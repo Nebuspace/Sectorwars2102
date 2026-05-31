@@ -1,6 +1,15 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect, ReactNode } from 'react';
 import axios from 'axios';
 import { useAuth } from './AuthContext';
+import type {
+  BangConfig,
+  BangJobResponse,
+} from '../components/universe/bang/types';
+import {
+  createBangJob,
+  listBangJobs,
+  wipeBangGalaxy,
+} from '../services/bangGalaxyApi';
 
 // Types for admin context
 export interface AdminStats {
@@ -198,6 +207,13 @@ interface AdminContextType {
   activateUser: (userId: string) => Promise<void>;
   deactivateUser: (userId: string) => Promise<void>;
 
+  // sw2102-bang generation (Phase 3 — admin UI integration)
+  bangHistory: BangJobResponse[];
+  bangHistoryTotal: number;
+  bangGalaxy: (config: BangConfig, galaxyName?: string) => Promise<BangJobResponse | null>;
+  loadBangHistory: (page?: number, pageSize?: number) => Promise<void>;
+  wipeGalaxy: (galaxyId: string, confirmName: string) => Promise<void>;
+
   // Loading and error state
   isLoading: boolean;
   error: string | null;
@@ -223,6 +239,10 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   // User management
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [players, setPlayers] = useState<PlayerAccount[]>([]);
+
+  // sw2102-bang state
+  const [bangHistory, setBangHistory] = useState<BangJobResponse[]>([]);
+  const [bangHistoryTotal, setBangHistoryTotal] = useState<number>(0);
   
   // Set up axios instance (headers set per request)
   const api = axios.create({
@@ -624,6 +644,82 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
   };
   
+  // ---------------------------------------------------------------------
+  // sw2102-bang integration (Phase 3)
+  //
+  // These wrap the bang-galaxy API helpers and mirror the existing
+  // setIsLoading / setError pattern so the rest of the app can opt in
+  // without bespoke state. The actual HTTP plumbing lives in
+  // `services/bangGalaxyApi.ts`; the live SSE log is consumed by the
+  // dedicated `useBangGenerationStream` hook (not by this context).
+  // ---------------------------------------------------------------------
+
+  const bangGalaxy = useCallback(
+    async (config: BangConfig, galaxyName?: string): Promise<BangJobResponse | null> => {
+      if (!user || !user.is_admin) return null;
+      setIsLoading(true);
+      setError(null);
+      try {
+        const job = await createBangJob({ config, galaxy_name: galaxyName }, token);
+        return job;
+      } catch (err) {
+        console.error('Error starting bang generation job:', err);
+        setError('Failed to start bang generation job');
+        throw err;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [user, token],
+  );
+
+  const loadBangHistory = useCallback(
+    async (page: number = 0, pageSize: number = 20): Promise<void> => {
+      if (!user || !user.is_admin) return;
+      setIsLoading(true);
+      setError(null);
+      try {
+        const result = await listBangJobs(page, pageSize, token);
+        setBangHistory(result.jobs ?? []);
+        setBangHistoryTotal(result.total ?? 0);
+      } catch (err) {
+        // History listing endpoint is planned but may not yet exist —
+        // degrade to an empty list rather than blocking the whole page.
+        console.error('Error loading bang history:', err);
+        setBangHistory([]);
+        setBangHistoryTotal(0);
+        setError('Failed to load bang generation history');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [user, token],
+  );
+
+  const wipeGalaxy = useCallback(
+    async (galaxyId: string, confirmName: string): Promise<void> => {
+      if (!user || !user.is_admin) return;
+      setIsLoading(true);
+      setError(null);
+      try {
+        await wipeBangGalaxy(galaxyId, confirmName, token);
+        // After a wipe the canonical galaxy is gone; reset all derived state.
+        setGalaxyState(null);
+        setRegions([]);
+        setZones([]);
+        setClusters([]);
+        setSectors([]);
+      } catch (err) {
+        console.error('Error wiping galaxy:', err);
+        setError('Failed to wipe galaxy');
+        throw err;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [user, token],
+  );
+
   // Load initial data when user logs in
   useEffect(() => {
     if (user && user.is_admin) {
@@ -672,6 +768,13 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     loadPlayers,
     activateUser,
     deactivateUser,
+
+    // sw2102-bang generation
+    bangHistory,
+    bangHistoryTotal,
+    bangGalaxy,
+    loadBangHistory,
+    wipeGalaxy,
 
     // Loading and error state
     isLoading,
