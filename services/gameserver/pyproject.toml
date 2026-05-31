@@ -39,7 +39,7 @@ qrcode = {extras = ["pil"], version = "^7.4.2"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
-pytest-asyncio = "^0.21.1"
+pytest-asyncio = ">=0.21.1,<0.24.0"
 pytest-cov = "^4.1.0"
 black = "^23.7.0"
 isort = "^5.12.0"
