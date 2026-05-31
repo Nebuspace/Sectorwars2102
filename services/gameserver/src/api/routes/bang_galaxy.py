@@ -291,7 +291,21 @@ async def hard_delete_galaxy(
         description="Must match the galaxy's exact name to authorise deletion.",
     ),
 ) -> Response:
-    """Hard-delete a galaxy (and everything cascaded). Per Max, no archive."""
+    """Hard-delete a galaxy (and everything cascaded). Per Max, no archive.
+
+    Important: Galaxy ↔ Region is not a FK relationship in this schema —
+    Galaxy.bang_snapshot["regions"][rt]["region_id"] is the only link.
+    SQLAlchemy cascade on the Galaxy row therefore does NOT reach Regions
+    or Sectors, so the wipe has to walk the snapshot and tear down each
+    region's subtree explicitly. Order matters: special_formations and
+    sectors must go before their parent regions, because
+    sectors.region_id and special_formations.anchor_sector_id are
+    ON DELETE RESTRICT. clusters cascade through region delete, and
+    sector_warps / warp_tunnels / planets / stations cascade through
+    sector delete.
+    """
+    from sqlalchemy import text as sa_text
+
     galaxy = await session.get(Galaxy, galaxy_id)
     if galaxy is None:
         raise HTTPException(status_code=404, detail="Galaxy not found")
@@ -303,6 +317,29 @@ async def hard_delete_galaxy(
                 "name; deletion refused."
             ),
         )
+
+    region_ids: list[uuid.UUID] = []
+    snapshot_regions = (galaxy.bang_snapshot or {}).get("regions", {})
+    for snap in snapshot_regions.values():
+        if isinstance(snap, dict):
+            rid = snap.get("region_id")
+            if rid is not None:
+                region_ids.append(rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid)))
+
+    if region_ids:
+        await session.execute(
+            sa_text("DELETE FROM special_formations WHERE region_id = ANY(:rids)"),
+            {"rids": region_ids},
+        )
+        await session.execute(
+            sa_text("DELETE FROM sectors WHERE region_id = ANY(:rids)"),
+            {"rids": region_ids},
+        )
+        await session.execute(
+            sa_text("DELETE FROM regions WHERE id = ANY(:rids)"),
+            {"rids": region_ids},
+        )
+
     await session.delete(galaxy)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
