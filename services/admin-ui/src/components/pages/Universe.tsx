@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useAdmin, SectorData } from '../../contexts/AdminContext';
 import * as d3 from 'd3';
 
@@ -12,7 +13,6 @@ const Universe: React.FC = () => {
     loadZones,
     loadClusters,
     loadSectors,
-    generateGalaxy,
     addSectors,
     createWarpTunnel,
     clearGalaxyData,
@@ -25,7 +25,7 @@ const Universe: React.FC = () => {
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
   const [selectedSector, setSelectedSector] = useState<SectorData | null>(null);
-  const [showGenerateForm, setShowGenerateForm] = useState(false);
+  // showGenerateForm state removed in bang cutover (Phase 4A); generation lives at /universe/bang
   const [showAddSectorsForm, setShowAddSectorsForm] = useState(false);
   const [showWarpTunnelForm, setShowWarpTunnelForm] = useState(false);
 
@@ -117,66 +117,8 @@ const Universe: React.FC = () => {
     setRegionDistribution(newDistribution);
   };
 
-  // Handle galaxy generation
-  const handleGenerateGalaxy = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!newGalaxyName.trim()) {
-      alert('Please enter a galaxy name.');
-      return;
-    }
-    
-    try {
-      await generateGalaxy(newGalaxyName, newGalaxySectors, {
-        resource_distribution: resourceDistribution,
-        hazard_levels: hazardLevels,
-        connectivity: connectivity,
-        station_density: portDensity,
-        planet_density: planetDensity,
-        warp_tunnel_probability: warpTunnelProbability,
-        faction_territory_size: factionTerritorySize,
-        zone_distribution: regionDistribution
-      });
-      setShowGenerateForm(false);
-      setNewGalaxyName('');
-    } catch (error: any) {
-      console.error('Error generating galaxy:', error);
-      
-      // Check if error is due to existing galaxy (HTTP 400)
-      if (error?.response?.status === 400 && 
-          error?.response?.data?.detail?.includes('already exists')) {
-        const shouldClear = window.confirm(
-          'A galaxy already exists. Would you like to clear the existing galaxy data and generate a new one?\n\n' +
-          'Warning: This will permanently delete all current galaxy data including sectors, planets, ports, and warp tunnels.'
-        );
-        
-        if (shouldClear) {
-          try {
-            await clearGalaxyData();
-            // Try generating again after clearing
-            await generateGalaxy(newGalaxyName, newGalaxySectors, {
-              resource_distribution: resourceDistribution,
-              hazard_levels: hazardLevels,
-              connectivity: connectivity,
-              station_density: portDensity,
-              planet_density: planetDensity,
-              warp_tunnel_probability: warpTunnelProbability,
-              faction_territory_size: factionTerritorySize,
-              zone_distribution: regionDistribution
-            });
-            setShowGenerateForm(false);
-            setNewGalaxyName('');
-            alert('Galaxy generated successfully after clearing existing data.');
-          } catch (clearError) {
-            console.error('Error clearing galaxy or regenerating:', clearError);
-            alert('Failed to clear existing galaxy data. Please try again.');
-          }
-        }
-      } else {
-        alert('Failed to generate galaxy. Please try again.');
-      }
-    }
-  };
+  // Legacy handleGenerateGalaxy removed in bang cutover (Phase 4A).
+  // Generation now lives at /universe/bang (BangGalaxyPage).
 
   // Handle adding sectors
   const handleAddSectors = async (e: React.FormEvent) => {
@@ -525,12 +467,9 @@ const Universe: React.FC = () => {
             <p className="page-subtitle">Manage galaxy generation, sectors, and universe structure</p>
           </div>
           {!galaxyState && (
-            <button 
-              className="btn btn-primary"
-              onClick={() => setShowGenerateForm(true)}
-            >
+            <Link className="btn btn-primary" to="/universe/bang">
               Generate New Galaxy
-            </button>
+            </Link>
           )}
         </div>
       </div>
@@ -789,16 +728,9 @@ const Universe: React.FC = () => {
                   >
                     {isUpdatingPortStock ? 'Updating...' : 'Update Port Stock Levels'}
                   </button>
-                  <button 
-                    className="btn btn-danger"
-                    onClick={() => {
-                      if (confirm('Are you sure you want to regenerate the entire galaxy? This will delete all existing data!')) {
-                        setShowGenerateForm(true);
-                      }
-                    }}
-                  >
+                  <Link to="/universe/bang" className="btn btn-danger">
                     Regenerate Galaxy
-                  </button>
+                  </Link>
                 </div>
 
                 <div className="regions-list">
@@ -865,145 +797,6 @@ const Universe: React.FC = () => {
           </>
         )}
 
-        {/* Generate Galaxy Modal */}
-        {showGenerateForm && (
-        <div className="modal-overlay" onClick={() => setShowGenerateForm(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2>Generate New Galaxy</h2>
-            <form onSubmit={handleGenerateGalaxy}>
-              <div className="form-group">
-                <label>Galaxy Name</label>
-                <input 
-                  type="text" 
-                  value={newGalaxyName}
-                  onChange={(e) => setNewGalaxyName(e.target.value)}
-                  placeholder="Enter galaxy name"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label>Number of Sectors</label>
-                <input 
-                  type="number" 
-                  value={newGalaxySectors}
-                  onChange={(e) => setNewGalaxySectors(parseInt(e.target.value))}
-                  min="10"
-                  max="1000"
-                  required
-                />
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Resource Distribution</label>
-                  <select value={resourceDistribution} onChange={(e) => setResourceDistribution(e.target.value as any)}>
-                    <option value="balanced">Balanced</option>
-                    <option value="clustered">Clustered</option>
-                    <option value="random">Random</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label>Hazard Levels</label>
-                  <select value={hazardLevels} onChange={(e) => setHazardLevels(e.target.value as any)}>
-                    <option value="low">Low</option>
-                    <option value="moderate">Moderate</option>
-                    <option value="high">High</option>
-                    <option value="extreme">Extreme</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label>Connectivity</label>
-                  <select value={connectivity} onChange={(e) => setConnectivity(e.target.value as any)}>
-                    <option value="sparse">Sparse</option>
-                    <option value="normal">Normal</option>
-                    <option value="dense">Dense</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Port Density ({(portDensity * 100).toFixed(0)}%)</label>
-                  <input 
-                    type="range" 
-                    min="0" 
-                    max="0.5" 
-                    step="0.05"
-                    value={portDensity}
-                    onChange={(e) => setPortDensity(parseFloat(e.target.value))}
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label>Planet Density ({(planetDensity * 100).toFixed(0)}%)</label>
-                  <input 
-                    type="range" 
-                    min="0" 
-                    max="0.5" 
-                    step="0.05"
-                    value={planetDensity}
-                    onChange={(e) => setPlanetDensity(parseFloat(e.target.value))}
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <h4>Region Distribution (Total: {regionDistribution.federation + regionDistribution.border + regionDistribution.frontier}%)</h4>
-                
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Federation Space ({regionDistribution.federation}%)</label>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="100" 
-                      step="1"
-                      value={regionDistribution.federation}
-                      onChange={(e) => handleRegionDistributionChange('federation', parseInt(e.target.value))}
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label>Border Zone ({regionDistribution.border}%)</label>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="100" 
-                      step="1"
-                      value={regionDistribution.border}
-                      onChange={(e) => handleRegionDistributionChange('border', parseInt(e.target.value))}
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label>Frontier ({regionDistribution.frontier}%)</label>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="100" 
-                      step="1"
-                      value={regionDistribution.frontier}
-                      onChange={(e) => handleRegionDistributionChange('frontier', parseInt(e.target.value))}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="form-actions">
-                <button type="button" className="btn btn-secondary" onClick={() => setShowGenerateForm(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary">
-                  Generate Galaxy
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Add Sectors Modal */}
       {showAddSectorsForm && (
