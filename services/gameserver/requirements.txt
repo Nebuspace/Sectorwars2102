@@ -23,7 +23,7 @@ aioredis==2.0.1
 # AI/ML Dependencies for Trading Intelligence System
 scikit-learn==1.8.0
 prophet==1.3.0
-pandas==2.0.3
+pandas==2.3.3
 numpy==1.24.3
 scipy==1.17.1
 
