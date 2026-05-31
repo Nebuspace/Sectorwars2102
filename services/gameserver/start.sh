@@ -154,4 +154,4 @@ else:
 
 # Start the FastAPI application
 echo "Starting FastAPI application..."
-exec python -m uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload 
+exec python -m uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload --proxy-headers --forwarded-allow-ips='*'
