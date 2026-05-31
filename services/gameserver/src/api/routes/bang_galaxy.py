@@ -15,7 +15,6 @@ intact; Phase 4 removes it.
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
 from typing import Any, AsyncGenerator, Dict, Optional
 
@@ -47,8 +46,6 @@ from src.schemas.bang_job import (
     BangJobResponse,
 )
 from src.services.bang_import_service import BangImportService
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
