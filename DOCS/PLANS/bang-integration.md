@@ -329,6 +329,25 @@ Translator MUST:
 - bang subprocess is reaped properly when gameserver container is `docker stop`'d
 - Version mismatch is caught at startup, not first invocation
 
+### Phase 2 — Implementation notes (locked 2026-05-31)
+
+- **Canonical version pin**: `BANG_VERSION` is declared once in `docker-compose.yml`
+  (gameserver `environment` block, default `1.3.0`). It is propagated into the
+  gameserver image at build time via a `build.args.BANG_VERSION` entry that feeds
+  the Dockerfile `ARG BANG_VERSION` / `ENV BANG_VERSION`. At runtime
+  `bang_import_service.py` reads `os.environ['BANG_VERSION']` and falls back to
+  `DEFAULT_BANG_IMAGE`'s baked-in tag if unset.
+- **PID 1 / signal forwarding**: `tini` is installed in the gameserver image and
+  wired as `ENTRYPOINT ["/usr/bin/tini", "--"]`. Bang sidecar subprocesses spawned
+  via `docker run` are now reaped cleanly when the gameserver container receives
+  `SIGTERM` from `docker stop`, eliminating zombie bang containers during job
+  cancellation.
+- **CI gate**: `.github/workflows/ci-bang-version-check.yml` extracts
+  `BANG_VERSION` from `docker-compose.yml`, pulls the matching DockerHub tag, runs
+  a smoke generation, and asserts the image reports the same version. Any PR that
+  bumps the pin without the tag being publicly pullable fails CI immediately
+  instead of at first production translator run.
+
 ---
 
 ## Phase 3 — Admin UI
