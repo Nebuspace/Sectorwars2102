@@ -40,22 +40,35 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Pull pinned bang image
+        env:
+          BANG_TAG: ${{ steps.bang_version.outputs.version }}
         run: |
-          docker pull "docker.io/drxelanull/sw2102-bang:${{ steps.bang_version.outputs.version }}"
+          docker pull "docker.io/drxelanull/sw2102-bang:${BANG_TAG}"
 
       - name: Smoke-test bang generation
+        # NOTE: bang's published Dockerfile (v1.3.0) sets ENTRYPOINT to the
+        # db-writer binary (bigbang-db), but the gameserver integration wants
+        # the stdout JSON CLI (bigbang → dist/cli.js). Until bang ships a
+        # corrected Dockerfile (planned v1.3.1) we override the entrypoint
+        # here AND in services/gameserver/src/services/bang_import_service.py
+        # to invoke the right binary.
+        env:
+          BANG_TAG: ${{ steps.bang_version.outputs.version }}
         run: |
           docker run --rm \
-            "docker.io/drxelanull/sw2102-bang:${{ steps.bang_version.outputs.version }}" \
+            --entrypoint node \
+            "docker.io/drxelanull/sw2102-bang:${BANG_TAG}" \
+            /app/dist/cli.js \
             --seed 42 --sectors 100 --json-out > /tmp/bang.json
 
       - name: Assert bang reports the pinned version
+        env:
+          BANG_TAG: ${{ steps.bang_version.outputs.version }}
         run: |
           REPORTED=$(jq -r '.version' /tmp/bang.json)
-          EXPECTED="${{ steps.bang_version.outputs.version }}"
           echo "Reported: $REPORTED"
-          echo "Expected: $EXPECTED"
-          if [ "$REPORTED" != "$EXPECTED" ]; then
-            echo "ERROR: bang image reported version '$REPORTED' but compose pins '$EXPECTED'"
+          echo "Expected: $BANG_TAG"
+          if [ "$REPORTED" != "$BANG_TAG" ]; then
+            echo "ERROR: bang image reported version '$REPORTED' but compose pins '$BANG_TAG'"
             exit 1
           fi
