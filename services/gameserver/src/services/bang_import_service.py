@@ -1366,6 +1366,17 @@ class BangImportService:
         job.completed_at = datetime.now(timezone.utc)  # type: ignore[assignment]
         job.error_message = msg  # type: ignore[assignment]
 
+        # Reap the Region rows the route handler pre-created for this job.
+        # POST /admin/galaxy/jobs commits three Region rows (one per region
+        # type) before the bang job runs; if apply() never gets to create
+        # the matching Galaxy + Sectors, those Regions are orphans. They
+        # match by the deterministic name pattern bang-{job_id}-{rt} that
+        # bang_galaxy.create_bang_job uses.
+        await session.execute(
+            text("DELETE FROM regions WHERE name LIKE :prefix"),
+            {"prefix": f"bang-{job_id}-%"},
+        )
+
     async def _append_log(
         self, session: AsyncSession, job_id: uuid.UUID, line: str
     ) -> None:
