@@ -440,7 +440,12 @@ export class EnhancedWebSocketService {
   }
 
   private generateSessionId(): string {
-    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Cryptographically-secure random suffix instead of Math.random
+    // (js/insecure-randomness — session IDs are a security context).
+    const bytes = new Uint8Array(8);
+    (globalThis.crypto || (window as any).msCrypto).getRandomValues(bytes);
+    const suffix = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `session_${Date.now()}_${suffix}`;
   }
 
   private loadAuthToken(): void {
@@ -460,11 +465,12 @@ export class EnhancedWebSocketService {
   }
 
   private sanitizeString(input: string): string {
-    // Basic XSS protection - in production use DOMPurify
+    // Basic XSS protection — in production use DOMPurify.
+    // Combined dangerous-scheme strip (covers vbscript: too) closes the
+    // js/incomplete-url-scheme-check finding.
     return input
       .replace(/[<>"'&]/g, '')
-      .replace(/javascript:/gi, '')
-      .replace(/data:/gi, '')
+      .replace(/(?:javascript|data|vbscript):/gi, '')
       .slice(0, 1000); // Limit length
   }
 
