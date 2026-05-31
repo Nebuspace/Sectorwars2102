@@ -26,8 +26,15 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from src.core.database import Base
 
 
-class BangGenerationJobStatus(enum.Enum):
-    """Lifecycle states for a bang generation job."""
+class BangGenerationJobStatus(str, enum.Enum):
+    """Lifecycle states for a bang generation job.
+
+    Subclasses ``str`` so each member *is* a string ("PENDING" etc.). This
+    makes Pydantic ``Literal["PENDING", ...]`` validation in response models
+    accept instances directly under pydantic 2.13's strict-literal rules,
+    while still working as a SQLAlchemy ``Enum`` column and as an enum at
+    every use-site that compares ``.RUNNING`` etc.
+    """
 
     PENDING = "PENDING"      # Queued; advisory lock not yet acquired
     RUNNING = "RUNNING"      # Bang subprocesses executing / translator writing
