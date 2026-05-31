@@ -98,9 +98,9 @@ export interface BangPreviewResponse {
   validation: BangPreviewValidation;
 }
 
-/** Paginated history list (assumed shape; backend list endpoint TBD). */
+/** Paginated history list. Matches gameserver BangJobListResponse. */
 export interface BangJobHistoryPage {
-  jobs: BangJobResponse[];
+  items: BangJobResponse[];
   total: number;
   page: number;
   page_size: number;

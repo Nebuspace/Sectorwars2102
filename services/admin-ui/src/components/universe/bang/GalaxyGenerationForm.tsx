@@ -8,7 +8,6 @@ import { i18nKeyForBangCode } from './errorCodeMap';
 import {
   BangConfig,
   BangPreviewResponse,
-  BangRegionType,
   BangValidatorStrictness,
   DEFAULT_BANG_CONFIG,
 } from './types';
@@ -23,12 +22,6 @@ interface GalaxyGenerationFormProps {
 
 type FormConfig = BangConfig & { galaxy_name?: string; raw_config_json?: string };
 
-const REGION_TYPES: BangRegionType[] = [
-  'player_owned',
-  'terran_space',
-  'central_nexus',
-];
-
 const VALIDATOR_OPTIONS: BangValidatorStrictness[] = [
   'lenient',
   'standard',
@@ -38,7 +31,12 @@ const VALIDATOR_OPTIONS: BangValidatorStrictness[] = [
 /**
  * Three-tier galaxy generation form: Common / Advanced / Expert.
  *
- * Common params: seed, region type, total sectors.
+ * Always generates a complete galaxy (all three region types). The
+ * orchestrator runs bang once per region with sub-seeds derived from
+ * the master seed. The form's "sectors" field sizes the player-owned
+ * region only; terran_space + central_nexus use baked-in counts.
+ *
+ * Common params: seed, sectors (player-owned), galaxy name.
  * Advanced: zone %s, density %s.
  * Expert: max warps, one-way warps, validator strictness, raw JSON.
  *
@@ -184,25 +182,6 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
               </button>
             </div>
             <small className="form-hint">{t('bang.form.common.seedHelp')}</small>
-          </label>
-
-          <label className="form-field">
-            <span className="form-label">{t('bang.form.common.regionType')}</span>
-            <select
-              value={config.region_type}
-              onChange={(e) => update('region_type', e.target.value as BangRegionType)}
-            >
-              {REGION_TYPES.map((r) => (
-                <option key={r} value={r}>
-                  {t(
-                    `bang.form.common.region${r
-                      .split('_')
-                      .map((p) => p[0].toUpperCase() + p.slice(1))
-                      .join('')}`,
-                  )}
-                </option>
-              ))}
-            </select>
           </label>
 
           <label className="form-field">
@@ -455,7 +434,7 @@ const GalaxyGenerationForm: React.FC<GalaxyGenerationFormProps> = ({
               <span className="form-label">{t('bang.form.expert.rawConfigJson')}</span>
               <textarea
                 rows={5}
-                placeholder='{"seed":42,"sectors":1000,"region_type":"player_owned"}'
+                placeholder='{"seed":42,"sectors":1000}'
                 value={config.raw_config_json ?? ''}
                 onChange={(e) => update('raw_config_json', e.target.value)}
               />

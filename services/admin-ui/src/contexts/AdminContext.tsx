@@ -622,7 +622,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setError(null);
       try {
         const result = await listBangJobs(page, pageSize, token);
-        setBangHistory(result.jobs ?? []);
+        setBangHistory(result.items ?? []);
         setBangHistoryTotal(result.total ?? 0);
       } catch (err) {
         // History listing endpoint is planned but may not yet exist —
