@@ -382,6 +382,7 @@ async def websocket_health():
         logger.error(f"WebSocket health check failed: {e}")
         return {
             "status": "unhealthy",
-            "error": str(e),
+            # Don't leak traceback to health probes (py/stack-trace-exposure).
+            "error": "WebSocket health check failed",
             "timestamp": datetime.now(UTC).isoformat()
         }

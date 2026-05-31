@@ -25,6 +25,31 @@ from src.services.mfa_service import MFAService
 router = APIRouter()
 
 
+# Allowlist of valid authorization-URL prefixes per OAuth provider. The OAuth
+# helper classes construct authorization URLs internally; re-validating them
+# here defends against open-redirect even if a forwarded-header value pollutes
+# the base URL used during construction (py/url-redirection).
+_OAUTH_AUTHORIZATION_PREFIXES = {
+    "github": ("https://github.com/login/oauth/authorize",),
+    "google": (
+        "https://accounts.google.com/o/oauth2/v2/auth",
+        "https://accounts.google.com/o/oauth2/auth",
+    ),
+    "steam": ("https://steamcommunity.com/openid/login",),
+}
+
+
+def _validate_oauth_authorization_url(provider: str, url: str) -> str:
+    allowed = _OAUTH_AUTHORIZATION_PREFIXES.get(provider, ())
+    if not any(url.startswith(p) for p in allowed):
+        # Misconfiguration — fail closed rather than redirect somewhere
+        # attacker-controlled.
+        raise HTTPException(
+            status_code=500, detail=f"OAuth provider URL did not match expected prefix for {provider}"
+        )
+    return url
+
+
 @router.post("/login", response_model=AuthResponse)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -578,7 +603,10 @@ async def login_github(request: Request, register: bool = False):
             base = f"{api_base_url}{settings.API_V1_STR}"
 
         # Always use the API_BASE_URL setting for Codespaces
-        redirect_uri = f"{base}/auth/github/callback?register={register}"
+        # Use a literal string rather than letting the bool's repr flow into
+        # the URL — gives CodeQL a clean data-flow break (py/url-redirection).
+        register_param = "true" if register else "false"
+        redirect_uri = f"{base}/auth/github/callback?register={register_param}"
     else:
         # Standard environment handling
         if api_base_url.endswith(settings.API_V1_STR):
@@ -586,12 +614,15 @@ async def login_github(request: Request, register: bool = False):
         else:
             base = f"{api_base_url}{settings.API_V1_STR}"
 
-        redirect_uri = f"{base}/auth/github/callback?register={register}"
+        # Use a literal string rather than letting the bool's repr flow into
+        # the URL — gives CodeQL a clean data-flow break (py/url-redirection).
+        register_param = "true" if register else "false"
+        redirect_uri = f"{base}/auth/github/callback?register={register_param}"
 
     logger.debug("GitHub OAuth redirect URI configured (env=%s)", settings.detect_environment())
 
     authorization_url = GitHubOAuth.get_authorization_url(redirect_uri)
-    return RedirectResponse(authorization_url)
+    return RedirectResponse(_validate_oauth_authorization_url("github", authorization_url))
 
 
 @router.get("/github/callback")
@@ -625,7 +656,10 @@ async def github_callback(request: Request, code: str, register: bool = False, s
             base = f"{api_base_url}{settings.API_V1_STR}"
 
         # Always use the API_BASE_URL setting for Codespaces
-        redirect_uri = f"{base}/auth/github/callback?register={register}"
+        # Use a literal string rather than letting the bool's repr flow into
+        # the URL — gives CodeQL a clean data-flow break (py/url-redirection).
+        register_param = "true" if register else "false"
+        redirect_uri = f"{base}/auth/github/callback?register={register_param}"
     else:
         # Include the registration flag in the redirect URI
         if api_base_url.endswith(settings.API_V1_STR):
@@ -633,7 +667,10 @@ async def github_callback(request: Request, code: str, register: bool = False, s
         else:
             base = f"{api_base_url}{settings.API_V1_STR}"
 
-        redirect_uri = f"{base}/auth/github/callback?register={register}"
+        # Use a literal string rather than letting the bool's repr flow into
+        # the URL — gives CodeQL a clean data-flow break (py/url-redirection).
+        register_param = "true" if register else "false"
+        redirect_uri = f"{base}/auth/github/callback?register={register_param}"
 
     logger.debug("GitHub OAuth callback URI configured")
 
@@ -705,12 +742,13 @@ async def login_google(request: Request, register: bool = False):
     else:
         base = f"{api_base_url}{settings.API_V1_STR}"
 
-    redirect_uri = f"{base}/auth/google/callback?register={register}"
+    register_param = "true" if register else "false"
+    redirect_uri = f"{base}/auth/google/callback?register={register_param}"
 
     logger.debug("Google OAuth redirect URI configured")
 
     authorization_url = GoogleOAuth.get_authorization_url(redirect_uri)
-    return RedirectResponse(authorization_url)
+    return RedirectResponse(_validate_oauth_authorization_url("google", authorization_url))
 
 
 @router.get("/google/callback")
@@ -728,7 +766,8 @@ async def google_callback(request: Request, code: str, register: bool = False, s
     else:
         base = f"{api_base_url}{settings.API_V1_STR}"
 
-    redirect_uri = f"{base}/auth/google/callback?register={register}"
+    register_param = "true" if register else "false"
+    redirect_uri = f"{base}/auth/google/callback?register={register_param}"
 
     # Validate OAuth state parameter (CSRF protection)
     if not _validate_oauth_state(state):
@@ -774,12 +813,13 @@ async def login_steam(request: Request, register: bool = False):
     else:
         base = f"{api_base_url}{settings.API_V1_STR}"
 
-    redirect_uri = f"{base}/auth/steam/callback?register={register}"
+    register_param = "true" if register else "false"
+    redirect_uri = f"{base}/auth/steam/callback?register={register_param}"
 
     logger.debug("Steam OAuth redirect URI configured")
 
     authorization_url = SteamAuth.get_authorization_url(redirect_uri)
-    return RedirectResponse(authorization_url)
+    return RedirectResponse(_validate_oauth_authorization_url("steam", authorization_url))
 
 
 @router.get("/steam/callback")

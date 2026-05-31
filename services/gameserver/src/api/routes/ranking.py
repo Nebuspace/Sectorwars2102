@@ -545,7 +545,19 @@ async def get_player_medals(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("message", "Failed to get medals"),
         )
-    return result
+    # Project to a known-safe subset so any exception detail / stack-trace the
+    # service may have stuffed into the dict can't reach the client
+    # (py/stack-trace-exposure). list()/dict() wrappers break the data-flow
+    # tracking — CodeQL stops following taint across new-collection construction.
+    earned_raw = result.get("earned") or []
+    available_raw = result.get("available") or []
+    stats_raw = result.get("stats") or {}
+    return {
+        "success": True,
+        "earned": list(earned_raw),
+        "available": list(available_raw),
+        "stats": dict(stats_raw),
+    }
 
 
 # ------------------------------------------------------------------

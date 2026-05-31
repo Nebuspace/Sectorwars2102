@@ -72,12 +72,16 @@ def sanitize_error_message(error: Exception, show_details: bool = False) -> str:
     error_type = type(error)
     safe_message = safe_messages.get(error_type, "An unexpected error occurred")
     
-    # In development, we might want to show more details
+    # In development, we might want to show more details — but never the
+    # multi-line stack trace. Strip newlines and cap length so traceback frames
+    # never leak to the client (py/stack-trace-exposure).
     if show_details and hasattr(error, 'detail'):
-        return str(error.detail)
+        detail = str(error.detail).splitlines()[0] if error.detail else safe_message
+        return detail[:200]
     elif show_details:
-        return str(error)
-    
+        first_line = str(error).splitlines()[0] if str(error) else safe_message
+        return first_line[:200]
+
     return safe_message
 
 

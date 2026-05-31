@@ -249,8 +249,10 @@ async def health_check():
                 "status": "unhealthy",
                 "timestamp": datetime.utcnow().isoformat(),
                 "database": "disconnected",
-                "error": str(e)
-            }
+                # Don't leak traceback to health probes
+                # (py/stack-trace-exposure).
+                "error": "Database health check failed",
+            },
         )
 
 

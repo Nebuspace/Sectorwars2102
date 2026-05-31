@@ -23,6 +23,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _redact(value: Optional[str], keep: int = 4) -> str:
+    """Redact most of a sensitive identifier, keeping the last few chars for
+    correlation. Used in log statements so subscription IDs / billing-agreement
+    IDs don't land in clear text in operator logs.
+    """
+    if not value:
+        return "***"
+    if len(value) <= keep:
+        return "***"
+    return f"...{value[-keep:]}"
+
+
 class SubscriptionTier(str, Enum):
     """Subscription tier types"""
     GALACTIC_CITIZEN = "galactic_citizen"  # $5/month
@@ -384,8 +396,12 @@ class PayPalService:
         if not subscription_id:
             return
         
-        # Log payment failure and potentially suspend after multiple failures
-        logger.warning(f"Payment failed for subscription {subscription_id}")
+        # Log payment failure and potentially suspend after multiple failures.
+        # The redacted variable is constructed BEFORE the log call so CodeQL's
+        # data-flow doesn't track the raw subscription_id reaching logger
+        # (py/clear-text-logging-sensitive-data).
+        redacted_id = _redact(subscription_id)
+        logger.warning("Payment failed for subscription %s", redacted_id)
         
         # You could implement a failure counter and suspend after X failures
         # For now, just log the event
@@ -397,7 +413,8 @@ class PayPalService:
             return
         
         amount = resource.get("amount", {}).get("total", "0.00")
-        logger.info(f"Payment completed for subscription {subscription_id}: ${amount}")
+        redacted_id = _redact(subscription_id)
+        logger.info("Payment completed for subscription %s: $%s", redacted_id, amount)
         
         # Ensure region/citizenship remains active
         result = await session.execute(

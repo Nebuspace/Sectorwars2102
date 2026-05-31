@@ -9,8 +9,13 @@ import os
 import time
 from threading import Thread
 
-def test_port(port, host="0.0.0.0", duration=1):
-    """Test if we can bind and listen on a port for a specified duration"""
+def test_port(port, host="127.0.0.1", duration=1):
+    """Test if we can bind and listen on a port for a specified duration.
+
+    Host defaults to loopback only. Callers that genuinely need to bind on all
+    interfaces (e.g., in-container reachability probes) can pass host="0.0.0.0"
+    explicitly so the security-scanner finding is acknowledged at the call site.
+    """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -26,8 +31,8 @@ def test_port(port, host="0.0.0.0", duration=1):
         print(f"❌ Could not bind to port {port}: {e}")
         return False
 
-def serve_http_response(port, host="0.0.0.0", text="Station test successful"):
-    """Try to serve a simple HTTP response on the port"""
+def serve_http_response(port, host="127.0.0.1", text="Station test successful"):
+    """Try to serve a simple HTTP response on the port. Loopback-only by default."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
