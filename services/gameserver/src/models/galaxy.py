@@ -2,11 +2,24 @@ import uuid
 import enum
 from datetime import datetime
 from typing import List, Dict, Optional, Any
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func, JSON
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func, JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
+
+
+class GalaxyImportState(enum.Enum):
+    """Whether the Galaxy row reflects a fully-imported universe.
+
+    Drives the GalaxyStateGuard middleware: player traffic is 503'd while
+    a bang generation job is mid-flight (`GENERATING`) or has failed
+    (`FAILED`); only `READY` permits gameplay.
+    """
+
+    GENERATING = "GENERATING"
+    READY = "READY"
+    FAILED = "FAILED"
 
 
 class Galaxy(Base):
@@ -96,7 +109,34 @@ class Galaxy(Base):
     hidden_sectors = Column(Integer, nullable=False, default=5)
     special_features = Column(ARRAY(String), nullable=False, default=[])
     description = Column(String, nullable=False, default="A standard galaxy with 500 sectors")
-    
+
+    # --- Bang integration audit columns (see bang_integration.md Phase 1B) ---
+    # Lifecycle gate read by GalaxyStateGuardMiddleware: GENERATING / READY / FAILED.
+    # Existing rows are backfilled to READY by the galaxy_audit_columns migration.
+    import_state = Column(
+        Enum(GalaxyImportState, name="galaxy_import_state"),
+        nullable=False,
+        default=GalaxyImportState.READY,
+        server_default=GalaxyImportState.READY.value,
+    )
+    # Pinned bang CLI version (semver) used to produce this galaxy. Drives the
+    # admin UI's "current bang differs from generator version" warning.
+    bang_version = Column(String(20), nullable=True)
+    # Seed passed to bang. BIGINT to preserve uint64 range without JS-number drift.
+    bang_seed = Column(BigInteger, nullable=True)
+    # Stable hash of the BangConfig used for this galaxy (reproducibility key).
+    bang_config_hash = Column(String(64), nullable=True)
+    # Verbatim raw Universe JSON (config + npcRosters + provenance) for audit
+    # and follow-up NPC materialization. Schema-A per resolved decision Q3.
+    bang_snapshot = Column(JSONB, nullable=True)
+    # Categorized warnings from bang's stderr + translator's Phase-13 checks.
+    generation_warnings = Column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default="[]",
+    )
+
     def __repr__(self):
         return f"<Galaxy {self.name} - {self.statistics.get('total_sectors', 0)} sectors>"
     
