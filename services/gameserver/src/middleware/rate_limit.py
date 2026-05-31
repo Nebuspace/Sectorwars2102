@@ -43,10 +43,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.rules: Dict[str, RateLimitRule] = {}
         self.clients: Dict[str, ClientState] = defaultdict(ClientState)
         
-        # Cleanup task to prevent memory leaks
+        # Cleanup task to prevent memory leaks. Started lazily on the first
+        # dispatch() call — at module-import time there is no running event
+        # loop, so asyncio.create_task() would raise RuntimeError.
         self._cleanup_task = None
-        self._start_cleanup_task()
-        
+
         # Rate limit configuration by endpoint pattern
         self._configure_default_rules()
     
@@ -162,6 +163,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Main middleware dispatch method"""
+        # Lazy-start the cleanup task on first request. We are inside a
+        # request here, so the event loop is guaranteed to be running.
+        if self._cleanup_task is None:
+            self._start_cleanup_task()
+
         current_time = time.time()
         client_id = self._get_client_id(request)
         path = request.url.path
