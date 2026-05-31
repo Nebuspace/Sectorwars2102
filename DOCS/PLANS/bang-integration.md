@@ -422,6 +422,46 @@ Owns:
 - Existing admin-ui tests still pass (`npm run build` + Playwright)
 - Single PR ready for merge to `dev`
 
+### Phase 4B implementation notes (locked 2026-05-31)
+
+- **Unit tests** (`services/gameserver/tests/unit/`): two new files
+  supplement the existing `test_bang_import_service.py`:
+  `test_bang_translator.py` (45 tests, parametrised across all 3
+  captured fixtures — asserts Q1/Q2/Q3/Q6, ADR-0070 no-cross-island
+  warps, terran_space starter invariants enforced post-translate, slug
+  → canonical-name mapping, formation-type coercion failure, missing
+  cluster-coverage errors) and `test_bang_invoke_mock.py` (18 tests —
+  timeout → RuntimeError, stderr forwarding to log sink, schema
+  version mismatch, exit-code-2 in invoke vs validate_only, optional
+  CLI-flag emission).
+- **Integration tests** (`services/gameserver/tests/integration/`):
+  `test_bang_apply.py` (atomic write surface with asyncpg-backed
+  `async_session_factory`), `test_bang_endpoints.py` (all 7 bang
+  endpoints + explicit `410 Gone` test for the legacy
+  `POST /admin/galaxy/generate` per Phase 4A's `replacement` field
+  contract), `test_bang_concurrency.py` (`asyncio.gather` race for the
+  advisory lock per the `test_refresh_token.py:90-100` template),
+  `test_bang_orphan_recovery.py` (backdated `started_at` → startup
+  sweep flips to FAILED + `'orphaned at startup'`), and a
+  `test_galaxy_state_guard.py` integration supplement.
+- **E2E tests** (`e2e_tests/bang/`): 6 specs + shared `bang-helpers.ts`
+  module: `generate-full-flow`, `iteration`, `wipe-regenerate`,
+  `concurrent-admins` (uses two browser contexts + API-direct
+  `Promise.all` for sub-50ms timing), `partial-state-recovery` (smoke
+  only — see open gap), `sse-log` (pause/resume + Copy diagnostic).
+- **Coverage**: 80% line on `bang_import_service.py` from unit tests
+  alone; the remaining 20% is `apply()` / `_apply_region()` /
+  `run_generation_job()` / job-table I/O — all covered by the
+  integration tests CI runs against the published
+  `drxelanull/sw2102-bang:1.3.0` image, expected to push total ≥90%.
+- **Open gaps**: `partial-state-recovery.spec.ts` is a smoke check
+  because there is no clean public endpoint to backdate a job's
+  `started_at` from the browser. Options for follow-up: add a
+  debug-only `POST /api/v1/admin/galaxy/jobs/{id}/_force_running`
+  endpoint gated by `ENVIRONMENT == "testing"`, or accept that the
+  `test_bang_orphan_recovery.py` pytest covers the contract
+  deterministically (current choice).
+
 ### Phase 4A implementation notes (locked 2026-05-31)
 
 **Removed (gameserver)**:
