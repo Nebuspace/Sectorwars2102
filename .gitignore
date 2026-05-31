@@ -80,3 +80,6 @@ dev-scripts/
 # Project specific
 generated-icon.png
 
+
+# macOS
+.DS_Store

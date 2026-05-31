@@ -1,0 +1,135 @@
+/* Typed-name confirmation modal for hard-delete of a galaxy. */
+
+.wipe-galaxy-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(3px);
+}
+
+.wipe-galaxy-panel {
+  background: var(--bg-primary, #1a1a1a);
+  border: 1px solid var(--border-danger, #b03030);
+  border-radius: 8px;
+  width: 90%;
+  max-width: 560px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+  color: var(--text-primary, #e0e0e0);
+}
+
+.wipe-galaxy-header {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border-primary, #333);
+  background: var(--bg-secondary, #2a1010);
+}
+
+.wipe-galaxy-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-danger, #ff8080);
+}
+
+.wipe-galaxy-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+}
+
+.wipe-galaxy-warning {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--text-secondary, #c8c8c8);
+}
+
+.wipe-galaxy-prompt {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.wipe-galaxy-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.95rem;
+  background: var(--bg-secondary, #2a2a2a);
+  color: var(--text-primary, #e0e0e0);
+  border: 1px solid var(--border-primary, #444);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.wipe-galaxy-input:focus {
+  outline: none;
+  border-color: var(--border-danger, #b03030);
+  box-shadow: 0 0 0 2px rgba(176, 48, 48, 0.25);
+}
+
+.wipe-galaxy-mismatch {
+  margin: 0;
+  color: var(--text-warning, #f0a020);
+  font-size: 0.9rem;
+}
+
+.wipe-galaxy-error {
+  margin: 0;
+  color: var(--text-danger, #ff8080);
+  font-size: 0.9rem;
+}
+
+.wipe-galaxy-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.wipe-galaxy-cancel,
+.wipe-galaxy-confirm {
+  padding: 0.55rem 1.15rem;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.wipe-galaxy-cancel {
+  background: transparent;
+  color: var(--text-secondary, #c8c8c8);
+  border-color: var(--border-primary, #444);
+}
+
+.wipe-galaxy-cancel:hover:not(:disabled) {
+  background: var(--bg-secondary, #2a2a2a);
+  color: var(--text-primary, #e0e0e0);
+}
+
+.wipe-galaxy-confirm {
+  background: var(--bg-danger, #b03030);
+  color: #ffffff;
+  border-color: var(--border-danger, #b03030);
+}
+
+.wipe-galaxy-confirm:hover:not(:disabled) {
+  background: #c43838;
+  border-color: #c43838;
+}
+
+.wipe-galaxy-confirm:disabled {
+  background: var(--bg-disabled, #444);
+  border-color: var(--bg-disabled, #444);
+  color: var(--text-disabled, #888);
+  cursor: not-allowed;
+}
+
+.wipe-galaxy-cancel:disabled {
+  color: var(--text-disabled, #777);
+  cursor: not-allowed;
+}

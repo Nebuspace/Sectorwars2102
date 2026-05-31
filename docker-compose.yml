@@ -137,8 +137,10 @@ services:
   
   # Development Game Server
   gameserver:
-    build: 
+    build:
       context: ./services/gameserver
+      args:
+        BANG_VERSION: ${BANG_VERSION:-1.3.0}
     container_name: sectorwars-gameserver
     ports:
       - "${GAMESERVER_PORT:-8080}:8080"
@@ -173,6 +175,7 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-sonnet-20240229}
       - TESTING_FROM_HOST=${TESTING_FROM_HOST:-false}
+      - BANG_VERSION=${BANG_VERSION:-1.3.0}
     restart: unless-stopped
     depends_on:
       database:
@@ -198,6 +201,7 @@ services:
       dockerfile: Dockerfile
       args:
         - ENVIRONMENT=${ENVIRONMENT:-production}
+        - BANG_VERSION=${BANG_VERSION:-1.3.0}
     container_name: sectorwars-central-nexus-server
     environment:
       - DATABASE_URL=postgresql://${NEXUS_DB_USER:-nexus_admin}:${NEXUS_DB_PASSWORD:-dev_only_not_for_production}@central-nexus-db:5432/${NEXUS_DB_NAME:-central_nexus}
@@ -206,6 +210,7 @@ services:
       - SERVICE_TYPE=central-nexus
       - REGION_ID=central-nexus
       - JWT_SECRET=${JWT_SECRET}
+      - BANG_VERSION=${BANG_VERSION:-1.3.0}
       - PAYPAL_CLIENT_ID=${PAYPAL_CLIENT_ID}
       - PAYPAL_CLIENT_SECRET=${PAYPAL_CLIENT_SECRET}
       - PAYPAL_GALACTIC_CITIZEN_PLAN_ID=${PAYPAL_GALACTIC_CITIZEN_PLAN_ID}
@@ -244,6 +249,7 @@ services:
       dockerfile: Dockerfile
       args:
         - ENVIRONMENT=${ENVIRONMENT:-production}
+        - BANG_VERSION=${BANG_VERSION:-1.3.0}
     restart: unless-stopped
     environment:
       - DATABASE_URL=postgresql://${REGION_DB_USER:-region_admin}:${REGION_DB_PASSWORD:-dev_only_not_for_production}@${REGION_NAME:-default-region}-db:5432/${REGION_NAME:-default_region}
@@ -252,6 +258,7 @@ services:
       - SERVICE_TYPE=regional-server
       - REGION_ID=${REGION_NAME:-default-region}
       - REGION_OWNER_ID=${REGION_OWNER_ID}
+      - BANG_VERSION=${BANG_VERSION:-1.3.0}
       - JWT_SECRET=${JWT_SECRET}
       - CENTRAL_NEXUS_URL=http://central-nexus-server:8080
       - ENABLE_CROSS_REGIONAL_API=true
@@ -293,6 +300,10 @@ services:
       - REACT_APP_ENVIRONMENT=${ENVIRONMENT:-development}
       - REACT_APP_MULTI_REGIONAL=${MULTI_REGIONAL:-false}
       - REACT_APP_PAYPAL_CLIENT_ID=${PAYPAL_CLIENT_ID}
+      # Vite reads VITE_* via import.meta.env (REACT_APP_* is ignored by Vite — kept above for any non-Vite consumers)
+      # NOTE: player-client adds /api/v1 + /ws at call sites (unlike admin-ui which expects suffixes baked in)
+      - VITE_API_URL=${API_BASE_URL:-http://localhost:8080}
+      - VITE_WS_URL=${WS_BASE_URL:-ws://localhost:8080}
     restart: unless-stopped
     depends_on:
       - gameserver

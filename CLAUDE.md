@@ -112,48 +112,35 @@ git push origin master                                # Deploy changes
 
 ## 🚨 CRITICAL CONTEXT
 
-### GCP Development VM (Primary Environment)
+### Execution Environment — Read This Before Running Anything
 
-Docker containers run on a remote GCP VM, accessed securely via Tailscale. Development happens locally on MacBook with Claude Code + Chrome browser automation.
+The full stack (FastAPI + Postgres + Redis + Admin UI + Player Client + Nginx) is **NOT** intended to run on Max's MacBook. The Mac is for code editing and lightweight tooling (Node, npm, pytest in isolation). The full Docker stack runs on a separate remote Linux host accessed via Tailscale.
 
-**GCP Instance Details**:
-- **VM Name**: See `dev-scripts/` (local, gitignored)
-- **Machine Type**: `e2-standard-4` (4 vCPU, 16GB RAM, spot/preemptible)
-- **Disk**: 50GB pd-balanced, Debian 12
-- **Access**: Via Tailscale VPN (no public IP exposed for service ports)
-- **Auto-Shutdown**: 11 PM CT daily via GCP instance schedule
-- **Firewall**: Blocks public access to ports 3000/3001/8080/5433
-- **Cost**: ~$0.04/hr (spot), roughly $80/month at 8hrs/day
+**❌ DO NOT, on Max's MacBook:**
+- Run `docker build`, `docker run`, `docker compose up`, or anything that starts/builds containers locally. Docker on the Mac combined with Claude Code throttles his CPU to ~20% capacity.
+- Assume "GCP VM" is the deploy target. An older revision of this file referenced a GCP VM; that is **outdated**. Do not act on that information.
 
-**Services Running on VM** (via `docker compose --profile development`):
-- Player Client: `http://<TAILSCALE_IP>:3000` (React/TypeScript frontend)
-- Admin UI: `http://<TAILSCALE_IP>:3001` (React/TypeScript admin interface)
-- Game Server: `http://<TAILSCALE_IP>:8080` (FastAPI/Python backend)
-- Database: PostgreSQL 15 (postgres:15-alpine, internal port 5432)
-- Redis Cache: Redis 7 (internal port 6379)
-- Nginx Gateway: Reverse proxy (healthy)
-- Region Manager: Regional coordination service
+**✅ DO, on Max's MacBook:**
+- Edit code (TS, Python, YAML, Dockerfiles — file changes are fine)
+- Run Node-only commands: `npm test`, `npm run build`, `tsc`
+- Run isolated `pytest` or `ruff` if a venv is configured locally (rare)
+- Use `git` freely (commits, branches, status, log)
 
-**VM Management**: See local `dev-scripts/` directory (gitignored — contains VM IPs and credentials).
+**Where the full stack actually runs:**
 
-**Git Workflow**:
-- **`dev` branch**: All development work. Commit freely, push to sync to VM.
-- **`master` branch**: Tested, validated code only. Merge from dev when ready.
-- VM tracks `origin/dev` — sync script pushes and pulls automatically.
-- Containers volume-mount source from VM repo, so changes hot-reload on pull.
+Infrastructure is documented in Max's separate, local-only infrastructure repo at `~/github/ServerSetup/` (not part of this codebase). That repo contains the canonical map of dev / stage / prod hosts, SSH access, Tailscale topology, and runbooks. **Future Claude sessions: read `~/github/ServerSetup/README.md` and `~/github/ServerSetup/docs/services/sectorwars-hosting.md` to learn the real deployment topology before planning any work that involves the stack actually running.**
 
-**VM Docker Commands** (on VM via SSH):
-```bash
-docker compose --profile development up -d       # Start all containers
-docker compose --profile development logs -f     # Follow logs
-docker compose --profile development down        # Stop containers
-```
+Summary (without sensitive specifics, which live in ServerSetup):
+- **Dev + stage** run on a remote Linux host reachable via Tailscale. Capable hardware, headroom for the full stack.
+- **Prod** runs on a separate colocated bare-metal host.
+- Connectivity to the dev host depends on Tailscale being up on the Mac. `tailscale status` confirms.
 
-**Important Notes**:
-- Tailscale must be running on MacBook to access VM services
-- VM has public IP for outbound internet (Docker pulls, Tailscale DERP) but service ports are firewalled
-- Spot VM may be preempted with 30s notice — data persists on disk
-- After VM restart: Tailscale auto-starts, but `docker compose up -d` must be run manually
+**Git workflow**:
+- `dev` branch: development work
+- `master` branch: tested, validated code
+- The remote dev host tracks the dev branch via a sync script.
+
+**Docker / stack commands run on the remote dev host via SSH**, not locally. See ServerSetup runbooks for exact commands per service.
 
 **DOCKER COMPOSE PROFILES**:
 ```bash
@@ -194,33 +181,33 @@ docker compose config                            # Show resolved configuration
 
 ## 🔧 ESSENTIAL COMMANDS REFERENCE
 
-```bash
-# VM Lifecycle (from MacBook) — see dev-scripts/ (local, gitignored)
+**Reminder:** Docker / `docker compose` commands run on the **remote dev host via SSH**, not on Max's MacBook. See `~/github/ServerSetup/docs/services/sectorwars-hosting.md` for SSH access details and exact host names.
 
-# Development Workflow (ON VM via SSH)
+```bash
+# Development Workflow (run on the remote dev host)
 docker compose --profile development up -d           # Start all services
 docker compose --profile development down            # Stop all services
 docker compose --profile development logs -f         # Follow all logs
 
-# Database Operations (ON VM)
+# Database Operations (on the remote dev host)
 docker compose exec gameserver poetry run alembic upgrade head           # Apply migrations
 docker compose exec gameserver poetry run alembic revision -m "desc"     # Create migration
 docker compose exec gameserver poetry run alembic current                # Check status
 docker compose exec gameserver poetry run alembic downgrade -1           # Rollback
 
-# Quality Gates (ON VM)
+# Quality Gates (on the remote dev host)
 docker compose exec player-client npm run lint       # Frontend code style
 docker compose exec player-client npm run build      # Frontend build + typecheck
 docker compose exec admin-ui npm run lint            # Admin UI code style
 docker compose exec gameserver poetry run pytest     # Backend tests
 docker compose exec gameserver poetry run ruff check .  # Backend linting
 
-# Container Management (ON VM)
+# Container Management (on the remote dev host)
 docker compose ps                                    # Service status
 docker compose logs <service>                        # Service logs
 docker compose restart <service>                     # Restart service
 
-# E2E Tests (from MacBook, pointing at Tailscale IP)
+# E2E Tests (run from the MacBook, target services on the dev host via Tailscale)
 npx playwright test -c e2e_tests/playwright.config.ts
 ```
 

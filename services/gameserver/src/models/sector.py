@@ -131,6 +131,7 @@ class Sector(Base):
     deployed_drones = relationship("Drone", back_populates="sector")
     drone_deployments = relationship("DroneDeployment", back_populates="sector")
     fleets = relationship("Fleet", back_populates="sector")
+    anchored_formations = relationship("SpecialFormation", back_populates="anchor_sector", foreign_keys="SpecialFormation.anchor_sector_id")
     
     # Warp connections
     outgoing_warps = relationship(
