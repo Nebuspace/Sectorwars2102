@@ -60,6 +60,49 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.error(f"Admin user initialization failed: {e}")
         # Don't crash the server if admin creation fails
 
+    # i18n auto-seed: ensure default languages/namespaces exist and load any
+    # JSON translation bundles shipped with the gameserver image. Files live
+    # at /app/i18n/{lng}/{ns}.json. Re-runs are no-ops (overwrite=False), so
+    # this is safe on every boot. Without this, a fresh DB serves empty
+    # namespaces and admin UI renders raw t-keys (see #317).
+    try:
+        import json
+        from pathlib import Path
+
+        from src.core.database import SessionLocal
+        from src.services.translation_service import TranslationService
+
+        i18n_root = Path(__file__).resolve().parent.parent / "i18n"
+        db = SessionLocal()
+        try:
+            tservice = TranslationService(db)
+            await tservice.initialize_default_data()
+
+            bundle_files = sorted(i18n_root.glob("*/*.json")) if i18n_root.is_dir() else []
+            for path in bundle_files:
+                language_code = path.parent.name
+                namespace = path.stem
+                try:
+                    with path.open() as fh:
+                        bundle = json.load(fh)
+                    summary = await tservice.bulk_import_translations(
+                        translations=bundle,
+                        language_code=language_code,
+                        namespace=namespace,
+                        overwrite=False,
+                    )
+                    logger.info(
+                        "i18n seed %s/%s: imported=%s skipped=%s errors=%s",
+                        language_code, namespace,
+                        summary.get("imported"), summary.get("skipped"), summary.get("errors"),
+                    )
+                except Exception as inner:
+                    logger.warning("i18n seed failed for %s: %s", path, inner)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"i18n auto-seed skipped: {e}")
+
     # Start WebSocket heartbeat cleanup background task
     import asyncio
     async def _heartbeat_cleanup_loop():
