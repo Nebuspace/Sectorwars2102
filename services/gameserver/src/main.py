@@ -3,20 +3,20 @@ Sectorwars 2102 Game Server - Main FastAPI Application
 """
 
 import logging
-import os
+from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict
+from typing import AsyncIterator
 
-from fastapi import FastAPI, Request, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.core.config import settings
-from src.core.database import Base, async_engine, get_async_session
 from src.api.api import api_router
+from src.core.config import settings
+from src.core.database import Base, async_engine
 from src.utils.error_handling import setup_error_handling
 
 # Configure logging
@@ -26,101 +26,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create FastAPI application
-app = FastAPI(
-    title="Sectorwars 2102 Game Server",
-    description="Advanced space trading simulation game server with AI intelligence",
-    version="2.1.0",
-    docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None,
-    openapi_url="/openapi.json" if settings.DEBUG else None,
-    redirect_slashes=True  # Auto-redirect /path/ to /path (eliminates duplicate route definitions)
-)
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """FastAPI 0.115+ lifespan handler (replaces @app.on_event startup/shutdown).
 
-# Security middleware
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["*"] if settings.DEVELOPMENT_MODE else ["localhost", "*.app.github.dev", "*.repl.co"]
-)
-
-# CORS middleware
-allowed_origins = ["*"] if settings.DEVELOPMENT_MODE else [
-    settings.get_frontend_url(),
-    "https://*.app.github.dev",
-    "https://*.repl.co"
-]
-
-# Always allow localhost origins for development
-if settings.DEVELOPMENT_MODE:
-    allowed_origins = ["*"]
-else:
-    allowed_origins.extend([
-        "http://localhost:3000",
-        "http://localhost:3001", 
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001"
-    ])
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["*"],
-)
-
-# Galaxy-state guard: blocks player traffic with 503 while a bang
-# generation job is mid-flight. Admin and auth paths bypass the check.
-# Fails-open (logs + lets traffic through) if the lookup raises — keeps
-# the server usable on fresh environments before migrations land.
-from src.middleware.galaxy_state_guard import GalaxyStateGuardMiddleware  # noqa: E402
-app.add_middleware(GalaxyStateGuardMiddleware)
-
-# Include API router
-app.include_router(api_router, prefix=settings.API_V1_STR)
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """Handle HTTP exceptions"""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail, "status_code": exc.status_code}
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle validation errors"""
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": exc.errors(), "body": exc.body}
-    )
-
-
-@app.exception_handler(SQLAlchemyError)
-async def database_exception_handler(request: Request, exc: SQLAlchemyError):
-    """Handle database errors"""
-    logger.error(f"Database error: {exc}")
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Database error occurred"}
-    )
-
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    """Handle all other exceptions"""
-    logger.error(f"Unexpected error: {exc}")
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Internal server error"}
-    )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize application"""
+    Runs DB schema init, admin user bootstrap, the WebSocket heartbeat cleanup
+    background task, and the bang job orphan recovery sweep on startup; logs
+    a shutdown line on teardown.
+    """
+    # ---------- startup ----------
     logger.info("Starting Sectorwars 2102 Game Server...")
 
     try:
@@ -158,7 +72,7 @@ async def startup_event():
             except Exception as e:
                 logger.warning(f"Heartbeat cleanup error: {e}")
 
-    asyncio.create_task(_heartbeat_cleanup_loop())
+    heartbeat_task = asyncio.create_task(_heartbeat_cleanup_loop())
 
     # Orphan-recovery sweep: mark any bang generation jobs left in RUNNING
     # state for >5 minutes as FAILED. See DOCS/PLANS/bang-integration.md
@@ -166,7 +80,10 @@ async def startup_event():
     # and the server keeps going).
     try:
         from datetime import timedelta
-        from sqlalchemy import update, func as sa_func
+
+        from sqlalchemy import func as sa_func
+        from sqlalchemy import update
+
         from src.core.database import AsyncSessionLocal
         from src.models.bang_generation_job import (
             BangGenerationJob,
@@ -204,12 +121,112 @@ async def startup_event():
 
     logger.info("Sectorwars 2102 Game Server started successfully")
 
+    # ---------- yield to application ----------
+    yield
 
-@app.on_event("shutdown")
+    # ---------- shutdown ----------
+    logger.info("Shutting down Sectorwars 2102 Game Server...")
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except asyncio.CancelledError:
+        # Expected: we just cancelled it.
+        logger.debug("Heartbeat cleanup task cancelled cleanly")
+    except Exception as e:  # noqa: BLE001 — best-effort shutdown
+        logger.warning(f"Heartbeat cleanup raised during shutdown (ignored): {e}")
+
+# Create FastAPI application
+app = FastAPI(
+    title="Sectorwars 2102 Game Server",
+    description="Advanced space trading simulation game server with AI intelligence",
+    version="2.1.0",
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
+    redirect_slashes=True,  # Auto-redirect /path/ to /path (eliminates duplicate route definitions)
+    lifespan=lifespan,
+)
+
+# Security middleware
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"] if settings.DEVELOPMENT_MODE else ["localhost", "*.app.github.dev", "*.repl.co"]
+)
+
+# CORS middleware
+allowed_origins = ["*"] if settings.DEVELOPMENT_MODE else [
+    settings.get_frontend_url(),
+    "https://*.app.github.dev",
+    "https://*.repl.co"
+]
+
+# Always allow localhost origins for development
+if settings.DEVELOPMENT_MODE:
+    allowed_origins = ["*"]
+else:
+    allowed_origins.extend([
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001"
+    ])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# Galaxy-state guard: blocks player traffic with 503 while a bang
+# generation job is mid-flight. Admin and auth paths bypass the check.
+# Fails-open (logs + lets traffic through) if the lookup raises — keeps
+# the server usable on fresh environments before migrations land.
+from src.middleware.galaxy_state_guard import GalaxyStateGuardMiddleware  # noqa: E402
+
+app.add_middleware(GalaxyStateGuardMiddleware)
+
+# Include API router
+app.include_router(api_router, prefix=settings.API_V1_STR)
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTP exceptions"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "status_code": exc.status_code}
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle validation errors"""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors(), "body": exc.body}
+    )
+
+@app.exception_handler(SQLAlchemyError)
+async def database_exception_handler(request: Request, exc: SQLAlchemyError):
+    """Handle database errors"""
+    logger.error(f"Database error: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Database error occurred"}
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle all other exceptions"""
+    logger.error(f"Unexpected error: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Internal server error"}
+    )
+
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("Shutting down Sectorwars 2102 Game Server...")
-
 
 @app.get("/")
 async def root():
@@ -223,7 +240,6 @@ async def root():
         "environment": settings.detect_environment()
     }
 
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -233,7 +249,7 @@ async def health_check():
         async with AsyncSessionLocal() as session:
             from sqlalchemy import text
             await session.execute(text("SELECT 1"))
-        
+
         return {
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
@@ -255,7 +271,6 @@ async def health_check():
             },
         )
 
-
 # Setup error handling
 setup_error_handling(app)
 
@@ -271,7 +286,7 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "src.main:app",
-        host="0.0.0.0",
+        host="0.0.0.0",  # noqa: S104 — container needs to bind to all interfaces
         port=8080,
         reload=settings.DEBUG,
         log_level="info"
