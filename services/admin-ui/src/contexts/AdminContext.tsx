@@ -30,6 +30,7 @@ export interface GalaxyStats {
   player_count: number;
   team_count: number;
   warp_tunnel_count: number;
+  sector_warp_count?: number;  // In-region adjacency graph count; back-end may be older
   genesis_count: number;
 }
 

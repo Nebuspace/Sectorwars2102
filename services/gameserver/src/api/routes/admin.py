@@ -952,6 +952,17 @@ async def get_galaxy_info(
             logger.error(f"Failed to query warp_tunnels table: {e2}")
             warp_tunnel_count = 0
 
+    # sector_warps is the in-region adjacency graph players actually use
+    # to traverse between sectors. This is what bang generates and what
+    # makes a galaxy navigable; warp_tunnels is the smaller set of
+    # cross-region gates + player-built / quantum / ancient tunnels.
+    try:
+        result = db.execute(text("SELECT COUNT(*) FROM sector_warps"))
+        sector_warp_count = result.scalar() or 0
+    except Exception as e:
+        logger.error(f"Failed to query sector_warps table: {e}")
+        sector_warp_count = 0
+
     return {
         "id": str(galaxy.id),
         "name": galaxy.name,
@@ -966,6 +977,7 @@ async def get_galaxy_info(
             "player_count": active_players,
             "team_count": team_count,
             "warp_tunnel_count": warp_tunnel_count,
+            "sector_warp_count": sector_warp_count,
             "genesis_count": galaxy.statistics.get("genesis_count", 0)
         },
         "density": galaxy.density,
