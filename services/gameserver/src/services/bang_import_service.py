@@ -856,12 +856,19 @@ class BangImportService:
         omitted fields fall back to bang's defaults (per ADR-0069's
         "GenerationRequest is optional" contract).
         """
+        # NOTE: bang's published Dockerfile (v1.3.0) sets ENTRYPOINT to the
+        # db-writer binary (bigbang-db). The integration needs the stdout JSON
+        # CLI (bigbang → dist/cli.js). Until bang ships a corrected Dockerfile
+        # (planned v1.3.1) we override the entrypoint here.
         cmd: List[str] = [
             "docker",
             "run",
             "--rm",
             "-i",
+            "--entrypoint",
+            "node",
             self.bang_image,
+            "/app/dist/cli.js",
             "--seed",
             str(config.seed),
             "--sectors",
