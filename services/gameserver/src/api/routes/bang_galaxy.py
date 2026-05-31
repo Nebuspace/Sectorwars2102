@@ -37,6 +37,7 @@ from src.models.bang_generation_job import (
     BangGenerationJobStatus,
 )
 from src.models.galaxy import Galaxy
+from src.models.region import Region
 from src.models.user import User
 from src.schemas.bang_config import BangConfig
 from src.schemas.bang_job import (
@@ -82,22 +83,48 @@ async def create_bang_job(
     service: BangImportService = Depends(get_bang_import_service),
 ) -> BangJobResponse:
     """Queue a bang generation job. Returns immediately with the job row."""
+    # Generate both ids up front. The model-side `default=uuid.uuid4` only
+    # fires at flush time, so we cannot read `.id` between add() and
+    # commit(); explicit assignment lets us pass the UUIDs straight to the
+    # background task without an extra round-trip.
+    job_id = uuid.uuid4()
     job = BangGenerationJob(
+        id=job_id,
         admin_user_id=current_admin.id,
         status=BangGenerationJobStatus.PENDING,
         params_json=payload.config.model_dump(),
     )
     session.add(job)
+
+    # Pre-create one Region row per region type. The translator does NOT
+    # create Region rows itself (per ADR-0069 §52 — operator owns Region
+    # metadata); apply() resolves them via
+    # InsertPlan.bang_snapshot['regions'][region_type]['region_id'].
+    # Names embed the job id so successive (wipe → regenerate) cycles do
+    # not collide on the unique(name) constraint, and so a galaxy's
+    # regions are traceable to the bang job that produced them.
+    galaxy_name = payload.galaxy_name or "SectorWars Galaxy"
+    region_uuids: Dict[str, uuid.UUID] = {}
+    for region_type in ("player_owned", "terran_space", "central_nexus"):
+        region_id = uuid.uuid4()
+        session.add(Region(
+            id=region_id,
+            name=f"bang-{job_id}-{region_type}",
+            display_name=f"{galaxy_name} — {region_type.replace('_', ' ').title()}",
+            region_type=region_type,
+        ))
+        region_uuids[region_type] = region_id
+
     await session.commit()
     await session.refresh(job)
 
     region_metadata: Dict[str, Any] = {
-        "galaxy_name": payload.galaxy_name or "SectorWars Galaxy",
+        "galaxy_name": galaxy_name,
         "master_seed": payload.config.seed,
+        "regions": {
+            rt: {"region_id": str(rid)} for rt, rid in region_uuids.items()
+        },
     }
-    # SQLAlchemy returns Column-typed values on instance access for mypy; the
-    # runtime value is a uuid.UUID, so cast for the BackgroundTasks signature.
-    job_id: uuid.UUID = job.id  # type: ignore[assignment]
     background_tasks.add_task(
         service.run_generation_job,
         job_id,
