@@ -294,8 +294,9 @@ services:
       - REACT_APP_MULTI_REGIONAL=${MULTI_REGIONAL:-false}
       - REACT_APP_PAYPAL_CLIENT_ID=${PAYPAL_CLIENT_ID}
       # Vite reads VITE_* via import.meta.env (REACT_APP_* is ignored by Vite — kept above for any non-Vite consumers)
-      - VITE_API_URL=${API_BASE_URL:-http://localhost:8080}/api/v1
-      - VITE_WS_URL=${WS_BASE_URL:-ws://localhost:8080}/ws
+      # NOTE: player-client adds /api/v1 + /ws at call sites (unlike admin-ui which expects suffixes baked in)
+      - VITE_API_URL=${API_BASE_URL:-http://localhost:8080}
+      - VITE_WS_URL=${WS_BASE_URL:-ws://localhost:8080}
     restart: unless-stopped
     depends_on:
       - gameserver
