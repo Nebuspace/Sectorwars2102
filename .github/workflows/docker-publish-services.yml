@@ -190,6 +190,10 @@ jobs:
         with:
           context: ${{ matrix.service.context }}
           file: ${{ matrix.service.dockerfile }}
+          # Every service Dockerfile exposes a `production` stage. Multi-stage
+          # means dev tooling (Vite dev server, --reload, dev deps) doesn't end
+          # up in the published image.
+          target: production
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
