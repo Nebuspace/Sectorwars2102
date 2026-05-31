@@ -74,3 +74,30 @@ class BangJobResponse(BaseModel):
     # `log_text` may be large; clients fetching the full record get it inline.
     # The SSE stream endpoint is the preferred channel for in-flight logs.
     log_text: str = ""
+
+
+class BangJobListItem(BaseModel):
+    """Row shape for the history list — no log_text to keep responses small."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    admin_user_id: UUID
+    status: JobStatusLiteral
+    params_json: dict[str, Any]
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    error_message: Optional[str] = None
+    warning_count: int = 0
+
+
+class BangJobListResponse(BaseModel):
+    """Paginated job-history listing for the admin UI."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: List[BangJobListItem]
+    total: int
+    page: int = Field(ge=0)
+    page_size: int = Field(ge=1, le=200)

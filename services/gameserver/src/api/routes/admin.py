@@ -987,6 +987,24 @@ async def get_galaxy_info(
         "hidden_sectors": galaxy.hidden_sectors,
         "special_features": galaxy.special_features,
         "description": galaxy.description,
+        # Bang provenance + audit columns (Phase 1B). All optional — pre-bang
+        # galaxies will return null for everything in this block.
+        "bang": {
+            "import_state": (
+                galaxy.import_state.value if getattr(galaxy, "import_state", None) is not None
+                and hasattr(galaxy.import_state, "value")
+                else getattr(galaxy, "import_state", None)
+            ),
+            "bang_version": getattr(galaxy, "bang_version", None),
+            "bang_seed": getattr(galaxy, "bang_seed", None),
+            "bang_config_hash": getattr(galaxy, "bang_config_hash", None),
+            "generation_warnings": getattr(galaxy, "generation_warnings", None) or [],
+            # Snapshot is large; expose lightweight stats only.
+            "stats": (
+                (galaxy.bang_snapshot or {}).get("stats")
+                if getattr(galaxy, "bang_snapshot", None) else None
+            ),
+        },
         # Legacy support for frontend
         "generation_config": {
             "resource_distribution": galaxy.density.get("resource_distribution", "balanced"),

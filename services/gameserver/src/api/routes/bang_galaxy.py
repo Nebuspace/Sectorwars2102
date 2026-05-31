@@ -42,6 +42,8 @@ from src.models.user import User
 from src.schemas.bang_config import BangConfig
 from src.schemas.bang_job import (
     BangJobCreate,
+    BangJobListItem,
+    BangJobListResponse,
     BangJobResponse,
 )
 from src.services.bang_import_service import BangImportService
@@ -126,6 +128,43 @@ async def preview_bang_config(
         "warnings": report.warnings,
         "validation": report.validation,
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/galaxy/jobs   (paginated history list — small payload)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/galaxy/jobs", response_model=BangJobListResponse)
+async def list_bang_jobs(
+    page: int = 0,
+    page_size: int = 20,
+    current_admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_async_session),
+) -> BangJobListResponse:
+    """Paginated job history. Excludes `log_text` to keep payloads small."""
+    from sqlalchemy import desc, func, select
+
+    page = max(0, page)
+    page_size = max(1, min(200, page_size))
+
+    total = (await session.execute(select(func.count(BangGenerationJob.id)))).scalar_one()
+
+    rows = (await session.execute(
+        select(BangGenerationJob)
+        .order_by(desc(BangGenerationJob.started_at))
+        .offset(page * page_size)
+        .limit(page_size)
+    )).scalars().all()
+
+    items: list[BangJobListItem] = []
+    for r in rows:
+        item = BangJobListItem.model_validate(r)
+        # warning_count is derived; not a column on the ORM model.
+        item = item.model_copy(update={"warning_count": len(r.warnings_json or [])})
+        items.append(item)
+
+    return BangJobListResponse(items=items, total=int(total), page=page, page_size=page_size)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +269,31 @@ async def hard_delete_galaxy(
     await session.delete(galaxy)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/bang/version   (server-side BANG_VERSION exposure)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/bang/version")
+async def get_bang_version(
+    current_admin: User = Depends(get_current_admin),
+) -> Dict[str, str]:
+    """Return the BANG_VERSION the server is pinned to.
+
+    Used by the admin UI's overview header to warn when the active galaxy
+    was generated under a different bang version than the server is
+    currently configured to invoke.
+    """
+    import os
+    return {
+        "bang_version": os.environ.get("BANG_VERSION", "unknown"),
+        "default_image": os.environ.get(
+            "BANG_IMAGE",
+            f"docker.io/drxelanull/sw2102-bang:{os.environ.get('BANG_VERSION', '1.3.0')}",
+        ),
+    }
 
 
 __all__ = ["router"]
