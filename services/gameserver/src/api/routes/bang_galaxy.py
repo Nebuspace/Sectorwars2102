@@ -30,7 +30,7 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
-from src.auth.dependencies import get_current_admin
+from src.auth.dependencies import get_current_admin, get_current_admin_from_header_or_query
 from src.core.database import get_async_session
 from src.models.bang_generation_job import (
     BangGenerationJob,
@@ -189,7 +189,9 @@ async def get_bang_job(
 @router.get("/galaxy/jobs/{job_id}/stream")
 async def stream_bang_job_log(
     job_id: uuid.UUID,
-    current_admin: User = Depends(get_current_admin),
+    # SSE uses the header-or-query variant: browser EventSource cannot send
+    # a custom Authorization header, so the admin-ui appends ?token=<JWT>.
+    current_admin: User = Depends(get_current_admin_from_header_or_query),
     session: AsyncSession = Depends(get_async_session),
 ) -> StreamingResponse:
     """Server-Sent-Events stream of new lines appended to ``log_text``.

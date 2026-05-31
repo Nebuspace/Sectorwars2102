@@ -321,10 +321,10 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
             
             # Write to database if available
             try:
-                from src.core.database import get_async_session
+                from src.core.database import get_db
                 from src.services.audit_service import AuditService
-                
-                # Get database session
+
+                # Get database session (sync — audit writer is sync code)
                 db = next(get_db())
                 
                 # Prepare data for database
