@@ -509,11 +509,23 @@ class BangImportService:
         # bang emits each region's sector IDs starting at 1, but sectors.sector_id
         # is globally unique in the gameserver schema. Offset each region's
         # sector-id space so the three regions occupy disjoint ranges.
-        # Invariants (Sol = local sector 1) run BEFORE offsetting so they
-        # still match bang's local numbering, then we shift the whole
-        # region together.
+        # Iterate in CANONICAL order — terran_space first so its local
+        # sector 1 (Sol / Earth Station, enforced by _apply_terran_space_
+        # invariants) lands at global sector_id 1. The docs are canon:
+        #   DOCS/API/v1/player.aispec
+        #       "Initial player spawn: Sector 1 of Terran Space"
+        #   DOCS/API/v1/sectors-planets.aispec
+        #       "fixed at sector 1 in Terran Space"
+        # Invariants run BEFORE offsetting so they still match bang's
+        # local numbering, then we shift the whole region together.
+        REGION_ORDER: Tuple[RegionType, ...] = (
+            "terran_space", "player_owned", "central_nexus",
+        )
         running_offset = 0
-        for region_type, universe in universes.items():
+        for region_type in REGION_ORDER:
+            universe = universes.get(region_type)
+            if universe is None:
+                continue
             plan = self._translate_region(region_type, universe)
             if region_type == "terran_space":
                 # Enforce the legacy starter-region invariants per the
