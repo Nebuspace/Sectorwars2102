@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, Optional, Union
 import uuid
 
-from jose import jwt
-from jose.exceptions import JWTError
+import jwt
+from jwt import PyJWTError as JWTError
 from sqlalchemy.orm import Session
 
 from src.core.config import settings

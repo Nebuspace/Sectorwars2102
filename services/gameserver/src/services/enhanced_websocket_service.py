@@ -24,8 +24,8 @@ from uuid import uuid4
 import logging
 
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
-from jose import jwt as jose_jwt
-from jose.exceptions import JWTError
+import jwt as jose_jwt
+from jwt import PyJWTError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
 import redis.asyncio as redis

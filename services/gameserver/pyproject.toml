@@ -17,7 +17,7 @@ asyncpg = "^0.28.0"
 pydantic = {extras = ["email"], version = ">=2.3.0,<2.6.0"}
 pydantic-settings = ">=2.0.3,<2.2.0"
 alembic = "^1.12.0"
-python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+pyjwt = {extras = ["crypto"], version = "^2.10.0"}
 python-multipart = ">=0.0.18"
 passlib = {extras = ["argon2"], version = "^1.7.4"}
 argon2-cffi = "^23.1.0"
