@@ -37,6 +37,7 @@ const Sidebar: React.FC = () => {
       icon: '🌌',
       items: [
         { to: '/universe', label: 'Universe Overview', icon: '🪐' },
+        { to: '/universe/bang', label: 'Bang Galaxy', icon: '💥' },
         { to: '/sectors', label: 'Sectors', icon: '🗺️' },
         { to: '/universe/planets', label: 'Planets', icon: '🏙️' },
         { to: '/colonies', label: 'Colonization', icon: '🚀' },

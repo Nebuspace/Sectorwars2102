@@ -45,6 +45,7 @@ const AITradingDashboard = lazy(() => import('./components/pages/AITradingDashbo
 const CentralNexusManager = lazy(() => import('./components/pages/CentralNexusManager'));
 const RegionalGovernorDashboard = lazy(() => import('./components/pages/RegionalGovernorDashboard'));
 const FirstLoginConversations = lazy(() => import('./components/pages/FirstLoginConversations'));
+const BangGalaxyPage = lazy(() => import('./components/pages/BangGalaxyPage'));
 
 // Helper component for protected lazy routes
 const ProtectedLazyRoute: React.FC<{ element: React.ReactElement }> = ({ element }) => (
@@ -88,6 +89,7 @@ function App() {
                 <Route path="sectors" element={<ProtectedLazyRoute element={<SectorsManager />} />} />
 
                 {/* Universe CRUD Routes */}
+                <Route path="universe/bang" element={<ProtectedLazyRoute element={<BangGalaxyPage />} />} />
                 <Route path="universe/sectors" element={<ProtectedLazyRoute element={<SectorsManager />} />} />
                 <Route path="universe/planets" element={<ProtectedLazyRoute element={<PlanetsManager />} />} />
                 <Route path="universe/stations" element={<ProtectedLazyRoute element={<StationsManager />} />} />
