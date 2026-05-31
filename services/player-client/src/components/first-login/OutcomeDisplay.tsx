@@ -83,7 +83,7 @@ const OutcomeDisplay: React.FC = () => {
   // FAILURE the player gets the default Escape Pod (per FIRST_LOGIN.md and
   // the gameserver's create_player_for_user starter-ship code). Fall back
   // to ESCAPE_POD so the page renders instead of crashing on .toLowerCase().
-  const awardedShip = awardedShip ?? 'ESCAPE_POD';
+  const awardedShip = dialogueOutcome.awarded_ship ?? 'ESCAPE_POD';
 
   return (
     <div className="outcome-container">
