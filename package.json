@@ -14,7 +14,7 @@
     "postgres": "^3.4.7",
     "postgres-client": "^1.0.1",
     "postgresql": "^0.0.1",
-    "uuid": "^11.1.1"
+    "uuid": "^14.0.0"
   },
   "scripts": {
     "claude:analyze": "echo \"Running CLAUDE.md analysis...\" && find . -name \"*.js\" -o -name \"*.ts\" | xargs wc -l",
