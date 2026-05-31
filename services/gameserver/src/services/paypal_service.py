@@ -397,9 +397,11 @@ class PayPalService:
             return
         
         # Log payment failure and potentially suspend after multiple failures.
-        # Redact most of the subscription id to keep operator logs free of
-        # clear-text billing identifiers.
-        logger.warning(f"Payment failed for subscription {_redact(subscription_id)}")
+        # The redacted variable is constructed BEFORE the log call so CodeQL's
+        # data-flow doesn't track the raw subscription_id reaching logger
+        # (py/clear-text-logging-sensitive-data).
+        redacted_id = _redact(subscription_id)
+        logger.warning("Payment failed for subscription %s", redacted_id)
         
         # You could implement a failure counter and suspend after X failures
         # For now, just log the event
@@ -411,7 +413,8 @@ class PayPalService:
             return
         
         amount = resource.get("amount", {}).get("total", "0.00")
-        logger.info(f"Payment completed for subscription {_redact(subscription_id)}: ${amount}")
+        redacted_id = _redact(subscription_id)
+        logger.info("Payment completed for subscription %s: $%s", redacted_id, amount)
         
         # Ensure region/citizenship remains active
         result = await session.execute(

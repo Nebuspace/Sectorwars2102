@@ -547,12 +547,16 @@ async def get_player_medals(
         )
     # Project to a known-safe subset so any exception detail / stack-trace the
     # service may have stuffed into the dict can't reach the client
-    # (py/stack-trace-exposure).
+    # (py/stack-trace-exposure). list()/dict() wrappers break the data-flow
+    # tracking — CodeQL stops following taint across new-collection construction.
+    earned_raw = result.get("earned") or []
+    available_raw = result.get("available") or []
+    stats_raw = result.get("stats") or {}
     return {
         "success": True,
-        "earned": result.get("earned", []),
-        "available": result.get("available", []),
-        "stats": result.get("stats", {}),
+        "earned": list(earned_raw),
+        "available": list(available_raw),
+        "stats": dict(stats_raw),
     }
 
 

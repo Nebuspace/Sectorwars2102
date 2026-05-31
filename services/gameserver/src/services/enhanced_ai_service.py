@@ -330,11 +330,12 @@ class EnhancedAIService:
         sanitized = response
         
         # Remove script tags or executable content. The closing-tag pattern
-        # accepts optional whitespace before `>` so `</script >` is still
-        # caught (py/bad-tag-filter). `<script\b` anchors the open tag so
-        # `<scripted>` isn't mis-matched.
+        # `</script\b[^>]*>` accepts any non-`>` content between `</script`
+        # and `>` (whitespace, tab, newline, junk attributes), so the full
+        # set of evasions like `</script\t\n bar>` is caught (py/bad-tag-filter).
+        # `<script\b` anchors the open tag so `<scripted>` isn't mis-matched.
         sanitized = re.sub(
-            r'<script\b[^>]*>.*?</script\s*>',
+            r'<script\b[^>]*>.*?</script\b[^>]*>',
             '',
             sanitized,
             flags=re.IGNORECASE | re.DOTALL,
