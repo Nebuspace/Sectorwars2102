@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, func, desc
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
@@ -9,9 +8,8 @@ import random
 import math
 import logging
 
-from src.core.database import get_db, get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_admin
-from src.services.nexus_generation_service import nexus_generation_service
 from src.models.user import User
 from src.models.player import Player
 from src.models.ship import Ship
@@ -1020,153 +1018,28 @@ async def get_galaxy_info(
 async def generate_galaxy(
     request: GalaxyGenerateRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-    async_db: AsyncSession = Depends(get_async_session)
 ):
-    """Generate a new galaxy with specified configuration"""
-    # Check if a galaxy already exists
-    existing_galaxy = db.query(Galaxy).first()
-    if existing_galaxy:
-        raise HTTPException(
-            status_code=400,
-            detail="A galaxy already exists. Delete the existing galaxy first."
-        )
+    """Deprecated: legacy Python galaxy generator removed in Phase 4 of the
+    sw2102-bang cutover. The synchronous, monolithic generator has been replaced
+    by the bang sidecar pipeline. Galaxy creation now flows through a job-based
+    API that supports preview, commit, live progress, and atomic multi-region
+    builds.
 
-    try:
-        # Use the comprehensive GalaxyGenerator service
-        from src.services.galaxy_service import GalaxyGenerator
-
-        generator = GalaxyGenerator(db)
-
-        # Prepare configuration with region distribution
-        config = request.config or {}
-        config.update({
-            "num_sectors": request.num_sectors,  # Include num_sectors in config
-            "federation_percentage": request.federation_percentage,
-            "border_percentage": request.border_percentage,
-            "frontier_percentage": request.frontier_percentage
-        })
-
-        # Generate galaxy metadata (regions/clusters/sectors created separately via region generation)
-        galaxy = generator.generate_galaxy(request.name, config)
-
-        # Auto-generate Terran Space starter region (300 sectors)
-        terran_space_created = False
-        terran_space_sectors = 0
-        try:
-            logger.info("Auto-generating Terran Space starter region (300 sectors)...")
-            from src.models.region import Region, RegionType
-
-            # Create Terran Space region record
-            terran_space = Region(
-                name="terran-space",
-                display_name="Terran Space",
-                region_type=RegionType.TERRAN_SPACE,  # Starter region for players
-                owner_id=None,  # Platform-owned
-                subscription_tier="free",
-                status="active",
-                governance_type="democracy",
-                tax_rate=0.05,
-                economic_specialization="terran_colony",
-                starting_credits=10000,
-                starting_ship="merchant",
-                total_sectors=300,
-                language_pack={
-                    "currency": "credits",
-                    "greeting": "Welcome to Terran Space - Humanity's First Frontier",
-                    "government": "Terran Federation"
-                },
-                aesthetic_theme={
-                    "style": "militaristic",
-                    "atmosphere": "frontier",
-                    "primary_color": "#3b82f6",
-                    "secondary_color": "#1e40af"
-                }
-            )
-            db.add(terran_space)
-            db.flush()
-
-            # Generate content for Terran Space (clusters, sectors, stations, planets)
-            generator.generate_region_content(terran_space, cluster_count=6, config=config)
-            terran_space_created = True
-            terran_space_sectors = 300
-            logger.info(f"Terran Space generation completed: 300 sectors created")
-
-            # CRITICAL: Ensure Sector 1 always has a station (starting location requirement)
-            from src.models.sector import Sector
-            from src.models.station import Station
-            from sqlalchemy import select
-
-            sector_1 = db.execute(select(Sector).where(Sector.sector_id == 1)).scalar_one_or_none()
-            if sector_1:
-                # Check if station already exists in Sector 1
-                existing_station = db.execute(select(Station).where(Station.sector_id == 1)).scalar_one_or_none()
-                if not existing_station:
-                    logger.info("Creating guaranteed station in Sector 1 (Earth Station)")
-                    earth_station = Station(
-                        name="Earth Station",
-                        sector_id=1,
-                        credits=1000000,  # Starting station has ample credits
-                        tax_rate=0.05,    # Standard tax rate
-                        station_type="trade_hub"  # Main trading hub
-                    )
-                    db.add(earth_station)
-                    db.flush()
-                    logger.info("Earth Station created in Sector 1")
-                else:
-                    logger.info(f"Station already exists in Sector 1: {existing_station.name}")
-            else:
-                logger.warning("Sector 1 not found - cannot create starting station")
-
-            # CRITICAL: Commit sync session to release locks before async Central Nexus generation
-            db.commit()
-            logger.info("Terran Space transaction committed, releasing database locks")
-        except Exception as terran_error:
-            logger.error(f"Terran Space auto-generation failed (non-fatal): {terran_error}")
-            logger.info("Galaxy created, but Terran Space generation failed")
-            db.rollback()  # Rollback on error
-
-        # Auto-generate Central Nexus after galaxy creation
-        # This creates the galactic hub that connects starting areas to player-owned regions
-        central_nexus_created = False
-        central_nexus_sectors = 0
-        try:
-            logger.info("Auto-generating Central Nexus as part of universe creation...")
-            nexus_result = await nexus_generation_service.generate_central_nexus(async_db)
-            central_nexus_created = nexus_result.get("status") in ["completed", "exists"]
-            if central_nexus_created:
-                central_nexus_sectors = nexus_result.get("stats", {}).get("total_sectors", 5000)
-                logger.info(f"Central Nexus generation: {nexus_result.get('status')}")
-                # CRITICAL: Commit async session to persist Central Nexus sectors to database
-                await async_db.commit()
-                logger.info(f"Central Nexus async session committed: {central_nexus_sectors} sectors persisted to database")
-        except Exception as nexus_error:
-            # Don't fail galaxy generation if nexus fails - can be retried later
-            logger.error(f"Central Nexus auto-generation failed (non-fatal): {nexus_error}")
-            logger.info("Galaxy created successfully, but Central Nexus must be generated manually")
-
-        return {
-            "id": str(galaxy.id),
-            "name": galaxy.name,
-            "created_at": galaxy.created_at.isoformat(),
-            # zone_distribution field removed - zones concept eliminated
-            "statistics": galaxy.statistics,
-            "state": galaxy.state,
-            "terran_space_created": terran_space_created,
-            "terran_space_sectors": terran_space_sectors,
-            "central_nexus_created": central_nexus_created,
-            "central_nexus_sectors": central_nexus_sectors,
-            "total_sectors_created": terran_space_sectors + central_nexus_sectors,
-            "message": f"Galaxy '{galaxy.name}' created successfully with {terran_space_sectors + central_nexus_sectors} sectors" +
-                      (f" (Terran Space: {terran_space_sectors}, Central Nexus: {central_nexus_sectors})" if (terran_space_created or central_nexus_created) else "")
-        }
-
-    except Exception as e:
-        db.rollback()
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"Galaxy generation error: {error_details}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate galaxy: {str(e)}")
+    Use ``POST /api/v1/admin/galaxy/jobs`` instead. See
+    ``DOCS/PLANS/bang-integration.md`` for the new contract.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "error": "endpoint_removed",
+            "message": (
+                "POST /api/admin/galaxy/generate was removed in the bang "
+                "integration cutover (Phase 4). Use POST /api/v1/admin/galaxy/jobs."
+            ),
+            "replacement": "/api/v1/admin/galaxy/jobs",
+            "docs": "DOCS/PLANS/bang-integration.md",
+        },
+    )
 
 # Zone endpoints removed - zones concept eliminated
 # Architecture: Galaxy → Region → Cluster → Sector
