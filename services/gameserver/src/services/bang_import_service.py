@@ -505,13 +505,23 @@ class BangImportService:
         per_region: Dict[RegionType, RegionInsertPlan] = {}
         warnings: List[Dict[str, Any]] = []
 
+        # bang emits each region's sector IDs starting at 1, but sectors.sector_id
+        # is globally unique in the gameserver schema. Offset each region's
+        # sector-id space so the three regions occupy disjoint ranges.
+        # Invariants (Sol = local sector 1) run BEFORE offsetting so they
+        # still match bang's local numbering, then we shift the whole
+        # region together.
+        running_offset = 0
         for region_type, universe in universes.items():
             plan = self._translate_region(region_type, universe)
             if region_type == "terran_space":
                 # Enforce the legacy starter-region invariants per the
                 # GalaxyGenerator audit's "Top 3 risks".
                 plan = self._apply_terran_space_invariants(plan, warnings)
+            if running_offset:
+                self._offset_region_sector_ids(plan, running_offset)
             per_region[region_type] = plan
+            running_offset += plan.total_sectors
 
         # `Galaxy.bang_snapshot` carries the **full Universe blob per region**
         # (per Job Model Author's contract): reproducibility + version-debug
@@ -544,6 +554,35 @@ class BangImportService:
             generation_warnings=warnings,
             regions=per_region,
         )
+
+    @staticmethod
+    def _offset_region_sector_ids(plan: RegionInsertPlan, offset: int) -> None:
+        """Shift every sector-id reference in ``plan`` by ``offset``.
+
+        sectors.sector_id is globally unique in the gameserver schema, but
+        bang emits each region's sectors starting at 1. translate() calls
+        this between regions so the three regions occupy disjoint ranges.
+        Mutates in place; touches every sector-id slot on the plan
+        (SectorSpec, WarpSpec, StationSpec, PlanetSpec, FormationSpec,
+        fedspace list, special_location map).
+        """
+        if offset <= 0:
+            return
+        for s in plan.sectors:
+            s.sector_id += offset
+        for w in plan.warps:
+            w.from_sector_int += offset
+            w.to_sector_int += offset
+        for st in plan.stations:
+            st.sector_int_id += offset
+        for p in plan.planets:
+            p.sector_int_id += offset
+        for f in plan.formations:
+            f.anchor_sector_int += offset
+        plan.fedspace_sector_ints = [i + offset for i in plan.fedspace_sector_ints]
+        plan.special_location_by_sector = {
+            (k + offset): v for k, v in plan.special_location_by_sector.items()
+        }
 
     # ----- atomic write ---------------------------------------------------
 
