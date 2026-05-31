@@ -340,27 +340,46 @@ const UniverseManager: React.FC = () => {
 
           <div className="region-distribution">
             <h3>Galaxy Regions</h3>
-            <div className="region-list">
-              {regions.map((region: any) => (
-                <div key={region.id} className="region-item">
-                  <div className="region-header">
-                    <span className="region-name">{region.display_name}</span>
-                    <span className={`region-badge ${
-                      region.region_type === 'central_nexus' ? 'badge-primary' :
-                      region.region_type === 'terran_space' ? 'badge-info' :
-                      'badge-success'
-                    }`}>
-                      {region.region_type?.replace('_', ' ') || 'Unknown'}
-                    </span>
-                  </div>
-                  <div className="region-stats">
-                    <span>{region.total_sectors} sectors</span>
-                    {region.statistics && (
-                      <span>• {region.statistics.discovered_sectors} discovered</span>
-                    )}
-                  </div>
-                </div>
-              ))}
+            <div className="crud-table-container">
+              <table className="crud-table">
+                <thead>
+                  <tr>
+                    <th>Region</th>
+                    <th>Type</th>
+                    <th>Sectors</th>
+                    <th>Discovered</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {regions.map((region: any) => {
+                    const rt = region.region_type;
+                    const typeLabel = rt
+                      ? rt.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+                      : 'Unknown';
+                    const badgeClass =
+                      rt === 'central_nexus' ? 'badge-primary' :
+                      rt === 'terran_space' ? 'badge-info' :
+                      rt === 'player_owned' ? 'badge-success' :
+                      'badge-default';
+                    return (
+                      <tr key={region.id}>
+                        <td className="name-cell"><strong>{region.display_name}</strong></td>
+                        <td>
+                          <span className={`region-badge ${badgeClass}`}>{typeLabel}</span>
+                        </td>
+                        <td>{(region.total_sectors ?? 0).toLocaleString()}</td>
+                        <td>{region.statistics?.discovered_sectors?.toLocaleString() ?? '—'}</td>
+                        <td>
+                          <span className={`status ${region.status === 'active' ? 'active' : 'inactive'}`}>
+                            {region.status ?? '—'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
