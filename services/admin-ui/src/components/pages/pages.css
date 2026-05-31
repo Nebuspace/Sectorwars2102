@@ -1031,3 +1031,32 @@
     --subtitle-color: #b0b3b8;
   }
 }
+/* Warp Tunnel type banner — used on WarpTunnelsManager to surface the
+   Natural vs Artificial split at a glance. */
+.warp-type-banner {
+  display: flex;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+  flex-wrap: wrap;
+}
+.warp-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.warp-type-chip strong { font-weight: 600; }
+.warp-type-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+.warp-type-natural { color: #4ade80; }       /* green — naturally-occurring */
+.warp-type-artificial { color: #60a5fa; }    /* blue  — player-built */
+.warp-type-other { color: #a78bfa; }         /* purple — quantum / ancient / … */

@@ -1,4 +1,6 @@
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import Depends, Header, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import PyJWTError as JWTError
 from sqlalchemy.orm import Session
@@ -70,6 +72,37 @@ async def get_current_admin_user(
 get_current_admin = get_current_admin_user
 require_admin = get_current_admin_user
 require_auth = get_current_user  # Alias for authentication requirement
+
+
+async def get_current_admin_from_header_or_query(
+    token: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> User:
+    """Admin auth that accepts the JWT from either the Authorization header
+    or a ``?token=`` query parameter. Required for browser EventSource
+    (SSE) clients, which cannot set custom headers.
+
+    Mirrors :func:`get_current_admin_user` semantics: 401 on missing/invalid
+    token, 403 on a valid non-admin token.
+    """
+    if not token and authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    try:
+        payload = decode_token(token)
+        user_id = payload.get("sub")
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+    user = db.query(User).filter(User.id == user_id, User.deleted == False).first()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive or missing")
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for admin access")
+    return user
 
 # Allow both OPTIONS and other methods
 # This is needed for CORS preflight requests in GitHub Codespaces

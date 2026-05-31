@@ -149,6 +149,10 @@ services:
       - ./services/gameserver:/app
       - gameserver_data:/app/data
       - gameserver_logs:/app/logs
+      # Bang galaxy generator runs as `docker run sw2102-bang:...` from
+      # inside this container, so the host docker socket must be reachable.
+      # See services/gameserver/src/services/bang_import_service.py.
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-dev_only_not_for_production}@redis-cache:6379/0
@@ -157,6 +161,7 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - DOCKER_HOST=unix:///var/run/docker.sock
       - DEBUG=${DEBUG:-false}
       - CLIENT_ID_GITHUB=${CLIENT_ID_GITHUB}
       - CLIENT_SECRET_GITHUB=${CLIENT_SECRET_GITHUB}

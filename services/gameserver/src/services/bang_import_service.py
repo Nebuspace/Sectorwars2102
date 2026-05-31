@@ -56,6 +56,7 @@ from src.models.galaxy import Galaxy, GalaxyImportState
 from src.models.planet import Planet, PlanetStatus, PlanetType
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.special_formation import SpecialFormation, SpecialFormationType
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.models.station import (
     Station,
     StationClass,
@@ -505,13 +506,23 @@ class BangImportService:
         per_region: Dict[RegionType, RegionInsertPlan] = {}
         warnings: List[Dict[str, Any]] = []
 
+        # bang emits each region's sector IDs starting at 1, but sectors.sector_id
+        # is globally unique in the gameserver schema. Offset each region's
+        # sector-id space so the three regions occupy disjoint ranges.
+        # Invariants (Sol = local sector 1) run BEFORE offsetting so they
+        # still match bang's local numbering, then we shift the whole
+        # region together.
+        running_offset = 0
         for region_type, universe in universes.items():
             plan = self._translate_region(region_type, universe)
             if region_type == "terran_space":
                 # Enforce the legacy starter-region invariants per the
                 # GalaxyGenerator audit's "Top 3 risks".
                 plan = self._apply_terran_space_invariants(plan, warnings)
+            if running_offset:
+                self._offset_region_sector_ids(plan, running_offset)
             per_region[region_type] = plan
+            running_offset += plan.total_sectors
 
         # `Galaxy.bang_snapshot` carries the **full Universe blob per region**
         # (per Job Model Author's contract): reproducibility + version-debug
@@ -544,6 +555,36 @@ class BangImportService:
             generation_warnings=warnings,
             regions=per_region,
         )
+
+    @staticmethod
+    def _offset_region_sector_ids(plan: RegionInsertPlan, offset: int) -> None:
+        """Shift every sector-id reference in ``plan`` by ``offset``.
+
+        sectors.sector_id is globally unique in the gameserver schema, but
+        bang emits each region's sectors starting at 1. translate() calls
+        this between regions so the three regions occupy disjoint ranges.
+        Mutates in place; touches every sector-id slot on the plan
+        (SectorSpec, WarpSpec, StationSpec, PlanetSpec, FormationSpec,
+        fedspace list, special_location map).
+        """
+        if offset <= 0:
+            return
+        for s in plan.sectors:
+            s.sector_id += offset
+        for w in plan.warps:
+            w.from_sector_int += offset
+            w.to_sector_int += offset
+        for st in plan.stations:
+            st.sector_int_id += offset
+        for p in plan.planets:
+            p.sector_int_id += offset
+        for f in plan.formations:
+            f.anchor_sector_int += offset
+            f.interior_sector_ints = [i + offset for i in f.interior_sector_ints]
+        plan.fedspace_sector_ints = [i + offset for i in plan.fedspace_sector_ints]
+        plan.special_location_by_sector = {
+            (k + offset): v for k, v in plan.special_location_by_sector.items()
+        }
 
     # ----- atomic write ---------------------------------------------------
 
@@ -582,6 +623,7 @@ class BangImportService:
                     rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid))
                 )
 
+        gate_sector_by_region: Dict[RegionType, uuid.UUID] = {}
         for region_type, region_plan in plan.regions.items():
             region_id = region_ids.get(region_type)
             if region_id is None:
@@ -590,7 +632,30 @@ class BangImportService:
                     "must pre-create the Region row and pass its UUID via "
                     "InsertPlan.bang_snapshot['regions'][region_type]['region_id']"
                 )
-            await self._apply_region(session, region_plan, region_id)
+            gate_sector_by_region[region_type] = await self._apply_region(
+                session, region_plan, region_id
+            )
+
+        # Inter-region warp gates. Bang only generates the in-region
+        # sector adjacency graph (sector_warps); to actually make the
+        # galaxy navigable end-to-end we wire the three regions through
+        # central_nexus with NATURAL warp tunnels here. See
+        # DOCS/PLANS/bang-integration-schema-map.md — "Cross-region warp
+        # gates remain gameserver-managed and go into warp_tunnels".
+        nexus_gate = gate_sector_by_region.get("central_nexus")
+        if nexus_gate is not None:
+            for spoke_rt in ("player_owned", "terran_space"):
+                spoke_gate = gate_sector_by_region.get(spoke_rt)
+                if spoke_gate is None:
+                    continue
+                session.add(WarpTunnel(
+                    name=f"{spoke_rt.replace('_', ' ').title()} ↔ Central Nexus",
+                    origin_sector_id=spoke_gate,
+                    destination_sector_id=nexus_gate,
+                    type=WarpTunnelType.NATURAL,
+                    is_bidirectional=True,
+                    description=f"Auto-generated gate linking {spoke_rt} to central_nexus.",
+                ))
 
         # Final state flip lives on the same transaction as the inserts so
         # there is no observable partial state.
@@ -603,8 +668,13 @@ class BangImportService:
         session: AsyncSession,
         region_plan: RegionInsertPlan,
         region_id: uuid.UUID,
-    ) -> None:
-        """Write one region's clusters, sectors, warps, stations, planets, formations."""
+    ) -> uuid.UUID:
+        """Write one region's clusters, sectors, warps, stations, planets, formations.
+
+        Returns the UUID of the region's gate sector — the first sector in
+        the region's offset id range. apply() uses this to wire up
+        inter-region WarpTunnel rows after every region is in place.
+        """
         cluster_uuid_by_int: Dict[int, uuid.UUID] = {}
         for cs in region_plan.clusters:
             cluster = Cluster(
@@ -724,6 +794,11 @@ class BangImportService:
 
         await session.flush()
 
+        # Gate sector = the lowest-numbered sector in this region's offset
+        # range. apply() uses it as the inter-region warp tunnel endpoint.
+        gate_sector_int = min(sector_uuid_by_int)
+        return sector_uuid_by_int[gate_sector_int]
+
     # ----- top-level orchestration ---------------------------------------
 
     async def run_generation_job(
@@ -810,6 +885,10 @@ class BangImportService:
                         job_id,
                         f"[{region_type}] parsed {parsed.total_sectors} sectors\n",
                     )
+                    # Commit progress so the SSE stream surfaces the line
+                    # immediately and so the next iteration's auto-begun
+                    # transaction starts clean.
+                    await session.commit()
 
                 plan = self.translate(universes, region_metadata)
 
@@ -1045,12 +1124,21 @@ class BangImportService:
             for planet_payload in sector_payload.get("planets") or []:
                 planet_specs.append(self._build_planet_spec(sid, planet_payload))
 
-        # Warps
+        # Warps. Defensively dedupe on the (from, to) pair: sector_warps has
+        # composite pkey (source_sector_id, destination_sector_id) and bang
+        # has been observed emitting the same directed edge more than once
+        # in a single Universe (presumed bug upstream), which would crash
+        # apply() with a UniqueViolationError on the second insert.
         warp_specs: List[WarpSpec] = []
+        seen_warp_pairs: set = set()
         cluster_stability_by_int = {cs.cluster_int_id: cs.warp_stability for cs in cluster_specs}
         for w in raw.get("warps") or []:
             from_int = int(w["from"])
             to_int = int(w["to"])
+            pair = (from_int, to_int)
+            if pair in seen_warp_pairs:
+                continue
+            seen_warp_pairs.add(pair)
             cluster = cluster_by_sector_int.get(from_int)
             warp_specs.append(
                 WarpSpec(
@@ -1321,6 +1409,17 @@ class BangImportService:
         job.status = BangGenerationJobStatus.FAILED  # type: ignore[assignment]
         job.completed_at = datetime.now(timezone.utc)  # type: ignore[assignment]
         job.error_message = msg  # type: ignore[assignment]
+
+        # Reap the Region rows the route handler pre-created for this job.
+        # POST /admin/galaxy/jobs commits three Region rows (one per region
+        # type) before the bang job runs; if apply() never gets to create
+        # the matching Galaxy + Sectors, those Regions are orphans. They
+        # match by the deterministic name pattern bang-{job_id}-{rt} that
+        # bang_galaxy.create_bang_job uses.
+        await session.execute(
+            text("DELETE FROM regions WHERE name LIKE :prefix"),
+            {"prefix": f"bang-{job_id}-%"},
+        )
 
     async def _append_log(
         self, session: AsyncSession, job_id: uuid.UUID, line: str

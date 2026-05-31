@@ -128,14 +128,33 @@ const WarpTunnelsManager: React.FC = () => {
                          `Sector ${tunnel.origin_sector_id}`.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          `Sector ${tunnel.destination_sector_id}`.toLowerCase().includes(searchTerm.toLowerCase());
     
-    const matchesFilter = filterStatus === 'all' || 
+    const tunnelType = (tunnel.type || '').toUpperCase();
+    const matchesFilter = filterStatus === 'all' ||
                          (filterStatus === 'active' && tunnel.is_active) ||
                          (filterStatus === 'inactive' && !tunnel.is_active) ||
                          (filterStatus === 'bidirectional' && tunnel.is_bidirectional) ||
-                         (filterStatus === 'unidirectional' && !tunnel.is_bidirectional);
-    
+                         (filterStatus === 'unidirectional' && !tunnel.is_bidirectional) ||
+                         (filterStatus === 'natural' && tunnelType === 'NATURAL') ||
+                         (filterStatus === 'artificial' && tunnelType === 'ARTIFICIAL') ||
+                         (filterStatus === 'other' && tunnelType !== 'NATURAL' && tunnelType !== 'ARTIFICIAL');
+
     return matchesSearch && matchesFilter;
   });
+
+  // Breakdown by type for the summary banner. NATURAL = bang-generated
+  // inter-region gates and any naturally-occurring tunnels; ARTIFICIAL =
+  // player-created tunnels (e.g. Warp Jumper). Anything else (STANDARD,
+  // QUANTUM, ANCIENT, UNSTABLE, ONE_WAY) rolls into "Other".
+  const typeCounts = warpTunnels.reduce(
+    (acc, t) => {
+      const k = (t.type || '').toUpperCase();
+      if (k === 'NATURAL') acc.natural += 1;
+      else if (k === 'ARTIFICIAL') acc.artificial += 1;
+      else acc.other += 1;
+      return acc;
+    },
+    { natural: 0, artificial: 0, other: 0 },
+  );
 
   // Pagination
   const totalPages = Math.ceil(filteredWarpTunnels.length / itemsPerPage);
@@ -160,7 +179,7 @@ const WarpTunnelsManager: React.FC = () => {
   if (loading) {
     return (
       <div className="page-container">
-        <PageHeader title="Warp Tunnels Manager" subtitle="Comprehensive Warp Tunnel Administration" />
+        <PageHeader title="Warp Tunnels Manager" subtitle="Special cross-region gates + premium / quantum / player-built tunnels. (For the in-region sector-adjacency graph players normally traverse, see the Sectors page.)" />
         <div className="loading-container">
           <div className="loading-spinner"></div>
           <p>Loading warp tunnels...</p>
@@ -171,7 +190,7 @@ const WarpTunnelsManager: React.FC = () => {
 
   return (
     <div className="page-container">
-      <PageHeader title="Warp Tunnels Manager" subtitle="Comprehensive Warp Tunnel Administration" />
+      <PageHeader title="Warp Tunnels Manager" subtitle="Special cross-region gates + premium / quantum / player-built tunnels. (For the in-region sector-adjacency graph players normally traverse, see the Sectors page.)" />
       
       {error && (
         <div className="error-message">
@@ -199,6 +218,9 @@ const WarpTunnelsManager: React.FC = () => {
             className="filter-select"
           >
             <option value="all">All Tunnels</option>
+            <option value="natural">Natural</option>
+            <option value="artificial">Artificial</option>
+            <option value="other">Other (Quantum/Ancient/…)</option>
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
             <option value="bidirectional">Bidirectional</option>
@@ -209,6 +231,22 @@ const WarpTunnelsManager: React.FC = () => {
         <div className="results-info">
           <span>{filteredWarpTunnels.length} of {warpTunnels.length} warp tunnels</span>
         </div>
+      </div>
+
+      {/* Type breakdown banner: makes the Natural-vs-Artificial split
+          legible at a glance without clicking the filter. */}
+      <div className="warp-type-banner">
+        <span className="warp-type-chip warp-type-natural" title="Naturally-occurring tunnels and bang-generated inter-region gates">
+          <span className="warp-type-dot" /> Natural <strong>{typeCounts.natural}</strong>
+        </span>
+        <span className="warp-type-chip warp-type-artificial" title="Player-created tunnels (e.g. Warp Jumper-built)">
+          <span className="warp-type-dot" /> Artificial <strong>{typeCounts.artificial}</strong>
+        </span>
+        {typeCounts.other > 0 && (
+          <span className="warp-type-chip warp-type-other" title="STANDARD / QUANTUM / ANCIENT / UNSTABLE / ONE_WAY">
+            <span className="warp-type-dot" /> Other <strong>{typeCounts.other}</strong>
+          </span>
+        )}
       </div>
 
       {/* Warp Tunnels Table */}

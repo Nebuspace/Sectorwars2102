@@ -30,13 +30,14 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
-from src.auth.dependencies import get_current_admin
+from src.auth.dependencies import get_current_admin, get_current_admin_from_header_or_query
 from src.core.database import get_async_session
 from src.models.bang_generation_job import (
     BangGenerationJob,
     BangGenerationJobStatus,
 )
 from src.models.galaxy import Galaxy
+from src.models.region import Region
 from src.models.user import User
 from src.schemas.bang_config import BangConfig
 from src.schemas.bang_job import (
@@ -82,22 +83,59 @@ async def create_bang_job(
     service: BangImportService = Depends(get_bang_import_service),
 ) -> BangJobResponse:
     """Queue a bang generation job. Returns immediately with the job row."""
+    # Generate both ids up front. The model-side `default=uuid.uuid4` only
+    # fires at flush time, so we cannot read `.id` between add() and
+    # commit(); explicit assignment lets us pass the UUIDs straight to the
+    # background task without an extra round-trip.
+    job_id = uuid.uuid4()
     job = BangGenerationJob(
+        id=job_id,
         admin_user_id=current_admin.id,
         status=BangGenerationJobStatus.PENDING,
         params_json=payload.config.model_dump(),
     )
     session.add(job)
+
+    # Pre-create one Region row per region type. The translator does NOT
+    # create Region rows itself (per ADR-0069 §52 — operator owns Region
+    # metadata); apply() resolves them via
+    # InsertPlan.bang_snapshot['regions'][region_type]['region_id'].
+    # Names embed the job id so successive (wipe → regenerate) cycles do
+    # not collide on the unique(name) constraint, and so a galaxy's
+    # regions are traceable to the bang job that produced them.
+    galaxy_name = payload.galaxy_name or "SectorWars Galaxy"
+    # Sector counts must satisfy regions.valid_region_type_sector_count:
+    #   central_nexus = 5000, terran_space = 300, player_owned in [100, 1000].
+    # player_owned tracks the form's sectors field, clamped to the
+    # constraint window. The other two are singletons by design.
+    player_owned_sectors = max(100, min(1000, payload.config.sectors))
+    region_sector_counts: Dict[str, int] = {
+        "player_owned": player_owned_sectors,
+        "terran_space": 300,
+        "central_nexus": 5000,
+    }
+    region_uuids: Dict[str, uuid.UUID] = {}
+    for region_type, total_sectors in region_sector_counts.items():
+        region_id = uuid.uuid4()
+        session.add(Region(
+            id=region_id,
+            name=f"bang-{job_id}-{region_type}",
+            display_name=f"{galaxy_name} — {region_type.replace('_', ' ').title()}",
+            region_type=region_type,
+            total_sectors=total_sectors,
+        ))
+        region_uuids[region_type] = region_id
+
     await session.commit()
     await session.refresh(job)
 
     region_metadata: Dict[str, Any] = {
-        "galaxy_name": payload.galaxy_name or "SectorWars Galaxy",
+        "galaxy_name": galaxy_name,
         "master_seed": payload.config.seed,
+        "regions": {
+            rt: {"region_id": str(rid)} for rt, rid in region_uuids.items()
+        },
     }
-    # SQLAlchemy returns Column-typed values on instance access for mypy; the
-    # runtime value is a uuid.UUID, so cast for the BackgroundTasks signature.
-    job_id: uuid.UUID = job.id  # type: ignore[assignment]
     background_tasks.add_task(
         service.run_generation_job,
         job_id,
@@ -189,7 +227,9 @@ async def get_bang_job(
 @router.get("/galaxy/jobs/{job_id}/stream")
 async def stream_bang_job_log(
     job_id: uuid.UUID,
-    current_admin: User = Depends(get_current_admin),
+    # SSE uses the header-or-query variant: browser EventSource cannot send
+    # a custom Authorization header, so the admin-ui appends ?token=<JWT>.
+    current_admin: User = Depends(get_current_admin_from_header_or_query),
     session: AsyncSession = Depends(get_async_session),
 ) -> StreamingResponse:
     """Server-Sent-Events stream of new lines appended to ``log_text``.
@@ -251,7 +291,21 @@ async def hard_delete_galaxy(
         description="Must match the galaxy's exact name to authorise deletion.",
     ),
 ) -> Response:
-    """Hard-delete a galaxy (and everything cascaded). Per Max, no archive."""
+    """Hard-delete a galaxy (and everything cascaded). Per Max, no archive.
+
+    Important: Galaxy ↔ Region is not a FK relationship in this schema —
+    Galaxy.bang_snapshot["regions"][rt]["region_id"] is the only link.
+    SQLAlchemy cascade on the Galaxy row therefore does NOT reach Regions
+    or Sectors, so the wipe has to walk the snapshot and tear down each
+    region's subtree explicitly. Order matters: special_formations and
+    sectors must go before their parent regions, because
+    sectors.region_id and special_formations.anchor_sector_id are
+    ON DELETE RESTRICT. clusters cascade through region delete, and
+    sector_warps / warp_tunnels / planets / stations cascade through
+    sector delete.
+    """
+    from sqlalchemy import text as sa_text
+
     galaxy = await session.get(Galaxy, galaxy_id)
     if galaxy is None:
         raise HTTPException(status_code=404, detail="Galaxy not found")
@@ -263,6 +317,29 @@ async def hard_delete_galaxy(
                 "name; deletion refused."
             ),
         )
+
+    region_ids: list[uuid.UUID] = []
+    snapshot_regions = (galaxy.bang_snapshot or {}).get("regions", {})
+    for snap in snapshot_regions.values():
+        if isinstance(snap, dict):
+            rid = snap.get("region_id")
+            if rid is not None:
+                region_ids.append(rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid)))
+
+    if region_ids:
+        await session.execute(
+            sa_text("DELETE FROM special_formations WHERE region_id = ANY(:rids)"),
+            {"rids": region_ids},
+        )
+        await session.execute(
+            sa_text("DELETE FROM sectors WHERE region_id = ANY(:rids)"),
+            {"rids": region_ids},
+        )
+        await session.execute(
+            sa_text("DELETE FROM regions WHERE id = ANY(:rids)"),
+            {"rids": region_ids},
+        )
+
     await session.delete(galaxy)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
