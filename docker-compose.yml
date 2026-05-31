@@ -137,8 +137,10 @@ services:
   
   # Development Game Server
   gameserver:
-    build: 
+    build:
       context: ./services/gameserver
+      args:
+        BANG_VERSION: ${BANG_VERSION:-1.3.0}
     container_name: sectorwars-gameserver
     ports:
       - "${GAMESERVER_PORT:-8080}:8080"
@@ -173,6 +175,7 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-sonnet-20240229}
       - TESTING_FROM_HOST=${TESTING_FROM_HOST:-false}
+      - BANG_VERSION=${BANG_VERSION:-1.3.0}
     restart: unless-stopped
     depends_on:
       database:

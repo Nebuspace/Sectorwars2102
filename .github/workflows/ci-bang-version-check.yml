@@ -1,0 +1,56 @@
+name: bang-version-check
+
+# Gate any PR that bumps the BANG_VERSION pin in docker-compose.yml on
+# the image actually being pullable from DockerHub. Catches version-bump
+# typos and unpublished tags before they hit production translator runs.
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - master
+      - dev
+
+jobs:
+  bang-image-smoke-test:
+    name: Pull and smoke-test pinned bang image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Extract BANG_VERSION from docker-compose.yml
+        id: bang_version
+        run: |
+          BANG_VERSION=$(grep 'BANG_VERSION:' docker-compose.yml | head -1 | sed 's/.*BANG_VERSION:[[:space:]]*//; s/[[:space:]]*$//')
+          # Strip surrounding ${...:-X} default-expansion shell syntax if present
+          BANG_VERSION=$(echo "$BANG_VERSION" | sed 's/^\${BANG_VERSION:-//; s/}$//')
+          if [ -z "$BANG_VERSION" ]; then
+            echo "ERROR: could not extract BANG_VERSION from docker-compose.yml"
+            exit 1
+          fi
+          echo "Extracted BANG_VERSION=$BANG_VERSION"
+          echo "version=$BANG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Pull pinned bang image
+        run: |
+          docker pull "docker.io/drxelanull/sw2102-bang:${{ steps.bang_version.outputs.version }}"
+
+      - name: Smoke-test bang generation
+        run: |
+          docker run --rm \
+            "docker.io/drxelanull/sw2102-bang:${{ steps.bang_version.outputs.version }}" \
+            --seed 42 --sectors 100 --json-out > /tmp/bang.json
+
+      - name: Assert bang reports the pinned version
+        run: |
+          REPORTED=$(jq -r '.version' /tmp/bang.json)
+          EXPECTED="${{ steps.bang_version.outputs.version }}"
+          echo "Reported: $REPORTED"
+          echo "Expected: $EXPECTED"
+          if [ "$REPORTED" != "$EXPECTED" ]; then
+            echo "ERROR: bang image reported version '$REPORTED' but compose pins '$EXPECTED'"
+            exit 1
+          fi
