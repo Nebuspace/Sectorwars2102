@@ -139,6 +139,7 @@ services:
   gameserver:
     build:
       context: ./services/gameserver
+      target: dev
       args:
         BANG_VERSION: ${BANG_VERSION:-1.3.0}
     container_name: sectorwars-gameserver
@@ -199,6 +200,7 @@ services:
     build:
       context: ./services/gameserver
       dockerfile: Dockerfile
+      target: production
       args:
         - ENVIRONMENT=${ENVIRONMENT:-production}
         - BANG_VERSION=${BANG_VERSION:-1.3.0}
@@ -247,6 +249,7 @@ services:
     build:
       context: ./services/gameserver
       dockerfile: Dockerfile
+      target: production
       args:
         - ENVIRONMENT=${ENVIRONMENT:-production}
         - BANG_VERSION=${BANG_VERSION:-1.3.0}
@@ -283,8 +286,9 @@ services:
   
   # Player Client
   player-client:
-    build: 
+    build:
       context: ./services/player-client
+      target: dev
       args:
         - ENVIRONMENT=${ENVIRONMENT:-development}
     container_name: sectorwars-player-client
@@ -322,8 +326,9 @@ services:
 
   # Admin UI
   admin-ui:
-    build: 
+    build:
       context: ./services/admin-ui
+      target: dev
       args:
         - ENVIRONMENT=${ENVIRONMENT:-development}
     container_name: sectorwars-admin-ui
@@ -366,6 +371,7 @@ services:
     build:
       context: ./services/nginx-gateway
       dockerfile: Dockerfile
+      target: dev
     container_name: sectorwars-nginx-gateway
     volumes:
       - ./services/nginx-gateway/ssl:/etc/nginx/ssl:ro
@@ -393,6 +399,7 @@ services:
     build:
       context: ./services/region-manager
       dockerfile: Dockerfile
+      target: dev
     container_name: sectorwars-region-manager
     environment:
       - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:dev_only_not_for_production@database:5432/sectorwars_dev}

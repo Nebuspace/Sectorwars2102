@@ -153,5 +153,18 @@ else:
 "
 
 # Start the FastAPI application
-echo "Starting FastAPI application..."
-exec python -m uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload --proxy-headers --forwarded-allow-ips='*'
+# Dev mode runs with --reload (hot-reload, single process). Production runs
+# with --workers (no reload). The Dockerfile sets GAMESERVER_MODE per stage;
+# default is dev so direct `start.sh` runs locally behave as they did before.
+echo "Starting FastAPI application (mode=${GAMESERVER_MODE:-development})..."
+if [ "${GAMESERVER_MODE}" = "production" ]; then
+    exec python -m uvicorn src.main:app \
+        --host 0.0.0.0 --port 8080 \
+        --workers "${UVICORN_WORKERS:-4}" \
+        --proxy-headers --forwarded-allow-ips='*'
+else
+    exec python -m uvicorn src.main:app \
+        --host 0.0.0.0 --port 8080 \
+        --reload \
+        --proxy-headers --forwarded-allow-ips='*'
+fi
