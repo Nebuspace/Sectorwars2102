@@ -43,3 +43,4 @@ from src.models.aria_personal_intelligence import (
     ARIATradingPattern, ARIAQuantumCache, ARIASecurityLog
 )
 from src.models.enhanced_ai_models import AIComprehensiveAssistant
+from src.models.bang_generation_job import BangGenerationJob, BangGenerationJobStatus
