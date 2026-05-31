@@ -189,8 +189,6 @@ interface AdminContextType {
   loadRegions: () => Promise<void>;
   loadRegionZones: (regionId: string) => Promise<void>;
   loadClusters: (regionId?: string) => Promise<void>;
-  generateGalaxy: (name: string, numSectors: number, config?: GalaxyGenerationConfig) => Promise<void>;
-  generateEnhancedGalaxy: (config: any) => Promise<void>;
   addSectors: (galaxyId: string, numSectors: number, config?: SectorGenerationConfig) => Promise<void>;
   createWarpTunnel: (sourceSectorId: number, targetSectorId: number, stability?: number) => Promise<void>;
   clearGalaxyData: () => Promise<void>;
@@ -396,60 +394,11 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     faction_territory_size: 25
   };
 
-  // Generate a new galaxy
-  const generateGalaxy = async (name: string, numSectors: number, config?: GalaxyGenerationConfig) => {
-    if (!user || !user.is_admin) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const finalConfig = { ...defaultGalaxyConfig, ...config };
-      const requestPayload = {
-        name, 
-        num_sectors: numSectors,
-        config: finalConfig
-      };
-      
-      console.log('generateGalaxy: Sending request payload:', requestPayload);
-      
-      const response = await api.post<GalaxyState>('/admin/galaxy/generate', requestPayload);
-      
-      console.log('generateGalaxy: Got response:', response.data);
-      await loadGalaxyInfo();
-    } catch (error: any) {
-      console.error('Error generating galaxy:', error);
-      console.error('Error response data:', error?.response?.data);
-      console.error('Error response status:', error?.response?.status);
-      console.error('Error response headers:', error?.response?.headers);
-      setError('Failed to generate galaxy');
-      throw error; // Re-throw to allow component to handle it
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Generate enhanced galaxy with detailed configuration
-  const generateEnhancedGalaxy = async (config: any) => {
-    if (!user || !user.is_admin) return;
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const response = await api.post('/admin/galaxy/generate-enhanced', config);
-      console.log('generateEnhancedGalaxy: Got response:', response.data);
-      await loadGalaxyInfo();
-      await loadRegions();
-      await loadSectors();
-    } catch (error) {
-      console.error('Error generating enhanced galaxy:', error);
-      setError('Failed to generate enhanced galaxy');
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  // Legacy generateGalaxy was removed in the bang cutover (Phase 4A).
+  // Galaxy generation is now handled via the bang flow:
+  //   AdminContext.bangGalaxy → POST /api/v1/admin/galaxy/jobs
+  // See services/admin-ui/src/components/universe/bang/ for the new form +
+  // history + log + wipe UI mounted at /universe/bang.
 
   // Add sectors to an existing galaxy
   const addSectors = async (galaxyId: string, numSectors: number, config?: SectorGenerationConfig) => {
@@ -751,8 +700,6 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     loadRegions,
     loadRegionZones,
     loadClusters,
-    generateGalaxy,
-    generateEnhancedGalaxy,
     addSectors,
     createWarpTunnel,
     clearGalaxyData,

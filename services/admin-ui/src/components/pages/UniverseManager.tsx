@@ -19,7 +19,6 @@ const UniverseManager: React.FC = () => {
     loadGalaxyInfo,
     loadSectors,
     loadRegions,
-    generateGalaxy,
     clearGalaxyData,
     isLoading,
     error
@@ -95,71 +94,8 @@ const UniverseManager: React.FC = () => {
     }
   };
 
-  // Handle galaxy generation
-  const handleGenerateGalaxy = async () => {
-    try {
-      // Generate galaxy with Central Nexus and Terran Space regions
-      await generateGalaxy(
-        galaxyConfig.name,
-        5300,  // 5000 for Central Nexus + 300 for Terran Space
-        {
-          resource_distribution: galaxyConfig.resource_distribution,
-          hazard_levels: galaxyConfig.hazard_levels,
-          connectivity: galaxyConfig.connectivity,
-          station_density: galaxyConfig.density.station_density / 100,
-          planet_density: galaxyConfig.density.planet_density / 100,
-          warp_tunnel_probability: galaxyConfig.density.one_way_warp_percentage / 100
-        }
-      );
-      setShowGalaxyGenerator(false);
-      // Reload data after generation
-      await loadGalaxyInfo();
-      await loadRegions();
-      await loadSectors();
-    } catch (error: any) {
-      console.error('Error generating galaxy:', error);
-      
-      // Check if error is due to existing galaxy (HTTP 400)
-      // Backend may return error in either 'detail' or 'message' field
-      const errorMessage = error?.response?.data?.detail || error?.response?.data?.message || '';
-      if (error?.response?.status === 400 && errorMessage.includes('already exists')) {
-        const shouldClear = window.confirm(
-          'A galaxy already exists. Would you like to clear the existing galaxy data and generate a new one?\n\n' +
-          'Warning: This will permanently delete all current galaxy data including sectors, planets, ports, and warp tunnels.'
-        );
-        
-        if (shouldClear) {
-          try {
-            await clearGalaxyData();
-            // Try generating again after clearing
-            await generateGalaxy(
-              galaxyConfig.name,
-              5300,  // 5000 for Central Nexus + 300 for Terran Space
-              {
-                resource_distribution: galaxyConfig.resource_distribution,
-                hazard_levels: galaxyConfig.hazard_levels,
-                connectivity: galaxyConfig.connectivity,
-                station_density: galaxyConfig.density.station_density / 100,
-                planet_density: galaxyConfig.density.planet_density / 100,
-                warp_tunnel_probability: galaxyConfig.density.one_way_warp_percentage / 100
-              }
-            );
-            setShowGalaxyGenerator(false);
-            // Reload data after generation
-            await loadGalaxyInfo();
-            await loadRegions();
-            await loadSectors();
-            alert('Galaxy generated successfully after clearing existing data.');
-          } catch (clearError) {
-            console.error('Error clearing galaxy or regenerating:', clearError);
-            alert('Failed to clear existing galaxy data. Please try again.');
-          }
-        }
-      } else {
-        alert('Failed to create universe');
-      }
-    }
-  };
+  // Legacy handleGenerateGalaxy removed in bang cutover (Phase 4A).
+  // Generation now lives at /universe/bang (BangGalaxyPage).
 
   // Render galaxy configuration
   const renderGalaxyConfig = () => (
@@ -347,12 +283,9 @@ const UniverseManager: React.FC = () => {
       <div className="galaxy-header">
         <h2>{galaxyState?.name || 'No Universe'}</h2>
         {galaxyState && (
-          <button
-            className="btn btn-outline"
-            onClick={() => setShowGalaxyGenerator(true)}
-          >
+          <Link to="/universe/bang" className="btn btn-outline">
             💥 Bang a New Galaxy!
-          </button>
+          </Link>
         )}
       </div>
 
@@ -426,12 +359,9 @@ const UniverseManager: React.FC = () => {
       ) : (
         <div className="no-galaxy">
           <p>No universe exists yet. Bang one into existence to begin!</p>
-          <button
-            className="btn btn-primary btn-lg"
-            onClick={() => setShowGalaxyGenerator(true)}
-          >
+          <Link to="/universe/bang" className="btn btn-primary btn-lg">
             💥 Bang a New Galaxy!
-          </button>
+          </Link>
         </div>
       )}
     </div>
@@ -677,8 +607,9 @@ const UniverseManager: React.FC = () => {
       default:
         return (
           <>
-            {showGalaxyGenerator ? (
-              renderGalaxyConfig()
+            {false ? (
+              // Inline generator branch removed in bang cutover (Phase 4A); see /universe/bang.
+              null
             ) : (
               <>
                 <div className="universe-tabs">

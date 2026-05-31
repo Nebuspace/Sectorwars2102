@@ -1,0 +1,106 @@
+# Dependabot configuration.
+#
+# Until this file existed, Dependabot's `security-updates` half was opening
+# alerts but the `version-updates` half (which actually files PRs) was idle.
+# The 65 open alerts triaged at DOCS/PLANS/dependabot-triage-2026-05-31.md
+# accumulated because nothing was auto-PRing fixes.
+#
+# This config enables version-updates across all 4 manifest roots
+# (3× npm + 1× pip), groups security/patch bumps into one PR per ecosystem
+# per run, and leaves majors as individual PRs so they get human review.
+
+version: 2
+updates:
+  # ---------------------------------------------------------------------
+  # npm — three lockfiles (root, player-client, admin-ui)
+  # ---------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      security:
+        applies-to: "security-updates"
+        update-types:
+          - "patch"
+          - "minor"
+      patch-and-minor:
+        applies-to: "version-updates"
+        update-types:
+          - "patch"
+          - "minor"
+    # Majors land as individual PRs (default — no entry in `groups`).
+
+  - package-ecosystem: "npm"
+    directory: "/services/player-client"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "npm"
+      - "player-client"
+    groups:
+      security:
+        applies-to: "security-updates"
+        update-types:
+          - "patch"
+          - "minor"
+      patch-and-minor:
+        applies-to: "version-updates"
+        update-types:
+          - "patch"
+          - "minor"
+
+  - package-ecosystem: "npm"
+    directory: "/services/admin-ui"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "npm"
+      - "admin-ui"
+    groups:
+      security:
+        applies-to: "security-updates"
+        update-types:
+          - "patch"
+          - "minor"
+      patch-and-minor:
+        applies-to: "version-updates"
+        update-types:
+          - "patch"
+          - "minor"
+
+  # ---------------------------------------------------------------------
+  # pip — gameserver (Poetry-managed)
+  # ---------------------------------------------------------------------
+  - package-ecosystem: "pip"
+    directory: "/services/gameserver"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "pip"
+      - "gameserver"
+    groups:
+      security:
+        applies-to: "security-updates"
+        update-types:
+          - "patch"
+          - "minor"
+      patch-and-minor:
+        applies-to: "version-updates"
+        update-types:
+          - "patch"
+          - "minor"

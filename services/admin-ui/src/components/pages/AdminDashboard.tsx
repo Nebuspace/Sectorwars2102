@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { useAdmin } from '../../contexts/AdminContext';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -176,7 +177,7 @@ const AdminDashboard: React.FC = () => {
               <div className="card">
                 <div className="card-body text-center">
                   <p className="text-secondary mb-4">No galaxy has been generated yet.</p>
-                  <button className="btn btn-primary">Generate Galaxy</button>
+                  <Link to="/universe/bang" className="btn btn-primary">Generate Galaxy</Link>
                 </div>
               </div>
             )}

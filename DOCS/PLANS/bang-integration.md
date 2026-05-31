@@ -422,6 +422,62 @@ Owns:
 - Existing admin-ui tests still pass (`npm run build` + Playwright)
 - Single PR ready for merge to `dev`
 
+### Phase 4B implementation notes (locked 2026-05-31)
+
+- **Unit tests** (`services/gameserver/tests/unit/`): two new files
+  supplement the existing `test_bang_import_service.py`:
+  `test_bang_translator.py` (45 tests, parametrised across all 3
+  captured fixtures — asserts Q1/Q2/Q3/Q6, ADR-0070 no-cross-island
+  warps, terran_space starter invariants enforced post-translate, slug
+  → canonical-name mapping, formation-type coercion failure, missing
+  cluster-coverage errors) and `test_bang_invoke_mock.py` (18 tests —
+  timeout → RuntimeError, stderr forwarding to log sink, schema
+  version mismatch, exit-code-2 in invoke vs validate_only, optional
+  CLI-flag emission).
+- **Integration tests** (`services/gameserver/tests/integration/`):
+  `test_bang_apply.py` (atomic write surface with asyncpg-backed
+  `async_session_factory`), `test_bang_endpoints.py` (all 7 bang
+  endpoints + explicit `410 Gone` test for the legacy
+  `POST /admin/galaxy/generate` per Phase 4A's `replacement` field
+  contract), `test_bang_concurrency.py` (`asyncio.gather` race for the
+  advisory lock per the `test_refresh_token.py:90-100` template),
+  `test_bang_orphan_recovery.py` (backdated `started_at` → startup
+  sweep flips to FAILED + `'orphaned at startup'`), and a
+  `test_galaxy_state_guard.py` integration supplement.
+- **E2E tests** (`e2e_tests/bang/`): 6 specs + shared `bang-helpers.ts`
+  module: `generate-full-flow`, `iteration`, `wipe-regenerate`,
+  `concurrent-admins` (uses two browser contexts + API-direct
+  `Promise.all` for sub-50ms timing), `partial-state-recovery` (smoke
+  only — see open gap), `sse-log` (pause/resume + Copy diagnostic).
+- **Coverage**: 80% line on `bang_import_service.py` from unit tests
+  alone; the remaining 20% is `apply()` / `_apply_region()` /
+  `run_generation_job()` / job-table I/O — all covered by the
+  integration tests CI runs against the published
+  `drxelanull/sw2102-bang:1.3.0` image, expected to push total ≥90%.
+- **Open gaps**: `partial-state-recovery.spec.ts` is a smoke check
+  because there is no clean public endpoint to backdate a job's
+  `started_at` from the browser. Options for follow-up: add a
+  debug-only `POST /api/v1/admin/galaxy/jobs/{id}/_force_running`
+  endpoint gated by `ENVIRONMENT == "testing"`, or accept that the
+  `test_bang_orphan_recovery.py` pytest covers the contract
+  deterministically (current choice).
+
+### Phase 4A implementation notes (locked 2026-05-31)
+
+**Removed (gameserver)**:
+- `services/gameserver/src/services/galaxy_service.py` — deleted entire file (was 1882 lines containing `GalaxyGenerator` + dead-code `GalaxyService` wrapper). All callers in §3 of the legacy audit are now severed.
+- `services/gameserver/src/api/routes/admin.py:1019-1169` (legacy `POST /api/admin/galaxy/generate` endpoint) — body gutted, now returns HTTP 410 Gone with a pointer to `POST /api/v1/admin/galaxy/jobs`. The endpoint shell is kept so legacy frontends/clients get a clear error instead of a 404. The unused `nexus_generation_service`, `AsyncSession`, and `get_async_session` imports were also removed from `admin.py`.
+- `services/gameserver/src/api/routes/admin_comprehensive.py:29` — orphaned `from src.services.galaxy_service import GalaxyService` import removed.
+- `services/admin-ui/src/contexts/AdminContext.tsx` — `generateEnhancedGalaxy(config)` function and its interface entry/context export removed. The backend endpoint it called (`/admin/galaxy/generate-enhanced`) never existed.
+
+**Starter invariants (Sector 1 safe-hazard, Earth Station, New Earth 8 B pop, Stardock CLASS_11 Shipyard at Sector 10)**:
+- Verified against `node dist/cli.js --seed 42 --sectors 300 --region-type terran_space --json-out`. Bang natively places special locations at Sector 1 (`terra`/Earth) and Sector 10 (`stardock`), and marks Sectors 1-10 as fedspace, but its raw output ships Earth as a 100 K-pop planet, the Sector 1 port as "Capital Station" (class 0), and the Sector 10 port as a class-0 SpaceDock — not the legacy gameserver shapes.
+- All four invariants are therefore **enforced by the translator** in `services/gameserver/src/services/bang_import_service.py::BangImportService._apply_terran_space_invariants` (delivered in Phase 1C, invoked at line ~510 when `region_type == "terran_space"`). The method overrides bang's Sector 1 station with the canonical "Earth Station" (CLASS_1 TRADING), replaces the planet with "New Earth" (TERRAN, hab 95, pop 8 B), forces Sector 1 hazard/radiation to zero and `fedspace` tag, and replaces the Sector 10 station with a CLASS_11 SHIPYARD "Stardock" carrying the full legacy services flag set (`genesis_dealer`, `mine_dealer`, `drone_shop`, `ship_dealer`, `ship_upgrades`, `insurance`, etc.). No silent dropping of the invariants.
+
+**`backfill_market_prices.py`**: ported in place. The static method's body was lifted verbatim into a standalone `backfill_market_prices(db)` function inside the script itself, decoupling it from the now-deleted `GalaxyGenerator`. The script remains idempotent (skips stations that already have `MarketPrice` rows) and is documented as a repair tool for legacy DBs — the bang translator emits `MarketPrice` rows alongside stations, so post-cutover galaxies should never need it.
+
+**Open question for Max**: the deprecated admin UI pages `Universe.tsx` and `UniverseManager.tsx` still wire a "Generate Galaxy" button to `generateGalaxy()` (which now returns 410). The new bang UI lives at `/universe/bang`. Decision deferred to Phase 4B / a follow-up: rip the legacy "Generate" CTAs out of those pages, or hide the pages from the sidebar entirely. For now, the 410 + JSON pointer surfaces a clear error in the legacy UI rather than a silent 404 or partial galaxy.
+
 ---
 
 ## Failure Mode Matrix

@@ -26,7 +26,6 @@ from src.models.region import Region
 from src.models.zone import Zone
 from src.models.warp_tunnel import WarpTunnel
 from src.models.team import Team
-from src.services.galaxy_service import GalaxyService
 from src.services.analytics_service import AnalyticsService
 from src.services.ai_security_service import get_security_service
 
