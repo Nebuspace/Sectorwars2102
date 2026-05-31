@@ -281,36 +281,29 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
   };
   
-  // Load galaxy info
-  const loadGalaxyInfo = async () => {
+  // Load galaxy info — memoized so callers passing it as a useEffect dep
+  // do not trigger an infinite render-and-fetch loop. Without useCallback
+  // every AdminProvider render creates a new function identity, which fires
+  // every dependent useEffect, which calls setGalaxyState, which re-renders
+  // the provider, which... (rate limiter just catches the loop).
+  const loadGalaxyInfo = useCallback(async () => {
     if (!user || !user.is_admin) {
-      console.log('loadGalaxyInfo: No admin user, returning');
       return;
     }
-    
-    console.log('loadGalaxyInfo: Starting galaxy info load...');
+
     setIsLoading(true);
     setError(null);
-    
+
     try {
-      // Try to get the default galaxy
-      console.log('loadGalaxyInfo: Making API request...');
       const response = await api.get<GalaxyState | {galaxy: null}>('/admin/galaxy', {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
-      console.log('loadGalaxyInfo: Got response:', response.data);
-      
-      // Handle different response formats
+
       if (response.data && 'galaxy' in response.data && response.data.galaxy === null) {
-        // No galaxy exists - backend returned {"galaxy": null}
-        console.log('loadGalaxyInfo: No galaxy found, setting null');
         setGalaxyState(null);
       } else if (response.data && 'id' in response.data) {
-        // Galaxy data returned directly
-        const galaxyData = response.data as GalaxyState;
-        setGalaxyState(galaxyData);
+        setGalaxyState(response.data as GalaxyState);
       } else {
-        // Unexpected format
         console.warn('Unexpected galaxy API response format:', response.data);
         setGalaxyState(null);
       }
@@ -321,7 +314,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user, token]);
   
   // Load regions
   const loadRegions = async () => {

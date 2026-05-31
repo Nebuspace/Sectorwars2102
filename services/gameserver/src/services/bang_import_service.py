@@ -810,6 +810,10 @@ class BangImportService:
                         job_id,
                         f"[{region_type}] parsed {parsed.total_sectors} sectors\n",
                     )
+                    # Commit progress so the SSE stream surfaces the line
+                    # immediately and so the next iteration's auto-begun
+                    # transaction starts clean.
+                    await session.commit()
 
                 plan = self.translate(universes, region_metadata)
 
