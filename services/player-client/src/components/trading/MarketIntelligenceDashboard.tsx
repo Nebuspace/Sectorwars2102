@@ -54,7 +54,9 @@ const validateTradingCommand = (command: TradingCommand): SecurityValidation => 
     // XSS and injection prevention
     sanitized.commodity = sanitized.commodity
       .replace(/[<>"'&]/g, '')
-      .replace(/javascript:/gi, '')
+      // Cover the full dangerous-scheme set, not just javascript: — CodeQL flags
+      // partial coverage as js/incomplete-url-scheme-check.
+      .replace(/(?:javascript|data|vbscript):/gi, '')
       .slice(0, 50);
     
     if (!/^[a-zA-Z0-9_-]+$/.test(sanitized.commodity)) {
@@ -88,8 +90,7 @@ const validateTradingCommand = (command: TradingCommand): SecurityValidation => 
 const sanitizeAIResponse = (response: string): string => {
   return response
     .replace(/[<>"'&]/g, '')
-    .replace(/javascript:/gi, '')
-    .replace(/data:/gi, '')
+    .replace(/(?:javascript|data|vbscript):/gi, '')
     .slice(0, 2000);
 };
 

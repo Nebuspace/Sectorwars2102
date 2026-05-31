@@ -53,11 +53,20 @@ export class InputValidator {
       ALLOWED_ATTR: []
     });
     
-    // Additional cleanup for common XSS patterns
-    return cleaned
-      .replace(/[<>]/g, '') // Remove any remaining angle brackets
-      .replace(/javascript:/gi, '') // Remove javascript: protocols
-      .replace(/on\w+\s*=/gi, ''); // Remove event handlers
+    // Additional cleanup for common XSS patterns. The event-handler strip
+    // loops until stable because a naive single-pass regex misses cases where
+    // removing one `on…=` exposes another (js/incomplete-multi-character-sanitization).
+    // The URL-scheme strip covers data: and vbscript: in addition to javascript:
+    // (js/incomplete-url-scheme-check).
+    let stripped = cleaned
+      .replace(/[<>]/g, '')
+      .replace(/(?:javascript|data|vbscript):/gi, '');
+    let prev = '';
+    while (prev !== stripped) {
+      prev = stripped;
+      stripped = stripped.replace(/on\w+\s*=/gi, '');
+    }
+    return stripped;
   }
 
   /**

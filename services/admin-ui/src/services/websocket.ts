@@ -213,7 +213,11 @@ class AdminWebSocketService {
         try {
           handler(data);
         } catch (error) {
-          console.error(`Admin WebSocket: Error in event handler for ${event}`, error);
+          // Pass `event` as a separate console arg rather than interpolating
+          // into the format string — console.error treats %s/%d as format
+          // specifiers, so an event name containing them would otherwise be
+          // mis-interpreted (js/tainted-format-string).
+          console.error('Admin WebSocket: Error in event handler for', event, error);
         }
       });
     }
