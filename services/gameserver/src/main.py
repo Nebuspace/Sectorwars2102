@@ -69,6 +69,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Galaxy-state guard: blocks player traffic with 503 while a bang
+# generation job is mid-flight. Admin and auth paths bypass the check.
+# Fails-open (logs + lets traffic through) if the lookup raises — keeps
+# the server usable on fresh environments before migrations land.
+from src.middleware.galaxy_state_guard import GalaxyStateGuardMiddleware  # noqa: E402
+app.add_middleware(GalaxyStateGuardMiddleware)
+
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
@@ -152,6 +159,48 @@ async def startup_event():
                 logger.warning(f"Heartbeat cleanup error: {e}")
 
     asyncio.create_task(_heartbeat_cleanup_loop())
+
+    # Orphan-recovery sweep: mark any bang generation jobs left in RUNNING
+    # state for >5 minutes as FAILED. See DOCS/PLANS/bang-integration.md
+    # § Phase 1B. Safe to run before migrations land (errors are logged
+    # and the server keeps going).
+    try:
+        from datetime import timedelta
+        from sqlalchemy import update, func as sa_func
+        from src.core.database import AsyncSessionLocal
+        from src.models.bang_generation_job import (
+            BangGenerationJob,
+            BangGenerationJobStatus,
+        )
+
+        async with AsyncSessionLocal() as session:
+            stmt = (
+                update(BangGenerationJob)
+                .where(BangGenerationJob.status == BangGenerationJobStatus.RUNNING)
+                .where(
+                    BangGenerationJob.started_at
+                    < sa_func.now() - timedelta(minutes=5)
+                )
+                .values(
+                    status=BangGenerationJobStatus.FAILED,
+                    error_message="orphaned at startup",
+                    completed_at=sa_func.now(),
+                )
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            recovered = result.rowcount or 0
+            if recovered:
+                logger.info(
+                    "Bang job orphan recovery: marked %d stale RUNNING jobs as FAILED",
+                    recovered,
+                )
+            else:
+                logger.debug("Bang job orphan recovery: no stale jobs found")
+    except Exception as e:
+        # Table may not exist on first boot before migrations run; failing
+        # the startup hook would block the whole server. Log + move on.
+        logger.warning(f"Bang job orphan recovery skipped: {e}")
 
     logger.info("Sectorwars 2102 Game Server started successfully")
 
