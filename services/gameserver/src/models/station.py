@@ -123,6 +123,12 @@ class Station(Base):
         "colonists": {
             "quantity": 100, "capacity": 500, "base_price": 50, "current_price": 50,
             "production_rate": 10, "price_variance": 10, "buys": False, "sells": False
+        },
+        # 9th commodity per ADR-0062 E-D1 (band 80-180 cr/unit; 130 is midpoint).
+        # Bang's content.ts emits 9-commodity wire including precious_metals.
+        "precious_metals": {
+            "quantity": 80, "capacity": 400, "base_price": 130, "current_price": 130,
+            "production_rate": 8, "price_variance": 30, "buys": False, "sells": False
         }
     })
     
@@ -179,6 +185,10 @@ class Station(Base):
     is_quest_hub = Column(Boolean, nullable=False, default=False)
     is_faction_headquarters = Column(Boolean, nullable=False, default=False)
     is_player_ownable = Column(Boolean, nullable=False, default=True)
+    # SpaceDock flag (bang's Port.isSpaceDock sentinel; canonical at gameserver-side
+    # too because StarDock-special-location hosts also get this flag for queries
+    # that don't load the parent sector's special_features array).
+    is_spacedock = Column(Boolean, nullable=False, default=False, server_default="false")
     
     # Acquisition requirements for player ownership
     acquisition_requirements = Column(JSONB, nullable=False, default={
