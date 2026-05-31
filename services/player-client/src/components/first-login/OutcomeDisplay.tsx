@@ -79,6 +79,12 @@ const OutcomeDisplay: React.FC = () => {
   // Get outcome header class for styling
   const outcomeHeaderClass = dialogueOutcome.outcome === 'SUCCESS' ? 'success' : 'failure';
 
+  // awarded_ship is only set on SUCCESS / PARTIAL_SUCCESS outcomes; on
+  // FAILURE the player gets the default Escape Pod (per FIRST_LOGIN.md and
+  // the gameserver's create_player_for_user starter-ship code). Fall back
+  // to ESCAPE_POD so the page renders instead of crashing on .toLowerCase().
+  const awardedShip = awardedShip ?? 'ESCAPE_POD';
+
   return (
     <div className="outcome-container">
       {/* Scrollable content area */}
@@ -116,10 +122,10 @@ const OutcomeDisplay: React.FC = () => {
         </div>
 
         <div className="outcome-ship">
-          <div className={`ship-image-large ${dialogueOutcome.awarded_ship.toLowerCase().replace(/_/g, '-')}`}>
-            <div className="fallback">{SHIP_NAMES[dialogueOutcome.awarded_ship] || dialogueOutcome.awarded_ship}</div>
+          <div className={`ship-image-large ${awardedShip.toLowerCase().replace(/_/g, '-')}`}>
+            <div className="fallback">{SHIP_NAMES[awardedShip] || awardedShip}</div>
           </div>
-          <div className="ship-name">{SHIP_NAMES[dialogueOutcome.awarded_ship] || dialogueOutcome.awarded_ship}</div>
+          <div className="ship-name">{SHIP_NAMES[awardedShip] || awardedShip}</div>
         </div>
 
         {/* Score Breakdown - shows why player passed/failed */}
@@ -140,7 +146,7 @@ const OutcomeDisplay: React.FC = () => {
               <div style={{marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(255, 255, 255, 0.1)'}}>
                 {dialogueOutcome.outcome === 'SUCCESS' ? (
                   <span style={{color: '#0c0'}}>
-                    ✓ Your score met the threshold for {SHIP_NAMES[dialogueOutcome.awarded_ship] || dialogueOutcome.awarded_ship}
+                    ✓ Your score met the threshold for {SHIP_NAMES[awardedShip] || awardedShip}
                   </span>
                 ) : (
                   <span style={{color: '#c80'}}>
