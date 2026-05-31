@@ -327,13 +327,30 @@ async def answer_dialogue(
         # 4. We're not using dangerouslySetInnerHTML - no HTML injection risk
         # Player INPUT is still sanitized, but AI OUTPUT stays natural.
     
+    # Project analysis / outcome to known-safe subsets — the upstream service
+    # may include exception detail / traceback in these dicts and they're
+    # returned directly to the player (py/stack-trace-exposure).
+    raw_analysis = result.get("analysis") or {}
+    safe_analysis = {
+        "summary": raw_analysis.get("summary"),
+        "ai_used": bool(raw_analysis.get("ai_used")),
+        "intent": raw_analysis.get("intent"),
+        "sentiment": raw_analysis.get("sentiment"),
+    }
+    raw_outcome = result.get("outcome") or {}
+    safe_outcome = {
+        "ship_type": raw_outcome.get("ship_type"),
+        "starting_credits": raw_outcome.get("starting_credits"),
+        "narrative": raw_outcome.get("narrative"),
+    } if raw_outcome else None
+
     return {
         "exchange_id": str(result["exchange_id"]),
-        "analysis": result["analysis"],
+        "analysis": safe_analysis,
         "is_final": result["is_final"],
-        "outcome": result.get("outcome"),
+        "outcome": safe_outcome,
         "next_question": next_question,
-        "next_exchange_id": next_exchange_id
+        "next_exchange_id": next_exchange_id,
     }
 
 

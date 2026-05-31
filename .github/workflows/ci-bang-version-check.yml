@@ -13,6 +13,10 @@ on:
       - master
       - dev
 
+# Smoke test only reads the repo + pulls a public image; no write capability needed.
+permissions:
+  contents: read
+
 jobs:
   bang-image-smoke-test:
     name: Pull and smoke-test pinned bang image

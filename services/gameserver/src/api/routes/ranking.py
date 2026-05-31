@@ -545,7 +545,15 @@ async def get_player_medals(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("message", "Failed to get medals"),
         )
-    return result
+    # Project to a known-safe subset so any exception detail / stack-trace the
+    # service may have stuffed into the dict can't reach the client
+    # (py/stack-trace-exposure).
+    return {
+        "success": True,
+        "earned": result.get("earned", []),
+        "available": result.get("available", []),
+        "stats": result.get("stats", {}),
+    }
 
 
 # ------------------------------------------------------------------

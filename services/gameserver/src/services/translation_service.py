@@ -144,8 +144,10 @@ class TranslationService:
         """Check if HTML tags are intentional formatting (like <br>, <b>, etc.)"""
         allowed_tags = ['<br>', '<br/>', '<b>', '</b>', '<i>', '</i>', '<em>', '</em>', '<strong>', '</strong>']
         
-        # Find all HTML-like patterns
-        html_patterns = re.findall(r'<[^>]+>', value, re.IGNORECASE)
+        # Find all HTML-like patterns. `[^<>]+` (not `[^>]+`) prevents O(n²)
+        # backtracking on inputs with many leading `<` characters
+        # (py/polynomial-redos).
+        html_patterns = re.findall(r'<[^<>]+>', value, re.IGNORECASE)
         
         # Check if all found tags are in allowed list
         for pattern in html_patterns:

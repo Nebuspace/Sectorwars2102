@@ -271,8 +271,10 @@ class EnhancedAIService:
         # Convert to string and limit length
         user_input = str(user_input)[:self.max_conversation_length]
         
-        # Remove HTML tags and dangerous characters
-        user_input = re.sub(r'<[^>]*>', '', user_input)
+        # Remove HTML tags and dangerous characters. `[^<>]*` (rather than
+        # `[^>]*`) prevents the inner class from running over `<`, eliminating
+        # the O(n²) polynomial-redos pattern CodeQL flags.
+        user_input = re.sub(r'<[^<>]*>', '', user_input)
         user_input = re.sub(r'[<>"\'`]', '', user_input)
         user_input = re.sub(r'javascript:|data:|vbscript:', '', user_input, flags=re.IGNORECASE)
         
@@ -327,8 +329,16 @@ class EnhancedAIService:
         # Remove any potentially dangerous content from AI responses
         sanitized = response
         
-        # Remove script tags or executable content
-        sanitized = re.sub(r'<script[^>]*>.*?</script>', '', sanitized, flags=re.IGNORECASE | re.DOTALL)
+        # Remove script tags or executable content. The closing-tag pattern
+        # accepts optional whitespace before `>` so `</script >` is still
+        # caught (py/bad-tag-filter). `<script\b` anchors the open tag so
+        # `<scripted>` isn't mis-matched.
+        sanitized = re.sub(
+            r'<script\b[^>]*>.*?</script\s*>',
+            '',
+            sanitized,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
         
         # Remove potentially harmful URLs
         sanitized = re.sub(r'(javascript|data|vbscript):[^\\s]*', '[filtered-url]', sanitized, flags=re.IGNORECASE)
