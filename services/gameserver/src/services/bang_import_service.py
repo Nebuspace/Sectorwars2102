@@ -56,6 +56,7 @@ from src.models.galaxy import Galaxy, GalaxyImportState
 from src.models.planet import Planet, PlanetStatus, PlanetType
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.special_formation import SpecialFormation, SpecialFormationType
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.models.station import (
     Station,
     StationClass,
@@ -622,6 +623,7 @@ class BangImportService:
                     rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid))
                 )
 
+        gate_sector_by_region: Dict[RegionType, uuid.UUID] = {}
         for region_type, region_plan in plan.regions.items():
             region_id = region_ids.get(region_type)
             if region_id is None:
@@ -630,7 +632,30 @@ class BangImportService:
                     "must pre-create the Region row and pass its UUID via "
                     "InsertPlan.bang_snapshot['regions'][region_type]['region_id']"
                 )
-            await self._apply_region(session, region_plan, region_id)
+            gate_sector_by_region[region_type] = await self._apply_region(
+                session, region_plan, region_id
+            )
+
+        # Inter-region warp gates. Bang only generates the in-region
+        # sector adjacency graph (sector_warps); to actually make the
+        # galaxy navigable end-to-end we wire the three regions through
+        # central_nexus with NATURAL warp tunnels here. See
+        # DOCS/PLANS/bang-integration-schema-map.md — "Cross-region warp
+        # gates remain gameserver-managed and go into warp_tunnels".
+        nexus_gate = gate_sector_by_region.get("central_nexus")
+        if nexus_gate is not None:
+            for spoke_rt in ("player_owned", "terran_space"):
+                spoke_gate = gate_sector_by_region.get(spoke_rt)
+                if spoke_gate is None:
+                    continue
+                session.add(WarpTunnel(
+                    name=f"{spoke_rt.replace('_', ' ').title()} ↔ Central Nexus",
+                    origin_sector_id=spoke_gate,
+                    destination_sector_id=nexus_gate,
+                    type=WarpTunnelType.NATURAL,
+                    is_bidirectional=True,
+                    description=f"Auto-generated gate linking {spoke_rt} to central_nexus.",
+                ))
 
         # Final state flip lives on the same transaction as the inserts so
         # there is no observable partial state.
@@ -643,8 +668,13 @@ class BangImportService:
         session: AsyncSession,
         region_plan: RegionInsertPlan,
         region_id: uuid.UUID,
-    ) -> None:
-        """Write one region's clusters, sectors, warps, stations, planets, formations."""
+    ) -> uuid.UUID:
+        """Write one region's clusters, sectors, warps, stations, planets, formations.
+
+        Returns the UUID of the region's gate sector — the first sector in
+        the region's offset id range. apply() uses this to wire up
+        inter-region WarpTunnel rows after every region is in place.
+        """
         cluster_uuid_by_int: Dict[int, uuid.UUID] = {}
         for cs in region_plan.clusters:
             cluster = Cluster(
@@ -763,6 +793,11 @@ class BangImportService:
             session.add(formation)
 
         await session.flush()
+
+        # Gate sector = the lowest-numbered sector in this region's offset
+        # range. apply() uses it as the inter-region warp tunnel endpoint.
+        gate_sector_int = min(sector_uuid_by_int)
+        return sector_uuid_by_int[gate_sector_int]
 
     # ----- top-level orchestration ---------------------------------------
 
