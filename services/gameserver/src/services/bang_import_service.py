@@ -579,6 +579,7 @@ class BangImportService:
             p.sector_int_id += offset
         for f in plan.formations:
             f.anchor_sector_int += offset
+            f.interior_sector_ints = [i + offset for i in f.interior_sector_ints]
         plan.fedspace_sector_ints = [i + offset for i in plan.fedspace_sector_ints]
         plan.special_location_by_sector = {
             (k + offset): v for k, v in plan.special_location_by_sector.items()
