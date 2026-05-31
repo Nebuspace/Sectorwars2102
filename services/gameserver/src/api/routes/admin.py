@@ -276,6 +276,7 @@ async def get_all_regions(
         "id": str(region.id),
         "name": region.name,
         "display_name": region.display_name,
+        "region_type": region.region_type,
         "total_sectors": region.total_sectors,
         "status": region.status,
         "subscription_tier": region.subscription_tier,
