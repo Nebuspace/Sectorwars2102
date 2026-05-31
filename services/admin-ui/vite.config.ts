@@ -21,12 +21,7 @@ export default defineConfig({
     cors: true,
 
     // Add explicit wildcard for all hosts
-    allowedHosts: [
-      'localhost',
-      '127.0.0.1',
-      '0.0.0.0',
-      '*'
-    ],
+    allowedHosts: true,
 
     // Don't check origin at all
     origin: '*',
