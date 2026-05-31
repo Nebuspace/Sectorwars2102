@@ -1124,12 +1124,21 @@ class BangImportService:
             for planet_payload in sector_payload.get("planets") or []:
                 planet_specs.append(self._build_planet_spec(sid, planet_payload))
 
-        # Warps
+        # Warps. Defensively dedupe on the (from, to) pair: sector_warps has
+        # composite pkey (source_sector_id, destination_sector_id) and bang
+        # has been observed emitting the same directed edge more than once
+        # in a single Universe (presumed bug upstream), which would crash
+        # apply() with a UniqueViolationError on the second insert.
         warp_specs: List[WarpSpec] = []
+        seen_warp_pairs: set = set()
         cluster_stability_by_int = {cs.cluster_int_id: cs.warp_stability for cs in cluster_specs}
         for w in raw.get("warps") or []:
             from_int = int(w["from"])
             to_int = int(w["to"])
+            pair = (from_int, to_int)
+            if pair in seen_warp_pairs:
+                continue
+            seen_warp_pairs.add(pair)
             cluster = cluster_by_sector_int.get(from_int)
             warp_specs.append(
                 WarpSpec(
