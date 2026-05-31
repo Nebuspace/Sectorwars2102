@@ -104,14 +104,25 @@ async def create_bang_job(
     # not collide on the unique(name) constraint, and so a galaxy's
     # regions are traceable to the bang job that produced them.
     galaxy_name = payload.galaxy_name or "SectorWars Galaxy"
+    # Sector counts must satisfy regions.valid_region_type_sector_count:
+    #   central_nexus = 5000, terran_space = 300, player_owned in [100, 1000].
+    # player_owned tracks the form's sectors field, clamped to the
+    # constraint window. The other two are singletons by design.
+    player_owned_sectors = max(100, min(1000, payload.config.sectors))
+    region_sector_counts: Dict[str, int] = {
+        "player_owned": player_owned_sectors,
+        "terran_space": 300,
+        "central_nexus": 5000,
+    }
     region_uuids: Dict[str, uuid.UUID] = {}
-    for region_type in ("player_owned", "terran_space", "central_nexus"):
+    for region_type, total_sectors in region_sector_counts.items():
         region_id = uuid.uuid4()
         session.add(Region(
             id=region_id,
             name=f"bang-{job_id}-{region_type}",
             display_name=f"{galaxy_name} — {region_type.replace('_', ' ').title()}",
             region_type=region_type,
+            total_sectors=total_sectors,
         ))
         region_uuids[region_type] = region_id
 
