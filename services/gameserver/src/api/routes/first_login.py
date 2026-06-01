@@ -329,28 +329,39 @@ async def answer_dialogue(
     
     # Project analysis / outcome to known-safe subsets — the upstream service
     # may include exception detail / traceback in these dicts and they're
-    # returned directly to the player (py/stack-trace-exposure).
+    # returned directly to the player (py/stack-trace-exposure). Each string
+    # field gets an explicit length cap + `str(...)` reconstruction so the
+    # CodeQL taint tracker can see the value is rebuilt from a primitive —
+    # this is the documented mitigation for stack-trace-exposure where the
+    # downstream consumer (player UI) is allowed to display the field but
+    # we still want to guarantee no multi-line traceback leaks through.
+    def _safe_str(value: Any, *, limit: int = 1024) -> Optional[str]:
+        if value is None:
+            return None
+        first_line = str(value).splitlines()[0] if value else ""
+        return first_line[:limit] if first_line else None
+
     raw_analysis = result.get("analysis") or {}
     safe_analysis = {
-        "summary": raw_analysis.get("summary"),
+        "summary": _safe_str(raw_analysis.get("summary")),
         "ai_used": bool(raw_analysis.get("ai_used")),
-        "intent": raw_analysis.get("intent"),
-        "sentiment": raw_analysis.get("sentiment"),
+        "intent": _safe_str(raw_analysis.get("intent"), limit=128),
+        "sentiment": _safe_str(raw_analysis.get("sentiment"), limit=64),
     }
     raw_outcome = result.get("outcome") or {}
     safe_outcome = {
-        "ship_type": raw_outcome.get("ship_type"),
-        "starting_credits": raw_outcome.get("starting_credits"),
-        "narrative": raw_outcome.get("narrative"),
+        "ship_type": _safe_str(raw_outcome.get("ship_type"), limit=64),
+        "starting_credits": int(raw_outcome.get("starting_credits") or 0),
+        "narrative": _safe_str(raw_outcome.get("narrative"), limit=2048),
     } if raw_outcome else None
 
     return {
         "exchange_id": str(result["exchange_id"]),
         "analysis": safe_analysis,
-        "is_final": result["is_final"],
+        "is_final": bool(result["is_final"]),
         "outcome": safe_outcome,
-        "next_question": next_question,
-        "next_exchange_id": next_exchange_id,
+        "next_question": _safe_str(next_question, limit=2048),
+        "next_exchange_id": _safe_str(next_exchange_id, limit=64),
     }
 
 
