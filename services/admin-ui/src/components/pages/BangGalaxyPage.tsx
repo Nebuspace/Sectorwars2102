@@ -9,6 +9,9 @@ import GalaxyOverviewHeader, {
 } from '../universe/bang/GalaxyOverviewHeader';
 import GenerationLogPanel from '../universe/bang/GenerationLogPanel';
 import WipeGalaxyConfirmDialog from '../universe/bang/WipeGalaxyConfirmDialog';
+import AddRegionDialog from '../universe/bang/AddRegionDialog';
+import { useAuth } from '../../contexts/AuthContext';
+import { addPlayerOwnedRegion } from '../../services/bangGalaxyApi';
 import type { BangConfig } from '../universe/bang/types';
 import './bang-galaxy-page.css';
 
@@ -34,6 +37,10 @@ const BangGalaxyPage: React.FC = () => {
   const [wipeOpen, setWipeOpen] = useState(false);
   const [wipeBusy, setWipeBusy] = useState(false);
   const [wipeError, setWipeError] = useState<string | null>(null);
+  const [addRegionOpen, setAddRegionOpen] = useState(false);
+  const [addRegionBusy, setAddRegionBusy] = useState(false);
+  const [addRegionError, setAddRegionError] = useState<string | null>(null);
+  const { token } = useAuth();
 
   useEffect(() => {
     loadGalaxyInfo();
@@ -91,6 +98,7 @@ const BangGalaxyPage: React.FC = () => {
         galaxy={overview}
         serverBangVersion={serverBangVersion}
         onWipe={overview ? () => setWipeOpen(true) : undefined}
+        onAddRegion={overview ? () => setAddRegionOpen(true) : undefined}
       />
 
       <nav className="bang-tabs" role="tablist">
@@ -134,6 +142,37 @@ const BangGalaxyPage: React.FC = () => {
             }}
           />
         </div>
+      )}
+
+      {addRegionOpen && overview && (
+        <AddRegionDialog
+          onCancel={() => {
+            setAddRegionOpen(false);
+            setAddRegionError(null);
+          }}
+          onConfirm={async (seed, sectors) => {
+            setAddRegionBusy(true);
+            setAddRegionError(null);
+            try {
+              const job = await addPlayerOwnedRegion(
+                overview.id,
+                { config: { seed, sectors, region_type: 'player_owned' } },
+                token,
+              );
+              setActiveJobId(job.id);
+              setAddRegionOpen(false);
+              // Refresh galaxy info to surface the new region.
+              setTimeout(() => { void loadGalaxyInfo(); }, 500);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              setAddRegionError(message);
+            } finally {
+              setAddRegionBusy(false);
+            }
+          }}
+          busy={addRegionBusy}
+          error={addRegionError}
+        />
       )}
 
       {wipeOpen && overview && (

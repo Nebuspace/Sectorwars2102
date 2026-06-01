@@ -675,6 +675,204 @@ class BangImportService:
         await session.flush()
         return galaxy
 
+    async def apply_additional_region(
+        self,
+        galaxy_id: uuid.UUID,
+        region_plan: RegionInsertPlan,
+        region_id: uuid.UUID,
+        session: AsyncSession,
+    ) -> uuid.UUID:
+        """Splice a single freshly-generated region into an existing galaxy.
+
+        Companion to :meth:`apply`. Used by the "Add Player-Owned Region"
+        admin flow when an operator wants to grow an existing galaxy
+        instead of regenerating it from scratch. The new region's clusters
+        and sectors are appended to the galaxy's sector-id keyspace by
+        the orchestrator (which pre-offsets the spec list past the current
+        max sector_id), and one fresh NATURAL warp tunnel is wired
+        between the new region's gate sector and the existing
+        central_nexus gate so the addition is reachable end-to-end.
+
+        Returns the gate sector UUID of the new region (mirrors the
+        return-shape contract of :meth:`_apply_region` for symmetry).
+        """
+        galaxy = await session.get(Galaxy, galaxy_id)
+        if galaxy is None:
+            raise ValueError(f"apply_additional_region: galaxy {galaxy_id} not found")
+
+        # Look up central_nexus's gate sector — the lowest-numbered sector
+        # within central_nexus, per the same convention apply() uses when
+        # picking gates. The galaxy MUST already have a central_nexus
+        # region for inter-region routing to make sense; if it does not,
+        # we still write the region but skip the tunnel and emit a
+        # warning so the operator can see what happened.
+        nexus_gate_row = (
+            await session.execute(
+                text(
+                    "SELECT s.id FROM sectors s "
+                    "JOIN regions r ON s.region_id = r.id "
+                    "WHERE r.region_type = 'central_nexus' "
+                    "ORDER BY s.sector_id ASC LIMIT 1"
+                )
+            )
+        ).first()
+        nexus_gate_id: Optional[uuid.UUID] = nexus_gate_row[0] if nexus_gate_row else None
+
+        # Write the region's content. _apply_region already returns the
+        # region's gate sector UUID (lowest sector_id in its offset range).
+        new_gate = await self._apply_region(session, region_plan, region_id)
+
+        # Inter-region tunnel: new region ↔ central_nexus. Mirrors the
+        # hub-and-spoke pattern apply() uses on full generation.
+        if nexus_gate_id is not None:
+            session.add(WarpTunnel(
+                name="Player Owned ↔ Central Nexus",
+                origin_sector_id=new_gate,
+                destination_sector_id=nexus_gate_id,
+                type=WarpTunnelType.NATURAL,
+                is_bidirectional=True,
+                description="Auto-generated gate linking new player_owned region to central_nexus.",
+            ))
+
+        # Track the new region in bang_snapshot.additional_regions so the
+        # wipe endpoint can find it (the existing bang_snapshot.regions
+        # dict is keyed by region_type and would collide on player_owned).
+        snapshot = dict(galaxy.bang_snapshot or {})  # copy to mark dirty for SQLA JSON change-detection
+        additional = list(snapshot.get("additional_regions") or [])
+        additional.append({
+            "region_id": str(region_id),
+            "region_type": region_plan.region_type,
+            "total_sectors": region_plan.total_sectors,
+        })
+        snapshot["additional_regions"] = additional
+        galaxy.bang_snapshot = snapshot  # type: ignore[assignment]
+
+        await session.flush()
+        return new_gate
+
+    async def run_add_region_job(
+        self,
+        job_id: uuid.UUID,
+        galaxy_id: uuid.UUID,
+        params: BangConfig,
+        *,
+        region_metadata: Optional[Dict[str, Any]] = None,
+        session_factory: Optional[Callable[[], AsyncSession]] = None,
+        emit_event: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    ) -> None:
+        """Orchestrate an additive player_owned region for an existing galaxy.
+
+        Mirrors :meth:`run_generation_job` but runs bang only ONCE (the
+        new region) and writes via :meth:`apply_additional_region`. The
+        orchestrator computes the global sector-id offset by reading the
+        current max(sector_id) on the galaxy, so the new region's
+        sector_ids start past the existing keyspace and don't collide.
+
+        ``region_metadata['regions']['player_owned']['region_id']`` must
+        contain the UUID of the pre-created Region row (created by the
+        route handler in the same transaction as the BangGenerationJob).
+        """
+        if session_factory is None:
+            from src.core.database import AsyncSessionLocal as _Session  # type: ignore[import-not-found]
+            session_factory = _Session
+
+        region_metadata = dict(region_metadata or {})
+        region_metadata.setdefault("master_seed", params.seed)
+
+        start_ts = time.monotonic()
+
+        async with session_factory() as session:
+            locked = (
+                await session.execute(
+                    text("SELECT pg_try_advisory_lock(:k)"),
+                    {"k": GALAXY_GEN_LOCK_KEY},
+                )
+            ).scalar()
+            if not locked:
+                await self._mark_job_failed(
+                    session, job_id, "another galaxy-generation job is already running"
+                )
+                await session.commit()
+                return
+
+            try:
+                await self._set_job_status(session, job_id, BangGenerationJobStatus.RUNNING)
+                await session.commit()
+
+                # Compute the offset so the new region's sector_ids land
+                # past the existing galaxy's max(sector_id). +1 keeps the
+                # range disjoint with zero overlap.
+                current_max_row = (
+                    await session.execute(
+                        text("SELECT COALESCE(MAX(sector_id), 0) FROM sectors")
+                    )
+                ).scalar()
+                sector_id_offset = int(current_max_row or 0)
+
+                # Run bang once for player_owned. We do NOT reuse
+                # invoke_bang's offsetting; the orchestrator-supplied
+                # offset is applied after _translate_region returns so
+                # the per-region invariants run on bang's local
+                # numbering first (consistent with translate()).
+                sub_config = BangConfig(
+                    seed=params.seed,
+                    sectors=params.sectors,
+                    region_type="player_owned",
+                )
+                parsed = await asyncio.to_thread(self.invoke_bang, sub_config, 300)
+                await self._append_log(
+                    session, job_id,
+                    f"[player_owned +offset={sector_id_offset}] parsed {parsed.total_sectors} sectors\n",
+                )
+                await session.commit()
+
+                # Translate ONE region.
+                region_plan = self._translate_region("player_owned", parsed)
+                if sector_id_offset > 0:
+                    self._offset_region_sector_ids(region_plan, sector_id_offset)
+
+                region_id_str = (
+                    region_metadata.get("regions", {})
+                    .get("player_owned", {})
+                    .get("region_id")
+                )
+                if region_id_str is None:
+                    raise ValueError(
+                        "run_add_region_job: region_metadata missing "
+                        "regions.player_owned.region_id"
+                    )
+                region_id = (
+                    region_id_str if isinstance(region_id_str, uuid.UUID)
+                    else uuid.UUID(str(region_id_str))
+                )
+
+                async with session.begin():
+                    await self.apply_additional_region(
+                        galaxy_id, region_plan, region_id, session
+                    )
+
+                duration_ms = int((time.monotonic() - start_ts) * 1000)
+                await self._mark_job_complete(
+                    session, job_id, duration_ms, []
+                )
+                await session.commit()
+
+                if emit_event is not None:
+                    await emit_event(
+                        "galaxy.region_added",
+                        {"galaxy_id": str(galaxy_id), "job_id": str(job_id), "region_id": str(region_id)},
+                    )
+            except Exception as exc:
+                logger.error("run_add_region_job failed: %s", exc, exc_info=True)
+                await self._mark_job_failed(session, job_id, str(exc))
+                await session.commit()
+            finally:
+                await session.execute(
+                    text("SELECT pg_advisory_unlock(:k)"),
+                    {"k": GALAXY_GEN_LOCK_KEY},
+                )
+                await session.commit()
+
     async def _apply_region(
         self,
         session: AsyncSession,
