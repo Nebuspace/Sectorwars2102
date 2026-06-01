@@ -111,8 +111,15 @@ class MovementService:
         # Get ship for capabilities
         ship = player.current_ship
         
-        # Get direct warps
+        # Get direct warps. sector_warps stores bidirectional connections
+        # as ONE row (source, dest, is_bidirectional=true) per the
+        # bang-integration schema map — so a sector reaches its
+        # bidirectional neighbours via *incoming* rows too, not just
+        # outgoing. Walk both sides.
         direct_warps = []
+        seen_sector_ids: set = set()
+
+        # Outgoing edges (this sector is the source).
         for connected_sector in current_sector.outgoing_warps:
             warp_cost = self._calculate_warp_cost(current_sector, connected_sector, ship)
             direct_warps.append({
@@ -122,7 +129,33 @@ class MovementService:
                 "turn_cost": warp_cost,
                 "can_afford": player.turns >= warp_cost
             })
-        
+            seen_sector_ids.add(connected_sector.sector_id)
+
+        # Incoming bidirectional edges — the bang translator stores a
+        # two-way warp A↔B as one row (source=A, dest=B, bidir=true),
+        # so from B's POV the reverse traversal is this incoming row.
+        # Without this branch a player can leave a sector but cannot
+        # warp back along a bidirectional connection.
+        incoming_bidir_rows = self.db.execute(
+            sector_warps.select().where(
+                sector_warps.c.destination_sector_id == current_sector.id,
+                sector_warps.c.is_bidirectional == True,  # noqa: E712 — SQLA boolean column compare
+            )
+        ).fetchall()
+        for row in incoming_bidir_rows:
+            origin = self.db.query(Sector).filter(Sector.id == row.source_sector_id).first()
+            if origin is None or origin.sector_id in seen_sector_ids:
+                continue
+            warp_cost = self._calculate_warp_cost(current_sector, origin, ship)
+            direct_warps.append({
+                "sector_id": origin.sector_id,
+                "name": origin.name,
+                "type": origin.type.name,
+                "turn_cost": warp_cost,
+                "can_afford": player.turns >= warp_cost
+            })
+            seen_sector_ids.add(origin.sector_id)
+
         # Get warp tunnels - both outgoing and incoming (for bidirectional)
         warp_tunnels = []
 
@@ -210,11 +243,27 @@ class MovementService:
             if current.id == end_sector.id:
                 break
             
-            # Add all neighbors to the queue
+            # Add all neighbors to the queue. Walk both outgoing edges and
+            # incoming bidirectional edges so BFS pathfinding can traverse
+            # bang's bidirectional sector_warps in reverse.
             for neighbor in current.outgoing_warps:
                 if neighbor.id not in visited:
                     visited[neighbor.id] = current.id
                     queue.append((neighbor, distance + 1))
+            incoming_bidir = self.db.execute(
+                sector_warps.select().where(
+                    sector_warps.c.destination_sector_id == current.id,
+                    sector_warps.c.is_bidirectional == True,  # noqa: E712
+                )
+            ).fetchall()
+            for row in incoming_bidir:
+                if row.source_sector_id in visited:
+                    continue
+                origin = self.db.query(Sector).filter(Sector.id == row.source_sector_id).first()
+                if origin is None:
+                    continue
+                visited[origin.id] = current.id
+                queue.append((origin, distance + 1))
             
             # Check warp tunnels
             tunnels = self.db.query(WarpTunnel).filter(
@@ -255,8 +304,9 @@ class MovementService:
             from_sector = self.db.query(Sector).filter(Sector.sector_id == from_sector_id).first()
             to_sector = self.db.query(Sector).filter(Sector.sector_id == to_sector_id).first()
             
-            # Check if direct warp or tunnel
-            if to_sector in from_sector.outgoing_warps:
+            # Check if direct warp (either direction for bidirectional
+            # sector_warps rows) or tunnel.
+            if self._is_directly_connected(from_sector, to_sector):
                 path[i + 1]["turn_cost"] = self._calculate_warp_cost(from_sector, to_sector, None)
                 path[i + 1]["connection_type"] = "warp"
             else:
@@ -281,22 +331,44 @@ class MovementService:
         
         return path
     
+    def _is_directly_connected(self, from_sector: Sector, to_sector: Sector) -> bool:
+        """True if there's a usable direct warp from ``from_sector`` to ``to_sector``.
+
+        bang's translator stores bidirectional warps as a single row
+        (source=A, dest=B, is_bidirectional=True). The reverse traversal
+        is therefore NOT in ``from_sector.outgoing_warps`` — we have to
+        also accept ``to_sector`` as the source of a row that points back
+        to ``from_sector`` when that row is bidirectional. See
+        DOCS/PLANS/bang-integration-schema-map.md.
+        """
+        if to_sector in from_sector.outgoing_warps:
+            return True
+        reverse_row = self.db.execute(
+            sector_warps.select().where(
+                sector_warps.c.source_sector_id == to_sector.id,
+                sector_warps.c.destination_sector_id == from_sector.id,
+                sector_warps.c.is_bidirectional == True,  # noqa: E712
+            )
+        ).first()
+        return reverse_row is not None
+
     def _check_direct_warp(self, current_sector_id: int, destination_sector_id: int, ship: Ship) -> Tuple[bool, int, str]:
         """Check if a direct warp is possible and calculate turn cost."""
         # Get sector objects
         current_sector = self.db.query(Sector).filter(Sector.sector_id == current_sector_id).first()
         destination_sector = self.db.query(Sector).filter(Sector.sector_id == destination_sector_id).first()
-        
+
         if not current_sector or not destination_sector:
             return False, 0, "Invalid sector IDs"
-        
-        # Check if destination is directly connected
-        if destination_sector not in current_sector.outgoing_warps:
+
+        # Check if destination is directly connected (either direction
+        # for bidirectional sector_warps rows).
+        if not self._is_directly_connected(current_sector, destination_sector):
             return False, 0, "Sectors are not directly connected"
-        
+
         # Calculate turn cost
         turn_cost = self._calculate_warp_cost(current_sector, destination_sector, ship)
-        
+
         return True, turn_cost, "Direct warp available"
     
     def _check_warp_tunnel(self, current_sector_id: int, destination_sector_id: int, ship: Ship) -> Tuple[bool, int, str]:
@@ -340,12 +412,22 @@ class MovementService:
     
     def _calculate_warp_cost(self, from_sector: Sector, to_sector: Sector, ship: Optional[Ship]) -> int:
         """Calculate turn cost for a direct warp between sectors."""
-        # Find the warp connection details
+        # Find the warp connection details. Try the forward direction first;
+        # if missing, try the reverse direction with is_bidirectional=true
+        # (the bang translator stores A↔B as ONE row per the schema map,
+        # so reverse traversal reads the same row).
         warp = self.db.query(sector_warps).filter(
             sector_warps.c.source_sector_id == from_sector.id,
             sector_warps.c.destination_sector_id == to_sector.id
         ).first()
-        
+
+        if not warp:
+            warp = self.db.query(sector_warps).filter(
+                sector_warps.c.source_sector_id == to_sector.id,
+                sector_warps.c.destination_sector_id == from_sector.id,
+                sector_warps.c.is_bidirectional == True,  # noqa: E712
+            ).first()
+
         if not warp:
             return 999  # Very high cost if no direct connection (should not happen)
         
