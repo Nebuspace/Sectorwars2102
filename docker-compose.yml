@@ -351,6 +351,11 @@ services:
       - REACT_APP_NEXUS_MODE=${NEXUS_MODE:-false}
       - VITE_API_URL=${API_BASE_URL:-http://localhost:8080}/api/v1
       - VITE_WS_URL=${WS_BASE_URL:-ws://localhost:8080}/ws
+      # When the gateway publishes admin-ui under /admin/ (stage/prod),
+      # set ADMIN_UI_BASE=/admin/ in the per-tier .env so Vite emits
+      # asset paths under /admin/. Default '/' keeps local-port dev
+      # (http://localhost:3001) working unchanged.
+      - VITE_BASE=${ADMIN_UI_BASE:-/}
     restart: unless-stopped
     depends_on:
       - gameserver
