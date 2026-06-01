@@ -50,19 +50,13 @@ jobs:
           docker pull "docker.io/drxelanull/sw2102-bang:${BANG_TAG}"
 
       - name: Smoke-test bang generation
-        # NOTE: bang's published Dockerfile (v1.3.0) sets ENTRYPOINT to the
-        # db-writer binary (bigbang-db), but the gameserver integration wants
-        # the stdout JSON CLI (bigbang → dist/cli.js). Until bang ships a
-        # corrected Dockerfile (planned v1.3.1) we override the entrypoint
-        # here AND in services/gameserver/src/services/bang_import_service.py
-        # to invoke the right binary.
+        # bang v1.3.1+ ENTRYPOINT defaults to dist/cli.js so the image is
+        # callable bare.
         env:
           BANG_TAG: ${{ steps.bang_version.outputs.version }}
         run: |
           docker run --rm \
-            --entrypoint node \
             "docker.io/drxelanull/sw2102-bang:${BANG_TAG}" \
-            /app/dist/cli.js \
             --seed 42 --sectors 100 --json-out > /tmp/bang.json
 
       - name: Assert bang reports the pinned version
