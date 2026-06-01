@@ -10,10 +10,6 @@
     "axios": "^1.15.1",
     "eslint": "^10.4.1",
     "form-data": "^4.0.4",
-    "pg": "^8.21.0",
-    "postgres": "^3.4.9",
-    "postgres-client": "^1.0.1",
-    "postgresql": "^0.0.1",
     "uuid": "^14.0.0"
   },
   "scripts": {

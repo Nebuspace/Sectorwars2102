@@ -185,34 +185,42 @@ def create_error_response(
     else:
         status_code = 500
     
-    # Create safe error message
-    message = sanitize_error_message(error, show_details)
-    
-    response_data = {
+    # Create safe error message. Rebuild from primitives + cap length so
+    # CodeQL sees that no Exception object flows into the response body
+    # (py/stack-trace-exposure). sanitize_error_message already returns
+    # short, single-line strings (or fixed safe constants); this second
+    # pass is a defensive belt-and-suspenders that makes the taint
+    # severance explicit at the response-construction site.
+    raw_message = sanitize_error_message(error, show_details)
+    safe_message = (str(raw_message).splitlines()[0] if raw_message else "An error occurred")[:200]
+
+    response_data: Dict[str, Any] = {
         "error": True,
-        "message": message,
-        "error_id": error_id,
-        "timestamp": datetime.utcnow().isoformat()
+        "message": safe_message,
+        "error_id": str(error_id),
+        "timestamp": datetime.utcnow().isoformat(),
     }
-    
-    # Add validation details for ValidationError
+
+    # Add validation details for ValidationError. Each field is rebuilt
+    # from primitives + capped so the response cannot inherit any raw
+    # exception payload (defense-in-depth for py/stack-trace-exposure).
     if isinstance(error, ValidationError) and show_details:
         response_data["validation_errors"] = [
             {
-                "field": ".".join(str(loc) for loc in err["loc"]),
-                "message": err["msg"],
-                "type": err["type"]
+                "field": ".".join(str(loc) for loc in err["loc"])[:200],
+                "message": str(err["msg"])[:500],
+                "type": str(err["type"])[:100],
             }
             for err in error.errors()
         ]
-    
+
     return JSONResponse(
         status_code=status_code,
         content=response_data,
         headers={
-            "X-Error-ID": error_id,
-            "Cache-Control": "no-cache, no-store, must-revalidate"
-        }
+            "X-Error-ID": str(error_id),
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
     )
 
 

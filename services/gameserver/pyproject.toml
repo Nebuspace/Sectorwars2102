@@ -9,6 +9,11 @@ packages = [{include = "src"}]
 [tool.poetry.dependencies]
 python = "^3.11"
 fastapi = ">=0.115,<0.126"
+# Explicit floor: starlette <0.49.1 has an O(n²) DoS via Range-header
+# merging in FileResponse (GHSA-2c2j-9gv5-cj73) and a separate multipart
+# DoS (GHSA-f96h-pmfr-66vw). FastAPI pulls starlette transitively, so we
+# pin the floor here to make sure poetry picks a patched version.
+starlette = ">=0.49.1,<0.50"
 uvicorn = {extras = ["standard"], version = ">=0.23.2,<0.49.0"}
 websockets = ">=11.0.3,<17.0.0"
 sqlalchemy = "^2.0.20"
