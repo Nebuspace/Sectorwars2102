@@ -27,6 +27,8 @@ interface GalaxyOverviewHeaderProps {
   serverBangVersion?: string | null;
   /** Optional "Wipe galaxy" callback. If absent the button is hidden. */
   onWipe?: () => void;
+  /** Optional "Add Player-Owned Region" callback. If absent the button is hidden. */
+  onAddRegion?: () => void;
 }
 
 /**
@@ -41,6 +43,7 @@ const GalaxyOverviewHeader: React.FC<GalaxyOverviewHeaderProps> = ({
   galaxy,
   serverBangVersion = null,
   onWipe,
+  onAddRegion,
 }) => {
   const { t } = useTranslation('admin');
 
@@ -67,6 +70,16 @@ const GalaxyOverviewHeader: React.FC<GalaxyOverviewHeaderProps> = ({
     <div className="galaxy-overview-header">
       <div className="overview-title-row">
         <h3>{t('bang.overview.title')}</h3>
+        {onAddRegion && (
+          <button
+            type="button"
+            className="overview-wipe-btn"
+            style={{ marginRight: 8, background: 'rgba(74, 144, 226, 0.15)', borderColor: 'rgba(74, 144, 226, 0.4)' }}
+            onClick={onAddRegion}
+          >
+            {t('bang.overview.addRegion')}
+          </button>
+        )}
         {onWipe && (
           <button
             type="button"

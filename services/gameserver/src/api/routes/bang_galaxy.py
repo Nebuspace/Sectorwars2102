@@ -146,6 +146,87 @@ async def create_bang_job(
 
 
 # ---------------------------------------------------------------------------
+# POST /admin/galaxy/{galaxy_id}/regions  (additive: add ONE player_owned region)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/galaxy/{galaxy_id}/regions",
+    response_model=BangJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def add_player_owned_region(
+    galaxy_id: uuid.UUID,
+    payload: BangJobCreate,
+    background_tasks: BackgroundTasks,
+    current_admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_async_session),
+    service: BangImportService = Depends(get_bang_import_service),
+) -> BangJobResponse:
+    """Queue an additive player_owned region job for an existing galaxy.
+
+    Unlike `POST /galaxy/jobs` (full 3-region generation), this endpoint
+    grows the existing galaxy by exactly one player_owned region. The
+    orchestrator runs bang once, offsets sector_ids past the current
+    keyspace, and wires the new region to central_nexus via a fresh
+    NATURAL warp tunnel. Sector counts are clamped to the constraint
+    window [100, 1000]; region_type is forced to player_owned regardless
+    of what the form sent.
+    """
+    galaxy = await session.get(Galaxy, galaxy_id)
+    if galaxy is None:
+        raise HTTPException(status_code=404, detail="Galaxy not found")
+
+    # Force region_type to player_owned and clamp sectors to the
+    # valid_region_type_sector_count window.
+    player_owned_sectors = max(100, min(1000, payload.config.sectors))
+
+    job_id = uuid.uuid4()
+    job = BangGenerationJob(
+        id=job_id,
+        admin_user_id=current_admin.id,
+        status=BangGenerationJobStatus.PENDING,
+        params_json={
+            **payload.config.model_dump(),
+            "sectors": player_owned_sectors,
+            "region_type": "player_owned",
+            "galaxy_id": str(galaxy_id),  # link the job to the target galaxy
+        },
+    )
+    session.add(job)
+
+    region_id = uuid.uuid4()
+    session.add(Region(
+        id=region_id,
+        name=f"bang-{job_id}-player_owned",
+        display_name=f"{galaxy.name} — Player Owned ({player_owned_sectors})",
+        region_type="player_owned",
+        total_sectors=player_owned_sectors,
+    ))
+
+    await session.commit()
+    await session.refresh(job)
+
+    sub_config = payload.config.model_copy(update={
+        "sectors": player_owned_sectors,
+        "region_type": "player_owned",
+    })
+    region_metadata: Dict[str, Any] = {
+        "master_seed": payload.config.seed,
+        "regions": {"player_owned": {"region_id": str(region_id)}},
+    }
+
+    background_tasks.add_task(
+        service.run_add_region_job,
+        job_id,
+        galaxy_id,
+        sub_config,
+        region_metadata=region_metadata,
+    )
+    return BangJobResponse.model_validate(job)
+
+
+# ---------------------------------------------------------------------------
 # POST /admin/galaxy/preview
 # ---------------------------------------------------------------------------
 
@@ -319,8 +400,18 @@ async def hard_delete_galaxy(
         )
 
     region_ids: list[uuid.UUID] = []
-    snapshot_regions = (galaxy.bang_snapshot or {}).get("regions", {})
-    for snap in snapshot_regions.values():
+    snapshot = galaxy.bang_snapshot or {}
+    # Initial three-region set (player_owned + terran_space + central_nexus).
+    for snap in (snapshot.get("regions") or {}).values():
+        if isinstance(snap, dict):
+            rid = snap.get("region_id")
+            if rid is not None:
+                region_ids.append(rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid)))
+    # Additive regions appended via POST /admin/galaxy/{id}/regions
+    # (Add Player-Owned Region flow). The wipe MUST tear these down too,
+    # otherwise the next generation collides on the unique(name) constraint
+    # — or worse, orphans the row entirely.
+    for snap in (snapshot.get("additional_regions") or []):
         if isinstance(snap, dict):
             rid = snap.get("region_id")
             if rid is not None:

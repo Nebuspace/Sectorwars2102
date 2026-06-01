@@ -43,6 +43,26 @@ export async function createBangJob(
   return response.data;
 }
 
+/**
+ * POST /admin/galaxy/{galaxy_id}/regions — additive: grow an existing
+ * galaxy by ONE player_owned region. Backend forces region_type to
+ * player_owned and clamps sectors to [100, 1000]. Returns the job row
+ * (202); subscribe to the SSE log stream the same way as the full-
+ * generation flow.
+ */
+export async function addPlayerOwnedRegion(
+  galaxyId: string,
+  payload: BangJobCreate,
+  token: string | null,
+): Promise<BangJobResponse> {
+  const response = await api.post<BangJobResponse>(
+    `/admin/galaxy/${galaxyId}/regions`,
+    payload,
+    { headers: authHeaders(token) },
+  );
+  return response.data;
+}
+
 /** POST /admin/galaxy/preview — runs bang with --validate-only inline. */
 export async function previewBangConfig(
   config: BangConfig,
