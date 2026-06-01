@@ -5,7 +5,7 @@
 # `target: dev` and the publish workflow can use `target: production`
 # uniformly across services.
 
-FROM nginx:alpine AS base
+FROM nginx:stable-alpine AS base
 
 COPY nginx.conf /etc/nginx/nginx.conf
 

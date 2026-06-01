@@ -10,7 +10,7 @@
 # ---------------------------------------------------------------------------
 # base — everything both stages need (system deps, Docker CLI, tini, Poetry)
 # ---------------------------------------------------------------------------
-FROM python:3.11 AS base
+FROM python:3.12-slim AS base
 
 # Bang sidecar image version pin. Propagated to runtime via ENV so
 # bang_import_service.py can read os.environ['BANG_VERSION']. Overridable
