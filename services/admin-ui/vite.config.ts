@@ -8,6 +8,13 @@ dns.setDefaultResultOrder('ipv4first')
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // When this UI is served behind nginx-gateway under `/admin/` (stage,
+  // prod), Vite must emit asset paths prefixed with `/admin/` so the
+  // browser fetches `/admin/src/main.tsx` (which nginx routes here)
+  // instead of `/src/main.tsx` (which nginx routes to player-client).
+  // Local dev hits this server at the root, so leave the default in
+  // that case. Set `VITE_BASE=/admin/` in the stage/prod env to flip.
+  base: process.env.VITE_BASE || '/',
   server: {
     host: true, // Listen on all addresses
     port: 3000, // Fixed to match Docker port mapping
