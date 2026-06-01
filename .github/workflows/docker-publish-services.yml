@@ -26,7 +26,7 @@ permissions:
 env:
   # Single source of truth for the bang image gameserver depends on at build time.
   # Update here AND in docker-compose.yml (BANG_VERSION env / build arg) together.
-  BANG_VERSION: "1.3.2"
+  BANG_VERSION: "1.3.3"
 
 jobs:
   detect-changes:
@@ -75,7 +75,7 @@ jobs:
             image: drxelanull/sw2102-gameserver
             changed-output: gameserver
             build-args: |
-              BANG_VERSION=1.3.2
+              BANG_VERSION=1.3.3
           - name: player-client
             context: services/player-client
             dockerfile: services/player-client/Dockerfile

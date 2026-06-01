@@ -9,7 +9,7 @@
 # ---------------------------------------------------------------------------
 # deps — shared node_modules layer for layer-cache hits
 # ---------------------------------------------------------------------------
-FROM node:20-slim AS deps
+FROM node:24-slim AS deps
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
@@ -41,7 +41,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # production — nginx serving the prebuilt SPA, with HTML5 history-mode routing
 # ---------------------------------------------------------------------------
-FROM nginx:alpine AS production
+FROM nginx:stable-alpine AS production
 
 # Minimal nginx config: serve static assets, fall back to index.html for any
 # unknown path so React Router handles client-side routes (HTML5 history mode).
