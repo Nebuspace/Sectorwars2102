@@ -141,7 +141,7 @@ services:
       context: ./services/gameserver
       target: dev
       args:
-        BANG_VERSION: ${BANG_VERSION:-1.3.0}
+        BANG_VERSION: ${BANG_VERSION:-1.3.1}
     container_name: sectorwars-gameserver
     ports:
       - "${GAMESERVER_PORT:-8080}:8080"
@@ -181,7 +181,7 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-sonnet-20240229}
       - TESTING_FROM_HOST=${TESTING_FROM_HOST:-false}
-      - BANG_VERSION=${BANG_VERSION:-1.3.0}
+      - BANG_VERSION=${BANG_VERSION:-1.3.1}
     restart: unless-stopped
     depends_on:
       database:
@@ -208,7 +208,7 @@ services:
       target: production
       args:
         - ENVIRONMENT=${ENVIRONMENT:-production}
-        - BANG_VERSION=${BANG_VERSION:-1.3.0}
+        - BANG_VERSION=${BANG_VERSION:-1.3.1}
     container_name: sectorwars-central-nexus-server
     environment:
       - DATABASE_URL=postgresql://${NEXUS_DB_USER:-nexus_admin}:${NEXUS_DB_PASSWORD:-dev_only_not_for_production}@central-nexus-db:5432/${NEXUS_DB_NAME:-central_nexus}
@@ -217,7 +217,7 @@ services:
       - SERVICE_TYPE=central-nexus
       - REGION_ID=central-nexus
       - JWT_SECRET=${JWT_SECRET}
-      - BANG_VERSION=${BANG_VERSION:-1.3.0}
+      - BANG_VERSION=${BANG_VERSION:-1.3.1}
       - PAYPAL_CLIENT_ID=${PAYPAL_CLIENT_ID}
       - PAYPAL_CLIENT_SECRET=${PAYPAL_CLIENT_SECRET}
       - PAYPAL_GALACTIC_CITIZEN_PLAN_ID=${PAYPAL_GALACTIC_CITIZEN_PLAN_ID}
@@ -257,7 +257,7 @@ services:
       target: production
       args:
         - ENVIRONMENT=${ENVIRONMENT:-production}
-        - BANG_VERSION=${BANG_VERSION:-1.3.0}
+        - BANG_VERSION=${BANG_VERSION:-1.3.1}
     restart: unless-stopped
     environment:
       - DATABASE_URL=postgresql://${REGION_DB_USER:-region_admin}:${REGION_DB_PASSWORD:-dev_only_not_for_production}@${REGION_NAME:-default-region}-db:5432/${REGION_NAME:-default_region}
@@ -266,7 +266,7 @@ services:
       - SERVICE_TYPE=regional-server
       - REGION_ID=${REGION_NAME:-default-region}
       - REGION_OWNER_ID=${REGION_OWNER_ID}
-      - BANG_VERSION=${BANG_VERSION:-1.3.0}
+      - BANG_VERSION=${BANG_VERSION:-1.3.1}
       - JWT_SECRET=${JWT_SECRET}
       - CENTRAL_NEXUS_URL=http://central-nexus-server:8080
       - ENABLE_CROSS_REGIONAL_API=true
