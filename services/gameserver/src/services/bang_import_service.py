@@ -41,16 +41,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import docker
 from docker import errors as docker_errors
 from requests.exceptions import ReadTimeout
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-
-if TYPE_CHECKING:
-    from docker.models.containers import Container as DockerContainer
 
 from src.models.bang_generation_job import (
     BangGenerationJob,
@@ -477,7 +474,7 @@ class BangImportService:
           4. ``container.remove(force=True)`` ensures cleanup even on the
              error paths — mirrors the prior ``--rm`` flag semantics.
         """
-        container: Optional["DockerContainer"] = None
+        container = None
         try:
             try:
                 container = self._docker.containers.run(

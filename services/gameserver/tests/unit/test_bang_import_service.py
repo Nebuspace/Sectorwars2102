@@ -16,7 +16,6 @@ from typing import Any, Dict
 from unittest.mock import MagicMock
 
 import pytest
-from requests.exceptions import ReadTimeout  # noqa: F401 - used by test helpers below
 
 from src.schemas.bang_config import BangConfig
 from src.services.bang_import_service import (

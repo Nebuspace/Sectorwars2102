@@ -68,14 +68,8 @@ def _fake_docker(
     else:
         container.wait.return_value = {"StatusCode": exit_code}
 
-    def _logs(stdout: bool = False, stderr: bool = False) -> bytes:
-        if stdout and not stderr:
-            return stdout.encode("utf-8") if isinstance(stdout, str) else _stdout_bytes  # type: ignore[no-any-return]
-        if stderr and not stdout:
-            return _stderr_bytes  # type: ignore[no-any-return]
-        return b""
-
-    # MagicMock doesn't let us close over kwargs easily — use side_effect.
+    # docker-py's container.logs takes keyword args (stdout=, stderr=), so
+    # we wire the canned output via side_effect rather than return_value.
     _stdout_bytes = stdout.encode("utf-8") if isinstance(stdout, str) else stdout
     _stderr_bytes = stderr.encode("utf-8") if isinstance(stderr, str) else stderr
 
