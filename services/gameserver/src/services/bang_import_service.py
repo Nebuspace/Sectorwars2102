@@ -37,15 +37,20 @@ import asyncio
 import hashlib
 import json
 import logging
-import subprocess  # noqa: S404 -- we invoke a pinned local CLI/Docker image
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+import docker
+from docker import errors as docker_errors
+from requests.exceptions import ReadTimeout
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from docker.models.containers import Container as DockerContainer
 
 from src.models.bang_generation_job import (
     BangGenerationJob,
@@ -159,7 +164,7 @@ _EXPECTED_SECTOR_COUNT: Dict[RegionType, Optional[int]] = {
 #: BangConfig snake_case field → bang CLI kebab-case flag. Only optional
 #: flags with a 1:1 CLI surface live here; the three required fields
 #: (seed, sectors, region_type) are emitted directly in
-#: :meth:`BangImportService._build_docker_args`. ``validator_strictness``
+#: :meth:`BangImportService._build_bang_args`. ``validator_strictness``
 #: is intentionally absent — bang has no strictness levels today
 #: (per Phase 1B handoff).
 _CLI_FLAG_MAP: Dict[str, str] = {
@@ -369,7 +374,7 @@ class BangImportService:
         self,
         bang_image: str = DEFAULT_BANG_IMAGE,
         *,
-        subprocess_runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
+        docker_client: Optional["docker.DockerClient"] = None,
         log_sink: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> None:
         """Construct a translator.
@@ -377,14 +382,18 @@ class BangImportService:
         Args:
             bang_image: Pinned bang Docker image (``repo:tag``). Tests pass a
                 no-op value because they short-circuit :meth:`invoke_bang`.
-            subprocess_runner: Override for :func:`subprocess.run`. Used by
-                unit tests to mock the bang invocation.
+            docker_client: Override for the :class:`docker.DockerClient`
+                used to spawn bang containers. Defaults to ``docker.from_env()``
+                which reads ``DOCKER_HOST`` (the gameserver Dockerfile +
+                compose pin this at ``unix:///var/run/docker.sock``). Tests
+                inject a :class:`unittest.mock.MagicMock` exposing the
+                ``containers.run`` → container → ``wait`` / ``logs`` chain.
             log_sink: Async callable that receives every stderr line emitted
                 by bang. The orchestrator wires this to append to
                 ``BangGenerationJob.log_text``.
         """
         self.bang_image = bang_image
-        self._run = subprocess_runner or subprocess.run
+        self._docker = docker_client or docker.from_env()
         self._log_sink = log_sink
 
     # ----- invocation -----------------------------------------------------
@@ -394,42 +403,26 @@ class BangImportService:
         config: BangConfig,
         timeout_seconds: int = 300,
     ) -> ParsedUniverse:
-        """Spawn ``docker run sw2102-bang`` for one region; parse stdout JSON.
+        """Spawn a bang container for one region; parse stdout JSON.
 
-        The image is invoked with ``--json-out`` so stdout contains exactly
-        the Universe JSON; stderr carries progress/warnings which we
-        forward to ``self._log_sink`` if set.
+        Uses the docker-py SDK to start the pinned bang image with
+        ``--json-out`` so stdout contains exactly the Universe JSON; stderr
+        carries progress/warnings which we forward to ``self._log_sink``
+        if set.
 
         Raises:
-            RuntimeError: If the subprocess exits non-zero, the JSON fails
+            RuntimeError: If the container exits non-zero, the JSON fails
                 to parse, or the resulting Universe fails the shape check
                 in :func:`_validate_universe_shape`.
         """
-        args = self._build_docker_args(config)
-        logger.info("invoke_bang: %s", args)
-        try:
-            completed = self._run(
-                args,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:  # pragma: no cover - integration path
-            raise RuntimeError(
-                f"bang timed out after {timeout_seconds}s for region "
-                f"{config.region_type}"
-            ) from exc
+        bang_args = self._build_bang_args(config)
+        logger.info("invoke_bang: image=%s args=%s", self.bang_image, bang_args)
+        stdout, stderr = self._run_bang_container(bang_args, timeout_seconds, region_type=config.region_type)
 
-        if completed.stderr:
-            self._forward_stderr(completed.stderr)
-        if completed.returncode != 0:
-            raise RuntimeError(
-                f"bang exited {completed.returncode} for region "
-                f"{config.region_type}: {completed.stderr[-2000:]}"
-            )
+        if stderr:
+            self._forward_stderr(stderr)
         try:
-            payload = json.loads(completed.stdout)
+            payload = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise RuntimeError(
                 f"bang produced invalid JSON for region "
@@ -441,22 +434,14 @@ class BangImportService:
 
     def validate_only(self, config: BangConfig) -> ValidationReport:
         """Run bang with ``--validate-only``; return stats + warnings inline."""
-        args = self._build_docker_args(config, validate_only=True)
-        logger.info("validate_only: %s", args)
-        completed = self._run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
+        bang_args = self._build_bang_args(config, validate_only=True)
+        logger.info("validate_only: image=%s args=%s", self.bang_image, bang_args)
+        stdout, stderr = self._run_bang_container(
+            bang_args, timeout_seconds=120, region_type=config.region_type,
+            allow_exit_codes=(0, 2),
         )
-        if completed.returncode not in (0, 2):
-            raise RuntimeError(
-                f"bang --validate-only exited {completed.returncode}: "
-                f"{completed.stderr[-1000:]}"
-            )
         try:
-            payload = json.loads(completed.stdout or "{}")
+            payload = json.loads(stdout or "{}")
         except json.JSONDecodeError:
             payload = {}
         return ValidationReport(
@@ -464,6 +449,85 @@ class BangImportService:
             warnings=payload.get("warnings", []),
             validation=payload.get("validation", {}),
         )
+
+    def _run_bang_container(
+        self,
+        bang_args: List[str],
+        timeout_seconds: int,
+        *,
+        region_type: str,
+        allow_exit_codes: Tuple[int, ...] = (0,),
+    ) -> Tuple[str, str]:
+        """Spawn one bang container via docker-py, return (stdout, stderr).
+
+        Replaces the prior ``subprocess.run(['docker','run',...])`` shell-out.
+        We removed ``docker-ce-cli`` from the gameserver image to drop ~16
+        critical and ~11 high CVEs that ship bundled in the CLI's Go vendor
+        tree (golang.org/x/crypto, golang.org/x/net, github.com/docker/*).
+
+        Lifecycle:
+          1. ``containers.run(image, command=bang_args, detach=True)`` —
+             returns immediately with a Container handle.
+          2. ``container.wait(timeout=N)`` blocks for exit; ``ReadTimeout``
+             surfaces on overrun.
+          3. ``container.logs(stdout=…, stderr=…)`` reads the buffered
+             output AFTER exit. (bang invocations are short; the prior
+             subprocess.run also buffered everything in capture_output mode,
+             so we are not losing real-time stderr behaviour.)
+          4. ``container.remove(force=True)`` ensures cleanup even on the
+             error paths — mirrors the prior ``--rm`` flag semantics.
+        """
+        container: Optional["DockerContainer"] = None
+        try:
+            try:
+                container = self._docker.containers.run(
+                    self.bang_image,
+                    command=bang_args,
+                    detach=True,
+                    stdout=True,
+                    stderr=True,
+                    stdin_open=True,
+                )
+            except docker_errors.ImageNotFound as exc:
+                raise RuntimeError(
+                    f"bang image not found: {self.bang_image}"
+                ) from exc
+            except docker_errors.APIError as exc:
+                raise RuntimeError(
+                    f"docker API error starting bang for {region_type}: {exc}"
+                ) from exc
+
+            try:
+                result = container.wait(timeout=timeout_seconds)
+            except ReadTimeout as exc:
+                # docker-py surfaces a requests.ReadTimeout on container.wait
+                # overrun. Kill the container so it doesn't dangle, then
+                # surface the same error shape the subprocess.TimeoutExpired
+                # path used to raise.
+                try:
+                    container.kill()
+                except Exception:  # pragma: no cover - best effort
+                    logger.warning("failed to kill timed-out bang container", exc_info=True)
+                raise RuntimeError(
+                    f"bang timed out after {timeout_seconds}s for region {region_type}"
+                ) from exc
+
+            status_code = int(result.get("StatusCode", -1))
+            stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+
+            if status_code not in allow_exit_codes:
+                raise RuntimeError(
+                    f"bang exited {status_code} for region "
+                    f"{region_type}: {stderr[-2000:]}"
+                )
+            return stdout, stderr
+        finally:
+            if container is not None:
+                try:
+                    container.remove(v=True, force=True)
+                except Exception:  # pragma: no cover - best effort cleanup
+                    logger.warning("failed to remove bang container", exc_info=True)
 
     # ----- pure translation ----------------------------------------------
 
@@ -1135,25 +1199,21 @@ class BangImportService:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _build_docker_args(
+    def _build_bang_args(
         self, config: BangConfig, *, validate_only: bool = False
     ) -> List[str]:
-        """Build the ``docker run …`` argv for one bang invocation.
+        """Build the bang CLI argv (no docker prefix).
+
+        Returned list is passed verbatim as the ``command`` kwarg to
+        ``containers.run`` — docker-py prepends the image's ENTRYPOINT
+        (bang v1.3.1+ defaults to ``node /app/dist/cli.js``).
 
         BangConfig fields are snake_case (Python convention); bang's CLI
         flags are kebab-case. Translation table lives in ``_CLI_FLAG_MAP``;
         omitted fields fall back to bang's defaults (per ADR-0069's
         "GenerationRequest is optional" contract).
         """
-        # bang v1.3.1+ ENTRYPOINT defaults to dist/cli.js so the image is
-        # callable bare. (v1.3.0 defaulted to db-writer.js and needed the
-        # --entrypoint override.)
         cmd: List[str] = [
-            "docker",
-            "run",
-            "--rm",
-            "-i",
-            self.bang_image,
             "--seed",
             str(config.seed),
             "--sectors",

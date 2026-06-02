@@ -11,11 +11,12 @@ will add an integration suite once a DB harness is in place.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any, Dict
+from unittest.mock import MagicMock
 
 import pytest
+from requests.exceptions import ReadTimeout  # noqa: F401 - used by test helpers below
 
 from src.schemas.bang_config import BangConfig
 from src.services.bang_import_service import (
@@ -60,9 +61,35 @@ def parsed_central_nexus() -> ParsedUniverse:
     return _parsed("central_nexus", FIXTURE_CENTRAL_NEXUS)
 
 
+def _fake_docker_client(stdout: str = "", stderr: str = "", exit_code: int = 0) -> MagicMock:
+    """Mock the docker-py chain used by ``BangImportService.invoke_bang`` /
+    ``validate_only`` after the docker-ce-cli → docker-py CVE refactor.
+
+    Identical pattern to ``_fake_docker`` in ``test_bang_invoke_mock.py``;
+    kept inline here to avoid cross-file test imports.
+    """
+    container = MagicMock(name="container")
+    container.wait.return_value = {"StatusCode": exit_code}
+
+    stdout_bytes = stdout.encode("utf-8") if isinstance(stdout, str) else stdout
+    stderr_bytes = stderr.encode("utf-8") if isinstance(stderr, str) else stderr
+
+    def _logs(**kw: Any) -> bytes:
+        if kw.get("stdout") and not kw.get("stderr"):
+            return stdout_bytes
+        if kw.get("stderr") and not kw.get("stdout"):
+            return stderr_bytes
+        return b""
+
+    container.logs.side_effect = _logs
+    client = MagicMock(name="docker_client")
+    client.containers.run.return_value = container
+    return client
+
+
 @pytest.fixture
 def service() -> BangImportService:
-    return BangImportService(bang_image="test-image:0")
+    return BangImportService(bang_image="test-image:0", docker_client=MagicMock(name="docker_noop"))
 
 
 # ---------------------------------------------------------------------------
@@ -494,36 +521,26 @@ class TestInvokeBangSubprocess:
         self, parsed_terran_space: ParsedUniverse
     ) -> None:
         stdout_payload = json.dumps(parsed_terran_space.raw)
+        client = _fake_docker_client(stdout=stdout_payload, exit_code=0)
 
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args, returncode=0, stdout=stdout_payload, stderr=""
-            )
-
-        svc = BangImportService(bang_image="test", subprocess_runner=fake_run)
+        svc = BangImportService(bang_image="test", docker_client=client)
         config = BangConfig(seed=42, sectors=300, region_type="terran_space")
         result = svc.invoke_bang(config)
         assert result.region_type == "terran_space"
         assert result.total_sectors == 300
 
     def test_nonzero_exit_raises(self) -> None:
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args, returncode=1, stdout="", stderr="boom"
-            )
+        client = _fake_docker_client(stdout="", stderr="boom", exit_code=1)
 
-        svc = BangImportService(bang_image="test", subprocess_runner=fake_run)
+        svc = BangImportService(bang_image="test", docker_client=client)
         config = BangConfig(seed=42, sectors=300, region_type="terran_space")
         with pytest.raises(RuntimeError, match="bang exited 1"):
             svc.invoke_bang(config)
 
     def test_invalid_json_raises(self) -> None:
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args, returncode=0, stdout="not json", stderr=""
-            )
+        client = _fake_docker_client(stdout="not json", exit_code=0)
 
-        svc = BangImportService(bang_image="test", subprocess_runner=fake_run)
+        svc = BangImportService(bang_image="test", docker_client=client)
         config = BangConfig(seed=42, sectors=300, region_type="terran_space")
         with pytest.raises(RuntimeError, match="invalid JSON"):
             svc.invoke_bang(config)
@@ -536,13 +553,9 @@ class TestInvokeBangSubprocess:
             "sectors": {},
             "warps": [],
         }
+        client = _fake_docker_client(stdout=json.dumps(bad_universe), exit_code=0)
 
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args, returncode=0, stdout=json.dumps(bad_universe), stderr=""
-            )
-
-        svc = BangImportService(bang_image="test", subprocess_runner=fake_run)
+        svc = BangImportService(bang_image="test", docker_client=client)
         config = BangConfig(seed=42, sectors=300, region_type="terran_space")
         with pytest.raises(ValueError, match="expected 300 sectors"):
             svc.invoke_bang(config)
@@ -560,13 +573,9 @@ class TestValidateOnly:
                 "validation": {"passed": True},
             }
         )
+        client = _fake_docker_client(stdout=stdout_payload, exit_code=0)
 
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args, returncode=0, stdout=stdout_payload, stderr=""
-            )
-
-        svc = BangImportService(bang_image="test", subprocess_runner=fake_run)
+        svc = BangImportService(bang_image="test", docker_client=client)
         config = BangConfig(seed=42, sectors=1000, region_type="player_owned")
         report = svc.validate_only(config)
         assert report.stats["sectors"] == 1000
@@ -574,12 +583,9 @@ class TestValidateOnly:
         assert report.validation["passed"] is True
 
     def test_exit_code_two_accepted(self) -> None:
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args, returncode=2, stdout="{}", stderr="some warnings"
-            )
+        client = _fake_docker_client(stdout="{}", stderr="some warnings", exit_code=2)
 
-        svc = BangImportService(bang_image="test", subprocess_runner=fake_run)
+        svc = BangImportService(bang_image="test", docker_client=client)
         config = BangConfig(seed=42, sectors=1000, region_type="player_owned")
         # exit code 2 is "validation warnings" — should NOT raise.
         report = svc.validate_only(config)
@@ -597,7 +603,7 @@ class TestCliFlagMapping:
 
     def test_required_flags_always_present(self, service: BangImportService) -> None:
         config = BangConfig(seed=42, sectors=1000, region_type="player_owned")
-        args = service._build_docker_args(config)  # pylint: disable=protected-access
+        args = service._build_bang_args(config)  # pylint: disable=protected-access
         assert "--seed" in args
         assert "42" in args
         assert "--sectors" in args
@@ -608,7 +614,7 @@ class TestCliFlagMapping:
 
     def test_validate_only_replaces_json_out(self, service: BangImportService) -> None:
         config = BangConfig(seed=42, sectors=1000, region_type="player_owned")
-        args = service._build_docker_args(config, validate_only=True)  # pylint: disable=protected-access
+        args = service._build_bang_args(config, validate_only=True)  # pylint: disable=protected-access
         assert "--validate-only" in args
         assert "--json-out" not in args
 
@@ -616,7 +622,7 @@ class TestCliFlagMapping:
         config = BangConfig(
             seed=42, sectors=1000, region_type="player_owned", max_warps=8
         )
-        args = service._build_docker_args(config)  # pylint: disable=protected-access
+        args = service._build_bang_args(config)  # pylint: disable=protected-access
         assert "--max-warps" in args
         idx = args.index("--max-warps")
         assert args[idx + 1] == "8"
@@ -628,12 +634,12 @@ class TestCliFlagMapping:
             region_type="player_owned",
             one_way_warp_percent=12.5,
         )
-        args = service._build_docker_args(config)  # pylint: disable=protected-access
+        args = service._build_bang_args(config)  # pylint: disable=protected-access
         assert "--one-way-warps" in args
 
     def test_unset_optionals_not_emitted(self, service: BangImportService) -> None:
         config = BangConfig(seed=42, sectors=1000, region_type="player_owned")
-        args = service._build_docker_args(config)  # pylint: disable=protected-access
+        args = service._build_bang_args(config)  # pylint: disable=protected-access
         assert "--max-warps" not in args
         assert "--port-percent" not in args
         assert "--planet-percent" not in args

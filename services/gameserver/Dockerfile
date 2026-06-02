@@ -20,20 +20,14 @@ ENV BANG_VERSION=${BANG_VERSION}
 
 WORKDIR /app
 
-# Docker CLI is required at runtime — gameserver spawns bang sidecar
-# containers via `docker run` (translator path). tini is PID 1 so signals
-# reach Python and bang subprocesses are reaped cleanly on `docker stop`.
-RUN apt-get update && apt-get install -y \
-    apt-transport-https \
+# tini is PID 1 so signals reach Python and bang subprocesses are reaped
+# cleanly on `docker stop`. The bang sidecar is spawned via the docker-py
+# SDK talking to the mounted /var/run/docker.sock — no docker-ce-cli
+# binary is installed in this image (the apt package bundled unpatched
+# golang.org/x/{crypto,net} + github.com/docker/* Go vendor CVEs).
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    curl \
-    gnupg \
-    lsb-release \
     tini \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
-    && apt-get update \
-    && apt-get install -y docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir poetry
