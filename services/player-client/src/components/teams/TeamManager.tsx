@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { gameAPI } from '../../services/api';
 import type { Team, TeamMember, TeamPermissions } from '../../types/team';
+import GameLayout from '../layouts/GameLayout';
 import './team-manager.css';
 
 interface TeamManagerProps {
@@ -100,18 +101,21 @@ export const TeamManager: React.FC<TeamManagerProps> = ({ playerId }) => {
 
   if (!team) {
     return (
-      <div className="team-manager no-team">
-        <h2>No Team</h2>
-        <p>You are not currently a member of any team.</p>
-        <div className="team-actions">
-          <button className="create-team-btn">Create Team</button>
-          <button className="browse-teams-btn">Browse Teams</button>
+      <GameLayout>
+        <div className="team-manager no-team">
+          <h2>No Team</h2>
+          <p>You are not currently a member of any team.</p>
+          <div className="team-actions">
+            <button className="create-team-btn">Create Team</button>
+            <button className="browse-teams-btn">Browse Teams</button>
+          </div>
         </div>
-      </div>
+      </GameLayout>
     );
   }
 
   return (
+    <GameLayout>
     <div className="team-manager">
       <div className="team-header">
         <div className="team-identity">
@@ -394,5 +398,6 @@ export const TeamManager: React.FC<TeamManagerProps> = ({ playerId }) => {
         )}
       </div>
     </div>
+    </GameLayout>
   );
 };

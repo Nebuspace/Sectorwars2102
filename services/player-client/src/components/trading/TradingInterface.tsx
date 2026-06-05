@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
+import GameLayout from '../layouts/GameLayout';
 import './trading-interface.css';
 
 interface Resource {
@@ -143,16 +144,18 @@ const TradingInterface: React.FC = () => {
   // Show loading state if player state isn't loaded yet
   if (!playerState) {
     return (
-      <div className="trading-interface">
-        <div className="trading-header">
-          <h2>Trading Interface</h2>
+      <GameLayout>
+        <div className="trading-interface">
+          <div className="trading-header">
+            <h2>Trading Interface</h2>
+          </div>
+          <div className="not-docked-message">
+            <div className="message-icon">⏳</div>
+            <h3>Loading...</h3>
+            <p>Initializing trading systems...</p>
+          </div>
         </div>
-        <div className="not-docked-message">
-          <div className="message-icon">⏳</div>
-          <h3>Loading...</h3>
-          <p>Initializing trading systems...</p>
-        </div>
-      </div>
+      </GameLayout>
     );
   }
 
@@ -286,6 +289,7 @@ const TradingInterface: React.FC = () => {
 
   if (!playerState?.is_docked) {
     return (
+      <GameLayout>
       <div className="trading-interface">
         <div className="trading-header">
           <h2>Trading Interface</h2>
@@ -319,10 +323,12 @@ const TradingInterface: React.FC = () => {
           )}
         </div>
       </div>
+      </GameLayout>
     );
   }
 
   return (
+    <GameLayout>
     <div className="trading-interface">
       <div className="trading-header">
         <h2>Trading Interface</h2>
@@ -589,6 +595,7 @@ const TradingInterface: React.FC = () => {
         document.body
       )}
     </div>
+    </GameLayout>
   );
 };
 

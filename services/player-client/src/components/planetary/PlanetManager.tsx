@@ -7,6 +7,7 @@ import { DefenseConfiguration } from './DefenseConfiguration';
 import { GenesisDeployment } from './GenesisDeployment';
 import { ColonySpecialization as ColonySpecializationComponent } from './ColonySpecialization';
 import { SiegeStatusMonitor } from './SiegeStatusMonitor';
+import GameLayout from '../layouts/GameLayout';
 import './planet-manager.css';
 
 export const PlanetManager: React.FC = () => {
@@ -85,28 +86,33 @@ export const PlanetManager: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="planet-manager loading">
-        <div className="loading-spinner">Loading planetary data...</div>
-      </div>
+      <GameLayout>
+        <div className="planet-manager loading">
+          <div className="loading-spinner">Loading planetary data...</div>
+        </div>
+      </GameLayout>
     );
   }
 
   if (error) {
     return (
-      <div className="planet-manager error">
-        <div className="error-message">
-          <span className="error-icon">⚠️</span>
-          {error}
-          <button onClick={handleRefresh} className="retry-button">
-            Retry
-          </button>
+      <GameLayout>
+        <div className="planet-manager error">
+          <div className="error-message">
+            <span className="error-icon">⚠️</span>
+            {error}
+            <button onClick={handleRefresh} className="retry-button">
+              Retry
+            </button>
+          </div>
         </div>
-      </div>
+      </GameLayout>
     );
   }
 
   if (planets.length === 0) {
     return (
+      <GameLayout>
       <div className="planet-manager empty">
         <div className="empty-state">
           <h2>No Planets Owned</h2>
@@ -133,10 +139,12 @@ export const PlanetManager: React.FC = () => {
           </div>
         )}
       </div>
+      </GameLayout>
     );
   }
 
   return (
+    <GameLayout>
     <div className="planet-manager">
       {/* Planet List Sidebar */}
       <div className="planet-list">
@@ -521,5 +529,6 @@ export const PlanetManager: React.FC = () => {
         </div>
       )}
     </div>
+    </GameLayout>
   );
 };

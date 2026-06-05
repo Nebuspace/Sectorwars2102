@@ -10,6 +10,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { gameAPI } from '../../services/api';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
+import GameLayout from '../layouts/GameLayout';
 import './combat-interface.css';
 
 // Define types locally since we're removing mocks
@@ -71,6 +72,12 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   onCombatEnd,
   onClose
 }) => {
+  // Wrap in GameLayout when standalone (no onClose prop = used as a route).
+  // When embedded as a modal (onClose provided), render bare so the parent's
+  // shell isn't duplicated inside the modal.
+  const isStandalone = !onClose;
+  const Wrapper = isStandalone ? GameLayout : React.Fragment;
+
   const { playerState, currentShip, refreshPlayerState } = useGame();
   
   // Combat state
@@ -208,18 +215,21 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   
   if (!target) {
     return (
-      <div className="combat-interface no-target">
-        <p>No combat target selected</p>
-        {onClose && (
-          <button className="cockpit-btn secondary" onClick={onClose}>
-            Close
-          </button>
-        )}
-      </div>
+      <Wrapper>
+        <div className="combat-interface no-target">
+          <p>No combat target selected</p>
+          {onClose && (
+            <button className="cockpit-btn secondary" onClick={onClose}>
+              Close
+            </button>
+          )}
+        </div>
+      </Wrapper>
     );
   }
-  
+
   return (
+    <Wrapper>
     <div className={`combat-interface ${animationState}`}>
       <div className="combat-header">
         <h2>COMBAT ENGAGEMENT</h2>
@@ -374,5 +384,6 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         </div>
       )}
     </div>
+    </Wrapper>
   );
 };

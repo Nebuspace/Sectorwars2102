@@ -10,6 +10,7 @@ import { useGame } from '../../contexts/GameContext';
 import { Ship } from '../../types/game';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import { formatShipType } from '../../utils/formatters';
+import GameLayout from '../layouts/GameLayout';
 import './ship-selector.css';
 
 interface ShipSelectorProps {
@@ -32,9 +33,11 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
   // Show empty state if player has no ships
   if (gameShips.length === 0) {
     return (
-      <div className="ship-selector-empty">
-        <p>No ships available. Visit a shipyard to purchase your first ship.</p>
-      </div>
+      <GameLayout>
+        <div className="ship-selector-empty">
+          <p>No ships available. Visit a shipyard to purchase your first ship.</p>
+        </div>
+      </GameLayout>
     );
   }
 
@@ -139,7 +142,8 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
   };
   
   return (
-    <div className="ship-selector">
+    <GameLayout>
+      <div className="ship-selector">
       <div className="selector-header">
         <h2>SHIP HANGAR</h2>
         {onClose && (
@@ -320,5 +324,6 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
         )}
       </div>
     </div>
+    </GameLayout>
   );
 };
