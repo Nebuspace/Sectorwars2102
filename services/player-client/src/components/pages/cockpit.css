@@ -155,7 +155,11 @@
 .cockpit-windshield {
   position: relative;
   width: 100%;
-  height: 40%;
+  /* Use flex basis so the windshield is sized as a fixed share of the
+     cockpit-mode column, and `flex-shrink: 0` so it doesn't compress
+     when the console fills the remaining space below. */
+  flex: 0 0 40%;
+  min-height: 0;
   overflow: hidden;
   background: #000;
 }
@@ -449,7 +453,15 @@
    ============================================ */
 
 .cockpit-console {
-  height: 50%;
+  /* Fill whatever vertical space the windshield (flex: 0 0 40%) leaves.
+     Using `flex: 1 1 0` + `min-height: 0` is the canonical pattern for a
+     flex child that hosts an inner grid: without `min-height: 0` the
+     grid's intrinsic row height (driven by content) pushes the console
+     past its parent, so the bottom monitor edges clip beyond the
+     viewport. With it, the grid is forced into the parent's leftover
+     height and the row's `overflow-y: auto` actually engages. */
+  flex: 1 1 0;
+  min-height: 0;
   background: linear-gradient(
     180deg,
     #1a1d24 0%,
@@ -459,6 +471,9 @@
   border-top: 3px solid #2a2f3a;
   display: grid;
   grid-template-columns: 460px 1fr 340px;
+  /* Single explicit row so monitors fill the console height instead of
+     auto-sizing to their content (which is what was overflowing). */
+  grid-template-rows: 1fr;
   gap: 0;
   padding: 0.5rem;
   box-shadow:
@@ -576,7 +591,12 @@
 .monitor-screen {
   position: relative;
   width: 100%;
-  height: 100%;
+  /* `flex: 1 1 0` + `min-height: 0` so this inner panel takes whatever
+     the console-monitor (a flex column) gives it without growing past
+     the parent. `height: 100%` alone is flaky when the parent is itself
+     a flex item with a `min-height: 0` constraint. */
+  flex: 1 1 0;
+  min-height: 0;
   background: rgba(0, 5, 10, 0.98);
   border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 4px;
