@@ -241,6 +241,13 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
         ref={svgRef}
         className="navigation-map-svg"
         viewBox={`0 0 ${width} ${height}`}
+        /* Anchor the scaled viewBox content to the TOP-center of the
+           SVG element. The default `xMidYMid meet` centers the content
+           vertically — so when the parent container is taller than
+           viewBox aspect, a visible band of empty space appears ABOVE
+           the graph. Anchoring to `xMidYMin` puts any remaining empty
+           space below the graph instead. */
+        preserveAspectRatio="xMidYMin meet"
         width="100%"
         height="100%"
       >
