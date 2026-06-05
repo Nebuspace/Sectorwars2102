@@ -50,49 +50,40 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               <span className="title-year">2102</span>
             </h1>
           </div>
-          <div className="game-header-center">
-            <div className="status-display">
-              <div className="status-indicator online"></div>
-              <span>SYSTEMS ONLINE</span>
+          <div className="header-commander-bar">
+            <div className="header-commander-name">
+              {user?.username || '—'}
+              {!playerState && !isLoading && (
+                <button
+                  onClick={refreshPlayerState}
+                  className="refresh-btn header-refresh-btn"
+                  title="Refresh player state"
+                  aria-label="Refresh"
+                >
+                  ⟳
+                </button>
+              )}
+            </div>
+            <div className="header-stat">
+              <span className="header-stat-label">CRED</span>
+              <span className="data-readout credits">{playerState?.credits?.toLocaleString() || '0'}</span>
+            </div>
+            <div className="header-stat">
+              <span className="header-stat-label">TURN</span>
+              <span className="data-readout turns">{playerState?.turns?.toLocaleString() || '0'}</span>
+            </div>
+            <div className="header-stat">
+              <span className="header-stat-label">DRONE</span>
+              <span className="data-readout">{playerState?.defense_drones || '0'}</span>
             </div>
           </div>
           <div className="game-header-right">
             <UserProfile />
           </div>
         </header>
-      
+
         <div className="game-container">
           <aside className={`game-sidebar hud-panel ${sidebarOpen ? 'open' : 'closed'}`}>
-            <div className="cockpit-card player-info">
-              <div className="cockpit-card-header">
-                <h3 className="cockpit-card-title">COMMANDER</h3>
-                {!playerState && !isLoading && (
-                  <button 
-                    onClick={refreshPlayerState}
-                    className="refresh-btn"
-                    style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem', marginLeft: 'auto' }}
-                  >
-                    Refresh
-                  </button>
-                )}
-              </div>
-              <div className="commander-name">{user?.username}</div>
-              <div className="player-stats">
-                <div className="stat-item">
-                  <span className="stat-label">CREDITS</span>
-                  <span className="data-readout credits">{playerState?.credits?.toLocaleString() || '0'}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">TURNS</span>
-                  <span className="data-readout turns">{playerState?.turns?.toLocaleString() || '0'}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">DRONES</span>
-                  <span className="data-readout">{playerState?.defense_drones || '0'}</span>
-                </div>
-              </div>
-            </div>
-          
             <div className="cockpit-card ship-info">
               <div className="cockpit-card-header">
                 <h3 className="cockpit-card-title">VESSEL STATUS</h3>

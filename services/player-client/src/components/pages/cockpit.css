@@ -449,7 +449,7 @@
    ============================================ */
 
 .cockpit-console {
-  height: 60%;
+  height: 50%;
   background: linear-gradient(
     180deg,
     #1a1d24 0%,
@@ -460,7 +460,7 @@
   display: grid;
   grid-template-columns: 460px 1fr 340px;
   gap: 0;
-  padding: 1rem;
+  padding: 0.5rem;
   box-shadow:
     inset 0 8px 12px rgba(0, 0, 0, 0.6),
     0 -4px 20px rgba(0, 0, 0, 0.8);
@@ -500,9 +500,12 @@
 .console-monitor {
   position: relative;
   background: transparent;
-  padding: 0.75rem;
-  max-height: 85%;
+  padding: 0.4rem;
+  max-height: 100%;
+  min-height: 0;  /* allow grid item to shrink so overflow works */
   border-right: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
 }
 
 .console-monitor:last-child {
@@ -588,8 +591,8 @@
 /* HUD Header - LED lines with label on screen */
 .screen-hud-header {
   position: relative;
-  padding: 0.5rem 0.75rem 0.5rem 0.5rem;
-  font-size: 0.65rem;
+  padding: 0.3rem 0.6rem 0.3rem 0.5rem;
+  font-size: 0.6rem;
   font-weight: 700;
   letter-spacing: 0.2em;
   color: rgba(0, 217, 255, 1);
@@ -610,8 +613,9 @@
 /* HUD Content - displayed area */
 .screen-hud-content {
   flex: 1;
-  padding: 0.75rem;
-  margin: 0 0.5rem 0.5rem 0.5rem;
+  min-height: 0;  /* allow overflow-y to clip + scroll within available space */
+  padding: 0.4rem 0.5rem;
+  margin: 0 0.5rem 0.4rem 0.5rem;
   overflow-y: auto;
   overflow-x: hidden;
   border-left: 2px solid rgba(0, 217, 255, 0.5);
