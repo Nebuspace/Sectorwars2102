@@ -801,14 +801,22 @@
 }
 
 @media (max-width: 1024px) {
+  /* On narrower viewports the three monitors stack vertically (1
+     column). Keep the same flex-basis pattern as the desktop rule so
+     the cockpit fits the viewport (the 50vh / 50vh values that lived
+     here previously summed to 100vh and ignored the 80px header,
+     pushing the bottom monitor past the screen edge).
+
+     The grid rows use minmax(0, 1fr) so each monitor shrinks
+     correctly inside the flex-constrained console; without min-track-
+     size 0, the rows default to min-content and overflow again. */
   .cockpit-windshield {
-    height: 50vh;
+    flex: 0 0 35%;
   }
 
   .cockpit-console {
-    height: 50vh;
     grid-template-columns: 1fr;
-    grid-template-rows: 300px 1fr 300px;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.5rem;
   }
 }
