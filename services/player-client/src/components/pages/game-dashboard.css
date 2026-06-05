@@ -5,12 +5,21 @@
   flex-direction: column;
   gap: 0.75rem;
   height: 100%;
-  min-height: 100vh;
+  /* `min-height: 100vh` was forcing the dashboard to be at least the
+     full viewport tall while its parent (main-viewport) is only
+     100vh - 80px (the game header). That delta pushed the cockpit
+     console exactly the header's height past the viewport bottom and
+     clipped the bottom row of monitor content. Now we let height
+     follow the parent. */
+  min-height: 0;
   width: 100%;
   padding: 0.75rem;
   box-sizing: border-box;
   animation: hud-boot 1s ease-out;
   background: transparent;
+  /* Cockpit-mode (which adds the .cockpit-mode class to this same
+     element) sets `overflow: hidden`, so the auto here is harmless;
+     it stays for the non-cockpit dashboard variants. */
   overflow-y: auto;
 }
 
