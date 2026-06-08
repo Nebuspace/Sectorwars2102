@@ -13,13 +13,13 @@ python = "^3.11"
 # `docker-ce-cli` apt install in the Dockerfile, which bundled
 # unpatched golang.org/x/{crypto,net} CVEs.
 docker = "^7.1"
-fastapi = ">=0.115,<0.126"
+fastapi = ">=0.115,<0.137"
 # Explicit floor: starlette <0.49.1 has an O(n²) DoS via Range-header
 # merging in FileResponse (GHSA-2c2j-9gv5-cj73) and a separate multipart
 # DoS (GHSA-f96h-pmfr-66vw). FastAPI pulls starlette transitively, so we
 # pin the floor here to make sure poetry picks a patched version.
 starlette = ">=0.49.1,<0.50"
-uvicorn = {extras = ["standard"], version = ">=0.23.2,<0.49.0"}
+uvicorn = {extras = ["standard"], version = ">=0.23.2,<0.50.0"}
 websockets = ">=11.0.3,<17.0.0"
 sqlalchemy = "^2.0.20"
 psycopg2-binary = "^2.9.7"
@@ -42,7 +42,7 @@ prophet = "^1.1.4"
 pandas = "^2.0.3"
 numpy = ">=1.24.3,<3.0.0"
 scipy = "^1.11.2"
-anthropic = ">=0.18.1,<0.106.0"
+anthropic = ">=0.18.1,<0.108.0"
 openai = ">=1.12,<3.0"
 pyotp = "^2.9.0"
 qrcode = {extras = ["pil"], version = ">=7.4.2,<9.0.0"}
@@ -55,7 +55,7 @@ black = "^26.3.0"
 isort = ">=5.12,<9.0"
 flake8 = ">=6.1,<8.0"
 mypy = ">=1.5.1,<3.0.0"
-ruff = ">=0.0.287,<0.15.16"
+ruff = ">=0.0.287,<0.15.17"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
