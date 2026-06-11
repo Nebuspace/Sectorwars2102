@@ -656,7 +656,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
             <div className="port-details">
               <span>Type: {marketInfo.port.type}</span>
               {marketInfo.port.faction && <span>Faction: {marketInfo.port.faction}</span>}
-              <span>Tax Rate: {((marketInfo.port.tax_rate || 0.1) * 100).toFixed(1)}%</span>
+              {/* Render the server's effective tax rate verbatim — 0 means
+                  genuinely untaxed (unowned port); `|| 0.1` used to fabricate
+                  a 10% rate out of an honest zero. */}
+              <span>Tax Rate: {((marketInfo.port.tax_rate ?? 0) * 100).toFixed(1)}%</span>
             </div>
 
             <div className="player-status-bar">

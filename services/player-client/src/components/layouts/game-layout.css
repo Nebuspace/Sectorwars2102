@@ -230,10 +230,45 @@
   box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
   position: relative;
   z-index: 10;
+  /* Firefox scrollbar theming (webkit equivalent below) */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 217, 255, 0.3) rgba(0, 0, 0, 0.5);
 }
 
 .game-sidebar.open {
   width: 320px;
+  /* The sidebar element also carries .hud-panel (cockpit-components.css),
+     which sets `overflow: hidden` and — being imported AFTER this file in
+     GameLayout.tsx — wins the single-class cascade tie against the
+     `overflow-y: auto` above. Computed overflow-y was therefore hidden:
+     at 1440x900 the sidebar content (~935px: vessel status + genesis bay
+     + nav coords + SHIP SYSTEMS nav + logout) overflowed its ~643px box
+     and everything below 🚀 COMMAND was unreachable, while the page
+     itself must never scroll (cockpit invariant). The two-class selector
+     here outranks .hud-panel, restoring internal scrolling for any
+     number of nav items. */
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Sidebar scrollbar — same retro-CRT idiom as .monitor-screen
+   (cockpit.css) and .venues-grid (spacedock.css). */
+.game-sidebar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.game-sidebar::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+}
+
+.game-sidebar::-webkit-scrollbar-thumb {
+  background: rgba(0, 217, 255, 0.3);
+  border-radius: 4px;
+}
+
+.game-sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 217, 255, 0.5);
 }
 
 .game-sidebar.closed {
