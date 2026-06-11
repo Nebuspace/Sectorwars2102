@@ -136,21 +136,23 @@ const EnhancedAIAssistant: React.FC<EnhancedAIAssistantProps> = ({
     if (typeof window !== 'undefined') {
       const protocol = window.location.protocol;
       const hostname = window.location.hostname;
-      
+
       // Detect GitHub Codespaces
       if (hostname.includes('app.github.dev')) {
         return `${protocol}//${hostname.replace('-3000', '-8080')}`;
       }
-      
+
       // Detect Replit
       if (hostname.includes('repl.co')) {
         return `${protocol}//${hostname}:8080`;
       }
-      
-      // Local development
-      return 'http://localhost:8080';
+
+      // Same-origin default: the Vite proxy / nginx gateway route /api to
+      // the gameserver in every tier. Hardcoding localhost:8080 made ARIA
+      // unreachable from any browser not on the dev box.
+      return window.location.origin;
     }
-    return 'http://localhost:8080';
+    return '';
   }, []);
 
   // Auto-scroll to bottom of messages

@@ -53,14 +53,16 @@ function MainApp() {
     { id: 5, type: 'join', message: '18-rank military progression system' },
   ];
   
-  // Simple API URL - use env var or default to localhost:8080
+  // API URL: explicit env override, else same-origin (the Vite proxy and
+  // nginx gateway both route /api to the gameserver in every tier, so the
+  // page origin always works — localhost:8080 only worked on the dev box).
   const getApiUrl = () => {
-    // In GitHub Codespaces, use the Vite proxy (current origin) instead of localhost
+    // In GitHub Codespaces, always use the Vite proxy (current origin)
     const isCodespaces = window.location.hostname.includes('.app.github.dev');
     if (isCodespaces) {
-      return window.location.origin; // Use Vite proxy via current origin
+      return window.location.origin;
     }
-    return import.meta.env.VITE_API_URL || 'http://localhost:8080';
+    return import.meta.env.VITE_API_URL || window.location.origin;
   };
 
   useEffect(() => {

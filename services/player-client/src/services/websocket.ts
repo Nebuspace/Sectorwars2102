@@ -121,13 +121,14 @@ class WebSocketService {
       return `${protocol}//${gameserverHost}/api/v1/ws/connect`;
     }
     
-    // Use VITE_API_URL if set, otherwise fall back to same-host with port 8080
+    // Use VITE_API_URL if set, otherwise same-origin — the Vite proxy
+    // (ws: true) and the nginx gateway both forward /api/v1/ws upstream
     const apiUrl = import.meta.env.VITE_API_URL;
     if (apiUrl) {
       const wsUrl = apiUrl.replace(/^http/, 'ws');
       return `${wsUrl}/api/v1/ws/connect`;
     }
-    return `ws://${window.location.hostname}:8080/api/v1/ws/connect`;
+    return `${protocol}//${window.location.host}/api/v1/ws/connect`;
   }
 
   connect(token?: string): void {
