@@ -1,0 +1,144 @@
+/* Cockpit-themed Ranking Page — SERVICE RECORD console */
+
+.ranking-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 0;
+  padding: 0.75rem;
+  box-sizing: border-box;
+  animation: hud-boot 1s ease-out;
+  background: transparent;
+  overflow-y: auto;
+  /* Cockpit scrollbar idiom — mirrors .game-sidebar (game-layout.css). */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 217, 255, 0.3) rgba(0, 0, 0, 0.5);
+}
+
+.ranking-page::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ranking-page::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+}
+
+.ranking-page::-webkit-scrollbar-thumb {
+  background: rgba(0, 217, 255, 0.3);
+  border-radius: 4px;
+}
+
+.ranking-page::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 217, 255, 0.5);
+}
+
+/* Page Header */
+.ranking-page-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm, 0.5rem);
+  flex-wrap: wrap;
+  padding: 1rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ranking-page-title {
+  margin: 0;
+  font-family: var(--font-primary);
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--color-text, #e2e8f0);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ranking-page-title .title-icon {
+  font-size: 1.2rem;
+}
+
+.ranking-page-subtitle {
+  font-family: var(--font-monospace, monospace);
+  font-size: 0.7rem;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--color-primary, #00d9ff);
+  opacity: 0.8;
+}
+
+/* Two-column console grid */
+.ranking-page-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+  width: 100%;
+}
+
+.ranking-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+/* Panel chrome — mirrors the sidebar cockpit-card header idiom */
+.ranking-panel {
+  padding: 0.75rem;
+  box-sizing: border-box;
+}
+
+.ranking-panel-header {
+  border-bottom: 1px solid var(--color-border, rgba(0, 217, 255, 0.2));
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.4rem;
+}
+
+.ranking-panel-title {
+  margin: 0;
+  font-family: var(--font-primary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--color-primary, #00d9ff);
+}
+
+/* The ranking components (ranking.css) carry their own generic card
+   chrome; inside a .ranking-panel hud-panel that doubles up as
+   card-inside-card. Strip it — the panel provides the chrome. */
+.ranking-panel .rank-display,
+.ranking-panel .rank-progress,
+.ranking-panel .medal-showcase,
+.ranking-panel .leaderboard {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+
+/* Panel headers already title each section; hide only the duplicated
+   inner headings (the count/total spans sharing those rows stay). */
+.ranking-panel .leaderboard-header h3,
+.ranking-panel .medal-header h3,
+.ranking-panel .rank-progress-header h3 {
+  display: none;
+}
+
+/* .hud-panel's backdrop-filter makes it the containing block for
+   position:fixed descendants, trapping the medal hover tooltip. */
+.ranking-panel.hud-panel {
+  backdrop-filter: none;
+}
+
+/* Single column on narrow viewports */
+@media (max-width: 1024px) {
+  .ranking-page-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

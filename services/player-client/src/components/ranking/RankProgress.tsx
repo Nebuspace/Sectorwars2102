@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { rankingAPI } from '../../services/api';
+import { TIER_COLORS } from './RankDisplay';
 import './ranking.css';
 
 interface RankRequirement {
@@ -31,15 +32,6 @@ interface RankProgressData {
   };
   requirements: RankRequirement[];
 }
-
-const TIER_COLORS: Record<string, string> = {
-  Enlisted: '#888888',
-  'Non-Commissioned Officer': '#4a9eff',
-  Officer: '#ff44ff',
-  'Senior Officer': '#ffaa44',
-  Flag: '#ff4444',
-  Supreme: '#00ffff',
-};
 
 const RankProgress: React.FC = () => {
   const [data, setData] = useState<RankProgressData | null>(null);
@@ -151,7 +143,7 @@ const RankProgress: React.FC = () => {
           </div>
           <div className="stat-item">
             <span className="stat-value">{data.stats.exploration_score}</span>
-            <span className="stat-label">Exploration</span>
+            <span className="stat-label">ARIA Activity</span>
           </div>
         </div>
       </div>

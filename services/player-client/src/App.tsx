@@ -17,6 +17,7 @@ import UserProfile from './components/auth/UserProfile'
 import OAuthCallback from './components/auth/OAuthCallback'
 import GameDashboard from './components/pages/GameDashboard'
 import GalaxyMap from './components/pages/GalaxyMap'
+import RankingPage from './components/pages/RankingPage'
 import DebugPage from './components/pages/DebugPage'
 import TestAuthPage from './components/pages/TestAuthPage'
 import { FirstLoginContainer } from './components/first-login'
@@ -647,6 +648,11 @@ function App() {
               <Route path="/game/trading" element={
                 <ProtectedRoute>
                   <TradingInterface />
+                </ProtectedRoute>
+              } />
+              <Route path="/game/ranking" element={
+                <ProtectedRoute>
+                  <RankingPage />
                 </ProtectedRoute>
               } />
               <Route path="*" element={<MainApp />} />

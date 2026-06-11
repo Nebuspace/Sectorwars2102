@@ -216,6 +216,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
                 <li><Link to="/game/planets" className="nav-link cockpit-btn">🪐 COLONIES</Link></li>
                 <li><Link to="/game/combat" className="nav-link cockpit-btn">⚔️ WEAPONS</Link></li>
                 <li><Link to="/game/team" className="nav-link cockpit-btn">👥 CREW</Link></li>
+                <li><Link to="/game/ranking" className="nav-link cockpit-btn">🎖️ SERVICE RECORD</Link></li>
               </ul>
               <div className="nav-footer">
                 <LogoutButton className="nav-link cockpit-btn logout-btn" />

@@ -23,13 +23,13 @@ interface RankInfo {
   is_max_rank: boolean;
 }
 
-const TIER_COLORS: Record<string, string> = {
+/** Keys match the rank tiers the backend emits (RANK_DEFINITIONS). */
+export const TIER_COLORS: Record<string, string> = {
   Enlisted: '#888888',
-  'Non-Commissioned Officer': '#4a9eff',
+  NCO: '#4a9eff',
+  Warrant: '#ffaa44',
   Officer: '#ff44ff',
-  'Senior Officer': '#ffaa44',
   Flag: '#ff4444',
-  Supreme: '#00ffff',
 };
 
 const RankDisplay: React.FC = () => {

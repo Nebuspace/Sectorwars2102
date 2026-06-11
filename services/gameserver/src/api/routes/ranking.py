@@ -265,32 +265,10 @@ async def get_public_leaderboard(
             ))
             pos += 1
 
-        # Find requesting player's combat position
-        if not any(e.player_id == str(player.id) for e in entries):
-            # Count this player's victories
-            player_wins_as_attacker = (
-                db.query(sa_func.count(CombatLog.id))
-                .filter(
-                    CombatLog.attacker_id == player.id,
-                    CombatLog.outcome == "attacker_win",
-                )
-                .scalar() or 0
-            )
-            player_wins_as_defender = (
-                db.query(sa_func.count(CombatLog.id))
-                .filter(
-                    CombatLog.defender_id == player.id,
-                    CombatLog.outcome == "defender_win",
-                )
-                .scalar() or 0
-            )
-            player_wins = player_wins_as_attacker + player_wins_as_defender
-
-            # Count players with more wins (approximate position)
-            higher_count = sum(1 for e in entries if e.score > player_wins)
-            # If player not in top N, position is at least limit+1
-            player_position = higher_count + 1 if player_wins > 0 else total_players
-        else:
+        # Find requesting player's combat position. Outside the visible
+        # top-N we'd need a full aggregate scan to know the real position,
+        # so leave it as None rather than fabricate one.
+        if any(e.player_id == str(player.id) for e in entries):
             player_position = next(
                 e.position for e in entries if e.player_id == str(player.id)
             )
@@ -336,16 +314,10 @@ async def get_public_leaderboard(
             ))
             pos += 1
 
-        # Find requesting player's trading position
-        if not any(e.player_id == str(player.id) for e in entries):
-            player_volume = (
-                db.query(sa_func.sum(MarketTransaction.total_value))
-                .filter(MarketTransaction.player_id == player.id)
-                .scalar() or 0
-            )
-            higher_count = sum(1 for e in entries if e.score > int(player_volume))
-            player_position = higher_count + 1 if player_volume > 0 else total_players
-        else:
+        # Find requesting player's trading position. Outside the visible
+        # top-N we'd need a full aggregate scan to know the real position,
+        # so leave it as None rather than fabricate one.
+        if any(e.player_id == str(player.id) for e in entries):
             player_position = next(
                 e.position for e in entries if e.player_id == str(player.id)
             )
@@ -459,11 +431,14 @@ async def get_rank_progress(
     requirements: List[RankRequirement] = []
     next_rank_points = rank_info.get("next_rank_points_required")
 
+    # Informational: promotion happens automatically when the threshold is
+    # crossed, so this can only read "met" at max rank — never render it as
+    # a permanently failed requirement.
     requirements.append(RankRequirement(
         name="Rank Points",
         current=rank_info["rank_points"],
         required=next_rank_points,
-        met=rank_info["is_max_rank"] or (rank_info["rank_points"] >= (next_rank_points or 0)),
+        met=rank_info["is_max_rank"],
     ))
     requirements.append(RankRequirement(
         name="Combat Victories",
@@ -541,9 +516,14 @@ async def get_player_medals(
     medal_service = MedalService(db)
     result = medal_service.get_player_medals(player.id)
     if not result.get("success"):
+        detail = result.get("error") or result.get("message") or "Failed to get medals"
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("message", "Failed to get medals"),
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+                if detail == "Player not found"
+                else status.HTTP_400_BAD_REQUEST
+            ),
+            detail=detail,
         )
     # Project to a known-safe subset so any exception detail / stack-trace the
     # service may have stuffed into the dict can't reach the client
@@ -585,7 +565,7 @@ async def get_player_reputation(
 # ------------------------------------------------------------------
 
 class PlaceBountyRequest(BaseModel):
-    target_id: str
+    target_id: uuid.UUID
     amount: int = Field(..., gt=0, le=1000000, description="Bounty amount (1 to 1,000,000 credits)")
 
 
@@ -598,7 +578,7 @@ async def place_bounty(
     """Place a bounty on another player. Costs amount + 10% fee."""
     bounty_service = BountyService(db)
     result = bounty_service.place_bounty(
-        player.id, uuid.UUID(request.target_id), request.amount
+        player.id, request.target_id, request.amount
     )
     if not result.get("success"):
         raise HTTPException(
@@ -611,13 +591,13 @@ async def place_bounty(
 
 @router.get("/bounties/target/{player_id}")
 async def get_bounties_on_player(
-    player_id: str,
+    player_id: uuid.UUID,
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
     """Get all bounties on a specific player."""
     bounty_service = BountyService(db)
-    result = bounty_service.get_bounties_on_player(uuid.UUID(player_id))
+    result = bounty_service.get_bounties_on_player(player_id)
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

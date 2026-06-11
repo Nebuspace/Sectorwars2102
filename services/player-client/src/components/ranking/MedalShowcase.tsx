@@ -17,8 +17,6 @@ interface Medal {
 interface MedalData {
   earned: Medal[];
   available: Medal[];
-  total_earned: number;
-  total_available: number;
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -108,7 +106,7 @@ const MedalShowcase: React.FC = () => {
       <div className="medal-header">
         <h3>Medals</h3>
         <span className="medal-count">
-          {medalData.total_earned} / {medalData.total_earned + medalData.total_available}
+          {medalData.earned.length} / {medalData.earned.length + medalData.available.length}
         </span>
       </div>
 
