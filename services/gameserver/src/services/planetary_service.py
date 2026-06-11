@@ -7,7 +7,7 @@ building construction, defenses, and sieges.
 
 from typing import Dict, Any, Optional, List
 from uuid import UUID, uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 import logging
@@ -45,6 +45,40 @@ SHIELD_GENERATOR_LEVELS = {
     9: {"name": "Quantum Shield", "strength": 65000, "regen_per_hour": 6500, "cost": 2000000},
     10: {"name": "Impervious Shield", "strength": 75000, "regen_per_hour": 7500, "cost": 3000000},
 }
+
+# Canon daily colonist growth (FEATURES/planets/colonization.md "Population
+# growth"): colonist_rate = colonists × 0.01 × (habitability_score / 100),
+# i.e. base growth = 1% per day, scaled linearly by habitability.
+DAILY_GROWTH_BASE = 0.01
+SECONDS_PER_DAY = 86400.0
+
+
+def max_colonists_for(citadel_level: int) -> int:
+    """Citadel-tier workforce ceiling per ADR-0035.
+
+    "`max_colonists` — citadel-tier workforce cap. Driven by citadel level,
+    with the per-tier values defined by `citadel_service.CITADEL_LEVELS`:
+    L1 Outpost = 1,000, L2 = 5,000, L3 = 15,000, L4 = 50,000,
+    L5 Planetary Capital = 200,000."
+
+    Note: CITADEL_LEVELS stores this tier value under the legacy key
+    "max_population", but per ADR-0035 it governs max_colonists (the
+    workforce cap), never the habitability-derived demographic cap.
+    """
+    from src.services.citadel_service import CITADEL_LEVELS
+    level = citadel_level or 0
+    info = CITADEL_LEVELS.get(level, CITADEL_LEVELS[0])
+    return info["max_population"]
+
+
+def max_population_for(habitability_score: int) -> int:
+    """Habitability-derived demographic ceiling per ADR-0035.
+
+    "Canonical formula: `max_population = habitability_score × 1,000`."
+    Recomputed (fresh evaluation, never a multiplicative shrink) whenever
+    habitability changes — e.g. terraforming completion.
+    """
+    return max(0, habitability_score or 0) * 1000
 
 
 class PlanetaryService:
@@ -85,8 +119,107 @@ class PlanetaryService:
         
         if not planet:
             raise ValueError("Planet not found or not owned by player")
-            
+
+        # Lazily apply colonist growth accrued since the last read
+        if self.apply_population_growth(planet):
+            self.db.commit()
+
         return self._format_planet_data(planet)
+
+    def apply_population_growth(self, planet: Planet) -> bool:
+        """Lazily apply canon colonist growth since planet.last_growth_at.
+
+        Canon daily formula (FEATURES/planets/colonization.md "Population
+        growth"): colonist_rate = colonists × 0.01 × (habitability_score/100),
+        pro-rated here by elapsed wall-clock time.
+
+        Ceilings enforced per ADR-0035 ("Runtime invariants"):
+          - colonists ≤ max_colonists (citadel cap)
+          - population ≤ max_population (habitability cap)
+          - colonists ≤ population (working-age subset)
+
+        Anchor pattern (mirrors turn-regen): only the time that produced
+        whole colonists is consumed from the anchor; the fractional
+        remainder stays banked so slow-growing colonies are never robbed
+        of sub-colonist progress. The anchor is never reset without the
+        accrued growth being applied first.
+
+        Returns True if any state changed (growth applied or anchor
+        initialized/advanced) so callers know to commit.
+        """
+        now = datetime.now(UTC)
+
+        if planet.last_growth_at is None:
+            # First read since the column landed: anchor now, accrue later.
+            planet.last_growth_at = now
+            return True
+
+        anchor = planet.last_growth_at
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+
+        elapsed_seconds = (now - anchor).total_seconds()
+        if elapsed_seconds <= 0:
+            return False
+
+        # Siege halts population growth (colonization.md "Other growth
+        # modifiers"); besieged time yields nothing, so advance the anchor.
+        if planet.under_siege:
+            planet.last_growth_at = now
+            return True
+
+        colonists = planet.colonists or 0
+        habitability = max(planet.habitability_score or 0, 0)
+        rate_per_day = colonists * DAILY_GROWTH_BASE * (habitability / 100.0)
+        if rate_per_day <= 0:
+            # Nothing can grow (no colonists or zero habitability); keep the
+            # anchor current so future colonists don't grow retroactively.
+            planet.last_growth_at = now
+            return True
+
+        # Dual ceilings (ADR-0035): growth stops at whichever cap binds first.
+        workforce_cap = (
+            max_colonists_for(planet.citadel_level)
+            if (planet.citadel_level or 0) >= 1
+            else (planet.max_colonists or 0)
+        )
+        ceiling = min(workforce_cap, max_population_for(planet.habitability_score))
+        headroom = ceiling - colonists
+        if headroom <= 0:
+            # Already at (or beyond, via legacy data) the ceiling — banked
+            # time is worthless, advance the anchor.
+            planet.last_growth_at = now
+            return True
+
+        rate_per_second = rate_per_day / SECONDS_PER_DAY
+        gained = int(rate_per_second * elapsed_seconds)
+        if gained <= 0:
+            # Not enough elapsed time for a whole colonist yet — leave the
+            # anchor untouched so the remainder keeps accruing.
+            return False
+
+        if gained >= headroom:
+            # Ceiling reached: surplus accrual is discarded, anchor moves to now.
+            gained = headroom
+            planet.last_growth_at = now
+        else:
+            # Consume only the whole-colonist time; bank the remainder.
+            seconds_consumed = gained / rate_per_second
+            planet.last_growth_at = anchor + timedelta(seconds=seconds_consumed)
+
+        planet.colonists = colonists + gained
+        # Simplification: total demographic tracks the workforce floor
+        # (population = max(population, colonists)); dependents beyond the
+        # workforce are not modeled yet. The growth ceiling above already
+        # respects max_population, and pre-existing populations are never
+        # shrunk here.
+        planet.population = max(planet.population or 0, planet.colonists)
+
+        logger.debug(
+            f"Lazy growth on planet {planet.id}: +{gained} colonists "
+            f"(now {planet.colonists}, ceiling {ceiling})"
+        )
+        return True
         
     def allocate_colonists(
         self,
@@ -199,7 +332,7 @@ class PlanetaryService:
         player_id: UUID,
         turrets: Optional[int] = None,
         shields: Optional[int] = None,
-        drones: Optional[int] = None
+        fighters: Optional[int] = None
     ) -> Dict[str, Any]:
         """Update planetary defenses."""
         # Verify ownership
@@ -216,19 +349,21 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found or not owned by player")
 
-        # Update defenses if provided
+        # Update defenses if provided.
+        # Note: the Planet model has no defense_drones column; deployed
+        # fighters (defense_fighters) are the drone-equivalent here.
         if turrets is not None:
             planet.defense_turrets = max(0, turrets)
         if shields is not None:
             planet.defense_shields = max(0, shields)
-        if drones is not None:
-            planet.defense_drones = max(0, drones)
+        if fighters is not None:
+            planet.defense_fighters = max(0, fighters)
 
         # Calculate total defense power
         defense_power = (
             planet.defense_turrets * 10 +
             planet.defense_shields * 5 +
-            planet.defense_drones * 2
+            planet.defense_fighters * 2
         )
 
         self.db.commit()
@@ -239,7 +374,7 @@ class PlanetaryService:
             "defenses": {
                 "turrets": planet.defense_turrets,
                 "shields": planet.defense_shields,
-                "drones": planet.defense_drones
+                "drones": planet.defense_fighters
             },
             "defensePower": defense_power
         }
@@ -305,7 +440,7 @@ class PlanetaryService:
             sector_id=sector_id,
             planet_type=planet_type,
             colonists=100,  # Start with 100 colonists
-            max_colonists=10000,  # Base max
+            max_colonists=1000,  # L1-scale default per ADR-0035
             fuel_ore=100,
             organics=100,
             equipment=100,
@@ -868,6 +1003,10 @@ class PlanetaryService:
             "colonists": planet.colonists,
             "maxColonists": habitability_effects["effectiveMaxColonists"],
             "baseMaxColonists": habitability_effects["baseMaxColonists"],
+            # Dual-ceiling demographic side (ADR-0035) for the colony UI
+            "population": planet.population or 0,
+            "maxPopulation": max_population_for(planet.habitability_score),
+            "isPopulationHub": bool(planet.is_population_hub),
             "habitability": {
                 "score": planet.habitability_score,
                 "effectiveMaxColonists": habitability_effects["effectiveMaxColonists"],
@@ -886,7 +1025,8 @@ class PlanetaryService:
             "defenses": {
                 "turrets": planet.defense_turrets or 0,
                 "shields": planet.defense_shields or 0,
-                "drones": planet.defense_drones or 0,
+                # No defense_drones column on Planet; fighters fill that role
+                "drones": planet.defense_fighters or 0,
                 "defenseLevel": defense_level,
                 "maxDefenseLevel": DEFENSE_MAX_LEVEL,
                 "damageReduction": f"{int(damage_reduction * 100)}%"
@@ -955,8 +1095,9 @@ class PlanetaryService:
         habitability = max(planet.habitability_score or 0, 0)
         habitability_ratio = habitability / 100.0
 
-        # Max population capacity scaled by habitability
-        base_max_colonists = planet.max_colonists or 10000
+        # Workforce-side limiter (ADR-0035): base cap is citadel-bound;
+        # fall back to the citadel-tier ceiling when the column is unset.
+        base_max_colonists = planet.max_colonists or max_colonists_for(planet.citadel_level or 0)
         effective_max_colonists = int(base_max_colonists * habitability_ratio)
 
         # Population growth multiplier

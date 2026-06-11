@@ -85,16 +85,26 @@ class Planet(Base):
     equipment = Column(Integer, nullable=False, default=0)
     fighters = Column(Integer, nullable=False, default=0)
     
-    # Colonization 
+    # Colonization
     colonized_at = Column(DateTime(timezone=True), nullable=True)
     population = Column(BigInteger, nullable=False, default=0)  # Current population
     max_population = Column(BigInteger, nullable=False, default=0)  # Maximum sustainable population
     population_growth = Column(Float, nullable=False, default=0.0)  # Growth rate percentage
     colonists = Column(Integer, nullable=False, default=0)
-    max_colonists = Column(Integer, nullable=False, default=10000)
+    # ADR-0035 "Schema impact": default 10000 -> 1000 (L1 Outpost scale)
+    max_colonists = Column(Integer, nullable=False, default=1000)
     fuel_allocation = Column(Integer, nullable=False, default=0)
     organics_allocation = Column(Integer, nullable=False, default=0)
     equipment_allocation = Column(Integer, nullable=False, default=0)
+    # Capital population hubs are public welcome worlds and never claimable
+    # (SYSTEMS/galaxy-generation.md Step 8: "A population hub planet
+    # (`is_population_hub = True`) ... Public, well-policed, non-destructible.")
+    is_population_hub = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Anchor for lazy colonist growth (FEATURES/planets/colonization.md
+    # "Population growth": colonist_rate = colonists × 0.01 × (habitability/100) per day).
+    # Only whole-colonist time is consumed from the anchor; the fractional
+    # remainder stays banked until it yields a full colonist.
+    last_growth_at = Column(DateTime(timezone=True), nullable=True)
     
     # Economy and production
     economy = Column(JSONB, nullable=False, default={})  # Economic attributes
@@ -130,6 +140,21 @@ class Planet(Base):
     under_siege = Column(Boolean, nullable=False, default=False)
     siege_started_at = Column(DateTime(timezone=True), nullable=True)
     siege_attacker_id = Column(UUID(as_uuid=True), nullable=True)
+    # Colony morale, 0-100 (DB column added in migration a1b2c3d4e5f6 with
+    # server_default '100' — a fresh colony starts at full morale).
+    morale = Column(Integer, nullable=False, default=100, server_default="100")
+    # Consecutive turns enemies have been present (siege escalation counter,
+    # DB column added in migration a1b2c3d4e5f6).
+    siege_turns = Column(Integer, nullable=False, default=0, server_default="0")
+
+    # Terraforming state (DB columns added in migration b2c3d4e5f6a7;
+    # documented in FEATURES/planets/terraforming.md "Planet model state").
+    # Per-level metadata (cost/boost/duration) lives in active_events JSONB
+    # under a {type: "terraforming"} entry.
+    terraforming_active = Column(Boolean, nullable=False, default=False, server_default="false")
+    terraforming_target = Column(Integer, nullable=True)  # Target habitability score
+    terraforming_start_time = Column(DateTime(timezone=True), nullable=True)
+    terraforming_progress = Column(Float, nullable=False, default=0.0, server_default="0.0")
     
     # Citadel system
     citadel_level = Column(Integer, nullable=False, default=0)  # 0-5

@@ -5,20 +5,44 @@ Handles planet colonization, resource allocation, building construction,
 defenses, sieges, and landing/departing operations.
 """
 
+from datetime import datetime, UTC
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.planet import Planet, PlanetStatus
-from src.services.planetary_service import PlanetaryService
+from src.models.ship import Ship
+from src.services.planetary_service import (
+    PlanetaryService,
+    max_colonists_for,
+    max_population_for,
+)
 
 router = APIRouter(prefix="/planets", tags=["planets"])
+
+# Traditional colonization requirements (FEATURES/planets/colonization.md
+# "#1-traditional-colonization" / "#fulfilling-the-contract"):
+#   - "10,000 credits investment (the founding-grant fee paid to the
+#      destination claim)"
+#   - pioneers delivered in cargo (1 colonist = 1 cargo unit, bought at the
+#     capital's CLASS_0 station Pioneer Office)
+# Interpretation note: the doc's full migration contract is 10,000 pioneers,
+# which is multi-trip by design (ships carry <= 1,000 colonists). We implement
+# the doc-faithful core: a claim requires the founding-grant fee AND at least
+# 100 colonists aboard the current ship (the minimum viable Outpost seed —
+# "new colony = Citadel L1 'Outpost' with 100-1,000 starting population").
+# On success ALL aboard colonists transfer to the planet, capped at the L1
+# Outpost max_colonists of 1,000 (ADR-0035); the rest of the 10,000-pioneer
+# cohort arrives over subsequent trips as the citadel grows.
+CLAIM_CREDIT_COST = 10_000
+CLAIM_MIN_COLONISTS = 100
 
 
 # Request/Response Models
@@ -83,6 +107,22 @@ class ClaimResponse(BaseModel):
     habitability_score: int
     population: int
     is_landed: bool
+    colonists_settled: int
+    credits_spent: int
+
+
+class ColonistTransferRequest(BaseModel):
+    """Colonist transfer between ship cargo and planet."""
+    action: str = Field(..., pattern="^(embark|disembark)$")
+    quantity: int = Field(..., gt=0)
+
+
+class ColonistTransferResponse(BaseModel):
+    """Colonist transfer response."""
+    planet_colonists: int
+    ship_colonists: int
+    max_colonists: int
+    message: str
 
 
 class LeaveResponse(BaseModel):
@@ -115,20 +155,27 @@ async def claim_planet(
     db: Session = Depends(get_db)
 ):
     """
-    Claim an unclaimed planet and land on it.
+    Claim an unclaimed planet via traditional colonization and land on it.
 
     This is required before landing on any unclaimed planet.
-    Claiming is free and gives the player ownership of the planet.
     The player is automatically landed on the planet after claiming.
 
-    Requirements:
+    Requirements (FEATURES/planets/colonization.md "Traditional colonization"):
     - Player must be in the same sector as the planet
     - Player must not be docked at a station
     - Player must not already be landed on a planet
     - Planet must be unclaimed (no owner)
     - Planet must be habitable (not uninhabitable, gas giant, or restricted)
+    - Planet must not be a capital population hub (never claimable)
+    - Player must pay the 10,000-credit founding-grant fee
+    - Current ship must carry at least 100 colonists in cargo
+
+    On success all aboard colonists settle (capped at the L1 Outpost
+    max_colonists of 1,000 per ADR-0035) and the colony starts as a
+    Citadel Level 1 Outpost.
     """
     from src.models.planet import PlanetType, player_planets
+    from src.services.citadel_service import CITADEL_LEVELS
 
     try:
         planet_uuid = UUID(planet_id)
@@ -152,8 +199,9 @@ async def claim_planet(
             detail="You are already landed on a planet. Leave first before claiming another."
         )
 
-    # Get the planet
-    planet = db.query(Planet).filter(Planet.id == planet_uuid).first()
+    # Get the planet — locked, so two pilots can't both pass the
+    # unclaimed check and double-found the colony (lost-update race)
+    planet = db.query(Planet).filter(Planet.id == planet_uuid).with_for_update().first()
     if not planet:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -189,6 +237,101 @@ async def claim_planet(
             detail="Cannot claim a gas giant planet"
         )
 
+    # Capital population hubs are public and never claimable
+    # (SYSTEMS/galaxy-generation.md Step 8: "Public, well-policed,
+    # non-destructible"). Belt-and-braces: any capital-scale population
+    # (>= 1,000,000) is treated as a hub even if the flag was missed.
+    if planet.is_population_hub or (planet.population or 0) >= 1_000_000:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"{planet.name} is a chartered population hub under regional "
+                "administration. Its billions of citizens are not looking for "
+                "a new landlord."
+            )
+        )
+
+    # Lock the player row to prevent concurrent credit races
+    # (mirrors trading.py's with_for_update pattern)
+    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+
+    # Founding-grant fee: "10,000 credits investment (the founding-grant fee
+    # paid to the destination claim)" — colonization.md, Traditional colonization
+    if player.credits < CLAIM_CREDIT_COST:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Claiming a planet requires a {CLAIM_CREDIT_COST:,}-credit "
+                f"founding grant. You have {player.credits:,}."
+            )
+        )
+
+    # Pioneers must be delivered in the current ship's cargo
+    # (1 colonist = 1 cargo unit, riding in cryosleep transit pods)
+    ship = db.query(Ship).filter(
+        Ship.id == player.current_ship_id,
+        Ship.owner_id == player.id
+    ).first()
+    if not ship:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active ship found"
+        )
+
+    cargo = ship.cargo or {'used': 0, 'capacity': 50, 'contents': {}}
+    contents = cargo.get('contents', {})
+    colonists_aboard = contents.get('colonists', 0)
+
+    if colonists_aboard < CLAIM_MIN_COLONISTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Founding a colony requires at least {CLAIM_MIN_COLONISTS} "
+                f"colonists aboard your ship. You are carrying "
+                f"{colonists_aboard}. Pioneer migration contracts are issued "
+                "at your region's Capital Sector."
+            )
+        )
+
+    # --- All requirements met: execute the claim ---
+
+    # Deduct the founding-grant fee
+    player.credits -= CLAIM_CREDIT_COST
+
+    # Settle ALL aboard colonists, capped at the L1 Outpost workforce
+    # ceiling of 1,000 (ADR-0035: "max_colonists = 1,000 (L1 Outpost cap)").
+    # Any overflow stays in cryosleep aboard — the 10,000-pioneer migration
+    # contract is multi-trip by design.
+    colony_level = planet.citadel_level if (planet.citadel_level or 0) >= 1 else 1
+    settle_cap = max_colonists_for(colony_level)
+    colonists_settled = min(colonists_aboard, max(0, settle_cap - (planet.colonists or 0)))
+
+    contents['colonists'] = colonists_aboard - colonists_settled
+    cargo['contents'] = contents
+    cargo['used'] = max(0, cargo.get('used', 0) - colonists_settled)
+    ship.cargo = cargo
+    flag_modified(ship, 'cargo')
+
+    planet.colonists = (planet.colonists or 0) + colonists_settled
+    # Dual ceilings at colonization (ADR-0035 "Genesis and colonization
+    # initialization"): max_colonists = L1 cap; max_population =
+    # habitability_score × 1,000.
+    planet.max_colonists = settle_cap
+    planet.max_population = max_population_for(planet.habitability_score)
+    # Simplification: total demographic starts at the settled workforce
+    planet.population = max(planet.population or 0, planet.colonists)
+    # Anchor lazy growth at the moment of founding
+    planet.last_growth_at = datetime.now(UTC)
+
+    # New colony = Citadel Level 1 "Outpost" (colonization.md: "Result:
+    # Outpost (Phase 1, citadel level 1)")
+    if not planet.citadel_level:
+        level_1 = CITADEL_LEVELS[1]
+        planet.citadel_level = 1
+        planet.citadel_safe_max = level_1["safe_storage"]
+        planet.citadel_drone_capacity = level_1["drone_capacity"]
+        planet.citadel_max_population = level_1["max_population"]
+
     # Claim the planet - set owner_id and add to player_planets association
     planet.owner_id = player.id
     planet.status = PlanetStatus.COLONIZED
@@ -212,13 +355,185 @@ async def claim_planet(
 
     return ClaimResponse(
         success=True,
-        message=f"Successfully claimed and landed on {planet.name}. This planet is now yours!",
+        message=(
+            f"Successfully claimed and landed on {planet.name}. "
+            f"{colonists_settled:,} colonists have settled your new Outpost!"
+        ),
         planet_id=str(planet.id),
         planet_name=planet.name,
         planet_type=planet.type.value,
         habitability_score=planet.habitability_score,
         population=planet.population,
-        is_landed=True
+        is_landed=True,
+        colonists_settled=colonists_settled,
+        credits_spent=CLAIM_CREDIT_COST
+    )
+
+
+@router.post("/{planet_id}/colonists/transfer", response_model=ColonistTransferResponse)
+async def transfer_colonists(
+    planet_id: str,
+    request: ColonistTransferRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """
+    Transfer colonists between the current ship's cargo and a planet.
+
+    Actions (matches player-client GameContext.transferColonists):
+    - disembark: move colonists from ship cargo onto the planet
+    - embark: move colonists from the planet into ship cargo
+
+    Requirements:
+    - Player must be landed on this planet
+    - Player must own the planet, or be on the owner's team
+    - Colonists are cargo: 1 colonist = 1 cargo unit
+
+    Ceilings enforced per ADR-0035: colonists <= max_colonists (citadel cap),
+    population <= max_population (habitability cap), colonists <= population.
+    """
+    try:
+        planet_uuid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid planet ID format"
+        )
+
+    # Locked: owner AND teammates may transfer concurrently — without the
+    # planet lock two embarks can both read N and write N-q (duplication)
+    planet = db.query(Planet).filter(Planet.id == planet_uuid).with_for_update().first()
+    if not planet:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Planet not found"
+        )
+
+    # Player must be landed on this specific planet
+    if not player.is_landed or player.current_planet_id != planet.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be landed on this planet to transfer colonists"
+        )
+
+    # Ownership gate: owner, or member of the owner's team (mirrors the
+    # owner/team friendliness logic used in siege detection)
+    if planet.owner_id != player.id:
+        owner = db.query(Player).filter(Player.id == planet.owner_id).first() if planet.owner_id else None
+        same_team = (
+            owner is not None
+            and owner.team_id is not None
+            and player.team_id == owner.team_id
+        )
+        if not same_team:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not own this planet"
+            )
+
+    # Lock the player row to serialize concurrent transfers on the same
+    # ship/planet pair (mirrors trading.py's with_for_update pattern)
+    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+
+    ship = db.query(Ship).filter(
+        Ship.id == player.current_ship_id,
+        Ship.owner_id == player.id
+    ).first()
+    if not ship:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active ship found"
+        )
+
+    # Apply any colonist growth accrued since the last read before
+    # validating against the ceilings (lazy growth, ADR-0035 ceilings)
+    service = PlanetaryService(db)
+    service.apply_population_growth(planet)
+
+    cargo = ship.cargo or {'used': 0, 'capacity': 50, 'contents': {}}
+    contents = cargo.get('contents', {})
+    ship_colonists = contents.get('colonists', 0)
+    cargo_used = cargo.get('used', 0)
+    cargo_capacity = cargo.get('capacity', 50)
+
+    quantity = request.quantity
+    planet_colonists = planet.colonists or 0
+    # Citadel-tier cap for established colonies; genesis-formed colonies
+    # (no citadel yet) keep their stored cap instead of freezing at 0
+    citadel_cap = (
+        max_colonists_for(planet.citadel_level)
+        if (planet.citadel_level or 0) >= 1
+        else (planet.max_colonists or 0)
+    )
+    habitability_cap = max_population_for(planet.habitability_score)
+
+    if request.action == "disembark":
+        if ship_colonists < quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Only {ship_colonists} colonists aboard; cannot disembark {quantity}"
+            )
+        if planet_colonists + quantity > citadel_cap:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Citadel level {planet.citadel_level or 0} supports at most "
+                    f"{citadel_cap:,} colonists ({planet_colonists:,} settled). "
+                    "Upgrade the citadel to house more."
+                )
+            )
+        # population grows with the settled colonists, so the habitability-
+        # derived demographic ceiling binds too (ADR-0035 invariants)
+        if planet_colonists + quantity > habitability_cap:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Habitability {planet.habitability_score} caps total "
+                    f"population at {habitability_cap:,}. Terraform the planet "
+                    "to raise the ceiling."
+                )
+            )
+
+        contents['colonists'] = ship_colonists - quantity
+        cargo['used'] = max(0, cargo_used - quantity)
+        planet.colonists = planet_colonists + quantity
+        # Simplification: total demographic tracks the workforce floor
+        planet.population = max(planet.population or 0, planet.colonists)
+        message = f"{quantity:,} colonists disembarked onto {planet.name}"
+    else:  # embark
+        if planet_colonists < quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Only {planet_colonists:,} colonists on {planet.name}; cannot embark {quantity}"
+            )
+        free_space = cargo_capacity - cargo_used
+        if free_space < quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Insufficient cargo space. Have {free_space} free, need {quantity}"
+            )
+
+        contents['colonists'] = ship_colonists + quantity
+        cargo['used'] = cargo_used + quantity
+        planet.colonists = planet_colonists - quantity
+        # Departing colonists leave the demographic count too, but
+        # population never drops below the remaining workforce
+        planet.population = max(planet.colonists, (planet.population or 0) - quantity)
+        message = f"{quantity:,} colonists embarked from {planet.name}"
+
+    cargo['contents'] = contents
+    ship.cargo = cargo
+    flag_modified(ship, 'cargo')
+
+    db.commit()
+    db.refresh(planet)
+    db.refresh(ship)
+
+    return ColonistTransferResponse(
+        planet_colonists=planet.colonists,
+        ship_colonists=(ship.cargo or {}).get('contents', {}).get('colonists', 0),
+        max_colonists=citadel_cap,
+        message=message
     )
 
 

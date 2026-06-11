@@ -7,7 +7,7 @@ and completing terraforming projects on player-owned planets.
 
 from typing import Dict, Any, Optional
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 import logging
@@ -159,7 +159,7 @@ class TerraformingService:
         planet.equipment = (planet.equipment or 0) - equipment_cost
 
         # Set terraforming state
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         planet.terraforming_active = True
         planet.terraforming_target = target_habitability
         planet.terraforming_start_time = now
@@ -229,6 +229,14 @@ class TerraformingService:
             Dict with current terraforming state
         """
         planet = self._get_owned_planet(planet_id, player_id)
+
+        # Advance time-based progress against the level's duration; this
+        # lazily completes projects whose duration has fully elapsed.
+        if planet.terraforming_active:
+            completed = self._apply_time_progress(planet)
+            self.db.commit()
+            if completed:
+                self.db.refresh(planet)
 
         if not planet.terraforming_active:
             return {
@@ -459,22 +467,26 @@ class TerraformingService:
         level = terra_meta.get("level", 0) if terra_meta else 0
         level_name = terra_meta.get("level_name", "Unknown") if terra_meta else "Unknown"
 
-        # Apply habitability boost (capped at 100)
+        # Apply the habitability gain (capped at 100). The tick path may
+        # already have incremented habitability toward terraforming_target;
+        # raising to the stored target (rather than re-adding the boost)
+        # avoids double-applying the gain when both paths run.
         old_habitability = planet.habitability_score
-        planet.habitability_score = min(
-            TERRAFORMING_MAX_HABITABILITY,
-            planet.habitability_score + boost
-        )
+        if planet.terraforming_target:
+            target = min(TERRAFORMING_MAX_HABITABILITY, planet.terraforming_target)
+        else:
+            target = min(TERRAFORMING_MAX_HABITABILITY, planet.habitability_score + boost)
+        planet.habitability_score = max(planet.habitability_score, target)
         final_habitability = planet.habitability_score
 
-        # Recalculate max population based on habitability
-        # Higher habitability directly scales the planet's carrying capacity
-        if planet.max_population and planet.max_population > 0:
-            habitability_factor = planet.habitability_score / 100.0
-            planet.max_population = int(planet.max_population * habitability_factor)
-        if planet.max_colonists and planet.max_colonists > 0:
-            habitability_factor = planet.habitability_score / 100.0
-            planet.max_colonists = max(1, int(planet.max_colonists * habitability_factor))
+        # Recompute the demographic ceiling per ADR-0035: "Canonical formula:
+        # `max_population = habitability_score × 1,000`. ... The recompute is
+        # a *trigger* fired by the habitability mutation — it evaluates the
+        # formula afresh, never multiplicatively shrinks the prior value."
+        # `max_colonists` is NOT touched here: it is citadel-bound, never
+        # modified by terraforming or habitability changes (ADR-0035).
+        from src.services.planetary_service import max_population_for
+        planet.max_population = max_population_for(planet.habitability_score)
 
         # Boost population growth rate based on habitability improvement
         if planet.habitability_score >= 80:
@@ -518,6 +530,43 @@ class TerraformingService:
             "populationGrowthRate": planet.population_growth,
             "status": planet.status.value
         }
+
+    def _apply_time_progress(self, planet: Planet) -> bool:
+        """
+        Advance terraforming_progress from elapsed wall-clock time against
+        the level's duration (terraforming.md ladder: 72h / 120h / 168h /
+        240h / 336h for levels 1-5), and complete the project when the full
+        duration has elapsed.
+
+        This is the lazy counterpart to the tick path: no scheduler invokes
+        process_terraforming_tick today, so duration-based completion keeps
+        projects honest whenever their status is read.
+
+        Returns True if the project completed.
+        """
+        if not planet.terraforming_active or not planet.terraforming_start_time:
+            return False
+
+        terra_meta = self._get_terraforming_meta(planet)
+        duration_hours = (terra_meta or {}).get("duration_hours")
+        if not duration_hours or duration_hours <= 0:
+            return False
+
+        start = planet.terraforming_start_time
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        elapsed_hours = (datetime.now(UTC) - start).total_seconds() / 3600.0
+
+        if elapsed_hours >= duration_hours:
+            self._complete_terraforming(planet)
+            return True
+
+        # Time-based progress never regresses progress earned via ticks
+        planet.terraforming_progress = max(
+            planet.terraforming_progress or 0.0,
+            min(100.0, (elapsed_hours / duration_hours) * 100.0)
+        )
+        return False
 
     def _get_terraforming_meta(self, planet: Planet) -> Optional[Dict[str, Any]]:
         """

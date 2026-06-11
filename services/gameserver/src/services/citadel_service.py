@@ -142,7 +142,7 @@ class CitadelService:
         # Include upgrade-in-progress timing info
         if getattr(planet, "citadel_upgrading", False):
             result["upgrade_started_at"] = str(planet.citadel_upgrade_started_at)
-            result["upgrade_complete_at"] = str(planet.citadel_upgrade_complete_at)
+            result["upgrade_complete_at"] = planet.citadel_upgrade_complete_at.isoformat()
             remaining = planet.citadel_upgrade_complete_at - datetime.now(UTC)
             result["upgrade_remaining_seconds"] = max(0, int(remaining.total_seconds()))
 
@@ -269,7 +269,7 @@ class CitadelService:
             "upgrading_to": next_level,
             "upgrading_to_name": next_info["name"],
             "upgrade_started_at": str(now),
-            "upgrade_complete_at": str(now + timedelta(hours=upgrade_hours)),
+            "upgrade_complete_at": (now + timedelta(hours=upgrade_hours)).isoformat(),
             "upgrade_hours": upgrade_hours,
             "credits_deducted": upgrade_cost,
             "resources_deducted": resource_cost,
@@ -330,7 +330,7 @@ class CitadelService:
                 "citadel_level": current_level,
                 "citadel_name": CITADEL_LEVELS[current_level]["name"],
                 "is_upgrading": True,
-                "upgrade_complete_at": str(planet.citadel_upgrade_complete_at),
+                "upgrade_complete_at": planet.citadel_upgrade_complete_at.isoformat(),
                 "upgrade_remaining_seconds": max(0, int(remaining.total_seconds())),
             }
 
