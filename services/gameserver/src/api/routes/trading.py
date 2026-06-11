@@ -494,7 +494,11 @@ async def get_market_info(
             "name": station.name,
             "type": station.type,
             "faction": station.faction_affiliation,
-            "tax_rate": getattr(station, 'tax_rate', 0.1)  # Default 10% tax if not set
+            "tax_rate": getattr(station, 'tax_rate', 0.1),  # Default 10% tax if not set
+            "station_class": str(station.station_class.value) if station.station_class else None,
+            "is_spacedock": bool(station.is_spacedock),
+            "trade_volume": station.trade_volume,
+            "trader_personality_type": (station.trader_personality or {}).get("type")
         }
     )
 
