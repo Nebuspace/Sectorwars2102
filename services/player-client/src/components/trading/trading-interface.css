@@ -134,6 +134,7 @@
 
 .port-item {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   padding: var(--space-sm) var(--space-md);
@@ -188,6 +189,179 @@
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+
+/* Transient slip availability line under each Dock entry */
+.port-slips-line {
+  flex-basis: 100%;
+  margin-top: var(--space-xs);
+  font-size: var(--text-sm);
+  color: var(--text-color);
+  opacity: 0.65;
+  text-align: left;
+}
+
+.port-slips-line.full {
+  opacity: 1;
+  color: #fbbf24;
+}
+
+.port-item.slips-full {
+  background: rgba(245, 158, 11, 0.05);
+}
+
+/* Dock-full panel — all slips occupied, queue position + bump option */
+.dock-full-panel {
+  margin-top: var(--space-lg);
+  padding: var(--space-lg);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(15, 23, 42, 0.6));
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 8px;
+  text-align: left;
+  animation: dock-full-in 0.25s ease-out;
+}
+
+@keyframes dock-full-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dock-full-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.dock-full-title {
+  font-weight: 700;
+  font-size: var(--text-base);
+  color: #fbbf24;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.queue-badge {
+  padding: 2px var(--space-sm);
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dock-full-detail {
+  margin-bottom: var(--space-md);
+  font-size: var(--text-sm);
+  opacity: 0.8;
+}
+
+.bump-option {
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-color);
+}
+
+.bump-button {
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  border-radius: 6px;
+  color: #fbbf24;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--transition-normal);
+}
+
+.bump-button:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.22);
+}
+
+.bump-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.bump-confirm-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.bump-confirm-prompt {
+  flex-basis: 100%;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.bump-confirm-button {
+  padding: var(--space-xs) var(--space-md);
+  background: linear-gradient(135deg, #b45309, #d97706);
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--transition-normal);
+}
+
+.bump-confirm-button:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.bump-confirm-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.bump-cancel-button {
+  padding: var(--space-xs) var(--space-md);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-color);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background-color var(--transition-normal);
+}
+
+.bump-cancel-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.bump-error {
+  margin-top: var(--space-sm);
+  font-size: var(--text-sm);
+  color: #f87171;
+}
+
+.dock-full-dismiss {
+  margin-top: var(--space-md);
+  padding: var(--space-xs) var(--space-md);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-color);
+  font-size: var(--text-sm);
+  opacity: 0.8;
+  cursor: pointer;
+  transition: opacity var(--transition-normal);
+}
+
+.dock-full-dismiss:hover {
+  opacity: 1;
 }
 
 /* Port Selection */
@@ -821,6 +995,10 @@
 
   .confirm-button:hover {
     transform: none;
+  }
+
+  .dock-full-panel {
+    animation: none;
   }
 }
 

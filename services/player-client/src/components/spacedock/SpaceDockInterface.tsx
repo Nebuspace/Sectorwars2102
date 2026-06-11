@@ -162,8 +162,27 @@ const SLOT_PAYOUTS: Record<string, number> = {
 };
 
 const SpaceDockInterface: React.FC = () => {
-  const { playerState, stationsInSector, updatePlayerCredits, updateShipGenesis, refreshPlayerState, loadShips } = useGame();
+  const { playerState, stationsInSector, updatePlayerCredits, updateShipGenesis, refreshPlayerState, loadShips, getStationSlips } = useGame();
   const [activeVenue, setActiveVenue] = useState<VenueType>('hub');
+
+  // Transient slips gauge for the hub header (fetched when docked)
+  const [slipsGauge, setSlipsGauge] = useState<{ occupied: number; capacity: number } | null>(null);
+
+  React.useEffect(() => {
+    const stationId = playerState?.current_port_id;
+    if (!stationId || !playerState?.is_docked) {
+      setSlipsGauge(null);
+      return;
+    }
+    let cancelled = false;
+    getStationSlips(stationId).then(info => {
+      if (!cancelled && info) {
+        setSlipsGauge({ occupied: info.occupied, capacity: info.capacity });
+      }
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerState?.current_port_id, playerState?.is_docked]);
 
   // Track local credits for immediate UI feedback
   const [localCredits, setLocalCredits] = useState<number | null>(null);
@@ -1068,6 +1087,17 @@ const SpaceDockInterface: React.FC = () => {
               <span className="status-label">Status</span>
               <span className={`status-value ${statusClass}`.trim()}>{statusLabel}</span>
             </div>
+            {slipsGauge && (
+              <div className="status-item">
+                <span className="status-label">Slips</span>
+                <span
+                  className={`status-value ${slipsGauge.occupied >= slipsGauge.capacity ? 'degraded' : 'operational'}`}
+                  title={`Transient slips occupied: ${slipsGauge.occupied} of ${slipsGauge.capacity}`}
+                >
+                  {slipsGauge.occupied}/{slipsGauge.capacity}
+                </span>
+              </div>
+            )}
             {activeServices.length > 0 && (
               <div className="status-item">
                 <span className="status-label">Services</span>

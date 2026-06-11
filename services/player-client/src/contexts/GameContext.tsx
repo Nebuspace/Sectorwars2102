@@ -100,6 +100,17 @@ export interface MarketInfo {
   };
 }
 
+export interface StationSlips {
+  capacity: number;
+  occupied: number;
+  free: number;
+  fee: number;
+  bump_cost: number;
+  queue_length: number;
+  my_queue_position: number | null;
+  occupants_bumpable_count: number;
+}
+
 export interface PlayerState {
   id: string;
   username: string;
@@ -156,6 +167,8 @@ interface GameContextType {
   // Station interactions
   dockAtStation: (stationId: string) => Promise<any>;
   undockFromStation: () => Promise<any>;
+  getStationSlips: (stationId: string) => Promise<StationSlips | null>;
+  bumpDockOccupant: (stationId: string, occupantPlayerId: string) => Promise<any>;
   marketInfo: MarketInfo | null;
   getMarketInfo: (stationId: string) => Promise<void>;
   buyResource: (stationId: string, resourceType: string, quantity: number) => Promise<any>;
@@ -510,12 +523,67 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       
       return response.data;
     } catch (error: any) {
+      // 409 = every transient slip is taken; the server auto-enqueued us and
+      // returned slip/queue/bump details. Surface that payload to callers
+      // instead of throwing so the UI can offer the queue/bump flow inline.
+      if (error.response?.status === 409 && error.response?.data) {
+        return { full: true, ...error.response.data };
+      }
       console.error('Error docking at port:', error);
       setError(error.response?.data?.message || 'Failed to dock at port');
       throw error;
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Get transient slip availability for a station
+  // Note: lightweight read used by dock lists and gauges — intentionally does
+  // NOT set global isLoading/error to avoid re-render cascades
+  const getStationSlips = async (stationId: string): Promise<StationSlips | null> => {
+    if (!user) return null;
+
+    try {
+      const response = await api.get(`/api/v1/trading/stations/${stationId}/slips`);
+      return response.data as StationSlips;
+    } catch (error) {
+      console.warn('GameContext: Failed to load station slips:', error);
+      return null;
+    }
+  };
+
+  // Pay the bump cost to evict a long-tenured occupant and take their slip.
+  // Errors are surfaced inline by the dock-full panel, so no global setError.
+  const bumpDockOccupant = async (stationId: string, occupantPlayerId: string) => {
+    if (!user || !playerState) {
+      // Callers treat a return as success — never fall through silently
+      throw new Error('Not ready to dock — please try again');
+    }
+
+    setIsLoading(true);
+
+    let response;
+    try {
+      response = await api.post(`/api/v1/trading/stations/${stationId}/slips/bump`, {
+        occupant_player_id: occupantPlayerId
+      });
+    } catch (error: any) {
+      console.error('Error bumping slip occupant:', error);
+      setIsLoading(false);
+      throw error;
+    }
+
+    // The bump succeeded server-side; a failed refresh must not read as a
+    // failed bump (the player IS docked and WAS charged)
+    try {
+      await refreshPlayerState();
+    } catch (refreshError) {
+      console.warn('Post-bump state refresh failed:', refreshError);
+    } finally {
+      setIsLoading(false);
+    }
+
+    return response.data;
   };
 
   // Undock from current station
@@ -975,6 +1043,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Station interactions
     dockAtStation,
     undockFromStation,
+    getStationSlips,
+    bumpDockOccupant,
     marketInfo,
     getMarketInfo,
     buyResource,

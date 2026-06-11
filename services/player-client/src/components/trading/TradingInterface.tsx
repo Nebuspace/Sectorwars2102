@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { useGame } from '../../contexts/GameContext';
+import { useGame, StationSlips } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import GameLayout from '../layouts/GameLayout';
 import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
@@ -25,6 +25,24 @@ interface TradeCalculation {
   fitsInCargo: boolean;
 }
 
+interface BumpableOccupant {
+  player_id: string;
+  name: string;
+  tenure_hours: number;
+}
+
+// Payload surfaced by GameContext.dockAtStation when the station's
+// transient slips are all occupied (HTTP 409 — requester auto-enqueued)
+interface DockFullInfo {
+  stationId: string;
+  stationName: string;
+  detail?: string;
+  slips: { capacity: number; occupied: number };
+  queue_position?: number | null;
+  bumpable: BumpableOccupant[];
+  bump_cost: number;
+}
+
 const formatName = (name: string) => name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 interface TradingInterfaceProps {
@@ -46,6 +64,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     buyResource,
     sellResource,
     dockAtStation,
+    getStationSlips,
+    bumpDockOccupant,
     stationsInSector,
     isLoading,
     error
@@ -65,8 +85,39 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [dockingStationId, setDockingStationId] = useState<string | null>(null);
 
+  // Transient slip availability per station (lazy, fetched when the
+  // undocked port list renders)
+  const [slipsByStation, setSlipsByStation] = useState<Record<string, StationSlips>>({});
+  const [dockFull, setDockFull] = useState<DockFullInfo | null>(null);
+  const [bumpConfirming, setBumpConfirming] = useState(false);
+  const [bumping, setBumping] = useState(false);
+  const [bumpError, setBumpError] = useState<string | null>(null);
+
   // Track which port we've already fetched market info for
   const lastFetchedPortId = useRef<string | null>(null);
+
+  // Track which stations we've already requested slip info for
+  const slipsFetchedFor = useRef<Set<string>>(new Set());
+
+  // Lazily load slip availability for each port shown in the undocked list
+  useEffect(() => {
+    if (playerState?.is_docked) {
+      // Occupancy changes while we're docked; refetch fresh after undocking
+      slipsFetchedFor.current.clear();
+      return;
+    }
+    portsInSector.forEach(port => {
+      if (slipsFetchedFor.current.has(port.id)) return;
+      getStationSlips(port.id).then(info => {
+        if (info) {
+          // Mark fetched only on success so a transient failure retries
+          slipsFetchedFor.current.add(port.id);
+          setSlipsByStation(prev => ({ ...prev, [port.id]: info }));
+        }
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerState?.is_docked, portsInSector]);
 
   // Auto-select first port if only one available (run once on mount)
   const firstPortId = portsInSector.length === 1 ? portsInSector[0].id : null;
@@ -190,10 +241,39 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     );
   }
 
+  // Re-fetch slip availability for one station (e.g. after a 409)
+  const refreshStationSlips = async (stationId: string) => {
+    const info = await getStationSlips(stationId);
+    if (info) {
+      setSlipsByStation(prev => ({ ...prev, [stationId]: info }));
+    }
+  };
+
   const handleDock = async (stationId: string) => {
     setDockingStationId(stationId);
+    setDockFull(null);
+    setBumpConfirming(false);
+    setBumpError(null);
     try {
-      await dockAtStation(stationId);
+      const result = await dockAtStation(stationId);
+
+      if (result?.full) {
+        // All slips occupied — we've been auto-enqueued. Show the inline
+        // queue/bump panel instead of a generic error.
+        const port = portsInSector.find(p => p.id === stationId);
+        setDockFull({
+          stationId,
+          stationName: port?.name || 'this station',
+          detail: result.detail,
+          slips: result.slips || { capacity: 0, occupied: 0 },
+          queue_position: result.queue_position,
+          bumpable: result.bumpable || [],
+          bump_cost: result.bump_cost || 0
+        });
+        refreshStationSlips(stationId);
+        return;
+      }
+
       // After successful dock, select this port for trading
       setSelectedPort(stationId);
       addNotification({
@@ -209,6 +289,59 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
       });
     } finally {
       setDockingStationId(null);
+    }
+  };
+
+  // Longest-tenured occupant is the canonical bump target
+  const getBumpTarget = (): BumpableOccupant | null => {
+    if (!dockFull || dockFull.bumpable.length === 0) return null;
+    return dockFull.bumpable.reduce((a, b) => (b.tenure_hours > a.tenure_hours ? b : a));
+  };
+
+  const formatTenure = (hours: number): string =>
+    hours < 1 ? '<1h' : `${Math.round(hours)}h`;
+
+  // 'pay 5× fee: 500cr' when the multiplier is clean, else just the cost
+  const formatBumpCost = (): string => {
+    if (!dockFull) return '';
+    const fee = slipsByStation[dockFull.stationId]?.fee;
+    if (fee && dockFull.bump_cost % fee === 0) {
+      return `pay ${dockFull.bump_cost / fee}× fee: ${formatCredits(dockFull.bump_cost)}cr`;
+    }
+    return `pay ${formatCredits(dockFull.bump_cost)}cr`;
+  };
+
+  const handleBump = async () => {
+    const target = getBumpTarget();
+    if (!dockFull || !target || bumping) return;
+
+    setBumping(true);
+    setBumpError(null);
+    try {
+      await bumpDockOccupant(dockFull.stationId, target.player_id);
+
+      // Bump docks us — flow into the normal docked state
+      const stationId = dockFull.stationId;
+      const stationName = dockFull.stationName;
+      setDockFull(null);
+      setBumpConfirming(false);
+      setSelectedPort(stationId);
+      addNotification({
+        title: 'Docked',
+        content: `Slip secured at ${stationName} — ${target.name} was evicted.`,
+        level: 'success'
+      });
+    } catch (err: any) {
+      setBumpError(
+        err.response?.data?.detail ||
+        err.response?.data?.message ||
+        'Bump failed — the slip may have already changed hands.'
+      );
+      if (dockFull) {
+        refreshStationSlips(dockFull.stationId);
+      }
+    } finally {
+      setBumping(false);
     }
   };
 
@@ -346,22 +479,100 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
             <div className="available-ports">
               <h4>Available Ports in Sector:</h4>
               <ul>
-                {portsInSector.map(port => (
-                  <li key={port.id} className="port-item">
-                    <div className="port-info">
-                      <span className="port-name">{port.name}</span>
-                      <span className="port-type">{port.type}</span>
-                    </div>
-                    <button
-                      className="dock-button"
-                      onClick={() => handleDock(port.id)}
-                      disabled={dockingStationId !== null}
-                    >
-                      {dockingStationId === port.id ? 'Docking...' : 'Dock'}
-                    </button>
-                  </li>
-                ))}
+                {portsInSector.map(port => {
+                  const slips = slipsByStation[port.id];
+                  const slipsFull = !!slips && slips.free === 0;
+                  return (
+                    <li key={port.id} className={`port-item ${slipsFull ? 'slips-full' : ''}`.trim()}>
+                      <div className="port-info">
+                        <span className="port-name">{port.name}</span>
+                        <span className="port-type">{port.type}</span>
+                      </div>
+                      <button
+                        className="dock-button"
+                        onClick={() => handleDock(port.id)}
+                        disabled={dockingStationId !== null}
+                        title={slipsFull
+                          ? `All ${slips.capacity} transient slips occupied — docking joins the queue (${slips.queue_length} waiting) or lets you bump a long-tenured occupant.`
+                          : undefined}
+                      >
+                        {dockingStationId === port.id
+                          ? 'Docking...'
+                          : slipsFull ? 'Dock (Queue)' : 'Dock'}
+                      </button>
+                      {slips && (
+                        <div className={`port-slips-line ${slipsFull ? 'full' : ''}`.trim()}>
+                          Transient slips: {slips.occupied}/{slips.capacity} occupied · fee {formatCredits(slips.fee)}cr
+                          {slipsFull && typeof (slips as any).estimated_wait_minutes === 'number' && (
+                            <> · Estimated wait: ~{(slips as any).estimated_wait_minutes} min</>
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
+
+              {dockFull && (() => {
+                const bumpTarget = getBumpTarget();
+                return (
+                  <div className="dock-full-panel" role="alert">
+                    <div className="dock-full-header">
+                      <span className="dock-full-title">
+                        All {dockFull.slips.capacity} slips occupied
+                      </span>
+                      {dockFull.queue_position != null && (
+                        <span className="queue-badge">
+                          Queue position {dockFull.queue_position}
+                        </span>
+                      )}
+                    </div>
+                    <p className="dock-full-detail">
+                      {dockFull.detail || `${dockFull.stationName} has no free transient slips. You've been added to the docking queue.`}
+                    </p>
+                    {bumpTarget && (
+                      <div className="bump-option">
+                        {!bumpConfirming ? (
+                          <button
+                            className="bump-button"
+                            onClick={() => { setBumpConfirming(true); setBumpError(null); }}
+                            disabled={bumping}
+                          >
+                            Evict {bumpTarget.name} — docked {formatTenure(bumpTarget.tenure_hours)} — {formatBumpCost()}
+                          </button>
+                        ) : (
+                          <div className="bump-confirm-row">
+                            <span className="bump-confirm-prompt">
+                              Evict {bumpTarget.name} and {formatBumpCost()}?
+                            </span>
+                            <button
+                              className="bump-confirm-button"
+                              onClick={handleBump}
+                              disabled={bumping}
+                            >
+                              {bumping ? 'Evicting...' : 'Confirm Eviction'}
+                            </button>
+                            <button
+                              className="bump-cancel-button"
+                              onClick={() => setBumpConfirming(false)}
+                              disabled={bumping}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                        {bumpError && <div className="bump-error">{bumpError}</div>}
+                      </div>
+                    )}
+                    <button
+                      className="dock-full-dismiss"
+                      onClick={() => { setDockFull(null); setBumpConfirming(false); setBumpError(null); }}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>

@@ -357,6 +357,20 @@ const GameDashboard: React.FC = () => {
   const handleDock = async (stationId: string) => {
     try {
       const result = await dockAtStation(stationId);
+      // Full station: dockAtStation surfaces the 409 payload as
+      // {full: true, detail, queue_position, ...} — we were auto-enqueued,
+      // NOT docked. Don't render the success banner for it.
+      if (result?.full) {
+        setDockingResult({
+          full: true,
+          message:
+            (result.detail || 'All docking slips are occupied.') +
+            (result.queue_position
+              ? ` You are #${result.queue_position} in the docking queue.`
+              : ''),
+        });
+        return;
+      }
       setDockingResult(result);
     } catch (error) {
       console.error('Error docking at port:', error);
@@ -521,8 +535,10 @@ const GameDashboard: React.FC = () => {
         )}
 
         {dockingResult && (
-          <div className="cockpit-alert success">
-            <div className="alert-header">🚀 DOCKING SUCCESSFUL</div>
+          <div className={`cockpit-alert ${dockingResult.full ? 'claim-denied' : 'success'}`}>
+            <div className="alert-header">
+              {dockingResult.full ? '🛑 DOCKING QUEUE' : '🚀 DOCKING SUCCESSFUL'}
+            </div>
             <div className="alert-message">{dockingResult.message}</div>
           </div>
         )}
