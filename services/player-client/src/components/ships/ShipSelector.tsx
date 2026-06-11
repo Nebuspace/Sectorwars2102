@@ -140,6 +140,16 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
     if (rating >= 20) return 'poor';
     return 'critical';
   };
+
+  // Format shields for display, handling both {current, max} and numeric formats
+  const getShieldsDisplay = (ship: Ship): string => {
+    const shields = ship.combat?.shields;
+    if (shields == null) return 'N/A';
+    if (typeof shields === 'object') {
+      return `${shields.current}/${shields.max}`;
+    }
+    return ship.combat?.max_shields ? `${shields}/${ship.combat.max_shields}` : `${shields}`;
+  };
   
   return (
     <GameLayout>
@@ -204,43 +214,53 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
           >
             <div className="ship-header">
               <h3>{ship.name}</h3>
-              {ship.is_flagship && <span className="flagship-badge">FLAGSHIP</span>}
-              {ship.id === currentShip?.id && <span className="active-badge">ACTIVE</span>}
+              <div className="ship-badges">
+                {ship.is_flagship && <span className="flagship-badge">FLAGSHIP</span>}
+                {ship.id === currentShip?.id && <span className="active-badge">ACTIVE</span>}
+              </div>
             </div>
-            
-            <div className="ship-type">{formatShipType(ship.type)}</div>
-            
+
+            <div className="ship-subheader">
+              <span className="subheader-type">{formatShipType(ship.type)}</span>
+              <span className="subheader-location">Sector {ship.sector_id}</span>
+            </div>
+
             <div className="ship-stats">
-              <div className="stat-group">
-                <div className="stat">
-                  <span className="label">Location:</span>
-                  <span className="value">Sector {ship.sector_id}</span>
-                </div>
-                <div className="stat">
-                  <span className="label">Speed:</span>
+              <div className="stat-chips-grid">
+                <div className="stat-chip">
+                  <span className="label">Speed</span>
                   <span className="value">{ship.current_speed}/{ship.base_speed}</span>
                 </div>
-              </div>
-              
-              <div className="stat-group">
-                <div className="stat">
-                  <span className="label">Combat:</span>
+                <div className="stat-chip">
+                  <span className="label">Attack</span>
+                  <span className="value">{ship.combat?.attack_rating ?? ship.combat?.weapons ?? 'N/A'}</span>
+                </div>
+                <div className="stat-chip">
+                  <span className="label">Defense</span>
+                  <span className="value">{ship.combat?.defense_rating ?? 'N/A'}</span>
+                </div>
+                <div className="stat-chip">
+                  <span className="label">Drones</span>
                   <span className="value">
-                    Atk {ship.combat?.attack_rating ?? ship.combat?.weapons ?? 'N/A'} / Def {ship.combat?.defense_rating ?? 'N/A'}
+                    {(ship.combat?.attack_drones || 0) + (ship.combat?.defense_drones || 0)}/{ship.combat?.max_drones || 0}
                   </span>
                 </div>
-                <div className="stat">
-                  <span className="label">Drones:</span>
-                  <span className="value">
-                    {(ship.combat?.attack_drones || 0) + (ship.combat?.defense_drones || 0)} / {ship.combat?.max_drones || 0}
-                  </span>
+                {ship.combat?.shields != null && (
+                  <div className="stat-chip">
+                    <span className="label">Shields</span>
+                    <span className="value">{getShieldsDisplay(ship)}</span>
+                  </div>
+                )}
+                <div className="stat-chip">
+                  <span className="label">Value</span>
+                  <span className="value value-credits">{ship.current_value.toLocaleString()}</span>
                 </div>
               </div>
-              
+
               <div className="condition-section">
-                <div className="condition-label">Condition:</div>
+                <div className="condition-label">Condition</div>
                 <div className="condition-bar">
-                  <div 
+                  <div
                     className={`condition-fill ${getConditionColor(ship.maintenance?.current_rating || 100)}`}
                     style={{ width: `${ship.maintenance?.current_rating || 100}%` }}
                   />
@@ -254,11 +274,11 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
                   </div>
                 )}
               </div>
-              
+
               <div className="cargo-section">
-                <div className="cargo-label">Cargo Hold:</div>
+                <div className="cargo-label">Cargo Hold</div>
                 <div className="cargo-bar">
-                  <div 
+                  <div
                     className="cargo-fill"
                     style={{ width: `${getCargoUsage(ship)}%` }}
                   />
@@ -267,41 +287,7 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
                   </span>
                 </div>
               </div>
-              
-              <div className="ship-value">
-                <span className="label">Value:</span>
-                <span className="value">{ship.current_value.toLocaleString()} credits</span>
-              </div>
             </div>
-            
-            {ship.combat?.shields != null && (
-              <div className="shields-section">
-                <div className="shields-label">Shields:</div>
-                <div className="shields-bar">
-                  {typeof ship.combat.shields === 'object' && ship.combat.shields !== null ? (
-                    <>
-                      <div
-                        className="shields-fill"
-                        style={{ width: `${ship.combat.shields.max > 0 ? (ship.combat.shields.current / ship.combat.shields.max) * 100 : 0}%` }}
-                      />
-                      <span className="shields-text">
-                        {ship.combat.shields.current}/{ship.combat.shields.max}
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <div
-                        className="shields-fill"
-                        style={{ width: `${ship.combat.max_shields > 0 ? (ship.combat.shields / ship.combat.max_shields) * 100 : 100}%` }}
-                      />
-                      <span className="shields-text">
-                        {ship.combat.shields}{ship.combat.max_shields ? `/${ship.combat.max_shields}` : ''}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         ))}
       </div>
