@@ -621,6 +621,51 @@ Neon Mode is the **single-word autonomous delivery run**: play the live game in 
 | N9 PROVE | Lead, browser mutex, serial per section | Hard-reload; confirm dev hostname + SHA. Replay each section's pre-registered proof script live — testpilot/verifpilot for two-player mechanics, GAME_TIME_SCALE for time mechanics. **Triple evidence per claim** (below). FAILED → ONE repair loop (fix→verify→redeploy→re-prove); second failure → `git revert` that section's commits, redeploy, mark REVERTED |
 | N10 DEBRIEF + WRITE-BACK | Lead, serial | Report to Max (always, even on abort). Docs write-back to sw2102-docs (see discipline below). Update ledger |
 
+### Worker Model Tiers — the NEON Quality Scale
+
+The lead session always runs on **Fable 5** (the most capable model). Subagent workers can and should use lighter models for tasks that don't require Fable-level reasoning — this meaningfully reduces token cost without sacrificing output quality where it matters. Max selects a tier by adding a word to the trigger; default when omitted is **STANDARD**.
+
+**Verbal triggers**: `"neon"` = STANDARD · `"neon heavy"` = HEAVY · `"neon lean"` = LEAN · `"neon scout"` = SCOUT
+
+| Tier | Trigger | Build workers | Adversarial reviewers | Discovery/scan | Plan agents | Fix wave | Relative cost |
+|------|---------|---------------|-----------------------|----------------|-------------|----------|---------------|
+| **HEAVY** | `neon heavy` | fable (inherit) | fable (inherit) | sonnet | opus | opus | ~3× |
+| **STANDARD** | `neon` *(default)* | fable (inherit) | fable (inherit) | sonnet | opus | opus | 1× |
+| **LEAN** | `neon lean` | opus | opus | sonnet | sonnet | sonnet | ~0.5× |
+| **SCOUT** | `neon scout` | *disabled — no build* | *disabled* | sonnet | sonnet | *n/a* | ~0.2× |
+
+**How to choose** — answer these questions in order:
+
+1. **"Is this genuinely novel architecture, security-sensitive, or did the last run have 3+ CRITICAL gate findings in this area?"** → **HEAVY**. The extra cost is insurance against a catastrophic gate failure or a subtle exploit introduced by a lighter model that didn't deeply understand the surrounding system. Use sparingly — maybe 1 in 10 runs.
+
+2. **"Is the work well-defined, does it follow established patterns I've built before, and are the risks predictable?"** → **LEAN**. Fixing known NameErrors, CSS scoping, adding auth headers, de-mocking, swapping sessions — these are pattern-matching tasks where Opus on the build + Sonnet on review is more than enough. The standard reviews we've proven consistently produce MED/LOW gate findings; an Opus reviewer on already-understood code will catch the same things.
+
+3. **"Am I exploring / auditing / generating a master list with no intention of building today?"** → **SCOUT**. Sonnet is excellent at structured JSON extraction, code scanning, and docs-drift grading. Discovery workflow (`wf_*-probe`) and audit sweeps should default to Sonnet workers — they read quickly and their findings feed into a Fable-led selection decision anyway.
+
+4. **Otherwise** → **STANDARD**. Normal NEON runs with 3 sections across multiple services. Build workers and reviewers run at full Fable quality (inherited from the session) because the code they produce is deployed to a live game.
+
+**Workflow script syntax** — in the Workflow tool's `agent()` calls, set `model` per agent:
+
+```javascript
+// STANDARD tier (omit model on build/review = fable inherited; override for cheap tasks)
+agent(scanPrompt, { label: 'scan:zone', model: 'sonnet' })   // discovery
+agent(planPrompt, { label: 'plan:A',   model: 'opus'   })   // planning
+agent(buildPrompt, { label: 'build:A'                  })   // build = fable (inherited)
+agent(reviewPrompt, { label: 'review:A'                })   // review = fable (inherited)
+agent(fixPrompt,   { label: 'fix:A',   model: 'opus'   })   // fix wave
+
+// LEAN tier (override build + review to opus; keep scan at sonnet)
+agent(buildPrompt, { label: 'build:A', model: 'opus'   })
+agent(reviewPrompt, { label: 'review:A', model: 'opus' })
+agent(fixPrompt,   { label: 'fix:A',   model: 'sonnet' })
+
+// SCOUT tier (all agents sonnet; no build phase)
+agent(scanPrompt,  { label: 'scan:zone', model: 'sonnet' })
+agent(auditPrompt, { label: 'audit:A',  model: 'sonnet' })
+```
+
+**When Fable is worth its cost** — the quality delta shows most clearly in: (1) adversarial review where a model must reason about subtle attack vectors it did NOT just write; (2) build workers that must reconcile complex multi-file contracts mid-generation (the NEON run 2 combat spine, the NPC spawn offset fix); (3) any work where a single missed invariant invalidates the entire section. When the task is "scan 200 files and return structured JSON", Sonnet is genuinely faster and just as accurate.
+
 ### Sorties (N1 discovery — goal-phrased, never click-paths)
 
 Run as testpilot (verifpilot for a fresh first-login); screenshot every beat (these BEFOREs are irreplaceable); ≥2 psql spot-checks per sortie (a number on screen vs the DB over SSH — a screen that LIES outranks a screen that's empty); check cockpit viewport fit at 1440×900 AND 1920×1080.
