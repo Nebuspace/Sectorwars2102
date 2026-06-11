@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.ship import ShipSpecification, ShipType, UpgradeType
+from src.models.ship import Ship, ShipSpecification, ShipType, UpgradeType
 from src.models.station import Station, StationType
 from src.services.ship_service import ShipService
 from src.services.ship_upgrade_service import ShipUpgradeService
@@ -199,6 +199,48 @@ async def purchase_ship(
             "type": ship.type.value,
         },
         "remaining_credits": player.credits,
+    }
+
+
+@router.post("/{ship_id}/set-active")
+async def set_active_ship(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Make one of the player's ships the active (piloted) ship.
+
+    The client (GameContext.setCurrentShip, the Hangar's MAKE ACTIVE SHIP
+    button) has always called this endpoint; it never existed until now.
+    The target ship must be in the player's current sector — you walk
+    across the hangar, you don't teleport across the galaxy.
+    """
+    import uuid as _uuid
+    try:
+        ship_uuid = _uuid.UUID(str(ship_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found")
+
+    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    ship = db.query(Ship).filter(Ship.id == ship_uuid, Ship.owner_id == player.id).first()
+    if not ship:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found")
+    if ship.sector_id != locked_player.current_sector_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ship.name} is in sector {ship.sector_id}; travel there to board it",
+        )
+    if locked_player.is_landed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lift off before switching ships",
+        )
+
+    locked_player.current_ship_id = ship.id
+    db.commit()
+    return {
+        "message": f"{ship.name} is now your active ship",
+        "current_ship_id": str(ship.id),
     }
 
 
