@@ -268,6 +268,72 @@
       "repair_loops": [
         "create-team 500: AuditService.log_action signature drift (actor_id/string actions) across 12 team_service call sites - pre-existing, unearthed by first UI reachability; fixed, redeployed, re-proven in one loop"
       ]
+    },
+    {
+      "id": "neon-2026-06-11-d",
+      "stage": "complete",
+      "branch_head_at_start": "bf05d28",
+      "deployed_sha_baseline": "208dfeb",
+      "sections": [
+        {
+          "key": "admin-honesty",
+          "state": "proven",
+          "effort": 3,
+          "proof_script": [
+            "admin login on stage; /admin/analytics Performance + Predictive tabs show honest 'endpoint offline' states (code-diff confirms Math.random fallbacks deleted)",
+            "/admin/colonies Planets: attribute values identical across two refreshes and match planets table rows (was random per request)",
+            "/admin/nexus shows real Clusters from /api/v1/nexus/clusters; regenerate button gone",
+            "/admin/ai-trading renders honest empty states ([] from de-mocked endpoints); /admin/permissions Roles tab shows ADR-0027/0058 design-only banner with disabled controls"
+          ]
+        },
+        {
+          "key": "region-sync-and-cost-preview",
+          "state": "proven",
+          "effort": 2,
+          "proof_script": [
+            "verifpilot at sector 1 hovers the cross-region tunnel node: 'CLICK TO WARP - 1 TURN' (cost from MoveOption.turn_cost)",
+            "warp 1 -> 1301 (Central Nexus): current-sector returns 200 with region 'Central Nexus' (the formerly-reproducible 404 is dead); players.current_region_id updated in DB",
+            "stale-region backfill applied on dev (players synced to their sector's region)"
+          ]
+        },
+        {
+          "key": "market-clarity",
+          "state": "proven",
+          "effort": 1.5,
+          "proof_script": [
+            "docked at a station with nothing to buy: honest in-fiction message explains the market instead of an empty grid",
+            "buy confirm modal shows the tax line (effective rate) in the price preview",
+            "single-commodity market no longer renders as one card lost in empty width"
+          ]
+        }
+      ],
+      "not_selected": {
+        "haggling": "NOT-READY per spec-readiness gate: 7 decisions filed to DECISIONS.md (counter-near-fair formula, band narrowing magnitude, rank 5%-vs-12% contradiction, rep-tier multiplier tables, difficulty authority int-1-10 vs archetype multipliers, fair-price model ambiguity, session re-entry rules) + canon contradictions to FINDINGS"
+      },
+      "probe_workflow": "wf_217772ba-43b",
+      "verdict": "GLOWING",
+      "commits": {
+        "admin-honesty": "fbb94d1 + ai-metrics hotfix",
+        "region-sync-and-cost-preview": "e59d018",
+        "market-clarity": "cfafd70"
+      },
+      "proof_evidence": {
+        "admin-honesty": "Real admin login: dashboard shows true galaxy stats (10 players/6300 sectors/89 ships). Analytics tabs state accurate 404 causes where Math.random dashboards lived; AI Trading shows em-dashes + ONE real number (3 ARIA profiles); Nexus renders honest Not Generated with Clusters tab (Districts gone); /ai/metrics fabrication caught DURING proof and hotfixed (3247/79.8%/67.3% -> nulls + real ARIA counts)",
+        "region-sync-and-cost-preview": "NAV hover: 'CLICK TO WARP - 1 TURN' on the cross-region tunnel node; warp 1 -> 1301 Central Nexus: current-sector 200 with correct region (the reproducible 404 is dead); 4 new unit tests green; backfill applied (0 stale)",
+        "market-clarity": "Capital Station buy: preview itemized Goods 13 / Station tariff (0.0%) +0 / Total 13 / After 1,988,262 - server charged EXACTLY that (header matches to the credit); prices player-effective server-side. Empty-market + single-commodity visual variants reviewer-verified (no qualifying station on proof route)"
+      },
+      "residual_notes": [
+        "AI Trading 'Recent Activity' card renders null processing rate as 'Processing 0 predictions per minute' (string template path) - minor null-as-0 nit",
+        "admin_colonization genesis-alert/terraforming de-mock verified by review + build; live admin Colonization visual pass deferred",
+        "Nexus status reports Not Generated although nexus-region sectors exist (1301-6300) - status-vs-data discrepancy to investigate"
+      ],
+      "parking_lot_additions": [
+        "DUPLICATE CAPITALS: Earth + Capital Station exist at BOTH player_owned sector 1 and nexus sector 1301 (both sectors named Terra) - BANG capital stamping ran per-region; canon presumably wants one Earth (terran_space). Worldgen invariant fix needed",
+        "Stale slip occupancy ghost: teleporting a docked player (admin teleport) leaves a docking_slip_occupancies row that 500s all future docking (unique player_id). Dock path should clean stale rows or teleport should release slips",
+        "PermissionMatrix/RoleManagement design-only banners ship; AdminScopeGrant (ADR-0058) implementation remains the real fix",
+        "Surviving admin fabrications named by reviewers for a future batch: PlanetaryManagement resource-unit labels; dead-code pages (AnalyticsReports/Universe/UniverseEditor) deletion",
+        "GameDashboard affordability edge: warp-unaffordable + tunnel-affordable node renders clickable but server rejects (warp-first, no fallthrough)"
+      ]
     }
   ]
 }
