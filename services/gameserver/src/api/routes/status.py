@@ -28,6 +28,10 @@ def get_status_response():
     }
 
 # Status endpoint for health checks
+# Registered at both "" and "/" so GET /api/v1/status works without a 307
+# trailing-slash redirect — the redirect emits an http:// Location through
+# the nginx/cloudflared proxy chain, which browsers on https reject.
+@router.get("")
 @router.get("/")
 async def status_root(request: Request):
     """
