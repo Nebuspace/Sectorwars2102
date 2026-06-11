@@ -120,6 +120,22 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     return Number((currentShip.cargo as Record<string, number>)[resourceType]) || 0;
   };
 
+  // Helper to get total units of cargo the player is carrying
+  const getPlayerCargoCount = (): number => {
+    if (!currentShip?.cargo) return 0;
+    // Check contents field first (new format)
+    if (typeof currentShip.cargo === 'object' && 'contents' in currentShip.cargo) {
+      const contents = currentShip.cargo.contents as Record<string, number>;
+      return Object.values(contents)
+        .filter((v): v is number => typeof v === 'number')
+        .reduce((a, b) => a + b, 0);
+    }
+    // Legacy format
+    return Object.values(currentShip.cargo as Record<string, number>)
+      .filter((v): v is number => typeof v === 'number')
+      .reduce((a, b) => a + b, 0);
+  };
+
   // Calculate trade costs when parameters change
   useEffect(() => {
     if (selectedResource && marketInfo && tradeQuantity > 0) {
@@ -422,6 +438,19 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
               <span className="status-cargo">📦 Cargo: {getCargoUsed()} / {getCargoCapacity()}</span>
             </div>
 
+            {tradeMode === 'sell' && getPlayerCargoCount() === 0 ? (
+              <div className="empty-cargo-state">
+                <div className="empty-icon">📦</div>
+                <h4>Cargo Hold Empty</h4>
+                <p>Buy goods first to sell them at this station.</p>
+                <button
+                  className="switch-mode-button"
+                  onClick={() => handleTradeModeChange('buy')}
+                >
+                  Switch to Buy Mode
+                </button>
+              </div>
+            ) : (
             <div className="resources-grid">
               {Object.entries(marketInfo.resources).map(([resourceType, resource]) => {
                 const playerAmount = getPlayerResourceAmount(resourceType);
@@ -452,8 +481,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                     </div>
                     <div className="resource-prices">
                       {/* Player buys at the station's sell_price, sells at its buy_price */}
-                      {resource.station_sells && <div className="buy-price">Buy: {formatCredits(resource.sell_price)}</div>}
-                      {resource.station_buys && <div className="sell-price">Sell: {formatCredits(resource.buy_price)}</div>}
+                      {resource.station_sells && <div className="buy-price">You pay: {formatCredits(resource.sell_price)}</div>}
+                      {resource.station_buys && <div className="sell-price">You get: {formatCredits(resource.buy_price)}</div>}
                     </div>
                     <div className="resource-quantity">
                       {tradeMode === 'buy'
@@ -470,6 +499,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                 );
               })}
             </div>
+            )}
           </div>
         )}
 
@@ -505,7 +535,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
             <div className="trade-modal-header">
               <div className="modal-resource-info">
                 <span className="modal-resource-icon">{getResourceIcon(selectedResource)}</span>
-                <h3>{tradeMode === 'buy' ? 'Buy' : 'Sell'} {formatName(selectedResource)}</h3>
+                <h3>
+                  <span className={`modal-trade-mode ${tradeMode}`}>{tradeMode === 'buy' ? 'BUY' : 'SELL'}</span>
+                  {formatName(selectedResource)}
+                </h3>
               </div>
               <button className="modal-close" onClick={() => setShowConfirmDialog(false)}>×</button>
             </div>
@@ -550,10 +583,18 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                 </div>
                 <div className="quantity-presets">
                   <button onClick={() => setTradeQuantity(1)}>1</button>
-                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.25) || 1)}>25%</button>
-                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.5) || 1)}>50%</button>
-                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.75) || 1)}>75%</button>
-                  <button onClick={() => setTradeQuantity(getMaxQuantity() || 1)}>Max</button>
+                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.25) || 1)}>
+                    25% ({Math.floor(getMaxQuantity() * 0.25) || 1})
+                  </button>
+                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.5) || 1)}>
+                    50% ({Math.floor(getMaxQuantity() * 0.5) || 1})
+                  </button>
+                  <button onClick={() => setTradeQuantity(Math.floor(getMaxQuantity() * 0.75) || 1)}>
+                    75% ({Math.floor(getMaxQuantity() * 0.75) || 1})
+                  </button>
+                  <button onClick={() => setTradeQuantity(getMaxQuantity() || 1)}>
+                    Max ({getMaxQuantity()})
+                  </button>
                 </div>
               </div>
 
