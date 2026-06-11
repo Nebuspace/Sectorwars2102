@@ -61,6 +61,8 @@ export interface Station {
   owner?: any;
   services: Record<string, any>;
   faction_affiliation?: string;
+  station_class?: string | number;
+  is_spacedock?: boolean;
 }
 
 export interface MoveOption {
@@ -91,6 +93,10 @@ export interface MarketInfo {
     type: string;
     faction: string | null;
     tax_rate: number;
+    station_class?: string | number;
+    is_spacedock?: boolean;
+    trade_volume?: number;
+    trader_personality_type?: string;
   };
 }
 

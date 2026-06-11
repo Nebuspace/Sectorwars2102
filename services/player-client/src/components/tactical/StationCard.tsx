@@ -1,4 +1,5 @@
 import React from 'react';
+import { getStationClassInfo, StationClassBadge } from '../common/stationIdentity';
 import './station-card.css';
 
 interface StationCardProps {
@@ -7,6 +8,8 @@ interface StationCardProps {
     name: string;
     type: string;
     status: string;
+    station_class?: string | number;
+    is_spacedock?: boolean;
     owner_id?: string | null;
     faction_affiliation?: string | null;
     services?: {
@@ -65,6 +68,7 @@ const StationCard: React.FC<StationCardProps> = ({ station, onDock, isDocked }) 
 
   const statusInfo = getStationStatusInfo(station.status);
   const factionColor = getFactionColor(station.faction_affiliation);
+  const classInfo = getStationClassInfo(station.station_class);
 
   // Get available services
   const availableServices = station.services
@@ -77,12 +81,14 @@ const StationCard: React.FC<StationCardProps> = ({ station, onDock, isDocked }) 
     <div
       className={`station-card ${!isDocked && station.status.toLowerCase() === 'active' ? 'clickable' : ''}`}
       onClick={handleClick}
+      style={classInfo ? { borderLeft: `3px solid ${classInfo.accent}` } : undefined}
     >
       {/* Station Header */}
       <div className="station-card-header">
         <div className="station-icon">🏢</div>
         <div className="station-info">
           <div className="station-name">{station.name}</div>
+          <StationClassBadge station_class={station.station_class} />
           <div className="station-type-badge" style={{ borderColor: factionColor, color: factionColor }}>
             {station.type}
           </div>

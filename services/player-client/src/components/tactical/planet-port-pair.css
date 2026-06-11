@@ -197,9 +197,13 @@
 }
 
 .station-icon {
+  display: inline-flex;
+  align-items: center;
   font-size: 1.2rem;
   flex-shrink: 0;
-  filter: drop-shadow(0 0 6px rgba(0, 217, 255, 0.5));
+  /* currentColor follows the station-class accent set inline; falls back to cyan */
+  color: #00d9ff;
+  filter: drop-shadow(0 0 6px currentColor);
 }
 
 .station-details {

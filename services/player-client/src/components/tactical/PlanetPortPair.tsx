@@ -1,4 +1,5 @@
 import React from 'react';
+import { getStationClassInfo, StationClassMark } from '../common/stationIdentity';
 import './planet-port-pair.css';
 
 interface Planet {
@@ -18,6 +19,8 @@ interface Station {
   id: string;
   name: string;
   port_class?: number;  // Station class 0-11 (from specification)
+  station_class?: string | number;  // Newer backend field; same 0-11 classes
+  is_spacedock?: boolean;
   type: string;
   status: string;
   owner_id?: string | null;
@@ -63,22 +66,10 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
     'jungle': '🌴'
   };
 
-  // Station class names (from specification)
-  const portClassNames: { [key: number]: string } = {
-    0: 'Sol System',
-    1: 'Mining Operation',
-    2: 'Agricultural Center',
-    3: 'Industrial Hub',
-    4: 'Distribution Center',
-    5: 'Collection Hub',
-    6: 'Mixed Market',
-    7: 'Resource Exchange',
-    8: 'Black Hole',
-    9: 'Nova',
-    10: 'Luxury Market',
-    11: 'Advanced Tech Hub'
-  };
-
+  // Station class identity (shared stationIdentity module); null when unknown
+  const stationClassInfo = station
+    ? getStationClassInfo(station.station_class ?? station.port_class)
+    : null;
 
   // Format population
   const formatPopulation = (pop: number | undefined) => {
@@ -167,7 +158,16 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
           className={`station-section ${!isDocked && station.status.toLowerCase() === 'operational' ? 'clickable' : 'inactive'}`}
           onClick={handleStationClick}
         >
-          <span className="station-icon">🛰️</span>
+          <span
+            className="station-icon"
+            style={stationClassInfo ? { color: stationClassInfo.accent } : undefined}
+          >
+            {stationClassInfo ? (
+              <StationClassMark group={stationClassInfo.group} size={18} />
+            ) : (
+              '🛰️'
+            )}
+          </span>
           <div className="station-details">
             <div className="station-name-line">
               <div className="station-name-status">
@@ -177,8 +177,18 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
                 </span>
               </div>
               {stationOwnerDisplay && <span className="station-owner">{stationOwnerDisplay}</span>}
-              {station.port_class !== undefined && (
-                <span className="station-class">Class {station.port_class}: {portClassNames[station.port_class] || 'Unknown'}</span>
+              {stationClassInfo ? (
+                <span
+                  className="station-class"
+                  style={{ color: stationClassInfo.accent }}
+                  title={stationClassInfo.blurb}
+                >
+                  Class {stationClassInfo.classNumber} · {stationClassInfo.name}
+                </span>
+              ) : (
+                station.port_class !== undefined && (
+                  <span className="station-class">Class {station.port_class}</span>
+                )
               )}
               <span className="station-type">{station.type.replace(/_/g, ' ')}</span>
             </div>

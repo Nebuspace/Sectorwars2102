@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import GameLayout from '../layouts/GameLayout';
+import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
 import './trading-interface.css';
 
 interface Resource {
@@ -369,6 +370,9 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     );
   }
 
+  // Optional flavor data from the backend; both render-guarded below
+  const traderPersonality = getTraderPersonality(marketInfo?.port?.trader_personality_type);
+
   return (
     <Wrapper>
     <div className="trading-interface">
@@ -426,7 +430,18 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         {/* Market Information */}
         {marketInfo && (
           <div className="market-info">
-            <h3>Market at {marketInfo.port.name}</h3>
+            <div className="market-info-header">
+              <h3>Market at {marketInfo.port.name}</h3>
+              <StationClassBadge station_class={marketInfo.port.station_class} />
+              {traderPersonality && (
+                <span
+                  className="trader-personality-chip"
+                  title={`Trader temperament: ${traderPersonality.label}`}
+                >
+                  {traderPersonality.label}
+                </span>
+              )}
+            </div>
             <div className="port-details">
               <span>Type: {marketInfo.port.type}</span>
               {marketInfo.port.faction && <span>Faction: {marketInfo.port.faction}</span>}
