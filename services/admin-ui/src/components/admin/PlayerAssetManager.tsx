@@ -34,8 +34,14 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
   
   const [activeTab, setActiveTab] = useState<'ships' | 'planets' | 'ports'>('ships');
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
   const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Asset assign/remove is disabled: the backend routes
+  // POST /api/v1/admin/players/{id}/assets/assign and .../assets/remove
+  // do not exist. Asset reads (ships/planets/ports) below are real and stay.
+  const ASSET_ASSIGN_ENDPOINT = 'POST /api/v1/admin/players/{id}/assets/assign';
+  const ASSET_REMOVE_ENDPOINT = 'POST /api/v1/admin/players/{id}/assets/remove';
 
   useEffect(() => {
     loadPlayerAssets();
@@ -83,49 +89,11 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
     }
   };
 
-  const handleAssetAction = async (action: 'assign' | 'remove', assetType: string, assetIds: string[]) => {
-    if (assetIds.length === 0) {
-      alert('Please select assets to ' + action);
-      return;
-    }
-
-    if (!confirm(`Are you sure you want to ${action} ${assetIds.length} ${assetType}(s)?`)) {
-      return;
-    }
-
-    setActionLoading(true);
-    try {
-      const endpoint = action === 'assign' 
-        ? `/api/v1/admin/players/${player.id}/assets/assign`
-        : `/api/v1/admin/players/${player.id}/assets/remove`;
-
-      await api.post(endpoint, {
-        asset_type: assetType,
-        asset_ids: assetIds
-      });
-
-      // Reload assets after action
-      await loadPlayerAssets();
-      setSelectedAssets([]);
-
-      // Update player data if needed
-      const updatedPlayer = { ...player };
-      if (assetType === 'ships') {
-        updatedPlayer.assets.ships_count += action === 'assign' ? assetIds.length : -assetIds.length;
-      } else if (assetType === 'planets') {
-        updatedPlayer.assets.planets_count += action === 'assign' ? assetIds.length : -assetIds.length;
-      } else if (assetType === 'ports') {
-        updatedPlayer.assets.stations_count += action === 'assign' ? assetIds.length : -assetIds.length;
-      }
-      onUpdate(updatedPlayer);
-
-      alert(`Successfully ${action}ed ${assetIds.length} ${assetType}(s)`);
-    } catch (error: any) {
-      console.error(`Failed to ${action} assets:`, error);
-      alert(`Failed to ${action} assets: ${error.response?.data?.detail || 'Unknown error'}`);
-    } finally {
-      setActionLoading(false);
-    }
+  // Disabled: the assign/remove backend endpoints do not exist. Rather than
+  // wiring a dead write, this surfaces an inline notice naming the endpoint.
+  const handleAssetAction = (action: 'assign' | 'remove', _assetType: string, _assetIds: string[]) => {
+    const endpoint = action === 'assign' ? ASSET_ASSIGN_ENDPOINT : ASSET_REMOVE_ENDPOINT;
+    setNotice(`Asset ${action} is unavailable: the backend endpoint ${endpoint} is not implemented.`);
   };
 
   const toggleAssetSelection = (assetId: string) => {
@@ -240,6 +208,32 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
         <button onClick={onClose} className="close-btn">×</button>
       </div>
 
+      <div
+        role="note"
+        style={{
+          margin: '12px 16px 0', padding: '10px 12px',
+          background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+          borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+        }}
+      >
+        Asset assign/remove is unavailable: the backend endpoints{' '}
+        <code style={{ color: '#fde68a' }}>{ASSET_ASSIGN_ENDPOINT}</code> and{' '}
+        <code style={{ color: '#fde68a' }}>{ASSET_REMOVE_ENDPOINT}</code> are not implemented.
+        Asset listings below are read-only.
+      </div>
+      {notice && (
+        <div
+          role="alert"
+          style={{
+            margin: '12px 16px 0', padding: '10px 12px',
+            background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: '6px', color: '#fca5a5', fontSize: '0.82rem', lineHeight: 1.4
+          }}
+        >
+          {notice}
+        </div>
+      )}
+
       <div className="asset-tabs">
         <button 
           className={`tab ${activeTab === 'ships' ? 'active' : ''}`}
@@ -278,10 +272,11 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
               {selectedAssets.length > 0 && (
                 <>
                   <span className="selection-count">{selectedAssets.length} selected</span>
-                  <button 
+                  <button
                     onClick={() => handleAssetAction('remove', activeTab, selectedAssets)}
                     className="btn btn-danger"
-                    disabled={actionLoading}
+                    disabled
+                    title={`Disabled — missing backend endpoint ${ASSET_REMOVE_ENDPOINT}`}
                   >
                     Remove Selected
                   </button>
@@ -309,10 +304,11 @@ const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
               {selectedAssets.length > 0 && (
                 <>
                   <span className="selection-count">{selectedAssets.length} selected</span>
-                  <button 
+                  <button
                     onClick={() => handleAssetAction('assign', activeTab, selectedAssets)}
                     className="btn btn-primary"
-                    disabled={actionLoading}
+                    disabled
+                    title={`Disabled — missing backend endpoint ${ASSET_ASSIGN_ENDPOINT}`}
                   >
                     Assign Selected
                   </button>

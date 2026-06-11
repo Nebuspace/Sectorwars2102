@@ -100,6 +100,38 @@ class CombatResolutionRequest(BaseModel):
     credits_adjustment: Optional[int] = Field(None, description="Adjusted credits looted")
 
 
+class CombatLogParticipant(BaseModel):
+    id: Optional[str] = None
+    username: str
+    ship_name: Optional[str] = None
+    ship_type: Optional[str] = None
+
+
+class CombatLogDamage(BaseModel):
+    attacker_damage: int
+    defender_damage: int
+
+
+class CombatLogItem(BaseModel):
+    id: str
+    combat_id: str
+    combat_type: str
+    outcome: str
+    rounds: int
+    duration_seconds: float
+    sector_id: Optional[int] = None
+    attacker: CombatLogParticipant
+    defender: CombatLogParticipant
+    damage_dealt: CombatLogDamage
+    credits_looted: int
+    experience_gained: int
+    disputed: bool
+    admin_resolved: bool
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    timestamp: str
+
+
 @router.get("/live", response_model=List[CombatFeedItem])
 async def get_live_combat_feed(
     limit: int = Query(50, ge=1, le=100, description="Number of combat entries to return"),
@@ -338,6 +370,101 @@ async def get_combat_stats(
         most_active_combatant=most_active_combatant,
         deadliest_ship_type=deadliest_ship_type
     )
+
+
+@router.get("/logs", response_model=List[CombatLogItem])
+async def get_combat_logs(
+    time_filter: str = Query("30d", description="Time filter: 24h, 7d, 30d, all"),
+    limit: int = Query(1000, ge=1, le=5000, description="Max number of logs to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    combat_type: Optional[str] = Query(None, description="Filter by combat type"),
+    outcome: Optional[str] = Query(None, description="Filter by outcome"),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Get a paginated, time-filtered list of recorded combat logs.
+
+    Returns the persisted combat history (one row per resolved combat),
+    enriched with attacker/defender usernames resolved from the players table.
+
+    **Required permissions**: Admin access
+    """
+    now = datetime.utcnow()
+    time_filters = {
+        "24h": now - timedelta(hours=24),
+        "7d": now - timedelta(days=7),
+        "30d": now - timedelta(days=30),
+    }
+
+    query = db.query(CombatLog)
+
+    if time_filter != "all":
+        threshold = time_filters.get(time_filter, time_filters["30d"])
+        query = query.filter(CombatLog.timestamp >= threshold)
+
+    if combat_type:
+        query = query.filter(CombatLog.combat_type == combat_type)
+
+    if outcome:
+        query = query.filter(CombatLog.outcome == outcome)
+
+    rows = (
+        query.order_by(desc(CombatLog.timestamp))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # Resolve participant usernames in one round-trip
+    player_ids = set()
+    for row in rows:
+        if row.attacker_id:
+            player_ids.add(row.attacker_id)
+        if row.defender_id:
+            player_ids.add(row.defender_id)
+
+    username_by_id = {}
+    if player_ids:
+        for pid, uname in db.query(Player.id, Player.username).filter(Player.id.in_(player_ids)).all():
+            username_by_id[pid] = uname
+
+    def participant(player_id, ship_name, ship_type) -> CombatLogParticipant:
+        return CombatLogParticipant(
+            id=str(player_id) if player_id else None,
+            username=username_by_id.get(player_id, "Unknown") if player_id else "Unknown",
+            ship_name=ship_name,
+            ship_type=ship_type,
+        )
+
+    logs: List[CombatLogItem] = []
+    for row in rows:
+        logs.append(
+            CombatLogItem(
+                id=str(row.id),
+                combat_id=str(row.id),
+                combat_type=row.combat_type or "ship_to_ship",
+                outcome=row.outcome,
+                rounds=row.rounds or 0,
+                duration_seconds=float(row.combat_duration or 0.0),
+                sector_id=row.sector_id,
+                attacker=participant(row.attacker_id, row.attacker_ship_name, row.attacker_ship_type),
+                defender=participant(row.defender_id, row.defender_ship_name, row.defender_ship_type),
+                damage_dealt=CombatLogDamage(
+                    attacker_damage=row.attacker_damage_dealt or 0,
+                    defender_damage=row.defender_damage_dealt or 0,
+                ),
+                credits_looted=row.credits_looted or 0,
+                experience_gained=row.experience_gained or 0,
+                disputed=bool(row.disputed),
+                admin_resolved=bool(row.admin_resolved),
+                started_at=row.started_at.isoformat() if row.started_at else None,
+                ended_at=row.ended_at.isoformat() if row.ended_at else None,
+                timestamp=row.timestamp.isoformat() if row.timestamp else now.isoformat(),
+            )
+        )
+
+    return logs
 
 
 @router.post("/{combat_id}/resolve")

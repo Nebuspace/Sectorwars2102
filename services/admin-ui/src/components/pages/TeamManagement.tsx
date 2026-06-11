@@ -116,18 +116,11 @@ export const TeamManagement: React.FC = () => {
     return true;
   });
 
-  const handleTeamAction = async (teamId: string, action: string) => {
-    try {
-      await api.post(`/api/v1/admin/teams/${teamId}/action`, {
-        action: action
-      });
-      // Refresh data after action
-      await loadData();
-    } catch (error: any) {
-      console.error('Team action failed:', error);
-      alert(error.response?.data?.detail || 'Failed to perform team action');
-    }
-  };
+  // Team admin actions are disabled: the backend endpoint
+  // POST /api/v1/admin/teams/{id}/action does not exist. The controls
+  // below stay visible to document intent but are inert until the
+  // endpoint is implemented.
+  const TEAM_ACTION_ENDPOINT = 'POST /api/v1/admin/teams/{id}/action';
 
   return (
     <div className="team-management">
@@ -428,57 +421,44 @@ export const TeamManagement: React.FC = () => {
 
                   <div style={{ padding: '16px', background: '#1f2937', borderRadius: '8px', border: '1px solid #374151' }}>
                     <h4 style={{ margin: '0 0 12px 0', color: '#e5e7eb' }}>Actions</h4>
+                    <div
+                      role="note"
+                      style={{
+                        margin: '0 0 12px 0', padding: '10px 12px',
+                        background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                        borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+                      }}
+                    >
+                      Team admin actions are unavailable: the backend endpoint{' '}
+                      <code style={{ color: '#fde68a' }}>{TEAM_ACTION_ENDPOINT}</code> is not implemented.
+                      These controls are shown to document intended capability.
+                    </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       <button
-                        style={{ padding: '8px 16px', background: '#374151', color: '#e5e7eb', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}
-                        onClick={() => {
-                          if (confirm(`Are you sure you want to ${selectedTeam.is_active ? 'deactivate' : 'activate'} team "${selectedTeam.name}"?`)) {
-                            handleTeamAction(selectedTeam.id, selectedTeam.is_active ? 'deactivate' : 'activate');
-                          }
-                        }}
+                        disabled
+                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
+                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
                       >
                         {selectedTeam.is_active ? 'Deactivate Team' : 'Activate Team'}
                       </button>
                       <button
-                        style={{ padding: '8px 16px', background: '#374151', color: '#e5e7eb', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}
-                        onClick={() => {
-                          const newLeader = prompt('Enter the new leader player ID:');
-                          if (newLeader) {
-                            if (confirm(`Transfer leadership of "${selectedTeam.name}" to player ${newLeader}?`)) {
-                              handleTeamAction(selectedTeam.id, `change_leader:${newLeader}`);
-                            }
-                          }
-                        }}
+                        disabled
+                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
+                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
                       >
                         Change Team Leader
                       </button>
                       <button
-                        style={{ padding: '8px 16px', background: '#374151', color: '#e5e7eb', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}
-                        onClick={() => {
-                          const newRep = prompt('Enter new reputation value:');
-                          if (newRep !== null) {
-                            const repNum = parseInt(newRep);
-                            if (!isNaN(repNum)) {
-                              if (confirm(`Set reputation for "${selectedTeam.name}" to ${repNum}?`)) {
-                                handleTeamAction(selectedTeam.id, `set_reputation:${repNum}`);
-                              }
-                            } else {
-                              alert('Please enter a valid number.');
-                            }
-                          }
-                        }}
+                        disabled
+                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
+                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
                       >
                         Modify Reputation
                       </button>
                       <button
-                        style={{ padding: '8px 16px', background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}
-                        onClick={() => {
-                          if (confirm(`WARNING: Are you sure you want to dissolve team "${selectedTeam.name}"? This action is irreversible!`)) {
-                            if (confirm(`FINAL CONFIRMATION: Dissolving "${selectedTeam.name}" will remove all members. Proceed?`)) {
-                              handleTeamAction(selectedTeam.id, 'dissolve');
-                            }
-                          }
-                        }}
+                        disabled
+                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
+                        style={{ padding: '8px 16px', background: 'rgba(239, 68, 68, 0.15)', color: '#9ca3af', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
                       >
                         Dissolve Team
                       </button>

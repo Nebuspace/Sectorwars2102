@@ -58,14 +58,17 @@ interface CombatRanking {
   totalDamage: number;
 }
 
+// Matches backend CombatDisputeResponse in admin_combat.py
 interface CombatDispute {
   id: string;
-  combatEventId: string;
-  reporterId: string;
-  reporterName: string;
-  reason: string;
-  status: 'pending' | 'resolved' | 'rejected';
-  createdAt: string;
+  combat_id: string | null;
+  type: string;
+  severity: string;
+  timestamp: string;
+  description: string;
+  participants: Record<string, unknown>;
+  status: string;
+  recommended_action: string;
 }
 
 export const CombatOverview: React.FC = () => {

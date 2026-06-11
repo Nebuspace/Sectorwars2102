@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { api } from '../../utils/auth';
 import { PlayerModel } from '../../types/playerManagement';
 import './bulk-operation-panel.css';
 
@@ -34,6 +33,12 @@ const BulkOperationPanel: React.FC<BulkOperationPanelProps> = ({
   const [isExecuting, setIsExecuting] = useState(false);
   const [results, setResults] = useState<BulkOperationResult[]>([]);
   const [showResults, setShowResults] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Bulk operations are disabled: the backend route
+  // POST /api/v1/admin/players/bulk-operation does not exist. The form
+  // stays visible to document intent but cannot execute.
+  const BULK_OP_ENDPOINT = 'POST /api/v1/admin/players/bulk-operation';
 
   const operations = [
     {
@@ -103,69 +108,10 @@ const BulkOperationPanel: React.FC<BulkOperationPanelProps> = ({
     }));
   };
 
-  const executeOperation = async () => {
-    if (!selectedOperation) {
-      alert('Please select an operation');
-      return;
-    }
-
-    const operation = operations.find(op => op.id === selectedOperation);
-    if (!operation) return;
-
-    // Validate required fields
-    const missingFields = operation.fields
-      .filter(field => !operationData[field.name] && field.type !== 'textarea')
-      .map(field => field.label);
-
-    if (missingFields.length > 0) {
-      alert(`Please fill in the following fields: ${missingFields.join(', ')}`);
-      return;
-    }
-
-    if (!confirm(`Are you sure you want to execute "${operation.name}" on ${selectedPlayers.length} players?`)) {
-      return;
-    }
-
-    setIsExecuting(true);
-    const operationResults: BulkOperationResult[] = [];
-
-    try {
-      // Execute operation for each player
-      for (const player of selectedPlayers) {
-        try {
-          const requestData = {
-            operation: selectedOperation,
-            data: operationData,
-            player_id: player.id
-          };
-
-          await api.post(`/api/v1/admin/players/bulk-operation`, requestData);
-          
-          operationResults.push({
-            playerId: player.id,
-            playerName: player.username,
-            success: true
-          });
-        } catch (error: any) {
-          operationResults.push({
-            playerId: player.id,
-            playerName: player.username,
-            success: false,
-            error: error.response?.data?.detail || 'Unknown error'
-          });
-        }
-      }
-
-      setResults(operationResults);
-      setShowResults(true);
-      onComplete(selectedOperation, operationResults);
-
-    } catch (error) {
-      console.error('Bulk operation failed:', error);
-      alert('Bulk operation failed. Please try again.');
-    } finally {
-      setIsExecuting(false);
-    }
+  // Disabled: the bulk-operation backend endpoint does not exist. We keep
+  // this handler as an inline-notice guard rather than wiring a dead write.
+  const executeOperation = () => {
+    setNotice(`Bulk operations are unavailable: the backend endpoint ${BULK_OP_ENDPOINT} is not implemented.`);
   };
 
   const selectedOp = operations.find(op => op.id === selectedOperation);
@@ -230,6 +176,30 @@ const BulkOperationPanel: React.FC<BulkOperationPanelProps> = ({
       </div>
 
       <div className="panel-content">
+        <div
+          role="note"
+          style={{
+            margin: '0 0 16px 0', padding: '10px 12px',
+            background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+            borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+          }}
+        >
+          Bulk operations are unavailable: the backend endpoint{' '}
+          <code style={{ color: '#fde68a' }}>{BULK_OP_ENDPOINT}</code> is not implemented.
+          The form below is shown to document intended capability.
+        </div>
+        {notice && (
+          <div
+            role="alert"
+            style={{
+              margin: '0 0 16px 0', padding: '10px 12px',
+              background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.35)',
+              borderRadius: '6px', color: '#fca5a5', fontSize: '0.82rem', lineHeight: 1.4
+            }}
+          >
+            {notice}
+          </div>
+        )}
         <div className="operation-selection">
           <h4>Select Operation</h4>
           <div className="operation-grid">
@@ -312,12 +282,13 @@ const BulkOperationPanel: React.FC<BulkOperationPanelProps> = ({
         <button onClick={onClose} className="btn btn-secondary" disabled={isExecuting}>
           Cancel
         </button>
-        <button 
-          onClick={executeOperation} 
+        <button
+          onClick={executeOperation}
           className="btn btn-danger"
-          disabled={!selectedOperation || isExecuting}
+          disabled
+          title={`Disabled — missing backend endpoint ${BULK_OP_ENDPOINT}`}
         >
-          {isExecuting ? 'Executing...' : `Execute on ${selectedPlayers.length} Players`}
+          {`Execute on ${selectedPlayers.length} Players`}
         </button>
       </div>
     </div>
