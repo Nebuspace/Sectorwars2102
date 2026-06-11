@@ -392,9 +392,11 @@ async def register_user(
         is_admin=False
     )
 
+    # Flush (not commit) so new_user.id exists for the FK rows below while
+    # keeping the whole registration atomic — a failure past this point must
+    # not leave an orphaned User with no Player (login succeeds, game 422s).
     db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    db.flush()
 
     # Create player credentials
     player_creds = PlayerCredentials(
@@ -402,45 +404,49 @@ async def register_user(
         password_hash=get_password_hash(password)
     )
     db.add(player_creds)
-    db.commit()
 
-    # Get Terran Space region and Sector 1 within it
     from src.models.sector import Sector
     from src.models.player import Player
-    from src.models.region import Region
+    from src.models.region import Region, RegionType
 
-    # Find Terran Space region
-    terran_space = db.query(Region).filter(Region.name == "terran-space").first()
+    # Find Terran Space by region_type — names are import-specific
+    # (BANG imports use "bang-<uuid>-terran_space"), the type is canonical.
+    terran_space = db.query(Region).filter(
+        Region.region_type == RegionType.TERRAN_SPACE.value
+    ).first()
     if not terran_space:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Terran Space region not found. Galaxy may not be properly initialized."
         )
 
-    # Find Sector 1 within Terran Space
+    # Capital Sector per ADR-0005 is sector 1 for Terran Space, but
+    # Region.capital_sector_number doesn't exist yet and BANG imports number
+    # sectors globally (Terran = 1001+). The region's lowest sector_number is
+    # the capital in both layouts.
     starting_sector = db.query(Sector).filter(
-        Sector.sector_id == 1,
         Sector.region_id == terran_space.id
-    ).first()
+    ).order_by(Sector.sector_id.asc()).first()
 
     if not starting_sector:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Sector 1 not found in Terran Space. Galaxy may not be properly initialized."
+            detail="No sectors found in Terran Space. Galaxy may not be properly initialized."
         )
 
     # Create Player record with both sector and region assignments
     player = Player(
         user_id=new_user.id,
         nickname=username,
-        current_sector_id=1,  # Sector 1 (sector_id integer, not UUID)
-        home_sector_id=1,     # Sector 1 (sector_id integer, not UUID)
+        current_sector_id=starting_sector.sector_id,
+        home_sector_id=starting_sector.sector_id,
         current_region_id=terran_space.id,  # Terran Space region UUID
         home_region_id=terran_space.id,     # Terran Space region UUID
         credits=10000  # Starting credits (Terran Space default)
     )
     db.add(player)
     db.commit()
+    db.refresh(new_user)
 
     return {
         "id": str(new_user.id),
