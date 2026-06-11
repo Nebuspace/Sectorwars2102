@@ -190,7 +190,22 @@ interface GameContextType {
   // Combat
   attackPlayer: (playerId: string) => Promise<any>;
   attackDrones: () => Promise<any>;
-  
+
+  // Port Office — station ownership, sealed-bid sales, tariffs, takeovers
+  // (backend: /api/v1/port-ownership/*). Payload shapes are normalized
+  // defensively in the Port Office venue, so these return `unknown`.
+  getPortListings: () => Promise<unknown>;
+  getListing: (stationId: string) => Promise<unknown>;
+  listStation: (stationId: string) => Promise<unknown>;
+  placeOffer: (stationId: string, bidAmount: number) => Promise<unknown>;
+  getMyStations: () => Promise<unknown>;
+  setStationTax: (stationId: string, taxRate: number) => Promise<unknown>;
+  withdrawTreasury: (stationId: string, amount: number) => Promise<unknown>;
+  getTakeoverStatus: (stationId: string) => Promise<unknown>;
+  launchTakeover: (stationId: string) => Promise<unknown>;
+  counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') => Promise<unknown>;
+
+
   // Loading states
   isLoading: boolean;
   error: string | null;
@@ -993,6 +1008,163 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
   
+  // --- Port Office: station ownership, sealed-bid sales, tariffs, takeovers ---
+  // These follow the getPlanetDetails mold: no global isLoading/error churn —
+  // the Port Office venue surfaces failures inline. Mutations that move
+  // credits (escrowed offers, treasury withdrawals, forced sales) refresh
+  // player state so the header credits stay authoritative.
+
+  // Registry board — every station currently listed for sale in scope
+  const getPortListings = async (): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get('/api/v1/port-ownership/listings');
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting port listings:', error);
+      throw error;
+    }
+  };
+
+  // Ownership/listing status for one station. Reading this also lets the
+  // server lazily resolve expired grace windows (sealed-bid auctions resolve
+  // on first read past expiry — no scheduler exists).
+  const getListing = async (stationId: string): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get(`/api/v1/port-ownership/stations/${stationId}/listing`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting station listing:', error);
+      throw error;
+    }
+  };
+
+  // Put a station on the sale board (price is formula-set server-side)
+  const listStation = async (stationId: string): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/list`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error listing station for sale:', error);
+      throw error;
+    }
+  };
+
+  // Sealed-bid offer — funds are escrowed (debited) immediately
+  const placeOffer = async (stationId: string, bidAmount: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/offer`, {
+        bid: bidAmount
+      });
+      // Escrow debits credits at offer time
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error placing station offer:', error);
+      throw error;
+    }
+  };
+
+  // Stations I own (with treasury / tax / revenue detail)
+  const getMyStations = async (): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get('/api/v1/port-ownership/my-stations');
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting my stations:', error);
+      throw error;
+    }
+  };
+
+  // Owner lever: set the trade tariff within [0.0, 0.25]
+  const setStationTax = async (stationId: string, taxRate: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/tax`, {
+        rate: taxRate
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error setting station tax:', error);
+      throw error;
+    }
+  };
+
+  // Owner lever: withdraw from the station treasury (solo owner only)
+  const withdrawTreasury = async (stationId: string, amount: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
+        amount
+      });
+      // Withdrawal credits the player
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error withdrawing station treasury:', error);
+      throw error;
+    }
+  };
+
+  // Economic-takeover campaign status. Reading this also lets the server
+  // lazily evaluate monthly volume shares and counter-window expiry.
+  const getTakeoverStatus = async (stationId: string): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get(`/api/v1/port-ownership/stations/${stationId}/takeover`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting takeover status:', error);
+      throw error;
+    }
+  };
+
+  // Challenger: open an economic-takeover campaign against this station
+  const launchTakeover = async (stationId: string): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/takeover/launch`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error launching takeover campaign:', error);
+      throw error;
+    }
+  };
+
+  // Owner counter during the 7-canonical-day window: accept (forced sale),
+  // match (volume contest resets the clock), or dispute (auto-arbitration)
+  const counterTakeover = async (
+    stationId: string,
+    action: 'accept' | 'match' | 'dispute'
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/takeover/counter`, {
+        action
+      });
+      // 'accept' transfers ownership + sale proceeds atomically
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error countering takeover:', error);
+      throw error;
+    }
+  };
+
   // Handle first login completion - refresh all game data
   const onFirstLoginComplete = async () => {
     setNeedsFirstLogin(false);
@@ -1066,7 +1238,20 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Combat
     attackPlayer,
     attackDrones,
-    
+
+    // Port Office — station ownership
+    getPortListings,
+    getListing,
+    listStation,
+    placeOffer,
+    getMyStations,
+    setStationTax,
+    withdrawTreasury,
+    getTakeoverStatus,
+    launchTakeover,
+    counterTakeover,
+
+
     // Loading states
     isLoading,
     error,

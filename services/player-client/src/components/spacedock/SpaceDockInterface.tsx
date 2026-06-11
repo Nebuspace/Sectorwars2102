@@ -3,6 +3,7 @@ import { useGame } from '../../contexts/GameContext';
 import type { Station } from '../../contexts/GameContext';
 import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
+import PortOfficeVenue from './PortOfficeVenue';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -15,7 +16,7 @@ const getApiBaseUrl = () => {
 };
 
 // Venue type definitions
-type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'genesis' | 'armory' | 'services' | 'gambling';
+type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'genesis' | 'armory' | 'services' | 'gambling';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types
@@ -304,6 +305,16 @@ const SpaceDockInterface: React.FC = () => {
       available: true,
       services: [`Tier ${tradedockTier} Slips`, 'Ship Orders', 'Build Tracking']
     }] : []),
+    // Port Office is universal — every station keeps a registry desk,
+    // whether or not the deed itself is purchasable
+    {
+      id: 'portoffice',
+      name: 'Port Office',
+      icon: '🏛️',
+      description: 'Station registry — ownership deeds, sealed-bid sales, tariffs, and takeover filings',
+      available: true,
+      services: ['Ownership Registry', 'Sealed-Bid Offers', 'Tariff & Treasury', 'Takeover War Room']
+    },
     {
       id: 'genesis',
       name: 'Genesis Store',
@@ -2376,6 +2387,17 @@ const SpaceDockInterface: React.FC = () => {
             tier={tradedockTier}
             credits={displayCredits}
             onCreditsDelta={handleCreditsDelta}
+            onCreditsSet={handleCreditsSet}
+            onBack={() => setActiveVenue('hub')}
+          />
+        ) : renderHub();
+      case 'portoffice':
+        // The registry desk needs a docked station to file against
+        return currentStation ? (
+          <PortOfficeVenue
+            stationId={currentStation.id}
+            stationName={currentStation.name}
+            credits={displayCredits}
             onCreditsSet={handleCreditsSet}
             onBack={() => setActiveVenue('hub')}
           />

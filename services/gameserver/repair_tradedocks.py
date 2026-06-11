@@ -42,6 +42,13 @@ NAMES = {
     "A": ["TradeDock Prime", "TradeDock Apex"],
     "B": ["TradeDock Meridian", "TradeDock Crucible", "TradeDock Bastion"],
 }
+# Tier-A flagships are unique per region (keep in sync with
+# bang_import_service._TRADEDOCK_TIER_A_NAMES_BY_REGION): Terran Space keeps
+# 'TradeDock Prime'; the Central Nexus flagship is 'TradeDock Nexus Prime'.
+TIER_A_NAMES_BY_REGION = {
+    "terran_space": ["TradeDock Prime", "TradeDock Apex"],
+    "central_nexus": ["TradeDock Nexus Prime", "TradeDock Nexus Apex"],
+}
 
 # Default commodity scaffold matching the translator's _build_full_commodities
 COMMODITY_DEFAULTS = {
@@ -117,7 +124,11 @@ def repair(db) -> dict:
                 logger.warning("%s: no free sector for Tier-%s TradeDock", region.name, tier)
                 continue
             sector = pool.pop(rng.randrange(len(pool)))
-            name = NAMES[tier][counters[tier] % len(NAMES[tier])]
+            if tier == "A":
+                tier_names = TIER_A_NAMES_BY_REGION.get(region.region_type, NAMES["A"])
+            else:
+                tier_names = NAMES[tier]
+            name = tier_names[counters[tier] % len(tier_names)]
             counters[tier] += 1
 
             commodities = apply_class_pattern(

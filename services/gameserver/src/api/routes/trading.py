@@ -108,7 +108,25 @@ async def buy_resource(
     if commodity_cfg is not None and not commodity_cfg.get("sells", False):
         raise HTTPException(status_code=400, detail="Station does not sell this resource")
 
+    # LOCK ORDER (global convention, deadlock contract): STATION row first,
+    # then PLAYER rows — matching port_ownership_service / docking_service.
+    # Locking player-then-station here while the ownership engine locked
+    # station-then-player was an AB-BA deadlock. with_for_update() does NOT
+    # refresh the already-loaded instance, so chain populate_existing();
+    # that replaces the commodities JSONB attribute, so re-derive
+    # commodity_cfg from the refreshed instance (the stale dict reference
+    # would silently drop the quantity sync below).
+    station = (
+        db.query(Station)
+        .filter(Station.id == station.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    commodity_cfg = (station.commodities or {}).get(trade_request.resource_type)
+
     # Lock player row to prevent race conditions on concurrent trades
+    # (after the station lock — see lock-order note above)
     current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
 
     # Get current ship
@@ -145,11 +163,21 @@ async def buy_resource(
     # Calculate total cost
     total_cost = effective_buy_price * trade_request.quantity
 
-    # Check if player has enough credits
-    if current_player.credits < total_cost:
+    # REAL TAX (port-ownership canon): trades pay the station's tax_rate
+    # into its treasury — but canon frames the tax as an OWNER lever, so
+    # unowned (NPC) stations levy none. The station row is already locked
+    # above, so concurrent trades can't lose treasury updates.
+    tax_rate = (
+        station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
+    )
+    tax_amount = int(total_cost * tax_rate)
+    total_with_tax = total_cost + tax_amount
+
+    # Check if player has enough credits (goods + station trade tax)
+    if current_player.credits < total_with_tax:
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient credits. Need {total_cost}, have {current_player.credits}"
+            detail=f"Insufficient credits. Need {total_with_tax}, have {current_player.credits}"
         )
     
     # Check ship cargo capacity
@@ -166,8 +194,10 @@ async def buy_resource(
 
     # Execute the trade
     try:
-        # Update player credits
-        current_player.credits -= total_cost
+        # Update player credits (goods + tax); the tax accrues to the
+        # station treasury under the station lock taken above
+        current_player.credits -= total_with_tax
+        station.treasury_balance = (station.treasury_balance or 0) + tax_amount
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -188,7 +218,10 @@ async def buy_resource(
             commodity_cfg["quantity"] = max(0, commodity_cfg.get("quantity", 0) - trade_request.quantity)
             flag_modified(station, 'commodities')
 
-        # Create transaction record
+        # Create transaction record. The station_buy/sell_price snapshots
+        # capture the station's prevailing prices at transaction time —
+        # the takeover engine's hostile-pricing test reads them
+        # (port_ownership_service._month_hostility).
         transaction = MarketTransaction(
             player_id=current_player.id,
             station_id=trade_request.station_id,
@@ -197,6 +230,9 @@ async def buy_resource(
             quantity=trade_request.quantity,
             unit_price=effective_buy_price,
             total_value=total_cost,
+            station_buy_price=market_price.buy_price,
+            station_sell_price=market_price.sell_price,
+            station_quantity=market_price.quantity,
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
@@ -261,6 +297,9 @@ async def buy_resource(
                 "base_price": market_price.sell_price,
                 "rank_discount_percent": bonuses["trading_discount_percent"],
                 "total_cost": total_cost,
+                "tax_rate": tax_rate,
+                "tax": tax_amount,
+                "total_with_tax": total_with_tax,
                 "remaining_credits": current_player.credits,
                 "remaining_cargo_space": current_ship.cargo.get('capacity', 50) - current_ship.cargo.get('used', 0)
             }
@@ -289,9 +328,6 @@ async def sell_resource(
     if not current_player.is_docked:
         raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
 
-    # Lock player row to prevent race conditions on concurrent trades
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
-
     # Get the station
     station = _get_station_or_404(db, trade_request.station_id)
 
@@ -300,6 +336,7 @@ async def sell_resource(
         raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
 
     # Populate MarketPrice rows from the commodities JSONB if missing
+    # (may COMMIT — must run before any row locks are taken)
     _ensure_market_prices(db, station)
 
     # Honor the station's commodity trade flags: 'buys' means the station
@@ -307,7 +344,25 @@ async def sell_resource(
     commodity_cfg = (station.commodities or {}).get(trade_request.resource_type)
     if commodity_cfg is not None and not commodity_cfg.get("buys", False):
         raise HTTPException(status_code=400, detail="Station does not buy this resource")
-    
+
+    # LOCK ORDER (global convention, deadlock contract): STATION row first,
+    # then PLAYER rows — matching port_ownership_service / docking_service.
+    # populate_existing() refreshes the already-loaded instance (plain
+    # with_for_update() does not); it replaces the commodities JSONB
+    # attribute, so re-derive commodity_cfg from the refreshed instance.
+    station = (
+        db.query(Station)
+        .filter(Station.id == station.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    commodity_cfg = (station.commodities or {}).get(trade_request.resource_type)
+
+    # Lock player row to prevent race conditions on concurrent trades
+    # (after the station lock — see lock-order note above)
+    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
+
     # Get current ship
     current_ship = db.query(Ship).filter(
         Ship.id == current_player.current_ship_id,
@@ -344,13 +399,26 @@ async def sell_resource(
     boosted_price = market_price.buy_price * (1 + bonus_pct)
     effective_sell_price = max(1, int(boosted_price))
 
-    # Calculate total earnings
+    # Calculate total earnings (gross, before station trade tax)
     total_earnings = effective_sell_price * trade_request.quantity
+
+    # REAL TAX (port-ownership canon): the station's tax_rate is withheld
+    # from sale proceeds and credited to its treasury — but canon frames
+    # the tax as an OWNER lever, so unowned (NPC) stations levy none. The
+    # station row is already locked above (station-first lock order), so
+    # concurrent trades can't lose treasury updates.
+    tax_rate = (
+        station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0
+    )
+    tax_amount = int(total_earnings * tax_rate)
+    net_earnings = total_earnings - tax_amount
 
     # Execute the trade
     try:
-        # Update player credits
-        current_player.credits += total_earnings
+        # Update player credits (net of tax); the withheld tax accrues to
+        # the station treasury under the station lock taken above
+        current_player.credits += net_earnings
+        station.treasury_balance = (station.treasury_balance or 0) + tax_amount
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -372,7 +440,10 @@ async def sell_resource(
             commodity_cfg["quantity"] = commodity_cfg.get("quantity", 0) + trade_request.quantity
             flag_modified(station, 'commodities')
 
-        # Create transaction record
+        # Create transaction record. The station_buy/sell_price snapshots
+        # capture the station's prevailing prices at transaction time —
+        # the takeover engine's hostile-pricing test reads them
+        # (port_ownership_service._month_hostility).
         transaction = MarketTransaction(
             player_id=current_player.id,
             station_id=trade_request.station_id,
@@ -381,6 +452,9 @@ async def sell_resource(
             quantity=trade_request.quantity,
             unit_price=effective_sell_price,
             total_value=total_earnings,
+            station_buy_price=market_price.buy_price,
+            station_sell_price=market_price.sell_price,
+            station_quantity=market_price.quantity,
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
@@ -446,6 +520,9 @@ async def sell_resource(
                 "base_price": market_price.buy_price,
                 "rank_bonus_percent": bonuses["trading_discount_percent"],
                 "total_earnings": total_earnings,
+                "tax_rate": tax_rate,
+                "tax": tax_amount,
+                "net_earnings": net_earnings,
                 "new_credits": current_player.credits,
                 "remaining_cargo": remaining
             }
@@ -501,7 +578,7 @@ async def get_market_info(
             "name": station.name,
             "type": station.type,
             "faction": station.faction_affiliation,
-            "tax_rate": getattr(station, 'tax_rate', 0.1),  # Default 10% tax if not set
+            "tax_rate": station.tax_rate if station.tax_rate is not None else 0.0,  # Real owner-set rate (port-ownership canon)
             "station_class": str(station.station_class.value) if station.station_class else None,
             "is_spacedock": bool(station.is_spacedock),
             "trade_volume": station.trade_volume,
@@ -522,13 +599,24 @@ async def dock_at_station(
     # Define docking turn cost
     DOCKING_TURN_COST = 1
 
-    # Lock player row to prevent concurrent turn deduction races
-    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
-
-    # Get the station
-    station = db.query(Station).filter(Station.id == dock_request.station_id).first()
+    # LOCK ORDER (global convention, deadlock contract): STATION row first,
+    # then PLAYER rows. docking_service.acquire() re-locks this same station
+    # row later in the transaction (already held — no extra wait); taking the
+    # player lock first while acquire() took the station lock was an AB-BA
+    # deadlock against the trade/ownership paths.
+    station = (
+        db.query(Station)
+        .filter(Station.id == dock_request.station_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if not station:
         raise HTTPException(status_code=404, detail="Station not found")
+
+    # Lock player row to prevent concurrent turn deduction races
+    # (after the station lock — see lock-order note above)
+    current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
 
     # Verify player is in the same sector as the station
     if current_player.current_sector_id != station.sector_id:
@@ -875,3 +963,12 @@ async def get_trading_history(
         "transactions": history,
         "total_transactions": len(history)
     }
+
+
+# ---------------------------------------------------------------------------
+# Legacy aliases — tests/unit/test_docking_turns.py (written before the
+# port -> station rename) imports these names from this module. Keep them
+# importable so the suite collects.
+# ---------------------------------------------------------------------------
+PortDockRequest = StationDockRequest
+dock_at_port = dock_at_station

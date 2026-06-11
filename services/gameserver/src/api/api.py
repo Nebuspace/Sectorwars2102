@@ -47,6 +47,7 @@ from src.api.routes.ship_upgrades import router as ship_upgrades_router
 from src.api.routes.armory import router as armory_router
 from src.api.routes.bang_galaxy import router as bang_galaxy_router
 from src.api.routes.construction import router as construction_router
+from src.api.routes.port_ownership import router as port_ownership_router
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -102,6 +103,9 @@ api_router.include_router(ship_upgrades_router, tags=["ship-upgrades"])
 api_router.include_router(armory_router, tags=["armory"])
 # TradeDock ship construction (router carries its own /construction prefix)
 api_router.include_router(construction_router, tags=["construction"])
+# Port ownership: listings/auctions, owner powers, economic takeover
+# (router carries its own /port-ownership prefix)
+api_router.include_router(port_ownership_router, tags=["port-ownership"])
 # Bang galaxy generator admin endpoints (Phase 1C of bang-integration plan).
 # The legacy `/admin/galaxy/generate` route in admin.py stays intact; Phase 4
 # removes it in favour of the new job-based flow defined here.

@@ -1710,6 +1710,16 @@ class BangImportService:
         "B": ["TradeDock Meridian", "TradeDock Crucible", "TradeDock Bastion"],
     }
 
+    # Tier-A flagships carry a UNIQUE name per region (both regions drawing
+    # 'TradeDock Prime' from the shared rotation produced duplicates):
+    # Terran Space keeps 'TradeDock Prime'; the Central Nexus flagship is
+    # 'TradeDock Nexus Prime'. Tier-B names stay distinct via the shared
+    # rotation above. Keep in sync with repair_tradedocks.py.
+    _TRADEDOCK_TIER_A_NAMES_BY_REGION = {
+        "terran_space": ["TradeDock Prime", "TradeDock Apex"],
+        "central_nexus": ["TradeDock Nexus Prime", "TradeDock Nexus Apex"],
+    }
+
     def _apply_tradedock_seeding(
         self,
         region_type: str,
@@ -1752,7 +1762,12 @@ class BangImportService:
                 continue
             sector_int = candidate_pool.pop(rng.randrange(len(candidate_pool)))
             occupied.add(sector_int)
-            names = self._TRADEDOCK_NAMES[tier]
+            if tier == "A":
+                names = self._TRADEDOCK_TIER_A_NAMES_BY_REGION.get(
+                    region_type, self._TRADEDOCK_NAMES["A"]
+                )
+            else:
+                names = self._TRADEDOCK_NAMES[tier]
             name = names[name_counters[tier] % len(names)]
             name_counters[tier] += 1
 

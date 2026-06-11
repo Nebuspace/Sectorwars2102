@@ -1,0 +1,742 @@
+/* Port Office Venue — station ownership registry */
+/* House style: sister of construction-venue.css; vault gauge follows the
+   citadel safe-storage gold-shimmer visual language */
+
+/* ========================================
+   VENUE LAYOUT
+   ======================================== */
+
+.po-deed-badge {
+  margin-left: auto;
+  padding: 3px 8px;
+  font-size: 0.65em;
+  font-weight: bold;
+  letter-spacing: 1px;
+  border-radius: 4px;
+  white-space: nowrap;
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.po-intro p {
+  margin: 0 0 16px 0;
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 0.88em;
+  line-height: 1.5;
+}
+
+.po-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+  padding-bottom: 8px;
+}
+
+.po-tab {
+  background: transparent;
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  color: rgba(255, 255, 255, 0.7);
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: all 0.2s ease;
+}
+
+.po-tab:hover {
+  border-color: rgba(0, 217, 255, 0.5);
+  color: #00d9ff;
+}
+
+.po-tab.active {
+  background: rgba(0, 217, 255, 0.12);
+  border-color: rgba(0, 217, 255, 0.6);
+  color: #00d9ff;
+  font-weight: bold;
+}
+
+/* ========================================
+   SECTION PANELS
+   ======================================== */
+
+.po-registry,
+.po-owner-console,
+.po-war-room {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.po-section {
+  padding: 14px;
+  background: rgba(20, 30, 48, 0.6);
+  border: 1px solid rgba(0, 217, 255, 0.2);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.po-section-title {
+  margin: 0;
+  font-size: 0.95em;
+  color: #ffffff;
+  letter-spacing: 0.5px;
+}
+
+.po-flavor {
+  margin: 0;
+  font-size: 0.8em;
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.55);
+  line-height: 1.45;
+}
+
+.po-term-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.82em;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.po-term-row span:last-child {
+  color: #00d9ff;
+  font-weight: bold;
+}
+
+.po-blocked-note {
+  padding: 8px 12px;
+  font-size: 0.8em;
+  color: #ffc107;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px dashed rgba(255, 193, 7, 0.35);
+  border-radius: 6px;
+  line-height: 1.45;
+}
+
+/* ========================================
+   STATUS PANEL + PORT SEAL (SVG flourish)
+   ======================================== */
+
+.po-status-panel {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px;
+  background:
+    radial-gradient(ellipse 70% 55% at 25% 50%, rgba(74, 158, 255, 0.08), transparent 70%),
+    linear-gradient(180deg, rgba(4, 8, 20, 0.85) 0%, rgba(10, 16, 36, 0.65) 100%);
+  border: 1px solid rgba(74, 158, 255, 0.18);
+  border-radius: 8px;
+}
+
+.port-seal {
+  flex: 0 0 110px;
+}
+
+.port-seal-svg {
+  display: block;
+  width: 110px;
+  height: 110px;
+}
+
+.ps-ring,
+.ps-ring-inner,
+.ps-notch {
+  stroke: rgba(125, 211, 252, 0.35);
+  stroke-width: 1.2;
+}
+
+.ps-station-ring,
+.ps-spine,
+.ps-mast {
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.ps-hab {
+  stroke: currentColor;
+  stroke-width: 1.4;
+  fill: rgba(74, 158, 255, 0.12);
+}
+
+.ps-core {
+  fill: currentColor;
+}
+
+.ps-flag {
+  stroke: currentColor;
+  stroke-width: 1.2;
+  fill: currentColor;
+  fill-opacity: 0.35;
+}
+
+.ps-sale-arc {
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-dasharray: 4 4;
+}
+
+.ps-sale-dot {
+  fill: currentColor;
+}
+
+/* Seal states — color + which strata are lit */
+.port-seal.state-unclaimed {
+  color: rgba(148, 163, 184, 0.55);
+}
+
+.port-seal.state-owned {
+  color: #4a9eff;
+}
+
+.port-seal.state-mine {
+  color: #fbbf24;
+}
+
+.port-seal.state-forsale {
+  color: #00ffcc;
+}
+
+.port-seal .ps-flag-group {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+.port-seal.state-owned .ps-flag-group,
+.port-seal.state-mine .ps-flag-group {
+  opacity: 1;
+}
+
+.port-seal .ps-sale-group {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+.port-seal.state-forsale .ps-sale-group {
+  opacity: 1;
+}
+
+.port-seal.state-forsale .ps-sale-arc {
+  animation: po-sale-march 2.4s linear infinite;
+}
+
+@keyframes po-sale-march {
+  0% { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -16; }
+}
+
+.po-status-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.po-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.po-badge {
+  padding: 3px 8px;
+  font-size: 0.65em;
+  font-weight: bold;
+  letter-spacing: 1px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.po-badge.unclaimed {
+  color: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.po-badge.owned {
+  color: #4a9eff;
+  border: 1px solid rgba(74, 158, 255, 0.5);
+}
+
+.po-badge.mine {
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.6);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.po-badge.forsale {
+  color: #00ffcc;
+  border: 1px solid rgba(0, 255, 204, 0.55);
+  background: rgba(0, 255, 204, 0.07);
+  animation: po-forsale-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes po-forsale-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(0, 255, 204, 0); }
+  50% { box-shadow: 0 0 8px rgba(0, 255, 204, 0.35); }
+}
+
+.po-badge[class*='campaign-'] {
+  color: #ff7a6b;
+  border: 1px solid rgba(255, 122, 107, 0.55);
+  background: rgba(255, 122, 107, 0.07);
+}
+
+.po-sale-terms {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+}
+
+/* ========================================
+   COUNTDOWNS (house pattern)
+   ======================================== */
+
+.po-countdown {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82em;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.po-countdown-label {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.po-countdown-value {
+  margin-left: auto;
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+  color: #00d9ff;
+}
+
+.po-countdown.urgent .po-countdown-value {
+  color: #ffaa44;
+  animation: po-countdown-blink 1.2s ease-in-out infinite;
+}
+
+.po-countdown.expired .po-countdown-value {
+  color: #ff5722;
+}
+
+@keyframes po-countdown-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* ========================================
+   ACQUISITION DESK (buy flow)
+   ======================================== */
+
+.po-bid-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.po-bid-row label {
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.po-bid-row input {
+  flex: 1;
+  min-width: 140px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 4px;
+  color: #ffffff;
+  font-family: 'Courier New', monospace;
+}
+
+.po-bid-row input:focus {
+  outline: none;
+  border-color: rgba(0, 217, 255, 0.7);
+}
+
+.po-escrow-note {
+  margin: 0;
+  font-size: 0.75em;
+  color: #ffc107;
+  font-style: italic;
+}
+
+.po-my-offer {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 6px;
+}
+
+.po-my-offer-label {
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.po-my-offer-amount {
+  font-weight: bold;
+  color: #fbbf24;
+  font-family: 'Courier New', monospace;
+}
+
+.po-my-offer-status {
+  margin-left: auto;
+  font-size: 0.65em;
+  font-weight: bold;
+  letter-spacing: 1px;
+  color: #00d9ff;
+}
+
+/* ========================================
+   OWNER CONSOLE — tariff + vault + ledger
+   ======================================== */
+
+.po-tariff-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.po-tariff-row input[type='range'] {
+  flex: 1;
+  min-width: 160px;
+  accent-color: #fbbf24;
+}
+
+.po-tariff-value {
+  min-width: 52px;
+  text-align: right;
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+  color: #fbbf24;
+}
+
+.po-tariff-current {
+  font-size: 0.75em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* Vault gauge — segmented gold shimmer, citadel visual language */
+.po-vault-gauge {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.po-vault-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  background: linear-gradient(
+    105deg,
+    #8a6d1f 0%,
+    #d4a72c 30%,
+    #ffe9a8 50%,
+    #d4a72c 70%,
+    #8a6d1f 100%
+  );
+  background-size: 220% 100%;
+  border-radius: 3px 0 0 3px;
+  transition: width 0.4s ease;
+  animation: po-vault-shimmer 4.5s linear infinite;
+}
+
+@keyframes po-vault-shimmer {
+  0% { background-position: 110% 0; }
+  100% { background-position: -110% 0; }
+}
+
+.po-vault-segments {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent calc(100% / 24 - 2px),
+    rgba(6, 10, 24, 0.9) calc(100% / 24 - 2px),
+    rgba(6, 10, 24, 0.9) calc(100% / 24)
+  );
+  pointer-events: none;
+}
+
+.po-vault-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.85em;
+}
+
+.po-vault-amount {
+  color: #fbbf24;
+  font-weight: 600;
+  font-family: 'Courier New', monospace;
+}
+
+.po-vault-capacity {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.85em;
+}
+
+.po-withdraw-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.po-withdraw-row input {
+  flex: 1;
+  min-width: 120px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 4px;
+  color: #ffffff;
+  font-family: 'Courier New', monospace;
+}
+
+.po-withdraw-row input:focus {
+  outline: none;
+  border-color: rgba(251, 191, 36, 0.7);
+}
+
+.po-max-btn {
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: 4px;
+  color: #fbbf24;
+  font-size: 0.75em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.po-max-btn:hover:not(:disabled) {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.po-max-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.po-ledger-rows,
+.po-ledger-months {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+}
+
+/* ========================================
+   WAR ROOM — campaign + share-of-volume chart
+   ======================================== */
+
+.po-campaign-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.po-campaign-challenger {
+  font-size: 0.82em;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.po-campaign-challenger strong {
+  color: #ff7a6b;
+}
+
+.po-campaign-progress {
+  margin-left: auto;
+  font-size: 0.8em;
+  font-family: 'Courier New', monospace;
+  color: #00d9ff;
+}
+
+.po-share-chart {
+  padding: 12px 10px 6px;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 100%, rgba(255, 122, 107, 0.06), transparent 70%),
+    linear-gradient(180deg, rgba(4, 8, 20, 0.85) 0%, rgba(10, 16, 36, 0.65) 100%);
+  border: 1px solid rgba(74, 158, 255, 0.18);
+  border-radius: 8px;
+}
+
+.po-share-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 0.65em;
+  letter-spacing: 0.5px;
+  color: #ffd166;
+}
+
+.po-threshold-swatch {
+  display: inline-block;
+  width: 18px;
+  border-top: 1px dashed rgba(255, 209, 102, 0.75);
+}
+
+.po-share-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-around;
+  gap: 8px;
+}
+
+/* The 50% takeover threshold line — drawn on every track */
+.po-share-threshold {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 50%;
+  border-top: 1px dashed rgba(255, 209, 102, 0.55);
+  pointer-events: none;
+}
+
+.po-share-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  max-width: 64px;
+}
+
+.po-share-track {
+  position: relative;
+  width: 22px;
+  height: 96px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(74, 158, 255, 0.2);
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+}
+
+.po-share-fill {
+  width: 100%;
+  background: linear-gradient(180deg, rgba(74, 158, 255, 0.85), rgba(74, 158, 255, 0.35));
+  transition: height 0.4s ease;
+}
+
+.po-share-fill.over {
+  background: linear-gradient(180deg, rgba(255, 122, 107, 0.9), rgba(255, 122, 107, 0.35));
+}
+
+.po-share-fill.qualifies {
+  box-shadow: 0 0 8px rgba(255, 122, 107, 0.5);
+}
+
+.po-share-pct {
+  font-size: 0.65em;
+  font-family: 'Courier New', monospace;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.po-share-month {
+  font-size: 0.6em;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.po-share-hostile {
+  font-size: 0.7em;
+  line-height: 1;
+  min-height: 0.9em;
+}
+
+.po-share-hostile.hidden {
+  visibility: hidden;
+}
+
+/* Counter desk */
+.po-counter-desk {
+  border-color: rgba(255, 122, 107, 0.4);
+}
+
+.po-counter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.po-counter-accept {
+  border-color: rgba(251, 191, 36, 0.5) !important;
+  color: #fbbf24 !important;
+}
+
+.po-counter-match {
+  border-color: rgba(0, 255, 136, 0.5) !important;
+  color: #00ff88 !important;
+}
+
+.po-counter-dispute {
+  border-color: rgba(201, 97, 222, 0.5) !important;
+  color: #c961de !important;
+}
+
+.po-counter-rules {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78em;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.45;
+}
+
+.po-counter-rules strong {
+  color: #ffffff;
+}
+
+/* ========================================
+   RESPONSIVE
+   ======================================== */
+
+@media (max-width: 640px) {
+  .po-status-panel {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .po-counter-actions {
+    flex-direction: column;
+  }
+
+  .po-counter-actions .action-button {
+    width: 100%;
+  }
+}
