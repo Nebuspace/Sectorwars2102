@@ -37,13 +37,14 @@ interface PlayerProfile {
 }
 
 interface SystemMetrics {
-  totalPredictions: number;
-  avgAccuracy: number;
+  // null = no engine/telemetry exists server-side (honest absence, not zero)
+  totalPredictions: number | null;
+  avgAccuracy: number | null;
   activeProfiles: number;
-  recommendationAcceptance: number;
-  modelHealth: 'healthy' | 'degraded' | 'critical';
-  queuedJobs: number;
-  processingRate: number;
+  recommendationAcceptance: number | null;
+  modelHealth: 'healthy' | 'degraded' | 'critical' | null;
+  queuedJobs: number | null;
+  processingRate: number | null;
 }
 
 const AITradingDashboard: React.FC = () => {
@@ -70,7 +71,7 @@ const AITradingDashboard: React.FC = () => {
     if (metrics) {
       setMetrics({
         ...metrics,
-        totalPredictions: metrics.totalPredictions + 1
+        totalPredictions: metrics.totalPredictions != null ? metrics.totalPredictions + 1 : null
       });
     }
   }, [metrics]);
@@ -130,7 +131,8 @@ const AITradingDashboard: React.FC = () => {
     }
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: string | null) => {
+    if (status == null) return '';
     switch (status) {
       case 'active':
       case 'healthy':
@@ -185,12 +187,12 @@ const AITradingDashboard: React.FC = () => {
         <div className="system-overview">
           <div className="metric-card">
             <h3>Total Predictions</h3>
-            <div className="metric-value">{metrics.totalPredictions.toLocaleString()}</div>
+            <div className="metric-value">{metrics.totalPredictions != null ? metrics.totalPredictions.toLocaleString() : '—'}</div>
             <div className="metric-label">Lifetime</div>
           </div>
           <div className="metric-card">
             <h3>Average Accuracy</h3>
-            <div className="metric-value">{metrics.avgAccuracy.toFixed(1)}%</div>
+            <div className="metric-value">{metrics.avgAccuracy != null ? `${metrics.avgAccuracy.toFixed(1)}%` : '—'}</div>
             <div className="metric-trend">Model Performance</div>
           </div>
           <div className="metric-card">
@@ -200,14 +202,14 @@ const AITradingDashboard: React.FC = () => {
           </div>
           <div className="metric-card">
             <h3>Acceptance Rate</h3>
-            <div className="metric-value">{metrics.recommendationAcceptance.toFixed(1)}%</div>
+            <div className="metric-value">{metrics.recommendationAcceptance != null ? `${metrics.recommendationAcceptance.toFixed(1)}%` : '—'}</div>
             <div className="metric-label">Recommendations Followed</div>
           </div>
           <div className={`metric-card ${getStatusColor(metrics.modelHealth)}`}>
             <h3>System Health</h3>
-            <div className="metric-value">{metrics.modelHealth.toUpperCase()}</div>
+            <div className="metric-value">{metrics.modelHealth != null ? metrics.modelHealth.toUpperCase() : '—'}</div>
             <div className="metric-label">
-              {metrics.queuedJobs} jobs queued • {metrics.processingRate}/min
+              {metrics.queuedJobs != null && metrics.processingRate != null ? `${metrics.queuedJobs} jobs queued • ${metrics.processingRate}/min` : 'no job queue exists'}
             </div>
           </div>
         </div>
@@ -277,8 +279,8 @@ const AITradingDashboard: React.FC = () => {
               
               <div className="info-card">
                 <h3>📊 Performance Metrics</h3>
-                <p>Overall system accuracy: {metrics?.avgAccuracy.toFixed(1)}%</p>
-                <p>Players are accepting {metrics?.recommendationAcceptance.toFixed(1)}% of AI recommendations.</p>
+                <p>Overall system accuracy: {metrics?.avgAccuracy != null ? `${metrics.avgAccuracy.toFixed(1)}%` : 'no telemetry'}</p>
+                <p>{metrics?.recommendationAcceptance != null ? `Players are accepting ${metrics.recommendationAcceptance.toFixed(1)}% of AI recommendations.` : 'No recommendation telemetry exists.'}</p>
               </div>
 
               <div className="info-card">

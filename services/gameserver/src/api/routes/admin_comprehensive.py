@@ -2745,17 +2745,26 @@ async def get_ai_system_metrics(
         day_ago = datetime.utcnow() - timedelta(days=1)
         active_players = db.query(Player).filter(Player.last_game_login >= day_ago).count()
         
-        # Calculate AI metrics
-        ai_active_profiles = min(active_players, int(total_players * 0.3))  # 30% use AI
-        
+        # Honest metrics: no AI prediction engine, model registry, or job queue
+        # exists yet — only real ARIA interaction counts are reportable.
+        # (De-mocked: the previous hardcoded 3247/79.8/67.3/12/45 figures were
+        # fabrications presented as live telemetry.)
+        total_aria_interactions = db.query(
+            func.coalesce(func.sum(Player.aria_total_interactions), 0)
+        ).scalar() or 0
+        aria_active_profiles = db.query(Player).filter(
+            Player.aria_total_interactions > 0
+        ).count()
+
         metrics = {
-            "totalPredictions": 3247,
-            "avgAccuracy": 79.8,
-            "activeProfiles": ai_active_profiles,
-            "recommendationAcceptance": 67.3,
-            "modelHealth": "healthy",
-            "queuedJobs": 12,
-            "processingRate": 45
+            "totalPredictions": None,   # no prediction engine exists
+            "avgAccuracy": None,        # no model accuracy telemetry exists
+            "activeProfiles": aria_active_profiles,  # players with ARIA activity
+            "recommendationAcceptance": None,  # no recommendation telemetry exists
+            "modelHealth": None,        # no model registry exists
+            "queuedJobs": None,         # no job queue exists
+            "processingRate": None,     # no processing pipeline exists
+            "totalAriaInteractions": int(total_aria_interactions),
         }
         
         logger.info(f"Admin {current_admin.username} requested AI system metrics")
