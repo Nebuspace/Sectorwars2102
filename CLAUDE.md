@@ -722,7 +722,13 @@ Per-section commits make reverts surgical and progress monotonic. **Resume**: le
 
 ### Final Report (mandatory, every run — the report is the product even when the code isn't)
 
-Verdict · full scored candidate table INCLUDING rejected items (selection bias must be auditable) · per-section evidence bundles (commit SHAs, before/after/GIF paths, psql queries+results, network evidence) · baseline regression diff · canon-gap and code-wins flags · parking lot · deferred Out-of-Bounds items · dev end state (deployed SHA, health) · docs write-back summary.
+Verdict · full scored candidate table INCLUDING rejected items (selection bias must be auditable) · per-section evidence bundles (commit SHAs, before/after/GIF paths, psql queries+results, network evidence) · baseline regression diff · canon-gap and code-wins flags · parking lot · deferred Out-of-Bounds items · dev end state (deployed SHA, health) · docs write-back summary · **model-usage breakdown** (mandatory, see below).
+
+**Model-Usage Breakdown** — every run's final report must include an approximate accounting of which models did what share of the work, so Max can see what the tier choice saved. Derive it from the run's workflow agent counts and their token usage (visible in workflow task notifications as `subagent_tokens` per workflow; attribute by which `model:` each agent ran with). Format:
+
+> **Models this run (LEAN tier):** Fable 5 (lead): orchestration, gating, browser proofs — ~X% of total tokens · Opus: N build workers + N reviewers — ~Y% · Sonnet: N scanners + fix wave — ~Z%. Estimated spend vs all-Fable: ~NN% (Opus ≈ ⅓ Fable cost, Sonnet ≈ ⅒ — use these ratios for the estimate; approximate is fine, honesty about it being an estimate is required).
+
+The percentages are rough by design — the point is the shape (how much of the heavy lifting left Fable), not decimal precision. If a tier choice caused a quality incident (e.g., a LEAN build needed a Fable rescue), say so in the same breath: the breakdown exists to tune future tier choices, not to flatter the savings.
 
 ### Verdict Scale
 
