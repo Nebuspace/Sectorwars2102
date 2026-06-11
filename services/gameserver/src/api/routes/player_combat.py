@@ -22,7 +22,9 @@ from src.models.ship import Ship, ShipType
 from src.services.player_combat_service import PlayerCombatService
 from src.services.combat_service import CombatService
 
-router = APIRouter(prefix="/api/combat", tags=["player-combat"])
+# Mounted under the /api/v1 api_router — a "/api/combat" prefix here doubled
+# up to /api/v1/api/combat, which no client called.
+router = APIRouter(prefix="/combat", tags=["player-combat"])
 
 
 # Request/Response Models
