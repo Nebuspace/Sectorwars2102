@@ -196,7 +196,15 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         // sell_price = what the station charges when the player buys;
         // buy_price = what the station pays when the player sells
         const unitPrice = tradeMode === 'buy' ? resource.sell_price : resource.buy_price;
-        const totalCost = unitPrice * tradeQuantity;
+        const subtotal = unitPrice * tradeQuantity;
+        // Station tariff follows routes/trading.py: the market endpoint
+        // reports the EFFECTIVE rate (0 at unowned stations) and the server
+        // truncates with int() — Math.floor here. Added on top of buys,
+        // withheld from sell proceeds. GET /market prices arrive
+        // player-effective (rank modifiers applied server-side), so this math
+        // consumes them as-is.
+        const taxAmount = Math.floor(subtotal * (marketInfo.port.tax_rate ?? 0));
+        const totalCost = tradeMode === 'buy' ? subtotal + taxAmount : subtotal - taxAmount;
 
         // Check affordability and cargo space
         const isAffordable = tradeMode === 'buy'
@@ -360,6 +368,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
 
   const handleTradeModeChange = (mode: 'buy' | 'sell') => {
     setTradeMode(mode);
+    // Mirror handlePortChange: a stale selection (and any open trade modal)
+    // from the other mode must not carry across the buy/sell switch
+    setSelectedResource('');
+    setShowConfirmDialog(false);
     setTradeQuantity(1);
   };
 
@@ -371,8 +383,11 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
 
     if (tradeMode === 'buy') {
       // For buying: limited by credits, cargo space, and port inventory
-      // (the station charges sell_price when the player buys)
-      const affordableQuantity = Math.floor(playerState.credits / resource.sell_price);
+      // (the station charges sell_price when the player buys, PLUS the
+      // station tariff — divide by the tariff-inclusive unit cost so the
+      // Max button never picks a quantity the server would reject)
+      const taxRate = marketInfo.port.tax_rate ?? 0;
+      const affordableQuantity = Math.floor(playerState.credits / (resource.sell_price * (1 + taxRate)));
       const currentCargo = getCargoUsed();
       const cargoSpace = getCargoCapacity() - currentCargo;
       const portInventory = resource.quantity;
@@ -448,6 +463,32 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   const formatCredits = (amount: number): string => {
     return new Intl.NumberFormat().format(amount);
   };
+
+  // --- Station tariff math (follows routes/trading.py) ---
+  // The market endpoint reports the EFFECTIVE tax rate: 0 means genuinely
+  // untaxed (unowned station), non-zero is the owner's lever. Prices from
+  // GET /market are player-effective server-side (rank modifiers already
+  // applied), so these helpers consume them as-is.
+  const getEffectiveTaxRate = (): number => marketInfo?.port.tax_rate ?? 0;
+
+  const getTradeUnitPrice = (): number => {
+    if (!selectedResource || !marketInfo) return 0;
+    const resource = marketInfo.resources[selectedResource];
+    if (!resource) return 0;
+    return tradeMode === 'buy' ? resource.sell_price : resource.buy_price;
+  };
+
+  const getTradeSubtotal = (): number => getTradeUnitPrice() * tradeQuantity;
+
+  // Server truncates: tax_amount = int(total * tax_rate)
+  const getTradeTaxAmount = (): number =>
+    Math.floor(getTradeSubtotal() * getEffectiveTaxRate());
+
+  // Buy: tariff added on top of goods cost. Sell: tariff withheld from gross.
+  const getTradeTotal = (): number =>
+    tradeMode === 'buy'
+      ? getTradeSubtotal() + getTradeTaxAmount()
+      : getTradeSubtotal() - getTradeTaxAmount();
 
   const getResourceIcon = (resourceType: string): string => {
     const icons: Record<string, string> = {
@@ -679,9 +720,72 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                   Switch to Buy Mode
                 </button>
               </div>
-            ) : (
-            <div className="resources-grid">
-              {Object.entries(marketInfo.resources).map(([resourceType, resource]) => {
+            ) : (() => {
+              const entries = Object.entries(marketInfo.resources);
+              const stationSellsAny = entries.some(([, r]) => r.station_sells);
+              const stationBuysAny = entries.some(([, r]) => r.station_buys);
+              // The player holds at least one commodity this station buys
+              const sellActionable = entries.some(
+                ([type, r]) => r.station_buys && getPlayerResourceAmount(type) > 0
+              );
+              // "Actionable" in the active mode: Buy needs the station to
+              // sell it; Sell needs the station to buy it AND the player to
+              // be holding some.
+              const actionable = entries.filter(([type, r]) =>
+                tradeMode === 'buy'
+                  ? r.station_sells
+                  : r.station_buys && getPlayerResourceAmount(type) > 0
+              );
+
+              if (actionable.length === 0) {
+                // Nothing the player can act on in this mode — explain why
+                // (from the station_buys/station_sells flags) instead of
+                // rendering a grid of dead cards.
+                let title: string;
+                let body: string;
+                if (tradeMode === 'buy') {
+                  title = 'THIS STATION SELLS NO COMMODITIES';
+                  body = stationBuysAny
+                    ? `${marketInfo.port.name} only purchases goods from traders.`
+                    : `${marketInfo.port.name} lists no commodities for trade.`;
+                } else if (!stationBuysAny) {
+                  title = 'THIS STATION BUYS NO COMMODITIES';
+                  body = stationSellsAny
+                    ? `${marketInfo.port.name} only sells goods to traders.`
+                    : `${marketInfo.port.name} lists no commodities for trade.`;
+                } else {
+                  const buyableNames = entries
+                    .filter(([, r]) => r.station_buys)
+                    .map(([type]) => formatName(type));
+                  title = 'NO BUYERS FOR YOUR CARGO';
+                  body = `${marketInfo.port.name} purchases ${buyableNames.join(', ')} — none currently in your hold.`;
+                }
+                // Only offer the mode switch when the other mode is actionable
+                const switchTarget: 'buy' | 'sell' | null =
+                  tradeMode === 'buy'
+                    ? (sellActionable ? 'sell' : null)
+                    : (stationSellsAny ? 'buy' : null);
+
+                return (
+                  <div className="empty-market-panel" role="status">
+                    <div className="empty-market-badge">Market Notice</div>
+                    <h4>{title}</h4>
+                    <p>{body}</p>
+                    {switchTarget && (
+                      <button
+                        className="switch-mode-button"
+                        onClick={() => handleTradeModeChange(switchTarget)}
+                      >
+                        Switch to {switchTarget === 'buy' ? 'Buy' : 'Sell'} Mode
+                      </button>
+                    )}
+                  </div>
+                );
+              }
+
+              return (
+            <div className={`resources-grid${entries.length === 1 ? ' single-commodity' : ''}`}>
+              {entries.map(([resourceType, resource]) => {
                 const playerAmount = getPlayerResourceAmount(resourceType);
                 const supportsDirection = tradeMode === 'buy' ? resource.station_sells : resource.station_buys;
                 const canTrade = tradeMode === 'buy'
@@ -728,7 +832,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                 );
               })}
             </div>
-            )}
+              );
+            })()}
           </div>
         )}
 
@@ -831,17 +936,30 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
               <div className="trade-summary-card">
                 <div className="summary-row">
                   <span>Unit Price</span>
-                  <span className="value">{formatCredits(marketInfo.resources[selectedResource]?.[tradeMode === 'buy' ? 'sell_price' : 'buy_price'] || 0)}</span>
+                  <span className="value">{formatCredits(getTradeUnitPrice())}</span>
                 </div>
                 <div className="summary-row">
                   <span>Quantity</span>
                   <span className="value">× {tradeQuantity}</span>
                 </div>
+                <div className="summary-row">
+                  <span>{tradeMode === 'buy' ? 'Goods Cost' : 'Gross Earnings'}</span>
+                  <span className="value">{formatCredits(getTradeSubtotal())}</span>
+                </div>
+                {/* Server-authoritative station tariff — rendered even at 0.0%
+                    so the charged total always matches this preview
+                    (routes/trading.py adds it on buys, withholds it on sells) */}
+                <div className="summary-row tariff-row">
+                  <span>Station tariff ({(getEffectiveTaxRate() * 100).toFixed(1)}%)</span>
+                  <span className="value">
+                    {tradeMode === 'buy' ? '+' : '−'}{formatCredits(getTradeTaxAmount())}
+                  </span>
+                </div>
                 <div className="summary-divider"></div>
                 <div className="summary-row total">
                   <span>{tradeMode === 'buy' ? 'Total Cost' : 'Total Earnings'}</span>
                   <span className="value highlight">
-                    {formatCredits((marketInfo.resources[selectedResource]?.[tradeMode === 'buy' ? 'sell_price' : 'buy_price'] || 0) * tradeQuantity)}
+                    {formatCredits(getTradeTotal())}
                   </span>
                 </div>
 
@@ -854,8 +972,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                     </div>
                     <div className="summary-row">
                       <span>After Purchase</span>
-                      <span className={`value ${((playerState?.credits || 0) - ((marketInfo.resources[selectedResource]?.sell_price || 0) * tradeQuantity)) < 0 ? 'error' : 'success'}`}>
-                        {formatCredits((playerState?.credits || 0) - ((marketInfo.resources[selectedResource]?.sell_price || 0) * tradeQuantity))}
+                      <span className={`value ${((playerState?.credits || 0) - getTradeTotal()) < 0 ? 'error' : 'success'}`}>
+                        {formatCredits((playerState?.credits || 0) - getTradeTotal())}
                       </span>
                     </div>
                     <div className="summary-row">
@@ -877,7 +995,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                     <div className="summary-row">
                       <span>After Sale</span>
                       <span className="value success">
-                        {formatCredits((playerState?.credits || 0) + ((marketInfo.resources[selectedResource]?.buy_price || 0) * tradeQuantity))}
+                        {formatCredits((playerState?.credits || 0) + getTradeTotal())}
                       </span>
                     </div>
                   </>

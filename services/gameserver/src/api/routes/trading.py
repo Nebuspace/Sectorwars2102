@@ -556,6 +556,14 @@ async def get_market_info(
     # Get all market prices for this port
     market_prices = db.query(MarketPrice).filter(MarketPrice.station_id == station.id).all()
 
+    # Market prices are player-effective (rank bonuses applied) so client
+    # previews match charges: mirror the int()/max(1, ...) math the buy and
+    # sell handlers use. sell_price is what THIS player pays the station
+    # (rank discount applied); buy_price is what the station pays THIS
+    # player (rank bonus applied).
+    bonuses = RankingService.get_rank_bonuses(current_player.military_rank)
+    rank_rate = bonuses["trading_discount_percent"] / 100.0
+
     # Format resources, carrying the station's trade-direction flags so the
     # client can show only actionable buy/sell options
     station_commodities = station.commodities or {}
@@ -564,8 +572,8 @@ async def get_market_info(
         cfg = station_commodities.get(price.commodity) or {}
         resources[price.commodity] = {
             "quantity": price.quantity,
-            "buy_price": price.buy_price,
-            "sell_price": price.sell_price,
+            "buy_price": max(1, int(price.buy_price * (1 + rank_rate))),
+            "sell_price": max(1, int(price.sell_price * (1 - rank_rate))),
             "station_buys": bool(cfg.get("buys", True)),
             "station_sells": bool(cfg.get("sells", True)),
             "last_updated": price.updated_at.isoformat() if price.updated_at else None
