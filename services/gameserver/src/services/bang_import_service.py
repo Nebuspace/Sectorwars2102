@@ -37,6 +37,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -49,6 +50,8 @@ from requests.exceptions import ReadTimeout
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.market_bootstrap import build_market_prices
+from src.core.station_class_map import apply_class_pattern
 from src.models.bang_generation_job import (
     BangGenerationJob,
     BangGenerationJobStatus,
@@ -1010,6 +1013,7 @@ class BangImportService:
                 )
             )
 
+        created_stations: List[Station] = []
         for stsp in region_plan.stations:
             station = Station(
                 name=stsp.name,
@@ -1025,6 +1029,7 @@ class BangImportService:
                 description=stsp.description,
             )
             session.add(station)
+            created_stations.append(station)
 
         for ps in region_plan.planets:
             planet = Planet(
@@ -1064,6 +1069,17 @@ class BangImportService:
             session.add(formation)
 
         await session.flush()
+
+        # MarketPrice rows — same transaction. The trading endpoint reads
+        # from the market_prices table, not the commodities JSONB, so a
+        # station without rows is invisible to trade. PKs are assigned by
+        # the flush above. apply_additional_region inherits this via
+        # _apply_region.
+        for station in created_stations:
+            for market_price in build_market_prices(
+                station.id, station.commodities
+            ):
+                session.add(market_price)
 
         # Gate sector = the lowest-numbered sector in this region's offset
         # range. apply() uses it as the inter-region warp tunnel endpoint.
@@ -1382,7 +1398,9 @@ class BangImportService:
 
             port = sector_payload.get("port")
             if port is not None:
-                station_specs.append(self._build_station_spec(sid, port))
+                station_specs.append(
+                    self._build_station_spec(sid, port, universe.seed)
+                )
 
             for planet_payload in sector_payload.get("planets") or []:
                 planet_specs.append(self._build_planet_spec(sid, planet_payload))
@@ -1452,7 +1470,9 @@ class BangImportService:
             raw_universe=raw,
         )
 
-    def _build_station_spec(self, sector_id: int, port: Dict[str, Any]) -> StationSpec:
+    def _build_station_spec(
+        self, sector_id: int, port: Dict[str, Any], universe_seed: int
+    ) -> StationSpec:
         klass = int(port.get("class", 0))
         is_spacedock = bool(port.get("isSpaceDock", False))
         station_class = StationClass(klass) if klass in {c.value for c in StationClass} else StationClass.CLASS_0
@@ -1462,11 +1482,21 @@ class BangImportService:
         else:
             station_type = _STATION_TYPE_BY_CLASS.get(klass, StationType.TRADING)
 
+        name = str(port.get("name", f"Station {sector_id}"))
         commodities = _build_full_commodities(port.get("commodities") or {})
+        # Class-pattern finalization fully OVERRIDES bang's per-commodity
+        # B/S flags (per SYSTEMS/bang-import-pipeline §11 / Appendix A) and
+        # stocks the station so it is tradeable on first dock. Seeded per
+        # station so re-importing the same universe is byte-identical.
+        commodities = apply_class_pattern(
+            commodities,
+            station_class,
+            random.Random(f"{universe_seed}:{sector_id}:{name}"),
+        )
         services = _build_default_services(is_spacedock)
         return StationSpec(
             sector_int_id=sector_id,
-            name=str(port.get("name", f"Station {sector_id}")),
+            name=name,
             station_class=station_class,
             station_type=station_type,
             status=StationStatus.OPERATIONAL,
@@ -1568,16 +1598,28 @@ class BangImportService:
             sector_1.special_features.append("fedspace")
 
         # Earth Station — drop any existing Sector-1 station, install canonical.
+        # CLASS_0 per ADR-0005 (Sol capital): the class pattern makes it sell
+        # colonists, and we additionally force low-quantity orientation stock
+        # of the standard commodities (galaxy-generation step 8: "standard
+        # commodities in low quantities for orientation trades").
+        earth_commodities = apply_class_pattern(
+            _build_full_commodities({}),
+            StationClass.CLASS_0,
+            random.Random(f"{plan.universe_seed}:1:Earth Station"),
+        )
+        for key, qty in (("ore", 300), ("organics", 250), ("fuel", 400)):
+            earth_commodities[key]["sells"] = True
+            earth_commodities[key]["quantity"] = qty
         plan.stations = [s for s in plan.stations if s.sector_int_id != 1]
         plan.stations.insert(
             0,
             StationSpec(
                 sector_int_id=1,
                 name="Earth Station",
-                station_class=StationClass.CLASS_1,
+                station_class=StationClass.CLASS_0,
                 station_type=StationType.TRADING,
                 status=StationStatus.OPERATIONAL,
-                commodities=_build_full_commodities({}),
+                commodities=earth_commodities,
                 services=_build_default_services(is_spacedock=False),
                 is_spacedock=False,
                 description="The canonical starter station for Terran Space.",
@@ -1608,7 +1650,9 @@ class BangImportService:
             ),
         )
 
-        # SpaceDock at sector 10 — replace whatever bang produced.
+        # SpaceDock at sector 10 — replace whatever bang produced. Same
+        # class-pattern finalization as every other station, otherwise the
+        # injected spec is fully inert (no buys/sells → no MarketPrice rows).
         plan.stations = [s for s in plan.stations if s.sector_int_id != 10]
         plan.stations.append(
             StationSpec(
@@ -1617,7 +1661,11 @@ class BangImportService:
                 station_class=StationClass.CLASS_11,
                 station_type=StationType.SHIPYARD,
                 status=StationStatus.OPERATIONAL,
-                commodities=_build_full_commodities({}),
+                commodities=apply_class_pattern(
+                    _build_full_commodities({}),
+                    StationClass.CLASS_11,
+                    random.Random(f"{plan.universe_seed}:10:Stardock"),
+                ),
                 services={
                     "ship_dealer": True,
                     "ship_repair": True,

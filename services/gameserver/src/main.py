@@ -103,6 +103,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning(f"i18n auto-seed skipped: {e}")
 
+    # Ship specifications auto-seed: shipyard ship creation reads
+    # ShipSpecification rows and raises ValueError when a type is missing,
+    # so a clean DB without this seed cannot sell ships. Idempotent — the
+    # seeder updates existing rows in place, so re-runs are safe on every
+    # boot (mirrors the i18n seed pattern above).
+    try:
+        from src.core.database import SessionLocal
+        from src.core.ship_specifications_seeder import seed_ship_specifications
+
+        db = SessionLocal()
+        try:
+            seed_ship_specifications(db)
+            logger.info("Ship specifications seed completed")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Ship specifications seed skipped: {e}")
+
     # Start WebSocket heartbeat cleanup background task
     import asyncio
     async def _heartbeat_cleanup_loop():

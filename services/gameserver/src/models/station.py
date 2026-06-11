@@ -219,99 +219,31 @@ class Station(Base):
         return f"<Station {self.name} (Class {self.station_class.value}, {self.type.name}) - Sector: {self.sector_id}, Status: {self.status.name}>"
     
     def get_trading_pattern(self):
-        """Get what this station buys/sells based on its class."""
-        patterns = {
-            StationClass.CLASS_0: {"buys": ["special_goods"], "sells": ["special_goods", "colonists"]},
-            StationClass.CLASS_1: {"buys": ["ore"], "sells": ["organics", "equipment"]},
-            StationClass.CLASS_2: {"buys": ["organics"], "sells": ["ore", "equipment"]},
-            StationClass.CLASS_3: {"buys": ["equipment"], "sells": ["ore", "organics"]},
-            StationClass.CLASS_4: {"buys": ["exotic_technology"], "sells": ["ore", "organics", "equipment", "fuel"]},
-            StationClass.CLASS_5: {"buys": ["ore", "organics", "equipment", "fuel"], "sells": ["luxury_goods"]},
-            StationClass.CLASS_6: {"buys": ["ore", "organics"], "sells": ["equipment", "fuel"]},
-            StationClass.CLASS_7: {"buys": ["equipment", "fuel"], "sells": ["ore", "organics"]},
-            StationClass.CLASS_8: {"buys": ["ore", "organics", "equipment", "fuel"], "sells": []},
-            StationClass.CLASS_9: {"buys": [], "sells": ["ore", "organics", "equipment", "fuel"]},
-            StationClass.CLASS_10: {"buys": ["gourmet_food"], "sells": ["luxury_goods", "exotic_technology"]},
-            StationClass.CLASS_11: {"buys": ["exotic_technology"], "sells": ["advanced_components"]}
-        }
-        return patterns.get(self.station_class, {"buys": [], "sells": []})
-    
+        """Get what this station buys/sells based on its class.
+
+        Single source of truth lives in ``src.core.station_class_map``
+        (imported lazily — that module imports StationClass from here).
+        """
+        from src.core.station_class_map import get_class_pattern
+        return get_class_pattern(self.station_class)
+
     def update_commodity_trading_flags(self):
-        """Update commodity buy/sell flags based on port class."""
-        pattern = self.get_trading_pattern()
-        
-        # Reset all flags
-        for commodity in self.commodities:
-            self.commodities[commodity]["buys"] = False
-            self.commodities[commodity]["sells"] = False
-        
-        # Set flags based on trading pattern
-        for commodity in pattern.get("buys", []):
-            if commodity in self.commodities:
-                self.commodities[commodity]["buys"] = True
-                
-        for commodity in pattern.get("sells", []):
-            if commodity in self.commodities:
-                self.commodities[commodity]["sells"] = True
-    
+        """Update commodity buy/sell flags based on port class.
+
+        Delegates to :func:`src.core.station_class_map.apply_trading_flags`
+        (in-place, same behaviour as the original inline implementation).
+        """
+        from src.core.station_class_map import apply_trading_flags
+        apply_trading_flags(self.commodities, self.station_class)
+
     def update_commodity_stock_levels(self):
-        """Update commodity stock levels to match port's trading role."""
+        """Update commodity stock levels to match port's trading role.
+
+        Delegates to :func:`src.core.station_class_map.apply_stock_levels`
+        with an unseeded RNG, matching the original module-level
+        ``random.uniform`` behaviour.
+        """
         import random
-        
-        pattern = self.get_trading_pattern()
-        is_premium_seller = self.station_class == StationClass.CLASS_9  # Nova
-        is_premium_buyer = self.station_class == StationClass.CLASS_8   # Black Hole
-        is_distribution = self.station_class == StationClass.CLASS_4    # Distribution Center
-        is_collection = self.station_class == StationClass.CLASS_5     # Collection Hub
-        
-        for commodity_name, commodity_data in self.commodities.items():
-            base_capacity = commodity_data.get("capacity", 1000)
-            
-            # Determine stock level based on port's role with this commodity
-            if commodity_name in pattern.get("sells", []):
-                # Station sells this commodity - needs high stock
-                if is_premium_seller:
-                    # Premium sellers have maximum stock
-                    stock_level = int(base_capacity * random.uniform(0.8, 1.0))
-                    production_rate = commodity_data.get("production_rate", 50) * 2
-                elif is_distribution:
-                    # Distribution centers have very high stock for selling
-                    stock_level = int(base_capacity * random.uniform(0.7, 0.9))
-                    production_rate = commodity_data.get("production_rate", 50) * 1.5
-                else:
-                    # Regular sellers have good stock
-                    stock_level = int(base_capacity * random.uniform(0.4, 0.7))
-                    production_rate = commodity_data.get("production_rate", 50)
-                    
-            elif commodity_name in pattern.get("buys", []):
-                # Station buys this commodity - needs low stock, high capacity
-                if is_premium_buyer or is_collection:
-                    # Premium buyers and collection hubs have minimal stock, maximum capacity
-                    stock_level = int(base_capacity * random.uniform(0.05, 0.15))
-                    production_rate = 0  # They don't produce, they collect
-                else:
-                    # Regular buyers have low stock
-                    stock_level = int(base_capacity * random.uniform(0.1, 0.3))
-                    production_rate = 0
-            else:
-                # Station doesn't trade this commodity - minimal stock
-                stock_level = int(base_capacity * random.uniform(0.1, 0.25))
-                production_rate = commodity_data.get("production_rate", 10)
-            
-            # Ensure minimum stock of 1 for all commodities
-            stock_level = max(1, stock_level)
-            
-            # Update the commodity data
-            self.commodities[commodity_name]["quantity"] = stock_level
-            self.commodities[commodity_name]["production_rate"] = production_rate
-            
-            # Adjust pricing for premium ports
-            base_price = commodity_data.get("base_price", 50)
-            if is_premium_seller and commodity_name in pattern.get("sells", []):
-                # Premium sellers charge less (better deals for players)
-                self.commodities[commodity_name]["current_price"] = int(base_price * 0.8)
-            elif is_premium_buyer and commodity_name in pattern.get("buys", []):
-                # Premium buyers pay more (better deals for players)
-                self.commodities[commodity_name]["current_price"] = int(base_price * 1.3)
-            else:
-                self.commodities[commodity_name]["current_price"] = base_price 
+
+        from src.core.station_class_map import apply_stock_levels
+        apply_stock_levels(self.commodities, self.station_class, random.Random()) 
