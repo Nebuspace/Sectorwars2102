@@ -187,10 +187,6 @@ interface GameContextType {
   depositToSafe: (planetId: string, resourceType: string, amount: number) => Promise<any>;
   withdrawFromSafe: (planetId: string, resourceType: string, amount: number) => Promise<any>;
 
-  // Combat
-  attackPlayer: (playerId: string) => Promise<any>;
-  attackDrones: () => Promise<any>;
-
   // Port Office — station ownership, sealed-bid sales, tariffs, takeovers
   // (backend: /api/v1/port-ownership/*). Payload shapes are normalized
   // defensively in the Port Office venue, so these return `unknown`.
@@ -960,54 +956,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Attack another player
-  const attackPlayer = async (playerId: string) => {
-    if (!user || !playerState) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const response = await api.post('/api/v1/combat/attack-player', { defender_id: playerId });
-      
-      // Update player state after combat
-      await refreshPlayerState();
-      
-      return response.data;
-    } catch (error: any) {
-      console.error('Error attacking player:', error);
-      setError(error.response?.data?.message || 'Failed to attack player');
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  
-  // Attack sector drones
-  const attackDrones = async () => {
-    if (!user || !playerState) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const response = await api.post('/api/v1/combat/attack-drones', { 
-        sector_id: playerState.current_sector_id 
-      });
-      
-      // Update player state after combat
-      await refreshPlayerState();
-      
-      return response.data;
-    } catch (error: any) {
-      console.error('Error attacking drones:', error);
-      setError(error.response?.data?.message || 'Failed to attack drones');
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  
   // --- Port Office: station ownership, sealed-bid sales, tariffs, takeovers ---
   // These follow the getPlanetDetails mold: no global isLoading/error churn —
   // the Port Office venue surfaces failures inline. Mutations that move
@@ -1234,10 +1182,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     transferColonists,
     depositToSafe,
     withdrawFromSafe,
-
-    // Combat
-    attackPlayer,
-    attackDrones,
 
     // Port Office — station ownership
     getPortListings,

@@ -1,64 +1,42 @@
 /**
  * CombatInterface Component
- * 
- * Main combat engagement interface for ship-to-ship, ship-to-planet, 
- * and ship-to-port combat. Provides real-time combat visualization
- * and player controls during combat encounters.
+ *
+ * Main combat engagement interface for ship-to-ship and ship-to-planet
+ * combat. Combat resolves synchronously on the backend (a single engage
+ * call resolves the whole fight), so this interface shows the resolved
+ * outcome with a full round-by-round combat log replay.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { gameAPI } from '../../services/api';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import GameLayout from '../layouts/GameLayout';
 import './combat-interface.css';
 
-// Define types locally since we're removing mocks
-interface CombatStatus {
-  combatId: string;
-  status: 'initiated' | 'ongoing' | 'completed' | 'error';
-  rounds: CombatRound[];
-  winner?: string;
-  message?: string;
-  loot?: {
-    credits: number;
-    items: string[];
-  };
+// Shapes returned by the player_combat API (see gameserver player_combat.py)
+interface CombatRoundEvent {
+  round: number;
+  actor?: string | null;
+  action?: string | null;
+  message: string;
 }
 
-interface CombatRound {
-  round: number;
-  roundNumber?: number;
-  actions: Array<{
-    attacker: string;
-    target: string;
-    damage: number;
-    critical: boolean;
-    message: string;
-  }>;
-  playerHealth: number;
-  playerShields: number;
-  targetHealth: number;
-  targetShields: number;
-  attackerHealth?: number;
-  defenderHealth?: number;
-  attackerAction?: {
-    type: string;
-    damage?: number;
-  };
-  defenderAction?: {
-    type: string;
-    damage?: number;
-  };
+interface CombatStatus {
+  status: 'completed';
+  outcome?: 'attacker_win' | 'defender_win' | 'draw' | 'escaped' | null;
+  rounds: CombatRoundEvent[];
+  winner?: string | null;
+  combatDuration?: number | null;
+  creditsLooted?: number | null;
+  cargoLooted?: string[];
 }
 
 interface CombatTarget {
   id: string;
   name: string;
   type: 'ship' | 'planet' | 'port';
-  health?: number;
-  shields?: number;
-  drones?: number;
+  isNpc?: boolean;
 }
 
 interface CombatInterfaceProps {
@@ -92,8 +70,6 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   const [combatStatus, setCombatStatus] = useState<CombatStatus | null>(null);
   const [isEngaging, setIsEngaging] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedAction, setSelectedAction] = useState<'fire' | 'drones' | 'retreat'>('fire');
-  const [retreatMessage, setRetreatMessage] = useState<{ success: boolean; message: string } | null>(null);
 
   // Target selected from the in-sector target list (when no target prop is given,
   // e.g. when rendered as the /game/combat route)
@@ -102,41 +78,26 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
 
   // UI state
   const [showCombatLog, setShowCombatLog] = useState(true);
-  const [animationState, setAnimationState] = useState<'idle' | 'attacking' | 'defending'>('idle');
-  
-  // Auto-refresh combat status
-  useEffect(() => {
-    if (!combatId || combatStatus?.status === 'completed') return;
-    
-    const interval = setInterval(async () => {
-      try {
-        const status = await gameAPI.combat.getStatus(combatId);
-        if (status) {
-          setCombatStatus(status);
-          
-          // Trigger animations based on latest round
-          if (status.rounds.length > 0) {
-            const latestRound = status.rounds[status.rounds.length - 1];
-            if (latestRound.actions && latestRound.actions.length > 0) {
-              setAnimationState('attacking');
-              setTimeout(() => setAnimationState('idle'), 500);
-            }
-          }
-          
-          // Handle combat end
-          if (status.status === 'completed') {
-            handleCombatEnd(status);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to fetch combat status:', err);
-      }
-    }, 1000);
-    
-    return () => clearInterval(interval);
-  }, [combatId, combatStatus?.status]);
-  
-  // Initiate combat against an explicit target (from prop or target selection)
+
+  // Handle combat end
+  const handleCombatEnd = useCallback((status: CombatStatus) => {
+    // Clear rate limit on combat end
+    if (playerState) {
+      InputValidator.clearRateLimit(`combat_${playerState.id}`);
+    }
+
+    // Refresh player state to update turns, drones, cargo, etc.
+    refreshPlayerState();
+
+    // Notify parent component
+    if (onCombatEnd) {
+      onCombatEnd(status);
+    }
+  }, [playerState, refreshPlayerState, onCombatEnd]);
+
+  // Initiate combat against an explicit target (from prop or target selection).
+  // The backend resolves the whole fight in this call — the follow-up status
+  // fetch returns the completed result with every round for replay.
   const initiateCombat = useCallback(async (engageTarget: CombatTarget) => {
     if (!playerState || isEngaging) return;
 
@@ -169,7 +130,6 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
 
     setIsEngaging(true);
     setError(null);
-    setRetreatMessage(null);
 
     try {
       const response = await gameAPI.combat.engage(engageTarget.type, engageTarget.id);
@@ -177,10 +137,12 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
       if (response.status === 'initiated' && response.combatId) {
         setCombatId(response.combatId);
 
-        // Fetch initial status
-        const initialStatus = await gameAPI.combat.getStatus(response.combatId);
-        if (initialStatus) {
-          setCombatStatus(initialStatus);
+        const status = await gameAPI.combat.getStatus(response.combatId) as CombatStatus;
+        if (status) {
+          setCombatStatus(status);
+          if (status.status === 'completed') {
+            handleCombatEnd(status);
+          }
         }
       } else {
         setError(response.message || 'Failed to initiate combat');
@@ -192,7 +154,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
     } finally {
       setIsEngaging(false);
     }
-  }, [playerState, isEngaging]);
+  }, [playerState, isEngaging, handleCombatEnd]);
 
   // Select a target from the in-sector list and engage immediately
   const handleEngageTarget = useCallback((engageTarget: CombatTarget) => {
@@ -200,62 +162,37 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
     setError(null);
     initiateCombat(engageTarget);
   }, [initiateCombat]);
-  
-  // Handle combat end
-  const handleCombatEnd = useCallback((status: CombatStatus) => {
-    // Clear rate limit on combat end
-    if (playerState) {
-      InputValidator.clearRateLimit(`combat_${playerState.id}`);
-    }
-    
-    // Refresh player state to update resources, health, etc.
-    refreshPlayerState();
-    
-    // Notify parent component
-    if (onCombatEnd) {
-      onCombatEnd(status);
-    }
-  }, [playerState, refreshPlayerState, onCombatEnd]);
-  
-  // Attempt retreat
-  const attemptRetreat = useCallback(async () => {
-    if (!combatId || !playerState || combatStatus?.status === 'completed') return;
 
-    setSelectedAction('retreat');
+  // Reset to target selection for another engagement
+  const resetCombat = useCallback(() => {
+    setCombatId(null);
+    setCombatStatus(null);
+    setSelectedTarget(null);
     setError(null);
+  }, []);
 
-    try {
-      const result = await gameAPI.combat.retreat(combatId);
-      setRetreatMessage({
-        success: !!result.success,
-        message: result.message || (result.success ? 'Retreat successful!' : 'Retreat failed!')
-      });
-
-      // On a successful retreat the combat ends — refresh status immediately
-      if (result.success) {
-        const status = await gameAPI.combat.getStatus(combatId);
-        if (status) {
-          setCombatStatus(status);
-          if (status.status === 'completed') {
-            handleCombatEnd(status);
-          }
-        }
+  // Resolve the headline result text from the player's perspective
+  const getResultHeadline = (status: CombatStatus): string => {
+    if (status.outcome === 'escaped') return 'DISENGAGED';
+    if (status.winner === 'draw') {
+      // The backend collapses MUTUAL_DESTRUCTION into the 'draw' outcome
+      // (the combat_logs outcome column has no dedicated value) — tell
+      // them apart by checking whether both sides' ships were destroyed
+      // in the round log ('attacker' destroying = defender ship died,
+      // 'defender' destroying = the player's attacking ship died).
+      const destroyers = new Set(
+        status.rounds
+          .filter(e => e.action === 'ship_destroyed' && e.actor)
+          .map(e => e.actor as string)
+      );
+      if (destroyers.has('attacker') && destroyers.has('defender')) {
+        return 'MUTUAL DESTRUCTION';
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Retreat attempt failed.');
-      console.error('Retreat attempt failed:', err);
+      return 'STALEMATE';
     }
-  }, [combatId, playerState, combatStatus, handleCombatEnd]);
-  
-  // Calculate health percentages
-  const getHealthPercentage = (current: number, max: number = 100): number => {
-    return Math.max(0, Math.min(100, (current / max) * 100));
+    if (status.winner && playerState && status.winner === playerState.id) return 'VICTORY!';
+    return 'DEFEATED';
   };
-  
-  // Get latest round data
-  const latestRound = combatStatus?.rounds[combatStatus.rounds.length - 1];
-  const playerHealth = latestRound?.playerHealth ?? 100;
-  const targetHealth = latestRound?.targetHealth ?? 100;
 
   // Build target lists from the current sector (GameContext)
   type TargetOption = CombatTarget & { subtype: string };
@@ -268,6 +205,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         ? `${p.username} — ${p.ship_name}`
         : p.username || 'Unknown pilot',
       type: 'ship' as const,
+      isNpc: !!p.is_npc,
       subtype: p.ship_type && p.ship_type !== 'None'
         ? String(p.ship_type).replace(/_/g, ' ').toLowerCase()
         : 'ship'
@@ -304,12 +242,15 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         targets.map(t => (
           <div key={`${t.type}-${t.id}`} className="target-row">
             <div className="target-info">
-              <span className="target-name">{t.name}</span>
+              <span className="target-name">
+                {t.name}
+                {t.isNpc && <span className="npc-badge"> NPC</span>}
+              </span>
               <span className="target-type-label">{t.subtype}</span>
             </div>
             <button
               className="cockpit-btn danger engage-target-btn"
-              onClick={() => handleEngageTarget({ id: t.id, name: t.name, type: t.type })}
+              onClick={() => handleEngageTarget({ id: t.id, name: t.name, type: t.type, isNpc: t.isNpc })}
               disabled={isEngaging}
             >
               {isEngaging ? '...' : 'ENGAGE'}
@@ -356,49 +297,44 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
 
   return (
     <Wrapper>
-    <div className={`combat-interface ${animationState}`}>
+    <div className="combat-interface">
       <div className="combat-header">
         <h2>COMBAT ENGAGEMENT</h2>
         {onClose && (
           <button className="close-btn" onClick={onClose}>×</button>
         )}
       </div>
-      
+
       {error && (
         <div className="combat-error">
           <span className="error-icon">⚠️</span>
           {error}
         </div>
       )}
-      
+
       <div className="combat-main">
         {/* Player Status */}
         <div className="combatant player">
           <h3>{currentShip?.name || 'Your Ship'}</h3>
           <div className="ship-type">{currentShip?.type || 'Unknown'}</div>
-          
-          <div className="health-bar">
-            <div 
-              className="health-fill"
-              style={{ width: `${getHealthPercentage(playerHealth)}%` }}
-            />
-            <span className="health-text">{playerHealth}/100</span>
-          </div>
-          
+
           {currentShip && (
             <div className="combat-stats">
               <div>Attack: {currentShip.combat?.attack_rating || 0}</div>
               <div>Defense: {currentShip.combat?.defense_rating || 0}</div>
-              <div>Drones: {currentShip.combat?.attack_drones || 0}</div>
+              <div>Drones: {playerState?.defense_drones ?? 0}</div>
             </div>
           )}
         </div>
-        
+
         {/* Combat Arena */}
         <div className="combat-arena">
           {!combatId ? (
             <div className="pre-combat">
-              <p>Prepare for combat against {combatTarget.name}</p>
+              <p>
+                Prepare for combat against {combatTarget.name}
+                {combatTarget.isNpc && <span className="npc-badge"> NPC</span>}
+              </p>
               <button
                 className="cockpit-btn danger engage-btn"
                 onClick={() => initiateCombat(combatTarget)}
@@ -409,10 +345,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
               {!target && (
                 <button
                   className="cockpit-btn secondary change-target-btn"
-                  onClick={() => {
-                    setSelectedTarget(null);
-                    setError(null);
-                  }}
+                  onClick={resetCombat}
                   disabled={isEngaging}
                 >
                   ← CHANGE TARGET
@@ -422,55 +355,36 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
           ) : (
             <div className="combat-active">
               <div className="combat-status">
-                {combatStatus?.status === 'ongoing' ? (
-                  <>
-                    <div className="round-indicator">
-                      Round {combatStatus.rounds.length}
-                    </div>
-                    <div className="combat-actions">
-                      <button 
-                        className={`action-btn ${selectedAction === 'fire' ? 'active' : ''}`}
-                        onClick={() => setSelectedAction('fire')}
-                      >
-                        FIRE WEAPONS
-                      </button>
-                      <button 
-                        className={`action-btn ${selectedAction === 'drones' ? 'active' : ''}`}
-                        onClick={() => setSelectedAction('drones')}
-                        disabled={!currentShip?.combat?.attack_drones}
-                      >
-                        DEPLOY DRONES
-                      </button>
-                      <button
-                        className={`action-btn retreat ${selectedAction === 'retreat' ? 'active' : ''}`}
-                        onClick={attemptRetreat}
-                      >
-                        ATTEMPT RETREAT
-                      </button>
-                    </div>
-                    {retreatMessage && (
-                      <div className={`combat-retreat-message ${retreatMessage.success ? 'success' : 'failure'}`}>
-                        <span className="retreat-icon">{retreatMessage.success ? '✓' : '✗'}</span>
-                        {retreatMessage.message}
-                      </div>
-                    )}
-                  </>
+                {!combatStatus ? (
+                  <div className="round-indicator">Resolving combat...</div>
                 ) : (
                   <div className="combat-result">
                     <h3>COMBAT COMPLETE</h3>
-                    <div className="winner">
-                      {combatStatus?.winner === 'attacker' ? 'VICTORY!' : 'DEFEATED'}
+                    <div className="winner">{getResultHeadline(combatStatus)}</div>
+                    <div className="combat-rounds-summary">
+                      Resolved in {combatStatus.rounds.length > 0
+                        ? Math.max(...combatStatus.rounds.map(r => r.round))
+                        : 0} rounds
                     </div>
-                    {combatStatus?.loot && (
+                    {((combatStatus.creditsLooted ?? 0) > 0 ||
+                      (combatStatus.cargoLooted?.length ?? 0) > 0) && (
                       <div className="loot-display">
                         <h4>Salvage Recovered:</h4>
-                        <div>Credits: {combatStatus.loot.credits}</div>
-                        {combatStatus.loot.items && combatStatus.loot.items.length > 0 && (
-                          <div>
-                            Items: {combatStatus.loot.items.join(', ')}
-                          </div>
+                        {(combatStatus.creditsLooted ?? 0) > 0 && (
+                          <div>Credits: {combatStatus.creditsLooted}</div>
+                        )}
+                        {combatStatus.cargoLooted && combatStatus.cargoLooted.length > 0 && (
+                          <div>Cargo: {combatStatus.cargoLooted.join(', ')}</div>
                         )}
                       </div>
+                    )}
+                    {!target && (
+                      <button
+                        className="cockpit-btn secondary change-target-btn"
+                        onClick={resetCombat}
+                      >
+                        ← NEW TARGET
+                      </button>
                     )}
                   </div>
                 )}
@@ -478,34 +392,27 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
             </div>
           )}
         </div>
-        
+
         {/* Target Status */}
         <div className="combatant target">
-          <h3>{combatTarget.name}</h3>
+          <h3>
+            {combatTarget.name}
+            {combatTarget.isNpc && <span className="npc-badge"> NPC</span>}
+          </h3>
           <div className="ship-type">{combatTarget.type}</div>
-
-          <div className="health-bar">
-            <div
-              className="health-fill enemy"
-              style={{ width: `${getHealthPercentage(targetHealth)}%` }}
-            />
-            <span className="health-text">{targetHealth}/100</span>
-          </div>
 
           <div className="combat-stats">
             <div>Type: {combatTarget.type}</div>
-            {combatTarget.shields && <div>Shields: {combatTarget.shields}</div>}
-            {combatTarget.drones && <div>Drones: {combatTarget.drones}</div>}
           </div>
         </div>
       </div>
-      
-      {/* Combat Log */}
-      {showCombatLog && combatStatus && (
+
+      {/* Combat Log — full round-by-round replay of the resolved fight */}
+      {showCombatLog && combatStatus && combatStatus.rounds.length > 0 && (
         <div className="combat-log">
           <div className="log-header">
             <h4>COMBAT LOG</h4>
-            <button 
+            <button
               className="toggle-log"
               onClick={() => setShowCombatLog(!showCombatLog)}
             >
@@ -513,17 +420,10 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
             </button>
           </div>
           <div className="log-entries">
-            {combatStatus.rounds.map((round, index) => (
-              <div key={index} className="log-entry">
-                <span className="round-num">R{round.roundNumber}:</span>
-                <span className="attacker-action">
-                  You {round.attackerAction.type === 'fire' ? 'fired weapons' : round.attackerAction.type}
-                  {round.attackerAction.damage && ` (${round.attackerAction.damage} damage)`}
-                </span>
-                <span className="defender-action">
-                  {combatTarget.name} {round.defenderAction.type === 'fire' ? 'returned fire' : round.defenderAction.type}
-                  {round.defenderAction.damage && ` (${round.defenderAction.damage} damage)`}
-                </span>
+            {combatStatus.rounds.map((event, index) => (
+              <div key={index} className={`log-entry ${event.actor ?? ''}`}>
+                <span className="round-num">R{event.round}:</span>
+                <span className="log-message">{event.message}</span>
               </div>
             ))}
           </div>

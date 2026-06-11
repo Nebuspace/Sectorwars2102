@@ -364,6 +364,10 @@ class RankingService:
                     and_(
                         CombatLog.attacker_id == player_id,
                         CombatLog.outcome == "attacker_win",
+                        # NPC kills (defender_id NULL) must not farm
+                        # achievement victories — canon NPC-kill reward
+                        # hooks (npc-scheduler.md KIA step 8) are deferred
+                        CombatLog.defender_id.isnot(None),
                     ),
                     and_(
                         CombatLog.defender_id == player_id,

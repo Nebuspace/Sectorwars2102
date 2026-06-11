@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 import random
@@ -5,20 +6,38 @@ import math
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import and_, or_
 
 from src.models.player import Player
-from src.models.ship import Ship, ShipType, ShipSpecification
+from src.models.ship import Ship, ShipStatus, ShipType, ShipSpecification
 from src.models.sector import Sector
 from src.models.combat import CombatType, CombatResult
-from src.models.combat_log import CombatLog
+from src.models.combat_log import CombatLog, CombatOutcome
 from src.models.drone import Drone, DroneDeployment
 from src.models.planet import Planet
+from src.models.region import RegionType
 from src.models.station import Station
 from src.services.ship_service import ShipService
 from src.services.ranking_service import RankingService
 
 logger = logging.getLogger(__name__)
+
+
+# Map the engine's CombatResult enum onto the outcome strings the combat_logs
+# table actually stores (see CombatOutcome / migration c138b33baec4). The
+# outcome column only has 5 values, so fled results collapse to "escaped" and
+# mutual destruction collapses to "draw" (closest real value — no dedicated
+# outcome exists in the schema).
+COMBAT_RESULT_TO_OUTCOME: Dict[CombatResult, str] = {
+    CombatResult.ATTACKER_VICTORY: CombatOutcome.ATTACKER_WIN.value,
+    CombatResult.DEFENDER_VICTORY: CombatOutcome.DEFENDER_WIN.value,
+    CombatResult.DRAW: CombatOutcome.DRAW.value,
+    CombatResult.ATTACKER_FLED: CombatOutcome.ESCAPED.value,
+    CombatResult.DEFENDER_FLED: CombatOutcome.ESCAPED.value,
+    CombatResult.MUTUAL_DESTRUCTION: CombatOutcome.DRAW.value,
+    CombatResult.ABANDONED: CombatOutcome.DRAW.value,
+}
 
 
 class CombatService:
@@ -94,10 +113,11 @@ class CombatService:
         if attacker.turns < turn_cost:
             return {"success": False, "message": f"Not enough turns to initiate combat (need {turn_cost})"}
         
-        # Check if players are docked or landed (optionally could prevent combat)
-        if attacker.is_docked:
-            return {"success": False, "message": "Cannot attack while docked at a port"}
-        
+        # Attacker cannot initiate combat while docked or landed (mirrors
+        # the other combat entry points)
+        if attacker.is_docked or attacker.is_landed:
+            return {"success": False, "message": "Cannot attack while docked at a port or landed on a planet"}
+
         # Get current sector for location and rules
         sector = self.db.query(Sector).filter(Sector.sector_id == attacker.current_sector_id).first()
         
@@ -111,46 +131,53 @@ class CombatService:
         # Consume turns
         attacker.turns -= turn_cost
         
-        # Create combat log
+        # Create combat log (snapshots taken before destruction/drone updates)
+        attacker_ship = attacker.current_ship
+        defender_ship = defender.current_ship
         combat_log = CombatLog(
-            combat_type=CombatType.SHIP_VS_SHIP,
-            combat_result=combat_result["result"],
+            combat_type=CombatType.SHIP_VS_SHIP.value,
+            outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
+            attacker_ship_name=attacker_ship.name if attacker_ship else None,
+            attacker_ship_type=attacker_ship.type.value if attacker_ship else None,
             defender_id=defender.id,
             defender_ship_id=defender.current_ship_id,
-            attacker_team_id=attacker.team_id,
-            defender_team_id=defender.team_id,
-            turns_consumed=turn_cost,
-            combat_rounds=combat_result["rounds"],
+            defender_ship_name=defender_ship.name if defender_ship else None,
+            defender_ship_type=defender_ship.type.value if defender_ship else None,
+            rounds=combat_result["rounds"],
+            attacker_drones=attacker.defense_drones,
+            defender_drones=defender.defense_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
-            attacker_ship_destroyed=combat_result["attacker_ship_destroyed"],
-            defender_ship_destroyed=combat_result["defender_ship_destroyed"],
-            combat_details=combat_result["combat_details"]
+            cargo_looted=combat_result["cargo_stolen"] or None,
+            combat_log=json.dumps(combat_result["combat_details"]),
+            ended_at=datetime.now()
         )
         
         self.db.add(combat_log)
-        
+
+        # Handle cargo theft BEFORE destruction — destroy_ship swaps the
+        # loser into an escape pod, so transferring afterwards would loot the
+        # pod's emergency cargo instead of the defeated ship's hold
+        if combat_result["cargo_stolen"]:
+            self._transfer_cargo(defender_ship, attacker_ship, combat_result["cargo_stolen"])
+
         # Apply combat effects
         if combat_result["defender_ship_destroyed"]:
             self._handle_ship_destruction(defender, attacker, "combat")
-        
+
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, defender, "combat")
-        
+
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
             attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
-        
+
         if combat_result["defender_drones_lost"] > 0:
             defender.defense_drones = max(0, defender.defense_drones - combat_result["defender_drones_lost"])
-        
-        # Handle cargo theft if applicable
-        if combat_result["cargo_stolen"]:
-            self._transfer_cargo(defender.current_ship, attacker.current_ship, combat_result["cargo_stolen"])
         
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
@@ -189,11 +216,15 @@ class CombatService:
                     if winner.aria_total_interactions >= threshold and winner.aria_consciousness_level < level:
                         winner.aria_consciousness_level = level
                         winner.aria_bonus_multiplier = multiplier
-                # Check combat medals
+                # Check combat medals. NPC kills (defender_id NULL) are
+                # excluded so they can't be farmed for medals — the canon
+                # NPC-kill reward hooks (npc-scheduler.md KIA step 8) are
+                # deliberately deferred, not invented here.
                 from src.services.medal_service import MedalService
                 victory_count = self.db.query(CombatLog).filter(
-                    ((CombatLog.attacker_id == winner.id) & (CombatLog.combat_result == CombatResult.ATTACKER_VICTORY)) |
-                    ((CombatLog.defender_id == winner.id) & (CombatLog.combat_result == CombatResult.DEFENDER_VICTORY))
+                    CombatLog.defender_id.isnot(None),
+                    ((CombatLog.attacker_id == winner.id) & (CombatLog.outcome == CombatOutcome.ATTACKER_WIN.value)) |
+                    ((CombatLog.defender_id == winner.id) & (CombatLog.outcome == CombatOutcome.DEFENDER_WIN.value))
                 ).count()
                 medal_service = MedalService(self.db)
                 medal_service.check_combat_medals(winner.id, victory_count)
@@ -244,6 +275,125 @@ class CombatService:
 
         return result_dict
 
+    def attack_npc_ship(self, attacker_id: uuid.UUID, ship_id: uuid.UUID) -> Dict[str, Any]:
+        """Initiate combat between a player and an NPC-controlled ship.
+
+        The defender is a Ship row with no owning Player (owner_id is NULL /
+        is_npc flag set), so there are no defender turn costs and no defender
+        reputation/rank hooks. Attacker-side rank/reputation/bounty hooks are
+        also skipped for NPC kills — canon prescribes faction reputation
+        deltas (e.g. Federation rep loss per Marshal kill) that belong to the
+        reputation/holdings slices and are deliberately deferred, not invented.
+        """
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
+        if not attacker:
+            return {"success": False, "message": "Player not found"}
+
+        npc_ship = self.db.query(Ship).filter(Ship.id == ship_id).with_for_update().first()
+        if not npc_ship or npc_ship.is_destroyed:
+            return {"success": False, "message": "Target ship not found"}
+
+        if not attacker.current_ship:
+            return {"success": False, "message": "Attacker has no active ship"}
+
+        if attacker.current_sector_id != npc_ship.sector_id:
+            return {"success": False, "message": "Target is not in your sector"}
+
+        # Attack turn cost comes from the defender ship's specification,
+        # exactly as in player-vs-player combat
+        defender_spec = self.db.query(ShipSpecification).filter(
+            ShipSpecification.type == npc_ship.type
+        ).first()
+        turn_cost = getattr(defender_spec, 'attack_turn_cost', None) or 2
+        if attacker.turns < turn_cost:
+            return {"success": False, "message": f"Not enough turns to initiate combat (need {turn_cost})"}
+
+        if attacker.is_docked or attacker.is_landed:
+            return {"success": False, "message": "Cannot attack while docked at a port or landed on a planet"}
+
+        sector = self.db.query(Sector).filter(Sector.sector_id == attacker.current_sector_id).first()
+
+        if not self._is_combat_allowed(sector, attacker, None):
+            return {"success": False, "message": "Combat is not allowed in this sector"}
+
+        # Resolve combat against the NPC ship via the standard resolution path
+        combat_result = self._resolve_ship_combat(attacker, None, sector, defender_ship=npc_ship)
+
+        # Consume turns
+        attacker.turns -= turn_cost
+
+        # Create combat log — defender_id stays NULL (no Player behind the
+        # ship); name/type snapshots preserve who was fought
+        attacker_ship = attacker.current_ship
+        combat_log = CombatLog(
+            combat_type=CombatType.SHIP_VS_SHIP.value,
+            outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
+            sector_id=sector.sector_id,
+            sector_uuid=sector.id,
+            attacker_id=attacker.id,
+            attacker_ship_id=attacker.current_ship_id,
+            attacker_ship_name=attacker_ship.name if attacker_ship else None,
+            attacker_ship_type=attacker_ship.type.value if attacker_ship else None,
+            defender_id=None,
+            defender_ship_id=npc_ship.id,
+            defender_ship_name=npc_ship.name,
+            defender_ship_type=npc_ship.type.value,
+            rounds=combat_result["rounds"],
+            attacker_drones=attacker.defense_drones,
+            defender_drones=0,
+            attacker_drones_lost=combat_result["attacker_drones_lost"],
+            defender_drones_lost=combat_result["defender_drones_lost"],
+            cargo_looted=combat_result["cargo_stolen"] or None,
+            combat_log=json.dumps(combat_result["combat_details"]),
+            ended_at=datetime.now()
+        )
+
+        self.db.add(combat_log)
+
+        # Handle cargo salvage before the wreck is finalized
+        if combat_result["cargo_stolen"]:
+            self._transfer_cargo(npc_ship, attacker.current_ship, combat_result["cargo_stolen"])
+
+        # Apply combat effects
+        if combat_result["defender_ship_destroyed"]:
+            npc_ship.is_destroyed = True
+            npc_ship.is_active = False
+            npc_ship.status = ShipStatus.DESTROYED
+            # Notify the NPC lifecycle system (delivered by the NPC slice).
+            # Lazy import + ImportError guard so combat still resolves if the
+            # module is absent in this deployment.
+            try:
+                from src.services.npc_spawn_service import handle_npc_ship_destroyed
+                handle_npc_ship_destroyed(self.db, npc_ship.id)
+            except ImportError:
+                logger.warning(
+                    "npc_spawn_service not available — NPC ship %s destroyed without KIA processing",
+                    npc_ship.id
+                )
+
+        if combat_result["attacker_ship_destroyed"]:
+            self._handle_ship_destruction(attacker, None, "combat")
+
+        # Update attacker drone count
+        if combat_result["attacker_drones_lost"] > 0:
+            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
+
+        # Update last_combat timestamp for sector
+        sector.last_combat = datetime.now()
+
+        # Commit changes
+        self.db.commit()
+
+        return {
+            "success": True,
+            "message": combat_result["message"],
+            "combat_result": combat_result["result"].name,
+            "combat_details": combat_result["combat_details"],
+            "turns_consumed": turn_cost,
+            "turns_remaining": attacker.turns,
+            "combat_log_id": str(combat_log.id)
+        }
+
     def attack_sector_drones(self, attacker_id: uuid.UUID, sector_id: int) -> Dict[str, Any]:
         """Attack drones deployed in a sector."""
         # Get attacker
@@ -286,27 +436,34 @@ class CombatService:
         if not deployments:
             return {"success": False, "message": "No active drone deployments found in this sector"}
         
+        # Snapshot starting drone totals before combat mutates deployments
+        starting_sector_drones = sum(d.drone_count for d in deployments)
+
         # Resolve combat against drones
         combat_result = self._resolve_drone_combat(attacker, sector, deployments)
-        
+
         # Consume turns
         attacker.turns -= turn_cost
-        
+
         # Create combat log
+        attacker_ship = attacker.current_ship
         combat_log = CombatLog(
-            combat_type=CombatType.SHIP_VS_DRONES,
-            combat_result=combat_result["result"],
+            combat_type=CombatType.SHIP_VS_DRONES.value,
+            outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
+            attacker_ship_name=attacker_ship.name if attacker_ship else None,
+            attacker_ship_type=attacker_ship.type.value if attacker_ship else None,
             defender_id=None,  # No specific defender for sector drones
-            turns_consumed=turn_cost,
-            combat_rounds=combat_result["rounds"],
+            rounds=combat_result["rounds"],
+            attacker_drones=attacker.defense_drones,
+            defender_drones=starting_sector_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
-            attacker_ship_destroyed=combat_result["attacker_ship_destroyed"],
-            combat_details=combat_result["combat_details"]
+            combat_log=json.dumps(combat_result["combat_details"]),
+            ended_at=datetime.now()
         )
         
         self.db.add(combat_log)
@@ -358,8 +515,9 @@ class CombatService:
     
     def attack_planet(self, attacker_id: uuid.UUID, planet_id: uuid.UUID) -> Dict[str, Any]:
         """Attack a planet."""
-        # Get attacker
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).first()
+        # Get attacker with a row lock to prevent concurrent turn deduction
+        # races (mirrors attack_player / attack_npc_ship)
+        attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
         
@@ -404,23 +562,24 @@ class CombatService:
         attacker.turns -= turn_cost
         
         # Create combat log
+        attacker_ship = attacker.current_ship
         combat_log = CombatLog(
-            combat_type=CombatType.SHIP_VS_PLANET,
-            combat_result=combat_result["result"],
+            combat_type=CombatType.SHIP_VS_PLANET.value,
+            outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
+            attacker_ship_name=attacker_ship.name if attacker_ship else None,
+            attacker_ship_type=attacker_ship.type.value if attacker_ship else None,
             defender_id=planet_owner.id if planet_owner else None,
             planet_id=planet.id,
-            attacker_team_id=attacker.team_id,
-            defender_team_id=planet_owner.team_id if planet_owner else None,
-            turns_consumed=turn_cost,
-            combat_rounds=combat_result["rounds"],
+            rounds=combat_result["rounds"],
+            attacker_drones=attacker.defense_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
-            attacker_ship_destroyed=combat_result["attacker_ship_destroyed"],
-            combat_details=combat_result["combat_details"]
+            combat_log=json.dumps(combat_result["combat_details"]),
+            ended_at=datetime.now()
         )
         
         self.db.add(combat_log)
@@ -461,7 +620,14 @@ class CombatService:
         }
     
     def attack_port(self, attacker_id: uuid.UUID, station_id: uuid.UUID) -> Dict[str, Any]:
-        """Attack a space station."""
+        """Attack a space station.
+
+        WARNING: not wired to any player route — port assault is disabled
+        this pass (economically sensitive: it transfers port ownership).
+        The Station model currently has no defense_level / shields /
+        defense_weapons columns, so this path cannot resolve until the
+        station-defense schema lands (canon gap: station defense stats).
+        """
         # Get attacker
         attacker = self.db.query(Player).filter(Player.id == attacker_id).first()
         if not attacker:
@@ -473,7 +639,7 @@ class CombatService:
         
         # Get port
         station = self.db.query(Station).filter(Station.id == station_id).first()
-        if not port:
+        if not station:
             return {"success": False, "message": "Station not found"}
         
         # Check if player is in the port's sector
@@ -502,29 +668,30 @@ class CombatService:
         sector = self.db.query(Sector).filter(Sector.sector_id == attacker.current_sector_id).first()
         
         # Resolve combat against port
-        combat_result = self._resolve_port_combat(attacker, port, port_owner)
-        
+        combat_result = self._resolve_port_combat(attacker, station, port_owner)
+
         # Consume turns
         attacker.turns -= turn_cost
-        
+
         # Create combat log
+        attacker_ship = attacker.current_ship
         combat_log = CombatLog(
-            combat_type=CombatType.SHIP_VS_PORT,
-            combat_result=combat_result["result"],
+            combat_type=CombatType.SHIP_VS_PORT.value,
+            outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
+            attacker_ship_name=attacker_ship.name if attacker_ship else None,
+            attacker_ship_type=attacker_ship.type.value if attacker_ship else None,
             defender_id=port_owner.id if port_owner else None,
-            station_id=station.id,
-            attacker_team_id=attacker.team_id,
-            defender_team_id=port_owner.team_id if port_owner else None,
-            turns_consumed=turn_cost,
-            combat_rounds=combat_result["rounds"],
+            port_id=station.id,
+            rounds=combat_result["rounds"],
+            attacker_drones=attacker.defense_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
-            attacker_ship_destroyed=combat_result["attacker_ship_destroyed"],
-            combat_details=combat_result["combat_details"]
+            combat_log=json.dumps(combat_result["combat_details"]),
+            ended_at=datetime.now()
         )
         
         self.db.add(combat_log)
@@ -542,7 +709,7 @@ class CombatService:
         
         # If port was captured, transfer ownership
         if combat_result["port_captured"]:
-            self._transfer_port_ownership(port, attacker)
+            self._transfer_port_ownership(station, attacker)
         
         # Update last_attacked timestamp for port
         station.last_attacked = datetime.now()
@@ -755,38 +922,38 @@ class CombatService:
         # Format into a detailed report
         attacker = self.db.query(Player).filter(Player.id == log.attacker_id).first()
         defender = self.db.query(Player).filter(Player.id == log.defender_id).first() if log.defender_id else None
-        
+
         report = {
             "id": str(log.id),
             "timestamp": log.timestamp.isoformat() if log.timestamp else None,
-            "combat_type": log.combat_type.name,
-            "combat_result": log.combat_result.name,
+            "combat_type": log.combat_type,
+            "combat_result": log.outcome,
             "sector_id": log.sector_id,
             "attacker": {
                 "id": str(log.attacker_id),
                 "name": attacker.username if attacker else "Unknown",
-                "ship_name": attacker.current_ship.name if attacker and attacker.current_ship else "Unknown",
-                "ship_type": attacker.current_ship.type.name if attacker and attacker.current_ship else "Unknown",
-                "team_id": str(log.attacker_team_id) if log.attacker_team_id else None,
+                "ship_name": log.attacker_ship_name or "Unknown",
+                "ship_type": log.attacker_ship_type or "Unknown",
                 "drones_lost": log.attacker_drones_lost,
-                "ship_destroyed": log.attacker_ship_destroyed
+                # No dedicated column — a defender_win means the attacker's
+                # ship was lost (mutual destruction is stored as a draw)
+                "ship_destroyed": log.outcome == CombatOutcome.DEFENDER_WIN.value
             },
-            "rounds": log.combat_rounds,
-            "details": log.combat_details
+            "rounds": log.rounds,
+            "details": self._parse_combat_details(log)
         }
-        
+
         # Add defender details if applicable
-        if log.combat_type == CombatType.SHIP_VS_SHIP:
+        if log.combat_type == CombatType.SHIP_VS_SHIP.value:
             report["defender"] = {
                 "id": str(log.defender_id) if log.defender_id else None,
-                "name": defender.username if defender else "Unknown",
-                "ship_name": defender.current_ship.name if defender and defender.current_ship else "Unknown",
-                "ship_type": defender.current_ship.type.name if defender and defender.current_ship else "Unknown",
-                "team_id": str(log.defender_team_id) if log.defender_team_id else None,
+                "name": defender.username if defender else (log.defender_ship_name or "Unknown"),
+                "ship_name": log.defender_ship_name or "Unknown",
+                "ship_type": log.defender_ship_type or "Unknown",
                 "drones_lost": log.defender_drones_lost,
-                "ship_destroyed": log.defender_ship_destroyed
+                "ship_destroyed": log.outcome == CombatOutcome.ATTACKER_WIN.value
             }
-        elif log.combat_type == CombatType.SHIP_VS_PLANET:
+        elif log.combat_type == CombatType.SHIP_VS_PLANET.value:
             planet = self.db.query(Planet).filter(Planet.id == log.planet_id).first()
             report["target"] = {
                 "type": "planet",
@@ -795,16 +962,16 @@ class CombatService:
                 "owner_id": str(log.defender_id) if log.defender_id else None,
                 "owner_name": defender.username if defender else "Unowned"
             }
-        elif log.combat_type == CombatType.SHIP_VS_PORT:
-            station = self.db.query(Station).filter(Station.id == log.station_id).first()
+        elif log.combat_type == CombatType.SHIP_VS_PORT.value:
+            station = self.db.query(Station).filter(Station.id == log.port_id).first()
             report["target"] = {
                 "type": "station",
-                "id": str(log.station_id) if log.station_id else None,
-                "name": station.name if port else "Unknown",
+                "id": str(log.port_id) if log.port_id else None,
+                "name": station.name if station else "Unknown",
                 "owner_id": str(log.defender_id) if log.defender_id else None,
                 "owner_name": defender.username if defender else "Unowned"
             }
-        elif log.combat_type == CombatType.SHIP_VS_DRONES:
+        elif log.combat_type == CombatType.SHIP_VS_DRONES.value:
             report["target"] = {
                 "type": "drones",
                 "sector_id": log.sector_id,
@@ -838,39 +1005,45 @@ class CombatService:
             opponent_id = log.defender_id if log.attacker_id == player_id else log.attacker_id
             opponent = self.db.query(Player).filter(Player.id == opponent_id).first() if opponent_id else None
             
+            is_attacker = log.attacker_id == player_id
             entry = {
                 "id": str(log.id),
                 "timestamp": log.timestamp.isoformat() if log.timestamp else None,
-                "combat_type": log.combat_type.name,
-                "role": "attacker" if log.attacker_id == player_id else "defender",
-                "result": log.combat_result.name,
+                "combat_type": log.combat_type,
+                "role": "attacker" if is_attacker else "defender",
+                "result": log.outcome,
                 "sector_id": log.sector_id,
-                "turns_consumed": log.turns_consumed if log.attacker_id == player_id else 0,
-                "drones_lost": log.attacker_drones_lost if log.attacker_id == player_id else log.defender_drones_lost,
-                "ship_destroyed": log.attacker_ship_destroyed if log.attacker_id == player_id else log.defender_ship_destroyed
+                "drones_lost": log.attacker_drones_lost if is_attacker else log.defender_drones_lost,
+                # Derived: losing side's ship was destroyed (no dedicated column)
+                "ship_destroyed": (
+                    log.outcome == CombatOutcome.DEFENDER_WIN.value if is_attacker
+                    else log.outcome == CombatOutcome.ATTACKER_WIN.value
+                )
             }
-            
+
             # Add target/opponent details
-            if log.combat_type == CombatType.SHIP_VS_SHIP:
+            if log.combat_type == CombatType.SHIP_VS_SHIP.value:
                 entry["opponent"] = {
                     "id": str(opponent_id) if opponent_id else None,
-                    "name": opponent.username if opponent else "Unknown"
+                    "name": opponent.username if opponent else (
+                        log.defender_ship_name if is_attacker and log.defender_ship_name else "Unknown"
+                    )
                 }
-            elif log.combat_type == CombatType.SHIP_VS_PLANET:
+            elif log.combat_type == CombatType.SHIP_VS_PLANET.value:
                 planet = self.db.query(Planet).filter(Planet.id == log.planet_id).first()
                 entry["target"] = {
                     "type": "planet",
                     "id": str(log.planet_id) if log.planet_id else None,
                     "name": planet.name if planet else "Unknown"
                 }
-            elif log.combat_type == CombatType.SHIP_VS_PORT:
-                station = self.db.query(Station).filter(Station.id == log.station_id).first()
+            elif log.combat_type == CombatType.SHIP_VS_PORT.value:
+                station = self.db.query(Station).filter(Station.id == log.port_id).first()
                 entry["target"] = {
                     "type": "station",
-                    "id": str(log.station_id) if log.station_id else None,
-                    "name": station.name if port else "Unknown"
+                    "id": str(log.port_id) if log.port_id else None,
+                    "name": station.name if station else "Unknown"
                 }
-            elif log.combat_type == CombatType.SHIP_VS_DRONES:
+            elif log.combat_type == CombatType.SHIP_VS_DRONES.value:
                 entry["target"] = {
                     "type": "drones",
                     "sector_id": log.sector_id
@@ -884,40 +1057,79 @@ class CombatService:
             "count": len(combat_history)
         }
     
-    def _is_combat_allowed(self, sector: Sector, attacker: Player, defender: Player) -> bool:
-        """Check if combat is allowed in a sector based on rules."""
-        # Get region type for security rules
-        region_type = sector.cluster.region.type.name if sector and sector.cluster and sector.cluster.region else "FRONTIER"
-        
-        # Combat is always allowed in frontier regions
-        if region_type == "FRONTIER":
-            return True
-        
-        # In Federation space, combat might be restricted unless both players agree
-        if region_type == "FEDERATION":
-            # Could implement a PvP flag system here
-            # For now, just making it very difficult/expensive to fight in Federation space
-            # This would be expanded in an actual implementation
+    @staticmethod
+    def _parse_combat_details(log: CombatLog) -> List[Dict[str, Any]]:
+        """Parse the round-by-round combat_details JSON stored in the
+        combat_log Text column. Returns an empty list when absent/corrupt."""
+        if not log.combat_log:
+            return []
+        try:
+            details = json.loads(log.combat_log)
+        except (ValueError, TypeError):
+            logger.warning("Combat log %s has unparseable combat details", log.id)
+            return []
+        return details if isinstance(details, list) else []
+
+    def _is_combat_allowed(self, sector: Sector, attacker: Player, defender: Optional[Player]) -> bool:
+        """Check if combat is allowed in a sector based on rules.
+
+        defender is None for NPC-defender combat — sector rules apply the
+        same way regardless of who is being attacked.
+
+        Canon basis: the police/safe-zone docs describe Terran space as
+        Federation-patrolled safe space, so combat is disallowed in
+        terran_space regions. Player-owned regions and the Central Nexus
+        are open space, and sectors whose cluster/region chain doesn't
+        resolve default to allowed (frontier behavior).
+        """
+        # Resolve region type null-safely — Region.region_type holds
+        # RegionType values (terran_space / player_owned / central_nexus)
+        region_type = None
+        if sector is not None and sector.cluster is not None and sector.cluster.region is not None:
+            region_type = sector.cluster.region.region_type
+
+        # Terran space is patrolled safe space — no combat
+        if region_type == RegionType.TERRAN_SPACE:
             return False
-        
-        # In Border regions, combat is allowed but with penalties
+
+        # player_owned, central_nexus, or unresolved region: combat allowed
         return True
     
-    def _resolve_ship_combat(self, attacker: Player, defender: Player, sector: Sector) -> Dict[str, Any]:
-        """Resolve ship-to-ship combat between two players."""
+    def _resolve_ship_combat(
+        self,
+        attacker: Player,
+        defender: Optional[Player],
+        sector: Sector,
+        defender_ship: Optional[Ship] = None
+    ) -> Dict[str, Any]:
+        """Resolve ship-to-ship combat.
+
+        defender is the defending Player for PvP combat. For NPC combat,
+        defender is None and defender_ship is the NPC-controlled Ship — the
+        NPC fights with its ship alone (no rank damage bonus, no player-owned
+        defense drones).
+        """
         # Get ships and equipment
         attacker_ship = attacker.current_ship
-        defender_ship = defender.current_ship
+        if defender is not None:
+            defender_ship = defender.current_ship
+            defender_name = defender.username
+            defender_drones = defender.defense_drones
+            defender_bonuses = RankingService.get_rank_bonuses(defender.military_rank)
+            defender_damage_mult = 1.0 + (defender_bonuses["combat_damage_bonus_percent"] / 100.0)
+        else:
+            if defender_ship is None:
+                raise ValueError("NPC combat requires a defender_ship")
+            defender_name = defender_ship.name
+            defender_drones = 0
+            defender_damage_mult = 1.0
 
-        # Get rank combat bonuses for both sides
+        # Get rank combat bonus for the attacker
         attacker_bonuses = RankingService.get_rank_bonuses(attacker.military_rank)
-        defender_bonuses = RankingService.get_rank_bonuses(defender.military_rank)
         attacker_damage_mult = 1.0 + (attacker_bonuses["combat_damage_bonus_percent"] / 100.0)
-        defender_damage_mult = 1.0 + (defender_bonuses["combat_damage_bonus_percent"] / 100.0)
 
         # Combat parameters
         attacker_drones = attacker.defense_drones
-        defender_drones = defender.defense_drones
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         defender_defense = self._calculate_defense_power(defender_ship, defender_drones)
         
@@ -964,7 +1176,7 @@ class CombatService:
                             "round": round_number,
                             "actor": "attacker",
                             "action": "drone_attack",
-                            "message": f"{attacker.username}'s {atk_weapon_name} destroyed {drones_destroyed} of {defender.username}'s drones",
+                            "message": f"{attacker.username}'s {atk_weapon_name} destroyed {drones_destroyed} of {defender_name}'s drones",
                             "drones_destroyed": drones_destroyed,
                             "weapon_type": atk_weapon_name,
                             "weapon_effectiveness": atk_weapon["shield_effectiveness"]
@@ -988,7 +1200,7 @@ class CombatService:
                                 "round": round_number,
                                 "actor": "attacker",
                                 "action": "ship_destroyed",
-                                "message": f"{attacker.username}'s {atk_weapon_name} critically damaged {defender.username}'s ship, forcing ejection",
+                                "message": f"{attacker.username}'s {atk_weapon_name} critically damaged {defender_name}'s ship, forcing ejection",
                                 "weapon_type": atk_weapon_name
                             })
                         else:
@@ -998,7 +1210,7 @@ class CombatService:
                                 "round": round_number,
                                 "actor": "attacker",
                                 "action": "ship_attack",
-                                "message": f"{attacker.username}'s {atk_weapon_name} hit {defender.username}'s ship for {damage} damage{modifier_note}{weapon_note}",
+                                "message": f"{attacker.username}'s {atk_weapon_name} hit {defender_name}'s ship for {damage} damage{modifier_note}{weapon_note}",
                                 "weapon_type": atk_weapon_name,
                                 "weapon_effectiveness": weapon_eff
                             })
@@ -1008,7 +1220,7 @@ class CombatService:
                         "round": round_number,
                         "actor": "attacker",
                         "action": "miss",
-                        "message": f"{attacker.username}'s attack missed {defender.username}'s ship"
+                        "message": f"{attacker.username}'s attack missed {defender_name}'s ship"
                     })
 
             # Check if combat is over
@@ -1039,7 +1251,7 @@ class CombatService:
                             "round": round_number,
                             "actor": "defender",
                             "action": "drone_attack",
-                            "message": f"{defender.username}'s {def_weapon_name} destroyed {drones_destroyed} of {attacker.username}'s drones",
+                            "message": f"{defender_name}'s {def_weapon_name} destroyed {drones_destroyed} of {attacker.username}'s drones",
                             "drones_destroyed": drones_destroyed,
                             "weapon_type": def_weapon_name,
                             "weapon_effectiveness": def_weapon["shield_effectiveness"]
@@ -1063,7 +1275,7 @@ class CombatService:
                                 "round": round_number,
                                 "actor": "defender",
                                 "action": "ship_destroyed",
-                                "message": f"{defender.username}'s {def_weapon_name} critically damaged {attacker.username}'s ship, forcing ejection",
+                                "message": f"{defender_name}'s {def_weapon_name} critically damaged {attacker.username}'s ship, forcing ejection",
                                 "weapon_type": def_weapon_name
                             })
                         else:
@@ -1073,7 +1285,7 @@ class CombatService:
                                 "round": round_number,
                                 "actor": "defender",
                                 "action": "ship_attack",
-                                "message": f"{defender.username}'s {def_weapon_name} hit {attacker.username}'s ship for {damage} damage{modifier_note}{weapon_note}",
+                                "message": f"{defender_name}'s {def_weapon_name} hit {attacker.username}'s ship for {damage} damage{modifier_note}{weapon_note}",
                                 "weapon_type": def_weapon_name,
                                 "weapon_effectiveness": weapon_eff
                             })
@@ -1083,7 +1295,7 @@ class CombatService:
                         "round": round_number,
                         "actor": "defender",
                         "action": "miss",
-                        "message": f"{defender.username}'s attack missed {attacker.username}'s ship"
+                        "message": f"{defender_name}'s attack missed {attacker.username}'s ship"
                     })
 
             # --- Escape check after both sides have dealt damage this round ---
@@ -1091,8 +1303,14 @@ class CombatService:
             # to flee. This represents being "below 25% effective hull" since
             # the drone shield layer is gone and the ship is taking direct hits.
             if not attacker_ship_destroyed and not defender_ship_destroyed:
-                # Defender tries to escape if they have no drones left (hull exposed)
-                if defender_drones <= 0:
+                # Defender tries to escape if they have no drones left (hull
+                # exposed). NPC defenders (defender is None) never roll:
+                # v1 static pirates stand and fight; NPC flee behavior is
+                # Design-only (npc-scheduler.md). Without this skip, the
+                # zero-drone NPC would roll escape from round 1 and
+                # DEFENDER_FLED would dominate while the static ship never
+                # actually leaves the sector.
+                if defender is not None and defender_drones <= 0:
                     escape_pct = self._calculate_escape_chance(defender_ship, attacker_ship)
                     if random.randint(1, 100) <= escape_pct:
                         fled_result = CombatResult.DEFENDER_FLED
@@ -1101,7 +1319,7 @@ class CombatService:
                             "actor": "defender",
                             "action": "escape",
                             "message": (
-                                f"{defender.username}'s ship engaged emergency thrusters "
+                                f"{defender_name}'s ship engaged emergency thrusters "
                                 f"and escaped! (escape chance: {escape_pct}%)"
                             ),
                             "escape_chance": escape_pct
@@ -1139,27 +1357,32 @@ class CombatService:
         if fled_result is not None:
             result = fled_result
             if fled_result == CombatResult.ATTACKER_FLED:
-                message = f"{attacker.username} fled from combat with {defender.username}"
+                message = f"{attacker.username} fled from combat with {defender_name}"
             else:
-                message = f"{defender.username} escaped from {attacker.username}'s attack"
+                message = f"{defender_name} escaped from {attacker.username}'s attack"
         elif attacker_ship_destroyed and defender_ship_destroyed:
             result = CombatResult.MUTUAL_DESTRUCTION
             message = "Combat ended in mutual destruction"
         elif attacker_ship_destroyed:
             result = CombatResult.DEFENDER_VICTORY
-            message = f"{defender.username} defeated {attacker.username} in combat"
+            message = f"{defender_name} defeated {attacker.username} in combat"
         elif defender_ship_destroyed:
             result = CombatResult.ATTACKER_VICTORY
-            message = f"{attacker.username} defeated {defender.username} in combat"
+            message = f"{attacker.username} defeated {defender_name} in combat"
         else:
             result = CombatResult.DRAW
             message = "Combat ended in a draw"
         
-        # Determine cargo theft if attacker victorious
+        # Determine cargo theft if attacker victorious.
+        # Ship.cargo JSONB shape is {"capacity": n, "used": n, "contents": {commodity: qty}}
+        # (see ShipService.create_ship) — only the contents dict holds commodities.
         cargo_stolen = {}
-        if result == CombatResult.ATTACKER_VICTORY and defender_ship.cargo:
+        defender_cargo_contents = ((defender_ship.cargo or {}).get("contents") or {})
+        if result == CombatResult.ATTACKER_VICTORY and defender_cargo_contents:
             # Take a random portion of cargo
-            for resource, amount in defender_ship.cargo.items():
+            for resource, amount in defender_cargo_contents.items():
+                if not isinstance(amount, (int, float)) or amount <= 0:
+                    continue
                 if random.random() < 0.7:  # 70% chance to steal each resource
                     steal_amount = int(amount * random.uniform(0.3, 0.8))  # Steal 30-80%
                     if steal_amount > 0:
@@ -1171,7 +1394,7 @@ class CombatService:
                     "round": round_number,
                     "actor": "attacker",
                     "action": "cargo_theft",
-                    "message": f"{attacker.username} salvaged cargo from {defender.username}'s ship: {cargo_list}"
+                    "message": f"{attacker.username} salvaged cargo from {defender_name}'s ship: {cargo_list}"
                 })
         
         # Finalize results
@@ -1578,9 +1801,9 @@ class CombatService:
         attacker_drones = attacker.defense_drones
         
         # Station defenses
-        port_defense_level = station.defense_level or 0
-        port_shields = station.shields or 0
-        port_weapons = station.defense_weapons or 0
+        port_defense_level = port.defense_level or 0
+        port_shields = port.shields or 0
+        port_weapons = port.defense_weapons or 0
         
         # Combat parameters
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
@@ -1715,7 +1938,7 @@ class CombatService:
             message = f"Station defenses defeated {attacker.username}"
         elif port_captured:
             result = CombatResult.ATTACKER_VICTORY
-            message = f"{attacker.username} captured port {station.name}"
+            message = f"{attacker.username} captured port {port.name}"
         else:
             result = CombatResult.DRAW
             message = "Combat ended in a stalemate"
@@ -1890,31 +2113,56 @@ class CombatService:
         logger.info(f"Player {player.id} ship destroyed, ejected to {escape_pod.name}")
     
     def _transfer_cargo(self, source_ship: Ship, target_ship: Ship, cargo_to_transfer: Dict[str, int]) -> None:
-        """Transfer cargo from one ship to another."""
+        """Transfer cargo from one ship to another.
+
+        Operates on the real cargo JSONB shape
+        {"capacity": n, "used": n, "contents": {commodity: qty}} and clamps
+        transfers to the target ship's remaining capacity so combat salvage
+        cannot overflow the victor's hold.
+        """
         if not source_ship or not target_ship:
             return
-        
-        # Get cargo from ships
-        source_cargo = source_ship.cargo
-        target_cargo = target_ship.cargo
-        
-        # Transfer each resource
+
+        source_cargo = source_ship.cargo or {}
+        target_cargo = target_ship.cargo or {}
+        source_contents: Dict[str, int] = source_cargo.get("contents") or {}
+        target_contents: Dict[str, int] = target_cargo.get("contents") or {}
+
+        target_capacity = target_cargo.get("capacity", 0) or 0
+        target_used = sum(q for q in target_contents.values() if isinstance(q, (int, float)))
+        remaining_capacity = max(0, int(target_capacity) - int(target_used))
+
+        # Transfer each resource, bounded by what the source actually holds
+        # and what the target can still carry
         for resource, amount in cargo_to_transfer.items():
+            if remaining_capacity <= 0:
+                break
+            available = source_contents.get(resource, 0)
+            if not isinstance(available, (int, float)) or available <= 0:
+                continue
+            moved = min(int(amount), int(available), remaining_capacity)
+            if moved <= 0:
+                continue
+
             # Remove from source
-            if resource in source_cargo:
-                source_cargo[resource] = max(0, source_cargo[resource] - amount)
-                if source_cargo[resource] == 0:
-                    del source_cargo[resource]
-            
+            source_contents[resource] = int(available) - moved
+            if source_contents[resource] <= 0:
+                del source_contents[resource]
+
             # Add to target
-            if resource in target_cargo:
-                target_cargo[resource] += amount
-            else:
-                target_cargo[resource] = amount
-        
-        # Update ships
+            target_contents[resource] = int(target_contents.get(resource, 0)) + moved
+            remaining_capacity -= moved
+
+        # Write back with recalculated usage; flag_modified is required for
+        # SQLAlchemy to detect in-place JSONB mutation
+        source_cargo["contents"] = source_contents
+        source_cargo["used"] = sum(int(q) for q in source_contents.values())
+        target_cargo["contents"] = target_contents
+        target_cargo["used"] = sum(int(q) for q in target_contents.values())
         source_ship.cargo = source_cargo
         target_ship.cargo = target_cargo
+        flag_modified(source_ship, "cargo")
+        flag_modified(target_ship, "cargo")
     
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""

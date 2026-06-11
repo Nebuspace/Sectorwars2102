@@ -287,6 +287,14 @@
   color: var(--cockpit-danger);
 }
 
+.combat-rounds-summary {
+  color: var(--cockpit-text-secondary);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+
 /* Loot Display */
 .loot-display {
   background: rgba(0, 255, 0, 0.1);
@@ -360,6 +368,12 @@
   color: var(--cockpit-primary);
   font-weight: bold;
   min-width: 30px;
+}
+
+.log-message {
+  flex: 1;
+  color: var(--cockpit-text-secondary);
+  font-family: var(--font-monospace, monospace);
 }
 
 .attacker-action {
@@ -500,6 +514,22 @@
   color: var(--cockpit-text-secondary);
   font-size: 12px;
   text-transform: uppercase;
+}
+
+/* NPC marker chip — amber-bordered to match cockpit warning accents */
+.npc-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--cockpit-warning);
+  border-radius: 3px;
+  color: var(--cockpit-warning);
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
 .engage-target-btn {

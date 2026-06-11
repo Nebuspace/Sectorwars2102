@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipType, ShipSpecification
@@ -174,54 +175,69 @@ class ShipService:
         return escape_pod
     
     def _transfer_emergency_cargo(self, destroyed_ship: Ship, escape_pod: Ship) -> None:
-        """Transfer 10% of cargo from destroyed ship to escape pod"""
-        if not destroyed_ship.cargo:
+        """Transfer 10% of cargo contents from destroyed ship to escape pod.
+
+        Operates on the real cargo JSONB shape
+        {"capacity": n, "used": n, "contents": {commodity: qty}} (see
+        create_ship) — mirrors CombatService._transfer_cargo. Treating the
+        cargo dict as flat {resource: qty} made sum() blow up on the nested
+        contents dict, 500ing every ship destruction.
+        """
+        destroyed_cargo = destroyed_ship.cargo or {}
+        destroyed_contents: Dict[str, int] = destroyed_cargo.get("contents") or {}
+        if not destroyed_contents:
             return
-        
-        # Get escape pod cargo capacity
-        escape_pod_spec = self.db.query(ShipSpecification).filter(
-            ShipSpecification.type == ShipType.ESCAPE_POD
-        ).first()
-        
-        if not escape_pod_spec:
-            return
-        
-        max_cargo = escape_pod_spec.max_cargo
-        current_cargo = sum(escape_pod.cargo.values()) if escape_pod.cargo else 0
-        available_space = max_cargo - current_cargo
-        
+
+        pod_cargo = escape_pod.cargo or {}
+        pod_contents: Dict[str, int] = pod_cargo.get("contents") or {}
+
+        # Pod capacity from its own cargo record, falling back to the spec
+        pod_capacity = pod_cargo.get("capacity") or 0
+        if not pod_capacity:
+            escape_pod_spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == ShipType.ESCAPE_POD
+            ).first()
+            pod_capacity = escape_pod_spec.max_cargo if escape_pod_spec else 0
+
+        pod_used = sum(int(q) for q in pod_contents.values() if isinstance(q, (int, float)))
+        available_space = max(0, int(pod_capacity) - pod_used)
         if available_space <= 0:
             return
-        
-        # Calculate emergency cargo (10% of each resource)
-        emergency_cargo = {}
-        total_emergency_cargo = 0
-        
-        for resource, amount in destroyed_ship.cargo.items():
-            emergency_amount = max(1, int(amount * 0.1))  # At least 1 unit
-            emergency_cargo[resource] = emergency_amount
-            total_emergency_cargo += emergency_amount
-        
-        # Limit to available space
-        if total_emergency_cargo > available_space:
-            # Proportionally reduce all cargo
-            reduction_factor = available_space / total_emergency_cargo
-            emergency_cargo = {
-                resource: max(1, int(amount * reduction_factor))
-                for resource, amount in emergency_cargo.items()
-            }
-        
-        # Transfer cargo
-        if not escape_pod.cargo:
-            escape_pod.cargo = {}
-        
-        for resource, amount in emergency_cargo.items():
-            if resource in escape_pod.cargo:
-                escape_pod.cargo[resource] += amount
-            else:
-                escape_pod.cargo[resource] = amount
-        
-        logger.info(f"Transferred emergency cargo to Escape Pod: {emergency_cargo}")
+
+        # Move 10% of each commodity (at least 1 unit), clamped to what the
+        # destroyed ship actually holds and the pod's remaining space
+        transferred: Dict[str, int] = {}
+        for resource, amount in list(destroyed_contents.items()):
+            if available_space <= 0:
+                break
+            if not isinstance(amount, (int, float)) or amount <= 0:
+                continue
+            emergency_amount = min(max(1, int(amount * 0.1)), int(amount), available_space)
+            if emergency_amount <= 0:
+                continue
+
+            destroyed_contents[resource] = int(amount) - emergency_amount
+            if destroyed_contents[resource] <= 0:
+                del destroyed_contents[resource]
+            pod_contents[resource] = int(pod_contents.get(resource, 0)) + emergency_amount
+            transferred[resource] = emergency_amount
+            available_space -= emergency_amount
+
+        if not transferred:
+            return
+
+        # Write back with recalculated usage; flag_modified is required for
+        # SQLAlchemy to detect in-place JSONB mutation
+        destroyed_cargo["contents"] = destroyed_contents
+        destroyed_cargo["used"] = sum(int(q) for q in destroyed_contents.values())
+        pod_cargo["contents"] = pod_contents
+        pod_cargo["used"] = sum(int(q) for q in pod_contents.values())
+        destroyed_ship.cargo = destroyed_cargo
+        escape_pod.cargo = pod_cargo
+        flag_modified(destroyed_ship, "cargo")
+        flag_modified(escape_pod, "cargo")
+
+        logger.info(f"Transferred emergency cargo to Escape Pod: {transferred}")
     
     def _calculate_insurance_payout(self, ship: Ship, insurance: Dict[str, Any]) -> int:
         """Calculate insurance payout for destroyed ship"""
