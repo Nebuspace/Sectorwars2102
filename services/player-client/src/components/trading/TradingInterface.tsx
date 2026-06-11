@@ -10,6 +10,8 @@ interface Resource {
   quantity: number;
   buy_price: number;
   sell_price: number;
+  station_buys: boolean;
+  station_sells: boolean;
   last_updated?: string;
 }
 
@@ -24,7 +26,17 @@ interface TradeCalculation {
 
 const formatName = (name: string) => name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-const TradingInterface: React.FC = () => {
+interface TradingInterfaceProps {
+  onClose?: () => void;
+}
+
+const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
+  // Wrap in GameLayout when standalone (no onClose prop = used as a route).
+  // When embedded as a modal (onClose provided), render bare so the parent's
+  // shell isn't duplicated inside the modal.
+  const isStandalone = !onClose;
+  const Wrapper = isStandalone ? GameLayout : React.Fragment;
+
   const {
     playerState,
     currentShip,
@@ -113,7 +125,9 @@ const TradingInterface: React.FC = () => {
     if (selectedResource && marketInfo && tradeQuantity > 0) {
       const resource = marketInfo.resources[selectedResource];
       if (resource) {
-        const unitPrice = tradeMode === 'buy' ? resource.buy_price : resource.sell_price;
+        // sell_price = what the station charges when the player buys;
+        // buy_price = what the station pays when the player sells
+        const unitPrice = tradeMode === 'buy' ? resource.sell_price : resource.buy_price;
         const totalCost = unitPrice * tradeQuantity;
 
         // Check affordability and cargo space
@@ -144,7 +158,7 @@ const TradingInterface: React.FC = () => {
   // Show loading state if player state isn't loaded yet
   if (!playerState) {
     return (
-      <GameLayout>
+      <Wrapper>
         <div className="trading-interface">
           <div className="trading-header">
             <h2>Trading Interface</h2>
@@ -155,7 +169,7 @@ const TradingInterface: React.FC = () => {
             <p>Initializing trading systems...</p>
           </div>
         </div>
-      </GameLayout>
+      </Wrapper>
     );
   }
 
@@ -207,7 +221,8 @@ const TradingInterface: React.FC = () => {
 
     if (tradeMode === 'buy') {
       // For buying: limited by credits, cargo space, and port inventory
-      const affordableQuantity = Math.floor(playerState.credits / resource.buy_price);
+      // (the station charges sell_price when the player buys)
+      const affordableQuantity = Math.floor(playerState.credits / resource.sell_price);
       const currentCargo = getCargoUsed();
       const cargoSpace = getCargoCapacity() - currentCargo;
       const portInventory = resource.quantity;
@@ -226,12 +241,15 @@ const TradingInterface: React.FC = () => {
 
   const canExecuteTrade = (): boolean => {
     if (!tradeCalculation || !playerState?.is_docked) return false;
-    
+
+    const resource = marketInfo?.resources[selectedResource];
+    if (!resource) return false;
+
     if (tradeMode === 'buy') {
-      return tradeCalculation.isAffordable && tradeCalculation.fitsInCargo && tradeQuantity <= (marketInfo?.resources[selectedResource]?.quantity || 0);
+      return resource.station_sells && tradeCalculation.isAffordable && tradeCalculation.fitsInCargo && tradeQuantity <= resource.quantity;
     } else {
       const playerHas = getPlayerResourceAmount(selectedResource);
-      return tradeQuantity <= playerHas;
+      return resource.station_buys && tradeQuantity <= playerHas;
     }
   };
 
@@ -261,9 +279,17 @@ const TradingInterface: React.FC = () => {
       setShowConfirmDialog(false);
       
     } catch (error: any) {
+      const serverMessage: string = error.response?.data?.detail || error.response?.data?.message || '';
+      let content = serverMessage || 'Failed to execute trade';
+      // Map directionality errors to friendlier hints pointing at the other tab
+      if (serverMessage.includes('does not sell')) {
+        content = `This station doesn't sell ${formatName(selectedResource)} — but it may buy it. Try the Sell Resources tab.`;
+      } else if (serverMessage.includes('does not buy')) {
+        content = `This station doesn't buy ${formatName(selectedResource)} — but it may sell it. Try the Buy Resources tab.`;
+      }
       addNotification({
         title: 'Trade Failed',
-        content: error.response?.data?.detail || error.response?.data?.message || 'Failed to execute trade',
+        content,
         level: 'error'
       });
     }
@@ -289,7 +315,7 @@ const TradingInterface: React.FC = () => {
 
   if (!playerState?.is_docked) {
     return (
-      <GameLayout>
+      <Wrapper>
       <div className="trading-interface">
         <div className="trading-header">
           <h2>Trading Interface</h2>
@@ -323,12 +349,12 @@ const TradingInterface: React.FC = () => {
           )}
         </div>
       </div>
-      </GameLayout>
+      </Wrapper>
     );
   }
 
   return (
-    <GameLayout>
+    <Wrapper>
     <div className="trading-interface">
       <div className="trading-header">
         <h2>Trading Interface</h2>
@@ -391,17 +417,23 @@ const TradingInterface: React.FC = () => {
               <span>Tax Rate: {((marketInfo.port.tax_rate || 0.1) * 100).toFixed(1)}%</span>
             </div>
 
+            <div className="player-status-bar">
+              <span className="status-credits">💰 Credits: {formatCredits(playerState?.credits || 0)}</span>
+              <span className="status-cargo">📦 Cargo: {getCargoUsed()} / {getCargoCapacity()}</span>
+            </div>
+
             <div className="resources-grid">
               {Object.entries(marketInfo.resources).map(([resourceType, resource]) => {
                 const playerAmount = getPlayerResourceAmount(resourceType);
+                const supportsDirection = tradeMode === 'buy' ? resource.station_sells : resource.station_buys;
                 const canTrade = tradeMode === 'buy'
-                  ? resource.quantity > 0
-                  : playerAmount > 0;
+                  ? resource.station_sells && resource.quantity > 0
+                  : resource.station_buys && playerAmount > 0;
 
                 return (
                   <div
                     key={resourceType}
-                    className={`resource-card ${!canTrade ? 'disabled' : ''} ${selectedResource === resourceType ? 'selected' : ''}`}
+                    className={`resource-card ${!canTrade ? 'disabled' : ''} ${!supportsDirection ? 'direction-unsupported' : ''} ${selectedResource === resourceType ? 'selected' : ''}`}
                     onClick={() => canTrade && handleResourceChange(resourceType)}
                     role="button"
                     tabIndex={canTrade ? 0 : -1}
@@ -414,9 +446,14 @@ const TradingInterface: React.FC = () => {
                   >
                     <div className="resource-icon">{getResourceIcon(resourceType)}</div>
                     <div className="resource-name">{formatName(resourceType)}</div>
+                    <div className="resource-direction-badges">
+                      {resource.station_sells && <span className="direction-badge sells">Station Sells</span>}
+                      {resource.station_buys && <span className="direction-badge buys">Station Buys</span>}
+                    </div>
                     <div className="resource-prices">
-                      <div className="buy-price">Buy: {formatCredits(resource.buy_price)}</div>
-                      <div className="sell-price">Sell: {formatCredits(resource.sell_price)}</div>
+                      {/* Player buys at the station's sell_price, sells at its buy_price */}
+                      {resource.station_sells && <div className="buy-price">Buy: {formatCredits(resource.sell_price)}</div>}
+                      {resource.station_buys && <div className="sell-price">Sell: {formatCredits(resource.buy_price)}</div>}
                     </div>
                     <div className="resource-quantity">
                       {tradeMode === 'buy'
@@ -445,8 +482,8 @@ const TradingInterface: React.FC = () => {
                 <span className="resource-name-large">{formatName(selectedResource)}</span>
                 <span className="resource-price">
                   {tradeMode === 'buy'
-                    ? `Buy @ ${formatCredits(marketInfo.resources[selectedResource]?.buy_price || 0)}/unit`
-                    : `Sell @ ${formatCredits(marketInfo.resources[selectedResource]?.sell_price || 0)}/unit`
+                    ? `Buy @ ${formatCredits(marketInfo.resources[selectedResource]?.sell_price || 0)}/unit`
+                    : `Sell @ ${formatCredits(marketInfo.resources[selectedResource]?.buy_price || 0)}/unit`
                   }
                 </span>
               </div>
@@ -524,7 +561,7 @@ const TradingInterface: React.FC = () => {
               <div className="trade-summary-card">
                 <div className="summary-row">
                   <span>Unit Price</span>
-                  <span className="value">{formatCredits(marketInfo.resources[selectedResource]?.[tradeMode === 'buy' ? 'buy_price' : 'sell_price'] || 0)}</span>
+                  <span className="value">{formatCredits(marketInfo.resources[selectedResource]?.[tradeMode === 'buy' ? 'sell_price' : 'buy_price'] || 0)}</span>
                 </div>
                 <div className="summary-row">
                   <span>Quantity</span>
@@ -534,7 +571,7 @@ const TradingInterface: React.FC = () => {
                 <div className="summary-row total">
                   <span>{tradeMode === 'buy' ? 'Total Cost' : 'Total Earnings'}</span>
                   <span className="value highlight">
-                    {formatCredits((marketInfo.resources[selectedResource]?.[tradeMode === 'buy' ? 'buy_price' : 'sell_price'] || 0) * tradeQuantity)}
+                    {formatCredits((marketInfo.resources[selectedResource]?.[tradeMode === 'buy' ? 'sell_price' : 'buy_price'] || 0) * tradeQuantity)}
                   </span>
                 </div>
 
@@ -547,8 +584,8 @@ const TradingInterface: React.FC = () => {
                     </div>
                     <div className="summary-row">
                       <span>After Purchase</span>
-                      <span className={`value ${((playerState?.credits || 0) - ((marketInfo.resources[selectedResource]?.buy_price || 0) * tradeQuantity)) < 0 ? 'error' : 'success'}`}>
-                        {formatCredits((playerState?.credits || 0) - ((marketInfo.resources[selectedResource]?.buy_price || 0) * tradeQuantity))}
+                      <span className={`value ${((playerState?.credits || 0) - ((marketInfo.resources[selectedResource]?.sell_price || 0) * tradeQuantity)) < 0 ? 'error' : 'success'}`}>
+                        {formatCredits((playerState?.credits || 0) - ((marketInfo.resources[selectedResource]?.sell_price || 0) * tradeQuantity))}
                       </span>
                     </div>
                     <div className="summary-row">
@@ -570,7 +607,7 @@ const TradingInterface: React.FC = () => {
                     <div className="summary-row">
                       <span>After Sale</span>
                       <span className="value success">
-                        {formatCredits((playerState?.credits || 0) + ((marketInfo.resources[selectedResource]?.sell_price || 0) * tradeQuantity))}
+                        {formatCredits((playerState?.credits || 0) + ((marketInfo.resources[selectedResource]?.buy_price || 0) * tradeQuantity))}
                       </span>
                     </div>
                   </>
@@ -595,7 +632,7 @@ const TradingInterface: React.FC = () => {
         document.body
       )}
     </div>
-    </GameLayout>
+    </Wrapper>
   );
 };
 

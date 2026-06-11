@@ -1765,7 +1765,7 @@ const SpaceDockInterface: React.FC = () => {
         <h2>🏪 Trading Hub</h2>
       </div>
       <div className="venue-content-area trading-venue">
-        <TradingInterface />
+        <TradingInterface onClose={() => {}} />
       </div>
       <BlackMarketButton />
     </div>

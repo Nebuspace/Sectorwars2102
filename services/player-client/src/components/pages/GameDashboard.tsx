@@ -515,7 +515,7 @@ const GameDashboard: React.FC = () => {
                   {isDockedAtSpaceDock ? 'SPACEDOCK TERMINAL' : 'TRADING TERMINAL'}
                 </div>
                 <div className="screen-hud-content trading-content">
-                  {isDockedAtSpaceDock ? <SpaceDockInterface /> : <TradingInterface />}
+                  {isDockedAtSpaceDock ? <SpaceDockInterface /> : <TradingInterface onClose={() => {}} />}
                 </div>
               </div>
             </div>

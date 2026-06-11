@@ -81,6 +81,9 @@ export interface MarketInfo {
     quantity: number;
     buy_price: number;
     sell_price: number;
+    station_buys: boolean;
+    station_sells: boolean;
+    last_updated?: string;
   }>;
   port: {
     id: string;

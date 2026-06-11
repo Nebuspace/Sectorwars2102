@@ -265,6 +265,27 @@
   opacity: 0.8;
 }
 
+/* Player Status Bar */
+.player-status-bar {
+  display: flex;
+  gap: var(--space-lg);
+  margin-bottom: var(--space-lg);
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.player-status-bar .status-credits {
+  color: var(--credits-color);
+}
+
+.player-status-bar .status-cargo {
+  color: var(--text-color);
+}
+
 /* Resources Grid */
 .resources-grid {
   display: grid;
@@ -297,6 +318,41 @@
 .resource-card.disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Dim cards that don't support the active tab's trade direction */
+.resource-card.direction-unsupported {
+  opacity: 0.4;
+  filter: grayscale(0.6);
+}
+
+/* Trade Direction Badges */
+.resource-direction-badges {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+
+.direction-badge {
+  font-size: var(--text-xs, 0.75rem);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px var(--space-xs);
+  border-radius: 4px;
+}
+
+.direction-badge.sells {
+  color: var(--accent-color);
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid var(--accent-color);
+}
+
+.direction-badge.buys {
+  color: var(--credits-color);
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid var(--credits-color);
 }
 
 .resource-icon {
