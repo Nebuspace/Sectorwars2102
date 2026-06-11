@@ -204,6 +204,70 @@
         "venue-grid fold visual check at a SpaceDock pending",
         "NavigationMap duplicate React keys for multi-edge connections (console warning, pre-existing)"
       ]
+    },
+    {
+      "id": "neon-2026-06-11-c",
+      "stage": "complete",
+      "branch_head_at_start": "ffcba00",
+      "deployed_sha_baseline": "c036287",
+      "sections": [
+        {
+          "key": "police-on-patrol",
+          "state": "proven",
+          "effort": 4,
+          "proof_script": [
+            "spawn extends to marshals/sentinels: 9 Marshal Interdictors at player_owned sector 1, 28 Sentinels at 3551, 14 terran marshals at 1001 (canon roster counts)",
+            "ship catalog excludes NPC hulls (is_npc_only filter); /purchase of an NPC hull returns ERR_NPC_ONLY_HULL 400",
+            "verifpilot warps into sector 1 (staged adjacent): COMMS shows Marshal contacts; engage one -> combat resolves",
+            "Marshal kill: reputations row created with current_value -250 for Terran Federation (psql verified); NPC KIA; squad row pruned",
+            "Placeholders documented: attack_turn_cost mirrors DEFENDER (DECISIONS entry); Sentinel rep deferred (Concord design-only)"
+          ]
+        },
+        {
+          "key": "crew-comes-alive",
+          "state": "proven",
+          "effort": 2.5,
+          "proof_script": [
+            "GET /api/v1/player/state returns team_id (null before team, set after)",
+            "verifpilot creates a team via the new CREW modal: 200, credits -10,000 (DB), CREW renders real team header + 1-member list (leader)",
+            "duplicate-name create -> 400 'already taken' shown honestly",
+            "no-team state still clean for testpilot; Browse Teams hidden with registry-offline note (list endpoint deferred as new API surface)"
+          ]
+        },
+        {
+          "key": "hygiene-batch-3",
+          "state": "proven",
+          "effort": 1.5,
+          "proof_script": [
+            "COMMS at sector 884: NPC badge visible on all pirate contacts (name ellipsizes, badge never clipped)",
+            "/game dashboard console: zero duplicate-React-key warnings (sectors deduped at source)",
+            "COLONIES renders normally; timeout/error panels restyled to CRT idiom (timeout path code-reviewed; live force-hang not provable)",
+            "venue-grid fold screenshot if a SpaceDock is on the proof route"
+          ]
+        }
+      ],
+      "flags_to_max": [
+        "Federation faction row seeded as canon 'Terran Federation' (FactionType FEDERATION); dead seeder create_default_factions names it 'United Space Federation' and is never called - discrepancy filed to FINDINGS",
+        "Interdictor attack_turn_cost + other NOT NULL spec columns canon-silent: mirrored from DEFENDER hull as documented placeholder (DECISIONS entry)",
+        "Sentinel-kill reputation deferred: canon names Galactic Concord standing loss with no numeric value and CONCORD faction is design-only",
+        "All 9 player_owned marshals anchor at starter sector 1 (single hostSectorId per BANG roster) - new players see 9 Interdictors in COMMS at spawn; gameplay call",
+        "GET /api/v1/teams (browse/list) deferred - new API surface needing scoping review; CREW hides the button with a note"
+      ],
+      "probe_workflow": "wf_5526753a-1fa",
+      "verdict": "GLOWING",
+      "commits": {
+        "police-on-patrol": "9e394f5",
+        "crew-comes-alive": "2f5a3a5 + audit hotfix",
+        "hygiene-batch-3": "ca4571a"
+      },
+      "proof_evidence": {
+        "police-on-patrol": "51 LAW_ENFORCEMENT NPCs spawned (9 marshals sector 1, 14 terran 1001, 28 sentinels 3551); canon-exact Interdictor specs in DB; catalog excludes NPC hulls (9 player types, 0 NPC); Marshal Quinn Hale engaged (18-turn placeholder cost charged exactly) and killed -> Terran Federation rep row -250 with history reason 'Marshal kill (Marshal Quinn Hale)'; KIA + scaled respawn + squad 8->7",
+        "crew-comes-alive": "[NEON] Neon Raiders founded via UI modal: 10,000cr charged exactly (1,998,325->1,988,325), real roster (LEADER verifpilot), /player/state returns team_id, Browse Teams honestly offline. Repair loop: pre-existing AuditService signature drift 500'd ALL team mutations - fixed all 12 call sites (hotfix commit)",
+        "hygiene-batch-3": "NPC badges visible on all 9 marshal contacts at sector 1 (names ellipsize, badges never clip); fresh /game load: zero console errors (duplicate-key warnings gone); COLONIES normal render + CRT-styled scan states (timeout path code-reviewed; live force-hang not provable); venue fold visual deferred again (no spacedock on proof route)"
+      },
+      "repair_loops": [
+        "create-team 500: AuditService.log_action signature drift (actor_id/string actions) across 12 team_service call sites - pre-existing, unearthed by first UI reachability; fixed, redeployed, re-proven in one loop"
+      ]
     }
   ]
 }
