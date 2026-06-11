@@ -6,7 +6,6 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import GameLayout from '../layouts/GameLayout';
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
-import EnhancedAIAssistant from '../ai/EnhancedAIAssistant';
 import TacticalCard from '../tactical/TacticalCard';
 import SectorViewport from '../tactical/SectorViewport';
 import PlanetPortPair from '../tactical/PlanetPortPair';
@@ -30,6 +29,7 @@ const GameDashboard: React.FC = () => {
     leavePlanet,
     renamePlanet,
     exploreCurrentLocation,
+    getAvailableMoves,
     error
   } = useGame();
   
@@ -39,6 +39,46 @@ const GameDashboard: React.FC = () => {
   const [movementResult, setMovementResult] = useState<any>(null);
   const [dockingResult, setDockingResult] = useState<any>(null);
   const [landingResult, setLandingResult] = useState<any>(null);
+
+  // NAV scan loading state: show a spinner while sector telemetry loads,
+  // then fall back to a retry affordance if nothing arrives within 10s.
+  const [navScanTimedOut, setNavScanTimedOut] = useState(false);
+  const [navScanAttempt, setNavScanAttempt] = useState(0);
+
+  useEffect(() => {
+    if (currentSector) {
+      setNavScanTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setNavScanTimedOut(true), 10000);
+    return () => clearTimeout(timer);
+  }, [currentSector, navScanAttempt]);
+
+  const handleRetryScan = async () => {
+    setNavScanTimedOut(false);
+    setNavScanAttempt(attempt => attempt + 1); // re-arm the 10s timeout
+    await Promise.allSettled([exploreCurrentLocation(), getAvailableMoves()]);
+  };
+
+  // COMMS contacts: merge live WebSocket presence with the sector snapshot
+  // from the API (players_present), excluding ourselves, de-duplicated.
+  const sectorContacts = useMemo(() => {
+    const contacts = new Map<string, any>();
+    const addContact = (contact: any) => {
+      if (!contact) return;
+      const key = String(contact.user_id || contact.id || contact.username || '');
+      if (!key) return;
+      const isSelf = playerState && (
+        key === String(playerState.id) ||
+        (contact.username && contact.username === playerState.username)
+      );
+      if (isSelf) return;
+      if (!contacts.has(key)) contacts.set(key, contact);
+    };
+    sectorPlayers.forEach(addContact);
+    (currentSector?.players_present || []).forEach(addContact);
+    return Array.from(contacts.values());
+  }, [sectorPlayers, currentSector?.players_present, playerState]);
 
   // Production allocation state (must total 100%)
   const [allocations, setAllocations] = useState({
@@ -415,7 +455,7 @@ const GameDashboard: React.FC = () => {
                 stations={stationsInSector}
                 planets={planetsInSector}
                 width={Math.floor(window.innerWidth - 320)}
-                height={Math.floor((window.innerHeight - 80) * 0.40)}
+                height={Math.floor((window.innerHeight - 80) * 0.35)}
                 onEntityClick={(entity) => {
                   if (entity.type === 'planet') {
                     handleLand(entity.id);
@@ -437,10 +477,13 @@ const GameDashboard: React.FC = () => {
               <div className="hud-overlay top-left">
                 <div className="hud-label">LOCATION</div>
                 <div className="hud-value">
-                  {currentSector.region_name && currentSector.region_name.toUpperCase()}
-                  {currentSector.region_name && ' - '}
                   SECTOR {currentSector.sector_number || currentSector.sector_id}
                 </div>
+                {currentSector.region_name && (
+                  <div className="hud-region-name" title={currentSector.region_name}>
+                    {currentSector.region_name}
+                  </div>
+                )}
                 <div className="hud-value-secondary">
                   {currentSector.type ? currentSector.type.replace(/_/g, ' ').toUpperCase() : 'STANDARD'}
                 </div>
@@ -628,9 +671,9 @@ const GameDashboard: React.FC = () => {
                                 <div className="defense-item"><span>🔫</span><span>{citadelLevel >= 2 ? (citadelLevel * 4) : 0}</span><span className="sublabel">Turrets</span></div>
                               </div>
                               <div className="section-actions">
-                                <button className="section-btn" disabled>🛡️ Upgrade Shields</button>
-                                <button className="section-btn" disabled>🤖 Deploy Drones</button>
-                                <button className="section-btn upgrade" disabled>🏗️ Upgrade Citadel</button>
+                                <button className="section-btn" disabled title="Coming soon — shield upgrades are managed from the Colonies page">🛡️ Upgrade Shields</button>
+                                <button className="section-btn" disabled title="Coming soon — drone deployment is managed from the Colonies page">🤖 Deploy Drones</button>
+                                <button className="section-btn upgrade" disabled title="Coming soon — citadel upgrades are managed from the Colonies page">🏗️ Upgrade Citadel</button>
                               </div>
                             </div>
                             <div className="planet-section production">
@@ -793,6 +836,23 @@ const GameDashboard: React.FC = () => {
                 <div className="monitor-screen">
                   <div className="screen-hud-header">NAV</div>
                   <div className="screen-hud-content">
+                  {!currentSector && (
+                    <div className="nav-scan-state">
+                      {!navScanTimedOut ? (
+                        <>
+                          <div className="nav-scan-spinner" aria-hidden="true"></div>
+                          <span className="nav-scan-text">SCANNING SECTOR...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="nav-scan-text warning">SECTOR SCAN TIMED OUT — NO TELEMETRY</span>
+                          <button className="nav-scan-retry" onClick={handleRetryScan}>
+                            ⟳ RETRY SCAN
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                   {currentSector && (
                     <NavigationMap
                       currentSectorId={currentSector.sector_id}
@@ -809,10 +869,11 @@ const GameDashboard: React.FC = () => {
                         },
                         // Available warp destinations
                         ...availableMoves.warps.map(warp => {
-                          // Show region name if different from current region
+                          // Sector number first so label truncation keeps it;
+                          // region suffix only when crossing regions
                           const showRegion = warp.region_id && warp.region_id !== currentSector.region_id;
                           const displayName = showRegion
-                            ? `${warp.region_name} - Sector ${warp.sector_number || warp.sector_id}`
+                            ? `Sector ${warp.sector_number || warp.sector_id} · ${warp.region_name}`
                             : `Sector ${warp.sector_number || warp.sector_id}`;
 
                           return {
@@ -824,10 +885,11 @@ const GameDashboard: React.FC = () => {
                         }),
                         // Available tunnel destinations
                         ...availableMoves.tunnels.map(tunnel => {
-                          // Show region name if different from current region
+                          // Sector number first so label truncation keeps it;
+                          // region suffix only when crossing regions
                           const showRegion = tunnel.region_id && tunnel.region_id !== currentSector.region_id;
                           const displayName = showRegion
-                            ? `${tunnel.region_name} - Sector ${tunnel.sector_number || tunnel.sector_id}`
+                            ? `Sector ${tunnel.sector_number || tunnel.sector_id} · ${tunnel.region_name}`
                             : `Sector ${tunnel.sector_number || tunnel.sector_id}`;
 
                           return {
@@ -906,10 +968,10 @@ const GameDashboard: React.FC = () => {
                 <div className="monitor-screen">
                   <div className="screen-hud-header">COMMS</div>
                   <div className="screen-hud-content">
-                  {sectorPlayers.length > 0 ? (
+                  {sectorContacts.length > 0 ? (
                     <div className="contacts-compact-list">
-                      {sectorPlayers.map((player: any) => (
-                        <div key={player.user_id} className="contact-list-item">
+                      {sectorContacts.map((player: any) => (
+                        <div key={player.user_id || player.id || player.username} className="contact-list-item">
                           <span className="status-indicator online"></span>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                             <span
@@ -917,17 +979,19 @@ const GameDashboard: React.FC = () => {
                               style={{ color: player.name_color || '#FFFFFF' }}
                             >
                               {player.military_rank ? `${player.military_rank.toUpperCase()} ` : ''}
-                              {player.username}
+                              {player.username || player.name || 'UNKNOWN CONTACT'}
                             </span>
-                            <span style={{ fontSize: '0.7em', opacity: 0.7 }}>
-                              {player.reputation_tier || 'Neutral'} ({player.personal_reputation >= 0 ? '+' : ''}{player.personal_reputation || 0})
-                            </span>
+                            {(player.reputation_tier || typeof player.personal_reputation === 'number') && (
+                              <span style={{ fontSize: '0.7em', opacity: 0.7 }}>
+                                {player.reputation_tier || 'Neutral'} ({(player.personal_reputation ?? 0) >= 0 ? '+' : ''}{player.personal_reputation ?? 0})
+                              </span>
+                            )}
                           </div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="empty-state">No signals detected</div>
+                    <div className="empty-state">No other contacts in sector</div>
                   )}
                   </div>
                 </div>
@@ -936,12 +1000,7 @@ const GameDashboard: React.FC = () => {
           )}
         </div>
 
-        {/* Enhanced AI Assistant - ARIA */}
-        {playerState?.id && (
-          <EnhancedAIAssistant
-            theme="dark"
-          />
-        )}
+        {/* ARIA assistant is mounted globally in GameLayout for all /game routes */}
       </div>
     </GameLayout>
   );

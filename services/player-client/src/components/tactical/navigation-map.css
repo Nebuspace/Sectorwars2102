@@ -172,7 +172,11 @@
 /* Responsive adjustments */
 @media (max-width: 1024px) {
   .navigation-map-container {
-    min-height: 500px;
+    /* Must stay 0 to match the base rule above — a forced min-height
+       here re-introduces the NAV monitor overflow that the compact
+       cockpit fixes removed (the container must follow its monitor
+       cell, which is well under 500px on narrow viewports). */
+    min-height: 0;
   }
 
   .navigation-instructions {

@@ -26,6 +26,13 @@ interface Node {
   sector: Sector;
 }
 
+// Truncate long sector/region labels so they don't overlap neighboring
+// nodes and edges. The full name stays available via the SVG <title>
+// tooltip on the node circles.
+const MAX_LABEL_CHARS = 14;
+const truncateLabel = (name: string): string =>
+  name.length > MAX_LABEL_CHARS ? `${name.slice(0, MAX_LABEL_CHARS - 1)}…` : name;
+
 const NavigationMap: React.FC<NavigationMapProps> = ({
   currentSectorId,
   sectors,
@@ -321,7 +328,9 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                     }}
                     onMouseEnter={() => setHoveredNode(node.id)}
                     onMouseLeave={() => setHoveredNode(null)}
-                  />
+                  >
+                    <title>{node.sector.name}</title>
+                  </circle>
                 )}
 
                 {/* Node circle */}
@@ -343,21 +352,23 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                     }
                   }}
                   style={{ cursor: isAvailable ? 'pointer' : 'default' }}
-                />
+                >
+                  <title>{node.sector.name}</title>
+                </circle>
 
-                {/* Node label */}
+                {/* Node label - truncated with full name in tooltip */}
                 {(isCurrent || isHovered || isAvailable) && (
                   <text
                     x={node.x}
-                    y={node.y + nodeSize + 16}
+                    y={node.y + nodeSize + 14}
                     textAnchor="middle"
                     className="node-label"
                     fill={nodeColor}
-                    fontSize="11"
+                    fontSize="9"
                     fontWeight="bold"
                     style={{ pointerEvents: 'none' }}
                   >
-                    {node.sector.name}
+                    {truncateLabel(node.sector.name)}
                   </text>
                 )}
 
