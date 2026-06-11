@@ -123,6 +123,14 @@
   }
 }
 
+/* Claim requirements at a glance, shown under the Click-to-Claim hint */
+.planet-claim-reqs {
+  font-size: 0.55rem;
+  color: rgba(255, 176, 0, 0.75);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
 /* Unclaimed planet styling */
 .planet-section.unclaimed {
   border-left: 2px solid rgba(255, 176, 0, 0.5);
@@ -273,7 +281,8 @@
   }
 
   .orbital-connector,
-  .planet-icon {
+  .planet-icon,
+  .planet-claim-hint {
     animation: none;
   }
 }

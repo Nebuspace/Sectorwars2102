@@ -615,13 +615,23 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       const response = await api.post(`/api/v1/planets/${planetId}/claim`);
 
-      // Update player state after claiming (player is auto-landed)
+      // Update player state after claiming (player is auto-landed).
+      // Claiming spends credits and settles colonists from the ship's
+      // cargo, and the planet's ownership changes — refresh all three.
       await refreshPlayerState();
+      await loadShips();
+      await exploreCurrentLocation();
 
       return response.data;
     } catch (error: any) {
       console.error('Error claiming planet:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to claim planet');
+      // 400 (requirements not met) and 403 (protected population hub) are
+      // in-fiction gameplay refusals that the claim UI surfaces inline;
+      // only unexpected failures should raise the global system alert.
+      const status = error.response?.status;
+      if (status !== 400 && status !== 403) {
+        setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to claim planet');
+      }
       throw error;
     } finally {
       setIsLoading(false);
@@ -799,7 +809,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return response.data;
     } catch (error: any) {
       console.error('Error transferring colonists:', error);
-      setError(error.response?.data?.detail || 'Failed to transfer colonists');
+      // 400/403 are gameplay refusals (capacity, ownership, quantity) shown
+      // inline by the transfer modal; reserve the global alert for the rest.
+      const status = error.response?.status;
+      if (status !== 400 && status !== 403) {
+        setError(error.response?.data?.detail || 'Failed to transfer colonists');
+      }
       throw error;
     } finally {
       setIsLoading(false);

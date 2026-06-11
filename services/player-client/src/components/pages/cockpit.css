@@ -870,6 +870,34 @@
   color: rgba(255, 255, 255, 0.9);
 }
 
+/* Claim refusal — the server's in-fiction message, amber-styled */
+.cockpit-alert.claim-denied {
+  border-color: #ffb000;
+  box-shadow: 0 0 30px rgba(255, 176, 0, 0.4);
+}
+
+.cockpit-alert.claim-denied .alert-header {
+  color: #ffb000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.cockpit-alert .alert-dismiss {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.cockpit-alert .alert-dismiss:hover {
+  color: #ffffff;
+}
+
 /* ============================================
    RESPONSIVE DESIGN
    ============================================ */
@@ -1423,6 +1451,75 @@
   z-index: 10;
   padding: 2rem;
   max-width: 600px;
+  /* Default accent (purple) — overridden per planet type below */
+  --planet-accent: 147, 51, 234;
+}
+
+/* Planet-type accent tints (RGB triplets consumed via rgba(var(...))) */
+.planet-surface.planet-tint-terran,
+.planet-surface.planet-tint-terra,
+.planet-surface.planet-tint-m_class,
+.planet-surface.planet-tint-jungle {
+  --planet-accent: 34, 197, 94;
+}
+
+.planet-surface.planet-tint-oceanic,
+.planet-surface.planet-tint-o_class {
+  --planet-accent: 56, 189, 248;
+}
+
+.planet-surface.planet-tint-desert,
+.planet-surface.planet-tint-k_class {
+  --planet-accent: 245, 158, 11;
+}
+
+.planet-surface.planet-tint-volcanic,
+.planet-surface.planet-tint-h_class {
+  --planet-accent: 239, 68, 68;
+}
+
+.planet-surface.planet-tint-barren,
+.planet-surface.planet-tint-d_class {
+  --planet-accent: 148, 163, 184;
+}
+
+.planet-surface.planet-tint-ice,
+.planet-surface.planet-tint-frozen,
+.planet-surface.planet-tint-c_class {
+  --planet-accent: 125, 211, 252;
+}
+
+.planet-surface.planet-tint-mountainous,
+.planet-surface.planet-tint-l_class {
+  --planet-accent: 168, 162, 158;
+}
+
+.planet-surface.planet-tint-gas_giant {
+  --planet-accent: 192, 132, 252;
+}
+
+/* Subtle tinting of the landed header from the accent variable */
+.landed-viewport .planet-surface .planet-header h2 {
+  color: rgb(var(--planet-accent));
+  text-shadow: 0 0 20px rgba(var(--planet-accent), 0.8);
+}
+
+.landed-viewport .planet-surface .planet-header .planet-type {
+  color: rgba(var(--planet-accent), 0.9);
+}
+
+.landed-viewport .planet-surface .planet-header .planet-icon {
+  animation: planet-icon-pulse-tinted 3s ease-in-out infinite;
+  filter: drop-shadow(0 0 20px rgba(var(--planet-accent), 0.6));
+}
+
+@keyframes planet-icon-pulse-tinted {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
 }
 
 .planet-header {
@@ -1608,6 +1705,118 @@
   font-weight: 600;
   color: #9333ea;
   font-family: 'Courier New', monospace;
+}
+
+/* Planet vitals — habitability dial + population/colonist bars */
+.planet-vitals {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(var(--planet-accent, 147, 51, 234), 0.3);
+}
+
+.vital-dial {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.vital-dial .dial-face {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at center, rgba(10, 5, 18, 0.95) 58%, transparent 59%),
+    conic-gradient(
+      rgba(var(--planet-accent, 147, 51, 234), 0.95) calc(var(--dial-pct, 0) * 1%),
+      rgba(255, 255, 255, 0.08) 0
+    );
+  box-shadow: 0 0 12px rgba(var(--planet-accent, 147, 51, 234), 0.35);
+}
+
+.vital-dial .dial-value {
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.vital-dial .dial-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.vital-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.vital-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.vital-bar-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.6);
+  width: 80px;
+  text-align: left;
+  flex-shrink: 0;
+}
+
+.vital-bar-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.vital-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.vital-bar-fill.population {
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+}
+
+.vital-bar-fill.colonists {
+  background: linear-gradient(90deg, #fbbf24, #fde047);
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.5);
+}
+
+.vital-bar-value {
+  font-size: 0.7rem;
+  font-family: 'Courier New', monospace;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+}
+
+.vital-bar-row.status {
+  justify-content: space-between;
+}
+
+.vital-bar-row.status .vital-bar-value {
+  color: rgb(var(--planet-accent, 147, 51, 234));
+  font-weight: 600;
 }
 
 .liftoff-button {
@@ -2381,6 +2590,41 @@
   color: rgba(255, 255, 255, 0.6);
   white-space: nowrap;
   font-style: italic;
+}
+
+/* Colonist cargo callout — shown when the ship is carrying colonists */
+.colonists-aboard {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fbbf24;
+  padding: 0.25rem 0.4rem;
+  margin-bottom: 0.5rem;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 3px;
+}
+
+/* Inline result of the last colonist transfer */
+.transfer-notice {
+  font-size: 0.7rem;
+  padding: 0.3rem 0.45rem;
+  margin-bottom: 0.5rem;
+  border-radius: 3px;
+}
+
+.transfer-notice.success {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.transfer-notice.error {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
 }
 
 /* Production Allocation Section */
@@ -3768,5 +4012,347 @@
 
   .next-requirements {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ============================================
+   CLAIM CEREMONY - Colony Established Overlay
+   ============================================ */
+
+.claim-celebration-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.78);
+  backdrop-filter: blur(4px);
+  cursor: pointer;
+  animation: claim-overlay-in 0.3s ease-out;
+}
+
+@keyframes claim-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.claim-celebration-card {
+  position: relative;
+  overflow: hidden;
+  text-align: center;
+  min-width: 340px;
+  max-width: 480px;
+  padding: 2.5rem 3rem 2rem;
+  background: linear-gradient(160deg, rgba(10, 25, 15, 0.96) 0%, rgba(4, 12, 8, 0.98) 100%);
+  border: 2px solid rgba(0, 255, 65, 0.55);
+  border-radius: 10px;
+  box-shadow:
+    0 0 40px rgba(0, 255, 65, 0.35),
+    inset 0 0 30px rgba(0, 255, 65, 0.08);
+  animation:
+    claim-card-in 0.45s cubic-bezier(0.18, 0.89, 0.32, 1.28),
+    claim-card-glow 2.4s ease-in-out 0.45s infinite;
+}
+
+@keyframes claim-card-in {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes claim-card-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 40px rgba(0, 255, 65, 0.35),
+      inset 0 0 30px rgba(0, 255, 65, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 60px rgba(0, 255, 65, 0.55),
+      inset 0 0 40px rgba(0, 255, 65, 0.14);
+  }
+}
+
+/* Scanline sweeping down the card */
+.claim-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, rgba(0, 255, 65, 0.9), transparent);
+  pointer-events: none;
+  animation: claim-scan-sweep 2.4s linear infinite;
+}
+
+@keyframes claim-scan-sweep {
+  0% {
+    top: 0;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    top: calc(100% - 3px);
+    opacity: 0;
+  }
+}
+
+.claim-banner {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.25em;
+  color: #00ff41;
+  text-shadow: 0 0 18px rgba(0, 255, 65, 0.7);
+  margin-bottom: 1.2rem;
+}
+
+.claim-planet-icon {
+  font-size: 4rem;
+  margin-bottom: 0.8rem;
+  filter: drop-shadow(0 0 24px rgba(0, 255, 65, 0.5));
+}
+
+.claim-planet-name {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.95);
+  margin-bottom: 1rem;
+}
+
+.claim-detail {
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: 'Courier New', monospace;
+  margin: 0.3rem 0;
+}
+
+.claim-dismiss-hint {
+  margin-top: 1.5rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ============================================
+   COLONIST TRANSFER MODAL
+   ============================================ */
+
+.colonist-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.7);
+  backdrop-filter: blur(3px);
+}
+
+.colonist-modal {
+  width: min(420px, calc(100vw - 2rem));
+  background: linear-gradient(160deg, rgba(8, 18, 30, 0.97) 0%, rgba(4, 10, 18, 0.99) 100%);
+  border: 2px solid rgba(34, 197, 94, 0.5);
+  border-radius: 8px;
+  box-shadow: 0 0 40px rgba(34, 197, 94, 0.25);
+  padding: 1.25rem;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.colonist-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.colonist-modal-header h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  letter-spacing: 0.12em;
+  color: #4ade80;
+}
+
+.colonist-modal-close {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.colonist-modal-close:hover {
+  color: #ffffff;
+}
+
+.colonist-modal-route {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.65);
+  margin-bottom: 1rem;
+}
+
+.colonist-qty-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+
+.colonist-qty-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.colonist-qty-slider {
+  width: 100%;
+  accent-color: #22c55e;
+}
+
+.colonist-qty-input-group {
+  display: flex;
+  gap: 0.3rem;
+  justify-content: center;
+}
+
+.qty-step {
+  width: 30px;
+  height: 30px;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  color: #4ade80;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.qty-step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.colonist-qty-input {
+  width: 90px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 4px;
+  color: #ffffff;
+  font-family: 'Courier New', monospace;
+}
+
+.colonist-qty-presets {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.colonist-qty-presets button {
+  flex: 1;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.65rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.8);
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.colonist-qty-presets button:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+.colonist-qty-presets button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.colonist-transfer-summary {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.colonist-transfer-summary .summary-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.colonist-transfer-summary .summary-line .value {
+  font-family: 'Courier New', monospace;
+  color: #4ade80;
+}
+
+.colonist-modal-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.colonist-modal-cancel {
+  flex: 1;
+  padding: 0.5rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.75);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.colonist-modal-confirm {
+  flex: 2;
+  padding: 0.5rem;
+  background: linear-gradient(135deg, #16a34a, #22c55e);
+  border: 1px solid rgba(34, 197, 94, 0.7);
+  color: #04150a;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.colonist-modal-confirm:disabled,
+.colonist-modal-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Reduced motion: ceremony and tinted landed header stay static */
+@media (prefers-reduced-motion: reduce) {
+  .claim-celebration-overlay,
+  .claim-celebration-card,
+  .claim-scanline,
+  .landed-viewport .planet-surface .planet-header .planet-icon {
+    animation: none;
+  }
+
+  .vital-bar-fill {
+    transition: none;
   }
 }

@@ -94,8 +94,9 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   // Get station owner display name
   const stationOwnerDisplay = station?.owner_name || (station?.faction_affiliation ? `${station.faction_affiliation} Faction` : null);
 
-  // Determine if planet is unclaimed
-  const isPlanetUnclaimed = planet && !planet.owner_id && !planet.owner_name && planet.name !== 'New Earth';
+  // Determine if planet is unclaimed — the server now protects population
+  // hubs itself, so a generic owner check is all the client needs
+  const isPlanetUnclaimed = planet && !planet.owner_id && !planet.owner_name;
 
   const handlePlanetClick = () => {
     if (!planet || isLanded) return;
@@ -103,7 +104,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
     if (isPlanetUnclaimed) {
       // Planet is unclaimed - need to claim it first
       if (!onClaimPlanet) return;
-      if (confirm(`Claim ${planet.name}?\n\nThis planet is unclaimed. Claiming it will make you the owner and automatically land your ship.`)) {
+      if (confirm(`Claim ${planet.name}?\n\nRequirements: 10,000 credits and at least 100 colonists aboard.\nClaiming makes you the owner and automatically lands your ship.`)) {
         onClaimPlanet(planet.id);
       }
     } else {
@@ -122,7 +123,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
     }
   };
 
-  const ownerDisplay = planet ? (planet.owner_name || (planet.name === 'New Earth' ? 'Terran Federation' : null)) : null;
+  const ownerDisplay = planet ? (planet.owner_name || (planet.owner_id ? 'Claimed' : null)) : null;
 
   return (
     <div className="planet-port-pair">
@@ -137,7 +138,10 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
             <div className="planet-name-line">
               <span className="planet-name">{planet.name}</span>
               {isPlanetUnclaimed && onClaimPlanet ? (
-                <span className="planet-claim-hint">Click to Claim</span>
+                <>
+                  <span className="planet-claim-hint">Click to Claim</span>
+                  <span className="planet-claim-reqs">💰 10,000cr · 👥 100+ colonists aboard</span>
+                </>
               ) : (
                 ownerDisplay && <span className="planet-owner">{ownerDisplay}</span>
               )}

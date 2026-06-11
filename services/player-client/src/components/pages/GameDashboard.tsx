@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useGame } from '../../contexts/GameContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
@@ -14,9 +15,26 @@ import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
 
+// Planet type icons (shared by the landed console and the claim ceremony)
+const PLANET_TYPE_ICONS: Record<string, string> = {
+  'terra': '🌍', 'm_class': '🌎', 'terran': '🌍', 'oceanic': '🌊',
+  'l_class': '🏔️', 'mountainous': '🏔️', 'o_class': '🌊',
+  'k_class': '🏜️', 'desert': '🏜️', 'h_class': '🌋', 'volcanic': '🌋',
+  'd_class': '🌑', 'barren': '🌑', 'c_class': '❄️', 'frozen': '❄️',
+  'ice': '🧊', 'jungle': '🌴', 'gas_giant': '🪐'
+};
+
+const getPlanetIcon = (type?: string): string =>
+  PLANET_TYPE_ICONS[type?.toLowerCase() || ''] || '🪐';
+
+// One accent class per planet type — the colors live in cockpit.css
+const getPlanetTintClass = (type?: string): string =>
+  `planet-tint-${(type || 'unknown').toLowerCase().replace(/[^a-z_]+/g, '_')}`;
+
 const GameDashboard: React.FC = () => {
   const {
     playerState,
+    currentShip,
     currentSector,
     planetsInSector,
     stationsInSector,
@@ -28,6 +46,8 @@ const GameDashboard: React.FC = () => {
     landOnPlanet,
     leavePlanet,
     renamePlanet,
+    getPlanetDetails,
+    transferColonists,
     exploreCurrentLocation,
     getAvailableMoves,
     error
@@ -79,6 +99,137 @@ const GameDashboard: React.FC = () => {
     (currentSector?.players_present || []).forEach(addContact);
     return Array.from(contacts.values());
   }, [sectorPlayers, currentSector?.players_present, playerState]);
+
+  // Landed planet — used by the windshield viewport and the colonist transfer UI
+  const landedPlanet = useMemo(() => (
+    playerState?.is_landed
+      ? planetsInSector?.find((p: any) => p.id === playerState?.current_planet_id) || null
+      : null
+  ), [playerState?.is_landed, playerState?.current_planet_id, planetsInSector]);
+
+  const isLandedPlanetMine = !!(landedPlanet && playerState && landedPlanet.owner_id === playerState.id);
+
+  // Colonists riding in the current ship's cargo.
+  // Cargo shape from /player/ships is {used, capacity, contents: {colonists: N}}
+  // (the legacy flat shape is kept as a fallback).
+  const shipColonists = useMemo(() => {
+    const cargo = currentShip?.cargo as any;
+    const aboard = cargo?.contents?.colonists ?? cargo?.colonists;
+    return typeof aboard === 'number' && aboard > 0 ? Math.floor(aboard) : 0;
+  }, [currentShip]);
+
+  // Detailed planet data (colonists / maxColonists) — the detail endpoint only
+  // answers for planets the player owns, so render gracefully when absent
+  const [landedPlanetDetail, setLandedPlanetDetail] = useState<any>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!landedPlanet || !isLandedPlanetMine) {
+      setLandedPlanetDetail(null);
+      return;
+    }
+    getPlanetDetails(landedPlanet.id)
+      .then((detail: any) => { if (!cancelled) setLandedPlanetDetail(detail); })
+      .catch(() => { if (!cancelled) setLandedPlanetDetail(null); });
+    return () => { cancelled = true; };
+  }, [landedPlanet?.id, isLandedPlanetMine]);
+
+  // Colonists on the landed planet (detail when owned, sector snapshot otherwise)
+  const landedPlanetColonists: number =
+    typeof landedPlanetDetail?.colonists === 'number'
+      ? landedPlanetDetail.colonists
+      : landedPlanet?.population || 0;
+
+  // --- Colonist transfer modal (quantity pattern mirrors the trading modal) ---
+  const [transferModal, setTransferModal] = useState<'disembark' | 'embark' | null>(null);
+  const [transferQuantity, setTransferQuantity] = useState(1);
+  const [isTransferring, setIsTransferring] = useState(false);
+  const [transferNotice, setTransferNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const transferMax = useMemo(() => {
+    if (transferModal === 'disembark') {
+      let max = shipColonists;
+      if (typeof landedPlanetDetail?.maxColonists === 'number' && typeof landedPlanetDetail?.colonists === 'number') {
+        max = Math.min(max, Math.max(0, landedPlanetDetail.maxColonists - landedPlanetDetail.colonists));
+      }
+      return max;
+    }
+    if (transferModal === 'embark') {
+      return landedPlanetColonists;
+    }
+    return 0;
+  }, [transferModal, shipColonists, landedPlanetDetail, landedPlanetColonists]);
+
+  // Default the modal to a full load when it opens
+  useEffect(() => {
+    if (transferModal) setTransferQuantity(Math.max(1, transferMax));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transferModal]);
+
+  // Auto-dismiss transfer notices
+  useEffect(() => {
+    if (!transferNotice) return;
+    const timer = setTimeout(() => setTransferNotice(null), 8000);
+    return () => clearTimeout(timer);
+  }, [transferNotice]);
+
+  const clampTransferQuantity = (value: number) =>
+    Math.max(1, Math.min(Math.max(1, transferMax), value));
+
+  const openTransferModal = (action: 'disembark' | 'embark') => {
+    setTransferNotice(null);
+    setTransferModal(action);
+  };
+
+  const handleTransferConfirm = async () => {
+    if (!landedPlanet || !transferModal || transferQuantity < 1 || isTransferring) return;
+    const action = transferModal;
+    setIsTransferring(true);
+    try {
+      const result = await transferColonists(landedPlanet.id, action, transferQuantity);
+      setTransferNotice({
+        type: 'success',
+        message: result?.message || (action === 'disembark'
+          ? `${transferQuantity.toLocaleString()} colonists disembarked to ${landedPlanet.name}`
+          : `${transferQuantity.toLocaleString()} colonists embarked from ${landedPlanet.name}`)
+      });
+      // Sync the detail panel from the authoritative server response
+      setLandedPlanetDetail((prev: any) => prev ? {
+        ...prev,
+        colonists: typeof result?.planet_colonists === 'number' ? result.planet_colonists : prev.colonists,
+        maxColonists: typeof result?.max_colonists === 'number' ? result.max_colonists : prev.maxColonists
+      } : prev);
+      setTransferModal(null);
+    } catch (error: any) {
+      setTransferNotice({
+        type: 'error',
+        message: error?.response?.data?.detail || error?.response?.data?.message || 'Colonist transfer failed'
+      });
+      setTransferModal(null);
+    } finally {
+      setIsTransferring(false);
+    }
+  };
+
+  // --- Claim ceremony / refusal notice ---
+  const [claimCelebration, setClaimCelebration] = useState<{
+    planetName: string;
+    planetType: string;
+    colonistsSettled?: number;
+    creditsSpent?: number;
+  } | null>(null);
+  const [claimNotice, setClaimNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!claimCelebration) return;
+    const timer = setTimeout(() => setClaimCelebration(null), 10000);
+    return () => clearTimeout(timer);
+  }, [claimCelebration]);
+
+  useEffect(() => {
+    if (!claimNotice) return;
+    const timer = setTimeout(() => setClaimNotice(null), 10000);
+    return () => clearTimeout(timer);
+  }, [claimNotice]);
 
   // Production allocation state (must total 100%)
   const [allocations, setAllocations] = useState({
@@ -222,11 +373,30 @@ const GameDashboard: React.FC = () => {
   };
 
   const handleClaim = async (planetId: string) => {
+    setClaimNotice(null);
+    // Capture the planet before the claim refreshes the sector snapshot
+    const planet = planetsInSector?.find((p: any) => p.id === planetId);
     try {
       const result = await claimPlanet(planetId);
-      setLandingResult(result);
-    } catch (error) {
+      setClaimCelebration({
+        planetName: result?.planet_name || planet?.name || 'Unknown Planet',
+        planetType: result?.planet_type || planet?.type || '',
+        colonistsSettled: typeof result?.colonists_settled === 'number' ? result.colonists_settled : undefined,
+        creditsSpent: typeof result?.credits_spent === 'number' ? result.credits_spent : undefined
+      });
+    } catch (error: any) {
       console.error('Error claiming planet:', error);
+      // 403 carries the population-hub refusal fiction; 400 carries the
+      // requirements message — show the server's words inline. Other
+      // failures (500/network) already surface via the global cockpit
+      // error alert; don't double-display them here.
+      const statusCode = error?.response?.status;
+      if (statusCode === 400 || statusCode === 403) {
+        const detail = error?.response?.data?.detail || error?.response?.data?.message;
+        setClaimNotice(typeof detail === 'string' && detail
+          ? detail
+          : 'Claim refused — 10,000 credits and at least 100 colonists aboard are required.');
+      }
     }
   };
 
@@ -275,6 +445,45 @@ const GameDashboard: React.FC = () => {
           <div className="cockpit-alert error">
             <div className="alert-header">⚠️ SYSTEM ALERT</div>
             <div className="alert-message">{error}</div>
+          </div>
+        )}
+
+        {claimNotice && (
+          <div className="cockpit-alert claim-denied" role="alert">
+            <div className="alert-header">
+              <span>🛑 CLAIM DENIED</span>
+              <button
+                className="alert-dismiss"
+                onClick={() => setClaimNotice(null)}
+                aria-label="Dismiss claim notice"
+              >
+                ×
+              </button>
+            </div>
+            <div className="alert-message">{claimNotice}</div>
+          </div>
+        )}
+
+        {claimCelebration && (
+          <div
+            className="claim-celebration-overlay"
+            role="dialog"
+            aria-label="Colony established"
+            onClick={() => setClaimCelebration(null)}
+          >
+            <div className="claim-celebration-card">
+              <div className="claim-scanline" aria-hidden="true"></div>
+              <div className="claim-banner">🏴 COLONY ESTABLISHED</div>
+              <div className="claim-planet-icon">{getPlanetIcon(claimCelebration.planetType)}</div>
+              <div className="claim-planet-name">{claimCelebration.planetName}</div>
+              {typeof claimCelebration.colonistsSettled === 'number' && (
+                <div className="claim-detail">👥 {claimCelebration.colonistsSettled.toLocaleString()} colonists settled</div>
+              )}
+              {typeof claimCelebration.creditsSpent === 'number' && (
+                <div className="claim-detail">💰 {claimCelebration.creditsSpent.toLocaleString()} credits invested</div>
+              )}
+              <div className="claim-dismiss-hint">Click anywhere to continue</div>
+            </div>
           </div>
         )}
 
@@ -334,14 +543,18 @@ const GameDashboard: React.FC = () => {
         <div className="cockpit-windshield">
           {/* LANDED STATE - Show planetary surface view */}
           {playerState?.is_landed && !playerState?.is_docked && (() => {
-            const landedPlanet = planetsInSector?.find((p: any) => p.id === playerState?.current_planet_id);
-            const isMyPlanet = landedPlanet?.owner_id === playerState?.id;
+            const isMyPlanet = isLandedPlanetMine;
+            const habitability = Math.max(0, Math.min(100, landedPlanet?.habitability_score ?? 0));
+            const population = landedPlanet?.population ?? 0;
+            const maxPopulation = landedPlanet?.max_population ?? 0;
+            const detailColonists = typeof landedPlanetDetail?.colonists === 'number' ? landedPlanetDetail.colonists : null;
+            const detailMaxColonists = typeof landedPlanetDetail?.maxColonists === 'number' ? landedPlanetDetail.maxColonists : null;
 
             return (
             <div className="landed-viewport">
-              <div className="planet-surface">
+              <div className={`planet-surface ${getPlanetTintClass(landedPlanet?.type)}`}>
                 <div className="planet-header">
-                  <div className="planet-icon">🪐</div>
+                  <div className="planet-icon">{getPlanetIcon(landedPlanet?.type)}</div>
                   <h2>LANDED ON PLANET</h2>
                   <p className="planet-name">
                     {landedPlanet?.name || 'Unknown Planet'}
@@ -386,18 +599,48 @@ const GameDashboard: React.FC = () => {
                     Surface operations available - Manage colony, collect resources, or load colonists
                   </div>
                   {landedPlanet && (
-                    <div className="planet-stats">
-                      <div className="stat-row">
-                        <span className="stat-label">Population:</span>
-                        <span className="stat-value">{landedPlanet.population?.toLocaleString() || 0}</span>
+                    <div className="planet-vitals">
+                      <div
+                        className="vital-dial"
+                        style={{ '--dial-pct': habitability } as React.CSSProperties}
+                        title={`Habitability: ${habitability}%`}
+                      >
+                        <div className="dial-face">
+                          <span className="dial-value">{habitability}%</span>
+                        </div>
+                        <span className="dial-label">Habitability</span>
                       </div>
-                      <div className="stat-row">
-                        <span className="stat-label">Habitability:</span>
-                        <span className="stat-value">{landedPlanet.habitability_score || 0}%</span>
-                      </div>
-                      <div className="stat-row">
-                        <span className="stat-label">Status:</span>
-                        <span className="stat-value">{landedPlanet.status?.toUpperCase() || 'UNKNOWN'}</span>
+                      <div className="vital-bars">
+                        <div className="vital-bar-row" title="Planetary population">
+                          <span className="vital-bar-label">Population</span>
+                          <div className="vital-bar-track">
+                            <div
+                              className="vital-bar-fill population"
+                              style={{ width: `${maxPopulation > 0 ? Math.min(100, (population / maxPopulation) * 100) : (population > 0 ? 100 : 0)}%` }}
+                            ></div>
+                          </div>
+                          <span className="vital-bar-value">
+                            {population.toLocaleString()}{maxPopulation > 0 ? ` / ${maxPopulation.toLocaleString()}` : ''}
+                          </span>
+                        </div>
+                        {detailColonists !== null && (
+                          <div className="vital-bar-row" title="Colonist workforce">
+                            <span className="vital-bar-label">Colonists</span>
+                            <div className="vital-bar-track">
+                              <div
+                                className="vital-bar-fill colonists"
+                                style={{ width: `${detailMaxColonists && detailMaxColonists > 0 ? Math.min(100, (detailColonists / detailMaxColonists) * 100) : (detailColonists > 0 ? 100 : 0)}%` }}
+                              ></div>
+                            </div>
+                            <span className="vital-bar-value">
+                              {detailColonists.toLocaleString()}{detailMaxColonists && detailMaxColonists > 0 ? ` / ${detailMaxColonists.toLocaleString()}` : ''}
+                            </span>
+                          </div>
+                        )}
+                        <div className="vital-bar-row status">
+                          <span className="vital-bar-label">Status</span>
+                          <span className="vital-bar-value">{landedPlanet.status?.toUpperCase() || 'UNKNOWN'}</span>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -595,15 +838,7 @@ const GameDashboard: React.FC = () => {
                     const droneCount = (currentPlanet as any)?.drones || 0;
                     const defenseRating = Math.min(100, Math.floor((shieldLevel * 5) + (droneCount / 2) + (citadelLevel * 10)));
 
-                    // Planet type icons
-                    const planetTypeIcons: Record<string, string> = {
-                      'TERRA': '🌍', 'M_CLASS': '🌎', 'terran': '🌍', 'oceanic': '🌊',
-                      'L_CLASS': '🏔️', 'mountainous': '🏔️', 'O_CLASS': '🌊',
-                      'K_CLASS': '🏜️', 'desert': '🏜️', 'H_CLASS': '🌋', 'volcanic': '🌋',
-                      'D_CLASS': '🌑', 'barren': '🌑', 'C_CLASS': '❄️', 'frozen': '❄️',
-                      'ice': '🧊', 'jungle': '🌴', 'gas_giant': '🪐'
-                    };
-                    const planetIcon = planetTypeIcons[currentPlanet?.type?.toLowerCase() || ''] || '🪐';
+                    const planetIcon = getPlanetIcon(currentPlanet?.type);
 
                     // Terraform values for header
                     const terraformLevel = (currentPlanet as any)?.terraform_level || 0;
@@ -686,15 +921,46 @@ const GameDashboard: React.FC = () => {
                                   <span className="pop-label">Population</span>
                                 </div>
                                 <div className="transfer-actions">
-                                  <button className="transfer-btn disembark" disabled title="Ship → Planet">
+                                  <button
+                                    className="transfer-btn disembark"
+                                    disabled={!isLandedPlanetMine || shipColonists === 0}
+                                    title={
+                                      !isLandedPlanetMine
+                                        ? 'Disembark requires landing on a planet you own'
+                                        : shipColonists === 0
+                                          ? 'No colonists aboard your ship'
+                                          : 'Ship → Planet'
+                                    }
+                                    onClick={() => openTransferModal('disembark')}
+                                  >
                                     <span>📥</span> Disembark
                                   </button>
-                                  <button className="transfer-btn embark" disabled title="Planet → Ship">
+                                  <button
+                                    className="transfer-btn embark"
+                                    disabled={!isLandedPlanetMine || landedPlanetColonists === 0}
+                                    title={
+                                      !isLandedPlanetMine
+                                        ? 'You can only embark colonists from a planet you own'
+                                        : landedPlanetColonists === 0
+                                          ? 'No colonists on this planet to embark'
+                                          : 'Planet → Ship'
+                                    }
+                                    onClick={() => openTransferModal('embark')}
+                                  >
                                     <span>📤</span> Embark
                                   </button>
                                 </div>
-                                <div className="transfer-note">1 cargo = 1,000 colonists</div>
                               </div>
+                              {shipColonists > 0 && (
+                                <div className="colonists-aboard">
+                                  👥 {shipColonists.toLocaleString()} colonists aboard
+                                </div>
+                              )}
+                              {transferNotice && (
+                                <div className={`transfer-notice ${transferNotice.type}`} role="status">
+                                  {transferNotice.message}
+                                </div>
+                              )}
 
                               {/* Production Allocation Sliders */}
                               <div className="allocation-section">
@@ -999,6 +1265,126 @@ const GameDashboard: React.FC = () => {
             </>
           )}
         </div>
+
+        {/* Colonist transfer quantity modal — portal escapes the cockpit stacking context */}
+        {transferModal && landedPlanet && createPortal(
+          <div
+            className="colonist-modal-overlay"
+            onClick={() => { if (!isTransferring) setTransferModal(null); }}
+          >
+            <div className="colonist-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="colonist-modal-header">
+                <h3>{transferModal === 'disembark' ? '📥 DISEMBARK COLONISTS' : '📤 EMBARK COLONISTS'}</h3>
+                <button
+                  className="colonist-modal-close"
+                  onClick={() => setTransferModal(null)}
+                  aria-label="Close colonist transfer"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="colonist-modal-route">
+                {transferModal === 'disembark'
+                  ? <>🚀 {currentShip?.name || 'Your ship'} → 🪐 {landedPlanet.name}</>
+                  : <>🪐 {landedPlanet.name} → 🚀 {currentShip?.name || 'Your ship'}</>}
+              </div>
+
+              <div className="colonist-qty-section">
+                <label className="colonist-qty-label" htmlFor="colonist-qty-input">Colonists</label>
+                <input
+                  type="range"
+                  min="1"
+                  max={Math.max(1, transferMax)}
+                  value={transferQuantity}
+                  onChange={(e) => setTransferQuantity(clampTransferQuantity(parseInt(e.target.value) || 1))}
+                  className="colonist-qty-slider"
+                  disabled={transferMax < 1}
+                />
+                <div className="colonist-qty-input-group">
+                  <button
+                    className="qty-step"
+                    onClick={() => setTransferQuantity(clampTransferQuantity(transferQuantity - 1))}
+                    disabled={transferQuantity <= 1}
+                  >
+                    −
+                  </button>
+                  <input
+                    id="colonist-qty-input"
+                    type="number"
+                    min="1"
+                    max={Math.max(1, transferMax)}
+                    value={transferQuantity}
+                    onChange={(e) => setTransferQuantity(clampTransferQuantity(parseInt(e.target.value) || 1))}
+                    className="colonist-qty-input"
+                  />
+                  <button
+                    className="qty-step"
+                    onClick={() => setTransferQuantity(clampTransferQuantity(transferQuantity + 1))}
+                    disabled={transferQuantity >= transferMax}
+                  >
+                    +
+                  </button>
+                </div>
+                <div className="colonist-qty-presets">
+                  {[0.25, 0.5, 0.75].map((fraction) => (
+                    <button
+                      key={fraction}
+                      onClick={() => setTransferQuantity(clampTransferQuantity(Math.floor(transferMax * fraction)))}
+                      disabled={transferMax < 1}
+                    >
+                      {fraction * 100}% ({Math.max(1, Math.floor(transferMax * fraction)).toLocaleString()})
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setTransferQuantity(Math.max(1, transferMax))}
+                    disabled={transferMax < 1}
+                  >
+                    Max ({transferMax.toLocaleString()})
+                  </button>
+                </div>
+              </div>
+
+              <div className="colonist-transfer-summary">
+                <div className="summary-line">
+                  <span>Aboard ship</span>
+                  <span className="value">
+                    {shipColonists.toLocaleString()} → {(transferModal === 'disembark'
+                      ? Math.max(0, shipColonists - transferQuantity)
+                      : shipColonists + transferQuantity).toLocaleString()}
+                  </span>
+                </div>
+                <div className="summary-line">
+                  <span>On planet</span>
+                  <span className="value">
+                    {landedPlanetColonists.toLocaleString()} → {(transferModal === 'disembark'
+                      ? landedPlanetColonists + transferQuantity
+                      : Math.max(0, landedPlanetColonists - transferQuantity)).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+
+              <div className="colonist-modal-actions">
+                <button
+                  className="colonist-modal-cancel"
+                  onClick={() => setTransferModal(null)}
+                  disabled={isTransferring}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="colonist-modal-confirm"
+                  onClick={handleTransferConfirm}
+                  disabled={isTransferring || transferMax < 1 || transferQuantity < 1 || transferQuantity > transferMax}
+                >
+                  {isTransferring
+                    ? 'TRANSFERRING…'
+                    : transferModal === 'disembark' ? 'CONFIRM DISEMBARK' : 'CONFIRM EMBARK'}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
         {/* ARIA assistant is mounted globally in GameLayout for all /game routes */}
       </div>
