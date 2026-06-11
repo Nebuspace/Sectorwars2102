@@ -1,0 +1,136 @@
+{
+  "ledger_version": 1,
+  "runs": [
+    {
+      "id": "neon-2026-06-11-a",
+      "stage": "complete",
+      "branch_head_at_start": "9d96775",
+      "deployed_sha_baseline": "ce3c8c6",
+      "baseline": {
+        "login": "ok (verifpilot)",
+        "dashboard": "ok, fits 1440x900",
+        "movement": "ok (1010->1006, 1 turn)",
+        "colonies": "ok after retry window (Pollux IX)",
+        "admin_shell": "loads; backend 403 for non-admin (correct)",
+        "known_console_noise": "teams/team-1 422 on /game/team mount; transient 404 storms during gameserver restart windows; token-validate 502 once"
+      },
+      "sections": [
+        {
+          "key": "cockpit-access-truth",
+          "state": "proven",
+          "effort": 2,
+          "findings": [
+            "NEON-6 sidebar nav unreachable (BLOCKER)",
+            "NEON-1 venue grid clipped",
+            "NEON-3 tax display lie"
+          ],
+          "files_owned": [
+            "services/player-client/src/components/layouts/game-layout.css",
+            "services/player-client/src/components/spacedock/* (CSS only)",
+            "services/player-client/src/components/trading/TradingInterface.tsx"
+          ],
+          "proof_script": [
+            "1440x900 + 1920x1080: all 7 nav items + LOGOUT reachable (visible or via sidebar scroll); NAV CHART and COLONIES clickable and load",
+            "Docked at Stardock: venue cards show icon+title+description legibly, no sliver-scroll (before/after screenshots)",
+            "Trading Hub at Stardock shows Tax Rate: 0.0% (server sends 0); at Fomalhaut shows 20.0%; network response cross-checked",
+            "Zero new console errors"
+          ]
+        },
+        {
+          "key": "ranking-goes-live",
+          "state": "proven",
+          "effort": 3,
+          "findings": [
+            "ranking router never mounted in api.py (BLOCKER, ORPHAN_API)",
+            "ranking UI suite rendered nowhere"
+          ],
+          "files_owned": [
+            "services/gameserver/src/api/api.py",
+            "services/player-client/src/App.tsx",
+            "services/player-client/src/components/layouts/GameLayout.tsx (nav list)",
+            "services/player-client/src/components/pages/RankingPage* (new)",
+            "services/player-client/src/components/ranking/* (fixups only)"
+          ],
+          "proof_script": [
+            "GET /api/v1/ranking/rank returns 200 for verifpilot (before: 404)",
+            "New nav entry visible; /game/ranking renders real rank + rep + medals(+empty state ok) + leaderboard of the 10 real players",
+            "DB cross-check: leaderboard order matches SQL over players table",
+            "All ranking requests 2xx; zero new console errors"
+          ]
+        },
+        {
+          "key": "in-fiction-confirmations",
+          "state": "proven",
+          "effort": 2,
+          "findings": [
+            "native confirm()/alert() in PlanetPortPair.tsx:98, PlanetCard.tsx:35,41, StationCard.tsx:31 (PAINFUL, design-language + automation-hostile)"
+          ],
+          "files_owned": [
+            "services/player-client/src/components/tactical/PlanetPortPair.tsx",
+            "services/player-client/src/components/tactical/PlanetCard.tsx",
+            "services/player-client/src/components/tactical/StationCard.tsx",
+            "services/player-client/src/components/tactical/confirm-dialog css/component (new)"
+          ],
+          "proof_script": [
+            "WITHOUT confirm-shim: click Dock on station card -> in-fiction styled dialog (not native); Cancel -> no dock, no turn spent; Confirm -> docked, turn decrements, DB occupancy row",
+            "Land flow on planet card shows same dialog pattern",
+            "grep: zero window.confirm/window.alert left in player-client src",
+            "Entire replay runs unshimmed without freezing automation"
+          ]
+        }
+      ],
+      "parking_lot": [
+        "NPC ecosystem void: 0 NPC ships in galaxy; combat/bounties/pirates unreachable in play. bang rosters pre-seeded in bang_snapshot. XL - propose dedicated run (headline candidate)",
+        "PvP combat client/server contract mismatch: client posts /combat/attack-player + /combat/attack-drones; server has engage/retreat (M)",
+        "drones.py /deployed + /deployments shadowed by /{drone_id} route ordering (S, but UI surface unreachable anyway)",
+        "Genesis spec divergences (TERRAN rolled despite ADR-0014, capacities 1/3 vs doc 0/5, advanced-tier 48h wait vs immediate) - code-wins-on-numbers rule => FLAG to Max, not autonomous fix",
+        "Confirmed BUG (canon-marked): combat_service.attack_planet missing formation_status=='forming' guard (S)",
+        "Haggling: docs OVERSTATED - zero haggling code exists despite doc claiming service hooks; building it = M-L candidate for next run",
+        "Galaxy map shows only current+adjacent sectors; no topology/search/route preview (M-L, needs design pass)",
+        "Admin UI mock-data plague: 11 BLOCKER-grade fabricated dashboards (Math.random data, phantom endpoints) - recommend dedicated GOLD/NEON run",
+        "Admin UI lets non-admin in, labels them Administrator, renders failed fetches as zeros (PAINFUL)",
+        "502 on token validation dumps player to landing page instead of retry (PAINFUL)",
+        "COLONIES page infinite spinner without error/retry state during outage windows; cockpit shows NO ACTIVE VESSEL during loads",
+        "Stardock market: nothing buyable/sellable for typical cargo with no explanation (CONFUSION); single-commodity layout wastes width",
+        "TeamManager hardcoded 'team-1' + missing playerId prop (App.tsx:629); no-team state works but with-team path broken",
+        "ranking.py bounty endpoints: cancellation (DELETE) unimplemented though doc says shipped; websocket bounty events absent",
+        "Sector naming drift: sectors.name 'Sector 6' vs displayed SECTOR 1006",
+        "No turn-cost preview before warp commit (movement UX)",
+        "region-manager container unhealthy on dev"
+      ],
+      "discovery_stats": {
+        "browser_findings": 11,
+        "code_findings": {
+          "gameserver": 18,
+          "player_client": 23,
+          "admin_ui": 24
+        },
+        "docs_claims": {
+          "economy": 64,
+          "gameplay": 93,
+          "galaxy_planets": 63
+        },
+        "workflow_run_id": "wf_b7f144ec-18b",
+        "full_results": "/private/tmp/claude-501/-Users-mrathbone-github-Nebuspace-Sectorwars2102/566cb194-13ef-4a00-bcd6-a32a289dad76/tasks/w9p0eskaz.output"
+      },
+      "verdict": "GLOWING",
+      "commits": {
+        "cockpit-access-truth": "e3f05fc",
+        "ranking-goes-live": "ff1609f",
+        "in-fiction-confirmations": "888ec18",
+        "docs-writeback": "sw2102-docs b46b2f0"
+      },
+      "proof_evidence": {
+        "cockpit-access-truth": "sidebar scrolls: all 7 nav items + SERVICE RECORD + LOGOUT reachable at 1440x900 and 1920x1080; venue grid 7 legible cards (was empty slivers); Tax Rate 0.0% at unowned Frontier Hub Delta matching server tax_rate 0",
+        "ranking-goes-live": "/game/ranking renders rank Recruit 10/50, requirements, medals, 10-player leaderboard; all /api/v1/ranking/* 2xx (was 404); DB cross-check exact: 9 trades / 40195 volume / ARIA interactions",
+        "in-fiction-confirmations": "DOCKING REQUEST CRT dialog live; CANCEL = no-op (turn held 959); CONFIRM docked (turn 958, fee 50cr); docking_slip_occupancies row verified; entire replay ran UNSHIMMED without freezing automation"
+      },
+      "residual_polish": [
+        "SERVICE RECORD page title/subtitle overlap in header",
+        "venue grid second-row titles slightly clipped at row boundary at 1440x900",
+        "NAV monitor legend overlays clickable warp nodes (had to dodge it twice during PROVE)",
+        "RankProgress requirement row still says 'Exploration Activity' (backend-sourced name; leaderboard tab + stats relabeled to ARIA Activity)"
+      ]
+    }
+  ]
+}
