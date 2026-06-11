@@ -409,10 +409,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     
     try {
       const response = await api.post(`/api/v1/player/move/${sectorId}`);
-      
+
       // Update player state after movement
       await refreshPlayerState();
-      
+
+      // Ships move with the player server-side; reload so Hangar
+      // doesn't show the pre-move sector
+      await loadShips();
+
       return response.data;
     } catch (error: any) {
       console.error('Error moving to sector:', error);
