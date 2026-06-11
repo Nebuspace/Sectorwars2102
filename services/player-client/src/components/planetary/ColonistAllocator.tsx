@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { gameAPI } from '../../services/api';
-import type { Planet, ResourceAllocations } from '../../types/planetary';
+import type { Planet } from '../../types/planetary';
 import './colonist-allocator.css';
 
 interface ColonistAllocatorProps {
@@ -9,80 +9,98 @@ interface ColonistAllocatorProps {
   onClose?: () => void;
 }
 
-export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({ 
-  planet, 
+/** Head counts assigned to each production role. */
+interface RoleAllocation {
+  fuel: number;
+  organics: number;
+  equipment: number;
+}
+
+type RoleKey = keyof RoleAllocation;
+
+/** Base output per colonist per day (canon: 10 units). */
+const BASE_OUTPUT_PER_COLONIST = 10;
+
+/**
+ * Planet-type production efficiency per role (canon examples:
+ * Oceanic 1.5x fuel, Mountainous 1.5x equipment; all others 1.0).
+ */
+const TYPE_EFFICIENCY: Record<string, Partial<RoleAllocation>> = {
+  oceanic: { fuel: 1.5 },
+  mountainous: { equipment: 1.5 },
+};
+
+const getTypeEfficiency = (planetType: string, role: RoleKey): number => {
+  const overrides = TYPE_EFFICIENCY[(planetType || '').toLowerCase()];
+  return overrides?.[role] ?? 1.0;
+};
+
+const ROLE_META: Array<{ key: RoleKey; icon: string; label: string; cssClass: string; color: string }> = [
+  { key: 'fuel', icon: '⛽', label: 'Fuel Production', cssClass: 'fuel', color: '#ff6b6b' },
+  { key: 'organics', icon: '🌿', label: 'Organics Production', cssClass: 'organics', color: '#51cf66' },
+  { key: 'equipment', icon: '⚙️', label: 'Equipment Production', cssClass: 'equipment', color: '#339af0' },
+];
+
+export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
+  planet,
   onUpdate,
-  onClose 
+  onClose
 }) => {
-  const [allocations, setAllocations] = useState<ResourceAllocations>(planet.allocations);
-  const [tempAllocations, setTempAllocations] = useState<ResourceAllocations>(planet.allocations);
+  const totalColonists = planet.colonists || 0;
+
+  const clampInitial = (value: number): number =>
+    Math.max(0, Math.min(value || 0, totalColonists));
+
+  const initialAllocation: RoleAllocation = {
+    fuel: clampInitial(planet.allocations?.fuel ?? 0),
+    organics: clampInitial(planet.allocations?.organics ?? 0),
+    equipment: clampInitial(planet.allocations?.equipment ?? 0),
+  };
+
+  const [allocations, setAllocations] = useState<RoleAllocation>(initialAllocation);
+  const [tempAllocations, setTempAllocations] = useState<RoleAllocation>(initialAllocation);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Calculate production preview based on allocations
-  const calculatePreviewProduction = useCallback((allocs: ResourceAllocations) => {
-    const baseRate = 100;
-    const specialized = planet.specialization || 'balanced';
-    
-    // Apply specialization bonuses
-    const bonuses = {
-      agricultural: { fuel: 0.8, organics: 1.5, equipment: 0.7 },
-      industrial: { fuel: 1.2, organics: 0.6, equipment: 1.4 },
-      military: { fuel: 1.0, organics: 0.8, equipment: 1.2 },
-      research: { fuel: 0.9, organics: 0.9, equipment: 0.9 },
-      balanced: { fuel: 1.0, organics: 1.0, equipment: 1.0 }
-    };
+  const sumAllocated = (allocs: RoleAllocation): number =>
+    allocs.fuel + allocs.organics + allocs.equipment;
 
-    const bonus = bonuses[specialized as keyof typeof bonuses] || bonuses.balanced;
+  const idleColonists = Math.max(0, totalColonists - sumAllocated(tempAllocations));
 
-    return {
-      fuel: Math.floor(baseRate * (allocs.fuel / 100) * 1.5 * bonus.fuel),
-      organics: Math.floor(baseRate * (allocs.organics / 100) * 2 * bonus.organics),
-      equipment: Math.floor(baseRate * (allocs.equipment / 100) * bonus.equipment),
-      colonists: planet.productionRates.colonists // Colonist growth is separate
-    };
-  }, [planet.specialization, planet.productionRates.colonists]);
+  /** Projected production per role: colonists_in_role x 10 x planet-type efficiency. */
+  const projectedProduction = useCallback((allocs: RoleAllocation): RoleAllocation => ({
+    fuel: Math.floor(allocs.fuel * BASE_OUTPUT_PER_COLONIST * getTypeEfficiency(planet.planetType, 'fuel')),
+    organics: Math.floor(allocs.organics * BASE_OUTPUT_PER_COLONIST * getTypeEfficiency(planet.planetType, 'organics')),
+    equipment: Math.floor(allocs.equipment * BASE_OUTPUT_PER_COLONIST * getTypeEfficiency(planet.planetType, 'equipment')),
+  }), [planet.planetType]);
 
-  const previewProduction = calculatePreviewProduction(tempAllocations);
+  const previewProduction = projectedProduction(tempAllocations);
+  const currentProduction = projectedProduction(allocations);
 
-  const handleSliderChange = (resource: keyof Omit<ResourceAllocations, 'unused'>, value: number) => {
-    const newAllocations = { ...tempAllocations };
-    newAllocations[resource] = value;
-    
-    // Calculate unused
-    const total = newAllocations.fuel + newAllocations.organics + newAllocations.equipment;
-    newAllocations.unused = Math.max(0, 100 - total);
-    
-    // If over 100%, reduce other allocations proportionally
-    if (total > 100) {
-      const excess = total - 100;
-      const otherResources = (['fuel', 'organics', 'equipment'] as const).filter(r => r !== resource);
-      const otherTotal = otherResources.reduce((sum, r) => sum + newAllocations[r], 0);
-      
-      if (otherTotal > 0) {
-        otherResources.forEach(r => {
-          const proportion = newAllocations[r] / otherTotal;
-          newAllocations[r] = Math.max(0, Math.floor(newAllocations[r] - excess * proportion));
-        });
-      }
-      
-      newAllocations.unused = 0;
-    }
-    
-    setTempAllocations(newAllocations);
+  const handleSliderChange = (role: RoleKey, requested: number) => {
+    setTempAllocations(prev => {
+      const othersTotal = sumAllocated(prev) - prev[role];
+      // Hard ceiling: head count sum can never exceed available colonists
+      const value = Math.max(0, Math.min(requested, totalColonists - othersTotal));
+      return { ...prev, [role]: value };
+    });
   };
 
   const handlePresetAllocation = (preset: 'balanced' | 'fuel' | 'organics' | 'equipment' | 'growth') => {
-    const presets = {
-      balanced: { fuel: 33, organics: 33, equipment: 34, unused: 0 },
-      fuel: { fuel: 70, organics: 15, equipment: 15, unused: 0 },
-      organics: { fuel: 15, organics: 70, equipment: 15, unused: 0 },
-      equipment: { fuel: 15, organics: 15, equipment: 70, unused: 0 },
-      growth: { fuel: 20, organics: 50, equipment: 20, unused: 10 } // Unused helps growth
+    const fractionsByPreset: Record<typeof preset, [number, number, number]> = {
+      balanced: [0.33, 0.33, 0.34],
+      fuel: [0.7, 0.15, 0.15],
+      organics: [0.15, 0.7, 0.15],
+      equipment: [0.15, 0.15, 0.7],
+      growth: [0.2, 0.5, 0.2], // leaves ~10% idle for population growth
     };
-    
-    setTempAllocations(presets[preset]);
+    const [f, o, e] = fractionsByPreset[preset];
+    setTempAllocations({
+      fuel: Math.floor(totalColonists * f),
+      organics: Math.floor(totalColonists * o),
+      equipment: Math.floor(totalColonists * e),
+    });
   };
 
   const handleSave = async () => {
@@ -90,18 +108,23 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
       setSaving(true);
       setError(null);
       setSuccessMessage(null);
-      
+
       const response = await gameAPI.planetary.allocateColonists(planet.id, {
         fuel: tempAllocations.fuel,
         organics: tempAllocations.organics,
         equipment: tempAllocations.equipment
       });
-      
+
       if (response.success) {
-        setAllocations(response.allocations);
-        setSuccessMessage('Resource allocations updated successfully!');
-        
-        // Update parent component
+        const savedAllocations: RoleAllocation = {
+          fuel: response.allocations?.fuel ?? tempAllocations.fuel,
+          organics: response.allocations?.organics ?? tempAllocations.organics,
+          equipment: response.allocations?.equipment ?? tempAllocations.equipment,
+        };
+        setAllocations(savedAllocations);
+        setTempAllocations(savedAllocations);
+        setSuccessMessage('Colonist assignments updated successfully!');
+
         if (onUpdate) {
           const updatedPlanet = {
             ...planet,
@@ -110,8 +133,7 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
           };
           onUpdate(updatedPlanet);
         }
-        
-        // Clear success message after 3 seconds
+
         setTimeout(() => setSuccessMessage(null), 3000);
       }
     } catch (err) {
@@ -127,37 +149,41 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
     setSuccessMessage(null);
   };
 
-  const hasChanges = JSON.stringify(tempAllocations) !== JSON.stringify(allocations);
+  const hasChanges =
+    tempAllocations.fuel !== allocations.fuel ||
+    tempAllocations.organics !== allocations.organics ||
+    tempAllocations.equipment !== allocations.equipment;
 
-  const getResourceColor = (resource: string) => {
-    const colors = {
-      fuel: '#ff6b6b',
-      organics: '#51cf66',
-      equipment: '#339af0',
-      unused: '#868e96'
-    };
-    return colors[resource as keyof typeof colors] || '#868e96';
-  };
+  const saveDisabledReason = saving
+    ? 'Saving in progress'
+    : !hasChanges
+      ? 'No changes to save'
+      : 'Save colonist assignments';
 
-  const getProductionDiff = (resource: keyof typeof previewProduction) => {
-    const current = planet.productionRates[resource];
-    const preview = previewProduction[resource];
-    const diff = preview - current;
-    
+  const resetDisabledReason = saving
+    ? 'Saving in progress'
+    : !hasChanges
+      ? 'Nothing to reset'
+      : 'Discard unsaved changes';
+
+  const getProductionDiff = (role: RoleKey) => {
+    const diff = previewProduction[role] - currentProduction[role];
     if (diff === 0) return null;
-    
     return (
       <span className={`production-diff ${diff > 0 ? 'positive' : 'negative'}`}>
-        {diff > 0 ? '+' : ''}{diff}
+        {diff > 0 ? '+' : ''}{diff.toLocaleString()}
       </span>
     );
   };
 
+  const sliderPercent = (value: number): number =>
+    totalColonists > 0 ? (value / totalColonists) * 100 : 0;
+
   return (
     <div className="colonist-allocator">
       <div className="allocator-header">
-        <h3>Resource Allocation - {planet.name}</h3>
-        <button className="close-button" onClick={onClose}>✕</button>
+        <h3>Colonist Assignments - {planet.name}</h3>
+        <button className="close-button" onClick={onClose} title="Close allocator">✕</button>
       </div>
 
       <div className="allocator-content">
@@ -165,16 +191,16 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
           <div className="stat-item">
             <span className="stat-label">Colonists:</span>
             <span className="stat-value">
-              {planet.colonists.toLocaleString()} / {planet.maxColonists.toLocaleString()}
+              {totalColonists.toLocaleString()} / {planet.maxColonists.toLocaleString()}
             </span>
           </div>
           <div className="stat-item">
-            <span className="stat-label">Specialization:</span>
-            <span className="stat-value">{planet.specialization || 'None'}</span>
+            <span className="stat-label">Assigned:</span>
+            <span className="stat-value">{sumAllocated(tempAllocations).toLocaleString()}</span>
           </div>
-          <div className="stat-item">
-            <span className="stat-label">Efficiency:</span>
-            <span className="stat-value">{100 - tempAllocations.unused}%</span>
+          <div className="stat-item idle-stat">
+            <span className="stat-label">Idle:</span>
+            <span className="stat-value idle-value">{idleColonists.toLocaleString()}</span>
           </div>
         </div>
 
@@ -193,140 +219,105 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
         )}
 
         <div className="preset-buttons">
-          <button 
+          <button
             className="preset-button"
             onClick={() => handlePresetAllocation('balanced')}
-            title="Equal distribution across all resources"
+            title="Distribute colonists evenly across all roles"
           >
             ⚖️ Balanced
           </button>
-          <button 
+          <button
             className="preset-button fuel"
             onClick={() => handlePresetAllocation('fuel')}
-            title="Focus on fuel production"
+            title="Assign most colonists to fuel production"
           >
             ⛽ Fuel Focus
           </button>
-          <button 
+          <button
             className="preset-button organics"
             onClick={() => handlePresetAllocation('organics')}
-            title="Focus on organics production"
+            title="Assign most colonists to organics production"
           >
             🌿 Organics Focus
           </button>
-          <button 
+          <button
             className="preset-button equipment"
             onClick={() => handlePresetAllocation('equipment')}
-            title="Focus on equipment production"
+            title="Assign most colonists to equipment production"
           >
             ⚙️ Equipment Focus
           </button>
-          <button 
+          <button
             className="preset-button growth"
             onClick={() => handlePresetAllocation('growth')}
-            title="Optimize for population growth"
+            title="Keep ~10% of colonists idle to support population growth"
           >
             👥 Growth Focus
           </button>
         </div>
 
         <div className="allocation-controls">
-          <div className="allocation-slider">
-            <div className="slider-header">
-              <span className="resource-label">
-                <span className="resource-icon">⛽</span> Fuel Production
-              </span>
-              <span className="allocation-value">{tempAllocations.fuel}%</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={tempAllocations.fuel}
-              onChange={(e) => handleSliderChange('fuel', parseInt(e.target.value))}
-              className="slider fuel-slider"
-              style={{
-                background: `linear-gradient(to right, ${getResourceColor('fuel')} 0%, ${getResourceColor('fuel')} ${tempAllocations.fuel}%, var(--surface-secondary) ${tempAllocations.fuel}%, var(--surface-secondary) 100%)`
-              }}
-            />
-            <div className="production-preview">
-              <span className="preview-label">Production:</span>
-              <span className="preview-value">
-                {previewProduction.fuel}/day
-                {getProductionDiff('fuel')}
-              </span>
-            </div>
-          </div>
-
-          <div className="allocation-slider">
-            <div className="slider-header">
-              <span className="resource-label">
-                <span className="resource-icon">🌿</span> Organics Production
-              </span>
-              <span className="allocation-value">{tempAllocations.organics}%</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={tempAllocations.organics}
-              onChange={(e) => handleSliderChange('organics', parseInt(e.target.value))}
-              className="slider organics-slider"
-              style={{
-                background: `linear-gradient(to right, ${getResourceColor('organics')} 0%, ${getResourceColor('organics')} ${tempAllocations.organics}%, var(--surface-secondary) ${tempAllocations.organics}%, var(--surface-secondary) 100%)`
-              }}
-            />
-            <div className="production-preview">
-              <span className="preview-label">Production:</span>
-              <span className="preview-value">
-                {previewProduction.organics}/day
-                {getProductionDiff('organics')}
-              </span>
-            </div>
-          </div>
-
-          <div className="allocation-slider">
-            <div className="slider-header">
-              <span className="resource-label">
-                <span className="resource-icon">⚙️</span> Equipment Production
-              </span>
-              <span className="allocation-value">{tempAllocations.equipment}%</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={tempAllocations.equipment}
-              onChange={(e) => handleSliderChange('equipment', parseInt(e.target.value))}
-              className="slider equipment-slider"
-              style={{
-                background: `linear-gradient(to right, ${getResourceColor('equipment')} 0%, ${getResourceColor('equipment')} ${tempAllocations.equipment}%, var(--surface-secondary) ${tempAllocations.equipment}%, var(--surface-secondary) 100%)`
-              }}
-            />
-            <div className="production-preview">
-              <span className="preview-label">Production:</span>
-              <span className="preview-value">
-                {previewProduction.equipment}/day
-                {getProductionDiff('equipment')}
-              </span>
-            </div>
-          </div>
+          {ROLE_META.map(({ key, icon, label, cssClass, color }) => {
+            const efficiency = getTypeEfficiency(planet.planetType, key);
+            return (
+              <div className="allocation-slider" key={key}>
+                <div className="slider-header">
+                  <span className="resource-label">
+                    <span className="resource-icon">{icon}</span> {label}
+                    {efficiency !== 1.0 && (
+                      <span
+                        className="efficiency-badge"
+                        title={`${planet.planetType} worlds produce ${efficiency}x ${key} per colonist`}
+                      >
+                        ×{efficiency}
+                      </span>
+                    )}
+                  </span>
+                  <span className="allocation-value">
+                    {tempAllocations[key].toLocaleString()}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max={totalColonists}
+                  value={tempAllocations[key]}
+                  onChange={(e) => handleSliderChange(key, parseInt(e.target.value))}
+                  disabled={totalColonists === 0}
+                  title={totalColonists === 0
+                    ? 'No colonists on this planet to assign'
+                    : `Colonists assigned to ${label.toLowerCase()}`}
+                  className={`slider ${cssClass}-slider`}
+                  style={{
+                    background: `linear-gradient(to right, ${color} 0%, ${color} ${sliderPercent(tempAllocations[key])}%, var(--surface-secondary) ${sliderPercent(tempAllocations[key])}%, var(--surface-secondary) 100%)`
+                  }}
+                />
+                <div className="production-preview">
+                  <span className="preview-label">Projected:</span>
+                  <span className="preview-value">
+                    {previewProduction[key].toLocaleString()}/day
+                    {getProductionDiff(key)}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
 
           <div className="allocation-slider unused">
             <div className="slider-header">
               <span className="resource-label">
-                <span className="resource-icon">💤</span> Unallocated
+                <span className="resource-icon">💤</span> Idle Colonists
               </span>
-              <span className="allocation-value">{tempAllocations.unused}%</span>
+              <span className="allocation-value">{idleColonists.toLocaleString()}</span>
             </div>
             <div className="unused-bar">
-              <div 
+              <div
                 className="unused-fill"
-                style={{ width: `${tempAllocations.unused}%` }}
+                style={{ width: `${sliderPercent(idleColonists)}%` }}
               />
             </div>
             <div className="unused-note">
-              Unallocated colonists contribute to population growth and maintenance
+              Idle colonists contribute to population growth and colony maintenance
             </div>
           </div>
         </div>
@@ -335,20 +326,23 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
           <h4>Production Summary</h4>
           <div className="summary-grid">
             <div className="summary-item">
-              <span className="summary-label">Total Efficiency:</span>
-              <span className="summary-value">{100 - tempAllocations.unused}%</span>
+              <span className="summary-label">Workforce Assigned:</span>
+              <span className="summary-value">
+                {totalColonists > 0
+                  ? `${Math.round((sumAllocated(tempAllocations) / totalColonists) * 100)}%`
+                  : '0%'}
+              </span>
             </div>
             <div className="summary-item">
               <span className="summary-label">Daily Output:</span>
               <span className="summary-value">
-                {previewProduction.fuel + previewProduction.organics + previewProduction.equipment} units
+                {(previewProduction.fuel + previewProduction.organics + previewProduction.equipment).toLocaleString()} units
               </span>
             </div>
             <div className="summary-item">
               <span className="summary-label">Population Growth:</span>
               <span className="summary-value">
-                +{previewProduction.colonists}/day
-                {tempAllocations.unused > 20 && <span className="growth-bonus"> (+{Math.floor(tempAllocations.unused / 10)}% bonus)</span>}
+                +{(planet.productionRates?.colonists ?? 0).toLocaleString()}/day
               </span>
             </div>
           </div>
@@ -359,6 +353,7 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
             className="button secondary"
             onClick={handleReset}
             disabled={!hasChanges || saving}
+            title={resetDisabledReason}
           >
             Reset
           </button>
@@ -366,8 +361,9 @@ export const ColonistAllocator: React.FC<ColonistAllocatorProps> = ({
             className="button primary"
             onClick={handleSave}
             disabled={!hasChanges || saving}
+            title={saveDisabledReason}
           >
-            {saving ? 'Saving...' : 'Save Allocations'}
+            {saving ? 'Saving...' : 'Save Assignments'}
           </button>
         </div>
       </div>

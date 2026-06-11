@@ -357,6 +357,13 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
                         handleUpgrade(building);
                       }}
                       disabled={!affordCheck.canAfford || upgrading === building.type}
+                      title={
+                        upgrading === building.type
+                          ? 'Upgrade already in progress'
+                          : !affordCheck.canAfford
+                            ? `Insufficient resources — missing: ${affordCheck.missing.join(', ')}`
+                            : `Upgrade ${building.type} to level ${building.level + 1}`
+                      }
                     >
                       {upgrading === building.type ? 'Upgrading...' : 'Upgrade'}
                     </button>

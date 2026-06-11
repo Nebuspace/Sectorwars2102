@@ -80,6 +80,25 @@
   color: var(--text-primary);
 }
 
+.idle-value {
+  color: var(--accent-primary, #00ffcc);
+  text-shadow: 0 0 8px rgba(0, 255, 204, 0.35);
+}
+
+/* Planet-type efficiency badge */
+.efficiency-badge {
+  margin-left: var(--space-xs);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #00ffcc;
+  background: rgba(0, 255, 204, 0.1);
+  border: 1px solid rgba(0, 255, 204, 0.35);
+  cursor: help;
+}
+
 /* Messages */
 .error-message,
 .success-message {
@@ -453,4 +472,22 @@
 
 .colonist-allocator {
   animation: slideIn 0.3s ease-out;
+}
+
+.slider:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .colonist-allocator {
+    animation: none;
+  }
+
+  .unused-fill,
+  .slider::-webkit-slider-thumb,
+  .slider::-moz-range-thumb {
+    transition: none;
+  }
 }

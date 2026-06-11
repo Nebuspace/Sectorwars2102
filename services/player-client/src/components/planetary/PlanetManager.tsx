@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { gameAPI } from '../../services/api';
+import { useGame } from '../../contexts/GameContext';
 import type { Planet, ColonySpecialization } from '../../types/planetary';
 import { ColonistAllocator } from './ColonistAllocator';
 import { BuildingManager } from './BuildingManager';
@@ -7,12 +8,141 @@ import { DefenseConfiguration } from './DefenseConfiguration';
 import { GenesisDeployment } from './GenesisDeployment';
 import { ColonySpecialization as ColonySpecializationComponent } from './ColonySpecialization';
 import { SiegeStatusMonitor } from './SiegeStatusMonitor';
+import CitadelManager from './CitadelManager';
 import GameLayout from '../layouts/GameLayout';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
 import './planet-manager.css';
 
+/**
+ * Optional planet fields surfaced by newer gameserver payloads.
+ * All reads are defensive — panels render gracefully when absent.
+ */
+interface PlanetExtras {
+  morale?: number;
+  population?: number;
+  maxPopulation?: number;
+  max_population?: number;
+  isPopulationHub?: boolean;
+  is_population_hub?: boolean;
+  lastGrowthAt?: string;
+  last_growth_at?: string;
+  habitability_score?: number;
+  habitability?: {
+    score?: number;
+    effectiveMaxColonists?: number;
+    growthMultiplier?: number;
+    moraleBonus?: number;
+  };
+  terraforming?: {
+    active?: boolean;
+    target?: number | string;
+    progress?: number;
+    startedAt?: string;
+  } | null;
+  terraforming_active?: boolean;
+  terraforming_target?: number | string;
+}
+
+type PlanetWithExtras = Planet & PlanetExtras;
+
+const getHabitabilityScore = (planet: PlanetWithExtras): number | null => {
+  const score = planet.habitability?.score ?? planet.habitability_score;
+  return typeof score === 'number' ? Math.max(0, Math.min(100, score)) : null;
+};
+
+const getPopulation = (planet: PlanetWithExtras): number =>
+  planet.population ?? planet.colonists ?? 0;
+
+const getMaxPopulation = (planet: PlanetWithExtras): number | null => {
+  const explicit = planet.maxPopulation ?? planet.max_population;
+  if (typeof explicit === 'number') return explicit;
+  // Canon dual-ceiling fallback: max_population = habitability x 1000
+  const hab = getHabitabilityScore(planet);
+  return hab !== null ? hab * 1000 : null;
+};
+
+const isTerraformingActive = (planet: PlanetWithExtras): boolean =>
+  Boolean(planet.terraforming?.active ?? planet.terraforming_active);
+
+const getTerraformingTarget = (planet: PlanetWithExtras): number | string | null =>
+  planet.terraforming?.target ?? planet.terraforming_target ?? null;
+
+const isPopulationHub = (planet: PlanetWithExtras): boolean =>
+  Boolean(planet.isPopulationHub ?? planet.is_population_hub);
+
+/** Canon growth formula: colonists x 0.01 x habitability/100 per day. */
+const getGrowthPerDay = (planet: PlanetWithExtras): number | null => {
+  const hab = getHabitabilityScore(planet);
+  if (hab === null) return null;
+  return planet.colonists * 0.01 * (hab / 100);
+};
+
+/** Map raw planet type strings onto theme keys (TERRAN/OCEANIC/DESERT/ICE/VOLCANIC/BARREN...). */
+const normalizePlanetType = (type: string): string => {
+  const t = (type || '').toLowerCase();
+  if (t === 'frozen' || t === 'glacial' || t === 'arctic') return 'ice';
+  return t;
+};
+
+const habitabilityBand = (score: number): 'low' | 'mid' | 'high' =>
+  score < 40 ? 'low' : score < 70 ? 'mid' : 'high';
+
+interface HabitabilityRingProps {
+  score: number | null;
+  terraformingActive: boolean;
+  terraformingTarget: number | string | null;
+}
+
+/** SVG radial gauge: red <40, amber <70, green >=70; pulses while terraforming. */
+const HabitabilityRing: React.FC<HabitabilityRingProps> = ({
+  score,
+  terraformingActive,
+  terraformingTarget,
+}) => {
+  const radius = 26;
+  const circumference = 2 * Math.PI * radius;
+  const filled = score !== null ? (score / 100) * circumference : 0;
+  const band = score !== null ? habitabilityBand(score) : 'unknown';
+
+  return (
+    <div
+      className={`habitability-ring hab-${band} ${terraformingActive ? 'terraforming' : ''}`}
+      title={
+        score !== null
+          ? `Habitability ${score}/100${terraformingActive ? ` — terraforming in progress${terraformingTarget !== null ? ` (target: ${terraformingTarget})` : ''}` : ''}`
+          : 'Habitability unknown'
+      }
+    >
+      <svg viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Habitability gauge">
+        <circle className="ring-track" cx="32" cy="32" r={radius} fill="none" strokeWidth="5" />
+        <circle
+          className="ring-value"
+          cx="32"
+          cy="32"
+          r={radius}
+          fill="none"
+          strokeWidth="5"
+          strokeLinecap="round"
+          strokeDasharray={`${filled} ${circumference - filled}`}
+          transform="rotate(-90 32 32)"
+        />
+        <text className="ring-score" x="32" y="31" textAnchor="middle" dominantBaseline="central">
+          {score !== null ? score : '—'}
+        </text>
+        <text className="ring-caption" x="32" y="44" textAnchor="middle">HAB</text>
+      </svg>
+      {terraformingActive && (
+        <span className="terraforming-tag">
+          ⬆ Terraforming{terraformingTarget !== null ? ` → ${terraformingTarget}` : ''}
+        </span>
+      )}
+    </div>
+  );
+};
+
 export const PlanetManager: React.FC = () => {
+  const { playerState } = useGame();
   const [planets, setPlanets] = useState<Planet[]>([]);
   const [selectedPlanet, setSelectedPlanet] = useState<Planet | null>(null);
   const [loading, setLoading] = useState(true);
@@ -24,6 +154,7 @@ export const PlanetManager: React.FC = () => {
   const [showGenesisDeployment, setShowGenesisDeployment] = useState(false);
   const [showSpecialization, setShowSpecialization] = useState(false);
   const [showSiegeMonitor, setShowSiegeMonitor] = useState(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'citadel'>('overview');
 
   useEffect(() => {
     loadPlanets();
@@ -76,14 +207,18 @@ export const PlanetManager: React.FC = () => {
   };
 
   const getPlanetTypeIcon = (type: string) => {
-    const icons = {
+    const icons: Record<string, string> = {
       terran: '🌍',
       oceanic: '🌊',
       mountainous: '⛰️',
       desert: '🏜️',
-      frozen: '❄️'
+      frozen: '❄️',
+      ice: '❄️',
+      glacial: '❄️',
+      volcanic: '🌋',
+      barren: '🪨'
     };
-    return icons[type as keyof typeof icons] || '🪐';
+    return icons[(type || '').toLowerCase()] || '🪐';
   };
 
   if (loading) {
@@ -177,10 +312,11 @@ export const PlanetManager: React.FC = () => {
             <div
               key={planet.id}
               className={`planet-item ${selectedPlanet?.id === planet.id ? 'selected' : ''} ${planet.underSiege ? 'under-siege' : ''}`}
+              data-planet-type={normalizePlanetType(planet.planetType)}
               onClick={() => handlePlanetSelect(planet)}
             >
               <div className="planet-item-header">
-                <span className="planet-icon">
+                <span className="planet-icon planet-icon-badge">
                   {getPlanetTypeIcon(planet.planetType)}
                 </span>
                 <span className="planet-name">{planet.name}</span>
@@ -221,15 +357,32 @@ export const PlanetManager: React.FC = () => {
       {/* Planet Details */}
       {selectedPlanet && (
         <div className="planet-details">
-          <div className="planet-header">
-            <h2>
-              {getPlanetTypeIcon(selectedPlanet.planetType)} {selectedPlanet.name}
-            </h2>
+          <div
+            className="planet-header"
+            data-planet-type={normalizePlanetType(selectedPlanet.planetType)}
+          >
+            <div className="planet-header-title">
+              <span
+                className="planet-icon-badge header-badge"
+                data-planet-type={normalizePlanetType(selectedPlanet.planetType)}
+              >
+                {getPlanetTypeIcon(selectedPlanet.planetType)}
+              </span>
+              <h2>{selectedPlanet.name}</h2>
+              {isPopulationHub(selectedPlanet as PlanetWithExtras) && (
+                <span
+                  className="hub-badge"
+                  title="Population hub — this colony anchors regional growth"
+                >
+                  ⭐ HUB
+                </span>
+              )}
+            </div>
             {selectedPlanet.underSiege && (
               <div className="siege-warning">
                 <span className="siege-icon">🚨</span>
                 <span>PLANET UNDER SIEGE!</span>
-                <button 
+                <button
                   className="siege-status-button"
                   onClick={() => setShowSiegeMonitor(true)}
                 >
@@ -237,9 +390,128 @@ export const PlanetManager: React.FC = () => {
                 </button>
               </div>
             )}
+            <HabitabilityRing
+              score={getHabitabilityScore(selectedPlanet as PlanetWithExtras)}
+              terraformingActive={isTerraformingActive(selectedPlanet as PlanetWithExtras)}
+              terraformingTarget={getTerraformingTarget(selectedPlanet as PlanetWithExtras)}
+            />
           </div>
 
+          <div className="planet-tabs" role="tablist" aria-label="Planet management tabs">
+            <button
+              role="tab"
+              aria-selected={activeTab === 'overview'}
+              className={`planet-tab ${activeTab === 'overview' ? 'active' : ''}`}
+              onClick={() => setActiveTab('overview')}
+            >
+              🌐 Overview
+            </button>
+            <button
+              role="tab"
+              aria-selected={activeTab === 'citadel'}
+              className={`planet-tab ${activeTab === 'citadel' ? 'active' : ''}`}
+              onClick={() => setActiveTab('citadel')}
+            >
+              🏰 Citadel
+            </button>
+          </div>
+
+          {activeTab === 'citadel' && (
+            <div className="planet-overview citadel-tab-content">
+              <CitadelManager
+                planetId={selectedPlanet.id}
+                playerCredits={playerState?.credits ?? 0}
+                onUpdate={loadPlanets}
+              />
+            </div>
+          )}
+
+          {activeTab === 'overview' && (
           <div className="planet-overview">
+            {(() => {
+              const extended = selectedPlanet as PlanetWithExtras;
+              const habScore = getHabitabilityScore(extended);
+              const population = getPopulation(extended);
+              const maxPopulation = getMaxPopulation(extended);
+              const growth = getGrowthPerDay(extended);
+              const workforcePct = selectedPlanet.maxColonists > 0
+                ? Math.min(100, (selectedPlanet.colonists / selectedPlanet.maxColonists) * 100)
+                : 0;
+              const populationPct = maxPopulation && maxPopulation > 0
+                ? Math.min(100, (population / maxPopulation) * 100)
+                : 0;
+              const workforceWithinPopPct = maxPopulation && maxPopulation > 0
+                ? Math.min(100, (selectedPlanet.colonists / maxPopulation) * 100)
+                : 0;
+              return (
+                <div className="overview-section population-panel">
+                  <h3>Population</h3>
+                  <div className="dual-ceiling">
+                    <div className="ceiling-bar-group">
+                      <div className="ceiling-bar-header">
+                        <span
+                          className="ceiling-label workforce"
+                          title="Working colonists, capped by citadel level"
+                        >
+                          👥 Workforce
+                        </span>
+                        <span className="ceiling-numbers">
+                          {selectedPlanet.colonists.toLocaleString()} / {selectedPlanet.maxColonists.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="ceiling-bar">
+                        <div
+                          className="ceiling-fill workforce"
+                          style={{ width: `${workforcePct}%` }}
+                        />
+                      </div>
+                    </div>
+                    {maxPopulation !== null ? (
+                      <div className="ceiling-bar-group">
+                        <div className="ceiling-bar-header">
+                          <span
+                            className="ceiling-label population"
+                            title="Total inhabitants, capped by habitability (habitability × 1,000)"
+                          >
+                            🌐 Population
+                          </span>
+                          <span className="ceiling-numbers">
+                            {population.toLocaleString()} / {maxPopulation.toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="ceiling-bar layered">
+                          <div
+                            className="ceiling-fill population"
+                            style={{ width: `${populationPct}%` }}
+                          />
+                          <div
+                            className="ceiling-fill workforce-overlay"
+                            style={{ width: `${workforceWithinPopPct}%` }}
+                            title="Workforce share of total population"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="ceiling-unavailable">
+                        Population ceiling unavailable — habitability data missing
+                      </div>
+                    )}
+                  </div>
+                  {growth !== null && habScore !== null && (
+                    <div className="growth-line">
+                      ≈ +{Math.round(growth).toLocaleString()}/day at current habitability ({habScore}/100)
+                    </div>
+                  )}
+                  {typeof extended.morale === 'number' && (
+                    <div className="morale-line" title="Colony morale — drops under siege; planet becomes vulnerable at 0">
+                      Morale: <span className={`morale-value ${extended.morale <= 25 ? 'critical' : extended.morale <= 50 ? 'low' : 'good'}`}>
+                        {extended.morale}%
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div className="overview-section">
               <h3>Colony Information</h3>
               <div className="info-grid">
@@ -259,7 +531,7 @@ export const PlanetManager: React.FC = () => {
                   </span>
                 </div>
                 <div className="info-item">
-                  <span className="label">Population:</span>
+                  <span className="label">Workforce:</span>
                   <span className="value">
                     {selectedPlanet.colonists.toLocaleString()} / {selectedPlanet.maxColonists.toLocaleString()}
                   </span>
@@ -294,48 +566,32 @@ export const PlanetManager: React.FC = () => {
             </div>
 
             <div className="overview-section">
-              <h3>Resource Allocations</h3>
+              <h3>Colonist Assignments</h3>
               <div className="allocation-bars">
-                <div className="allocation-item">
-                  <span className="allocation-label">⛽ Fuel Production</span>
-                  <div className="allocation-bar">
-                    <div 
-                      className="allocation-fill fuel"
-                      style={{ width: `${selectedPlanet.allocations.fuel}%` }}
-                    />
-                    <span className="allocation-value">{selectedPlanet.allocations.fuel}%</span>
-                  </div>
-                </div>
-                <div className="allocation-item">
-                  <span className="allocation-label">🌿 Organics Production</span>
-                  <div className="allocation-bar">
-                    <div 
-                      className="allocation-fill organics"
-                      style={{ width: `${selectedPlanet.allocations.organics}%` }}
-                    />
-                    <span className="allocation-value">{selectedPlanet.allocations.organics}%</span>
-                  </div>
-                </div>
-                <div className="allocation-item">
-                  <span className="allocation-label">⚙️ Equipment Production</span>
-                  <div className="allocation-bar">
-                    <div 
-                      className="allocation-fill equipment"
-                      style={{ width: `${selectedPlanet.allocations.equipment}%` }}
-                    />
-                    <span className="allocation-value">{selectedPlanet.allocations.equipment}%</span>
-                  </div>
-                </div>
-                <div className="allocation-item">
-                  <span className="allocation-label">💤 Unallocated</span>
-                  <div className="allocation-bar">
-                    <div 
-                      className="allocation-fill unused"
-                      style={{ width: `${selectedPlanet.allocations.unused}%` }}
-                    />
-                    <span className="allocation-value">{selectedPlanet.allocations.unused}%</span>
-                  </div>
-                </div>
+                {(() => {
+                  const total = Math.max(1, selectedPlanet.colonists);
+                  const pct = (heads: number) => Math.min(100, (Math.max(0, heads) / total) * 100);
+                  const rows = [
+                    { key: 'fuel', label: '⛽ Fuel Production', heads: selectedPlanet.allocations.fuel },
+                    { key: 'organics', label: '🌿 Organics Production', heads: selectedPlanet.allocations.organics },
+                    { key: 'equipment', label: '⚙️ Equipment Production', heads: selectedPlanet.allocations.equipment },
+                    { key: 'unused', label: '💤 Idle', heads: selectedPlanet.allocations.unused },
+                  ];
+                  return rows.map(row => (
+                    <div className="allocation-item" key={row.key}>
+                      <span className="allocation-label">{row.label}</span>
+                      <div className="allocation-bar">
+                        <div
+                          className={`allocation-fill ${row.key}`}
+                          style={{ width: `${pct(row.heads)}%` }}
+                        />
+                        <span className="allocation-value">
+                          {Math.max(0, row.heads).toLocaleString()} colonists
+                        </span>
+                      </div>
+                    </div>
+                  ));
+                })()}
               </div>
             </div>
 
@@ -422,29 +678,34 @@ export const PlanetManager: React.FC = () => {
               </div>
             )}
           </div>
+          )}
 
           <div className="planet-actions">
-            <button 
+            <button
               className="action-button allocate"
               onClick={() => setShowAllocator(true)}
+              title="Assign colonists to production roles"
             >
               📊 Manage Allocations
             </button>
-            <button 
+            <button
               className="action-button upgrade"
               onClick={() => setShowBuildingManager(true)}
+              title="Upgrade planetary buildings"
             >
               🔨 Upgrade Buildings
             </button>
-            <button 
+            <button
               className="action-button defense"
               onClick={() => setShowDefenseConfig(true)}
+              title="Configure turrets, shields, and drones"
             >
               🛡️ Configure Defenses
             </button>
-            <button 
+            <button
               className="action-button specialize"
               onClick={() => setShowSpecialization(true)}
+              title="Choose a colony specialization"
             >
               🎯 Set Specialization
             </button>

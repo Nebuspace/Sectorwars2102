@@ -349,6 +349,7 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
             className="button secondary"
             onClick={handleReset}
             disabled={!hasChanges || saving}
+            title={saving ? 'Update in progress' : !hasChanges ? 'Nothing to reset' : 'Discard unsaved changes'}
           >
             Reset
           </button>
@@ -356,6 +357,15 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
             className="button primary"
             onClick={handleSave}
             disabled={!hasChanges || saving || !canAfford}
+            title={
+              saving
+                ? 'Update in progress'
+                : !hasChanges
+                  ? 'No changes to apply'
+                  : !canAfford
+                    ? `Insufficient credits: need ${totalCost.toLocaleString()}, you have ${playerCredits.toLocaleString()}`
+                    : `Apply defense changes for ${totalCost.toLocaleString()} credits`
+            }
           >
             {saving ? 'Updating...' : `Apply Changes (💰 ${totalCost.toLocaleString()})`}
           </button>

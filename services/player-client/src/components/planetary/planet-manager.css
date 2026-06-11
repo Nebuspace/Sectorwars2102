@@ -235,9 +235,15 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-md);
   padding: var(--space-lg);
   border-bottom: 1px solid var(--border-primary);
-  background: var(--bg-secondary);
+  background: linear-gradient(
+    135deg,
+    var(--planet-accent-dim, rgba(0, 255, 255, 0.08)) 0%,
+    var(--bg-secondary) 55%
+  );
+  border-top: 2px solid var(--planet-accent, var(--accent-primary));
 }
 
 .planet-header h2 {
@@ -247,6 +253,204 @@
   gap: var(--space-sm);
   font-size: 1.5rem;
   color: var(--text-primary);
+}
+
+.planet-header-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+/* Per-type icon badge */
+.planet-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.planet-icon-badge.header-badge {
+  width: 48px;
+  height: 48px;
+  font-size: 1.75rem;
+  border-radius: 50%;
+  background: var(--planet-accent-dim, rgba(0, 255, 255, 0.1));
+  border: 1px solid var(--planet-accent, var(--accent-primary));
+  box-shadow: 0 0 12px var(--planet-accent-glow, rgba(0, 255, 255, 0.25));
+  flex-shrink: 0;
+}
+
+.hub-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* Planet-Type Theming
+   TERRAN green · OCEANIC blue · DESERT sand · ICE pale cyan
+   VOLCANIC red · BARREN gray · MOUNTAINOUS slate */
+[data-planet-type='terran'] {
+  --planet-accent: #34d399;
+  --planet-accent-dim: rgba(52, 211, 153, 0.12);
+  --planet-accent-glow: rgba(52, 211, 153, 0.3);
+}
+
+[data-planet-type='oceanic'] {
+  --planet-accent: #38bdf8;
+  --planet-accent-dim: rgba(56, 189, 248, 0.12);
+  --planet-accent-glow: rgba(56, 189, 248, 0.3);
+}
+
+[data-planet-type='desert'] {
+  --planet-accent: #e8c170;
+  --planet-accent-dim: rgba(232, 193, 112, 0.12);
+  --planet-accent-glow: rgba(232, 193, 112, 0.3);
+}
+
+[data-planet-type='ice'] {
+  --planet-accent: #a5f3fc;
+  --planet-accent-dim: rgba(165, 243, 252, 0.1);
+  --planet-accent-glow: rgba(165, 243, 252, 0.3);
+}
+
+[data-planet-type='volcanic'] {
+  --planet-accent: #f87171;
+  --planet-accent-dim: rgba(248, 113, 113, 0.12);
+  --planet-accent-glow: rgba(248, 113, 113, 0.3);
+}
+
+[data-planet-type='barren'] {
+  --planet-accent: #9ca3af;
+  --planet-accent-dim: rgba(156, 163, 175, 0.12);
+  --planet-accent-glow: rgba(156, 163, 175, 0.25);
+}
+
+[data-planet-type='mountainous'] {
+  --planet-accent: #94a3b8;
+  --planet-accent-dim: rgba(148, 163, 184, 0.12);
+  --planet-accent-glow: rgba(148, 163, 184, 0.25);
+}
+
+.planet-item[data-planet-type] {
+  border-left: 3px solid var(--planet-accent, var(--border-secondary));
+}
+
+/* Habitability Ring (SVG radial gauge) */
+.habitability-ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  cursor: help;
+}
+
+.habitability-ring .ring-track {
+  stroke: rgba(255, 255, 255, 0.08);
+}
+
+.habitability-ring .ring-value {
+  transition: stroke-dasharray 0.6s ease;
+}
+
+.habitability-ring.hab-low .ring-value {
+  stroke: #ef4444;
+  filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.5));
+}
+
+.habitability-ring.hab-mid .ring-value {
+  stroke: #f59e0b;
+  filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.5));
+}
+
+.habitability-ring.hab-high .ring-value {
+  stroke: #22c55e;
+  filter: drop-shadow(0 0 4px rgba(34, 197, 94, 0.5));
+}
+
+.habitability-ring.hab-unknown .ring-value {
+  stroke: rgba(255, 255, 255, 0.15);
+}
+
+.habitability-ring .ring-score {
+  fill: var(--text-primary, #fff);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.habitability-ring .ring-caption {
+  fill: var(--text-tertiary, #888);
+  font-size: 7px;
+  letter-spacing: 2px;
+}
+
+.habitability-ring.terraforming svg {
+  animation: terraform-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes terraform-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.75; transform: scale(1.05); }
+}
+
+.terraforming-tag {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #00ffcc;
+  white-space: nowrap;
+  animation: terraform-tag-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes terraform-tag-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Planet Tabs */
+.planet-tabs {
+  display: flex;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-lg) 0;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.planet-tab {
+  padding: var(--space-sm) var(--space-lg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  color: var(--text-secondary);
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.planet-tab:hover {
+  color: var(--text-primary);
+  background: var(--surface-secondary);
+}
+
+.planet-tab.active {
+  color: var(--accent-primary);
+  background: var(--surface-primary);
+  border-color: var(--border-primary);
+  border-bottom: 2px solid var(--accent-primary);
+  margin-bottom: -1px;
+}
+
+.citadel-tab-content {
+  padding: var(--space-lg);
 }
 
 .siege-warning {
@@ -287,6 +491,122 @@
   color: var(--accent-primary);
   border-bottom: 1px solid var(--border-tertiary);
   padding-bottom: var(--space-sm);
+}
+
+/* Population Panel — dual-ceiling visualization */
+.population-panel {
+  border-color: var(--planet-accent, var(--border-secondary));
+}
+
+.dual-ceiling {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.ceiling-bar-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.ceiling-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.ceiling-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: help;
+}
+
+.ceiling-label.workforce {
+  color: #00ffcc;
+}
+
+.ceiling-label.population {
+  color: #38bdf8;
+}
+
+.ceiling-numbers {
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ceiling-bar {
+  position: relative;
+  height: 18px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-tertiary, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.ceiling-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  transition: width 0.5s ease;
+}
+
+.ceiling-fill.workforce {
+  background: linear-gradient(90deg, rgba(0, 255, 204, 0.45), #00ffcc);
+  box-shadow: 0 0 10px rgba(0, 255, 204, 0.35);
+}
+
+.ceiling-fill.population {
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.35), rgba(56, 189, 248, 0.7));
+}
+
+/* Layered population bar: workforce overlay nested inside total population */
+.ceiling-bar.layered .ceiling-fill.workforce-overlay {
+  height: 6px;
+  top: auto;
+  bottom: 0;
+  background: linear-gradient(90deg, rgba(0, 255, 204, 0.5), #00ffcc);
+  box-shadow: 0 0 6px rgba(0, 255, 204, 0.45);
+}
+
+.ceiling-unavailable {
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--text-tertiary);
+}
+
+.growth-line {
+  margin-top: var(--space-md);
+  font-size: 0.85rem;
+  color: #34d399;
+  font-variant-numeric: tabular-nums;
+}
+
+.morale-line {
+  margin-top: var(--space-xs);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: help;
+}
+
+.morale-value.good {
+  color: #34d399;
+  font-weight: 600;
+}
+
+.morale-value.low {
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.morale-value.critical {
+  color: #ef4444;
+  font-weight: 600;
 }
 
 /* Info Grid */
@@ -779,5 +1099,34 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .habitability-ring.terraforming svg,
+  .terraforming-tag,
+  .siege-warning,
+  .planet-item.under-siege,
+  .siege-indicator,
+  .siege-section,
+  .building-item.upgrading,
+  .loading-spinner {
+    animation: none;
+  }
+
+  .habitability-ring.terraforming svg {
+    opacity: 0.9;
+  }
+
+  .ceiling-fill,
+  .allocation-fill,
+  .habitability-ring .ring-value {
+    transition: none;
+  }
+
+  .modal-overlay,
+  .modal-content {
+    animation-duration: 0.01s;
   }
 }
