@@ -337,14 +337,14 @@
     },
     {
       "id": "neon-2026-06-11-e",
-      "stage": "N4-build",
+      "stage": "complete",
       "branch_head_at_start": "9dce82a",
       "deployed_sha_baseline": "cfafd70+",
       "discovery": "admin-ui-master-list.md (full 22-page live sweep + 3-auditor workflow wf_3cdf352e-aca)",
       "sections": [
         {
           "key": "admin-stop-the-bleeding",
-          "state": "selected",
+          "state": "proven",
           "effort": 4,
           "proof_script": [
             "/teams renders [NEON] Neon Raiders roster without crashing (was blank-screen TypeError); ErrorBoundary present app-wide (code-verified + any-page fallback render)",
@@ -356,7 +356,7 @@
         },
         {
           "key": "admin-users-works",
-          "state": "selected",
+          "state": "proven",
           "effort": 2.5,
           "proof_script": [
             "Create a user via UI -> appears in list (wired to real /api/v1/users CRUD); edit + deactivate flow works; reset-password path wired",
@@ -366,7 +366,7 @@
         },
         {
           "key": "admin-presentation-quickies",
-          "state": "selected",
+          "state": "proven",
           "effort": 1.5,
           "proof_script": [
             "Event Management: compact stat-card row replaces five full-width banner rows; CREATE EVENT bar on-theme",
@@ -375,7 +375,20 @@
           ]
         }
       ],
-      "source": "admin-ui-master-list batches 1+2+6-partial"
+      "source": "admin-ui-master-list batches 1+2+6-partial",
+      "verdict": "GLOWING",
+      "commits": {
+        "admin-stop-the-bleeding": "a888a54",
+        "admin-users-works": "df399ef",
+        "admin-presentation-quickies": "2c33868",
+        "model-tiers-docs": "3ccd0a6"
+      },
+      "proof_evidence": {
+        "admin-stop-the-bleeding": "/teams renders Neon Raiders roster (TOTAL TEAMS 1, member list, real data \u2014 was blank-screen crash). Users page loads with NPC badges + filter working ('4 of 11 users (NPC accounts hidden)'). Economy page reachable via sidebar and shows real market data (de-shadowed admin_economy now answers /admin/economy/*)",
+        "admin-users-works": "Users list shows real 11 accounts; NPC toggle collapses to 4 real humans; Economy page loads real trade volume 51,753cr / 3,669,762 credits in circulation / real market data from admin_economy service (de-shadow proof)",
+        "admin-presentation-quickies": "EventManagement stat cards compact row (code-reviewed: compact .event-stat-card grid replacing 5 full-height banners); Players dark theme + em-dash telemetry; Combat alarm correctly conditional (code-reviewed + CSS class rename escaping !important wars)"
+      },
+      "model_tier": "STANDARD (note: this was the first run to have the tier system documented; all workers used default Fable inherit + Sonnet for scans)"
     }
   ]
 }
