@@ -389,6 +389,89 @@
         "admin-presentation-quickies": "EventManagement stat cards compact row (code-reviewed: compact .event-stat-card grid replacing 5 full-height banners); Players dark theme + em-dash telemetry; Combat alarm correctly conditional (code-reviewed + CSS class rename escaping !important wars)"
       },
       "model_tier": "STANDARD (note: this was the first run to have the tier system documented; all workers used default Fable inherit + Sonnet for scans)"
+    },
+    {
+      "id": "neon-2026-06-11-f",
+      "tier": "LEAN (build+review=opus, scan/fix=sonnet, lead=fable)",
+      "stage": "complete",
+      "branch_head_at_start": "9ce758e",
+      "sections": [
+        {
+          "key": "admin-honest-lists",
+          "state": "selected",
+          "effort": 3,
+          "proof_script": [
+            "Stations Manager shows real owner names (Fomalhaut -> testpilot, not 'Independent'), real tax_rate, real docking fee per slip-class table; totals honest ('100 of 3,126' or paginated)",
+            "Sectors list: Location column resolves region/cluster names (no 'Unknown - Unknown'); honest totals",
+            "Fleet stats derive from full counts or state the cap"
+          ]
+        },
+        {
+          "key": "admin-wireups-honest-disable",
+          "state": "selected",
+          "effort": 3,
+          "proof_script": [
+            "Combat logs tab populates from a real endpoint backed by combat_logs rows (the 7+ real battles visible)",
+            "Dispute resolve posts to the real /admin/combat/{id}/resolve path",
+            "Warp tunnel edit/maintenance saves via PUT (was PATCH 405)",
+            "Teams admin actions + planet delete + player bulk/emergency controls honest-disabled with endpoint-named notes (no dead-write buttons)"
+          ]
+        },
+        {
+          "key": "admin-dead-code-purge",
+          "state": "selected",
+          "effort": 2,
+          "proof_script": [
+            "13 unrouted components + orphan css deleted (~4,500 lines); admin-ui build green",
+            "FleetHealthReport RESCUED: wired into FleetManagement consuming the real /admin/ships/health-report endpoint, renders live data"
+          ]
+        }
+      ],
+      "verdict": "GLOWING",
+      "commits": [
+        "9ce758e (model-usage docs)",
+        "5147620 (honest lists)",
+        "819b9c5 (wireups+disarm)",
+        "e44550c (dead-code purge+rescue)",
+        "<test repair>",
+        "<stations search>",
+        "<combat logs property fix>"
+      ],
+      "model_usage": {
+        "tier": "LEAN",
+        "opus": {
+          "agents": 9,
+          "tokens": 708196,
+          "roles": "build x3 + adversarial review x6"
+        },
+        "sonnet": {
+          "agents": 3,
+          "tokens": 151571,
+          "roles": "gate fix wave"
+        },
+        "fable_lead": {
+          "tokens_est": 200000,
+          "roles": "orchestration, gate triage, 3 hand-fixes, browser proofs"
+        },
+        "est_cost_vs_all_fable": "~0.45x (~55% saved)",
+        "quality_note": "opus reviewers caught dispute-panel triple-bug + 100x tax display; missed runtime-only Player.username property 500 (caught at prove, 1 repair loop) \u2014 same class Fable runs have also only caught at prove"
+      },
+      "proof_evidence": {
+        "stations": "UI search \"Trade Hub Fomalhaut\" -> Showing 2 of 2 across full table; owner=testpilot rendered; real tax 0.2; class fees 25/50/100/200 match canon table; Showing 100 of 3,126 + Page 1 of 32",
+        "sectors": "Showing 100 of 6,300; Location resolves region+cluster (was Unknown - Unknown)",
+        "combat_logs": "GET /admin/combat/logs 200 with 7 real battles; Rankings tab computes verifpilot #1 (2 kills, 2.00 K/D) from logs",
+        "fleet_health_rescue": "Fleet Health section live in FleetManagement: real destroyed Marauders/Marshal Interdictor, maintenance table from /admin/ships/health-report",
+        "teams_disarm": "all 4 admin-action buttons disabled with inline notice naming POST /admin/teams/{id}/action",
+        "warp_put_db_delta": "PUT /admin/warp-tunnels/288d4991 200; psql status ACTIVE->MAINTENANCE->ACTIVE",
+        "regression": "pytest 407 passed (baseline 318; collection repair unblocked ~150 tests); both UI builds green"
+      },
+      "parking_lot": [
+        "update_port blind-setattr should whitelist writable fields (P0.2 remnant)",
+        "admin SPA deep-link/reload bounces to player client (master list C.1) \u2014 hit 3x during proofs",
+        "health-report endpoint full-table scan + N+1 (flagged by reviewer, pre-existing)",
+        "sectors list per-row has_port/has_planet N+1 (reviewer LOW)",
+        "AdminContext zones/addSectors/createWarpTunnel chain needs coordinated prune (worker deferred correctly)"
+      ]
     }
   ]
 }

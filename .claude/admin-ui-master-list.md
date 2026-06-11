@@ -5,6 +5,8 @@ canon spec audit (OPERATIONS/admin-ui.md, ui-flows.md, DATA_MODELS/admin.md, ADR
 frontend inventory (24 routed entries + 13 dead components), backend inventory (22 route files,
 ~190 admin endpoints). Severity: P0 broken-now → P5 cleanup. Sizes S/M/L.
 
+**Run-6 completions (neon-2026-06-11-f, LEAN tier):** P1.1 (stations real owner/fee/tax/security; sector richness; sector-port tax), P1.2 (server pagination + honest totals on stations & sectors, plus server-side stations search added at gate), P1.9 (sectors Location resolves region/cluster), P5.1–5.3 (13 dead components + 4 css deleted, FleetHealthReport rescued into FleetManagement wired to /admin/ships/health-report, UniverseManager dead branch removed), and P0.7-adjacent wire-ups: GET /admin/combat/logs implemented (feeds Rankings), DisputePanel resolve fixed (path/id/body), WarpTunnels PATCH→PUT proven with DB delta, honest-disable on Teams admin actions / PlanetsManager delete / player bulk+emergency+asset ops. NEW FINDS: StationsManager PortModal edit form was half dead-write (non-column fields now read-only; `update_port` blind-setattr should whitelist — P0.2 remnant), warp tunnel `max_ship_size` has no backend column (read-only'd), stale `test_nexus_endpoints.py` Port import had been interrupting ALL pytest collection (repaired — 407 passed vs 318 baseline).
+
 ---
 
 ## P0 — BROKEN NOW (admins hit these today)
