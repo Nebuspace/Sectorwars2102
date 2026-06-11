@@ -1,0 +1,1111 @@
+/* Construction Venue — TradeDock ship construction slips */
+/* BuildLine visualization follows the CitadelStructure house SVG style */
+
+/* ========================================
+   VENUE LAYOUT
+   ======================================== */
+
+.construction-tier-badge {
+  margin-left: auto;
+  padding: 3px 8px;
+  font-size: 0.65em;
+  font-weight: bold;
+  letter-spacing: 1px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.construction-tier-badge.tier-a {
+  color: #ffd166;
+  border: 1px solid rgba(255, 209, 102, 0.5);
+  background: rgba(255, 209, 102, 0.08);
+}
+
+.construction-tier-badge.tier-b {
+  color: #00d9ff;
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  background: rgba(0, 217, 255, 0.06);
+}
+
+.construction-intro p {
+  margin: 0 0 16px 0;
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 0.88em;
+  line-height: 1.5;
+}
+
+.construction-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.2);
+  padding-bottom: 8px;
+}
+
+.construction-tab {
+  background: transparent;
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  color: rgba(255, 255, 255, 0.7);
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: all 0.2s ease;
+}
+
+.construction-tab:hover {
+  border-color: rgba(0, 217, 255, 0.5);
+  color: #00d9ff;
+}
+
+.construction-tab.active {
+  background: rgba(0, 217, 255, 0.12);
+  border-color: rgba(0, 217, 255, 0.6);
+  color: #00d9ff;
+  font-weight: bold;
+}
+
+/* ========================================
+   SHIP ORDER BOOK — quote grid
+   ======================================== */
+
+.construction-slip-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.cq-slip-stat {
+  padding: 4px 10px;
+  font-size: 0.78em;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 217, 255, 0.2);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.cq-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 14px;
+}
+
+.cq-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: rgba(20, 30, 48, 0.6);
+  border: 1px solid rgba(0, 217, 255, 0.2);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.cq-card:hover {
+  border-color: rgba(0, 217, 255, 0.45);
+}
+
+.cq-card.gated {
+  opacity: 0.6;
+}
+
+.cq-card.gated:hover {
+  border-color: rgba(0, 217, 255, 0.2);
+}
+
+.cq-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.cq-ship-name {
+  font-weight: bold;
+  color: #ffffff;
+  font-size: 1em;
+}
+
+.cq-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.cq-badge {
+  padding: 2px 6px;
+  font-size: 0.6em;
+  font-weight: bold;
+  letter-spacing: 1px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.cq-badge.tier-a {
+  color: #ffd166;
+  border: 1px solid rgba(255, 209, 102, 0.5);
+}
+
+.cq-badge.tier-a.gated {
+  color: #ff5722;
+  border-color: rgba(255, 87, 34, 0.5);
+}
+
+.cq-badge.specialized {
+  color: #c961de;
+  border: 1px solid rgba(201, 97, 222, 0.5);
+}
+
+.cq-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+}
+
+.cq-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.82em;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.cq-row span:last-child {
+  color: #00d9ff;
+  font-weight: bold;
+}
+
+.cq-resources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cq-resource-chip {
+  padding: 3px 8px;
+  font-size: 0.75em;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(0, 217, 255, 0.06);
+  border: 1px solid rgba(0, 217, 255, 0.2);
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.cq-gated-reason {
+  font-size: 0.75em;
+  color: #ffc107;
+  font-style: italic;
+}
+
+.cq-reserve-btn {
+  margin-top: auto;
+}
+
+/* ========================================
+   MY BUILDS — reservation cards
+   ======================================== */
+
+.construction-builds {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cr-card {
+  padding: 14px;
+  background: rgba(20, 30, 48, 0.6);
+  border: 1px solid rgba(0, 217, 255, 0.2);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cr-card.state-paused {
+  border-color: rgba(255, 170, 68, 0.45);
+}
+
+.cr-card.state-ready {
+  border-color: rgba(0, 255, 136, 0.5);
+}
+
+.cr-card.state-terminal {
+  opacity: 0.55;
+}
+
+.cr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.cr-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cr-ship-name {
+  font-weight: bold;
+  color: #ffffff;
+  font-size: 1.05em;
+}
+
+.cr-ship-type {
+  font-size: 0.75em;
+  color: rgba(255, 255, 255, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.cr-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cr-progress {
+  font-size: 0.9em;
+  font-weight: bold;
+  color: #00d9ff;
+  font-family: 'Courier New', monospace;
+}
+
+.cr-state-badge {
+  padding: 3px 8px;
+  font-size: 0.65em;
+  font-weight: bold;
+  letter-spacing: 1px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.cr-state-badge.hold {
+  color: #00d9ff;
+  border: 1px solid rgba(0, 217, 255, 0.5);
+}
+
+.cr-state-badge.building {
+  color: #4a9eff;
+  border: 1px solid rgba(74, 158, 255, 0.5);
+}
+
+.cr-state-badge.paused {
+  color: #ffaa44;
+  border: 1px solid rgba(255, 170, 68, 0.6);
+  background: rgba(255, 170, 68, 0.08);
+}
+
+.cr-state-badge.ready {
+  color: #00ff88;
+  border: 1px solid rgba(0, 255, 136, 0.6);
+  background: rgba(0, 255, 136, 0.08);
+}
+
+.cr-state-badge.terminal,
+.cr-state-badge.unknown {
+  color: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.cr-phase-line {
+  font-size: 0.82em;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.cr-phase-line strong {
+  color: #00ffcc;
+}
+
+.cr-phase-pct {
+  color: rgba(255, 255, 255, 0.5);
+  font-family: 'Courier New', monospace;
+}
+
+.cr-away-note {
+  padding: 8px 12px;
+  font-size: 0.78em;
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px dashed rgba(0, 217, 255, 0.3);
+  border-radius: 6px;
+}
+
+/* ========================================
+   BUILD LINE — four-phase ship silhouette
+   (house SVG style, sister of CitadelStructure)
+   ======================================== */
+
+.build-line {
+  position: relative;
+  padding: 6px 6px 0;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 100%, rgba(74, 158, 255, 0.08), transparent 70%),
+    linear-gradient(180deg, rgba(4, 8, 20, 0.85) 0%, rgba(10, 16, 36, 0.65) 100%);
+  border: 1px solid rgba(74, 158, 255, 0.18);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.build-line-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 170px;
+}
+
+/* Slip cradle — always visible */
+.bl-cradle {
+  stroke: rgba(125, 211, 252, 0.35);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+/* ---- Base element styling (color comes from stratum state) ---- */
+.bl-stratum {
+  stroke: currentColor;
+  transition: opacity 0.5s ease, color 0.5s ease;
+}
+
+.bl-stratum .bl-keel,
+.bl-stratum .bl-spar,
+.bl-stratum .bl-rib,
+.bl-stratum .bl-conduit,
+.bl-stratum .bl-seam,
+.bl-stratum .bl-mast,
+.bl-stratum .bl-window {
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.bl-stratum .bl-keel {
+  stroke-width: 2.4;
+}
+
+.bl-stratum .bl-rib {
+  opacity: 0.8;
+}
+
+.bl-stratum .bl-block,
+.bl-stratum .bl-hull,
+.bl-stratum .bl-dome {
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+.bl-stratum .bl-block {
+  fill: rgba(8, 14, 32, 0.85);
+}
+
+.bl-stratum .bl-conduit {
+  stroke-dasharray: 4 3;
+  opacity: 0.85;
+}
+
+.bl-stratum .bl-seam {
+  opacity: 0.5;
+}
+
+.bl-stratum .bl-window {
+  stroke-width: 2.4;
+  stroke-dasharray: 2 4;
+  opacity: 0.85;
+}
+
+.bl-stratum .bl-core,
+.bl-stratum .bl-light {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* ---- State: lit (phase complete) ---- */
+.bl-stratum.state-lit {
+  color: #4a9eff;
+  opacity: 0.95;
+}
+
+.bl-stratum.state-lit .bl-light,
+.bl-stratum.state-lit .bl-core {
+  fill: #00ffcc;
+}
+
+/* ---- State: current (phase under way — soft breathing glow) ---- */
+.bl-stratum.state-current {
+  color: #00ffcc;
+  animation: bl-breathe 3.2s ease-in-out infinite;
+}
+
+.bl-stratum.state-current .bl-light,
+.bl-stratum.state-current .bl-core {
+  fill: #aaffee;
+}
+
+.bl-stratum.state-current .bl-beacon {
+  filter: drop-shadow(0 0 4px rgba(0, 255, 204, 0.9));
+}
+
+@keyframes bl-breathe {
+  0%, 100% {
+    opacity: 0.85;
+    filter: drop-shadow(0 0 3px rgba(0, 255, 204, 0.35));
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 9px rgba(0, 255, 204, 0.7));
+  }
+}
+
+/* ---- State: paused (work stopped — amber, frozen scaffold) ---- */
+.bl-stratum.state-paused {
+  color: #ffaa44;
+  opacity: 0.8;
+}
+
+.bl-stratum.state-paused .bl-keel,
+.bl-stratum.state-paused .bl-spar,
+.bl-stratum.state-paused .bl-rib,
+.bl-stratum.state-paused .bl-block,
+.bl-stratum.state-paused .bl-hull,
+.bl-stratum.state-paused .bl-dome,
+.bl-stratum.state-paused .bl-mast {
+  stroke-dasharray: 6 4;
+}
+
+.bl-stratum.state-paused .bl-hull,
+.bl-stratum.state-paused .bl-dome {
+  fill: transparent;
+}
+
+/* ---- State: ghost (future phase — what the ship will become) ---- */
+.bl-stratum.state-ghost {
+  color: #64748b;
+  opacity: 0.28;
+}
+
+.bl-stratum.state-ghost .bl-keel,
+.bl-stratum.state-ghost .bl-spar,
+.bl-stratum.state-ghost .bl-rib,
+.bl-stratum.state-ghost .bl-block,
+.bl-stratum.state-ghost .bl-hull,
+.bl-stratum.state-ghost .bl-dome,
+.bl-stratum.state-ghost .bl-mast {
+  stroke-dasharray: 4 4;
+  fill: transparent;
+}
+
+.bl-stratum.state-ghost .bl-window,
+.bl-stratum.state-ghost .bl-exhaust {
+  opacity: 0;
+}
+
+/* ---- Phase track below the silhouette ---- */
+.bl-phase-track {
+  display: flex;
+  padding: 6px 4px 8px;
+}
+
+.bl-phase-node {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
+
+/* Connector lines between phase nodes */
+.bl-phase-node + .bl-phase-node::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 50%;
+  width: 100%;
+  height: 1px;
+  background: rgba(125, 211, 252, 0.25);
+  z-index: 0;
+}
+
+.bl-phase-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid #64748b;
+  background: transparent;
+  position: relative;
+  z-index: 1;
+}
+
+.bl-phase-name {
+  font-size: 0.6em;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+
+.bl-phase-node.state-lit .bl-phase-dot {
+  border-color: #4a9eff;
+  background: #4a9eff;
+}
+
+.bl-phase-node.state-lit .bl-phase-name {
+  color: rgba(74, 158, 255, 0.9);
+}
+
+.bl-phase-node.state-current .bl-phase-dot {
+  border-color: #00ffcc;
+  background: #00ffcc;
+  animation: bl-dot-breathe 3.2s ease-in-out infinite;
+}
+
+.bl-phase-node.state-current .bl-phase-name {
+  color: #00ffcc;
+}
+
+@keyframes bl-dot-breathe {
+  0%, 100% {
+    box-shadow: 0 0 2px rgba(0, 255, 204, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 8px rgba(0, 255, 204, 0.9);
+  }
+}
+
+.bl-phase-node.state-paused .bl-phase-dot {
+  border-color: #ffaa44;
+  background: rgba(255, 170, 68, 0.4);
+}
+
+.bl-phase-node.state-paused .bl-phase-name {
+  color: #ffaa44;
+}
+
+/* ========================================
+   COUNTDOWNS / RENT / PAUSED / SHORTFALL
+   ======================================== */
+
+.cr-countdowns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cr-countdowns:empty {
+  display: none;
+}
+
+.cr-countdown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 0.78em;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 217, 255, 0.2);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.cr-countdown-value {
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+  color: #00d9ff;
+}
+
+.cr-countdown.urgent {
+  border-color: rgba(255, 170, 68, 0.5);
+}
+
+.cr-countdown.urgent .cr-countdown-value {
+  color: #ffaa44;
+}
+
+.cr-countdown.expired {
+  border-color: rgba(255, 87, 34, 0.5);
+}
+
+.cr-countdown.expired .cr-countdown-value {
+  color: #ff5722;
+}
+
+.cr-rent-warning {
+  padding: 8px 12px;
+  font-size: 0.82em;
+  color: #ffaa44;
+  background: rgba(255, 170, 68, 0.08);
+  border: 1px solid rgba(255, 170, 68, 0.4);
+  border-radius: 6px;
+}
+
+.cr-paused-panel {
+  padding: 10px 12px;
+  background: rgba(255, 170, 68, 0.08);
+  border: 1px solid rgba(255, 170, 68, 0.45);
+  border-radius: 6px;
+}
+
+.cr-paused-title {
+  display: block;
+  font-size: 0.78em;
+  font-weight: bold;
+  letter-spacing: 1px;
+  color: #ffaa44;
+  margin-bottom: 4px;
+}
+
+.cr-paused-panel ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.cr-shortfall-list {
+  margin: 0;
+  padding: 8px 12px 8px 28px;
+  font-size: 0.8em;
+  color: #ffc107;
+  background: rgba(255, 193, 7, 0.06);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 6px;
+}
+
+/* ========================================
+   RESOURCE DELIVERY PROGRESS
+   ======================================== */
+
+.cr-resource-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.cr-resource-bar {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78em;
+}
+
+.cr-resource-bar-label {
+  color: rgba(255, 255, 255, 0.7);
+  white-space: nowrap;
+}
+
+.cr-resource-bar-track {
+  height: 6px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.cr-resource-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4a9eff, #00ffcc);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.cr-resource-bar-value {
+  font-family: 'Courier New', monospace;
+  color: rgba(255, 255, 255, 0.75);
+  white-space: nowrap;
+}
+
+/* ========================================
+   MILESTONES
+   ======================================== */
+
+.cr-milestones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cr-milestone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 0.78em;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 209, 102, 0.35);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.cr-milestone.paid {
+  border-color: rgba(0, 255, 136, 0.35);
+  color: rgba(0, 255, 136, 0.8);
+}
+
+.cr-milestone-amount {
+  font-family: 'Courier New', monospace;
+  color: #ffd166;
+}
+
+.cr-milestone.paid .cr-milestone-amount {
+  color: rgba(0, 255, 136, 0.8);
+}
+
+.cr-milestone-pay-btn {
+  background: rgba(255, 209, 102, 0.12);
+  border: 1px solid rgba(255, 209, 102, 0.5);
+  color: #ffd166;
+  padding: 2px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9em;
+  transition: all 0.2s ease;
+}
+
+.cr-milestone-pay-btn:hover:not(:disabled) {
+  background: rgba(255, 209, 102, 0.25);
+}
+
+.cr-milestone-pay-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ========================================
+   ACTIONS + INLINE PANELS
+   ======================================== */
+
+.cr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cr-claim-btn {
+  border-color: rgba(0, 255, 136, 0.6);
+  color: #00ff88;
+}
+
+.cr-claim-btn:hover:not(:disabled) {
+  background: rgba(0, 255, 136, 0.15);
+  border-color: #00ff88;
+}
+
+.cr-cancel-btn {
+  border-color: rgba(255, 87, 34, 0.5);
+  color: #ff5722;
+}
+
+.cr-cancel-btn:hover:not(:disabled) {
+  background: rgba(255, 87, 34, 0.15);
+  border-color: #ff5722;
+}
+
+.cr-panel {
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cr-panel h5 {
+  margin: 0;
+  font-size: 0.85em;
+  color: #00d9ff;
+  letter-spacing: 1px;
+}
+
+.cr-panel-warning {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 0.75em;
+  color: #ffc107;
+  background: rgba(255, 193, 7, 0.06);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 4px;
+}
+
+.cr-deliver-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 80px auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8em;
+}
+
+.cr-deliver-resource {
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+}
+
+.cr-deliver-meta {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.9em;
+}
+
+.cr-deliver-row input,
+.cr-rent-days input {
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 4px;
+  color: #ffffff;
+  font-size: 0.95em;
+  width: 80px;
+}
+
+.cr-deliver-row input:focus,
+.cr-rent-days input:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
+.cr-deliver-row input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cr-max-btn,
+.cr-quick-btn {
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  color: #00d9ff;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: all 0.2s ease;
+}
+
+.cr-max-btn:hover:not(:disabled),
+.cr-quick-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.2);
+}
+
+.cr-max-btn:disabled,
+.cr-quick-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cr-quick-btn.selected {
+  background: rgba(0, 217, 255, 0.25);
+  border-color: #00d9ff;
+  font-weight: bold;
+}
+
+.cr-rent-owed {
+  font-size: 0.82em;
+  color: #ffaa44;
+}
+
+.cr-rent-days {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.cr-rent-quick {
+  display: flex;
+  gap: 6px;
+}
+
+.cr-rent-preview {
+  font-size: 0.8em;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.cr-rent-preview strong {
+  color: #00d9ff;
+}
+
+.cr-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Refund rules in the cancel confirmation */
+.cr-refund-rules {
+  margin: 12px 0;
+  padding: 12px 12px 12px 28px;
+  font-size: 0.85em;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 87, 34, 0.06);
+  border: 1px solid rgba(255, 87, 34, 0.3);
+  border-radius: 6px;
+}
+
+.cr-refund-rules li {
+  margin-bottom: 6px;
+}
+
+.cr-refund-rules li:last-child {
+  margin-bottom: 0;
+}
+
+/* ========================================
+   KEEL TO STARS — claim ceremony
+   (sister of COLONY ESTABLISHED)
+   ======================================== */
+
+.keel-ceremony-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.8);
+  backdrop-filter: blur(3px);
+  cursor: pointer;
+}
+
+.keel-ceremony-card {
+  position: relative;
+  width: min(440px, calc(100vw - 2rem));
+  padding: 2rem 1.5rem;
+  text-align: center;
+  background: linear-gradient(160deg, rgba(8, 18, 30, 0.97) 0%, rgba(4, 10, 18, 0.99) 100%);
+  border: 2px solid rgba(0, 217, 255, 0.6);
+  border-radius: 10px;
+  overflow: hidden;
+  animation: keel-card-in 0.35s ease-out, keel-card-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes keel-card-in {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes keel-card-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 40px rgba(0, 217, 255, 0.35),
+      inset 0 0 30px rgba(0, 217, 255, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 60px rgba(0, 217, 255, 0.55),
+      inset 0 0 40px rgba(0, 217, 255, 0.14);
+  }
+}
+
+/* Scanline sweeping down the card */
+.keel-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, rgba(0, 217, 255, 0.9), transparent);
+  pointer-events: none;
+  animation: keel-scan-sweep 2.4s linear infinite;
+}
+
+@keyframes keel-scan-sweep {
+  0% {
+    top: 0;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    top: calc(100% - 3px);
+    opacity: 0;
+  }
+}
+
+.keel-banner {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.25em;
+  color: #00d9ff;
+  text-shadow: 0 0 18px rgba(0, 217, 255, 0.7);
+  margin-bottom: 1.2rem;
+}
+
+.keel-ship-icon {
+  font-size: 4rem;
+  margin-bottom: 0.8rem;
+  filter: drop-shadow(0 0 24px rgba(0, 217, 255, 0.5));
+}
+
+.keel-ship-name {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.95);
+  margin-bottom: 1rem;
+}
+
+.keel-detail {
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: 'Courier New', monospace;
+  margin: 0.3rem 0;
+}
+
+.keel-dismiss-hint {
+  margin-top: 1.5rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ========================================
+   REDUCED MOTION — freeze animation, keep static states
+   ======================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .bl-stratum.state-current {
+    animation: none;
+    opacity: 1;
+    filter: drop-shadow(0 0 6px rgba(0, 255, 204, 0.55));
+  }
+
+  .bl-phase-node.state-current .bl-phase-dot {
+    animation: none;
+    box-shadow: 0 0 6px rgba(0, 255, 204, 0.7);
+  }
+
+  .bl-stratum {
+    transition: none;
+  }
+
+  .keel-ceremony-card,
+  .keel-scanline {
+    animation: none;
+  }
+
+  .keel-ceremony-card {
+    box-shadow: 0 0 40px rgba(0, 217, 255, 0.35);
+  }
+
+  .cr-resource-bar-fill {
+    transition: none;
+  }
+}

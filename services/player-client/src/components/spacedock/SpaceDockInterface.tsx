@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import type { Station } from '../../contexts/GameContext';
 import TradingInterface from '../trading/TradingInterface';
+import ConstructionVenue from './ConstructionVenue';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -14,7 +15,7 @@ const getApiBaseUrl = () => {
 };
 
 // Venue type definitions
-type VenueType = 'hub' | 'trading' | 'shipyard' | 'genesis' | 'armory' | 'services' | 'gambling';
+type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'genesis' | 'armory' | 'services' | 'gambling';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types
@@ -48,6 +49,7 @@ interface Venue {
 interface DockedStation extends Station {
   station_class?: number | null;
   is_spacedock?: boolean;
+  tradedock_tier?: string | null;
 }
 
 // Shipyard catalog entry (GET /api/v1/ships/catalog)
@@ -77,6 +79,7 @@ interface ArmoryCatalogItem {
   description?: string;
   available?: boolean;
   reason?: string | null;
+  service?: string;
 }
 
 // Loadout snapshot returned by POST /api/v1/armory/purchase
@@ -261,6 +264,13 @@ const SpaceDockInterface: React.FC = () => {
     s => s.id === playerState?.current_port_id
   ) as DockedStation | undefined;
 
+  // TradeDock construction tier — the field arrives via the sector stations
+  // payload and may be absent entirely on older payloads; feature-detect it.
+  const rawTier = typeof currentStation?.tradedock_tier === 'string'
+    ? currentStation.tradedock_tier.toUpperCase()
+    : null;
+  const tradedockTier: 'A' | 'B' | null = rawTier === 'A' || rawTier === 'B' ? rawTier : null;
+
   // Check if player has negative reputation (access to black market)
   const hasBlackMarketAccess = (playerState?.personal_reputation || 0) < 0;
 
@@ -284,6 +294,16 @@ const SpaceDockInterface: React.FC = () => {
       available: Boolean(stationServices.ship_dealer),
       services: ['Custom Ship Building', 'Dock Slip Rental', 'Ship Customization']
     },
+    // Construction only exists at TradeDock stations (tier A or B) —
+    // it is omitted entirely everywhere else rather than shown as unavailable
+    ...(tradedockTier ? [{
+      id: 'construction' as VenueType,
+      name: 'Construction',
+      icon: '🏗️',
+      description: 'Order new hulls built to spec in this TradeDock\'s construction slips',
+      available: true,
+      services: [`Tier ${tradedockTier} Slips`, 'Ship Orders', 'Build Tracking']
+    }] : []),
     {
       id: 'genesis',
       name: 'Genesis Store',
@@ -954,6 +974,17 @@ const SpaceDockInterface: React.FC = () => {
     }
   }, [armoryBuying, displayCredits, updatePlayerCredits, refreshPlayerState]);
 
+  // Credits plumbing for the Construction venue — instant optimistic feedback
+  // plus authoritative totals when the server returns them
+  const handleCreditsDelta = useCallback((delta: number) => {
+    setLocalCredits(prev => (prev ?? playerState?.credits ?? 0) + delta);
+  }, [playerState?.credits]);
+
+  const handleCreditsSet = useCallback((value: number) => {
+    setLocalCredits(value);
+    updatePlayerCredits(value);
+  }, [updatePlayerCredits]);
+
   // Get current genesis device counts (use local if set, otherwise from ship data)
   const currentGenesisDevices = localGenesisDevices ?? shipData?.genesis_devices ?? 0;
   const maxGenesisDevices = localMaxGenesis ?? shipData?.max_genesis_devices ?? 0;
@@ -1031,7 +1062,7 @@ const SpaceDockInterface: React.FC = () => {
                   <p>{item.desc}</p>
                   <div className="bm-item-stats">
                     {Object.entries(item).filter(([k]) => !['name', 'desc', 'price'].includes(k)).map(([key, val]) => (
-                      <span key={key} className="bm-stat">{key}: {val}</span>
+                      <span key={key} className="bm-stat">{key}: {String(val)}</span>
                     ))}
                   </div>
                 </div>
@@ -1703,10 +1734,23 @@ const SpaceDockInterface: React.FC = () => {
           <div className="shipyard-sections">
             <div className="shipyard-section">
               <h3>🏗️ Construction Slips</h3>
-              <p className="section-description">
-                Slip construction — coming soon. Custom ship building is not yet available at this facility.
-              </p>
-              <button className="action-button" disabled>Reserve Dock Slip</button>
+              {tradedockTier ? (
+                <>
+                  <p className="section-description">
+                    This Tier-{tradedockTier} TradeDock runs full construction slips. Ship orders and build tracking live in the Construction venue.
+                  </p>
+                  <button className="action-button" onClick={() => setActiveVenue('construction')}>
+                    Open Construction Venue
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="section-description">
+                    Slip construction — coming soon. Custom ship building is not yet available at this facility.
+                  </p>
+                  <button className="action-button" disabled>Reserve Dock Slip</button>
+                </>
+              )}
             </div>
 
             <div className="shipyard-section">
@@ -2322,6 +2366,20 @@ const SpaceDockInterface: React.FC = () => {
         return renderTrading();
       case 'shipyard':
         return renderShipyard();
+      case 'construction':
+        // Construction only exists at TradeDock stations — fall back to the
+        // hub if the venue is reached without a tiered station docked
+        return tradedockTier && currentStation ? (
+          <ConstructionVenue
+            stationId={currentStation.id}
+            stationName={currentStation.name}
+            tier={tradedockTier}
+            credits={displayCredits}
+            onCreditsDelta={handleCreditsDelta}
+            onCreditsSet={handleCreditsSet}
+            onBack={() => setActiveVenue('hub')}
+          />
+        ) : renderHub();
       case 'genesis':
         return renderGenesisStore();
       case 'armory':
