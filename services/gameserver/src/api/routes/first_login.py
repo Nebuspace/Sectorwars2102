@@ -341,18 +341,40 @@ async def answer_dialogue(
         first_line = str(value).splitlines()[0] if value else ""
         return first_line[:limit] if first_line else None
 
+    def _safe_score(value: Any) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return 0.0
+
     raw_analysis = result.get("analysis") or {}
     safe_analysis = {
         "summary": _safe_str(raw_analysis.get("summary")),
         "ai_used": bool(raw_analysis.get("ai_used")),
         "intent": _safe_str(raw_analysis.get("intent"), limit=128),
         "sentiment": _safe_str(raw_analysis.get("sentiment"), limit=64),
+        # Numeric scores drive the TrustMeter; without them the trust UI
+        # never moves off its initial value.
+        "persuasiveness": _safe_score(raw_analysis.get("persuasiveness")),
+        "confidence": _safe_score(
+            raw_analysis.get("confidence", raw_analysis.get("confidence_level"))
+        ),
+        "consistency": _safe_score(raw_analysis.get("consistency")),
+        "overall_believability": _safe_score(raw_analysis.get("overall_believability")),
     }
     raw_outcome = result.get("outcome") or {}
+    # Field set must match FirstLoginContext.DialogueAnalysis['outcome'] —
+    # the UI renders ACCESS GRANTED/DENIED, the awarded ship, and skill from
+    # these; omitting them makes every outcome render as a denied escape pod.
     safe_outcome = {
-        "ship_type": _safe_str(raw_outcome.get("ship_type"), limit=64),
+        "outcome": _safe_str(raw_outcome.get("outcome"), limit=32),
+        "awarded_ship": _safe_str(raw_outcome.get("awarded_ship"), limit=64),
         "starting_credits": int(raw_outcome.get("starting_credits") or 0),
-        "narrative": _safe_str(raw_outcome.get("narrative"), limit=2048),
+        "negotiation_skill": _safe_str(raw_outcome.get("negotiation_skill"), limit=32),
+        "final_persuasion_score": _safe_score(raw_outcome.get("final_persuasion_score")),
+        "negotiation_bonus": bool(raw_outcome.get("negotiation_bonus")),
+        "notoriety_penalty": bool(raw_outcome.get("notoriety_penalty")),
+        "guard_response": _safe_str(raw_outcome.get("guard_response"), limit=2048),
     } if raw_outcome else None
 
     return {
