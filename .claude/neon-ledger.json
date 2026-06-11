@@ -334,6 +334,48 @@
         "Surviving admin fabrications named by reviewers for a future batch: PlanetaryManagement resource-unit labels; dead-code pages (AnalyticsReports/Universe/UniverseEditor) deletion",
         "GameDashboard affordability edge: warp-unaffordable + tunnel-affordable node renders clickable but server rejects (warp-first, no fallthrough)"
       ]
+    },
+    {
+      "id": "neon-2026-06-11-e",
+      "stage": "N4-build",
+      "branch_head_at_start": "9dce82a",
+      "deployed_sha_baseline": "cfafd70+",
+      "discovery": "admin-ui-master-list.md (full 22-page live sweep + 3-auditor workflow wf_3cdf352e-aca)",
+      "sections": [
+        {
+          "key": "admin-stop-the-bleeding",
+          "state": "selected",
+          "effort": 4,
+          "proof_script": [
+            "/teams renders [NEON] Neon Raiders roster without crashing (was blank-screen TypeError); ErrorBoundary present app-wide (code-verified + any-page fallback render)",
+            "Port editor: PATCH a station via Stations Manager UI -> 200 + persisted (was NameError 500)",
+            "EconomyDashboard renders real admin_economy data (legacy shadowing removed); combat /logs panel populates or honestly states the endpoint contract",
+            "MFA: POST /auth/mfa/generate returns 200 secret/QR as admin (was 500); audit logs tab renders rows",
+            "nexus GET endpoints return 401 unauthenticated"
+          ]
+        },
+        {
+          "key": "admin-users-works",
+          "state": "selected",
+          "effort": 2.5,
+          "proof_script": [
+            "Create a user via UI -> appears in list (wired to real /api/v1/users CRUD); edit + deactivate flow works; reset-password path wired",
+            "npc_filler accounts show an NPC badge/filter in Users",
+            "/economy reachable from the sidebar"
+          ]
+        },
+        {
+          "key": "admin-presentation-quickies",
+          "state": "selected",
+          "effort": 1.5,
+          "proof_script": [
+            "Event Management: compact stat-card row replaces five full-width banner rows; CREATE EVENT bar on-theme",
+            "Players page: dead telemetry (session/retention) renders as 'not yet tracked' em-dash, not 0.0%; light band rethemed",
+            "Combat: ACTIVE BATTLES zero renders neutral (red reserved for >0 needing intervention)"
+          ]
+        }
+      ],
+      "source": "admin-ui-master-list batches 1+2+6-partial"
     }
   ]
 }
