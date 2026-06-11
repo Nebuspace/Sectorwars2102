@@ -43,6 +43,10 @@
   padding: 1rem;
   width: 100%;
   box-sizing: border-box;
+  /* .hud-panel's overflow:hidden zeroes this flex item's automatic
+     min-height; without flex-shrink:0 the bounded column crushes the
+     header to ~0 and the title/subtitle collide. */
+  flex-shrink: 0;
 }
 
 .ranking-page-title {

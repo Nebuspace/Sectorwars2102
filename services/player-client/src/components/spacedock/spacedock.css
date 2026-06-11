@@ -24,7 +24,7 @@
   flex-direction: column;
   height: 100%;
   padding: 10px 12px;
-  gap: 10px;
+  gap: 6px;
 }
 
 .hub-header {
@@ -98,6 +98,18 @@
 
 .hub-welcome p {
   margin: 0;
+}
+
+/* On short viewports (e.g. 1440x900) the hub's fixed chrome leaves the
+   venues grid a few px shy of two full rows, slicing second-row titles
+   at the grid fold. Drop the decorative welcome strip to reclaim that
+   height; the grid's overflow-y:auto remains the safety net. 870px also
+   covers the chrome-less band (browser windows without OS/browser chrome)
+   that 820px missed. */
+@media (max-height: 870px) {
+  .hub-welcome {
+    display: none;
+  }
 }
 
 /* Venues Grid — the scrolling region of the hub. `align-content: start`
