@@ -467,17 +467,24 @@
 
 .guard-stat {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
   font-size: 0.8rem;
 }
 
 .guard-stat-label {
+  display: block;
   color: #888;
   font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 1px;
 }
 
 .guard-stat-value {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: break-word;
   color: var(--color-cyan-primary);
   font-weight: 600;
   font-family: var(--font-mono);
@@ -510,22 +517,31 @@
   overflow: hidden;
 }
 
-/* ===== TRUST METER (Large, Central, Dramatic) ===== */
+/* ===== TRUST METER (Compact two-column: circle left, status right) =====
+   Laid out horizontally so the dialogue transcript below stays above the fold. */
 .trust-meter-section {
   background: linear-gradient(135deg, rgba(0, 0, 0, 0.7) 0%, rgba(26, 26, 46, 0.5) 100%);
   border: 2px solid var(--color-cyan-primary);
   border-radius: 8px;
-  padding: var(--space-lg);
-  display: flex;
-  flex-direction: column;
+  padding: var(--space-md) var(--space-lg);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  grid-template-areas:
+    "title title"
+    "meter risk"
+    "meter scores";
   align-items: center;
-  gap: var(--space-md);
+  column-gap: var(--space-lg);
+  row-gap: var(--space-md);
   position: relative;
   overflow: hidden;
   flex-shrink: 0;
 }
 
 .trust-meter-title {
+  grid-area: title;
+  justify-self: center;
   font-size: 0.85rem;
   font-weight: 700;
   color: var(--color-cyan-primary);
@@ -535,7 +551,8 @@
 }
 
 .trust-meter-container {
-  width: 100%;
+  grid-area: meter;
+  width: auto;
   position: relative;
 }
 
@@ -624,8 +641,10 @@
   transform-origin: center 110px;
 }
 
-/* Risk warning below meter */
+/* Risk warning beside meter */
 .risk-assessment {
+  grid-area: risk;
+  align-self: end;
   text-align: center;
   padding: var(--space-sm) var(--space-md);
   border-radius: 4px;
@@ -654,7 +673,7 @@
   border: 1px solid var(--color-trust-danger);
 }
 
-/* Score breakdown (expandable details) */
+/* Score breakdown (shared base — also reused by OutcomeDisplay) */
 .score-breakdown {
   display: flex;
   gap: var(--space-md);
@@ -662,8 +681,21 @@
   font-family: var(--font-mono);
 }
 
+/* Trust panel chips: single row, evenly spaced whole chips */
+.trust-meter-section .score-breakdown {
+  grid-area: scores;
+  align-self: start;
+  flex-wrap: nowrap;
+  justify-content: space-around;
+  gap: var(--space-sm);
+  width: 100%;
+  min-width: 0;
+}
+
 .score-item {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 70px;
+  white-space: nowrap;
   text-align: center;
 }
 
@@ -682,6 +714,7 @@
 /* ===== DIALOGUE EXCHANGE ===== */
 .dialogue-exchange-section {
   flex: 1;
+  min-height: 240px;
   background: linear-gradient(135deg, rgba(0, 0, 0, 0.5) 0%, rgba(26, 26, 46, 0.3) 100%);
   border: 1px solid rgba(0, 212, 255, 0.2);
   border-radius: 8px;
@@ -693,7 +726,7 @@
 
 .dialogue-history {
   flex: 1;
-  min-height: 0;
+  min-height: 100px;
   overflow-y: auto;
   overflow-x: hidden;
   margin-bottom: var(--space-md);
@@ -863,7 +896,7 @@
   padding: var(--space-md);
   font-size: 0.95rem;
   font-family: var(--font-body);
-  min-height: 150px;
+  min-height: 80px;
   width: 100%;
   resize: vertical;
   transition: all var(--anim-normal) ease;
@@ -911,8 +944,23 @@
 }
 
 .submit-response:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+/* Inline spinner shown inside the submit button while a request is in flight */
+.submit-spinner {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: var(--space-sm);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  vertical-align: -0.1em;
+  animation: spin 1s linear infinite;
 }
 
 /* ========== RIGHT PANEL: SHIP CLAIM DISPLAY ========== */
@@ -1092,8 +1140,11 @@
 
 .outcome-details {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: var(--space-2xl);
   margin: var(--space-xl) 0;
+  width: 100%;
 }
 
 .outcome-item {
@@ -1101,6 +1152,10 @@
   flex-direction: column;
   align-items: center;
   gap: var(--space-sm);
+  flex: 0 1 auto;
+  min-width: 140px;
+  max-width: 200px;
+  text-align: center;
 }
 
 .outcome-icon {
@@ -1300,14 +1355,11 @@
     flex-shrink: 0;
   }
 
-  .trust-meter-section {
+  /* Trust meter + dialogue live inside .center-panel (a flex column),
+     so the panel itself is placed in the single-column grid. */
+  .center-panel {
     grid-column: 1;
-    grid-row: 3;
-  }
-
-  .dialogue-exchange-section {
-    grid-column: 1;
-    grid-row: 4;
+    grid-row: 3 / 5;
   }
 }
 
