@@ -266,6 +266,7 @@ npx playwright test -c e2e_tests/playwright.config.ts
 | "violet mode" / "vision audit" / "align to spec" | VIOLET | No — explicit request |
 | "red mode" / "security audit" / "security sweep" | RED | No — explicit request |
 | "amber mode" / "translation quality" / "i18n sweep" | AMBER | No — explicit request |
+| "neon" / "neon mode" / "shakedown" | NEON | No — explicit request (standing authorization for the full autonomous run) |
 | "500 error" / "page won't load" / "not working" | BLUE | No — clear regression |
 | "add support for..." / "I want the game to..." | GREEN | No — clear additive |
 | "something's off" / "X isn't right" | GATE | **Yes** — ask before routing |
@@ -416,6 +417,8 @@ Files in the same service/subsystem stay together. No two subagents write to the
 ---
 
 ## VIOLET MODE — Spec Compliance & Construction Protocol
+
+> ⚠️ **SUPERSEDED (2026-06-11)**: The spec layers VIOLET audits (`DOCS/SPECS/*.aispec`, `DOCS/FEATURES/`, `DOCS/ARCHITECTURE/data-models/`, `DOCS/STATUS/`) **no longer exist** — the in-repo `DOCS/` directory is legacy (only `_TOOLS/`, `API/`, `PLANS/` remain). The canonical spec is now `~/github/Nebuspace/sw2102-docs/`. Do NOT run VIOLET as written; use **NEON MODE** (below) for spec-vs-reality work. This section is preserved for reference until Max removes it.
 
 ### What Is Violet Mode?
 
@@ -577,8 +580,118 @@ Amber Mode audits the internationalization system across both player-client and 
 
 ---
 
+## NEON MODE — Autonomous Discover→Build→Prove Protocol
+
+### What Is Neon Mode?
+
+Neon Mode is the **single-word autonomous delivery run**: play the live game in Chrome to find what's broken, ugly, or half-built; triangulate with a code scan and a canon-docs drift audit; select **at most 3 sections**; build them with parallel zone workers; survive adversarial review; deploy to dev; **prove every section live in the browser**; and write status truth back to the docs. Unlike BLUE (reactive diagnosis), GOLD (code polish), or VIOLET (audit that stops at grading), NEON starts from the player's chair and does not end until the improvement is observed running on dev. "The UI presentation is crap" is a first-class finding.
+
+**Canonical spec: `~/github/Nebuspace/sw2102-docs/`** — FEATURES/ inline `Status:` markers (✅ 🚧 📐 🐛) are the gap index; SYSTEMS/, ADR/, DATA_MODELS/ are spec closure; `OPERATIONS/ui-flows.md` scripts the browser walk; code wins on number disputes (flag, never "fix"). The game repo's `DOCS/` is legacy — never treat it as spec.
+
+**RULE**: Neon Mode is **explicit-only**. Max uttering the trigger IS standing authorization for the full ≥1-hour run — multi-file, cross-service, new endpoints, additive migrations, conventional commits, and dev deploys are pre-cleared; do NOT pause on the standard pause triggers mid-run. **Chrome belongs to the lead session ONLY** (it is a mutex — no subagent ever drives the browser). The Workflow tool orchestrates; agents return structured JSON only, never file dumps. Nothing ships UNPROVEN: every deployed section ends the run PROVEN or REVERTED.
+
+**Activation Triggers**: "neon" / "neon mode" / "shakedown" (Max's message only — Claude never self-triggers; quoting the word does not count)
+
+### Out-of-Bounds (halt the section or run and ask Max, even mid-run)
+
+| Out of Bounds | Action |
+|---------------|--------|
+| Anything touching prod; force-push; history rewrite | Halt run |
+| Auth, payments, MFA, admin gating, AI-dialogue safety code | Drop section, report |
+| Destructive migrations (drop/alter populated columns); live-data migration (additive nullable columns/tables are fine, flagged) | Drop section, report |
+| Modifying/deleting existing tests or assertions to make gates pass | Automatic CRITICAL — never |
+| Inventing canon (numbers/rules not literally in sw2102-docs) | File in `sw2102-docs/DECISIONS.md` (Pending template), build only the documented kernel |
+| Editing canonical doc prose/rules/numbers; marking an ADR Accepted | Propose in report; Proposed-status ADR drafts are fine |
+| New external dependency; docker-compose topology change | Drop section, report |
+| Destructive psql (writes outside testpilot/verifpilot rows) | Halt run |
+
+### The Pipeline (stages are barriers; no skipping)
+
+| Stage | Topology | What Happens |
+|-------|----------|--------------|
+| N0 PREFLIGHT | Lead, serial | `git status` clean · `tailscale status` up · dev stack healthy via SSH · Chrome connected, testpilot (player tab) + admin (admin tab) logged in · both repos pulled · ledger check (incomplete run <24h on same branch head → resume from last barrier). Failure → DARK, nothing dispatched. After every page load inject `window.confirm = () => true; window.alert = () => {};` via javascript_tool (native dialogs freeze ALL automation — PlanetPortPair is a known trap) |
+| N1 DISCOVERY | Lead drives browser WHILE read-only subagents run in parallel | **Lead — sorties** (goal-phrased playthroughs, see below). **Code scan** (2–4 Explore agents, zones: gameserver / player-client / admin-ui): stubs, TODOs, mock fallbacks, orphan APIs, dead handlers → `{file, line, kind: STUB|MOCK|ORPHAN_API|HALF_WIRED, feature_guess}`. **Docs drift audit** (2–4 agents over FEATURES/ zones: economy/galaxy/gameplay/planets, staleness-filtered by the ledger): verify each inline Status marker against code → drift verdict per claim |
+| N2 SELECT | Lead, serial barrier | Join all findings on doc anchor / feature key → candidate cards. Score, disqualify, pick ≤3 sections. **Write each section's PROOF SCRIPT NOW, before any code** (falsifiable: the sortie beats that fail today + expected UI behavior + expected DB delta + expected API response). No proof script → no selection |
+| N3 BASELINE | Lead, serial | Run a fixed smoke script on dev (login, dashboard render, move, trade, admin login); record console errors, key outputs, deployed SHA. Baseline unhealthy → abort to BLUE territory (an autonomous builder on a sick baseline can't tell its regressions from rot) |
+| N4 PLAN | ≤3 Plan agents, parallel, read-only | Per section: tasks, exclusive file-ownership map, migration check (additive only), layer of fix (never patch the client to hide an API lie). Lead freezes cross-zone CONTRACTS first: interface stubs, route table, lock order (station row before player rows). **Barrier: the union of ownership maps must be DISJOINT before any build** |
+| N5 BUILD | ≤6 writers (≤2/section), strict file ownership | Workers do NOT commit, do NOT run builds, NEVER add mock data or new native confirm()/alert(). Return `{tasks_done, files_changed, self_check_notes}` |
+| N6 REVIEW + GATE | 2 adversarial reviewers/section, parallel, fresh contexts | Reviewer A: correctness/security/contracts (every cross-zone call vs the real definition, lock order, async/sync, race conditions). Reviewer B: spec fidelity (impl vs quoted doc lines) + CRT design-language fidelity (read 2 adjacent components before judging styling) + test-weakening check. Findings `{severity: CRITICAL|HIGH|MED|LOW, file:line, issue, fix}`. GATE: lead hand-fixes or dispatches a fix wave (same ownership map). **Max 2 passes**; surviving MED/LOW ship as report items; surviving CRITICAL/HIGH → cut the section |
+| N7 VERIFY | Lead, serial, ONCE | `npm run build` per touched frontend · pytest (local venv + env stubs) · py_compile · re-run baseline smoke — any unexplained delta is CRITICAL |
+| N8 DEPLOY | Lead, serial | **One conventional commit PER SECTION** → push branch → ssh dev host: pull, alembic upgrade if needed, restart gameserver (vite hot-reloads client) → confirm health + deployed SHA |
+| N9 PROVE | Lead, browser mutex, serial per section | Hard-reload; confirm dev hostname + SHA. Replay each section's pre-registered proof script live — testpilot/verifpilot for two-player mechanics, GAME_TIME_SCALE for time mechanics. **Triple evidence per claim** (below). FAILED → ONE repair loop (fix→verify→redeploy→re-prove); second failure → `git revert` that section's commits, redeploy, mark REVERTED |
+| N10 DEBRIEF + WRITE-BACK | Lead, serial | Report to Max (always, even on abort). Docs write-back to sw2102-docs (see discipline below). Update ledger |
+
+### Sorties (N1 discovery — goal-phrased, never click-paths)
+
+Run as testpilot (verifpilot for a fresh first-login); screenshot every beat (these BEFOREs are irreplaceable); ≥2 psql spot-checks per sortie (a number on screen vs the DB over SSH — a screen that LIES outranks a screen that's empty); check cockpit viewport fit at 1440×900 AND 1920×1080.
+
+| # | Sortie | Player goal | Canon judge |
+|---|--------|-------------|-------------|
+| S1 | FIRST CONTACT | "New player: in 10 min I understand turns, credits, sectors, and want to talk to ARIA again" | first-login, player-journey docs |
+| S2 | TRADER LOOP | "Turn 10,000 cr into more: dock, read market, buy, fly, sell, haggle" | FEATURES/economy |
+| S3 | SPACER LOOP | "Reach a distant named sector; know the turn cost before committing" | movement, galaxy docs |
+| S4 | COMBAT LOOP | "Pick a winnable fight; escape if losing; understand the aftermath" | combat, insurance, bounty docs |
+| S5 | TYCOON LOOP | "Commission a ship at a TradeDock; manage my planet; eye a port to own" | tradedock-shipyard, port-ownership |
+| S6 | OPERATOR LOOP | "Admin on duty: economy healthy? anyone stuck? sweep the admin pages" | admin-ui docs |
+
+**Finding schema** (mandatory, all three discovery streams): id · severity `BLOCKER|PAINFUL|SHABBY|POLISH` · class `DEAD-END|MECHANIC-NO-UI|JANK|DESIGN-LANGUAGE|CONFUSION|LIE` · screen/route · repro · observed vs expected **with doc citation or "NO-CANON"** · evidence refs · suspected file:line.
+
+### Selection Algorithm (N2)
+
+`Score = (Pain × Reach × SpecClarity × Corroboration) ÷ Effort`
+- Pain: BLOCKER=5 · PAINFUL=3 · SHABBY=2 · POLISH=1
+- Reach: every-session screen=3 · common=2 · niche/admin=1
+- SpecClarity: doc gives exact numbers/rules=1.0 · partial=0.7 · NO-CANON=0.4 (NO-CANON findings get only the smallest intervention — fix the overflow, don't redesign the screen)
+- Corroboration: 1 stream ×1.0 · 2 streams ×1.5 · all 3 (**triple-lock**: felt in browser + located in code + specified in canon) ×2.0
+- Effort: 1 = ≤3 files one service · 3 = ≤8 files cross-service · 5 = >12 files or migration
+
+**Hard caps**: ≤3 sections AND combined Effort ≤ 8 (the Effort budget is the real cap). **Disqualify**: 📐 design-only with open questions (needs Max — these become report agenda items) · spec closure has a ⏳ Pending entry in DECISIONS.md · size > Effort 5 · Out-of-Bounds surfaces · unprovable via browser automation. **Tie-breakers**: 🐛 > 🚧 > 📐; seen-in-browser beats docs-only; fewer services. Everything not selected → the report's parking lot, never mid-run scope creep.
+
+### Evidence Standard (N9 — a claim is PROVEN only with all three legs)
+
+| Leg | Requirement |
+|-----|-------------|
+| UI | Mechanic EXERCISED via real clicks: before-state and after-state observed; before/after screenshots same route/viewport (both viewports for layout work); GIF via gif_creator for flows/animation. A screenshot of a rendered page is an exhibit, NOT proof |
+| DB | psql before/after over SSH showing the expected state delta; query text + results in the report |
+| Network | Live request: 2xx, real (non-mock) data, expected shape; zero new console errors |
+
+### Failure Handling (apply the mildest sufficient rung)
+
+| Rung | Condition | Action |
+|------|-----------|--------|
+| Downgrade | Section blows its file budget mid-build, or CRITICAL survives review pass 2 | Cut/revert that section, continue others (better 2 proven than 3 broken) |
+| Report-only | Disqualified gap, canon ambiguity, doc-vs-code number conflict | Flag in report / DECISIONS.md / FINDINGS.md; never invent, never "correct" code-wins numbers |
+| Halt section | Out-of-Bounds surface discovered mid-build | Revert section, report ("I was already in there" is not authorization) |
+| Halt run | Baseline unhealthy · gates failing after repair loop · ~110 min wall clock (then: no new build work, prove-or-revert what's deployed, debrief) | Revert to baseline, full report |
+| MAYDAY | Deploy AND rollback failed; dev worse than baseline | Stop; notify Max with exact SHAs, last commands, service health |
+
+Per-section commits make reverts surgical and progress monotonic. **Resume**: ledger at `.claude/neon-ledger.json` (git-tracked) records per-page audit freshness (docs SHA + game SHA + per-claim drift verdicts) and per-run section state; re-trigger within 24h on the same branch head resumes from the last completed barrier; staleness rule means steady-state runs re-audit only changed pages.
+
+### Docs Write-Back (N10 — read sw2102-docs/CLAUDE.md + CONTRIBUTING.md first; lint with scripts/tags/lint_tags.py)
+
+| Autonomous | Max-gated |
+|------------|-----------|
+| Flip inline FEATURES Status markers to match proven reality (withholding a true flip IS docs drift) | Canonical prose, rules, numbers, new sections |
+| Append rows to the FINDINGS.md "Gameplay verifications" table (create it if absent — CONTRIBUTING requires it for Current→Live promotion) | Marking any ADR Accepted |
+| DECISIONS.md Pending entries (ambiguity) · FINDINGS.md entries (contradictions, unanchored code) · Proposed-status ADR drafts | Deleting or restructuring docs |
+
+### Final Report (mandatory, every run — the report is the product even when the code isn't)
+
+Verdict · full scored candidate table INCLUDING rejected items (selection bias must be auditable) · per-section evidence bundles (commit SHAs, before/after/GIF paths, psql queries+results, network evidence) · baseline regression diff · canon-gap and code-wins flags · parking lot · deferred Out-of-Bounds items · dev end state (deployed SHA, health) · docs write-back summary.
+
+### Verdict Scale
+
+| Verdict | Criteria |
+|---------|----------|
+| GLOWING | All selected sections PROVEN live; replayed sorties show zero regressions; write-back committed |
+| STEADY | ≥1 section PROVEN; the rest cleanly cut/reverted and parked; dev healthy |
+| FLICKERING | Work built but proof failed → reverted; findings + parking lot still delivered (an honest scrub beats a fake success) |
+| DARK | Preflight abort or no viable sections — discovery/diagnostic report only, working tree clean |
+
+---
+
 *Sectorwars2102: Multi-Regional Space Trading Game Platform*
-*Last Updated: 2026-03-17*
+*Last Updated: 2026-06-11*
 
 **Notes**:
 - Never name components with the word "enhanced" or "improved" without first asking Max
