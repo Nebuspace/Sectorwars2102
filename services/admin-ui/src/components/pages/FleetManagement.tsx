@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import FleetHealthReport from '../charts/FleetHealthReport';
+import './fleet-management.css';
 
 interface Ship {
   id: string;
@@ -292,8 +294,8 @@ const FleetManagement: React.FC = () => {
                   <span className="dashboard-stat-icon">🚀</span>
                   <h4 className="dashboard-stat-title">Total Ships</h4>
                 </div>
-                <div className="dashboard-stat-value">{stats.total_ships}</div>
-                <div className="dashboard-stat-description">All ships</div>
+                <div className="dashboard-stat-value">{totalCount.toLocaleString()}</div>
+                <div className="dashboard-stat-description">All ships in galaxy</div>
               </div>
               
               <div className="dashboard-stat-card">
@@ -302,7 +304,7 @@ const FleetManagement: React.FC = () => {
                   <h4 className="dashboard-stat-title">Avg Maintenance</h4>
                 </div>
                 <div className="dashboard-stat-value">{stats.average_maintenance.toFixed(1)}%</div>
-                <div className="dashboard-stat-description">Fleet condition</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
               </div>
               
               <div className="dashboard-stat-card stat-warning">
@@ -311,7 +313,7 @@ const FleetManagement: React.FC = () => {
                   <h4 className="dashboard-stat-title">Inactive Ships</h4>
                 </div>
                 <div className="dashboard-stat-value">{stats.inactive_ships}</div>
-                <div className="dashboard-stat-description">Need attention</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
               </div>
               
               <div className="dashboard-stat-card">
@@ -320,7 +322,7 @@ const FleetManagement: React.FC = () => {
                   <h4 className="dashboard-stat-title">Total Cargo</h4>
                 </div>
                 <div className="dashboard-stat-value">{stats.total_cargo_capacity.toLocaleString()}</div>
-                <div className="dashboard-stat-description">Capacity</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
               </div>
             </div>
           </section>
@@ -494,8 +496,21 @@ const FleetManagement: React.FC = () => {
             </div>
           </div>
         </section>
+
+        {/* Fleet Health Report (rescued: GET /admin/ships/health-report) */}
+        <section className="section">
+          <div className="section-header">
+            <h3 className="section-title">🩺 Fleet Health</h3>
+            <p className="section-subtitle">Condition and status analysis across the entire fleet</p>
+          </div>
+          <div className="card">
+            <div className="card-body">
+              <FleetHealthReport />
+            </div>
+          </div>
+        </section>
       </div>
-      
+
       {/* Create Ship Modal */}
       {showCreateForm && (
         <div className="modal-overlay" onClick={() => setShowCreateForm(false)}>
