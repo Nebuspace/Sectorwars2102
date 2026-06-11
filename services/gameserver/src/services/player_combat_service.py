@@ -102,15 +102,18 @@ class PlayerCombatService:
             # Create combat log for planetary assault
             combat_log = self._create_planet_combat(attacker, attacker_ship, planet)
             
-        elif target_type == "station":
+        elif target_type == "port":
+            # The API contract admits "port" (CombatEngageRequest); this branch
+            # previously matched "station" and referenced an undefined `port`
+            # variable, so port raids always fell through to the error case
             station = self.db.query(Station).filter(Station.id == target_id).first()
-            if not port:
+            if not station:
                 return {
                     "combatId": None,
                     "status": "error",
                     "message": "Target port not found"
                 }
-                
+
             # Check if port is in same sector
             if attacker_ship.current_sector_id != station.sector_id:
                 return {
@@ -118,9 +121,9 @@ class PlayerCombatService:
                     "status": "error",
                     "message": "Target port is not in the same sector"
                 }
-                
+
             # Create combat log for port raid
-            combat_log = self._create_port_combat(attacker, attacker_ship, port)
+            combat_log = self._create_port_combat(attacker, attacker_ship, station)
             
         else:
             return {
