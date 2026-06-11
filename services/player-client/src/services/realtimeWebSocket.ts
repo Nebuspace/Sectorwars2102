@@ -432,10 +432,11 @@ export class EnhancedWebSocketService {
   // Utility Methods
   private getWebSocketUrl(): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = process.env.NODE_ENV === 'development' 
-      ? 'localhost:8080' 
-      : window.location.host;
-    
+    // Same-origin in every tier — the Vite proxy (ws: true) and nginx
+    // gateway forward websocket upgrades; localhost only worked on the
+    // dev box itself
+    const host = window.location.host;
+
     return `${protocol}//${host}/ws/realtime`;
   }
 
