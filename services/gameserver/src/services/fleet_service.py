@@ -137,8 +137,8 @@ class FleetService:
         if not ship:
             raise ValueError(f"Ship {ship_id} not found")
 
-        # Check ship owner's team matches fleet team
-        if ship.owner.team_id != fleet.team_id:
+        # Check ship owner's team matches fleet team (NPC hulls have no owner)
+        if ship.owner is None or ship.owner.team_id != fleet.team_id:
             raise ValueError("Ship and fleet must belong to the same team")
 
         # Check if ship is already in a fleet

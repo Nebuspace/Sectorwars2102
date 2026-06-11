@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
@@ -64,7 +64,14 @@ class Ship(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), nullable=False)
     type = Column(Enum(ShipType, name="ship_type"), nullable=False)
-    owner_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="CASCADE"), nullable=False)
+    # NULL owner = NPC-piloted hull (see is_npc + NPCCharacter.ship_id);
+    # player ships always carry an owner.
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="CASCADE"), nullable=True)
+    # True for NPC-piloted ships. Minimal v1 analogue of canon's
+    # ShipSpecification.is_npc_only flag (DATA_MODELS/ships.md) — an
+    # instance flag instead of a spec flag because v1 pirate hulls reuse
+    # player ShipTypes (no canon pirate hull stats exist yet).
+    is_npc = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     sector_id = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -122,7 +129,11 @@ class Ship(Base):
         
     @property
     def owner_name(self) -> str:
-        """Return the ship owner's name - uses the Player.username property"""
+        """Return the ship owner's name - uses the Player.username property.
+
+        NPC-piloted ships (owner_id NULL, is_npc True) have no Player owner;
+        their pilot's display name lives on NPCCharacter (ship_id FK).
+        """
         if self.owner:
             return self.owner.username
         return "Unknown"

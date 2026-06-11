@@ -892,6 +892,8 @@ class PlanetaryService:
             and_(
                 Ship.sector_id == planet.sector_id,
                 Ship.owner_id != owner_id,
+                # NPC hulls excluded explicitly — previously only an accidental side effect of the NULL owner_id failing the != comparison
+                Ship.is_npc == False,
                 Ship.is_active == True,
                 Ship.is_destroyed == False
             )

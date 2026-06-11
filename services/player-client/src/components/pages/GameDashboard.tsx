@@ -95,7 +95,13 @@ const GameDashboard: React.FC = () => {
     const contacts = new Map<string, any>();
     const addContact = (contact: any) => {
       if (!contact) return;
-      const key = String(contact.user_id || contact.id || contact.username || '');
+      // NPC presence entries carry their NPCCharacter id in player_id —
+      // key on it ONLY for NPCs so same-named captains stay distinct,
+      // while real players keep WS-vs-snapshot dedupe via user_id/id.
+      const key = String(
+        (contact.is_npc ? contact.player_id : null) ||
+        contact.user_id || contact.id || contact.username || ''
+      );
       if (!key) return;
       const isSelf = playerState && (
         key === String(playerState.id) ||
@@ -1292,7 +1298,7 @@ const GameDashboard: React.FC = () => {
                   {sectorContacts.length > 0 ? (
                     <div className="contacts-compact-list">
                       {sectorContacts.map((player: any) => (
-                        <div key={player.user_id || player.id || player.username} className="contact-list-item">
+                        <div key={(player.is_npc && player.player_id) || player.user_id || player.id || player.username} className="contact-list-item">
                           <span className="status-indicator online"></span>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                             <span
@@ -1301,6 +1307,9 @@ const GameDashboard: React.FC = () => {
                             >
                               {player.military_rank ? `${player.military_rank.toUpperCase()} ` : ''}
                               {player.username || player.name || 'UNKNOWN CONTACT'}
+                              {player.is_npc && (
+                                <span className="contact-npc-badge">NPC</span>
+                              )}
                             </span>
                             {(player.reputation_tier || typeof player.personal_reputation === 'number') && (
                               <span style={{ fontSize: '0.7em', opacity: 0.7 }}>

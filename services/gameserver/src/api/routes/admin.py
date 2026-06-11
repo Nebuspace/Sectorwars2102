@@ -1255,6 +1255,8 @@ async def clear_all_galaxy_data(
         # NOTE: Preserves User and OAuthAccount tables (authentication identity)
         # but deletes all game state (Players, Ships, galaxy structure)
 
+        from src.models.npc_character import NPCCharacter
+        db.query(NPCCharacter).delete()  # NPC pilots (incl. KIA tombstones) reference Ships; must not outlive their galaxy
         db.query(Ship).delete()          # Ships reference Players + Sectors
         db.query(Player).delete()        # Players reference Sectors + Regions + Ships (via current_ship_id)
         db.query(Station).delete()       # Stations reference Sectors

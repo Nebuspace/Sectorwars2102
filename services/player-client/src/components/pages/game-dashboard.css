@@ -935,15 +935,27 @@
   .sector-details h4 {
     font-size: 1rem;
   }
-  
+
   .port-item {
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-sm);
   }
-  
+
   .dock-button {
     margin-left: 0;
     align-self: stretch;
   }
+}
+
+/* COMMS contact list: NPC tag rendered after the contact name */
+.contact-npc-badge {
+  margin-left: 6px;
+  font-size: 0.65em;
+  padding: 1px 4px;
+  border: 1px solid var(--color-error);
+  border-radius: 2px;
+  color: var(--color-error);
+  letter-spacing: 0.08em;
+  vertical-align: middle;
 }
