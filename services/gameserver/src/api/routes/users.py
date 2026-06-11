@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 from datetime import datetime, UTC
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_admin_user, admin_or_options
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
@@ -19,7 +19,7 @@ router = APIRouter()
 async def read_users(
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """
@@ -42,7 +42,7 @@ async def options_users():
 @router.post("/", response_model=UserSchema)
 async def create_user(
     user_data: UserCreate,
-    db: Session = Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """
@@ -85,7 +85,7 @@ async def create_user(
 @router.post("/admin", response_model=UserSchema)
 async def create_admin_user(
     admin_data: AdminCreate,
-    db: Session = Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """
@@ -138,7 +138,7 @@ async def create_admin_user(
 @router.get("/{user_id}", response_model=UserSchema)
 async def read_user(
     user_id: UUID,
-    db: Session = Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """
@@ -157,7 +157,7 @@ async def read_user(
 async def update_user(
     user_id: UUID,
     user_data: UserUpdate,
-    db: Session = Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """
@@ -210,7 +210,7 @@ async def update_user(
 @router.delete("/{user_id}", response_model=UserSchema)
 async def delete_user(
     user_id: UUID,
-    db: Session = Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """
@@ -243,7 +243,7 @@ async def delete_user(
 async def reset_admin_password(
     user_id: UUID,
     password: str = Body(..., min_length=8),
-    db: Session = Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """

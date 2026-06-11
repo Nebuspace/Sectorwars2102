@@ -111,7 +111,7 @@ export interface Cluster {
 export interface UserAccount {
   id: string;
   username: string;
-  email: string;
+  email: string | null;
   is_active: boolean;
   is_admin: boolean;
   created_at: string;
@@ -543,18 +543,23 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
   };
   
-  // Activate a user account
+  // Activate a user account.
+  // There are no dedicated activate/deactivate endpoints — the real user CRUD
+  // lives at /api/v1/users/* (users.py) and PUT /users/{id} accepts a partial
+  // update with an is_active flag.
   const activateUser = async (userId: string) => {
     if (!user || !user.is_admin) return;
-    
+
     setIsLoading(true);
     setError(null);
-    
+
     try {
-      await api.post(`/admin/users/${userId}/activate`);
-      
+      await api.put(`/users/${userId}`, { is_active: true }, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+
       // Update local state
-      setUsers(users.map(u => 
+      setUsers(users.map(u =>
         u.id === userId ? { ...u, is_active: true } : u
       ));
     } catch (error) {
@@ -564,19 +569,21 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setIsLoading(false);
     }
   };
-  
-  // Deactivate a user account
+
+  // Deactivate a user account (PUT /users/{id} — see activateUser)
   const deactivateUser = async (userId: string) => {
     if (!user || !user.is_admin) return;
-    
+
     setIsLoading(true);
     setError(null);
-    
+
     try {
-      await api.post(`/admin/users/${userId}/deactivate`);
-      
+      await api.put(`/users/${userId}`, { is_active: false }, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+
       // Update local state
-      setUsers(users.map(u => 
+      setUsers(users.map(u =>
         u.id === userId ? { ...u, is_active: false } : u
       ));
     } catch (error) {

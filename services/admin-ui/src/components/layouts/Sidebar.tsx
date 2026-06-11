@@ -80,6 +80,7 @@ const Sidebar: React.FC = () => {
       icon: '📊',
       items: [
         { to: '/analytics', label: 'Analytics', icon: '📈' },
+        { to: '/economy', label: 'Economy', icon: '💰' },
         { to: '/ai-trading', label: 'AI Trading', icon: '🤖' }
       ]
     },
