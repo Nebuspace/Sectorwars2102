@@ -39,6 +39,39 @@ class MarketInfoResponse(BaseModel):
     port: Dict[str, Any]
 
 
+def _get_station_or_404(db: Session, station_id: str) -> Station:
+    """Fetch a station by id, turning malformed UUIDs into a 404 instead of
+    a DataError that surfaces as a generic 'Database error occurred' 500."""
+    import uuid as _uuid
+    try:
+        station_uuid = _uuid.UUID(str(station_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Station not found")
+    station = db.query(Station).filter(Station.id == station_uuid).first()
+    if not station:
+        raise HTTPException(status_code=404, detail="Station not found")
+    return station
+
+
+def _ensure_market_prices(db: Session, station: Station) -> None:
+    """Bridge the station's commodities JSONB into MarketPrice rows.
+
+    Galaxy imports (BANG) stock stations only via the commodities JSONB;
+    the market/buy/sell endpoints read MarketPrice rows, which otherwise
+    never exist — every market in the universe reads empty. Populate them
+    lazily on first access; TradingService keeps them current afterwards.
+    """
+    if not station.commodities:
+        return
+    has_rows = db.query(MarketPrice.id).filter(
+        MarketPrice.station_id == station.id
+    ).first()
+    if has_rows:
+        return
+    TradingService(db).update_market_prices(station.id)
+    db.commit()
+
+
 @router.post("/buy")
 async def buy_resource(
     trade_request: TradeRequest,
@@ -53,13 +86,20 @@ async def buy_resource(
         raise HTTPException(status_code=400, detail="You must be docked at a station to trade")
 
     # Get the station
-    station = db.query(Station).filter(Station.id == trade_request.station_id).first()
-    if not station:
-        raise HTTPException(status_code=404, detail="Station not found")
+    station = _get_station_or_404(db, trade_request.station_id)
 
     # Verify player is in the same sector as the station
     if current_player.current_sector_id != station.sector_id:
         raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+
+    # Populate MarketPrice rows from the commodities JSONB if missing
+    _ensure_market_prices(db, station)
+
+    # Honor the station's commodity trade flags: 'sells' means the station
+    # sells this commodity TO players
+    commodity_cfg = (station.commodities or {}).get(trade_request.resource_type)
+    if commodity_cfg is not None and not commodity_cfg.get("sells", False):
+        raise HTTPException(status_code=400, detail="Station does not sell this resource")
 
     # Lock player row to prevent race conditions on concurrent trades
     current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
@@ -87,10 +127,12 @@ async def buy_resource(
             detail=f"Station only has {market_price.quantity} units available"
         )
 
-    # Apply rank trading discount to buy price
+    # Players purchasing FROM the station pay sell_price (what the station
+    # charges players). Charging buy_price here created a same-station
+    # buy-low/sell-high arbitrage loop.
     bonuses = RankingService.get_rank_bonuses(current_player.military_rank)
     discount_pct = bonuses["trading_discount_percent"] / 100.0
-    discounted_price = market_price.buy_price * (1 - discount_pct)
+    discounted_price = market_price.sell_price * (1 - discount_pct)
     effective_buy_price = max(1, int(discounted_price))  # Floor at 1 credit
 
     # Calculate total cost
@@ -130,10 +172,15 @@ async def buy_resource(
         current_ship.cargo['used'] = current_ship.cargo.get('used', 0) + trade_request.quantity
         flag_modified(current_ship, 'cargo')  # Mark JSONB as modified for SQLAlchemy
 
-        # Update market quantity
+        # Update market quantity — both the MarketPrice row and the
+        # commodities JSONB (the JSONB is the source TradingService rebuilds
+        # prices from; leaving it stale resurrects sold stock on refresh)
         market_price.quantity -= trade_request.quantity
-        market_price.last_updated = datetime.now(UTC)
-        
+        market_price.last_transaction_at = datetime.now(UTC)
+        if commodity_cfg is not None:
+            commodity_cfg["quantity"] = max(0, commodity_cfg.get("quantity", 0) - trade_request.quantity)
+            flag_modified(station, 'commodities')
+
         # Create transaction record
         transaction = MarketTransaction(
             player_id=current_player.id,
@@ -204,7 +251,7 @@ async def buy_resource(
                 "resource": trade_request.resource_type,
                 "quantity": trade_request.quantity,
                 "unit_price": effective_buy_price,
-                "base_price": market_price.buy_price,
+                "base_price": market_price.sell_price,
                 "rank_discount_percent": bonuses["trading_discount_percent"],
                 "total_cost": total_cost,
                 "remaining_credits": current_player.credits,
@@ -239,13 +286,20 @@ async def sell_resource(
     current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
 
     # Get the station
-    station = db.query(Station).filter(Station.id == trade_request.station_id).first()
-    if not station:
-        raise HTTPException(status_code=404, detail="Station not found")
-    
+    station = _get_station_or_404(db, trade_request.station_id)
+
     # Verify player is in the same sector as the station
     if current_player.current_sector_id != station.sector_id:
         raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+
+    # Populate MarketPrice rows from the commodities JSONB if missing
+    _ensure_market_prices(db, station)
+
+    # Honor the station's commodity trade flags: 'buys' means the station
+    # buys this commodity FROM players
+    commodity_cfg = (station.commodities or {}).get(trade_request.resource_type)
+    if commodity_cfg is not None and not commodity_cfg.get("buys", False):
+        raise HTTPException(status_code=400, detail="Station does not buy this resource")
     
     # Get current ship
     current_ship = db.query(Ship).filter(
@@ -275,11 +329,13 @@ async def sell_resource(
     if not market_price:
         raise HTTPException(status_code=404, detail="Station doesn't trade this resource")
     
-    # Apply rank trading bonus to sell price
+    # Players selling TO the station receive buy_price (what the station
+    # pays players). Paying out sell_price here was the other half of the
+    # same-station arbitrage loop.
     bonuses = RankingService.get_rank_bonuses(current_player.military_rank)
     bonus_pct = bonuses["trading_discount_percent"] / 100.0
-    boosted_price = market_price.sell_price * (1 + bonus_pct)
-    effective_sell_price = int(boosted_price)
+    boosted_price = market_price.buy_price * (1 + bonus_pct)
+    effective_sell_price = max(1, int(boosted_price))
 
     # Calculate total earnings
     total_earnings = effective_sell_price * trade_request.quantity
@@ -301,9 +357,13 @@ async def sell_resource(
         current_ship.cargo['used'] = max(0, current_ship.cargo.get('used', 0) - trade_request.quantity)
         flag_modified(current_ship, 'cargo')  # Mark JSONB as modified for SQLAlchemy
 
-        # Update market quantity
+        # Update market quantity — keep the commodities JSONB in sync (it is
+        # the source TradingService rebuilds prices from)
         market_price.quantity += trade_request.quantity
-        market_price.last_updated = datetime.now(UTC)
+        market_price.last_transaction_at = datetime.now(UTC)
+        if commodity_cfg is not None:
+            commodity_cfg["quantity"] = commodity_cfg.get("quantity", 0) + trade_request.quantity
+            flag_modified(station, 'commodities')
 
         # Create transaction record
         transaction = MarketTransaction(
@@ -376,7 +436,7 @@ async def sell_resource(
                 "resource": trade_request.resource_type,
                 "quantity": trade_request.quantity,
                 "unit_price": effective_sell_price,
-                "base_price": market_price.sell_price,
+                "base_price": market_price.buy_price,
                 "rank_bonus_percent": bonuses["trading_discount_percent"],
                 "total_earnings": total_earnings,
                 "new_credits": current_player.credits,
@@ -402,22 +462,28 @@ async def get_market_info(
     current_player: Player = Depends(get_current_player)
 ):
     """Get market information for a specific port"""
-    
+
     # Get the station
-    station = db.query(Station).filter(Station.id == station_id).first()
-    if not station:
-        raise HTTPException(status_code=404, detail="Station not found")
-    
+    station = _get_station_or_404(db, station_id)
+
+    # Populate MarketPrice rows from the commodities JSONB if missing
+    _ensure_market_prices(db, station)
+
     # Get all market prices for this port
-    market_prices = db.query(MarketPrice).filter(MarketPrice.station_id == station_id).all()
-    
-    # Format resources
+    market_prices = db.query(MarketPrice).filter(MarketPrice.station_id == station.id).all()
+
+    # Format resources, carrying the station's trade-direction flags so the
+    # client can show only actionable buy/sell options
+    station_commodities = station.commodities or {}
     resources = {}
     for price in market_prices:
+        cfg = station_commodities.get(price.commodity) or {}
         resources[price.commodity] = {
             "quantity": price.quantity,
             "buy_price": price.buy_price,
             "sell_price": price.sell_price,
+            "station_buys": bool(cfg.get("buys", True)),
+            "station_sells": bool(cfg.get("sells", True)),
             "last_updated": price.updated_at.isoformat() if price.updated_at else None
         }
     
