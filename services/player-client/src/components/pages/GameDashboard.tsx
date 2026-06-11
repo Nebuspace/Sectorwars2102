@@ -7,6 +7,7 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import GameLayout from '../layouts/GameLayout';
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
+import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import TacticalCard from '../tactical/TacticalCard';
 import SectorViewport from '../tactical/SectorViewport';
 import PlanetPortPair from '../tactical/PlanetPortPair';
@@ -50,6 +51,7 @@ const GameDashboard: React.FC = () => {
     transferColonists,
     exploreCurrentLocation,
     getAvailableMoves,
+    refreshPlayerState,
     error
   } = useGame();
   
@@ -59,6 +61,13 @@ const GameDashboard: React.FC = () => {
   const [movementResult, setMovementResult] = useState<any>(null);
   const [dockingResult, setDockingResult] = useState<any>(null);
   const [landingResult, setLandingResult] = useState<any>(null);
+
+  // Docked trading-station terminal: trade desk or the Port Office registry.
+  // SpaceDocks/TradeDocks reach the Port Office through their own venue hub.
+  const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice'>('trade');
+  useEffect(() => {
+    setStationTerminal('trade');
+  }, [playerState?.current_port_id]);
 
   // NAV scan loading state: show a spinner while sector telemetry loads,
   // then fall back to a retry affordance if nothing arrives within 10s.
@@ -814,10 +823,40 @@ const GameDashboard: React.FC = () => {
               </div>
               <div className="monitor-screen">
                 <div className="screen-hud-header">
-                  {isDockedAtSpaceDock ? 'SPACEDOCK TERMINAL' : 'TRADING TERMINAL'}
+                  {isDockedAtSpaceDock
+                    ? 'SPACEDOCK TERMINAL'
+                    : stationTerminal === 'portoffice' ? 'PORT OFFICE' : 'TRADING TERMINAL'}
+                  {!isDockedAtSpaceDock && (
+                    <button
+                      className="hud-header-toggle"
+                      style={{
+                        float: 'right', background: 'transparent', color: 'inherit',
+                        border: '1px solid currentColor', borderRadius: '3px',
+                        font: 'inherit', fontSize: '0.85em', padding: '0 8px', cursor: 'pointer'
+                      }}
+                      onClick={() => setStationTerminal(prev => prev === 'trade' ? 'portoffice' : 'trade')}
+                    >
+                      {stationTerminal === 'trade' ? '🏛️ Port Office' : '📈 Trade Desk'}
+                    </button>
+                  )}
                 </div>
                 <div className="screen-hud-content trading-content">
-                  {isDockedAtSpaceDock ? <SpaceDockInterface /> : <TradingInterface onClose={() => {}} />}
+                  {isDockedAtSpaceDock ? (
+                    <SpaceDockInterface />
+                  ) : stationTerminal === 'portoffice' && playerState?.current_port_id ? (
+                    <PortOfficeVenue
+                      stationId={playerState.current_port_id}
+                      stationName={
+                        stationsInSector?.find((s: any) => s.id === playerState?.current_port_id)?.name ||
+                        'Trading Station'
+                      }
+                      credits={playerState?.credits ?? 0}
+                      onCreditsSet={() => { refreshPlayerState(); }}
+                      onBack={() => setStationTerminal('trade')}
+                    />
+                  ) : (
+                    <TradingInterface onClose={() => {}} />
+                  )}
                 </div>
               </div>
             </div>
