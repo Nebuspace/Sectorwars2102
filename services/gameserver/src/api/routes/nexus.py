@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
 
@@ -15,6 +15,7 @@ from src.models.station import Station
 from src.models.planet import Planet
 from src.models.region import Region
 from src.models.cluster import Cluster
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services.nexus_generation_service import nexus_generation_service
 from src.services.regional_auth_service import regional_auth, RegionalPermission
 
@@ -39,8 +40,10 @@ class NexusStatsResponse(BaseModel):
     total_planets: int
     total_warp_gates: int
     clusters: List[Dict[str, Any]]  # Changed from districts
-    active_players: int
-    daily_traffic: int
+    # Nullable: no player-location or traffic telemetry exists yet, so these
+    # are None rather than fabricated zeros.
+    active_players: Optional[int] = None
+    daily_traffic: Optional[int] = None
 
 
 class ClusterInfoResponse(BaseModel):
@@ -209,18 +212,33 @@ async def get_nexus_statistics(
                 "avg_development": round(row.avg_development, 1) if row.avg_development else 0
             })
 
-        # Get active players (would need player location tracking)
-        active_players = 0  # Placeholder
-        daily_traffic = 0   # Placeholder
+        # Count warp gates: active warp tunnels touching the nexus region
+        # from EITHER end — tunnels terminating at the nexus are gates too,
+        # and counting only origins missed them entirely.
+        nexus_sector_ids = select(Sector.id).where(
+            Sector.region_id == nexus_region.id
+        ).scalar_subquery()
+        warp_gates_result = await session.execute(
+            select(func.count(WarpTunnel.id)).where(
+                or_(
+                    WarpTunnel.origin_sector_id.in_(nexus_sector_ids),
+                    WarpTunnel.destination_sector_id.in_(nexus_sector_ids)
+                ),
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE
+            )
+        )
+        total_warp_gates = warp_gates_result.scalar() or 0
 
+        # active_players / daily_traffic: no player-location or traffic
+        # telemetry exists yet — return None instead of fabricated zeros.
         return NexusStatsResponse(
             total_sectors=total_sectors,
             total_ports=total_ports,
             total_planets=total_planets,
-            total_warp_gates=0,  # Would need to implement warp gate counting
+            total_warp_gates=total_warp_gates,
             clusters=clusters,  # Changed from districts
-            active_players=active_players,
-            daily_traffic=daily_traffic
+            active_players=None,
+            daily_traffic=None
         )
     
     except HTTPException:

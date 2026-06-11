@@ -28,6 +28,7 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
   const [roles, setRoles] = useState<Role[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -39,120 +40,36 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
 
   const fetchRolesAndPermissions = async () => {
     setLoading(true);
+    setError(null);
     try {
-      // Fetch roles
-      const rolesResponse = await fetch('/api/admin/roles', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      }).catch(() => {
-        // Mock data
-        return {
-          ok: true,
-          json: async () => ({
-            roles: [
-              {
-                id: 'super-admin',
-                name: 'Super Administrator',
-                description: 'Full system access with all permissions',
-                permissions: ['*'],
-                userCount: 2,
-                isSystem: true,
-                createdAt: '2024-01-01T00:00:00Z',
-                updatedAt: '2024-01-01T00:00:00Z'
-              },
-              {
-                id: 'admin',
-                name: 'Administrator',
-                description: 'General administrative access',
-                permissions: ['users.read', 'users.write', 'ships.read', 'ships.write', 'economy.read', 'economy.intervene'],
-                userCount: 5,
-                isSystem: true,
-                createdAt: '2024-01-01T00:00:00Z',
-                updatedAt: '2024-01-01T00:00:00Z'
-              },
-              {
-                id: 'moderator',
-                name: 'Moderator',
-                description: 'Can moderate player actions and content',
-                permissions: ['users.read', 'messages.read', 'messages.moderate', 'combat.view'],
-                userCount: 12,
-                isSystem: false,
-                createdAt: '2024-02-01T00:00:00Z',
-                updatedAt: '2024-02-15T00:00:00Z'
-              },
-              {
-                id: 'analyst',
-                name: 'Data Analyst',
-                description: 'Read-only access to analytics and reports',
-                permissions: ['analytics.read', 'economy.read', 'users.read', 'combat.view'],
-                userCount: 8,
-                isSystem: false,
-                createdAt: '2024-03-01T00:00:00Z',
-                updatedAt: '2024-03-01T00:00:00Z'
-              }
-            ]
-          })
-        };
-      });
-
-      // Fetch permissions
-      const permissionsResponse = await fetch('/api/admin/permissions', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      }).catch(() => {
-        // Mock data
-        return {
-          ok: true,
-          json: async () => ({
-            permissions: [
-              // User permissions
-              { id: 'users.read', name: 'View Users', resource: 'users', action: 'read', description: 'View user profiles and lists' },
-              { id: 'users.write', name: 'Modify Users', resource: 'users', action: 'write', description: 'Create, update, and delete users' },
-              { id: 'users.ban', name: 'Ban Users', resource: 'users', action: 'ban', description: 'Ban and unban user accounts' },
-              
-              // Ship permissions
-              { id: 'ships.read', name: 'View Ships', resource: 'ships', action: 'read', description: 'View ship information' },
-              { id: 'ships.write', name: 'Modify Ships', resource: 'ships', action: 'write', description: 'Create, update, and delete ships' },
-              { id: 'ships.emergency', name: 'Emergency Ship Actions', resource: 'ships', action: 'emergency', description: 'Perform emergency repairs and teleports' },
-              
-              // Economy permissions
-              { id: 'economy.read', name: 'View Economy', resource: 'economy', action: 'read', description: 'View economic data and reports' },
-              { id: 'economy.intervene', name: 'Market Intervention', resource: 'economy', action: 'intervene', description: 'Perform market interventions' },
-              
-              // Combat permissions
-              { id: 'combat.view', name: 'View Combat', resource: 'combat', action: 'view', description: 'View combat logs and statistics' },
-              { id: 'combat.intervene', name: 'Combat Intervention', resource: 'combat', action: 'intervene', description: 'Intervene in active combat' },
-              
-              // Messages permissions
-              { id: 'messages.read', name: 'Read Messages', resource: 'messages', action: 'read', description: 'Read all player messages' },
-              { id: 'messages.moderate', name: 'Moderate Messages', resource: 'messages', action: 'moderate', description: 'Delete and flag messages' },
-              
-              // Analytics permissions
-              { id: 'analytics.read', name: 'View Analytics', resource: 'analytics', action: 'read', description: 'View analytics and reports' },
-              { id: 'analytics.export', name: 'Export Analytics', resource: 'analytics', action: 'export', description: 'Export analytics data' },
-              
-              // Security permissions
-              { id: 'security.manage', name: 'Manage Security', resource: 'security', action: 'manage', description: 'Manage security settings and policies' },
-              { id: 'security.audit', name: 'View Audit Logs', resource: 'security', action: 'audit', description: 'View and export audit logs' },
-              
-              // System permissions
-              { id: 'system.config', name: 'System Configuration', resource: 'system', action: 'config', description: 'Modify system configuration' },
-              { id: 'roles.manage', name: 'Manage Roles', resource: 'roles', action: 'manage', description: 'Create and modify roles' }
-            ]
-          })
-        };
-      });
+      const [rolesResponse, permissionsResponse] = await Promise.all([
+        fetch('/api/v1/admin/roles', {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
+          }
+        }),
+        fetch('/api/v1/admin/permissions', {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
+          }
+        })
+      ]);
 
       if (rolesResponse.ok && permissionsResponse.ok) {
         const rolesData = await rolesResponse.json();
         const permissionsData = await permissionsResponse.json();
-        setRoles(rolesData.roles);
-        setPermissions(permissionsData.permissions);
+        setRoles(rolesData.roles ?? []);
+        setPermissions(permissionsData.permissions ?? []);
+      } else {
+        setRoles([]);
+        setPermissions([]);
+        setError('Failed to load roles and permissions — /api/v1/admin/roles and /api/v1/admin/permissions are not implemented.');
       }
     } catch (error) {
       console.error('Error fetching roles and permissions:', error);
+      setRoles([]);
+      setPermissions([]);
+      setError('Failed to load roles and permissions. Please check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -184,12 +101,9 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
         method,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
         },
         body: JSON.stringify(editingRole)
-      }).catch(() => {
-        // Mock success
-        return { ok: true, json: async () => ({ ...editingRole, id: editingRole.id || `role-${Date.now()}` }) };
       });
 
       if (response.ok) {
@@ -202,26 +116,22 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
         setShowCreateModal(false);
         setEditingRole(null);
         onRoleUpdate?.(savedRole);
+      } else {
+        setError('Failed to save role — role endpoints are not implemented (RBAC is design-only).');
       }
     } catch (error) {
       console.error('Error saving role:', error);
+      setError('Network error while saving role.');
     }
   };
 
   const handleDeleteRole = async (roleId: string) => {
-    if (!confirm('Are you sure you want to delete this role? Users with this role will lose their permissions.')) {
-      return;
-    }
-
     try {
-      const response = await fetch(`/api/admin/roles/${roleId}`, {
+      const response = await fetch(`/api/v1/admin/roles/${roleId}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
         }
-      }).catch(() => {
-        // Mock success
-        return { ok: true };
       });
 
       if (response.ok) {
@@ -229,9 +139,12 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
         if (selectedRole?.id === roleId) {
           setSelectedRole(null);
         }
+      } else {
+        setError('Failed to delete role — role endpoints are not implemented (RBAC is design-only).');
       }
     } catch (error) {
       console.error('Error deleting role:', error);
+      setError('Network error while deleting role.');
     }
   };
 
@@ -275,6 +188,20 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
 
   return (
     <div className="role-management">
+      <div className="alert alert-warning">
+        <span className="alert-icon">⚠️</span>
+        <span className="alert-message">
+          RBAC roles are design-only (ADR-0027 / ADR-0058) — no backend endpoints
+        </span>
+      </div>
+
+      {error && (
+        <div className="error-state" style={{ padding: '16px', margin: '16px 0', backgroundColor: 'rgba(231, 76, 60, 0.1)', border: '1px solid rgba(231, 76, 60, 0.3)', borderRadius: '8px', color: '#e74c3c' }}>
+          <i className="fas fa-exclamation-circle" style={{ marginRight: '8px' }}></i>
+          {error}
+        </div>
+      )}
+
       <div className="role-header">
         <h2>Role Management</h2>
         <div className="role-actions">
@@ -287,7 +214,12 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <button className="btn btn-primary" onClick={handleCreateRole}>
+          <button
+            className="btn btn-primary"
+            onClick={handleCreateRole}
+            disabled
+            title="Role creation is design-only (ADR-0027 / ADR-0058) — no backend endpoint"
+          >
             <i className="fas fa-plus"></i>
             Create Role
           </button>
@@ -341,14 +273,8 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
                     e.stopPropagation();
                     handleDeleteRole(role.id);
                   }}
-                  disabled={role.isSystem || role.userCount > 0}
-                  title={
-                    role.isSystem 
-                      ? 'System roles cannot be deleted' 
-                      : role.userCount > 0 
-                        ? 'Cannot delete role with assigned users'
-                        : 'Delete role'
-                  }
+                  disabled
+                  title="Role deletion is design-only (ADR-0027 / ADR-0058) — no backend endpoint"
                 >
                   <i className="fas fa-trash"></i>
                 </button>
@@ -466,10 +392,11 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
               <button className="btn btn-secondary" onClick={() => setShowCreateModal(false)}>
                 Cancel
               </button>
-              <button 
-                className="btn btn-primary" 
+              <button
+                className="btn btn-primary"
                 onClick={handleSaveRole}
-                disabled={!editingRole.name || editingRole.isSystem}
+                disabled
+                title="Saving roles is design-only (ADR-0027 / ADR-0058) — no backend endpoint"
               >
                 {editingRole.id ? 'Save Changes' : 'Create Role'}
               </button>

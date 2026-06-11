@@ -60,6 +60,7 @@ export const PredictiveAnalytics: React.FC = () => {
   const [riskFactors, setRiskFactors] = useState<RiskFactor[]>([]);
   const [selectedTimeframe, setSelectedTimeframe] = useState<'7d' | '30d' | '90d'>('30d');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchPredictiveData();
@@ -68,136 +69,28 @@ export const PredictiveAnalytics: React.FC = () => {
   const fetchPredictiveData = async () => {
     setLoading(true);
     try {
-      // Fetch predictions
-      const response = await fetch(`/api/admin/analytics/predictions?timeframe=${selectedTimeframe}`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
-      }).catch(() => ({
-        ok: true,
-        json: async () => ({
-          predictions: [
-            {
-              metric: 'Active Players',
-              current: 1234,
-              predicted: 1456,
-              confidence: 85,
-              trend: 'up',
-              change: 18,
-              factors: ['New marketing campaign', 'Seasonal trend', 'Recent game update']
-            },
-            {
-              metric: 'Daily Revenue',
-              current: 15420,
-              predicted: 17850,
-              confidence: 78,
-              trend: 'up',
-              change: 15.8,
-              factors: ['Increased player retention', 'New monetization features']
-            },
-            {
-              metric: 'Server Load',
-              current: 65,
-              predicted: 72,
-              confidence: 92,
-              trend: 'up',
-              change: 10.8,
-              factors: ['Player growth', 'Upcoming event']
-            },
-            {
-              metric: 'Player Churn',
-              current: 12.5,
-              predicted: 10.2,
-              confidence: 73,
-              trend: 'down',
-              change: -18.4,
-              factors: ['Improved onboarding', 'Content updates']
-            },
-            {
-              metric: 'Combat Activity',
-              current: 892,
-              predicted: 1120,
-              confidence: 81,
-              trend: 'up',
-              change: 25.6,
-              factors: ['Weekend peak', 'PvP event announcement']
-            },
-            {
-              metric: 'Market Stability',
-              current: 87,
-              predicted: 84,
-              confidence: 69,
-              trend: 'down',
-              change: -3.4,
-              factors: ['High trade volume', 'Resource imbalance']
-            }
-          ],
-          playerGrowth: {
-            labels: Array.from({ length: 30 }, (_, i) => {
-              const date = new Date();
-              date.setDate(date.getDate() - 29 + i);
-              return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-            }),
-            actual: Array.from({ length: 20 }, () => 1100 + Math.floor(Math.random() * 200)),
-            predicted: Array.from({ length: 30 }, (_, i) => 1200 + i * 8 + Math.floor(Math.random() * 50)),
-            upperBound: Array.from({ length: 30 }, (_, i) => 1300 + i * 8 + Math.floor(Math.random() * 50)),
-            lowerBound: Array.from({ length: 30 }, (_, i) => 1100 + i * 8 + Math.floor(Math.random() * 50))
-          },
-          economyForecast: {
-            labels: Array.from({ length: 30 }, (_, i) => {
-              const date = new Date();
-              date.setDate(date.getDate() - 29 + i);
-              return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-            }),
-            actual: Array.from({ length: 20 }, () => 14000 + Math.floor(Math.random() * 3000)),
-            predicted: Array.from({ length: 30 }, (_, i) => 15000 + i * 100 + Math.floor(Math.random() * 1000)),
-            upperBound: Array.from({ length: 30 }, (_, i) => 16000 + i * 100 + Math.floor(Math.random() * 1000)),
-            lowerBound: Array.from({ length: 30 }, (_, i) => 14000 + i * 100 + Math.floor(Math.random() * 1000))
-          },
-          riskFactors: [
-            {
-              id: 'rf1',
-              name: 'Server Capacity Limit',
-              severity: 'high',
-              probability: 75,
-              impact: 'May cause performance degradation and player disconnections',
-              mitigation: 'Scale infrastructure before predicted peak'
-            },
-            {
-              id: 'rf2',
-              name: 'Economic Inflation',
-              severity: 'medium',
-              probability: 60,
-              impact: 'Could destabilize in-game economy',
-              mitigation: 'Implement automatic market interventions'
-            },
-            {
-              id: 'rf3',
-              name: 'Player Retention Drop',
-              severity: 'medium',
-              probability: 45,
-              impact: 'Revenue decline and reduced player base',
-              mitigation: 'Launch retention campaign and content updates'
-            },
-            {
-              id: 'rf4',
-              name: 'Security Vulnerability',
-              severity: 'critical',
-              probability: 15,
-              impact: 'Potential exploit could damage game economy',
-              mitigation: 'Regular security audits and monitoring'
-            }
-          ]
-        })
-      }));
+      const response = await fetch(`/api/v1/admin/analytics/predictions?timeframe=${selectedTimeframe}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+      });
 
-      if (response.ok) {
-        const data = await response.json();
-        setPredictions(data.predictions);
-        setPlayerGrowth(data.playerGrowth);
-        setEconomyForecast(data.economyForecast);
-        setRiskFactors(data.riskFactors);
+      if (!response.ok) {
+        setError(
+          response.status === 404
+            ? 'Predictive analytics endpoint not implemented — /api/v1/admin/analytics/predictions returned 404'
+            : `Predictive analytics request failed (HTTP ${response.status})`
+        );
+        return;
       }
-    } catch (error) {
-      console.error('Error fetching predictive data:', error);
+
+      const data = await response.json();
+      setPredictions(data.predictions ?? []);
+      setPlayerGrowth(data.playerGrowth);
+      setEconomyForecast(data.economyForecast);
+      setRiskFactors(data.riskFactors ?? []);
+      setError(null);
+    } catch (err) {
+      console.error('Error fetching predictive data:', err);
+      setError('Gameserver unreachable — network error fetching predictive analytics');
     } finally {
       setLoading(false);
     }
@@ -347,6 +240,27 @@ export const PredictiveAnalytics: React.FC = () => {
     );
   }
 
+  if (error) {
+    return (
+      <div className="predictive-analytics">
+        <div className="analytics-header">
+          <h2>Predictive Analytics Dashboard</h2>
+        </div>
+        <div className="alert alert-error">
+          <span className="alert-icon">⚠️</span>
+          <span className="alert-message">{error}</span>
+        </div>
+        <button
+          className="btn btn-secondary"
+          onClick={() => fetchPredictiveData()}
+        >
+          <i className="fas fa-sync"></i>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="predictive-analytics">
       <div className="analytics-header">
@@ -481,27 +395,6 @@ export const PredictiveAnalytics: React.FC = () => {
         </div>
       </div>
 
-      <div className="analytics-insights">
-        <h3>AI-Generated Insights</h3>
-        <div className="insights-list">
-          <div className="insight-item">
-            <i className="fas fa-lightbulb"></i>
-            <p>Player growth is expected to accelerate by 18% over the next {selectedTimeframe}. Consider scaling server infrastructure to handle the increased load.</p>
-          </div>
-          <div className="insight-item">
-            <i className="fas fa-chart-line"></i>
-            <p>Revenue projections show a 15.8% increase, primarily driven by improved player retention and recent monetization features.</p>
-          </div>
-          <div className="insight-item">
-            <i className="fas fa-exclamation-triangle"></i>
-            <p>Server capacity risk is high (75% probability). Immediate action recommended to prevent performance issues during peak times.</p>
-          </div>
-          <div className="insight-item">
-            <i className="fas fa-shield-alt"></i>
-            <p>Security vulnerability risk is low but critical. Schedule security audit within the next 2 weeks to maintain system integrity.</p>
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

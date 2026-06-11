@@ -11,9 +11,6 @@ export const PermissionsDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [editingUser, setEditingUser] = useState<any>(null);
-  const [editRoles, setEditRoles] = useState<string[]>([]);
-  const [editCustomPerms, setEditCustomPerms] = useState<string[]>([]);
 
   React.useEffect(() => {
     if (activeTab === 'users') {
@@ -25,7 +22,7 @@ export const PermissionsDashboard: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/v1/admin/users?include_permissions=true', {
+      const response = await fetch('/api/v1/admin/users', {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
         }
@@ -55,110 +52,9 @@ export const PermissionsDashboard: React.FC = () => {
     }
   };
 
-  const handlePermissionChange = async (roleId: string, permissionId: string, granted: boolean) => {
-    try {
-      const response = await fetch(`/api/v1/admin/roles/${roleId}/permissions`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        },
-        body: JSON.stringify({ permission_id: permissionId, granted })
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({ detail: 'Failed to update permission' }));
-        setError(errData.detail || 'Failed to update permission');
-      }
-    } catch (err) {
-      console.error('Error updating permission:', err);
-      setError('Network error while updating permission');
-    }
-  };
-
-  const handleEditPermissions = (user: any) => {
-    setEditingUser(user);
-    setEditRoles([...(user.roles || [])]);
-    setEditCustomPerms([...(user.customPermissions || [])]);
-  };
-
-  const handleSaveEditedPermissions = async () => {
-    if (!editingUser) return;
-    try {
-      await handleUserPermissionChange(editingUser.id, {
-        roles: editRoles,
-        customPermissions: editCustomPerms
-      });
-      setEditingUser(null);
-      alert('Permissions updated successfully');
-    } catch (err) {
-      console.error('Error saving permissions:', err);
-      alert('Failed to save permissions');
-    }
-  };
-
-  const handleRevokeAllAccess = async (user: any) => {
-    if (!confirm(`Are you sure you want to revoke ALL access for user "${user.username}"? This will remove all roles and custom permissions.`)) {
-      return;
-    }
-    if (!confirm(`FINAL CONFIRMATION: This will completely remove "${user.username}"'s access. Proceed?`)) {
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/v1/admin/users/${user.id}/permissions`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        },
-        body: JSON.stringify({ roles: [], customPermissions: [] })
-      });
-
-      if (response.ok) {
-        setUsers(users.map(u =>
-          u.id === user.id ? { ...u, roles: [], customPermissions: [] } : u
-        ));
-        setSelectedUser(null);
-        alert(`All access revoked for ${user.username}`);
-      } else {
-        const errData = await response.json().catch(() => ({ detail: 'Failed to revoke access' }));
-        alert(errData.detail || 'Failed to revoke access');
-      }
-    } catch (err) {
-      console.error('Error revoking access:', err);
-      alert('Network error while revoking access');
-    }
-  };
-
-  const handleUserPermissionChange = async (userId: string, changes: any) => {
-    try {
-      const response = await fetch(`/api/v1/admin/users/${userId}/permissions`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        },
-        body: JSON.stringify(changes)
-      });
-
-      if (response.ok) {
-        // Update local state
-        setUsers(users.map(u => 
-          u.id === userId 
-            ? { ...u, roles: changes.roles, customPermissions: changes.customPermissions }
-            : u
-        ));
-        setSelectedUser(null);
-      }
-    } catch (error) {
-      console.error('Error updating user permissions:', error);
-    }
-  };
-
   const filteredUsers = users.filter(user =>
-    user.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    user.email.toLowerCase().includes(searchTerm.toLowerCase())
+    (user.username || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (user.email || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -198,7 +94,10 @@ export const PermissionsDashboard: React.FC = () => {
         )}
 
         {activeTab === 'matrix' && (
-          <PermissionMatrix onPermissionChange={handlePermissionChange} />
+          /* PermissionMatrix renders its own design-only banner (ADR-0027 /
+             ADR-0058); the inert wrapper was only needed while it shipped a
+             fabricated interactive matrix. */
+          <PermissionMatrix />
         )}
 
         {activeTab === 'users' && (
@@ -234,21 +133,23 @@ export const PermissionsDashboard: React.FC = () => {
                   {filteredUsers.map(user => (
                     <div
                       key={user.id}
-                      className={`user-item ${selectedUser?.id === user.id ? 'selected' : ''} ${user.status === 'inactive' ? 'inactive' : ''}`}
+                      className={`user-item ${selectedUser?.id === user.id ? 'selected' : ''} ${user.is_active === false ? 'inactive' : ''}`}
                       onClick={() => setSelectedUser(user)}
                     >
                       <div className="user-info">
                         <div className="user-header">
                           <span className="username">{user.username}</span>
-                          <span className={`status ${user.status}`}>{user.status}</span>
+                          <span className={`status ${user.is_active === false ? 'inactive' : 'active'}`}>
+                            {user.is_active === false ? 'inactive' : 'active'}
+                          </span>
                         </div>
                         <div className="user-email">{user.email}</div>
                         <div className="user-meta">
                           <span className="roles">
                             <i className="fas fa-user-tag"></i>
-                            {user.roles.join(', ')}
+                            {user.roles?.length ? user.roles.join(', ') : '—'}
                           </span>
-                          {user.customPermissions.length > 0 && (
+                          {(user.customPermissions?.length ?? 0) > 0 && (
                             <span className="custom-perms">
                               <i className="fas fa-key"></i>
                               +{user.customPermissions.length} custom
@@ -281,33 +182,37 @@ export const PermissionsDashboard: React.FC = () => {
                         </div>
                         <div className="detail-row">
                           <span className="label">Status:</span>
-                          <span className={`status ${selectedUser.status}`}>
-                            {selectedUser.status}
+                          <span className={`status ${selectedUser.is_active === false ? 'inactive' : 'active'}`}>
+                            {selectedUser.is_active === false ? 'inactive' : 'active'}
                           </span>
                         </div>
                         <div className="detail-row">
                           <span className="label">Last Login:</span>
                           <span className="value">
-                            {new Date(selectedUser.lastLogin).toLocaleString()}
+                            {selectedUser.last_login ? new Date(selectedUser.last_login).toLocaleString() : '—'}
                           </span>
                         </div>
                       </div>
 
                       <div className="detail-section">
                         <h4>Assigned Roles</h4>
-                        <div className="role-list">
-                          {selectedUser.roles.map((roleId: string) => (
-                            <div key={roleId} className="role-badge">
-                              <i className="fas fa-user-tag"></i>
-                              {roleId}
-                            </div>
-                          ))}
-                        </div>
+                        {selectedUser.roles?.length ? (
+                          <div className="role-list">
+                            {selectedUser.roles.map((roleId: string) => (
+                              <div key={roleId} className="role-badge">
+                                <i className="fas fa-user-tag"></i>
+                                {roleId}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="no-permissions">—</p>
+                        )}
                       </div>
 
                       <div className="detail-section">
                         <h4>Custom Permissions</h4>
-                        {selectedUser.customPermissions.length > 0 ? (
+                        {selectedUser.customPermissions?.length ? (
                           <div className="permission-list">
                             {selectedUser.customPermissions.map((permId: string) => (
                               <div key={permId} className="permission-badge">
@@ -317,69 +222,28 @@ export const PermissionsDashboard: React.FC = () => {
                             ))}
                           </div>
                         ) : (
-                          <p className="no-permissions">No custom permissions assigned</p>
+                          <p className="no-permissions">—</p>
                         )}
                       </div>
 
                       <div className="user-actions">
                         <button
                           className="btn btn-secondary"
-                          onClick={() => handleEditPermissions(selectedUser)}
+                          disabled
+                          title="Endpoint offline — /api/v1/admin/users/:id/permissions not implemented"
                         >
                           <i className="fas fa-edit"></i>
                           Edit Permissions
                         </button>
                         <button
                           className="btn btn-danger"
-                          onClick={() => handleRevokeAllAccess(selectedUser)}
+                          disabled
+                          title="Endpoint offline — /api/v1/admin/users/:id/permissions not implemented"
                         >
                           <i className="fas fa-ban"></i>
                           Revoke All Access
                         </button>
                       </div>
-
-                      {/* Inline Edit Mode */}
-                      {editingUser && editingUser.id === selectedUser.id && (
-                        <div style={{ marginTop: '16px', padding: '16px', background: 'rgba(59, 130, 246, 0.05)', borderRadius: '8px', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
-                          <h4 style={{ margin: '0 0 12px 0' }}>Edit Permissions</h4>
-
-                          <div style={{ marginBottom: '12px' }}>
-                            <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, fontSize: '0.9rem' }}>Roles (comma-separated)</label>
-                            <input
-                              type="text"
-                              value={editRoles.join(', ')}
-                              onChange={(e) => setEditRoles(e.target.value.split(',').map(r => r.trim()).filter(Boolean))}
-                              style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #374151', background: '#111827', color: '#e5e7eb' }}
-                            />
-                          </div>
-
-                          <div style={{ marginBottom: '12px' }}>
-                            <label style={{ display: 'block', marginBottom: '6px', fontWeight: 600, fontSize: '0.9rem' }}>Custom Permissions (comma-separated)</label>
-                            <input
-                              type="text"
-                              value={editCustomPerms.join(', ')}
-                              onChange={(e) => setEditCustomPerms(e.target.value.split(',').map(p => p.trim()).filter(Boolean))}
-                              style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #374151', background: '#111827', color: '#e5e7eb' }}
-                            />
-                          </div>
-
-                          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                            <button
-                              className="btn btn-secondary"
-                              onClick={() => setEditingUser(null)}
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              className="btn btn-primary"
-                              onClick={handleSaveEditedPermissions}
-                              style={{ background: '#3b82f6', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '6px', cursor: 'pointer' }}
-                            >
-                              Save Changes
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </div>
                 )}

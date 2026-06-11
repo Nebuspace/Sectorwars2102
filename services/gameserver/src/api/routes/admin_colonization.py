@@ -10,13 +10,12 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel, Field
 import logging
-import random
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_admin
 from src.models.user import User
 from src.models.player import Player
-from src.models.planet import Planet, PlanetType
+from src.models.planet import Planet, PlanetType, PlanetStatus
 from src.models.genesis_device import GenesisDevice, PlanetFormation
 from src.models.ship import Ship
 from src.models.sector import Sector
@@ -123,7 +122,7 @@ class TerraformingProject(BaseModel):
     id: str
     planetId: str
     planetName: str
-    type: str  # 'atmosphere', 'temperature', 'water', 'soil'
+    type: str  # terraforming level name from the real 5-level system (e.g. 'Basic Atmospheric')
     progress: float
     duration: int
     cost: Dict[str, int]
@@ -136,7 +135,7 @@ async def get_colony_production(
     timeRange: str = Query("day", pattern="^(hour|day|week|month)$"),
     resource: str = Query("all", pattern="^(all|energy|minerals|food|water)$"),
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get colony production data for monitoring"""
     try:
@@ -206,18 +205,16 @@ async def get_colony_production(
                     water_base += p.water_coverage * 10
                 water_prod += water_base
             
-            # Add some variation
-            energy_prod += random.randint(-10, 10) * max(1, len(planets))
-            minerals_prod += random.randint(-5, 5) * max(1, len(planets))
-            food_prod += random.randint(-8, 8) * max(1, len(planets))
-            water_prod += random.randint(-6, 6) * max(1, len(planets))
-            
+            # Derived deterministically from real planet fields above;
+            # no random jitter — the series only changes when the data does.
+            # int() because the pop_multiplier math yields floats and the
+            # ProductionData fields are ints (pydantic v2 rejects floats).
             history.append(ProductionData(
                 timestamp=current_time.isoformat(),
-                energy=max(0, energy_prod),
-                minerals=max(0, minerals_prod),
-                food=max(0, food_prod),
-                water=max(0, water_prod)
+                energy=max(0, int(energy_prod)),
+                minerals=max(0, int(minerals_prod)),
+                food=max(0, int(food_prod)),
+                water=max(0, int(water_prod))
             ))
             current_time += timedelta(minutes=interval_minutes)
 
@@ -255,33 +252,11 @@ async def get_colony_production(
                     efficiency=efficiency
                 ))
 
-        # Generate alerts
-        alerts = []
-        alert_types = ['shortage', 'surplus', 'efficiency', 'maintenance']
-        severities = ['low', 'medium', 'high']
-        
-        for i, planet in enumerate(planets[:8]):  # Limit to 8 alerts
-            if random.random() > 0.5:  # 50% chance of alert
-                alert_type = random.choice(alert_types)
-                severity = random.choice(severities)
-                resource_type = random.choice(resources)
-                
-                messages = {
-                    'shortage': f"Low {resource_type} production detected",
-                    'surplus': f"Excess {resource_type} in storage facilities",
-                    'efficiency': f"Production efficiency below optimal levels",
-                    'maintenance': f"Maintenance required for {resource_type} facilities"
-                }
-                
-                alerts.append(ProductionAlert(
-                    id=f"alert-{i}",
-                    type=alert_type,
-                    severity=severity,
-                    resource=resource_type,
-                    colony=planet.name,
-                    message=messages[alert_type],
-                    timestamp=(now - timedelta(hours=random.randint(0, 24))).isoformat()
-                ))
+        # No real alert source exists: there is no production alert table,
+        # threshold engine, or telemetry that detects shortages/surpluses/
+        # maintenance issues. Return an empty list rather than randomly
+        # fabricated alerts.
+        alerts: List[ProductionAlert] = []
 
         # Calculate stats
         total_production = {
@@ -372,7 +347,7 @@ async def get_colony_production(
 @router.get("/colonization/genesis-devices")
 async def get_genesis_devices(
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get genesis device tracking data"""
     try:
@@ -523,21 +498,43 @@ async def get_genesis_devices(
             topUsers=top_users
         )
         
-        # Generate alerts
+        # Alerts: real trigger (low stability or non-active status), with
+        # type/severity derived deterministically from the device's actual
+        # state and timestamp from its real last_updated — no random.
         alerts = []
-        alert_types = ['security', 'malfunction', 'unauthorized', 'critical']
-        severities = ['low', 'medium', 'high', 'critical']
-        
-        for i, device in enumerate(devices[:8]):
+        for device in devices[:8]:
             if device.stability < 0.5 or device.status.value not in ['ACTIVE', 'DEPLOYING']:
+                if device.stability < 0.5:
+                    alert_type = 'malfunction'
+                    if device.stability < 0.2:
+                        severity = 'critical'
+                    elif device.stability < 0.35:
+                        severity = 'high'
+                    else:
+                        severity = 'medium'
+                    message = f"Genesis device stability at {int(device.stability * 100)}%"
+                else:
+                    status_value = device.status.value
+                    if status_value in ('FAILED', 'ABORTED'):
+                        alert_type = 'critical'
+                        severity = 'high'
+                    elif status_value == 'UNSTABLE':
+                        alert_type = 'malfunction'
+                        severity = 'medium'
+                    else:  # INACTIVE / COMPLETED — dormant, informational
+                        alert_type = 'security'
+                        severity = 'low'
+                    message = f"Genesis device status: {status_value}"
+
+                alert_time = device.last_updated or device.created_at
                 alert = GenesisAlert(
-                    id=f"alert-{i}",
+                    id=f"alert-{device.id}",
                     deviceId=str(device.id),
                     deviceName=device.name,
-                    type=random.choice(alert_types),
-                    message=f"Genesis device requires attention",
-                    timestamp=(datetime.now(timezone.utc) - timedelta(hours=random.randint(0, 24))).isoformat(),
-                    severity=random.choice(severities)
+                    type=alert_type,
+                    message=message,
+                    timestamp=alert_time.isoformat() if alert_time else datetime.now(timezone.utc).isoformat(),
+                    severity=severity
                 )
                 alerts.append(alert)
         
@@ -556,7 +553,7 @@ async def get_genesis_devices(
 @router.get("/colonization/planets")
 async def get_admin_colonization_planets(
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get planetary management data for admin"""
     try:
@@ -592,25 +589,37 @@ async def get_admin_colonization_planets(
                             team_name = team.name
                             team_id = str(team.id)
             
-            # Determine planet properties
-            planet_types = ['Terran', 'Desert', 'Ice', 'Gas Giant', 'Volcanic', 'Ocean']
-            planet_type = planet.type.value if planet.type else random.choice(planet_types)
-            
-            sizes = ['Small', 'Medium', 'Large', 'Massive']
-            size = random.choice(sizes)
-            
-            atmospheres = ['None', 'Toxic', 'Thin', 'Breathable', 'Dense']
-            atmosphere = 'Breathable' if planet_type == 'Terran' else random.choice(atmospheres)
-            
-            # Calculate resources based on planet type and richness
-            base_resources = planet.resource_richness or 50
+            # Planet properties read 1:1 from real Planet columns —
+            # no synthesized or random values. UI-friendly casing: the UI
+            # colors known title-cased names ('Gas Giant', 'Terran', ...);
+            # unknown names render uncolored, which is acceptable.
+            planet_type = planet.type.value.replace('_', ' ').title()
+
+            # planet.size is an Integer on a 1-10 scale; bucket it onto the
+            # existing label set so the response shape is unchanged.
+            if planet.size <= 3:
+                size = 'Small'
+            elif planet.size <= 6:
+                size = 'Medium'
+            elif planet.size <= 8:
+                size = 'Large'
+            else:
+                size = 'Massive'
+
+            atmosphere = planet.atmosphere or 'Unknown'
+
+            # Resources from the real commodity columns, using the same
+            # column mapping as the production history above
+            # (fuel_ore -> energy, equipment -> minerals) plus water_coverage
+            # (surface water %) and special_resources (count of unique
+            # resources). planet.organics has no slot in this legacy key set.
             resources = {
-                'energy': int(base_resources * random.uniform(0.8, 1.2)),
-                'minerals': int(base_resources * random.uniform(0.7, 1.3)),
-                'water': int(base_resources * random.uniform(0.5, 1.0)) if planet_type != 'Desert' else 10,
-                'rareMaterials': int(base_resources * random.uniform(0.3, 0.6))
+                'energy': planet.fuel_ore or 0,
+                'minerals': planet.equipment or 0,
+                'water': int(planet.water_coverage or 0),
+                'rareMaterials': len(planet.special_resources or [])
             }
-            
+
             # Infrastructure - map from individual fields
             infra_data = {
                 'spaceports': 1 if planet.colonized_at else 0,  # Assume 1 spaceport if colonized
@@ -618,12 +627,18 @@ async def get_admin_colonization_planets(
                 'factories': planet.factory_level,
                 'research': planet.research_level
             }
-            
-            # Determine if discovered/colonizable
-            discovered = planet.discovered if hasattr(planet, 'discovered') else (planet.owner_id is not None or random.random() > 0.3)
-            colonizable = planet_type != 'Gas Giant' and planet.owner_id is None
-            has_genesis = planet.genesis_created if hasattr(planet, 'genesis_created') else False
-            
+
+            # Discovered/colonizable derived from real ownership and status —
+            # there is no 'discovered' column, so a planet counts as
+            # discovered once it is owned or its status reflects activity.
+            discovered = planet.owner_id is not None or planet.status in (
+                PlanetStatus.COLONIZED,
+                PlanetStatus.DEVELOPED,
+                PlanetStatus.TERRAFORMING
+            )
+            colonizable = planet.type != PlanetType.GAS_GIANT and planet.owner_id is None
+            has_genesis = planet.genesis_created
+
             planet_info = PlanetInfo(
                 id=str(planet.id),
                 name=planet.name,
@@ -632,12 +647,12 @@ async def get_admin_colonization_planets(
                 type=planet_type,
                 size=size,
                 atmosphere=atmosphere,
-                temperature=random.uniform(-100, 100) if planet_type != 'Terran' else random.uniform(10, 30),
-                gravity=random.uniform(0.5, 2.0),
+                temperature=planet.temperature,
+                gravity=planet.gravity,
                 resources=resources,
-                habitability=planet.habitability_score or (80 if planet_type == 'Terran' else random.randint(20, 60)),
+                habitability=planet.habitability_score,
                 population=planet.population or 0,
-                maxPopulation=planet.max_population or random.randint(1000000, 50000000),
+                maxPopulation=planet.max_population,
                 colonies=1 if planet.colonized_at else 0,  # Number of colonies on the planet
                 infrastructure=infra_data,
                 ownership={
@@ -678,29 +693,38 @@ async def get_admin_colonization_planets(
             resourceDistribution=resource_dist
         )
         
-        # Generate terraforming projects
+        # Real terraforming projects: planets with terraforming_active set
+        # by the 5-level terraforming system (TerraformingService). Level
+        # metadata (name/costs/duration/boost) lives in the active_events
+        # JSONB {type: "terraforming"} entry that service writes; progress
+        # and target come straight from the Planet terraforming columns.
         terraforming_projects = []
-        project_types = ['atmosphere', 'temperature', 'water', 'soil']
-        
-        for i, planet in enumerate(colonized_planets[:10]):
-            if random.random() > 0.5:  # 50% chance of project
-                project = TerraformingProject(
-                    id=f"project-{i}",
-                    planetId=planet.id,
-                    planetName=planet.name,
-                    type=random.choice(project_types),
-                    progress=random.uniform(0, 100),
-                    duration=random.randint(24, 720),  # 1-30 days
-                    cost={
-                        'energy': random.randint(1000, 10000),
-                        'minerals': random.randint(500, 5000)
-                    },
-                    impact={
-                        'habitability': random.randint(5, 20),
-                        'resourceBonus': random.choice(['energy', 'minerals', 'water'])
-                    }
-                )
-                terraforming_projects.append(project)
+        for planet in planets:
+            if not planet.terraforming_active:
+                continue
+            meta = next(
+                (e for e in (planet.active_events or [])
+                 if isinstance(e, dict) and e.get("type") == "terraforming"),
+                {}
+            )
+            project = TerraformingProject(
+                id=f"terraform-{planet.id}",
+                planetId=str(planet.id),
+                planetName=planet.name,
+                type=meta.get("level_name", f"Level {meta.get('level', '?')}"),
+                progress=float(planet.terraforming_progress or 0.0),
+                duration=int(meta.get("duration_hours", 0)),
+                cost={
+                    'credits': int(meta.get("credit_cost", 0)),
+                    'organics': int(meta.get("organics_cost", 0)),
+                    'equipment': int(meta.get("equipment_cost", 0))
+                },
+                impact={
+                    'habitability': int(meta.get("habitability_boost", 0)),
+                    'targetHabitability': planet.terraforming_target
+                }
+            )
+            terraforming_projects.append(project)
         
         return {
             "planets": [p.dict() for p in planet_list],

@@ -53,6 +53,7 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
   });
   const [activeTab, setActiveTab] = useState<'metrics' | 'filters' | 'visualization' | 'schedule'>('metrics');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchReportData();
@@ -61,95 +62,37 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
   const fetchReportData = async () => {
     setLoading(true);
     try {
-      // Fetch available metrics and templates
+      // Fetch the real metric catalog and saved templates — no fabricated
+      // fallbacks. If the endpoints don't exist, say so honestly.
       const [metricsResponse, templatesResponse] = await Promise.all([
-        fetch('/api/admin/reports/metrics', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
-        }).catch(() => ({
-          ok: true,
-          json: async () => ({
-            metrics: [
-              // Player metrics
-              { id: 'player.count', name: 'Total Players', category: 'Players', dataType: 'number', aggregations: ['sum', 'avg'], description: 'Total number of players' },
-              { id: 'player.active', name: 'Active Players', category: 'Players', dataType: 'number', aggregations: ['sum', 'avg'], description: 'Currently active players' },
-              { id: 'player.new', name: 'New Players', category: 'Players', dataType: 'number', aggregations: ['sum'], description: 'New player registrations' },
-              { id: 'player.retention', name: 'Player Retention', category: 'Players', dataType: 'percentage', aggregations: ['avg'], description: 'Player retention rate' },
-              
-              // Economy metrics
-              { id: 'economy.volume', name: 'Trade Volume', category: 'Economy', dataType: 'currency', aggregations: ['sum', 'avg'], description: 'Total trade volume' },
-              { id: 'economy.transactions', name: 'Transaction Count', category: 'Economy', dataType: 'number', aggregations: ['sum', 'avg'], description: 'Number of transactions' },
-              { id: 'economy.inflation', name: 'Inflation Rate', category: 'Economy', dataType: 'percentage', aggregations: ['avg'], description: 'Economic inflation rate' },
-              { id: 'economy.gdp', name: 'GDP', category: 'Economy', dataType: 'currency', aggregations: ['sum'], description: 'Gross domestic product' },
-              
-              // Combat metrics
-              { id: 'combat.battles', name: 'Total Battles', category: 'Combat', dataType: 'number', aggregations: ['sum'], description: 'Total combat encounters' },
-              { id: 'combat.casualties', name: 'Ship Casualties', category: 'Combat', dataType: 'number', aggregations: ['sum', 'avg'], description: 'Ships destroyed in combat' },
-              { id: 'combat.damage', name: 'Damage Dealt', category: 'Combat', dataType: 'number', aggregations: ['sum', 'avg', 'max'], description: 'Total damage in combat' },
-              
-              // Fleet metrics
-              { id: 'fleet.ships', name: 'Total Ships', category: 'Fleet', dataType: 'number', aggregations: ['sum', 'avg'], description: 'Total ships in game' },
-              { id: 'fleet.health', name: 'Average Fleet Health', category: 'Fleet', dataType: 'percentage', aggregations: ['avg'], description: 'Average fleet health' },
-              { id: 'fleet.maintenance', name: 'Maintenance Cost', category: 'Fleet', dataType: 'currency', aggregations: ['sum', 'avg'], description: 'Fleet maintenance costs' },
-              
-              // Team metrics
-              { id: 'team.count', name: 'Total Teams', category: 'Teams', dataType: 'number', aggregations: ['sum'], description: 'Number of teams' },
-              { id: 'team.members', name: 'Average Team Size', category: 'Teams', dataType: 'number', aggregations: ['avg'], description: 'Average members per team' },
-              { id: 'team.activity', name: 'Team Activity', category: 'Teams', dataType: 'percentage', aggregations: ['avg'], description: 'Team activity level' }
-            ]
-          })
-        })),
-        fetch('/api/admin/reports/templates', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
-        }).catch(() => ({
-          ok: true,
-          json: async () => ({
-            templates: [
-              {
-                id: 'daily-overview',
-                name: 'Daily Overview Report',
-                description: 'Daily summary of key metrics',
-                metrics: ['player.active', 'economy.volume', 'combat.battles'],
-                filters: [],
-                groupBy: [],
-                sortBy: [],
-                visualization: 'both',
-                chartType: 'line'
-              },
-              {
-                id: 'economy-health',
-                name: 'Economy Health Report',
-                description: 'Detailed economic analysis',
-                metrics: ['economy.volume', 'economy.transactions', 'economy.inflation', 'economy.gdp'],
-                filters: [],
-                groupBy: ['date'],
-                sortBy: [{ field: 'date', direction: 'desc' }],
-                visualization: 'chart',
-                chartType: 'area'
-              },
-              {
-                id: 'player-engagement',
-                name: 'Player Engagement Report',
-                description: 'Player activity and retention analysis',
-                metrics: ['player.active', 'player.new', 'player.retention'],
-                filters: [],
-                groupBy: ['date'],
-                sortBy: [{ field: 'date', direction: 'desc' }],
-                visualization: 'both',
-                chartType: 'bar'
-              }
-            ]
-          })
-        }))
+        fetch('/api/v1/admin/reports/metrics', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+        }),
+        fetch('/api/v1/admin/reports/templates', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+        })
       ]);
 
-      if (metricsResponse.ok && templatesResponse.ok) {
-        const metricsData = await metricsResponse.json();
-        const templatesData = await templatesResponse.json();
-        setAvailableMetrics(metricsData.metrics);
-        setTemplates(templatesData.templates);
+      if (!metricsResponse.ok || !templatesResponse.ok) {
+        const failed = !metricsResponse.ok
+          ? { path: '/api/v1/admin/reports/metrics', status: metricsResponse.status }
+          : { path: '/api/v1/admin/reports/templates', status: templatesResponse.status };
+        setError(
+          failed.status === 404
+            ? `Report builder endpoint not implemented — ${failed.path} returned 404`
+            : `Report builder request failed (HTTP ${failed.status})`
+        );
+        return;
       }
-    } catch (error) {
-      console.error('Error fetching report data:', error);
+
+      const metricsData = await metricsResponse.json();
+      const templatesData = await templatesResponse.json();
+      setAvailableMetrics(metricsData.metrics ?? []);
+      setTemplates(templatesData.templates ?? []);
+      setError(null);
+    } catch (err) {
+      console.error('Error fetching report data:', err);
+      setError('Gameserver unreachable — network error fetching report builder data');
     } finally {
       setLoading(false);
     }
@@ -269,6 +212,24 @@ export const CustomReportBuilder: React.FC<CustomReportBuilderProps> = ({ onGene
       <div className="report-builder-loading">
         <i className="fas fa-spinner fa-spin"></i>
         <span>Loading report builder...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="custom-report-builder">
+        <div className="report-builder-header">
+          <h2>Custom Report Builder</h2>
+        </div>
+        <div className="alert alert-error">
+          <span className="alert-icon">⚠️</span>
+          <span className="alert-message">{error}</span>
+        </div>
+        <button className="btn btn-secondary" onClick={() => fetchReportData()}>
+          <i className="fas fa-sync"></i>
+          Retry
+        </button>
       </div>
     );
   }

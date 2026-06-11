@@ -26,13 +26,13 @@ interface PredictionAccuracy {
   trend: 'improving' | 'stable' | 'declining';
 }
 
+// /api/v1/admin/ai/profiles returns only these fields. Risk tolerance,
+// trading patterns, AI engagement, and profit impact were stripped from the
+// payload (canon gap: ARIA per-player profile scoring is not implemented
+// server-side), so the table renders em-dashes for those columns.
 interface PlayerProfile {
   playerId: string;
   playerName: string;
-  riskTolerance: 'conservative' | 'moderate' | 'aggressive';
-  tradingPatterns: string[];
-  aiEngagement: number;
-  profitImprovement: number;
   lastActive: string;
 }
 
@@ -420,33 +420,13 @@ const AITradingDashboard: React.FC = () => {
                   {profiles.map(profile => (
                     <tr key={profile.playerId}>
                       <td data-label="Player">{profile.playerName}</td>
-                      <td data-label="Risk Profile">
-                        <span className={`risk-badge ${profile.riskTolerance}`}>
-                          {profile.riskTolerance}
-                        </span>
-                      </td>
-                      <td data-label="AI Engagement">
-                        <div className="engagement-bar">
-                          <div 
-                            className="engagement-fill"
-                            style={{ width: `${profile.aiEngagement}%` }}
-                          />
-                          <span className="engagement-text">{profile.aiEngagement}%</span>
-                        </div>
-                      </td>
-                      <td data-label="Profit Impact">
-                        <span className={`profit-impact ${profile.profitImprovement >= 0 ? 'positive' : 'negative'}`}>
-                          {profile.profitImprovement >= 0 ? '+' : ''}{profile.profitImprovement}%
-                        </span>
-                      </td>
+                      {/* Stripped from the /ai/profiles payload — see
+                          PlayerProfile comment (ARIA profile scoring gap) */}
+                      <td data-label="Risk Profile">—</td>
+                      <td data-label="AI Engagement">—</td>
+                      <td data-label="Profit Impact">—</td>
                       <td data-label="Last Active">{new Date(profile.lastActive).toLocaleDateString()}</td>
-                      <td data-label="Patterns">
-                        <div className="pattern-tags">
-                          {profile.tradingPatterns.map((pattern, idx) => (
-                            <span key={idx} className="pattern-tag">{pattern}</span>
-                          ))}
-                        </div>
-                      </td>
+                      <td data-label="Patterns">—</td>
                     </tr>
                   ))}
                 </tbody>

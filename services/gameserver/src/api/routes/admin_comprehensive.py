@@ -716,10 +716,14 @@ async def teleport_ship(
         old_sector = ship.sector_id
         ship.sector_id = target_sector_id
         
-        # Also update player location if this is their current ship
+        # Also update player location if this is their current ship.
+        # Keep current_region_id in sync with the target sector — teleports
+        # can cross regions, and region-filtered routes (e.g.
+        # /player/current-sector) 404 on a stale region.
         owner = db.query(Player).filter(Player.id == ship.owner_id).first()
         if owner and owner.current_ship_id == ship.id:
             owner.current_sector_id = target_sector_id
+            owner.current_region_id = sector.region_id
         
         db.commit()
         
@@ -2670,43 +2674,11 @@ async def get_ai_models(
 ):
     """Get AI models status for admin dashboard"""
     try:
-        # Return realistic AI models data
-        models = [
-            {
-                "id": "price-prediction-v1",
-                "name": "Commodity Price Prediction",
-                "type": "price_prediction",
-                "status": "active",
-                "accuracy": 78.5,
-                "lastTrainedAt": "2025-01-06T12:00:00Z",
-                "nextTrainingAt": "2025-01-07T12:00:00Z",
-                "predictions": 1247,
-                "avgResponseTime": 45
-            },
-            {
-                "id": "route-optimizer-v2",
-                "name": "Trade Route Optimizer",
-                "type": "route_optimization",
-                "status": "active", 
-                "accuracy": 82.1,
-                "lastTrainedAt": "2025-01-06T06:00:00Z",
-                "nextTrainingAt": "2025-01-07T06:00:00Z",
-                "predictions": 634,
-                "avgResponseTime": 120
-            },
-            {
-                "id": "behavior-analyzer-v1",
-                "name": "Player Behavior Analysis",
-                "type": "behavior_analysis",
-                "status": "training",
-                "accuracy": 71.3,
-                "lastTrainedAt": "2025-01-05T18:00:00Z",
-                "nextTrainingAt": "2025-01-06T18:00:00Z",
-                "predictions": 892,
-                "avgResponseTime": 95
-            }
-        ]
-        
+        # No AI model registry exists in the system; there is no table or
+        # service tracking trained models, accuracy, or training schedules.
+        # Return an empty list rather than fabricated model status.
+        models: List[Dict[str, Any]] = []
+
         logger.info(f"Admin {current_admin.username} requested AI models data")
         return models
         
@@ -2721,16 +2693,11 @@ async def get_ai_prediction_accuracy(
 ):
     """Get AI prediction accuracy by commodity for admin dashboard"""
     try:
-        # Generate realistic prediction accuracy data
-        commodities = [
-            {"resourceId": "food", "resourceName": "Food Rations", "accuracy": 85.2, "predictions": 324, "accurate": 276, "avgDeviation": 12.4},
-            {"resourceId": "equipment", "resourceName": "Equipment", "accuracy": 79.8, "predictions": 198, "accurate": 158, "avgDeviation": 15.6},
-            {"resourceId": "fuel", "resourceName": "Fuel Ore", "accuracy": 77.4, "predictions": 287, "accurate": 222, "avgDeviation": 18.2},
-            {"resourceId": "organics", "resourceName": "Organics", "accuracy": 82.1, "predictions": 156, "accurate": 128, "avgDeviation": 14.1},
-            {"resourceId": "energy", "resourceName": "Energy", "accuracy": 74.6, "predictions": 243, "accurate": 181, "avgDeviation": 21.3},
-            {"resourceId": "holds", "resourceName": "Holds", "accuracy": 81.9, "predictions": 89, "accurate": 73, "avgDeviation": 13.7}
-        ]
-        
+        # No prediction accuracy tracking exists; predictions are not logged
+        # or scored against outcomes anywhere in the system. Return an empty
+        # list rather than fabricated per-commodity accuracy figures.
+        commodities: List[Dict[str, Any]] = []
+
         logger.info(f"Admin {current_admin.username} requested AI prediction accuracy data")
         return commodities
         
@@ -2745,18 +2712,17 @@ async def get_ai_player_profiles(
 ):
     """Get AI player profiles for admin dashboard"""
     try:
-        # Get actual player data and generate AI profiles
+        # Get actual player data; only fields read 1:1 from Player/User rows
+        # are returned. riskTolerance/tradingPatterns/aiEngagement/
+        # profitImprovement were hash-synthesized scores with no backing data
+        # and have been removed — no AI profiling telemetry exists yet.
         players = db.query(Player).join(User).limit(10).all()
-        
+
         profiles = []
         for player in players:
             profiles.append({
                 "playerId": str(player.id),
                 "playerName": player.user.username,
-                "riskTolerance": ["conservative", "moderate", "aggressive"][hash(str(player.id)) % 3],
-                "tradingPatterns": ["bulk-trader", "arbitrage", "long-haul"][:2],
-                "aiEngagement": 65 + (hash(str(player.id)) % 35),
-                "profitImprovement": -5 + (hash(str(player.id)) % 25),
                 "lastActive": (player.last_game_login or player.user.created_at).isoformat()
             })
         
@@ -2807,22 +2773,17 @@ async def ai_model_action(
     db: Session = Depends(get_db)
 ):
     """Take action on AI model (start, stop, train)"""
-    try:
-        if action not in ["start", "stop", "train"]:
-            raise HTTPException(status_code=400, detail="Invalid action")
-            
-        logger.info(f"Admin {current_admin.username} executed {action} on AI model {model_id}")
-        
-        return {
-            "message": f"Successfully executed {action} on model {model_id}",
-            "model_id": model_id,
-            "action": action,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error executing AI model action: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to execute AI model action: {str(e)}")
+    if action not in ["start", "stop", "train"]:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    # No AI model registry exists in the system (see GET /ai/models), so
+    # there is nothing to start/stop/train. The previous implementation
+    # returned a fabricated success message without doing anything.
+    logger.info(f"Admin {current_admin.username} attempted {action} on AI model {model_id} (not implemented)")
+    raise HTTPException(
+        status_code=501,
+        detail="No AI model registry exists; model actions are not implemented"
+    )
 
 @router.get("/ai/predictions", response_model=List[Dict[str, Any]])
 async def get_ai_predictions(
@@ -2833,56 +2794,15 @@ async def get_ai_predictions(
 ):
     """Get AI price predictions for admin dashboard"""
     try:
-        # Generate realistic prediction data
-        predictions = [
-            {
-                "id": "pred-1",
-                "resourceId": "food_rations",
-                "resourceName": "Food Rations",
-                "sectorId": "42",
-                "sectorName": "Nexus Station",
-                "currentPrice": 85.50,
-                "predictedPrice": 92.30,
-                "confidence": 78,
-                "timeframe": timeframe,
-                "factors": ["High demand", "Low supply", "Trade route disruption"],
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "id": "pred-2",
-                "resourceId": "equipment",
-                "resourceName": "Equipment",
-                "sectorId": "15",
-                "sectorName": "Industrial Hub",
-                "currentPrice": 235.80,
-                "predictedPrice": 221.45,
-                "confidence": 82,
-                "timeframe": timeframe,
-                "factors": ["Manufacturing surplus", "Trade competition"],
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "id": "pred-3",
-                "resourceId": "fuel_ore",
-                "resourceName": "Fuel Ore",
-                "sectorId": "8",
-                "sectorName": "Mining Colony",
-                "currentPrice": 156.20,
-                "predictedPrice": 164.75,
-                "confidence": 71,
-                "timeframe": timeframe,
-                "factors": ["Mining strikes", "Increased transport costs"],
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        ]
-        
-        # Filter by resource if specified
-        if resource and resource != "all":
-            predictions = [p for p in predictions if p["resourceId"] == resource]
-        
+        # No price prediction engine exists; nothing in the system generates,
+        # stores, or scores price forecasts (see GET /ai/models — there is no
+        # model registry either). Return an empty list rather than fabricated
+        # predictions.
+        predictions: List[Dict[str, Any]] = []
+
         logger.info(f"Admin {current_admin.username} requested AI predictions")
         return predictions
-        
+
     except Exception as e:
         logger.error(f"Error getting AI predictions: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI predictions: {str(e)}")
@@ -2895,43 +2815,18 @@ async def get_ai_route_optimization_data(
 ):
     """Get AI route optimization data for admin dashboard"""
     try:
-        # Generate realistic route optimization data
+        # No route optimization engine exists; nothing in the system computes,
+        # tracks, or stores optimized routes or their outcomes. Return an
+        # empty structure (with null stats — zeros would themselves be
+        # fabricated metrics) rather than invented routes.
         data = {
-            "active_optimizations": [
-                {
-                    "id": "route-1",
-                    "playerId": "player-123",
-                    "playerName": "TraderOne",
-                    "startSector": "Nexus Station",
-                    "route": ["Nexus Station", "Trade Hub Alpha", "Mining Outpost", "Industrial Complex"],
-                    "estimatedProfit": 45680,
-                    "estimatedTime": 4.5,
-                    "efficiency": 89,
-                    "status": "in_progress"
-                },
-                {
-                    "id": "route-2",
-                    "playerId": "player-456",
-                    "playerName": "CargoMaster",
-                    "startSector": "Frontier Base",
-                    "route": ["Frontier Base", "Research Station", "Crystal Mines"],
-                    "estimatedProfit": 23450,
-                    "estimatedTime": 2.8,
-                    "efficiency": 76,
-                    "status": "completed"
-                }
-            ],
-            "optimization_stats": {
-                "total_routes_optimized": 1247,
-                "avg_efficiency_improvement": 23.5,
-                "avg_profit_increase": 18.2,
-                "active_optimizations": 12
-            }
+            "active_optimizations": [],
+            "optimization_stats": None
         }
-        
+
         logger.info(f"Admin {current_admin.username} requested AI route optimization data")
         return data
-        
+
     except Exception as e:
         logger.error(f"Error getting AI route optimization data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI route optimization data: {str(e)}")
@@ -2943,58 +2838,21 @@ async def get_ai_behavior_analytics(
 ):
     """Get AI behavior analytics data for admin dashboard"""
     try:
-        # Get actual player data for realistic analytics
-        total_players = db.query(Player).count()
-        active_players = db.query(Player).filter(Player.last_game_login >= datetime.utcnow() - timedelta(days=7)).count()
-        
+        # No behavior analytics pipeline exists; player trading patterns,
+        # AI engagement, and insights are not classified or tracked anywhere
+        # in the system. The previous payload apportioned the real player
+        # count across invented pattern buckets with fabricated percentages.
+        # Return an empty structure (null metrics — zeros would themselves be
+        # fabricated) rather than synthesized analytics.
         data = {
-            "player_patterns": [
-                {
-                    "pattern": "Bulk Traders",
-                    "count": int(total_players * 0.35),
-                    "description": "Players who focus on high-volume, low-margin trades",
-                    "avgProfit": 15.2,
-                    "aiEngagement": 68
-                },
-                {
-                    "pattern": "Arbitrage Specialists",
-                    "count": int(total_players * 0.25),
-                    "description": "Players who exploit price differences between sectors",
-                    "avgProfit": 28.7,
-                    "aiEngagement": 84
-                },
-                {
-                    "pattern": "Long-haul Traders",
-                    "count": int(total_players * 0.20),
-                    "description": "Players who make extended trading routes",
-                    "avgProfit": 41.3,
-                    "aiEngagement": 72
-                },
-                {
-                    "pattern": "Casual Traders",
-                    "count": int(total_players * 0.20),
-                    "description": "Players with sporadic trading activity",
-                    "avgProfit": 8.9,
-                    "aiEngagement": 45
-                }
-            ],
-            "engagement_metrics": {
-                "total_analyzed_players": total_players,
-                "active_ai_users": int(active_players * 0.3),
-                "avg_ai_engagement": 67.2,
-                "patterns_identified": 847
-            },
-            "recent_insights": [
-                "Bulk traders show 23% higher AI acceptance rate",
-                "Arbitrage specialists prefer minimal AI intervention",
-                "Long-haul traders benefit most from route optimization",
-                "New players show 40% higher AI engagement"
-            ]
+            "player_patterns": [],
+            "engagement_metrics": None,
+            "recent_insights": []
         }
-        
+
         logger.info(f"Admin {current_admin.username} requested AI behavior analytics")
         return data
-        
+
     except Exception as e:
         logger.error(f"Error getting AI behavior analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI behavior analytics: {str(e)}")
