@@ -340,7 +340,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
                 <div className="feature-info">
                   <p>Class {portData.port_class || portData.class || 'Unknown'} Trading Post</p>
                   <p>Type: {portData.type || 'Unknown'}</p>
-                  <p>Tax Rate: {portData.tax_rate || 0}%</p>
+                  <p>Tax Rate: {((portData.tax_rate ?? 0) * 100).toFixed(1)}%</p>
                   <p>Defense Level: {portData.defense_level || portData.defense_weapons || 0}</p>
                   <p>Status: {portData.status || 'Unknown'}</p>
                   <button className="view-details">View Station Details →</button>

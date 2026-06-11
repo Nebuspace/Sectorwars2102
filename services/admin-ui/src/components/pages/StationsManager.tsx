@@ -10,11 +10,13 @@ interface Station {
   sector_name?: string;
   station_type: string;
   trade_volume: number;
-  max_capacity: number;
-  security_level: number;
+  max_capacity: number | null;
+  security_level: number | null;
+  defense_drones?: number | null;
   docking_fee: number;
-  owner_id?: string;
-  owner_name?: string;
+  tax_rate?: number | null;
+  owner_id?: string | null;
+  owner_name?: string | null;
   created_at: string;
   is_operational: boolean;
   commodities: string[];
@@ -27,8 +29,9 @@ const StationsManager: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterClass, setFilterClass] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(20);
-  
+  const [itemsPerPage] = useState(100);
+  const [total, setTotal] = useState(0);
+
   // Modal states
   const [selectedPort, setSelectedPort] = useState<Station | null>(null);
   const [showPortModal, setShowPortModal] = useState(false);
@@ -38,8 +41,12 @@ const StationsManager: React.FC = () => {
   const fetchPorts = async () => {
     try {
       setLoading(true);
-      const response = await api.get('/api/v1/admin/stations');
+      const offset = (currentPage - 1) * itemsPerPage;
+      const response = await api.get('/api/v1/admin/stations', {
+        params: { limit: itemsPerPage, offset }
+      });
       setPorts(response.data.stations || []);
+      setTotal(response.data.total ?? (response.data.stations || []).length);
       setError(null);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to fetch stations');
@@ -50,7 +57,7 @@ const StationsManager: React.FC = () => {
 
   useEffect(() => {
     fetchPorts();
-  }, []);
+  }, [currentPage]);
 
   // Handler functions
   const handleViewPort = (port: Station) => {
@@ -102,21 +109,20 @@ const StationsManager: React.FC = () => {
     fetchPorts(); // Refresh to get updated data
   };
 
-  // Filter and search logic
+  // Filter and search logic operates over the current server page only.
   const filteredPorts = ports.filter(port => {
     const matchesSearch = port.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          port.sector_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          port.owner_name?.toLowerCase().includes(searchTerm.toLowerCase());
-    
+
     const matchesFilter = filterClass === 'all' || port.station_type.toLowerCase().includes(filterClass.toLowerCase());
-    
+
     return matchesSearch && matchesFilter;
   });
 
-  // Pagination
-  const totalPages = Math.ceil(filteredPorts.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const paginatedPorts = filteredPorts.slice(startIndex, startIndex + itemsPerPage);
+  // Server-side pagination: total reflects the full station count, not this page.
+  const totalPages = Math.max(1, Math.ceil(total / itemsPerPage));
+  const paginatedPorts = filteredPorts;
 
   if (loading) {
     return (
@@ -176,7 +182,7 @@ const StationsManager: React.FC = () => {
         </div>
 
         <div className="results-info">
-          <span>{filteredPorts.length} of {ports.length} stations</span>
+          <span>Showing {ports.length.toLocaleString()} of {total.toLocaleString()} stations</span>
         </div>
       </div>
 
@@ -209,15 +215,20 @@ const StationsManager: React.FC = () => {
                   </span>
                 </td>
                 <td>
-                  {port.trade_volume.toLocaleString()} / {port.max_capacity.toLocaleString()}
+                  {port.trade_volume.toLocaleString()}
+                  {port.max_capacity != null ? ` / ${port.max_capacity.toLocaleString()}` : ''}
                 </td>
                 <td>
-                  <span className={`security-level level-${Math.floor(port.security_level / 20)}`}>
-                    {port.security_level}
-                  </span>
+                  {port.security_level != null ? (
+                    <span className={`security-level level-${Math.floor(port.security_level / 20)}`}>
+                      {port.security_level}
+                    </span>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
                 </td>
                 <td>{port.docking_fee.toLocaleString()} credits</td>
-                <td>{port.owner_name || 'Independent'}</td>
+                <td>{port.owner_id ? (port.owner_name || port.owner_id) : 'Independent'}</td>
                 <td>
                   <span className={`status ${port.is_operational ? 'operational' : 'offline'}`}>
                     {port.is_operational ? '✓ Operational' : '✗ Offline'}
@@ -254,24 +265,24 @@ const StationsManager: React.FC = () => {
         </table>
       </div>
 
-      {/* Pagination */}
+      {/* Pagination (server-side) */}
       {totalPages > 1 && (
         <div className="pagination">
-          <button 
+          <button
             onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
             disabled={currentPage === 1}
             className="pagination-btn"
           >
             Previous
           </button>
-          
+
           <span className="pagination-info">
             Page {currentPage} of {totalPages}
           </span>
-          
-          <button 
+
+          <button
             onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-            disabled={currentPage === totalPages}
+            disabled={currentPage >= totalPages}
             className="pagination-btn"
           >
             Next
@@ -301,6 +312,9 @@ const StationsManager: React.FC = () => {
 };
 
 // Port Modal Component for View/Edit
+// "Port" is an alias for Station — the backend serves stations as ports.
+type Port = Station;
+
 interface PortModalProps {
   port: Port;
   mode: 'view' | 'edit';
@@ -309,15 +323,22 @@ interface PortModalProps {
 }
 
 const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) => {
+  // Only include fields that the backend PATCH actually writes.
+  // Excluded: station_type (column is `type`), max_capacity (no column),
+  // security_level (stored in defenses JSONB), docking_fee (computed),
+  // owner_name (column is owner_id — handled separately below).
   const [formData, setFormData] = useState({
     name: port.name,
-    station_type: port.station_type,
-    trade_volume: port.trade_volume,
-    max_capacity: port.max_capacity,
-    security_level: port.security_level,
-    docking_fee: port.docking_fee,
-    owner_name: port.owner_name || ''
+    trade_volume: port.trade_volume ?? 0,
+    owner_id: port.owner_id ?? ''
   });
+  // Read-only display-only values (never sent to backend)
+  const displayData = {
+    station_type: port.station_type,
+    max_capacity: port.max_capacity ?? '',
+    security_level: port.security_level ?? '',
+    docking_fee: port.docking_fee
+  };
   const [saving, setSaving] = useState(false);
   const [players, setPlayers] = useState<Player[]>([]);
   const [loadingPlayers, setLoadingPlayers] = useState(true);
@@ -352,8 +373,19 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
 
     try {
       setSaving(true);
-      const response = await api.patch(`/api/v1/admin/ports/${port.id}`, formData);
-      onSave({ ...port, ...formData });
+      // Only send fields with real backend columns:
+      //   name, trade_volume, owner_id (nullable UUID)
+      const payload: Record<string, unknown> = {
+        name: formData.name,
+        trade_volume: formData.trade_volume
+      };
+      if (formData.owner_id !== '') {
+        payload.owner_id = formData.owner_id;
+      } else {
+        payload.owner_id = null;
+      }
+      await api.patch(`/api/v1/admin/ports/${port.id}`, payload);
+      onSave({ ...port, name: formData.name, trade_volume: formData.trade_volume, owner_id: formData.owner_id || null });
     } catch (err: any) {
       alert(`Failed to update port: ${err.response?.data?.detail || err.message}`);
     } finally {
@@ -373,6 +405,7 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
         
         <form onSubmit={handleSubmit} className="modal-form">
           <div className="form-grid">
+            {/* Writable fields */}
             <div className="form-group">
               <label>Port Name</label>
               <input
@@ -383,98 +416,86 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
                 required
               />
             </div>
-            
-            <div className="form-group">
-              <label>Port Class</label>
-              <select
-                value={formData.station_type}
-                onChange={(e) => setFormData({ ...formData, station_type: e.target.value })}
-                disabled={isReadOnly}
-                required
-              >
-                <option value="CLASS_0">CLASS_0 - Sol System</option>
-                <option value="CLASS_1">CLASS_1 - Mining Operation</option>
-                <option value="CLASS_2">CLASS_2 - Agricultural Center</option>
-                <option value="CLASS_3">CLASS_3 - Industrial Hub</option>
-                <option value="CLASS_4">CLASS_4 - Distribution Center</option>
-                <option value="CLASS_5">CLASS_5 - Collection Hub</option>
-                <option value="CLASS_6">CLASS_6 - Mixed Market</option>
-                <option value="CLASS_7">CLASS_7 - Resource Exchange</option>
-                <option value="CLASS_8">CLASS_8 - Black Hole (Premium Buyer)</option>
-                <option value="CLASS_9">CLASS_9 - Nova (Premium Seller)</option>
-                <option value="CLASS_10">CLASS_10 - Luxury Market</option>
-                <option value="CLASS_11">CLASS_11 - Advanced Tech Hub</option>
-              </select>
-            </div>
-            
+
             <div className="form-group">
               <label>Trade Volume</label>
               <input
                 type="number"
                 value={formData.trade_volume}
-                onChange={(e) => setFormData({ ...formData, trade_volume: parseInt(e.target.value) })}
+                onChange={(e) => setFormData({ ...formData, trade_volume: parseInt(e.target.value) || 0 })}
                 readOnly={isReadOnly}
                 min="0"
               />
             </div>
-            
-            <div className="form-group">
-              <label>Max Capacity</label>
-              <input
-                type="number"
-                value={formData.max_capacity}
-                onChange={(e) => setFormData({ ...formData, max_capacity: parseInt(e.target.value) })}
-                readOnly={isReadOnly}
-                min="0"
-              />
-            </div>
-            
-            <div className="form-group">
-              <label>Security Level</label>
-              <input
-                type="number"
-                value={formData.security_level}
-                onChange={(e) => setFormData({ ...formData, security_level: parseInt(e.target.value) })}
-                readOnly={isReadOnly}
-                min="0"
-                max="100"
-              />
-            </div>
-            
-            <div className="form-group">
-              <label>Docking Fee</label>
-              <input
-                type="number"
-                value={formData.docking_fee}
-                onChange={(e) => setFormData({ ...formData, docking_fee: parseInt(e.target.value) })}
-                readOnly={isReadOnly}
-                min="0"
-              />
-            </div>
-            
+
             <div className="form-group">
               <label>Port Owner</label>
               {isReadOnly ? (
                 <input
                   type="text"
-                  value={formData.owner_name || 'Independent'}
+                  value={port.owner_name || port.owner_id || 'Independent'}
                   readOnly={true}
                 />
               ) : loadingPlayers ? (
                 <div className="loading-placeholder">Loading players...</div>
               ) : (
                 <select
-                  value={formData.owner_name}
-                  onChange={(e) => setFormData({ ...formData, owner_name: e.target.value })}
+                  value={formData.owner_id}
+                  onChange={(e) => setFormData({ ...formData, owner_id: e.target.value })}
                 >
                   <option value="">Independent (No Owner)</option>
                   {players.map(player => (
-                    <option key={player.id} value={player.username}>
+                    <option key={player.id} value={player.id}>
                       {player.username} ({player.credits.toLocaleString()} credits)
                     </option>
                   ))}
                 </select>
               )}
+            </div>
+
+            {/* Read-only display fields — backend stores these elsewhere or derives them */}
+            <div className="form-group">
+              <label>Port Class</label>
+              <input
+                type="text"
+                value={displayData.station_type}
+                readOnly
+                disabled
+                title="Read-only — not a writable field (backend stores this as `type`; use a migration or seed script to change)"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Max Capacity</label>
+              <input
+                type="text"
+                value={displayData.max_capacity !== '' ? String(displayData.max_capacity) : '—'}
+                readOnly
+                disabled
+                title="Read-only — not a writable field (no max_capacity column on Station)"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Security Level</label>
+              <input
+                type="text"
+                value={displayData.security_level !== '' ? String(displayData.security_level) : '—'}
+                readOnly
+                disabled
+                title="Read-only — not a writable field (backend stores this in defenses JSONB)"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Docking Fee</label>
+              <input
+                type="text"
+                value={displayData.docking_fee.toLocaleString()}
+                readOnly
+                disabled
+                title="Read-only — not a writable field (computed by the backend; not a stored column)"
+              />
             </div>
           </div>
           
@@ -519,7 +540,7 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
 // Add Port Modal Component
 interface AddPortModalProps {
   onClose: () => void;
-  onSave: (port: Port) => void;
+  onSave: (port: Station) => void;
 }
 
 interface Sector {

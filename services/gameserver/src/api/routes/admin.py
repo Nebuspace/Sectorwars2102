@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import text, func, desc
+from sqlalchemy import text, func, desc, or_
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime, timezone
@@ -1109,6 +1109,8 @@ async def get_all_stations(
 ):
     """Get all stations with pagination"""
     try:
+        from src.services.docking_service import docking_fee_for
+
         query = db.query(Station)
         total = query.count()
         stations = query.offset(offset).limit(limit).all()
@@ -1118,6 +1120,20 @@ async def get_all_stations(
             # Get sector info
             sector = db.query(Sector).filter(Sector.sector_id == station.sector_id).first()
 
+            # Resolve owner display name from the Player -> User chain.
+            # owner_id may point at a Player whose display name is nickname or
+            # the linked user's username. None when truly unowned (UI then
+            # renders "Independent").
+            owner_name = None
+            if station.owner_id is not None:
+                owner = db.query(Player).filter(Player.id == station.owner_id).first()
+                if owner is not None:
+                    owner_name = owner.username  # nickname or user.username
+
+            # Defense data lives in the Station.defenses JSONB; surface the
+            # real shield strength / drone count rather than fabricating one.
+            defenses = station.defenses or {}
+
             stations_list.append({
                 "id": str(station.id),
                 "name": station.name,
@@ -1125,60 +1141,127 @@ async def get_all_stations(
                 "sector_name": sector.name if sector else "Unknown",
                 "station_type": station.type.value if station.type else "TRADING",
                 "trade_volume": station.trade_volume or 0,
-                "max_capacity": 10000,  # TODO: Add to Station model
-                "security_level": sector.hazard_level if sector else 5,
-                "docking_fee": 100,  # Default docking fee
+                # No max_capacity column on Station; null renders as em-dash.
+                "max_capacity": None,
+                # Real per-class docking fee from the canonical fee table.
+                "docking_fee": docking_fee_for(station),
+                # Real trade tax column (0-1 float); UI presents as percent.
+                "tax_rate": station.tax_rate,
+                # Real defensive figures from the JSONB; null when absent.
+                "security_level": defenses.get("shield_strength"),
+                "defense_drones": defenses.get("defense_drones"),
                 "owner_id": str(station.owner_id) if station.owner_id else None,
-                "owner_name": None,  # TODO: Look up owner name
+                "owner_name": owner_name,
                 "created_at": station.created_at.isoformat() if station.created_at else None,
                 "is_operational": station.status.value == "OPERATIONAL" if station.status else True,
                 "commodities": list(station.commodities.keys()) if station.commodities else []
             })
 
-        return {"stations": stations_list, "total": total}
+        return {"stations": stations_list, "total": total, "limit": limit, "offset": offset}
     except Exception as e:
         logger.error(f"Error fetching stations: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch stations: {str(e)}")
 
 @router.get("/sectors", response_model=dict)
 async def get_all_sectors(
-    region_id: Optional[str] = None,
-    cluster_id: Optional[str] = None,
+    filter_region: Optional[str] = None,
+    filter_cluster: Optional[str] = None,
+    filter_has_port: Optional[bool] = None,
+    filter_has_planet: Optional[bool] = None,
+    filter_discovered: Optional[bool] = None,
+    search: Optional[str] = None,
+    page: int = 1,
     limit: int = 100,
-    offset: int = 0,
+    offset: Optional[int] = None,
     current_admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
-    """Get sectors with optional filtering"""
+    """Get sectors with optional filtering and honest server-side pagination."""
     query = db.query(Sector)
-    
-    if cluster_id:
-        query = query.filter(Sector.cluster_id == cluster_id)
-    elif region_id:
-        query = query.join(Cluster).filter(Cluster.region_id == region_id)
-    
-    sectors = query.offset(offset).limit(limit).all()
-    
+
+    if filter_cluster:
+        query = query.filter(Sector.cluster_id == filter_cluster)
+    elif filter_region:
+        query = query.join(Cluster).filter(Cluster.region_id == filter_region)
+
+    if filter_discovered is not None:
+        query = query.filter(Sector.is_discovered == filter_discovered)
+
+    if search:
+        term = f"%{search.strip()}%"
+        # Match by sector name; numeric search also matches the sector number.
+        conditions = [Sector.name.ilike(term)]
+        if search.strip().isdigit():
+            conditions.append(Sector.sector_id == int(search.strip()))
+        query = query.filter(or_(*conditions))
+
+    # has_port / has_planet require per-row presence checks; apply them after
+    # fetching the page candidates so the count stays a single query for the
+    # column-level filters. When those filters are requested we restrict the
+    # base query via subquery to keep totals honest.
+    if filter_has_port is not None:
+        port_subq = db.query(Station.sector_id).distinct().subquery()
+        port_sectors = db.query(port_subq.c.sector_id)
+        if filter_has_port:
+            query = query.filter(Sector.sector_id.in_(port_sectors))
+        else:
+            query = query.filter(~Sector.sector_id.in_(port_sectors))
+
+    if filter_has_planet is not None:
+        planet_subq = db.query(Planet.sector_id).distinct().subquery()
+        planet_sectors = db.query(planet_subq.c.sector_id)
+        if filter_has_planet:
+            query = query.filter(Sector.sector_id.in_(planet_sectors))
+        else:
+            query = query.filter(~Sector.sector_id.in_(planet_sectors))
+
+    total = query.count()
+
+    # offset wins if explicitly supplied; otherwise derive from 1-based page.
+    effective_offset = offset if offset is not None else max(page - 1, 0) * limit
+    sectors = query.offset(effective_offset).limit(limit).all()
+
+    # Resolve cluster -> region display names for the page in two batched
+    # lookups rather than per-row joins.
+    cluster_ids = {sector.cluster_id for sector in sectors if sector.cluster_id is not None}
+    cluster_map = {}
+    region_map = {}
+    if cluster_ids:
+        clusters = db.query(Cluster).filter(Cluster.id.in_(cluster_ids)).all()
+        cluster_map = {c.id: c for c in clusters}
+        region_ids = {c.region_id for c in clusters if c.region_id is not None}
+        if region_ids:
+            regions = db.query(Region).filter(Region.id.in_(region_ids)).all()
+            region_map = {r.id: r for r in regions}
+
     sector_list = []
     for sector in sectors:
         # Check for port in this sector
         has_port = db.query(Station).filter(Station.sector_id == sector.sector_id).first() is not None
-        
+
         # Check for planet in this sector
         has_planet = db.query(Planet).filter(Planet.sector_id == sector.sector_id).first() is not None
-        
+
         # Check for warp tunnels from this sector (using UUID sector.id, not integer sector_id)
         has_warp_tunnel = db.query(WarpTunnel).filter(
             (WarpTunnel.origin_sector_id == sector.id) |
             (WarpTunnel.destination_sector_id == sector.id)
         ).first() is not None
-        
+
+        # Resolve region/cluster names from the batched lookups.
+        cluster = cluster_map.get(sector.cluster_id)
+        cluster_name = cluster.name if cluster else None
+        region = region_map.get(cluster.region_id) if cluster else None
+        region_name = region.display_name if region else None
+
         sector_list.append({
             "id": str(sector.id),
             "sector_id": sector.sector_id,
             "name": sector.name,
             "type": sector.special_type.value if hasattr(sector, 'special_type') and sector.special_type is not None else sector.type.value,
             "cluster_id": str(sector.cluster_id),
+            "cluster_name": cluster_name,
+            "region_name": region_name,
             "x_coord": sector.x_coord,
             "y_coord": sector.y_coord,
             "z_coord": sector.z_coord,
@@ -1188,11 +1271,41 @@ async def get_all_sectors(
             "has_port": has_port,
             "has_planet": has_planet,
             "has_warp_tunnel": has_warp_tunnel,
-            "resource_richness": "average",  # TODO: Calculate from resources
+            # Real richness derived from the resources JSONB: rich when this
+            # sector has scanned asteroid yields, otherwise null (no canonical
+            # richness scalar exists on the model — do not fabricate one).
+            "resource_richness": _sector_resource_richness(sector.resources),
             "controlling_faction": sector.controlling_faction
         })
-    
-    return {"sectors": sector_list, "total": query.count()}
+
+    return {
+        "sectors": sector_list,
+        "total": total,
+        "total_count": total,
+        "limit": limit,
+        "offset": effective_offset,
+        "page": page,
+    }
+
+
+def _sector_resource_richness(resources):
+    """Derive an honest richness label from the Sector.resources JSONB.
+
+    The model has no richness scalar; we report based on real asteroid yield
+    data. Returns None when the sector has not been scanned / has no asteroid
+    data, so the UI can render an em-dash rather than an invented value.
+    """
+    if not resources or not resources.get("has_asteroids"):
+        return None
+    yields = resources.get("asteroid_yield") or {}
+    total_yield = sum(v for v in yields.values() if isinstance(v, (int, float)))
+    if total_yield <= 0:
+        return None
+    if total_yield >= 5000:
+        return "rich"
+    if total_yield >= 1000:
+        return "moderate"
+    return "sparse"
 
 @router.post("/warp-tunnels/create", response_model=dict)
 async def create_warp_tunnel(
@@ -1368,7 +1481,7 @@ async def get_sector_port(
             "faction_affiliation": station.faction_affiliation,
             "trade_volume": station.trade_volume,
             "market_volatility": station.market_volatility,
-            "tax_rate": 5.0,  # Default tax rate - TODO: Add to Station model
+            "tax_rate": station.tax_rate,  # Real trade tax column (0-1 float)
 
             # Defense information from JSONB
             "defense_level": defenses.get("defense_drones", 0),

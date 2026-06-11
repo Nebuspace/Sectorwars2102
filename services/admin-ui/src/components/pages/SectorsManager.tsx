@@ -9,7 +9,8 @@ interface Sector {
   name: string;
   type: string;
   cluster_id: string;
-  region_name: string;
+  cluster_name?: string | null;
+  region_name?: string | null;
   x_coord: number;
   y_coord: number;
   z_coord: number;
@@ -36,6 +37,7 @@ const SectorsManager: React.FC = () => {
   
   // State for sectors
   const [sectors, setSectors] = useState<Sector[]>([]);
+  const [totalSectors, setTotalSectors] = useState<number>(0);
   const [selectedSector, setSelectedSector] = useState<Sector | null>(null);
   const [sectorLoading, setSectorLoading] = useState<boolean>(false);
   
@@ -89,12 +91,14 @@ const SectorsManager: React.FC = () => {
           }
         });
         
-        const data = response.data as { sectors: Sector[]; total_count?: number; };
+        const data = response.data as { sectors: Sector[]; total?: number; total_count?: number; };
         setSectors(data.sectors || []);
+        setTotalSectors(data.total ?? data.total_count ?? (data.sectors || []).length);
       } catch (error) {
         console.error('Error fetching sectors:', error);
         // If the API call fails, use empty array
         setSectors([]);
+        setTotalSectors(0);
       } finally {
         setSectorLoading(false);
       }
@@ -141,6 +145,7 @@ const SectorsManager: React.FC = () => {
   // Handle search input
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSearchQuery(e.target.value);
+    setCurrentPage(1);
   };
   
   // Handle search submission
@@ -370,7 +375,9 @@ const SectorsManager: React.FC = () => {
           ) : (
             <div className="card">
               <div className="card-header">
-                <h3 className="card-title">Sectors ({sectors.length})</h3>
+                <h3 className="card-title">
+                  Sectors (Showing {sectors.length.toLocaleString()} of {totalSectors.toLocaleString()})
+                </h3>
               </div>
               <div className="card-body">
                 {sectors.length === 0 ? (
@@ -392,10 +399,14 @@ const SectorsManager: React.FC = () => {
                         </thead>
                         <tbody>
                           {sectors.map(sector => {
-                            // Use region_name directly from backend
-                            const regionName = sector.region_name || 'Unknown';
-                            const clusterName = clusters.find(c => c.id === sector.cluster_id)?.name || 'Unknown';
-                            
+                            // Prefer server-resolved names; fall back to the
+                            // already-loaded clusters context, then em-dash.
+                            const regionName = sector.region_name || '—';
+                            const clusterName =
+                              sector.cluster_name ||
+                              clusters.find(c => c.id === sector.cluster_id)?.name ||
+                              '—';
+
                             return (
                               <tr 
                                 key={sector.id} 
@@ -448,17 +459,19 @@ const SectorsManager: React.FC = () => {
                     </div>
                     
                     <div className="flex justify-between items-center mt-6">
-                      <button 
+                      <button
                         className="btn btn-secondary"
                         disabled={currentPage === 1}
                         onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
                       >
                         Previous
                       </button>
-                      <span className="text-sm text-muted">Page {currentPage}</span>
-                      <button 
+                      <span className="text-sm text-muted">
+                        Page {currentPage} of {Math.max(1, Math.ceil(totalSectors / itemsPerPage))}
+                      </span>
+                      <button
                         className="btn btn-secondary"
-                        disabled={sectors.length < itemsPerPage}
+                        disabled={currentPage >= Math.max(1, Math.ceil(totalSectors / itemsPerPage))}
                         onClick={() => setCurrentPage(prev => prev + 1)}
                       >
                         Next
