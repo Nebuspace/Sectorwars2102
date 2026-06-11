@@ -15,7 +15,7 @@ from src.models.team import Team, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
 from src.models.player import Player
 from src.models.message import Message
-from src.services.audit_service import AuditService
+from src.services.audit_service import AuditService, AuditAction
 
 logger = logging.getLogger(__name__)
 
@@ -121,10 +121,10 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=creator_id,
-            action="team.create",
+            user_id=creator_id,
+            action=AuditAction.CREATE,
             resource_type="team",
-            resource_id=team.id,
+            resource_id=str(team.id),
             details={"team_name": name, "team_id": str(team.id)}
         )
         
@@ -156,10 +156,10 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.update",
+            user_id=player_id,
+            action=AuditAction.UPDATE,
             resource_type="team",
-            resource_id=team_id,
+            resource_id=str(team_id),
             details={"updates": kwargs}
         )
         
@@ -184,10 +184,10 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.delete",
+            user_id=player_id,
+            action=AuditAction.DELETE,
             resource_type="team",
-            resource_id=team_id,
+            resource_id=str(team_id),
             details={"team_name": team.name}
         )
         
@@ -280,8 +280,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=inviter_id,
-            action="team.invite",
+            user_id=inviter_id,
+            action=AuditAction.UPDATE,  # was "team.invite"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -377,8 +377,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.join",
+            user_id=player_id,
+            action=AuditAction.UPDATE,  # was "team.join"
             resource_type="team",
             resource_id=team.id,
             details={"team_name": team.name, "method": "invitation" if invitation_code else "direct"}
@@ -433,8 +433,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=actor_id,
-            action="team.remove_member",
+            user_id=actor_id,
+            action=AuditAction.UPDATE,  # was "team.remove_member"
             resource_type="team",
             resource_id=team_id,
             details={"removed_member_id": str(member_id)}
@@ -514,8 +514,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.leave",
+            user_id=player_id,
+            action=AuditAction.UPDATE,  # was "team.leave"
             resource_type="team",
             resource_id=team.id if team else None,
             details={"team_name": team.name if team else "disbanded"}
@@ -585,8 +585,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=actor_id,
-            action="team.update_role",
+            user_id=actor_id,
+            action=AuditAction.UPDATE,  # was "team.update_role"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -678,8 +678,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=current_leader_id,
-            action="team.transfer_leadership",
+            user_id=current_leader_id,
+            action=AuditAction.UPDATE,  # was "team.transfer_leadership"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -749,8 +749,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.treasury.deposit",
+            user_id=player_id,
+            action=AuditAction.UPDATE,  # was "team.treasury.deposit"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -818,8 +818,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.treasury.withdraw",
+            user_id=player_id,
+            action=AuditAction.UPDATE,  # was "team.treasury.withdraw"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -903,8 +903,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=actor_id,
-            action="team.treasury.transfer",
+            user_id=actor_id,
+            action=AuditAction.UPDATE,  # was "team.treasury.transfer"
             resource_type="team",
             resource_id=team_id,
             details={
