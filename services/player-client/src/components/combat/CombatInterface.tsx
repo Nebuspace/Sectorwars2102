@@ -78,15 +78,28 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   const isStandalone = !onClose;
   const Wrapper = isStandalone ? GameLayout : React.Fragment;
 
-  const { playerState, currentShip, refreshPlayerState } = useGame();
-  
+  const {
+    playerState,
+    currentShip,
+    currentSector,
+    planetsInSector,
+    stationsInSector,
+    refreshPlayerState
+  } = useGame();
+
   // Combat state
   const [combatId, setCombatId] = useState<string | null>(null);
   const [combatStatus, setCombatStatus] = useState<CombatStatus | null>(null);
   const [isEngaging, setIsEngaging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedAction, setSelectedAction] = useState<'fire' | 'drones' | 'retreat'>('fire');
-  
+  const [retreatMessage, setRetreatMessage] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Target selected from the in-sector target list (when no target prop is given,
+  // e.g. when rendered as the /game/combat route)
+  const [selectedTarget, setSelectedTarget] = useState<CombatTarget | null>(null);
+  const combatTarget = target ?? selectedTarget;
+
   // UI state
   const [showCombatLog, setShowCombatLog] = useState(true);
   const [animationState, setAnimationState] = useState<'idle' | 'attacking' | 'defending'>('idle');
@@ -123,26 +136,26 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
     return () => clearInterval(interval);
   }, [combatId, combatStatus?.status]);
   
-  // Initiate combat
-  const inititateCombat = useCallback(async () => {
-    if (!target || !playerState || isEngaging) return;
-    
+  // Initiate combat against an explicit target (from prop or target selection)
+  const initiateCombat = useCallback(async (engageTarget: CombatTarget) => {
+    if (!playerState || isEngaging) return;
+
     // Validate inputs
     const validation = InputValidator.validateCombatParams({
-      targetType: target.type,
-      targetId: target.id
+      targetType: engageTarget.type,
+      targetId: engageTarget.id
     });
-    
+
     if (!validation.valid) {
       setError(validation.errors.join(', '));
       SecurityAudit.log({
         type: 'validation_failure',
-        details: { errors: validation.errors, target },
+        details: { errors: validation.errors, target: engageTarget },
         userId: playerState.id
       });
       return;
     }
-    
+
     // Rate limiting check
     if (!InputValidator.checkRateLimit(`combat_${playerState.id}`, 5, 60000)) {
       setError('Too many combat attempts. Please wait before engaging again.');
@@ -153,16 +166,17 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
       });
       return;
     }
-    
+
     setIsEngaging(true);
     setError(null);
-    
+    setRetreatMessage(null);
+
     try {
-      const response = await gameAPI.combat.engage(target.type, target.id);
-      
+      const response = await gameAPI.combat.engage(engageTarget.type, engageTarget.id);
+
       if (response.status === 'initiated' && response.combatId) {
         setCombatId(response.combatId);
-        
+
         // Fetch initial status
         const initialStatus = await gameAPI.combat.getStatus(response.combatId);
         if (initialStatus) {
@@ -172,12 +186,20 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         setError(response.message || 'Failed to initiate combat');
       }
     } catch (err) {
-      setError('Combat system error. Please try again.');
+      // apiRequest surfaces the server's `detail` message — show it inline
+      setError(err instanceof Error ? err.message : 'Combat system error. Please try again.');
       console.error('Combat initiation failed:', err);
     } finally {
       setIsEngaging(false);
     }
-  }, [target, playerState, isEngaging]);
+  }, [playerState, isEngaging]);
+
+  // Select a target from the in-sector list and engage immediately
+  const handleEngageTarget = useCallback((engageTarget: CombatTarget) => {
+    setSelectedTarget(engageTarget);
+    setError(null);
+    initiateCombat(engageTarget);
+  }, [initiateCombat]);
   
   // Handle combat end
   const handleCombatEnd = useCallback((status: CombatStatus) => {
@@ -198,10 +220,32 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   // Attempt retreat
   const attemptRetreat = useCallback(async () => {
     if (!combatId || !playerState || combatStatus?.status === 'completed') return;
-    
-    // TODO: Implement retreat mechanics when API is available
-    console.warn('Retreat attempt - not yet implemented');
-  }, [combatId, playerState, combatStatus]);
+
+    setSelectedAction('retreat');
+    setError(null);
+
+    try {
+      const result = await gameAPI.combat.retreat(combatId);
+      setRetreatMessage({
+        success: !!result.success,
+        message: result.message || (result.success ? 'Retreat successful!' : 'Retreat failed!')
+      });
+
+      // On a successful retreat the combat ends — refresh status immediately
+      if (result.success) {
+        const status = await gameAPI.combat.getStatus(combatId);
+        if (status) {
+          setCombatStatus(status);
+          if (status.status === 'completed') {
+            handleCombatEnd(status);
+          }
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Retreat attempt failed.');
+      console.error('Retreat attempt failed:', err);
+    }
+  }, [combatId, playerState, combatStatus, handleCombatEnd]);
   
   // Calculate health percentages
   const getHealthPercentage = (current: number, max: number = 100): number => {
@@ -212,17 +256,99 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   const latestRound = combatStatus?.rounds[combatStatus.rounds.length - 1];
   const playerHealth = latestRound?.playerHealth ?? 100;
   const targetHealth = latestRound?.targetHealth ?? 100;
-  
-  if (!target) {
+
+  // Build target lists from the current sector (GameContext)
+  type TargetOption = CombatTarget & { subtype: string };
+
+  const shipTargets: TargetOption[] = (currentSector?.players_present ?? [])
+    .filter((p: any) => p && p.player_id && p.player_id !== playerState?.id && p.ship_id)
+    .map((p: any) => ({
+      id: p.ship_id as string,
+      name: p.ship_name && p.ship_name !== 'None'
+        ? `${p.username} — ${p.ship_name}`
+        : p.username || 'Unknown pilot',
+      type: 'ship' as const,
+      subtype: p.ship_type && p.ship_type !== 'None'
+        ? String(p.ship_type).replace(/_/g, ' ').toLowerCase()
+        : 'ship'
+    }));
+
+  const planetTargets: TargetOption[] = planetsInSector
+    .filter(planet => !planet.owner_id || planet.owner_id !== playerState?.id)
+    .map(planet => ({
+      id: planet.id,
+      name: planet.name,
+      type: 'planet' as const,
+      subtype: planet.owner_name
+        ? `${planet.type} — owned by ${planet.owner_name}`
+        : `${planet.type} — unclaimed`
+    }));
+
+  const stationTargets: TargetOption[] = stationsInSector.map(station => ({
+    id: station.id,
+    name: station.name,
+    type: 'port' as const,
+    subtype: station.type
+  }));
+
+  const renderTargetGroup = (
+    title: string,
+    targets: TargetOption[],
+    emptyText: string
+  ) => (
+    <div className="target-group">
+      <h3>{title}</h3>
+      {targets.length === 0 ? (
+        <div className="target-empty">{emptyText}</div>
+      ) : (
+        targets.map(t => (
+          <div key={`${t.type}-${t.id}`} className="target-row">
+            <div className="target-info">
+              <span className="target-name">{t.name}</span>
+              <span className="target-type-label">{t.subtype}</span>
+            </div>
+            <button
+              className="cockpit-btn danger engage-target-btn"
+              onClick={() => handleEngageTarget({ id: t.id, name: t.name, type: t.type })}
+              disabled={isEngaging}
+            >
+              {isEngaging ? '...' : 'ENGAGE'}
+            </button>
+          </div>
+        ))
+      )}
+    </div>
+  );
+
+  if (!combatTarget) {
     return (
       <Wrapper>
-        <div className="combat-interface no-target">
-          <p>No combat target selected</p>
-          {onClose && (
-            <button className="cockpit-btn secondary" onClick={onClose}>
-              Close
-            </button>
+        <div className="combat-interface target-selection">
+          <div className="combat-header">
+            <h2>SELECT COMBAT TARGET</h2>
+            {onClose && (
+              <button className="close-btn" onClick={onClose}>×</button>
+            )}
+          </div>
+
+          {error && (
+            <div className="combat-error">
+              <span className="error-icon">⚠️</span>
+              {error}
+            </div>
           )}
+
+          <p className="target-selection-hint">
+            {currentSector
+              ? `Targets in sector ${currentSector.sector_number ?? currentSector.sector_id} — ${currentSector.name}`
+              : 'Scanning sector for targets...'}
+          </p>
+
+          <div className="target-groups">
+            {renderTargetGroup('Ships', shipTargets, 'No ships in sector')}
+            {renderTargetGroup('Planets', planetTargets, 'No planets in sector')}
+            {renderTargetGroup('Stations', stationTargets, 'No stations in sector')}
+          </div>
         </div>
       </Wrapper>
     );
@@ -233,7 +359,9 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
     <div className={`combat-interface ${animationState}`}>
       <div className="combat-header">
         <h2>COMBAT ENGAGEMENT</h2>
-        <button className="close-btn" onClick={onClose}>×</button>
+        {onClose && (
+          <button className="close-btn" onClick={onClose}>×</button>
+        )}
       </div>
       
       {error && (
@@ -270,14 +398,26 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         <div className="combat-arena">
           {!combatId ? (
             <div className="pre-combat">
-              <p>Prepare for combat against {target.name}</p>
-              <button 
+              <p>Prepare for combat against {combatTarget.name}</p>
+              <button
                 className="cockpit-btn danger engage-btn"
-                onClick={inititateCombat}
+                onClick={() => initiateCombat(combatTarget)}
                 disabled={isEngaging}
               >
                 {isEngaging ? 'Engaging...' : 'ENGAGE COMBAT'}
               </button>
+              {!target && (
+                <button
+                  className="cockpit-btn secondary change-target-btn"
+                  onClick={() => {
+                    setSelectedTarget(null);
+                    setError(null);
+                  }}
+                  disabled={isEngaging}
+                >
+                  ← CHANGE TARGET
+                </button>
+              )}
             </div>
           ) : (
             <div className="combat-active">
@@ -301,13 +441,19 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
                       >
                         DEPLOY DRONES
                       </button>
-                      <button 
+                      <button
                         className={`action-btn retreat ${selectedAction === 'retreat' ? 'active' : ''}`}
                         onClick={attemptRetreat}
                       >
                         ATTEMPT RETREAT
                       </button>
                     </div>
+                    {retreatMessage && (
+                      <div className={`combat-retreat-message ${retreatMessage.success ? 'success' : 'failure'}`}>
+                        <span className="retreat-icon">{retreatMessage.success ? '✓' : '✗'}</span>
+                        {retreatMessage.message}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="combat-result">
@@ -335,21 +481,21 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         
         {/* Target Status */}
         <div className="combatant target">
-          <h3>{target.name}</h3>
-          <div className="ship-type">{target.type}</div>
-          
+          <h3>{combatTarget.name}</h3>
+          <div className="ship-type">{combatTarget.type}</div>
+
           <div className="health-bar">
-            <div 
+            <div
               className="health-fill enemy"
               style={{ width: `${getHealthPercentage(targetHealth)}%` }}
             />
             <span className="health-text">{targetHealth}/100</span>
           </div>
-          
+
           <div className="combat-stats">
-            <div>Type: {target.type}</div>
-            {target.shields && <div>Shields: {target.shields}</div>}
-            {target.drones && <div>Drones: {target.drones}</div>}
+            <div>Type: {combatTarget.type}</div>
+            {combatTarget.shields && <div>Shields: {combatTarget.shields}</div>}
+            {combatTarget.drones && <div>Drones: {combatTarget.drones}</div>}
           </div>
         </div>
       </div>
@@ -375,7 +521,7 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
                   {round.attackerAction.damage && ` (${round.attackerAction.damage} damage)`}
                 </span>
                 <span className="defender-action">
-                  {target.name} {round.defenderAction.type === 'fire' ? 'returned fire' : round.defenderAction.type}
+                  {combatTarget.name} {round.defenderAction.type === 'fire' ? 'returned fire' : round.defenderAction.type}
                   {round.defenderAction.damage && ` (${round.defenderAction.damage} damage)`}
                 </span>
               </div>

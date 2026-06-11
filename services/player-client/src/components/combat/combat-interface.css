@@ -428,6 +428,98 @@
   margin-bottom: 20px;
 }
 
+/* Target Selection */
+.target-selection-hint {
+  color: var(--cockpit-text-secondary);
+  font-size: 14px;
+  margin: 0 0 15px 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.target-groups {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 15px;
+}
+
+.target-group {
+  background: rgba(0, 255, 255, 0.05);
+  border: 1px solid var(--cockpit-border);
+  border-radius: 4px;
+  padding: 15px;
+}
+
+.target-group h3 {
+  color: var(--cockpit-primary);
+  margin: 0 0 10px 0;
+  font-size: 16px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--cockpit-border);
+  padding-bottom: 8px;
+}
+
+.target-empty {
+  color: var(--cockpit-text-secondary);
+  font-size: 13px;
+  font-style: italic;
+  padding: 10px 0;
+}
+
+.target-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(0, 255, 255, 0.1);
+}
+
+.target-row:last-child {
+  border-bottom: none;
+}
+
+.target-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.target-name {
+  color: var(--cockpit-text);
+  font-size: 14px;
+  font-weight: bold;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-type-label {
+  color: var(--cockpit-text-secondary);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.engage-target-btn {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.change-target-btn {
+  display: block;
+  margin: 15px auto 0;
+}
+
+@media (max-width: 768px) {
+  .target-groups {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Retreat Message */
 .combat-retreat-message {
   padding: 10px 16px;
