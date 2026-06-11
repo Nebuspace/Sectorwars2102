@@ -337,17 +337,22 @@ async def get_combat_stats(
     avg_duration = base_query.with_entities(func.avg(CombatLog.combat_duration)).scalar() or 0
 
     # Most active combatant (by participation count)
+    # Player.username is a Python property, not a column — group by id, resolve after
     most_active_result = db.query(
-        Player.username,
+        Player.id,
         func.count().label('combat_count')
     ).join(
         CombatLog,
         (CombatLog.attacker_id == Player.id) | (CombatLog.defender_id == Player.id)
     ).filter(
         CombatLog.timestamp >= time_threshold
-    ).group_by(Player.id, Player.username).order_by(desc('combat_count')).first()
+    ).group_by(Player.id).order_by(desc('combat_count')).first()
 
-    most_active_combatant = most_active_result.username if most_active_result else "None"
+    if most_active_result:
+        most_active_player = db.query(Player).filter(Player.id == most_active_result.id).first()
+        most_active_combatant = most_active_player.username if most_active_player else "None"
+    else:
+        most_active_combatant = "None"
 
     # Deadliest ship type (by wins)
     deadliest_result = db.query(
@@ -426,8 +431,9 @@ async def get_combat_logs(
 
     username_by_id = {}
     if player_ids:
-        for pid, uname in db.query(Player.id, Player.username).filter(Player.id.in_(player_ids)).all():
-            username_by_id[pid] = uname
+        # Player.username is a Python property (nickname or user.username), not a column
+        for p in db.query(Player).filter(Player.id.in_(player_ids)).all():
+            username_by_id[p.id] = p.username
 
     def participant(player_id, ship_name, ship_type) -> CombatLogParticipant:
         return CombatLogParticipant(
