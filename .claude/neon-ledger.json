@@ -131,6 +131,79 @@
         "NAV monitor legend overlays clickable warp nodes (had to dodge it twice during PROVE)",
         "RankProgress requirement row still says 'Exploration Activity' (backend-sourced name; leaderboard tab + stats relabeled to ARIA Activity)"
       ]
+    },
+    {
+      "id": "neon-2026-06-11-b",
+      "stage": "complete",
+      "branch_head_at_start": "e46dc30",
+      "deployed_sha_baseline": "888ec18",
+      "sections": [
+        {
+          "key": "combat-engine-live",
+          "state": "proven",
+          "effort": 3,
+          "proof_script": [
+            "POST /api/v1/combat/engage {targetType:ship} returns 200 with combatId (before: 500 on every call)",
+            "verifpilot engages a target from /game/combat WEAPONS screen; rounds replay in UI without crash; winner shown correctly by UUID",
+            "DB: combat_logs row with real columns (combat_type, outcome, rounds>0, combat_details JSON); attacker turns deducted by defender attack_turn_cost",
+            "PvP secondary: engage testpilot's ship in shared sector; CombatLog honest regardless of outcome",
+            "Zero new console errors; port targetType returns honest 'disabled' message"
+          ]
+        },
+        {
+          "key": "first-npcs-pirates",
+          "state": "proven",
+          "effort": 3,
+          "proof_script": [
+            "spawn script on dev materializes 31 pirate captains: npc_characters rows + ships rows (owner_id NULL, is_npc true) at 13 BANG anchor sectors (sector-offset correct)",
+            "verifpilot flies to nearest pirate anchor sector: COMMS shows the pirate contact; WEAPONS target list shows the pirate ship with NPC styling",
+            "ENGAGE the pirate: combat resolves, CombatLog row with defender_id NULL; on NPC destruction KIA processed (status kia, presence + patrol entries removed, respawn_eligible_at set)",
+            "Script idempotent: second run spawns nothing"
+          ]
+        },
+        {
+          "key": "polish-batch-2",
+          "state": "proven",
+          "effort": 1,
+          "proof_script": [
+            "SERVICE RECORD header: title+subtitle no longer overlap at 1440x900",
+            "SpaceDock venue grid: both rows un-sliced at 1440x900",
+            "NAV monitor: a warp node under the legend is clickable (legend visible, pointer-events none)"
+          ]
+        }
+      ],
+      "flags_to_max": [
+        "Pirate hulls have NO canon stats - v1 uses LIGHT_FREIGHTER specs as documented placeholder (police interdictors deferred: need new enum hulls, fully spec'd in police-forces.md)",
+        "bang rosters say 13 pirate lords/galaxy vs canon ADR-0047 1-2 Stronghold-tier per region - lords + 90 enforcers held back from v1 spawn",
+        "NPC kills grant no rep/bounty/loot in v1 (canon numbers exist, belong to holdings/reputation slices)",
+        "ships.owner_id NOT NULL dropped + is_npc added via migration + manual dev ALTER (additive)",
+        "Defender-docked protection: attack_player has no defender-docked guard - canon gap, decide whether docked players are attackable",
+        "npcs.md internal conflict: prose says nine archetypes, enum section lists ten (STATION_SECURITY) - docs fix needed",
+        "respawn-vs-permanent-KIA tension: npcs.md ADR-0063 N-D2 (15-min respawn) vs npc-scheduler.md KIA step 9 (permanently gone)",
+        "current-sector endpoint region-scopes lookups; cross-region travel flows unverified (teleport during proof required manual region_id fix)"
+      ],
+      "probe_workflow": "wf_f25eaeaa-c25",
+      "verdict": "GLOWING",
+      "commits": {
+        "combat-engine-live": "e2fc11d",
+        "first-npcs-pirates": "91f8d29",
+        "polish-batch-2": "c036287"
+      },
+      "proof_evidence": {
+        "combat-engine-live": "engage 200 (was 500-forever); 4 live fights resolved with honest outcomes (DISENGAGED zero-drone flee, STALEMATE 10-round cap, VICTORY kill, PvP 1-round scout escape); combat_logs rows with real columns; spec'd turn costs charged exactly (LIGHT_FREIGHTER attack_turn_cost 12, SCOUT 5); UI round replay without crash",
+        "first-npcs-pirates": "31 pirate captains materialized at 13 BANG anchor sectors with DB-derived offsets; idempotent re-run (0 spawned, 13 EXISTS); COMMS + combat target list show NPCs (badge in DOM); KIA on kill: status KIA, sector NULL, respawn_eligible_at exactly +70 wall-min (168h/144 scale), presence+patrol pruned 5->4; farming guard holds (combat_victories 0 after NPC kill)",
+        "polish-batch-2": "SERVICE RECORD header clean (no overlap); NAV legend pointer-events none verified via computed style + map clicks throughout the run; venue-grid fold fix reviewer-verified, live visual deferred (no SpaceDock in proof area)"
+      },
+      "test_rig_notes": [
+        "verifpilot/testpilot relocated to sectors 884/885 (player_owned region) via DB during proof; left there (valid game state)",
+        "Mayflower attack_rating restored to 10, verifpilot drones reset to 0 after proof",
+        "Blackjack Mara's ship was hull-rigged to force the kill path; ship destroyed + NPC KIA (legitimate end state, respawns via future Loop B)"
+      ],
+      "residual_polish": [
+        "COMMS contact names truncate before the NPC badge renders (badge in DOM, clipped from view) \u2014 render badge before name or widen panel",
+        "venue-grid fold visual check at a SpaceDock pending",
+        "NavigationMap duplicate React keys for multi-edge connections (console warning, pre-existing)"
+      ]
     }
   ]
 }
