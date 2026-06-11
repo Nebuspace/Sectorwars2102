@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from typing import List, Dict, Any
@@ -12,10 +13,12 @@ from src.models.player import Player
 from src.models.station import Station
 from src.models.sector import Sector
 from src.models.ship import Ship
+from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
 from src.models.market_transaction import MarketTransaction, MarketPrice, TransactionType
 from src.services.trading_service import TradingService
 from src.services.ranking_service import RankingService
 from src.services.medal_service import MedalService
+from src.services import docking_service
 
 import logging
 
@@ -32,6 +35,10 @@ class TradeRequest(BaseModel):
 
 class StationDockRequest(BaseModel):
     station_id: str
+
+
+class SlipBumpRequest(BaseModel):
+    occupant_player_id: str
 
 
 class MarketInfoResponse(BaseModel):
@@ -538,24 +545,83 @@ async def dock_at_station(
     # Check if player has enough turns
     if current_player.turns < DOCKING_TURN_COST:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Insufficient turns. Need {DOCKING_TURN_COST} turn(s), have {current_player.turns}"
         )
-    
+
+    # Docking fee (canon: fees fund the station treasury). Validated after the
+    # turn check, in addition to the 1-turn dock cost.
+    docking_fee = docking_service.docking_fee_for(station)
+    if current_player.credits < docking_fee:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient credits for the {docking_fee}cr docking fee. Have {current_player.credits}"
+        )
+
+    # Claim a transient slip. acquire() locks the station row to serialize
+    # slot grants; occupancy rows are the source of truth for slip usage.
+    slip_result = docking_service.acquire(
+        db, station, current_player, ship_id=current_player.current_ship_id
+    )
+
+    if slip_result["status"] != "granted":
+        # All transient slips taken (or the free slot belongs to the queue
+        # head). Auto-enqueue the requester so they hold a FIFO position,
+        # then report the choices: wait, or pay 5x the fee to bump.
+        queue_position = slip_result.get("position")
+        if queue_position is None:
+            db.add(DockingQueueEntry(station_id=station.id, player_id=current_player.id))
+            queue_position = slip_result["queue_length"] + 1
+        db.commit()
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": (
+                    f"All transient docking slips at {station.name} are occupied "
+                    f"({slip_result['occupied']}/{slip_result['capacity']})"
+                    if slip_result['occupied'] >= slip_result['capacity']
+                    else (
+                        f"A slip is free at {station.name} but the docking queue "
+                        f"has priority ({slip_result['occupied']}/{slip_result['capacity']} occupied)"
+                    )
+                ),
+                "slips": {
+                    "capacity": slip_result["capacity"],
+                    "occupied": slip_result["occupied"],
+                },
+                "queue_position": queue_position,
+                "bumpable": slip_result["bumpable"],
+                "bump_cost": docking_fee * docking_service.BUMP_COST_MULTIPLIER,
+            },
+        )
+
     try:
         # Update player status
         current_player.is_docked = True
         current_player.current_port_id = dock_request.station_id
-        
+
         # Deduct turns for docking
         current_player.turns -= DOCKING_TURN_COST
-        
+
+        # Charge the docking fee; fees accrue to the station treasury.
+        # The station row is already locked by acquire() — one session,
+        # single commit.
+        current_player.credits -= docking_fee
+        station.treasury_balance = (station.treasury_balance or 0) + docking_fee
+        slip_result["occupancy"].fee_paid = docking_fee
+
         db.commit()
-        
+
         return {
             "message": f"Successfully docked at {station.name}",
             "turn_cost": DOCKING_TURN_COST,
             "turns_remaining": current_player.turns,
+            "docking_fee": docking_fee,
+            "credits_remaining": current_player.credits,
+            "slips": {
+                "capacity": slip_result["capacity"],
+                "occupied": slip_result["occupied"],
+            },
             "station": {
                 "id": str(station.id),
                 "name": station.name,
@@ -564,7 +630,7 @@ async def dock_at_station(
                 "services": station.services or {}
             }
         }
-        
+
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Docking failed: {str(e)}")
@@ -595,15 +661,20 @@ async def undock_from_port(
         )
     
     try:
+        # Free the transient slip in the same transaction. Tolerates a
+        # missing occupancy row (players docked before the slip system
+        # shipped never held one).
+        docking_service.release(db, None, current_player)
+
         # Update player status
         current_player.is_docked = False
         current_player.current_port_id = None
-        
+
         # Deduct turns for undocking
         current_player.turns -= UNDOCKING_TURN_COST
-        
+
         db.commit()
-        
+
         return {
             "message": "Successfully undocked from port",
             "turn_cost": UNDOCKING_TURN_COST,
@@ -613,6 +684,161 @@ async def undock_from_port(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Undocking failed: {str(e)}")
+
+
+@router.get("/stations/{station_id}/slips")
+async def get_station_slips(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player)
+):
+    """Transient docking slip availability for a station.
+
+    No docking required — powers the pre-dock UI:
+    "Transient slips: 11/12 occupied. Estimated wait: ~N min".
+    """
+    station = _get_station_or_404(db, station_id)
+
+    capacity = docking_service.slip_capacity_for(station)
+    occupancies = db.query(DockingSlipOccupancy).filter(
+        DockingSlipOccupancy.station_id == station.id,
+        DockingSlipOccupancy.slip_class == "transient"
+    ).all()
+    occupied = len(occupancies)
+
+    queue = db.query(DockingQueueEntry).filter(
+        DockingQueueEntry.station_id == station.id
+    ).order_by(DockingQueueEntry.created_at.asc()).all()
+    my_queue_position = next(
+        (idx + 1 for idx, entry in enumerate(queue) if entry.player_id == current_player.id),
+        None
+    )
+
+    fee = docking_service.docking_fee_for(station)
+
+    # Estimated wait (canon UX promise): wall-clock minutes until the
+    # longest-tenured occupant crosses the 4h bumpable threshold — the
+    # earliest moment a slip can realistically be forced free. 0 when free.
+    estimated_wait_minutes = 0
+    if occupied >= capacity and occupancies:
+        from src.core.game_time import GAME_TIME_SCALE, canonical_hours_since
+        max_tenure = max(canonical_hours_since(o.docked_at) for o in occupancies)
+        remaining_canonical_h = max(0.0, docking_service.BUMP_MIN_TENURE_HOURS - max_tenure)
+        estimated_wait_minutes = int(round(remaining_canonical_h * 60 / GAME_TIME_SCALE))
+
+    return {
+        "capacity": capacity,
+        "occupied": occupied,
+        "free": max(capacity - occupied, 0),
+        "estimated_wait_minutes": estimated_wait_minutes,
+        "fee": fee,
+        "bump_cost": fee * docking_service.BUMP_COST_MULTIPLIER,
+        "queue_length": len(queue),
+        "my_queue_position": my_queue_position,
+        "occupants_bumpable_count": sum(
+            1 for occ in occupancies if docking_service.is_bumpable(occ)
+        )
+    }
+
+
+@router.post("/stations/{station_id}/slips/bump")
+async def bump_docking_slip(
+    station_id: str,
+    bump_request: SlipBumpRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player)
+):
+    """Pay 5x the docking fee to evict a long-tenured slip occupant
+    (>= 4 canonical hours of tenure) and dock in the freed slip.
+
+    Bump + dock execute in one transaction; the response mirrors the
+    /dock success shape plus the evicted occupant's info.
+    """
+    # Define docking turn cost (the bump includes a normal dock)
+    DOCKING_TURN_COST = 1
+
+    # Get the station
+    station = _get_station_or_404(db, station_id)
+
+    # Same pre-flight checks as /dock. NOTE: the player row is deliberately
+    # NOT locked here — docking_service.bump locks the station row first,
+    # then BOTH player rows in ascending player-id order (deadlock
+    # avoidance; see docking_service lock-ordering notes).
+    if current_player.current_sector_id != station.sector_id:
+        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+
+    if current_player.is_docked:
+        raise HTTPException(status_code=400, detail="You are already docked at a station")
+
+    if current_player.is_landed:
+        raise HTTPException(status_code=400, detail="You must leave the planet before docking at a station")
+
+    if current_player.turns < DOCKING_TURN_COST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient turns. Need {DOCKING_TURN_COST} turn(s), have {current_player.turns}"
+        )
+
+    import uuid as _uuid
+    try:
+        occupant_uuid = _uuid.UUID(str(bump_request.occupant_player_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="That occupant does not hold a slip at this station")
+
+    try:
+        bump_result = docking_service.bump(db, station, current_player, occupant_uuid)
+    except docking_service.BumpError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+    try:
+        # Re-check turns now that the player row is locked (bump locked it),
+        # then dock the bumper in the freed slip.
+        if current_player.turns < DOCKING_TURN_COST:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient turns. Need {DOCKING_TURN_COST} turn(s), have {current_player.turns}"
+            )
+
+        current_player.is_docked = True
+        current_player.current_port_id = station.id
+        current_player.turns -= DOCKING_TURN_COST
+
+        db.commit()
+
+        # Notify the evicted occupant only AFTER the eviction is durable
+        evicted_user_id = bump_result["evicted"].pop("_notify_user_id", None)
+        if evicted_user_id is not None:
+            docking_service._notify_bumped(evicted_user_id, station.name)
+
+        return {
+            "message": f"Successfully bumped an occupant and docked at {station.name}",
+            "turn_cost": DOCKING_TURN_COST,
+            "turns_remaining": current_player.turns,
+            "docking_fee": bump_result["cost"],
+            "credits_remaining": current_player.credits,
+            "evicted": bump_result["evicted"],
+            "slips": {
+                "capacity": bump_result["capacity"],
+                "occupied": bump_result["occupied"],
+            },
+            "station": {
+                "id": str(station.id),
+                "name": station.name,
+                "type": station.type,
+                "faction": station.faction_affiliation,
+                "services": station.services or {}
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Docking failed: {str(e)}")
 
 
 @router.get("/history")
