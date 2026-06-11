@@ -241,16 +241,6 @@
   transform: translateX(2px);
 }
 
-.contact-list-name {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #00d9ff;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-}
-
 .empty-state {
   padding: 1rem;
   text-align: center;

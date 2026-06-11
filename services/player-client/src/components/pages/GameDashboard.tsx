@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useGame } from '../../contexts/GameContext';
+import { useGame, type MoveOption } from '../../contexts/GameContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
@@ -114,6 +114,70 @@ const GameDashboard: React.FC = () => {
     (currentSector?.players_present || []).forEach(addContact);
     return Array.from(contacts.values());
   }, [sectorPlayers, currentSector?.players_present, playerState]);
+
+  // NAV map sectors: one node per destination sector. A sector reachable by
+  // BOTH a warp and a tunnel used to be listed twice (duplicate React keys in
+  // NavigationMap + phantom overlapping nodes), so build through a Map keyed
+  // on sector_id — warp entries win, so the real sector type beats the
+  // synthetic 'nebula' tunnel styling, which tunnel-only destinations keep.
+  const navSectors = useMemo(() => {
+    if (!currentSector) return [];
+
+    // Sector number first so label truncation keeps it;
+    // region suffix only when crossing regions
+    const destinationName = (move: MoveOption): string => {
+      const showRegion = move.region_id && move.region_id !== currentSector.region_id;
+      return showRegion
+        ? `Sector ${move.sector_number || move.sector_id} · ${move.region_name}`
+        : `Sector ${move.sector_number || move.sector_id}`;
+    };
+
+    const byId = new Map<number, { id: number; name: string; type?: string; connected_sectors: number[] }>();
+
+    // Current sector (connections deduped — a dual warp+tunnel destination
+    // would otherwise draw the same edge twice)
+    byId.set(currentSector.sector_id, {
+      id: currentSector.sector_id,
+      name: `Sector ${currentSector.sector_number || currentSector.sector_id}`,
+      type: currentSector.type,
+      connected_sectors: [...new Set([
+        ...availableMoves.warps.map(w => w.sector_id),
+        ...availableMoves.tunnels.map(t => t.sector_id)
+      ])]
+    });
+
+    // Available warp destinations
+    availableMoves.warps.forEach(warp => {
+      if (byId.has(warp.sector_id)) return;
+      byId.set(warp.sector_id, {
+        id: warp.sector_id,
+        name: destinationName(warp),
+        type: warp.type,
+        connected_sectors: [currentSector.sector_id]
+      });
+    });
+
+    // Available tunnel destinations — skipped when the same sector is
+    // already reachable by warp (the warp entry wins)
+    availableMoves.tunnels.forEach(tunnel => {
+      if (byId.has(tunnel.sector_id)) return;
+      byId.set(tunnel.sector_id, {
+        id: tunnel.sector_id,
+        name: destinationName(tunnel),
+        type: 'nebula',
+        connected_sectors: [currentSector.sector_id]
+      });
+    });
+
+    return Array.from(byId.values());
+  }, [currentSector, availableMoves]);
+
+  // Stable identity for the NavigationMap prop: an inline array literal would
+  // be a new reference every render, re-running the map's node-init effect.
+  const affordableMoveIds = useMemo(() => [
+    ...availableMoves.warps.filter(w => w.can_afford).map(w => w.sector_id),
+    ...availableMoves.tunnels.filter(t => t.can_afford).map(t => t.sector_id)
+  ], [availableMoves]);
 
   // Landed planet — used by the windshield viewport and the colonist transfer UI
   const landedPlanet = useMemo(() => (
@@ -1183,54 +1247,8 @@ const GameDashboard: React.FC = () => {
                   {currentSector && (
                     <NavigationMap
                       currentSectorId={currentSector.sector_id}
-                      sectors={[
-                        // Current sector
-                        {
-                          id: currentSector.sector_id,
-                          name: `Sector ${currentSector.sector_number || currentSector.sector_id}`,
-                          type: currentSector.type,
-                          connected_sectors: [
-                            ...availableMoves.warps.map(w => w.sector_id),
-                            ...availableMoves.tunnels.map(t => t.sector_id)
-                          ]
-                        },
-                        // Available warp destinations
-                        ...availableMoves.warps.map(warp => {
-                          // Sector number first so label truncation keeps it;
-                          // region suffix only when crossing regions
-                          const showRegion = warp.region_id && warp.region_id !== currentSector.region_id;
-                          const displayName = showRegion
-                            ? `Sector ${warp.sector_number || warp.sector_id} · ${warp.region_name}`
-                            : `Sector ${warp.sector_number || warp.sector_id}`;
-
-                          return {
-                            id: warp.sector_id,
-                            name: displayName,
-                            type: warp.type,
-                            connected_sectors: [currentSector.sector_id]
-                          };
-                        }),
-                        // Available tunnel destinations
-                        ...availableMoves.tunnels.map(tunnel => {
-                          // Sector number first so label truncation keeps it;
-                          // region suffix only when crossing regions
-                          const showRegion = tunnel.region_id && tunnel.region_id !== currentSector.region_id;
-                          const displayName = showRegion
-                            ? `Sector ${tunnel.sector_number || tunnel.sector_id} · ${tunnel.region_name}`
-                            : `Sector ${tunnel.sector_number || tunnel.sector_id}`;
-
-                          return {
-                            id: tunnel.sector_id,
-                            name: displayName,
-                            type: 'nebula',
-                            connected_sectors: [currentSector.sector_id]
-                          };
-                        })
-                      ]}
-                      availableMoves={[
-                        ...availableMoves.warps.filter(w => w.can_afford).map(w => w.sector_id),
-                        ...availableMoves.tunnels.filter(t => t.can_afford).map(t => t.sector_id)
-                      ]}
+                      sectors={navSectors}
+                      availableMoves={affordableMoveIds}
                       onNavigate={handleMove}
                       width={440}
                       height={300}
@@ -1300,13 +1318,15 @@ const GameDashboard: React.FC = () => {
                       {sectorContacts.map((player: any) => (
                         <div key={(player.is_npc && player.player_id) || player.user_id || player.id || player.username} className="contact-list-item">
                           <span className="status-indicator online"></span>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
                             <span
-                              className="contact-list-name"
+                              className="comms-contact-name"
                               style={{ color: player.name_color || '#FFFFFF' }}
                             >
-                              {player.military_rank ? `${player.military_rank.toUpperCase()} ` : ''}
-                              {player.username || player.name || 'UNKNOWN CONTACT'}
+                              <span className="comms-contact-name-text">
+                                {player.military_rank ? `${player.military_rank.toUpperCase()} ` : ''}
+                                {player.username || player.name || 'UNKNOWN CONTACT'}
+                              </span>
                               {player.is_npc && (
                                 <span className="contact-npc-badge">NPC</span>
                               )}

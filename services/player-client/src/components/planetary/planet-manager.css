@@ -19,12 +19,6 @@
   padding: var(--space-xl);
 }
 
-.loading-spinner {
-  font-size: 1.2rem;
-  color: var(--accent-primary);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
 .error-message {
   display: flex;
   align-items: center;
@@ -52,6 +46,69 @@
 
 .retry-button:hover {
   opacity: 0.8;
+}
+
+/* ============================================
+   COLONY SCAN STATE - spinner / timeout / retry
+   Copied from the cockpit.css nav-scan idiom (NAV monitor) so this
+   page owns its styles instead of depending on cockpit.css loading.
+   ============================================ */
+
+.planet-scan-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  height: 100%;
+  text-align: center;
+  padding: 1rem;
+}
+
+.planet-scan-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(0, 217, 255, 0.2);
+  border-top-color: #00d9ff;
+  border-radius: 50%;
+  animation: planet-scan-spin 1s linear infinite;
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+}
+
+@keyframes planet-scan-spin {
+  to { transform: rotate(360deg); }
+}
+
+.planet-scan-text {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: rgba(0, 217, 255, 0.8);
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+
+.planet-scan-text.warning {
+  color: #ffb000;
+  text-shadow: 0 0 8px rgba(255, 176, 0, 0.4);
+}
+
+.planet-scan-retry {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(0, 217, 255, 0.15);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 4px;
+  color: #00d9ff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.planet-scan-retry:hover {
+  background: rgba(0, 217, 255, 0.25);
+  border-color: rgba(0, 217, 255, 0.7);
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
 }
 
 /* Disabled control affordances */
@@ -1110,8 +1167,7 @@
   .planet-item.under-siege,
   .siege-indicator,
   .siege-section,
-  .building-item.upgrading,
-  .loading-spinner {
+  .building-item.upgrading {
     animation: none;
   }
 

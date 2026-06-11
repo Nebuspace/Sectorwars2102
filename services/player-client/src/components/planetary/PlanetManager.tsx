@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { gameAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import type { Planet, ColonySpecialization } from '../../types/planetary';
@@ -12,7 +12,6 @@ import CitadelManager from './CitadelManager';
 import TerraformingPanel from './TerraformingPanel';
 import GameLayout from '../layouts/GameLayout';
 import EmptyState from '../common/EmptyState';
-import LoadingState from '../common/LoadingState';
 import './planet-manager.css';
 
 /**
@@ -157,26 +156,51 @@ export const PlanetManager: React.FC = () => {
   const [showSiegeMonitor, setShowSiegeMonitor] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'citadel' | 'terraforming'>('overview');
 
+  // COLONY scan loading state: show a spinner while the registry loads, then
+  // fall back to a retry affordance if nothing arrives within 10s. apiRequest
+  // has no timeout, so a hung GET /planets/owned would otherwise spin forever.
+  // Mirrors the NAV scan idiom in GameDashboard.
+  const [scanTimedOut, setScanTimedOut] = useState(false);
+  const [scanAttempt, setScanAttempt] = useState(0);
+
   useEffect(() => {
     loadPlanets();
   }, []);
 
+  useEffect(() => {
+    if (!loading) {
+      setScanTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setScanTimedOut(true), 10000);
+    return () => clearTimeout(timer);
+  }, [loading, scanAttempt]);
+
+  // Request token: only the latest loadPlanets call may touch state, so a
+  // late-settling hung fetch can't clobber the result of a successful retry.
+  const loadRequestId = useRef(0);
+
   const loadPlanets = async () => {
+    const requestId = ++loadRequestId.current;
     try {
       setError(null);
       const response = await gameAPI.planetary.getOwnedPlanets();
+      if (requestId !== loadRequestId.current) return;
       setPlanets(response.planets || []);
-      
+
       // Select first planet by default
       if (response.planets && response.planets.length > 0 && !selectedPlanet) {
         setSelectedPlanet(response.planets[0]);
       }
     } catch (err) {
+      if (requestId !== loadRequestId.current) return;
       setError('Failed to load planets');
       console.error('Error loading planets:', err);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (requestId === loadRequestId.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   };
 
@@ -186,6 +210,13 @@ export const PlanetManager: React.FC = () => {
 
   const handleRefresh = () => {
     setRefreshing(true);
+    loadPlanets();
+  };
+
+  const handleRetryScan = () => {
+    setScanTimedOut(false);
+    setScanAttempt(attempt => attempt + 1); // re-arm the 10s timeout
+    setLoading(true);
     loadPlanets();
   };
 
@@ -226,7 +257,21 @@ export const PlanetManager: React.FC = () => {
     return (
       <GameLayout>
         <div className="planet-manager loading">
-          <LoadingState message="Loading planetary data..." />
+          <div className="planet-scan-state">
+            {!scanTimedOut ? (
+              <>
+                <div className="planet-scan-spinner" aria-hidden="true"></div>
+                <span className="planet-scan-text">SCANNING COLONY REGISTRY...</span>
+              </>
+            ) : (
+              <>
+                <span className="planet-scan-text warning">COLONY REGISTRY SCAN TIMED OUT — NO TELEMETRY</span>
+                <button className="planet-scan-retry" onClick={handleRetryScan}>
+                  ⟳ RETRY SCAN
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </GameLayout>
     );
@@ -236,11 +281,10 @@ export const PlanetManager: React.FC = () => {
     return (
       <GameLayout>
         <div className="planet-manager error">
-          <div className="error-message">
-            <span className="error-icon">⚠️</span>
-            {error}
-            <button onClick={handleRefresh} className="retry-button">
-              Retry
+          <div className="planet-scan-state">
+            <span className="planet-scan-text warning">{error}</span>
+            <button className="planet-scan-retry" onClick={handleRetryScan}>
+              ⟳ RETRY SCAN
             </button>
           </div>
         </div>

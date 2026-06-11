@@ -948,14 +948,15 @@
   }
 }
 
-/* COMMS contact list: NPC tag rendered after the contact name */
+/* COMMS contact list: NPC tag rendered after the contact name.
+   flex-shrink:0 keeps the badge visible while the name text ellipsizes;
+   spacing comes from .comms-contact-name's flex gap (cockpit.css). */
 .contact-npc-badge {
-  margin-left: 6px;
+  flex-shrink: 0;
   font-size: 0.65em;
   padding: 1px 4px;
   border: 1px solid var(--color-error);
   border-radius: 2px;
   color: var(--color-error);
   letter-spacing: 0.08em;
-  vertical-align: middle;
 }

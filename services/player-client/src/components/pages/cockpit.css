@@ -1348,9 +1348,23 @@
   border-color: rgba(0, 255, 65, 0.4);
 }
 
-.contact-list-name {
+/* COMMS-scoped name class: .contact-list-name collided with a tactical-layout
+   rule of the same name, cascading wrong styles onto the cockpit COMMS list */
+.comms-contact-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+/* Inner text ellipsizes so trailing badges (e.g. NPC) always stay visible */
+.comms-contact-name-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .status-indicator {

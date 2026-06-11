@@ -67,7 +67,17 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
     const centerX = width / 2;
     const centerY = height / 2;
 
-    const newNodes: Node[] = sectors.map((sector, index) => {
+    // Defensive: one node per sector id. Duplicate entries from a caller
+    // (e.g. a destination listed via both warp and tunnel) would otherwise
+    // render overlapping phantom nodes with duplicate React keys.
+    const seenIds = new Set<number>();
+    const uniqueSectors = sectors.filter(sector => {
+      if (seenIds.has(sector.id)) return false;
+      seenIds.add(sector.id);
+      return true;
+    });
+
+    const newNodes: Node[] = uniqueSectors.map((sector, index) => {
       const isCurrent = sector.id === currentSectorId;
 
       // Place current sector in center
@@ -85,7 +95,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
       // Place connected sectors in a circle around current (maximum spacing)
       const isConnected = availableMoves.includes(sector.id);
       const radius = isConnected ? 350 : 450;  // Very wide spacing for clear readability
-      const angle = (index / sectors.length) * Math.PI * 2;
+      const angle = (index / uniqueSectors.length) * Math.PI * 2;
 
       return {
         id: sector.id,
