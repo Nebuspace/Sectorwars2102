@@ -9,6 +9,7 @@ import { GenesisDeployment } from './GenesisDeployment';
 import { ColonySpecialization as ColonySpecializationComponent } from './ColonySpecialization';
 import { SiegeStatusMonitor } from './SiegeStatusMonitor';
 import CitadelManager from './CitadelManager';
+import TerraformingPanel from './TerraformingPanel';
 import GameLayout from '../layouts/GameLayout';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
@@ -154,7 +155,7 @@ export const PlanetManager: React.FC = () => {
   const [showGenesisDeployment, setShowGenesisDeployment] = useState(false);
   const [showSpecialization, setShowSpecialization] = useState(false);
   const [showSiegeMonitor, setShowSiegeMonitor] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'citadel'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'citadel' | 'terraforming'>('overview');
 
   useEffect(() => {
     loadPlanets();
@@ -414,6 +415,14 @@ export const PlanetManager: React.FC = () => {
             >
               🏰 Citadel
             </button>
+            <button
+              role="tab"
+              aria-selected={activeTab === 'terraforming'}
+              className={`planet-tab ${activeTab === 'terraforming' ? 'active' : ''}`}
+              onClick={() => setActiveTab('terraforming')}
+            >
+              🌱 Terraforming
+            </button>
           </div>
 
           {activeTab === 'citadel' && (
@@ -421,6 +430,18 @@ export const PlanetManager: React.FC = () => {
               <CitadelManager
                 planetId={selectedPlanet.id}
                 playerCredits={playerState?.credits ?? 0}
+                stationedDrones={selectedPlanet.defenses?.drones}
+                onUpdate={loadPlanets}
+              />
+            </div>
+          )}
+
+          {activeTab === 'terraforming' && (
+            <div className="planet-overview citadel-tab-content">
+              <TerraformingPanel
+                planetId={selectedPlanet.id}
+                playerCredits={playerState?.credits ?? 0}
+                habitabilityScore={getHabitabilityScore(selectedPlanet as PlanetWithExtras)}
                 onUpdate={loadPlanets}
               />
             </div>

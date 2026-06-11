@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { citadelAPI } from '../../services/api';
+import CitadelStructure from './CitadelStructure';
 import './citadel.css';
 
 interface CitadelNextLevel {
@@ -33,17 +34,28 @@ interface CitadelInfo {
 interface CitadelManagerProps {
   planetId: string;
   playerCredits: number;
+  /** Drones currently stationed on the planet, if the caller has that data. */
+  stationedDrones?: number;
   onUpdate?: () => void;
 }
 
 /** Canon 5-level progression (mirrors gameserver CITADEL_LEVELS). */
 const CITADEL_TRACK = [
   { level: 1, name: 'Outpost', maxColonists: 1000, safeStorage: 100000, droneCapacity: 10 },
-  { level: 2, name: 'Garrison', maxColonists: 5000, safeStorage: 500000, droneCapacity: 25 },
-  { level: 3, name: 'Fortress', maxColonists: 15000, safeStorage: 2000000, droneCapacity: 50 },
-  { level: 4, name: 'Stronghold', maxColonists: 50000, safeStorage: 10000000, droneCapacity: 100 },
-  { level: 5, name: 'Citadel', maxColonists: 200000, safeStorage: 50000000, droneCapacity: 200 },
+  { level: 2, name: 'Settlement', maxColonists: 5000, safeStorage: 500000, droneCapacity: 25 },
+  { level: 3, name: 'Colony', maxColonists: 15000, safeStorage: 2000000, droneCapacity: 50 },
+  { level: 4, name: 'Major Colony', maxColonists: 50000, safeStorage: 10000000, droneCapacity: 100 },
+  { level: 5, name: 'Planetary Capital', maxColonists: 200000, safeStorage: 50000000, droneCapacity: 200 },
 ] as const;
+
+/** One-line in-fiction descriptions per level (UI flavor copy only). */
+const CITADEL_FLAVOR: Record<number, string> = {
+  1: 'A lone dome against the dust, one antenna whispering back to civilization.',
+  2: 'Domes cluster behind the first wall; strangers start calling this place home.',
+  3: 'Watchtowers sweep the horizon while the comm spire sings to passing ships.',
+  4: 'An orbital defense ring crowns the skyline — this world answers to you.',
+  5: 'Twin rings, layered towers, a beacon burning: the capital of a world.',
+};
 
 /** Defense-level prerequisites enforced by the gameserver before each upgrade. */
 const CITADEL_PREREQS: Record<number, string> = {
@@ -64,9 +76,27 @@ const compact = (n: number): string => {
   return `${n}`;
 };
 
+/** Format a millisecond duration as a "2d 5h 12m" countdown string. */
+const formatCountdown = (ms: number): string => {
+  if (ms <= 0) return 'moments';
+  const totalMinutes = Math.floor(ms / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
+  return parts.join(' ');
+};
+
+/** Cap on rendered drone pips; above this, each pip represents a share of capacity. */
+const MAX_DRONE_PIPS = 25;
+
 const CitadelManager: React.FC<CitadelManagerProps> = ({
   planetId,
   playerCredits,
+  stationedDrones,
   onUpdate,
 }) => {
   const [citadel, setCitadel] = useState<CitadelInfo | null>(null);
@@ -76,6 +106,7 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const fetchCitadel = useCallback(async () => {
     try {
@@ -93,6 +124,22 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
   useEffect(() => {
     fetchCitadel();
   }, [fetchCitadel]);
+
+  // Tick the construction countdown once a second while an upgrade is active;
+  // refetch once the completion timestamp passes so the new level lights up.
+  useEffect(() => {
+    if (!citadel?.is_upgrading || !citadel.upgrade_complete_at) return;
+    const completeMs = Date.parse(citadel.upgrade_complete_at);
+    const interval = window.setInterval(() => {
+      const now = Date.now();
+      setNowMs(now);
+      if (Number.isFinite(completeMs) && now >= completeMs) {
+        window.clearInterval(interval);
+        fetchCitadel();
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [citadel?.is_upgrading, citadel?.upgrade_complete_at, fetchCitadel]);
 
   const handleUpgrade = async () => {
     if (!citadel || actionLoading) return;
@@ -172,6 +219,32 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
   const upgradeCost = next?.upgrade_cost ?? 0;
   const canAffordUpgrade = playerCredits >= upgradeCost;
 
+  // --- Upgrade-in-progress timing ---
+  const upgradingToLevel = next?.level ?? (level < 5 ? level + 1 : null);
+  const upgradingToName =
+    next?.name ?? CITADEL_TRACK.find((s) => s.level === (level + 1))?.name ?? `Level ${level + 1}`;
+  const upgradeStartMs = citadel.upgrade_started_at ? Date.parse(citadel.upgrade_started_at) : NaN;
+  const upgradeEndMs = citadel.upgrade_complete_at ? Date.parse(citadel.upgrade_complete_at) : NaN;
+  const upgradeRemainingMs = Number.isFinite(upgradeEndMs)
+    ? Math.max(0, upgradeEndMs - nowMs)
+    : typeof citadel.upgrade_remaining_seconds === 'number'
+      ? Math.max(0, citadel.upgrade_remaining_seconds * 1000)
+      : null;
+  const upgradeProgressPct =
+    Number.isFinite(upgradeStartMs) && Number.isFinite(upgradeEndMs) && upgradeEndMs > upgradeStartMs
+      ? Math.min(100, Math.max(0, ((nowMs - upgradeStartMs) / (upgradeEndMs - upgradeStartMs)) * 100))
+      : null;
+
+  // --- Drone bay pips ---
+  const droneCapacity = citadel.drone_capacity ?? 0;
+  const pipCount = Math.min(droneCapacity, MAX_DRONE_PIPS);
+  const dronesPerPip = pipCount > 0 ? droneCapacity / pipCount : 0;
+  const hasStationedData = typeof stationedDrones === 'number';
+  const filledPips =
+    typeof stationedDrones === 'number' && dronesPerPip > 0
+      ? Math.min(pipCount, Math.max(stationedDrones > 0 ? 1 : 0, Math.round(stationedDrones / dronesPerPip)))
+      : 0;
+
   const upgradeDisabledReason = actionLoading
     ? 'Action in progress'
     : !canAffordUpgrade
@@ -191,6 +264,21 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
         {citadel.citadel_name || (level === 0 ? 'No Citadel' : `Level ${level}`)}
       </div>
 
+      {/* Citadel Structure Visualization — the city you can see grow */}
+      <CitadelStructure
+        level={level}
+        isUpgrading={citadel.is_upgrading}
+        upgradingToLevel={upgradingToLevel}
+      />
+      {level >= 1 && level <= 5 && (
+        <div className="citadel-flavor">
+          <span className="citadel-flavor-name">
+            {CITADEL_TRACK.find((s) => s.level === level)?.name ?? citadel.citadel_name}
+          </span>
+          <span className="citadel-flavor-text">{CITADEL_FLAVOR[level]}</span>
+        </div>
+      )}
+
       {/* 5-Level Stepped Progression Track */}
       <div className="citadel-track" role="list" aria-label="Citadel progression">
         {CITADEL_TRACK.map((step) => {
@@ -200,8 +288,10 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
             <div
               key={step.level}
               role="listitem"
+              tabIndex={0}
+              data-flavor={CITADEL_FLAVOR[step.level]}
               className={`citadel-step ${state} ${isNext ? 'next-up' : ''}`}
-              title={`L${step.level} ${step.name} — Workforce cap ${step.maxColonists.toLocaleString()}, safe storage ${step.safeStorage.toLocaleString()} cr, ${step.droneCapacity} drones${CITADEL_PREREQS[step.level] ? `. ${CITADEL_PREREQS[step.level]}` : ''}`}
+              title={`L${step.level} ${step.name} — "${CITADEL_FLAVOR[step.level]}" Workforce cap ${step.maxColonists.toLocaleString()}, safe storage ${step.safeStorage.toLocaleString()} cr, ${step.droneCapacity} drones${CITADEL_PREREQS[step.level] ? `. ${CITADEL_PREREQS[step.level]}` : ''}`}
             >
               <div className="step-node">
                 <span className="step-level">L{step.level}</span>
@@ -225,16 +315,27 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
 
       <div className="citadel-stats">
         <div className="citadel-stat">
-          <span className="stat-label">Safe Storage</span>
-          <div className="storage-bar">
+          <span className="stat-label">Vault — Safe Storage</span>
+          <div
+            className="vault-gauge"
+            role="meter"
+            aria-valuemin={0}
+            aria-valuemax={safeCapacity}
+            aria-valuenow={safeCredits}
+            aria-label={`Vault: ${safeCredits.toLocaleString()} of ${safeCapacity.toLocaleString()} credits secured`}
+            title={`${storagePercent.toFixed(1)}% of vault capacity in use`}
+          >
             <div
-              className="storage-fill"
+              className="vault-fill"
               style={{ width: `${Math.min(100, storagePercent)}%` }}
             />
+            <div className="vault-segments" aria-hidden="true" />
           </div>
-          <span className="stat-value">
-            {safeCredits.toLocaleString()} / {safeCapacity.toLocaleString()} credits
-          </span>
+          <div className="vault-readout">
+            <span className="vault-amount">{safeCredits.toLocaleString()}</span>
+            <span className="vault-capacity">/ {safeCapacity.toLocaleString()} cr</span>
+            <span className="vault-percent">{storagePercent.toFixed(1)}%</span>
+          </div>
         </div>
         <div className="citadel-stat-row">
           <div className="citadel-stat">
@@ -242,8 +343,35 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
             <span className="stat-value">{(citadel.max_population ?? 0).toLocaleString()}</span>
           </div>
           <div className="citadel-stat">
-            <span className="stat-label">Drone Capacity</span>
-            <span className="stat-value">{citadel.drone_capacity ?? 0}</span>
+            <span className="stat-label">Drone Bay</span>
+            <div
+              className="drone-bay"
+              role="img"
+              aria-label={
+                hasStationedData
+                  ? `${stationedDrones} of ${droneCapacity} drones stationed`
+                  : `Drone bay capacity: ${droneCapacity}`
+              }
+              title={
+                hasStationedData
+                  ? `${stationedDrones} of ${droneCapacity} drones stationed${dronesPerPip > 1 ? ` (each pip ≈ ${Math.round(dronesPerPip)} drones)` : ''}`
+                  : `Drone bay capacity: ${droneCapacity}${dronesPerPip > 1 ? ` (each pip ≈ ${Math.round(dronesPerPip)} drones)` : ''}`
+              }
+            >
+              <div className="drone-pips" aria-hidden="true">
+                {Array.from({ length: pipCount }, (_, i) => (
+                  <span
+                    key={i}
+                    className={`drone-pip ${hasStationedData ? (i < filledPips ? 'filled' : 'empty') : 'capacity'}`}
+                  />
+                ))}
+              </div>
+              <span className="drone-count">
+                {hasStationedData
+                  ? `${stationedDrones} / ${droneCapacity}`
+                  : `${droneCapacity} capacity`}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -347,10 +475,37 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
         </div>
       )}
 
-      {citadel.is_upgrading && citadel.upgrade_complete_at && (
+      {citadel.is_upgrading && (
         <div className="citadel-upgrading">
-          Upgrading... Completes at{' '}
-          {new Date(citadel.upgrade_complete_at).toLocaleString()}
+          <div className="upgrading-header">
+            <span className="upgrading-icon" aria-hidden="true">🏗️</span>
+            <span className="upgrading-label">
+              Constructing {upgradingToName}
+              {upgradingToLevel !== null ? ` (L${upgradingToLevel})` : ''}
+            </span>
+            {upgradeRemainingMs !== null && (
+              <span className="upgrading-countdown" title="Time until construction completes">
+                {formatCountdown(upgradeRemainingMs)} remaining
+              </span>
+            )}
+          </div>
+          {upgradeProgressPct !== null && (
+            <div
+              className="upgrading-bar"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(upgradeProgressPct)}
+              aria-label="Citadel construction progress"
+            >
+              <div className="upgrading-fill" style={{ width: `${upgradeProgressPct}%` }} />
+            </div>
+          )}
+          {citadel.upgrade_complete_at && (
+            <div className="upgrading-eta">
+              Completes {new Date(citadel.upgrade_complete_at).toLocaleString()}
+            </div>
+          )}
         </div>
       )}
 
