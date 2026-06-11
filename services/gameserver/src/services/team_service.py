@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
+from sqlalchemy.exc import IntegrityError
 
 from src.models.team import Team, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
@@ -60,8 +61,10 @@ class TeamService:
     def create_team(self, creator_id: uuid.UUID, name: str, description: str = None, tag: str = None,
                    max_members: int = 4, recruitment_status: str = TeamRecruitmentStatus.OPEN.value) -> Team:
         """Create a new team with the creator as leader"""
-        # Check if player already has a team
-        creator = self.db.query(Player).filter(Player.id == creator_id).first()
+        # Check if player already has a team.
+        # Locks the creator row to prevent concurrent create/join race
+        # conditions (same lock pattern as ship_upgrades purchases).
+        creator = self.db.query(Player).filter(Player.id == creator_id).with_for_update().first()
         if not creator:
             raise ValueError("Player not found")
         
@@ -90,7 +93,15 @@ class TeamService:
         )
         
         self.db.add(team)
-        self.db.flush()
+        try:
+            self.db.flush()
+        except IntegrityError:
+            # Two creators raced past the SELECT-based name check above —
+            # the unique constraint is the backstop. Roll back the aborted
+            # transaction and surface the same clean ValueError the route
+            # layer already maps to a 400.
+            self.db.rollback()
+            raise ValueError("Team name already taken")
         
         # Create team member entry for the leader
         team_member = TeamMember(
@@ -195,7 +206,9 @@ class TeamService:
         
         return [{
             "player_id": str(member.player_id),
-            "nickname": player.nickname,
+            # nickname is nullable — fall back to the Player.username
+            # property (nickname -> user.username -> "Unknown Player")
+            "nickname": player.nickname or player.username,
             "role": member.role,
             "joined_at": member.joined_at.isoformat() if member.joined_at else None,
             "last_active": member.last_active.isoformat() if member.last_active else None,
@@ -206,7 +219,9 @@ class TeamService:
             "can_manage_alliances": member.can_manage_alliances,
             "contribution_credits": member.contribution_credits,
             "current_sector": player.current_sector_id,
-            "combat_rating": player.combat_rating
+            # canon gap: no per-player combat rating exists yet
+            # (Team.combat_rating is the team aggregate)
+            "combat_rating": 0.0
         } for member, player in members]
     
     def invite_player(self, team_id: uuid.UUID, inviter_id: uuid.UUID, 
@@ -450,8 +465,9 @@ class TeamService:
                     TeamMember.player_id != player_id
                 )
                 .order_by(
-                    # Prefer officers, then by join date
-                    TeamMember.role == TeamRole.OFFICER.value,
+                    # Prefer officers (desc puts the True matches first),
+                    # then by join date
+                    (TeamMember.role == TeamRole.OFFICER.value).desc(),
                     TeamMember.joined_at
                 )
                 .first()

@@ -157,6 +157,7 @@ async def create_team(
 @router.get("/{team_id}", response_model=TeamResponse)
 async def get_team(
     team_id: UUID,
+    player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
     """Get team details"""
@@ -266,12 +267,19 @@ async def delete_team(
 @router.get("/{team_id}/members", response_model=List[TeamMemberResponse])
 async def get_team_members(
     team_id: UUID,
+    player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
     """Get all team members"""
     team_service = TeamService(db)
     members = team_service.get_team_members(team_id)
-    
+
+    # Roster is visible to any authenticated player, but live positions
+    # are team-internal intelligence: hide current_sector from non-members.
+    if player.team_id != team_id:
+        for member in members:
+            member["current_sector"] = None
+
     return [TeamMemberResponse(**member) for member in members]
 
 
@@ -406,7 +414,9 @@ async def update_member_role(
         
         return TeamMemberResponse(
             player_id=member.player_id,
-            nickname=member_player.nickname if member_player else "Unknown",
+            # nickname is nullable — fall back to the Player.username
+            # property (nickname -> user.username -> "Unknown Player")
+            nickname=(member_player.nickname or member_player.username) if member_player else "Unknown",
             role=member.role,
             joined_at=member.joined_at.isoformat(),
             last_active=member.last_active.isoformat() if member.last_active else None,
@@ -417,7 +427,9 @@ async def update_member_role(
             can_manage_alliances=member.can_manage_alliances,
             contribution_credits=member.contribution_credits,
             current_sector=member_player.current_sector_id if member_player else None,
-            combat_rating=member_player.combat_rating if member_player else 0.0
+            # canon gap: no per-player combat rating exists yet
+            # (Team.combat_rating is the team aggregate)
+            combat_rating=0.0
         )
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))

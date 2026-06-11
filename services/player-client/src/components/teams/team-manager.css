@@ -41,9 +41,22 @@
 }
 
 .create-team-btn:hover,
-.browse-teams-btn:hover {
+.browse-teams-btn:hover:not(:disabled) {
   background: rgba(0, 255, 157, 0.2);
   transform: translateY(-2px);
+}
+
+/* Browse Teams is disabled until a team list endpoint exists */
+.browse-teams-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.registry-offline-note {
+  margin-top: 12px;
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: #ffb347;
 }
 
 /* Team Header */
@@ -164,7 +177,8 @@
   margin-bottom: 5px;
 }
 
-.stat-item value {
+.stat-item value,
+.stat-item .stat-value {
   display: block;
   color: var(--primary-green);
   font-size: 20px;
@@ -240,6 +254,11 @@
 .role-badge.member {
   background: rgba(0, 255, 157, 0.2);
   color: var(--primary-green);
+}
+
+.role-badge.recruit {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
 }
 
 .online-indicator {
@@ -475,8 +494,17 @@
   font-size: 14px;
 }
 
-.info-item value {
+.info-item value,
+.info-item .stat-value {
   color: var(--text-primary);
+}
+
+/* Neutralize unscoped global .stat-value rules (ranking.css, planetary/*.css)
+   so the info rows keep the same metrics the bare <value> element had */
+.info-item .stat-value {
+  display: inline;
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 .edit-btn {
@@ -514,6 +542,59 @@
 .leave-team-btn:hover,
 .disband-team-btn:hover {
   background: rgba(255, 0, 0, 0.2);
+}
+
+/* Create Team Modal */
+.team-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.team-modal {
+  background: rgba(0, 10, 5, 0.97);
+  border: 1px solid var(--primary-green);
+  border-radius: 8px;
+  padding: 24px;
+  width: min(480px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.team-modal h3 {
+  color: var(--primary-green);
+  margin-bottom: 6px;
+}
+
+.team-modal-cost {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-bottom: 18px;
+}
+
+.form-error {
+  background: rgba(255, 0, 0, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.5);
+  color: #ff6b6b;
+  padding: 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  margin-bottom: 15px;
+}
+
+.field-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.danger-zone .form-error {
+  margin-top: 15px;
+  margin-bottom: 0;
 }
 
 /* Responsive Design */

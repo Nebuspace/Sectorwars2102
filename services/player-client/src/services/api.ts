@@ -113,13 +113,28 @@ export const teamAPI = {
   getTeam: (teamId: string) =>
     apiRequest(`/api/v1/teams/${teamId}`),
 
-  createTeam: (data: { name: string, tag: string, description: string, isPublic: boolean, recruitmentStatus: string }) =>
+  // Body uses the backend CreateTeamRequest field names (teams.py): camelCase
+  // keys were silently dropped by pydantic, losing the recruitment choice.
+  createTeam: (data: {
+    name: string;
+    tag?: string;
+    description?: string;
+    max_members?: number;
+    recruitment_status: string;
+  }) =>
     apiRequest('/api/v1/teams/create', {
       method: 'POST',
       body: JSON.stringify(data)
     }),
 
-  updateTeam: (teamId: string, updates: any) =>
+  // Subset of the backend UpdateTeamRequest fields (teams.py)
+  updateTeam: (teamId: string, updates: {
+    description?: string;
+    tag?: string;
+    logo?: string;
+    recruitment_status?: string;
+    max_members?: number;
+  }) =>
     apiRequest(`/api/v1/teams/${teamId}`, {
       method: 'PUT',
       body: JSON.stringify(updates)
@@ -134,10 +149,11 @@ export const teamAPI = {
   getMembers: (teamId: string) =>
     apiRequest(`/api/v1/teams/${teamId}/members`),
 
-  inviteMember: (teamId: string, playerId: string, message?: string) =>
+  // Backend InvitePlayerRequest resolves the invitee by nickname (teams.py)
+  inviteMember: (teamId: string, playerNickname: string) =>
     apiRequest(`/api/v1/teams/${teamId}/invite`, {
       method: 'POST',
-      body: JSON.stringify({ playerId, message })
+      body: JSON.stringify({ player_nickname: playerNickname })
     }),
 
   kickMember: (teamId: string, memberId: string, reason?: string) =>
@@ -146,10 +162,11 @@ export const teamAPI = {
       body: JSON.stringify({ reason })
     }),
 
-  promoteMember: (teamId: string, memberId: string, role: 'officer' | 'member') =>
+  // Backend UpdateRoleRequest expects { new_role } with TeamRole enum values
+  promoteMember: (teamId: string, memberId: string, newRole: 'OFFICER' | 'MEMBER' | 'RECRUIT') =>
     apiRequest(`/api/v1/teams/${teamId}/members/${memberId}/role`, {
       method: 'PUT',
-      body: JSON.stringify({ role })
+      body: JSON.stringify({ new_role: newRole })
     }),
 
   // Server resolves the player's own membership; teamId kept for call-site symmetry
@@ -253,9 +270,11 @@ export const teamAPI = {
   getPermissions: (teamId: string) =>
     apiRequest(`/api/v1/teams/${teamId}/permissions`),
 
-  // Utility function to get available teams (may need a different endpoint)
+  // Canon gap: GET /api/v1/teams does not exist on the backend. Still bound
+  // because DiplomacyInterface/AllianceManager call it; their fetches fail at
+  // runtime today. Remove together with those call sites.
   getAvailableTeams: () =>
-    apiRequest('/api/v1/teams') // This endpoint might need to be implemented
+    apiRequest('/api/v1/teams')
 };
 
 // Fleet Management APIs

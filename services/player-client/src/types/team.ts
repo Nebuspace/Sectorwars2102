@@ -2,21 +2,28 @@
 export interface Team {
   id: string;
   name: string;
-  tag: string; // 3-5 character team tag
+  tag: string; // 2-10 character team tag ('' when unset)
   description: string;
   leaderId: string;
-  leaderName: string;
+  /** Canon gap: backend TeamResponse does not expose the leader's nickname */
+  leaderName?: string;
   memberCount: number;
   maxMembers: number;
-  reputation: number;
-  founded: string;
-  isPublic: boolean;
+  /** Canon gap: backend TeamResponse exposes no team reputation field yet */
+  reputation?: number;
+  founded: string; // ISO timestamp (backend created_at)
+  /** Canon gap: backend TeamResponse does not expose is_public */
+  isPublic?: boolean;
   recruitmentStatus: 'open' | 'invite-only' | 'closed';
+  combatRating: number;
+  tradeRating: number;
+  totalPlanets: number;
   treasury: {
     credits: number;
-    fuel: number;
-    organics: number;
-    equipment: number;
+    /** Canon gap: backend TeamResponse only exposes treasury_credits today */
+    fuel?: number;
+    organics?: number;
+    equipment?: number;
   };
 }
 
@@ -24,7 +31,7 @@ export interface TeamMember {
   id: string;
   playerId: string;
   playerName: string;
-  role: 'leader' | 'officer' | 'member';
+  role: 'leader' | 'officer' | 'member' | 'recruit';
   joinedAt: string;
   contributions: {
     credits: number;
@@ -38,6 +45,55 @@ export interface TeamMember {
   };
   shipType: string;
   combatRating: number;
+}
+
+// --- Gameserver wire shapes (snake_case) -----------------------------------
+// Mirror the pydantic response models in
+// services/gameserver/src/api/routes/teams.py. Map these to the camelCase UI
+// types above before rendering.
+
+export interface TeamApiResponse {
+  id: string;
+  name: string;
+  description: string | null;
+  tag: string | null;
+  logo: string | null;
+  leader_id: string;
+  recruitment_status: string; // TeamRecruitmentStatus: 'OPEN' | 'INVITE_ONLY' | 'CLOSED'
+  max_members: number;
+  member_count: number;
+  total_credits: number;
+  total_planets: number;
+  combat_rating: number;
+  trade_rating: number;
+  created_at: string;
+  treasury_credits: number;
+}
+
+export interface TeamMemberApiResponse {
+  player_id: string;
+  nickname: string;
+  role: string; // TeamRole: 'LEADER' | 'OFFICER' | 'MEMBER' | 'RECRUIT'
+  joined_at: string;
+  last_active: string | null;
+  can_invite: boolean;
+  can_kick: boolean;
+  can_manage_treasury: boolean;
+  can_manage_missions: boolean;
+  can_manage_alliances: boolean;
+  contribution_credits: Record<string, number> | null;
+  current_sector: number | null;
+  combat_rating: number;
+}
+
+export interface TeamPermissionsApiResponse {
+  can_invite: boolean;
+  can_kick: boolean;
+  can_manage_treasury: boolean;
+  can_manage_missions: boolean;
+  can_manage_alliances: boolean;
+  is_member: boolean;
+  role: string | null;
 }
 
 export interface TeamInvitation {
