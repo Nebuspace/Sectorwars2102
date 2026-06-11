@@ -5,6 +5,7 @@ import { useGame } from '../../contexts/GameContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import UserProfile from '../auth/UserProfile';
 import LogoutButton from '../auth/LogoutButton';
+import EnhancedAIAssistant from '../ai/EnhancedAIAssistant';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -42,7 +43,12 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       <div className="game-layout">
         <header className="game-header hud-panel">
           <div className="game-header-left">
-            <button className="cockpit-btn sidebar-toggle" onClick={toggleSidebar}>
+            <button
+              className="cockpit-btn sidebar-toggle"
+              onClick={toggleSidebar}
+              aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+              title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+            >
               <span className="toggle-icon">{sidebarOpen ? '◀' : '▶'}</span>
             </button>
             <h1 className="game-title">
@@ -94,20 +100,45 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
                   <div className="ship-type">{currentShip.type || 'UNKNOWN CLASS'}</div>
                   <div className="ship-cargo">
                     <h4 className="cargo-header">CARGO BAY</h4>
-                    {currentShip.cargo && Object.keys(currentShip.cargo).length > 0 ? (
-                      <ul className="cargo-list">
-                        {Object.entries(currentShip.cargo).map(([resource, amount]) => (
-                          <li key={resource} className="cargo-item">
-                            <span className="resource-name">{resource}</span>
-                            <span className="data-readout">
-                              {typeof amount === 'object' ? JSON.stringify(amount) : amount}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="empty-cargo">CARGO BAY EMPTY</p>
-                    )}
+                    {(() => {
+                      // Cargo shape: { used, capacity, contents: { commodity: qty } }
+                      // Render the actual goods, not the raw structure
+                      const cargo = (currentShip.cargo ?? {}) as Record<string, any>;
+                      const contents: Record<string, number> =
+                        cargo.contents && typeof cargo.contents === 'object'
+                          ? cargo.contents
+                          : Object.fromEntries(
+                              Object.entries(cargo).filter(([k, v]) =>
+                                typeof v === 'number' && !['used', 'capacity'].includes(k))
+                            );
+                      const used = typeof cargo.used === 'number' ? cargo.used : null;
+                      const capacity = typeof cargo.capacity === 'number' ? cargo.capacity : null;
+                      const items = Object.entries(contents).filter(([, qty]) => qty > 0);
+                      return (
+                        <>
+                          {used !== null && capacity !== null && (
+                            <div className="cargo-item">
+                              <span className="resource-name">Hold</span>
+                              <span className="data-readout">{used} / {capacity}</span>
+                            </div>
+                          )}
+                          {items.length > 0 ? (
+                            <ul className="cargo-list">
+                              {items.map(([resource, qty]) => (
+                                <li key={resource} className="cargo-item">
+                                  <span className="resource-name">
+                                    {resource.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                                  </span>
+                                  <span className="data-readout">× {qty}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="empty-cargo">CARGO BAY EMPTY</p>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
 
                   {/* Genesis Device Display - Special Items */}
@@ -204,6 +235,11 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               </div>
             )}
           </main>
+
+          {/* Mount ARIA assistant once for all /game routes when a player session exists */}
+          {playerState?.id && (
+            <EnhancedAIAssistant theme="dark" />
+          )}
         </div>
       </div>
     </div>

@@ -54,17 +54,17 @@
   opacity: 0.8;
 }
 
-.empty-state {
-  text-align: center;
-  padding: var(--space-xl);
-  background: var(--surface-primary);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-primary);
+/* Disabled control affordances */
+.action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.empty-state h2 {
-  margin-bottom: var(--space-md);
-  color: var(--text-secondary);
+.action-button:disabled:hover {
+  background: var(--surface-secondary);
+  border-color: var(--border-secondary);
+  color: var(--text-primary);
+  transform: none;
 }
 
 /* Planet List Sidebar */

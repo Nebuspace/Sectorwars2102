@@ -15,7 +15,7 @@
     0 4px 8px rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(10px);
   transition: all 0.3s ease;
-  z-index: 999;
+  z-index: 1001;
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -196,6 +196,11 @@
   ring-color: rgba(59, 130, 246, 0.5);
   ring-offset: 2px;
   ring-offset-color: transparent;
+}
+
+.ai-assistant-button:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.9);
+  outline-offset: 2px;
 }
 
 /* Dark mode support (if theme context is available) */

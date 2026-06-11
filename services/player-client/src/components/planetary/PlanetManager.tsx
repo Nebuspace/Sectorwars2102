@@ -8,6 +8,8 @@ import { GenesisDeployment } from './GenesisDeployment';
 import { ColonySpecialization as ColonySpecializationComponent } from './ColonySpecialization';
 import { SiegeStatusMonitor } from './SiegeStatusMonitor';
 import GameLayout from '../layouts/GameLayout';
+import EmptyState from '../common/EmptyState';
+import LoadingState from '../common/LoadingState';
 import './planet-manager.css';
 
 export const PlanetManager: React.FC = () => {
@@ -88,7 +90,7 @@ export const PlanetManager: React.FC = () => {
     return (
       <GameLayout>
         <div className="planet-manager loading">
-          <div className="loading-spinner">Loading planetary data...</div>
+          <LoadingState message="Loading planetary data..." />
         </div>
       </GameLayout>
     );
@@ -114,17 +116,16 @@ export const PlanetManager: React.FC = () => {
     return (
       <GameLayout>
       <div className="planet-manager empty">
-        <div className="empty-state">
-          <h2>No Planets Owned</h2>
-          <p>You don't own any planets yet. Deploy a Genesis Device to create your first colony!</p>
-          <button 
-            className="genesis-button"
-            onClick={() => setShowGenesisDeployment(true)}
-          >
-            🌌 Deploy Genesis Device
-          </button>
-        </div>
-        
+        <EmptyState
+          icon="🌌"
+          title="No Planets Owned"
+          message="You don't own any planets yet. Deploy a Genesis Device to create your first colony!"
+          action={{
+            label: '🌌 Deploy Genesis Device',
+            onClick: () => setShowGenesisDeployment(true)
+          }}
+        />
+
         {showGenesisDeployment && (
           <div className="modal-overlay" onClick={() => setShowGenesisDeployment(false)}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -151,18 +152,20 @@ export const PlanetManager: React.FC = () => {
         <div className="planet-list-header">
           <h3>Your Colonies ({planets.length})</h3>
           <div className="header-actions">
-            <button 
-              onClick={() => setShowGenesisDeployment(true)} 
+            <button
+              onClick={() => setShowGenesisDeployment(true)}
               className="genesis-mini-button"
               title="Deploy Genesis Device"
+              aria-label="Deploy Genesis Device"
             >
               🌌
             </button>
-            <button 
-              onClick={handleRefresh} 
+            <button
+              onClick={handleRefresh}
               className="refresh-button"
               disabled={refreshing}
-              title="Refresh planet data"
+              title={refreshing ? 'Refresh in progress' : 'Refresh planet data'}
+              aria-label={refreshing ? 'Refresh in progress' : 'Refresh planet data'}
             >
               {refreshing ? '🔄' : '🔃'}
             </button>

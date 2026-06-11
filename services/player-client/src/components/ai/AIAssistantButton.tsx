@@ -33,6 +33,7 @@ const AIAssistantButton: React.FC<AIAssistantButtonProps> = ({
       initial={{ opacity: 0, x: 50 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.3 }}
+      aria-label="Open ARIA AI Assistant"
     >
       <div className="ai-assistant-button-icon">
         <MessageCircle className="w-6 h-6" />
