@@ -61,8 +61,10 @@ class ShipService:
                 "repair_needed": False
             },
             
-            # Initialize cargo
-            cargo={},
+            # Initialize cargo with the spec's hold size — an empty dict
+            # made every purchased ship fall back to the default capacity
+            # of 50 (a Cargo Hauler shipped with a rowboat's hold)
+            cargo={"capacity": spec.max_cargo, "used": 0, "contents": {}},
             
             # Initialize combat stats based on specifications
             combat={
