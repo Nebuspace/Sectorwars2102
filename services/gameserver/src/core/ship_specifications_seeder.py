@@ -352,6 +352,121 @@ SHIP_SPECIFICATIONS = {
         "description": "A highly specialized vessel containing modified warp gate technology that allows it to make directed quantum jumps across multiple sectors. The Warp Jumper is specifically designed to establish warp gates in distant sectors.",
         "acquisition_methods": ["special_construction"],
         "faction_requirements": {"tech_guild": "HONORED", "quantum_research": "RESPECTED"}
+    },
+    # ------------------------------------------------------------------
+    # NPC-only police hulls (police-forces.md "Interdictor hulls").
+    # Canon-given numbers are exact (hull/shields/speed/evasion/scanner/
+    # attack/defense). Canon is silent on the remaining NOT NULL spec
+    # columns — those MIRROR the DEFENDER entry above, each flagged with
+    # a PLACEHOLDER comment, pending DECISIONS.
+    # acquisition_methods is empty and is_npc_only is True: players can
+    # never purchase, capture, salvage, or claim these hulls
+    # (ERR_NPC_ONLY_HULL at the registry/purchase layer).
+    # ------------------------------------------------------------------
+    ShipType.NPC_MARSHAL_INTERDICTOR: {
+        "is_npc_only": True,
+        "base_cost": 0,  # NPC special-issue — never sold, no market price to invent
+        "speed": 1.5,  # canon police-forces.md
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "turn_cost": 1,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "attack_turn_cost": 18,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "max_cargo": 400,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "max_colonists": 8,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "max_drones": 6,
+        "max_shields": 800,  # canon
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "shield_recharge_rate": 20.0,
+        "hull_points": 1200,  # canon
+        "evasion": 35,  # canon
+        "genesis_compatible": False,
+        "max_genesis_devices": 0,
+        "warp_compatible": False,
+        "warp_creation_capable": False,
+        "quantum_jump_capable": False,
+        "scanner_range": 6,  # canon
+        "attack_rating": 35,  # canon
+        "defense_rating": 50,  # canon
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "maintenance_rate": 0.15,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "construction_time": 5,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "fuel_efficiency": 70,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "max_upgrade_levels": {
+            "ENGINE": 3,
+            "CARGO_HOLD": 2,
+            "SHIELD": 4,
+            "HULL": 4,
+            "SENSOR": 3,
+            "DRONE_BAY": 3,
+            "GENESIS_CONTAINMENT": 2,
+            "MAINTENANCE_SYSTEM": 3
+        },
+        # Inert v1 — Interdictor Field deferred (police-forces.md:121-127);
+        # Contraband Scanner detection formula also deferred (police-forces.md:144).
+        "special_abilities": ["interdictor_field", "contraband_scanner"],
+        "description": "Federation Police special-issue pursuit hull, built for sustained pursuit through Federation Zone sectors. Outguns a Defender in single combat but is no fleet flagship. NPC-only: never sold, salvaged, or claimed.",
+        "acquisition_methods": [],
+        "faction_requirements": None
+    },
+    ShipType.NPC_SENTINEL_INTERDICTOR: {
+        "is_npc_only": True,
+        "base_cost": 0,  # NPC special-issue — never sold, no market price to invent
+        "speed": 1.5,  # canon police-forces.md
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "turn_cost": 1,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only)
+        # — mirrors DEFENDER's 18; open question: Marshal 18 vs Sentinel ~25
+        # differentiation (tougher hull, harder target) pending DECISIONS
+        "attack_turn_cost": 18,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "max_cargo": 400,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "max_colonists": 8,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "max_drones": 6,
+        "max_shields": 1000,  # canon
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "shield_recharge_rate": 20.0,
+        "hull_points": 1500,  # canon
+        "evasion": 40,  # canon
+        "genesis_compatible": False,
+        "max_genesis_devices": 0,
+        "warp_compatible": False,
+        "warp_creation_capable": False,
+        "quantum_jump_capable": False,
+        "scanner_range": 7,  # canon
+        "attack_rating": 40,  # canon
+        "defense_rating": 60,  # canon
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "maintenance_rate": 0.15,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "construction_time": 5,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "fuel_efficiency": 70,
+        # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
+        "max_upgrade_levels": {
+            "ENGINE": 3,
+            "CARGO_HOLD": 2,
+            "SHIELD": 4,
+            "HULL": 4,
+            "SENSOR": 3,
+            "DRONE_BAY": 3,
+            "GENESIS_CONTAINMENT": 2,
+            "MAINTENANCE_SYSTEM": 3
+        },
+        # Inert v1 — Interdictor Field deferred (police-forces.md:121-127);
+        # Beacon Disruptor and Concord Authorization likewise inert until
+        # warp-gate construction / gate-toll slices land.
+        "special_abilities": ["interdictor_field", "beacon_disruptor", "concord_authorization"],
+        "description": "Nexus Sentinel Corps special-issue hull. Tougher than the Marshal Interdictor — its mandate is hub-level governance of the Central Nexus, holding the line against well-equipped gate-builders. NPC-only: never sold, salvaged, or claimed.",
+        "acquisition_methods": [],
+        "faction_requirements": None
     }
 }
 

@@ -42,9 +42,106 @@ TRADE_MODIFIERS = [
 TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # Fallback for -700 and below
 
 
+def apply_faction_rep_delta(
+    db: Session,
+    player_id: UUID,
+    faction_type: FactionType,
+    delta: int,
+    reason: str,
+) -> Optional[Reputation]:
+    """Apply a faction reputation delta from a SYNC, caller-owned transaction.
+
+    Built for in-transaction hooks (e.g. combat_service applying the
+    Marshal-kill −250 Federation delta, police-forces.md) where the async
+    ``FactionService.update_reputation`` cannot be used: it awaits, commits
+    internally mid-transaction, and fires WebSocket sends — calling it from
+    a sync combat path would double-commit and break the combat
+    transaction. This helper get-or-creates the Reputation row, clamps to
+    the model's documented [-800, +800] range, appends a history entry,
+    and FLUSHES ONLY — the caller owns the commit.
+
+    The faction is resolved by FactionType (the Faction model has no
+    ``code`` column, so roster faction codes like "terran_federation" need
+    an explicit mapping by the caller). Returns None — with an error log,
+    never an exception — when no faction row of that type exists, so a
+    missing seed degrades to a lost rep delta rather than a failed combat.
+
+    No rivalry cap is applied: the cap only constrains positive gains and
+    this helper exists for penalty hooks; route positive gains through
+    ``FactionService.update_reputation``.
+    """
+    faction = (
+        db.query(Faction)
+        .filter(Faction.faction_type == faction_type)
+        .first()
+    )
+    if faction is None:
+        logger.error(
+            "apply_faction_rep_delta: no %s faction row exists — delta %+d "
+            "for player %s dropped (reason: %s). Seed the faction "
+            "(npc_spawn_service._ensure_federation_faction).",
+            faction_type.name, delta, player_id, reason,
+        )
+        return None
+
+    reputation = (
+        db.query(Reputation)
+        .filter(
+            and_(
+                Reputation.player_id == player_id,
+                Reputation.faction_id == faction.id,
+            )
+        )
+        .first()
+    )
+    if reputation is None:
+        # Mirror initialize_player_reputations defaults for the new row.
+        reputation = Reputation(
+            player_id=player_id,
+            faction_id=faction.id,
+            current_value=0,
+            current_level=ReputationLevel.NEUTRAL,
+            title="Neutral",
+            trade_modifier=0.0,
+            port_access_level=0,
+            combat_response="neutral",
+            history=[],
+        )
+        db.add(reputation)
+
+    svc = FactionService(db)
+    old_value = reputation.current_value
+    reputation.current_value = max(-800, min(800, reputation.current_value + delta))
+    reputation.current_level = svc._calculate_reputation_level(reputation.current_value)
+    reputation.title = svc._get_reputation_title(reputation.current_level)
+    reputation.trade_modifier = svc._calculate_trade_modifier(reputation.current_value)
+    reputation.port_access_level = svc._calculate_port_access_level(reputation.current_value)
+    reputation.combat_response = svc._calculate_combat_response(reputation.current_value)
+
+    # Reassign (not in-place append) so SQLAlchemy detects the JSONB change.
+    history = list(reputation.history or [])
+    history.append({
+        "timestamp": datetime.utcnow().isoformat(),
+        "old_value": old_value,
+        "new_value": reputation.current_value,
+        "change": reputation.current_value - old_value,
+        "reason": reason,
+    })
+    reputation.history = history
+    reputation.last_updated = datetime.utcnow()
+
+    db.flush()
+    logger.info(
+        "Faction rep delta for player %s with %s (%s): %d -> %d (%s)",
+        player_id, faction.name, faction_type.name,
+        old_value, reputation.current_value, reason,
+    )
+    return reputation
+
+
 class FactionService:
     """Service for managing faction-related operations."""
-    
+
     def __init__(self, db: Session):
         self.db = db
     

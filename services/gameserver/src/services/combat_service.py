@@ -74,6 +74,11 @@ class CombatService:
         ShipType.DEFENDER: "plasma",
         ShipType.CARRIER: "missile",
         ShipType.WARP_JUMPER: "plasma",
+        # Canon (police-forces.md Interdictor stat tables): Marshal
+        # Interdictor "Default weapon: Laser" (~line 140); Sentinel
+        # Interdictor "Default weapon: Plasma" (~line 157).
+        ShipType.NPC_MARSHAL_INTERDICTOR: "laser",
+        ShipType.NPC_SENTINEL_INTERDICTOR: "plasma",
     }
 
     # Ship types that get a bonus to escape chance due to speed/agility
@@ -280,10 +285,13 @@ class CombatService:
 
         The defender is a Ship row with no owning Player (owner_id is NULL /
         is_npc flag set), so there are no defender turn costs and no defender
-        reputation/rank hooks. Attacker-side rank/reputation/bounty hooks are
-        also skipped for NPC kills — canon prescribes faction reputation
-        deltas (e.g. Federation rep loss per Marshal kill) that belong to the
-        reputation/holdings slices and are deliberately deferred, not invented.
+        reputation/rank hooks. Attacker-side rank/bounty hooks are skipped
+        for NPC kills. The one canon-numeric reputation hook IS applied:
+        killing a Federation Marshal Interdictor crashes the attacker's
+        Terran Federation reputation by -250 per kill (police-forces.md).
+        Sentinel kills canonically crash Galactic Concord standing, but
+        canon gives no numeric value and the CONCORD FactionType is
+        Design-only — deferred with a logged TODO, not invented.
         """
         attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
         if not attacker:
@@ -362,14 +370,52 @@ class CombatService:
             # Notify the NPC lifecycle system (delivered by the NPC slice).
             # Lazy import + ImportError guard so combat still resolves if the
             # module is absent in this deployment.
+            dead_npc = None
             try:
                 from src.services.npc_spawn_service import handle_npc_ship_destroyed
-                handle_npc_ship_destroyed(self.db, npc_ship.id)
+                dead_npc = handle_npc_ship_destroyed(self.db, npc_ship.id)
             except ImportError:
                 logger.warning(
                     "npc_spawn_service not available — NPC ship %s destroyed without KIA processing",
                     npc_ship.id
                 )
+
+            # Police-kill reputation hook (police-forces.md). Sync helper —
+            # flush only, folded into this method's single commit below; the
+            # async FactionService.update_reputation would commit
+            # mid-transaction and fire WebSocket sends from a sync path.
+            if dead_npc is not None:
+                from src.models.npc_character import NPCArchetype
+                if dead_npc.archetype == NPCArchetype.LAW_ENFORCEMENT:
+                    if dead_npc.faction_code == "terran_federation":
+                        from src.models.faction import FactionType
+                        from src.services.faction_service import apply_faction_rep_delta
+                        # Canon: killing a Marshal Interdictor crashes
+                        # Federation reputation by -250 per kill. The
+                        # second clause of police-forces.md:75 — the kill
+                        # also "immediately escalates the response squad"
+                        # (the wanted-status/standing consequence on top
+                        # of the rep delta) — is a named canon deferral to
+                        # the NPC engagement-routing/scheduler slice; only
+                        # the rep delta is applied here.
+                        apply_faction_rep_delta(
+                            self.db,
+                            attacker.id,
+                            FactionType.FEDERATION,
+                            -250,
+                            reason=f"Marshal kill ({dead_npc.display_name})",
+                        )
+                    elif dead_npc.faction_code == "galactic_concord":
+                        # TODO(canon gap): Sentinel kills crash Galactic
+                        # Concord standing (police-forces.md), but canon
+                        # gives NO numeric value and the CONCORD
+                        # FactionType is Design-only — deferred, not
+                        # invented.
+                        logger.info(
+                            "Sentinel kill by player %s (%s) — Galactic Concord "
+                            "standing loss deferred (canon numeric gap)",
+                            attacker.id, dead_npc.display_name,
+                        )
 
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "combat")

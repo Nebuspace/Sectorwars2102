@@ -64,7 +64,15 @@ async def get_ship_catalog(
 ):
     """List ship types and their specifications so the shipyard UI can render
     real catalog data. Viewing does not require being docked at a shipyard."""
-    specs = db.query(ShipSpecification).order_by(ShipSpecification.base_cost).all()
+    # NPC-only special-issue hulls (police Interdictors) are never
+    # serialized to player-facing ShipType lists (police-forces.md
+    # "NPC-only hull classes") — filter at this serializer layer.
+    specs = (
+        db.query(ShipSpecification)
+        .filter(ShipSpecification.is_npc_only == False)  # noqa: E712 — SQLAlchemy boolean comparison
+        .order_by(ShipSpecification.base_cost)
+        .all()
+    )
 
     ships = []
     for spec in specs:
@@ -110,9 +118,12 @@ async def purchase_ship(
     try:
         ship_type = ShipType(normalized_type)
     except ValueError:
+        # NPC-only hulls (NPC_* values) are excluded from the player-facing
+        # valid-types list (police-forces.md "NPC-only hull classes").
+        valid_types = [t.value for t in ShipType if not t.value.startswith("NPC_")]
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Unknown ship type: {request.ship_type}. Valid types: {[t.value for t in ShipType]}",
+            detail=f"Unknown ship type: {request.ship_type}. Valid types: {valid_types}",
         )
 
     # Lock the player row to prevent concurrent purchases double-spending credits
@@ -145,6 +156,18 @@ async def purchase_ship(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No specification available for ship type {ship_type.value}",
+        )
+
+    # NPC-only special-issue hulls can never transfer to player ownership
+    # (police-forces.md "Interdictor hulls"; DATA_MODELS/ships.md
+    # ERR_NPC_ONLY_HULL)
+    if spec.is_npc_only:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"ERR_NPC_ONLY_HULL: {ship_type.value.replace('_', ' ').title()} "
+                f"is an NPC-only special-issue hull and cannot be player-owned"
+            ),
         )
 
     # Only ship types flagged as purchasable can be bought at a shipyard

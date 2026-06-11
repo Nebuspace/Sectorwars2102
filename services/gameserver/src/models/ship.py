@@ -23,6 +23,13 @@ class ShipType(enum.Enum):
     DEFENDER = "DEFENDER"
     CARRIER = "CARRIER"
     WARP_JUMPER = "WARP_JUMPER"
+    # NPC-only special-issue police hulls (police-forces.md "NPC-only hull
+    # classes"; DATA_MODELS/ships.md ship_type enum). Never serialized to
+    # player-facing ShipType lists — the filter lives at the serializer
+    # layer (ship_upgrades.py /catalog + /purchase via
+    # ShipSpecification.is_npc_only).
+    NPC_MARSHAL_INTERDICTOR = "NPC_MARSHAL_INTERDICTOR"
+    NPC_SENTINEL_INTERDICTOR = "NPC_SENTINEL_INTERDICTOR"
 
 
 class FailureType(enum.Enum):
@@ -67,10 +74,11 @@ class Ship(Base):
     # NULL owner = NPC-piloted hull (see is_npc + NPCCharacter.ship_id);
     # player ships always carry an owner.
     owner_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="CASCADE"), nullable=True)
-    # True for NPC-piloted ships. Minimal v1 analogue of canon's
-    # ShipSpecification.is_npc_only flag (DATA_MODELS/ships.md) — an
-    # instance flag instead of a spec flag because v1 pirate hulls reuse
-    # player ShipTypes (no canon pirate hull stats exist yet).
+    # True for NPC-piloted ships. Instance-level companion to canon's
+    # ShipSpecification.is_npc_only flag (DATA_MODELS/ships.md): police
+    # Interdictors carry both, while v1 pirate hulls reuse player
+    # ShipTypes (no canon pirate hull stats exist yet) and rely on this
+    # instance flag alone.
     is_npc = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     sector_id = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -144,6 +152,11 @@ class ShipSpecification(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     type = Column(Enum(ShipType, name="ship_type"), nullable=False, unique=True)
+    # NPC-only special-issue hull (canon DATA_MODELS/ships.md +
+    # police-forces.md "Interdictor hulls"): players can never purchase,
+    # capture, salvage, or claim these — ownership-transfer paths reject
+    # with ERR_NPC_ONLY_HULL and player-facing catalogs filter them out.
+    is_npc_only = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     base_cost = Column(Integer, nullable=False)
     speed = Column(Float, nullable=False)
     turn_cost = Column(Integer, nullable=False)

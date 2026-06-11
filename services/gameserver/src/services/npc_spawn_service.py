@@ -1,4 +1,4 @@
-"""NPC Spawn Service — static pirate-captain materialization (v1).
+"""NPC Spawn Service — static NPC materialization from BANG rosters (v1).
 
 Materializes NPCCharacter + Ship rows from the BANG rosters stashed on
 ``Galaxy.bang_snapshot.regions[*].universe.npcRosters`` and surfaces them
@@ -10,27 +10,34 @@ Canon anchors:
   - SYSTEMS/npc-scheduler.md — Loop B (spawn recipe; this is a one-shot,
     degenerate Loop B) and "KIA processing" steps 1-4
   - ADR-0047 — ``Sector.defenses.pirate_patrol_ships`` JSON shape
+  - FEATURES/gameplay/police-forces.md — Federation Marshals / Nexus
+    Sentinels, Interdictor hulls, police squad JSONB shape
 
 V1 scope (documented subset, not invention — the NPC scheduler/lifecycle
 docs are explicitly Design-only):
-  - Pirate CAPTAINS only. Enforcers are held back for a later slice;
-    lords are held back because the BANG snapshot's 13 lords contradict
-    canon ADR-0047's "Stronghold-tier only, 1-2 per region" (conflict
-    flagged to Max).
+  - Pirate CAPTAINS plus the police forces (Federation Marshals /
+    Marshal-Captains on Marshal Interdictors; Nexus Sentinels /
+    Sentinel-Captains on Sentinel Interdictors). Pirate enforcers are
+    held back for a later slice; lords are held back because the BANG
+    snapshot's 13 lords contradict canon ADR-0047's "Stronghold-tier
+    only, 1-2 per region" (conflict flagged to Max).
   - Static NPCs: no movement, no schedules, no NPC-initiated combat,
-    no respawn (Loop B), no NPCDeathLog, no reputation/bounty hooks.
+    no respawn (Loop B), no NPCDeathLog, no bounty hooks. The one
+    reputation hook in v1 lives in combat_service.attack_npc_ship
+    (Marshal kill → −250 Terran Federation rep, police-forces.md:75).
 """
 
 import logging
 import uuid
 from datetime import datetime, UTC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.game_time import scaled_deadline
+from src.models.faction import Faction, FactionType
 from src.models.galaxy import Galaxy
 from src.models.npc_character import NPCCharacter, NPCArchetype, NPCStatus
 from src.models.sector import Sector
@@ -47,9 +54,129 @@ REGION_ORDER: Tuple[str, ...] = ("terran_space", "player_owned", "central_nexus"
 PIRATE_CAPTAIN_KIND = "pirate_captain"
 PIRATE_CAPTAIN_TITLE = "Pirate Captain"
 
+PIRATE_PATROL_DEFENSES_KEY = "pirate_patrol_ships"
+# Police squads land under their own defenses key. Canon-divergence note:
+# police-forces.md "Patrol-squad row coherence" says the existing
+# ``defenses.patrol_ships`` shape "is extended", but patrol_ships is
+# already shape-conflicted in code — admin.py reads it as an INT while
+# sector.py defaults it to a list — so landing dict squad rows there
+# would break admin pages. A dedicated key mirrors the ADR-0047
+# pirate_patrol_ships precedent instead; divergence FLAGGED for the docs
+# repo, not silently resolved.
+POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships"
+PATROL_DEFENSES_KEYS: Tuple[str, ...] = (
+    PIRATE_PATROL_DEFENSES_KEY,
+    POLICE_PATROL_DEFENSES_KEY,
+)
+
+# Canon squad-row field (police-forces.md squad JSONB shape).
+POLICE_WANTED_THRESHOLD = -500
+
 # Canon: SYSTEMS/npc-scheduler.md "KIA processing" step 2 —
 # respawn_eligible_at = now + 7 days (faction-tunable cooldown).
 KIA_RESPAWN_COOLDOWN_HOURS = 7 * 24
+
+
+class KindConfig(NamedTuple):
+    """Spawn recipe for one BANG roster ``kind`` value."""
+
+    archetype: NPCArchetype
+    # DATA_MODELS/npcs.md — title is rendered before the name in UI
+    # ("Marshal", "Sentinel-Captain").
+    title: str
+    ship_type: ShipType
+    # str.format(name=...) template for the piloted hull's Ship.name.
+    ship_name_format: str
+    # Canon squad_kind enumeration value (police-forces.md): captains
+    # fold into their force's squad kind — only ``federation_marshal``
+    # and ``nexus_sentinel`` exist for police.
+    squad_kind: str
+    defenses_key: str
+    # Fallback when the roster carries no factionCode.
+    default_faction_code: str
+    # BANG roster ids restart per kind (dev: federation_marshal id=1
+    # collides with pirate roster id=1), so the NEW police kinds embed
+    # kind in bang_roster_ref. Pirate refs keep the original kind-blind
+    # format — changing it would break idempotency with rows already
+    # materialized under the old refs.
+    kind_in_roster_ref: bool
+    # Police squad rows carry the canon wanted_threshold /
+    # scheduled_clear_at fields; pirate rows keep the ADR-0047 shape.
+    is_police: bool
+
+
+KIND_CONFIG: Dict[str, KindConfig] = {
+    PIRATE_CAPTAIN_KIND: KindConfig(
+        archetype=NPCArchetype.HOSTILE_RAIDER,
+        title=PIRATE_CAPTAIN_TITLE,
+        # PLACEHOLDER: canon defines no pirate hull stats (police-forces.md
+        # shows the fully-numeric Interdictor pattern this should follow) —
+        # pirate captains reuse LIGHT_FREIGHTER specs until canon supplies
+        # pirate numbers.
+        ship_type=ShipType.LIGHT_FREIGHTER,
+        ship_name_format="Captain {name}'s Marauder",
+        squad_kind=PIRATE_CAPTAIN_KIND,
+        defenses_key=PIRATE_PATROL_DEFENSES_KEY,
+        default_faction_code="pirates",
+        kind_in_roster_ref=False,
+        is_police=False,
+    ),
+    "federation_marshal": KindConfig(
+        archetype=NPCArchetype.LAW_ENFORCEMENT,
+        title="Marshal",
+        ship_type=ShipType.NPC_MARSHAL_INTERDICTOR,
+        # PLACEHOLDER: canon gives no police ship-naming convention —
+        # mirrors the pirate "Captain X's Marauder" pattern.
+        ship_name_format="Marshal {name}'s Interdictor",
+        squad_kind="federation_marshal",
+        defenses_key=POLICE_PATROL_DEFENSES_KEY,
+        default_faction_code="terran_federation",
+        kind_in_roster_ref=True,
+        is_police=True,
+    ),
+    # Captains fly the SAME Interdictor hull as regulars — canon confirms
+    # via "28 docked Interdictors" for 24 Sentinels + 4 Captains and the
+    # 1:1 permanent ship assignment (police-forces.md).
+    "marshal_captain": KindConfig(
+        archetype=NPCArchetype.LAW_ENFORCEMENT,
+        title="Marshal-Captain",
+        ship_type=ShipType.NPC_MARSHAL_INTERDICTOR,
+        # PLACEHOLDER: canon gives no police ship-naming convention —
+        # mirrors the pirate "Captain X's Marauder" pattern.
+        ship_name_format="Marshal-Captain {name}'s Interdictor",
+        squad_kind="federation_marshal",
+        defenses_key=POLICE_PATROL_DEFENSES_KEY,
+        default_faction_code="terran_federation",
+        kind_in_roster_ref=True,
+        is_police=True,
+    ),
+    "nexus_sentinel": KindConfig(
+        archetype=NPCArchetype.LAW_ENFORCEMENT,
+        title="Sentinel",
+        ship_type=ShipType.NPC_SENTINEL_INTERDICTOR,
+        # PLACEHOLDER: canon gives no police ship-naming convention —
+        # mirrors the pirate "Captain X's Marauder" pattern.
+        ship_name_format="Sentinel {name}'s Interdictor",
+        squad_kind="nexus_sentinel",
+        defenses_key=POLICE_PATROL_DEFENSES_KEY,
+        default_faction_code="galactic_concord",
+        kind_in_roster_ref=True,
+        is_police=True,
+    ),
+    "sentinel_captain": KindConfig(
+        archetype=NPCArchetype.LAW_ENFORCEMENT,
+        title="Sentinel-Captain",
+        ship_type=ShipType.NPC_SENTINEL_INTERDICTOR,
+        # PLACEHOLDER: canon gives no police ship-naming convention —
+        # mirrors the pirate "Captain X's Marauder" pattern.
+        ship_name_format="Sentinel-Captain {name}'s Interdictor",
+        squad_kind="nexus_sentinel",
+        defenses_key=POLICE_PATROL_DEFENSES_KEY,
+        default_faction_code="galactic_concord",
+        kind_in_roster_ref=True,
+        is_police=True,
+    ),
+}
 
 
 def _region_offset_map(db: Session, regions: Dict[str, Any]) -> Dict[str, int]:
@@ -112,13 +239,10 @@ def _build_npc_ship(
     name: str,
     sector_id: int,
 ) -> Ship:
-    """Construct an NPC-piloted Ship mirroring ShipService.create_ship defaults.
-
-    # PLACEHOLDER: canon defines no pirate hull stats (see police-forces.md
-    # for the fully-specified Interdictor pattern this should eventually
-    # follow); pirate captains reuse LIGHT_FREIGHTER specs for now.
-    # Revisit with pirate interdictor hulls when canon supplies numbers.
-    """
+    """Construct an NPC-piloted Ship mirroring ShipService.create_ship
+    defaults. Hull stats come entirely from the kind's ShipSpecification
+    (see KIND_CONFIG for the per-kind hull mapping and the pirate-hull
+    placeholder note)."""
     return Ship(
         name=name,
         type=spec.type,
@@ -171,7 +295,8 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
     will NOT resolve against the players table)."""
     return {
         "player_id": str(npc.id),
-        "username": f"{PIRATE_CAPTAIN_TITLE} {npc.name}",
+        # Canon renders title before name (DATA_MODELS/npcs.md).
+        "username": npc.display_name,
         "ship_id": str(ship.id),
         "ship_name": ship.name,
         "ship_type": ship.type.name,
@@ -181,17 +306,57 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
     }
 
 
+def _ensure_federation_faction(db: Session) -> Faction:
+    """Get-or-create the Terran Federation faction row, idempotent by
+    faction_type.
+
+    Canon (police-forces.md "Faction registration"): the Federation Police
+    are the enforcement arm of the existing **Terran Federation** — and the
+    Marshal-kill reputation hook (−250, police-forces.md) needs this row to
+    exist. The factions table ships empty: the only existing seeder
+    (auth/admin.py create_default_factions) is dead code with zero call
+    sites AND names this faction "United Space Federation" vs canon's
+    "Terran Federation" — docs-vs-code discrepancy FLAGGED, not followed;
+    the canon name is used here. An existing FEDERATION-typed row (however
+    named) is left untouched.
+
+    The Galactic Concord (Sentinel force) is NOT seeded: its CONCORD
+    FactionType is Design-only (police-forces.md "Faction registration")
+    and adding the enum value is out of scope for this slice.
+    """
+    faction = (
+        db.query(Faction)
+        .filter(Faction.faction_type == FactionType.FEDERATION)
+        .first()
+    )
+    if faction is None:
+        faction = Faction(
+            name="Terran Federation",
+            faction_type=FactionType.FEDERATION,
+            description=(
+                "The dominant galactic governing authority. Operates the "
+                "Federation Police — the Marshal Service — across Terran "
+                "Space and the Federation Zones of player regions."
+            ),
+        )
+        db.add(faction)
+        db.flush()
+        logger.info("Seeded Terran Federation faction row (%s)", faction.id)
+    return faction
+
+
 def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     """One-shot, degenerate Loop B (SYSTEMS/npc-scheduler.md): spawn the
-    pirate-captain rosters from the galaxy's BANG snapshot.
+    pirate-captain and police rosters from the galaxy's BANG snapshot.
 
-    Per captain, two rows (Ship + NPCCharacter) and two JSONB presence
-    writes on the host sector (players_present entry; one shared
-    pirate_patrol_ships squad row per roster).
+    Per NPC, two rows (Ship + NPCCharacter) and two JSONB presence
+    writes on the host sector (players_present entry; one shared squad
+    row per roster under the kind's defenses key — pirate_patrol_ships
+    or police_patrol_ships, see KIND_CONFIG).
 
     Idempotent per roster: a roster is skipped when NPCCharacter rows with
     its ``bang_roster_ref`` already exist — including KIA rows, so a
-    killed captain does not silently respawn on re-run (respawn is Loop B
+    killed NPC does not silently respawn on re-run (respawn is Loop B
     with cooldown, out of v1 scope).
 
     The caller owns the transaction (flush only, no commit) — mirrors the
@@ -204,6 +369,8 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
         "rosters_spawned": 0,
         "rosters_skipped_existing": 0,
         "rosters_skipped_bad_sector": 0,
+        # Counts EVERY spawned NPC (pirate captains + police officers) —
+        # key name frozen for spawn_npcs.py output compatibility.
         "captains_spawned": 0,
         "warnings": [],
     }
@@ -214,18 +381,24 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
         )
         return stats
 
-    # PLACEHOLDER: canon defines no pirate hull stats (see police-forces.md
-    # for the pattern — Marshal/Sentinel Interdictors are fully numeric);
-    # revisit with pirate interdictor hulls. Captains fly LIGHT_FREIGHTER
-    # specs until canon supplies pirate numbers.
-    spec = (
-        db.query(ShipSpecification)
-        .filter(ShipSpecification.type == ShipType.LIGHT_FREIGHTER)
-        .first()
-    )
-    if spec is None:
+    # The Marshal-kill reputation hook (combat_service) targets the
+    # Terran Federation faction row — guarantee it exists before any
+    # LAW_ENFORCEMENT NPC can be spawned (and therefore killed).
+    _ensure_federation_faction(db)
+
+    # One spec fetch per distinct hull across all spawnable kinds.
+    hull_types = {cfg.ship_type for cfg in KIND_CONFIG.values()}
+    specs: Dict[ShipType, ShipSpecification] = {
+        s.type: s
+        for s in (
+            db.query(ShipSpecification)
+            .filter(ShipSpecification.type.in_(hull_types))
+            .all()
+        )
+    }
+    if not specs:
         raise ValueError(
-            "No ShipSpecification for LIGHT_FREIGHTER — seed ship specs "
+            "No ShipSpecification rows for any NPC hull — seed ship specs "
             "before spawning NPCs"
         )
 
@@ -240,7 +413,7 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
         region_id = region_snapshot.get("region_id")
         offset = offsets.get(region_type)
         if offset is None:
-            if any(str(r.get("kind", "")) == PIRATE_CAPTAIN_KIND for r in rosters):
+            if any(str(r.get("kind", "")) in KIND_CONFIG for r in rosters):
                 stats["warnings"].append(
                     f"region {region_type}: no region_id in snapshot or no "
                     f"sectors in DB — cannot derive offset; skipping its rosters"
@@ -248,12 +421,30 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
             continue
 
         for roster in rosters:
-            if str(roster.get("kind", "")) != PIRATE_CAPTAIN_KIND:
+            kind = str(roster.get("kind", ""))
+            cfg = KIND_CONFIG.get(kind)
+            if cfg is None:
                 continue
             stats["rosters_seen"] += 1
             # Galaxy-scoped so two galaxies sharing region types/roster ids
-            # never collide on the idempotency marker.
-            roster_ref = f"{galaxy.id}:{region_type}:{roster.get('id')}"
+            # never collide on the idempotency marker. Police refs embed
+            # the kind because BANG roster ids restart per kind (see
+            # KindConfig.kind_in_roster_ref); pirate refs keep the
+            # original kind-blind format for idempotency with rows
+            # already materialized under it.
+            if cfg.kind_in_roster_ref:
+                roster_ref = f"{galaxy.id}:{region_type}:{kind}:{roster.get('id')}"
+            else:
+                roster_ref = f"{galaxy.id}:{region_type}:{roster.get('id')}"
+
+            spec = specs.get(cfg.ship_type)
+            if spec is None:
+                stats["warnings"].append(
+                    f"roster {roster_ref}: no ShipSpecification for "
+                    f"{cfg.ship_type.name} — run migrations + boot seeder "
+                    f"first; skipping"
+                )
+                continue
 
             existing = (
                 db.query(NPCCharacter)
@@ -308,7 +499,7 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
                 )
                 continue
 
-            faction_code = str(roster.get("factionCode", "pirates"))
+            faction_code = str(roster.get("factionCode", cfg.default_faction_code))
             now = datetime.now(UTC)
             squad_npc_ids: List[str] = []
             presence_entries: List[Dict[str, Any]] = []
@@ -319,23 +510,23 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
                 # numeral generation (II, III, ...) so usernames stay
                 # unique per sector.
                 generation = i // len(name_pool) + 1
-                captain_name = (
+                npc_name = (
                     base_name if generation == 1
                     else f"{base_name} {_roman(generation)}"
                 )
                 ship = _build_npc_ship(
                     spec,
-                    name=f"Captain {captain_name}'s Marauder",
+                    name=cfg.ship_name_format.format(name=npc_name),
                     sector_id=global_sector_id,
                 )
                 db.add(ship)
                 db.flush()  # surface ship.id for the FK + presence entry
 
                 npc = NPCCharacter(
-                    name=captain_name,
-                    title=PIRATE_CAPTAIN_TITLE,
+                    name=npc_name,
+                    title=cfg.title,
                     faction_code=faction_code,
-                    archetype=NPCArchetype.HOSTILE_RAIDER,
+                    archetype=cfg.archetype,
                     status=NPCStatus.ON_DUTY,
                     current_sector_id=global_sector_id,
                     ship_id=ship.id,
@@ -351,7 +542,7 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
                 stats["captains_spawned"] += 1
 
             # Presence write 1: players_present (movement_service shape) —
-            # makes the captains visible in COMMS and the combat target list.
+            # makes the NPCs visible in COMMS and the combat target list.
             players_present = list(sector.players_present or [])
             known_ids = {p.get("player_id") for p in players_present}
             players_present.extend(
@@ -360,27 +551,33 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
             sector.players_present = players_present
             flag_modified(sector, "players_present")
 
-            # Presence write 2: defenses.pirate_patrol_ships — ADR-0047
-            # squad shape. One squad row per roster. holding_id omitted:
-            # the PirateHolding table is Design-only (canon gap).
-            defenses = dict(sector.defenses or {})
-            pirate_patrols = list(defenses.get("pirate_patrol_ships") or [])
-            pirate_patrols.append({
+            # Presence write 2: squad row under the kind's defenses key —
+            # ADR-0047 shape for pirates (holding_id omitted: the
+            # PirateHolding table is Design-only, canon gap); canon
+            # police-forces.md squad shape for police (adds
+            # wanted_threshold / scheduled_clear_at).
+            squad_row: Dict[str, Any] = {
                 "patrol_id": str(uuid.uuid4()),
                 "faction_code": faction_code,
-                "squad_kind": PIRATE_CAPTAIN_KIND,
+                "squad_kind": cfg.squad_kind,
                 "npc_character_ids": squad_npc_ids,
                 "ship_count": len(squad_npc_ids),
                 "deployed_at": now.isoformat(),
-            })
-            defenses["pirate_patrol_ships"] = pirate_patrols
+            }
+            if cfg.is_police:
+                squad_row["wanted_threshold"] = POLICE_WANTED_THRESHOLD
+                squad_row["scheduled_clear_at"] = None
+            defenses = dict(sector.defenses or {})
+            patrols = list(defenses.get(cfg.defenses_key) or [])
+            patrols.append(squad_row)
+            defenses[cfg.defenses_key] = patrols
             sector.defenses = defenses
             flag_modified(sector, "defenses")
 
             stats["rosters_spawned"] += 1
             logger.info(
-                "Spawned %d pirate captain(s) at sector %d (roster %s)",
-                len(squad_npc_ids), global_sector_id, roster_ref,
+                "Spawned %d %s NPC(s) at sector %d (roster %s)",
+                len(squad_npc_ids), kind, global_sector_id, roster_ref,
             )
 
     db.flush()
@@ -404,8 +601,11 @@ def handle_npc_ship_destroyed(db: Session, ship_id: uuid.UUID) -> Optional[NPCCh
 
     Deferred (documented, not dropped silently): step 3 NPCDeathLog (no
     table in v1), step 5 ship_id detach (canonical destruction handler
-    owns the ship row), steps 6-9 realtime events, reputation hooks, and
-    Loop B replacement.
+    owns the ship row), steps 6-9 realtime events, and Loop B
+    replacement. Reputation hooks live in the caller: combat_service
+    inspects the returned NPCCharacter and applies the Marshal-kill
+    Federation rep delta (police-forces.md) — this handler stays
+    rep-free.
 
     Rows are never deleted — the named NPC is permanently gone but the
     NPCCharacter row persists per canon.
@@ -449,21 +649,24 @@ def handle_npc_ship_destroyed(db: Session, ship_id: uuid.UUID) -> Optional[NPCCh
             flag_modified(sector, "players_present")
 
             defenses = dict(sector.defenses or {})
-            patrols: List[Dict[str, Any]] = []
-            for patrol in (defenses.get("pirate_patrol_ships") or []):
-                remaining = [
-                    nid for nid in (patrol.get("npc_character_ids") or [])
-                    if nid != npc_id_str
-                ]
-                if npc_id_str not in (patrol.get("npc_character_ids") or []):
-                    patrols.append(patrol)
-                elif remaining:
-                    updated = dict(patrol)
-                    updated["npc_character_ids"] = remaining
-                    updated["ship_count"] = len(remaining)
-                    patrols.append(updated)
-                # canon: empty squad rows are deleted
-            defenses["pirate_patrol_ships"] = patrols
+            for defenses_key in PATROL_DEFENSES_KEYS:
+                if defenses_key not in defenses:
+                    continue
+                patrols: List[Dict[str, Any]] = []
+                for patrol in (defenses.get(defenses_key) or []):
+                    remaining = [
+                        nid for nid in (patrol.get("npc_character_ids") or [])
+                        if nid != npc_id_str
+                    ]
+                    if npc_id_str not in (patrol.get("npc_character_ids") or []):
+                        patrols.append(patrol)
+                    elif remaining:
+                        updated = dict(patrol)
+                        updated["npc_character_ids"] = remaining
+                        updated["ship_count"] = len(remaining)
+                        patrols.append(updated)
+                    # canon: empty squad rows are deleted
+                defenses[defenses_key] = patrols
             sector.defenses = defenses
             flag_modified(sector, "defenses")
 
