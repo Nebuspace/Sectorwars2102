@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { getStationClassInfo, StationClassBadge } from '../common/stationIdentity';
+import ConfirmDialog from './ConfirmDialog';
 import './station-card.css';
 
 interface StationCardProps {
@@ -26,11 +27,12 @@ interface StationCardProps {
 }
 
 const StationCard: React.FC<StationCardProps> = ({ station, onDock, isDocked }) => {
+  // In-fiction confirmation dialog state (replaces native confirm())
+  const [showDockConfirm, setShowDockConfirm] = useState(false);
+
   const handleClick = () => {
     if (isDocked) return;
-    if (confirm(`Dock at ${station.name}?`)) {
-      onDock(station.id);
-    }
+    setShowDockConfirm(true);
   };
   // Determine station status color and icon
   const getStationStatusInfo = (status: string) => {
@@ -132,6 +134,20 @@ const StationCard: React.FC<StationCardProps> = ({ station, onDock, isDocked }) 
           </div>
         )}
       </div>
+
+      {/* In-fiction confirmation dialog (action proceeds only on confirm) */}
+      {showDockConfirm && (
+        <ConfirmDialog
+          title="Docking Request"
+          message={`Dock at ${station.name}?`}
+          confirmLabel="Dock"
+          onConfirm={() => {
+            setShowDockConfirm(false);
+            onDock(station.id);
+          }}
+          onCancel={() => setShowDockConfirm(false)}
+        />
+      )}
     </div>
   );
 };

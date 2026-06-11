@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import ConfirmDialog, { type PendingConfirm } from './ConfirmDialog';
 import './planet-card.css';
 
 interface PlanetCardProps {
@@ -26,21 +27,34 @@ const PlanetCard: React.FC<PlanetCardProps> = ({ planet, onLand, onClaim, isLand
   // Determine if planet is unclaimed
   const isUnclaimed = !planet.owner_id && !planet.owner_name && planet.name !== 'New Earth';
 
+  // In-fiction confirmation dialog state (replaces native confirm())
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+
   const handleClick = () => {
     if (isLanded) return;
 
     if (isUnclaimed) {
       // Planet is unclaimed - need to claim it
       if (!onClaim) return;
-      if (confirm(`Claim ${planet.name}?\n\nThis planet is unclaimed. Claiming it will make you the owner and automatically land your ship.`)) {
-        onClaim(planet.id);
-      }
+      // Capture narrowed callback for the deferred onConfirm closure
+      const claim = onClaim;
+      setPendingConfirm({
+        title: 'Claim Planet',
+        message: `Claim ${planet.name}?\n\nThis planet is unclaimed. Claiming it will make you the owner and automatically land your ship.`,
+        confirmLabel: 'Claim',
+        onConfirm: () => claim(planet.id)
+      });
     } else {
       // Planet is owned - just land
       if (!onLand) return;
-      if (confirm(`Land on ${planet.name}?`)) {
-        onLand(planet.id);
-      }
+      // Capture narrowed callback for the deferred onConfirm closure
+      const land = onLand;
+      setPendingConfirm({
+        title: 'Landing Request',
+        message: `Land on ${planet.name}?`,
+        confirmLabel: 'Land',
+        onConfirm: () => land(planet.id)
+      });
     }
   };
   // Planet type configurations
@@ -168,6 +182,20 @@ const PlanetCard: React.FC<PlanetCardProps> = ({ planet, onLand, onClaim, isLand
           </div>
         )}
       </div>
+
+      {/* In-fiction confirmation dialog (action proceeds only on confirm) */}
+      {pendingConfirm && (
+        <ConfirmDialog
+          title={pendingConfirm.title}
+          message={pendingConfirm.message}
+          confirmLabel={pendingConfirm.confirmLabel}
+          onConfirm={() => {
+            setPendingConfirm(null);
+            pendingConfirm.onConfirm();
+          }}
+          onCancel={() => setPendingConfirm(null)}
+        />
+      )}
     </div>
   );
 };

@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { getStationClassInfo, StationClassMark } from '../common/stationIdentity';
+import ConfirmDialog, { type PendingConfirm } from './ConfirmDialog';
 import './planet-port-pair.css';
 
 interface Planet {
@@ -24,6 +25,7 @@ interface Station {
   type: string;
   status: string;
   owner_id?: string | null;
+  owner_name?: string | null;
   faction_affiliation?: string | null;
   services?: {
     fuel?: boolean;
@@ -89,29 +91,47 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   // hubs itself, so a generic owner check is all the client needs
   const isPlanetUnclaimed = planet && !planet.owner_id && !planet.owner_name;
 
+  // In-fiction confirmation dialog state (replaces native confirm())
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+
   const handlePlanetClick = () => {
     if (!planet || isLanded) return;
+    // Capture narrowed values for the deferred onConfirm closure
+    const targetPlanet = planet;
 
     if (isPlanetUnclaimed) {
       // Planet is unclaimed - need to claim it first
       if (!onClaimPlanet) return;
-      if (confirm(`Claim ${planet.name}?\n\nRequirements: 10,000 credits and at least 100 colonists aboard.\nClaiming makes you the owner and automatically lands your ship.`)) {
-        onClaimPlanet(planet.id);
-      }
+      const claimPlanet = onClaimPlanet;
+      setPendingConfirm({
+        title: 'Claim Planet',
+        message: `Claim ${targetPlanet.name}?\n\nRequirements: 10,000 credits and at least 100 colonists aboard.\nClaiming makes you the owner and automatically lands your ship.`,
+        confirmLabel: 'Claim',
+        onConfirm: () => claimPlanet(targetPlanet.id)
+      });
     } else {
       // Planet is owned - just land
-      if (confirm(`Land on ${planet.name}?`)) {
-        onLandOnPlanet(planet.id);
-      }
+      setPendingConfirm({
+        title: 'Landing Request',
+        message: `Land on ${targetPlanet.name}?`,
+        confirmLabel: 'Land',
+        onConfirm: () => onLandOnPlanet(targetPlanet.id)
+      });
     }
   };
 
   const handleStationClick = (e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent planet click
     if (!station || !onDockAtStation || isDocked) return;
-    if (confirm(`Dock at ${station.name}?`)) {
-      onDockAtStation(station.id);
-    }
+    // Capture narrowed values for the deferred onConfirm closure
+    const targetStation = station;
+    const dockAtStation = onDockAtStation;
+    setPendingConfirm({
+      title: 'Docking Request',
+      message: `Dock at ${targetStation.name}?`,
+      confirmLabel: 'Dock',
+      onConfirm: () => dockAtStation(targetStation.id)
+    });
   };
 
   const ownerDisplay = planet ? (planet.owner_name || (planet.owner_id ? 'Claimed' : null)) : null;
@@ -194,6 +214,20 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* In-fiction confirmation dialog (action proceeds only on confirm) */}
+      {pendingConfirm && (
+        <ConfirmDialog
+          title={pendingConfirm.title}
+          message={pendingConfirm.message}
+          confirmLabel={pendingConfirm.confirmLabel}
+          onConfirm={() => {
+            setPendingConfirm(null);
+            pendingConfirm.onConfirm();
+          }}
+          onCancel={() => setPendingConfirm(null)}
+        />
       )}
     </div>
   );
