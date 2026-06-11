@@ -228,10 +228,11 @@ async def get_current_sector(
             detail="Current sector not found in your region"
         )
 
-    # Get region name if sector belongs to a region
+    # Player-facing region label: display_name ("Terran Space"), not the
+    # internal import-scoped name ("bang-<uuid>-terran_space")
     region_name = None
     if sector.region:
-        region_name = sector.region.name
+        region_name = sector.region.display_name or sector.region.name
 
     return SectorResponse(
         id=str(sector.id),
@@ -294,7 +295,7 @@ async def get_available_moves(
     for warp in available_moves.get("warps", []):
         # Look up sector to get region information
         sector = db.query(Sector).filter(Sector.sector_id == warp["sector_id"]).first()
-        region_name = sector.region.name if sector and sector.region else None
+        region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         warps.append(MoveOption(
             sector_id=warp["sector_id"],
@@ -311,7 +312,7 @@ async def get_available_moves(
     for tunnel in available_moves.get("tunnels", []):
         # Look up sector to get region information
         sector = db.query(Sector).filter(Sector.sector_id == tunnel["sector_id"]).first()
-        region_name = sector.region.name if sector and sector.region else None
+        region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         tunnels.append(MoveOption(
             sector_id=tunnel["sector_id"],
