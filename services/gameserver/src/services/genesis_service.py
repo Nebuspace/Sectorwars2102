@@ -564,24 +564,24 @@ class GenesisService:
         # Set initial population based on tier
         if tier == "advanced":
             # Spec: Advanced genesis creates a Settlement-level colony
-            # with a Level 2 (Garrison) citadel and 5000 colonists
+            # with a Level 2 (Settlement) citadel and 5000 colonists
             planet.colonists = 5000
             planet.population = 5000
             planet.max_colonists = max(planet.max_colonists, 5000)
 
-            # Initialize citadel at Level 2 (Garrison) with proper stats
+            # Initialize citadel at Level 2 (Settlement) with proper stats
             # Import citadel level config to stay consistent with citadel_service
             from src.services.citadel_service import CITADEL_LEVELS
-            garrison_config = CITADEL_LEVELS[2]
+            settlement_config = CITADEL_LEVELS[2]
             planet.citadel_level = 2
             planet.citadel_safe_credits = 0
-            planet.citadel_safe_max = garrison_config["safe_storage"]
-            planet.citadel_drone_capacity = garrison_config["drone_capacity"]
-            planet.citadel_max_population = garrison_config["max_population"]
+            planet.citadel_safe_max = settlement_config["safe_storage"]
+            planet.citadel_drone_capacity = settlement_config["drone_capacity"]
+            planet.citadel_max_population = settlement_config["max_population"]
 
             logger.info(
                 f"Advanced genesis: Settlement-level colony created with L2 citadel "
-                f"(Garrison) and 5000 colonists on planet {planet.id}"
+                f"(Settlement) and 5000 colonists on planet {planet.id}"
             )
         elif tier == "enhanced":
             # Enhanced tier gets a modest head start over basic

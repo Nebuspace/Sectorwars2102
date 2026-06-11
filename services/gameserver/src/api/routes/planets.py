@@ -1144,3 +1144,101 @@ async def citadel_withdraw(
         raise HTTPException(status_code=400, detail=result.get("message", "Withdrawal failed"))
     db.commit()
     return result
+
+
+# Terraforming Endpoints
+
+class TerraformingStartRequest(BaseModel):
+    """Terraforming project start request."""
+    target_level: int = Field(..., ge=1, le=5)
+
+
+@router.post("/{planet_id}/terraforming/start")
+async def start_terraforming(
+    planet_id: str,
+    request: TerraformingStartRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """
+    Start a terraforming project on a planet you own.
+
+    Requirements (enforced by TerraformingService):
+    - Player must own the planet (landing is not required — terraforming
+      is managed remotely, like colonist allocation)
+    - No terraforming project already active on the planet
+    - Planet habitability must be below 90%
+    - Credits (drawn from the player) and organics + equipment (drawn
+      from the planet's stockpile) per the requested level's costs
+
+    Levels 1-5 grant +10 to +30 habitability over 72h-336h.
+    """
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    from src.services.terraforming_service import TerraformingService
+    service = TerraformingService(db)
+
+    try:
+        return service.start_terraforming(pid, player.id, level=request.target_level)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{planet_id}/terraforming/status")
+async def get_terraforming_status(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """
+    Get terraforming status for a planet you own.
+
+    Reading status also lazily advances time-based progress and
+    completes the project once its duration has fully elapsed.
+    """
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    from src.services.terraforming_service import TerraformingService
+    service = TerraformingService(db)
+
+    try:
+        return service.get_terraforming_status(pid, player.id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{planet_id}/terraforming/cancel")
+async def cancel_terraforming(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel an active terraforming project on a planet you own.
+
+    Refund semantics (TerraformingService): 50% of the original credit
+    cost is returned to the player; consumed planet resources (organics,
+    equipment) are NOT refunded.
+    """
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    # Lock the player row to prevent concurrent credit races on the refund
+    # (mirrors the claim route's with_for_update pattern)
+    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+
+    from src.services.terraforming_service import TerraformingService
+    service = TerraformingService(db)
+
+    try:
+        return service.cancel_terraforming(pid, player.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

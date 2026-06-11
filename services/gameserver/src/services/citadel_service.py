@@ -1,7 +1,7 @@
 """
 Citadel Service - 5-level citadel upgrade system for planets.
 
-Handles citadel progression from Outpost to full Citadel, timed upgrades,
+Handles citadel progression from Outpost to Planetary Capital, timed upgrades,
 resource costs, safe credit storage, and defense building construction
 for planetary owners.
 """
@@ -66,7 +66,7 @@ CITADEL_LEVELS = {
         "resource_cost": {},
     },
     2: {
-        "name": "Garrison",
+        "name": "Settlement",
         "max_population": 5000,
         "safe_storage": 500000,
         "drone_capacity": 25,
@@ -75,7 +75,7 @@ CITADEL_LEVELS = {
         "resource_cost": {"fuel_ore": 500, "equipment": 200},
     },
     3: {
-        "name": "Fortress",
+        "name": "Colony",
         "max_population": 15000,
         "safe_storage": 2000000,
         "drone_capacity": 50,
@@ -84,7 +84,7 @@ CITADEL_LEVELS = {
         "resource_cost": {"fuel_ore": 1500, "organics": 500, "equipment": 800},
     },
     4: {
-        "name": "Stronghold",
+        "name": "Major Colony",
         "max_population": 50000,
         "safe_storage": 10000000,
         "drone_capacity": 100,
@@ -93,7 +93,7 @@ CITADEL_LEVELS = {
         "resource_cost": {"fuel_ore": 5000, "organics": 2000, "equipment": 3000},
     },
     5: {
-        "name": "Citadel",
+        "name": "Planetary Capital",
         "max_population": 200000,
         "safe_storage": 50000000,
         "drone_capacity": 200,

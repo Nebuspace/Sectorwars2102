@@ -27,7 +27,9 @@ SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
 DEFENSE_UPGRADE_COST = 1000     # Credits per defense level
 DEFENSE_MAX_LEVEL = 10          # Maximum defense level
-DEFENSE_DAMAGE_REDUCTION_PER_LEVEL = 0.10  # 10% damage reduction per level
+# Canon: DOCS/API/v1/sectors-planets.aispec — siege morale loss is
+# "mitigated by 0.05 × defense_level", i.e. 5% damage reduction per level
+DEFENSE_DAMAGE_REDUCTION_PER_LEVEL = 0.05
 
 # Shield Generator Levels (0-10)
 # Uses planet.defense_shields to track generator level, planet.shields for strength
