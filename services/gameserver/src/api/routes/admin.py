@@ -85,15 +85,16 @@ async def get_all_users(
     current_admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
-    """Get all users for admin panel"""
-    users = db.query(User).all()
-    
+    """Get all users for admin panel (excludes soft-deleted accounts)"""
+    users = db.query(User).filter(User.deleted == False).all()
+
     # Map to response model
     user_list = [
         {
             "id": str(user.id),
             "username": user.username,
             "email": user.email,
+            "deleted": user.deleted,
             "is_active": user.is_active,
             "is_admin": user.is_admin,
             "created_at": user.created_at.isoformat(),
@@ -1330,27 +1331,10 @@ async def fix_galaxy_statistics(
         logger.error(f"Failed to fix galaxy statistics: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fix galaxy statistics: {str(e)}")
 
-@router.delete("/galaxy/{galaxy_id}", response_model=dict)
-async def delete_galaxy(
-    galaxy_id: str,
-    current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
-):
-    """Delete a galaxy and all its contents"""
-    try:
-        galaxy = db.query(Galaxy).filter(Galaxy.id == galaxy_id).first()
-        
-        if not galaxy:
-            raise HTTPException(status_code=404, detail="Galaxy not found")
-        
-        db.delete(galaxy)
-        db.commit()
-        
-        return {"message": f"Galaxy '{galaxy.name}' deleted successfully"}
-        
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete galaxy: {str(e)}")
+# NOTE: DELETE /galaxy/{galaxy_id} intentionally removed from this router.
+# It shadowed bang_galaxy.py's proper cascade hard-delete (same path, mounted
+# later in api.py), which requires the X-Confirm-Galaxy-Name header and
+# cascades all galaxy contents. bang_galaxy.py now answers that route.
 
 @router.get("/sectors/{sector_id}/port", response_model=dict)
 async def get_sector_port(
@@ -1361,7 +1345,7 @@ async def get_sector_port(
     """Get port details for a specific sector"""
     station = db.query(Station).filter(Station.sector_id == sector_id).first()
 
-    if not port:
+    if not station:
         return {
             "has_port": False,
             "station": None
@@ -1544,8 +1528,8 @@ async def update_port(
     """Update port details including commodity quantities"""
     try:
         station = db.query(Station).filter(Station.id == station_id).first()
-        
-        if not port:
+
+        if not station:
             raise HTTPException(status_code=404, detail="Station not found")
         
         # Handle commodity updates
@@ -1560,8 +1544,8 @@ async def update_port(
         for field, value in port_updates.items():
             if field == 'commodities':
                 continue  # Already handled above
-            elif hasattr(port, field):
-                setattr(port, field, value)
+            elif hasattr(station, field):
+                setattr(station, field, value)
             elif field.endswith('_quantity'):
                 # Handle direct quantity updates like "ore_quantity"
                 commodity_name = field.replace('_quantity', '')

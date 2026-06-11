@@ -104,6 +104,7 @@ async def generate_central_nexus(
 
 @router.get("/status")
 async def get_nexus_status(
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session)
 ) -> Dict[str, Any]:
     """Get Central Nexus status and basic information"""
@@ -156,6 +157,7 @@ async def get_nexus_status(
 
 @router.get("/stats", response_model=NexusStatsResponse)
 async def get_nexus_statistics(
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session)
 ):
     """Get comprehensive Central Nexus statistics"""
@@ -250,6 +252,7 @@ async def get_nexus_statistics(
 
 @router.get("/clusters")
 async def get_clusters_info(
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session)
 ) -> List[ClusterInfoResponse]:
     """Get information about all clusters in Central Nexus (replaces /districts)"""
@@ -322,6 +325,7 @@ async def get_clusters_info(
 @router.get("/clusters/{cluster_id}")
 async def get_cluster_details(
     cluster_id: str,
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session)
 ) -> Dict[str, Any]:
     """Get detailed information about a specific cluster (replaces /districts/{district_type})"""

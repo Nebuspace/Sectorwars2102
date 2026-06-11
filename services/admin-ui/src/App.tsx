@@ -1,5 +1,5 @@
 import React, { lazy, Suspense } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { AdminProvider } from './contexts/AdminContext';
 import { WebSocketProvider } from './contexts/WebSocketContext';
@@ -11,6 +11,7 @@ import AppLayout from './components/layouts/AppLayout';
 // Components
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import PageLoader from './components/common/PageLoader';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 // Lazy load all pages for better performance
 const LoginPage = lazy(() => import('./components/pages/LoginPage'));
@@ -47,14 +48,21 @@ const RegionalGovernorDashboard = lazy(() => import('./components/pages/Regional
 const FirstLoginConversations = lazy(() => import('./components/pages/FirstLoginConversations'));
 const BangGalaxyPage = lazy(() => import('./components/pages/BangGalaxyPage'));
 
-// Helper component for protected lazy routes
-const ProtectedLazyRoute: React.FC<{ element: React.ReactElement }> = ({ element }) => (
-  <ProtectedRoute>
-    <Suspense fallback={<PageLoader />}>
-      {element}
-    </Suspense>
-  </ProtectedRoute>
-);
+// Helper component for protected lazy routes.
+// The ErrorBoundary is keyed by pathname so a crash on one page resets
+// when the admin navigates elsewhere.
+const ProtectedLazyRoute: React.FC<{ element: React.ReactElement }> = ({ element }) => {
+  const location = useLocation();
+  return (
+    <ProtectedRoute>
+      <ErrorBoundary key={location.pathname}>
+        <Suspense fallback={<PageLoader />}>
+          {element}
+        </Suspense>
+      </ErrorBoundary>
+    </ProtectedRoute>
+  );
+};
 
 function App() {
   return (
@@ -66,9 +74,11 @@ function App() {
               <Route path="/" element={<AppLayout />}>
                 {/* Public routes */}
                 <Route path="login" element={
-                  <Suspense fallback={<PageLoader />}>
-                    <LoginPage />
-                  </Suspense>
+                  <ErrorBoundary>
+                    <Suspense fallback={<PageLoader />}>
+                      <LoginPage />
+                    </Suspense>
+                  </ErrorBoundary>
                 } />
 
                 {/* Protected routes */}

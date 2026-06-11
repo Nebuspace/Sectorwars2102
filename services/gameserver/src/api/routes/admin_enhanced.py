@@ -6,14 +6,14 @@ import random
 import math
 import uuid
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_admin
 from src.models.user import User
 from src.models.galaxy import Galaxy
 from src.models.cluster import Cluster, ClusterType
 from src.models.sector import Sector, SectorType, SectorSpecialType
 from src.models.warp_tunnel import WarpTunnel
-from src.models.station import Station
+from src.models.station import Station, StationClass, StationType, StationStatus
 from src.models.planet import Planet
 
 # Enhanced request schemas
@@ -77,7 +77,7 @@ async def update_sector(
     sector_id: int,
     request: SectorUpdateRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Update sector properties"""
     sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
@@ -128,7 +128,7 @@ async def update_sector(
 async def create_port(
     request: StationCreateRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Create a new port in a sector"""
     # Check if sector exists and doesn't have a port
@@ -139,33 +139,45 @@ async def create_port(
     
     if sector.has_port:
         raise HTTPException(status_code=400, detail="Sector already has a port")
-    
-    # Create port
+
+    # Validate station class
+    try:
+        station_class = StationClass(request.port_class)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid port class: {request.port_class}")
+
+    # Create port (defense values map into the Station.defenses JSONB)
     station = Station(
         name=request.name,
         sector_id=request.sector_id,
-        port_class=request.station_class,
+        sector_uuid=sector.id,
+        station_class=station_class,
+        type=StationType.TRADING,
+        status=StationStatus.OPERATIONAL,
         owner_id=None,  # Admin-created ports are NPC owned
         tax_rate=request.tax_rate,
-        defense_fighters=request.defense_drones,
-        shields_percentage=100.0,
-        armor_percentage=100.0,
-        under_attack=False,
-        lockdown=False,
         commodities=request.commodities,
         services=request.services,
-        has_defense_grid=request.has_turrets
+        defenses={
+            "defense_drones": request.defense_drones,
+            "max_defense_drones": 50,
+            "auto_turrets": request.has_turrets,
+            "defense_grid": False,
+            "shield_strength": 50,
+            "patrol_ships": 0,
+            "military_contract": False
+        }
     )
-    
-    db.add(port)
+
+    db.add(station)
     sector.has_port = True
     db.commit()
-    
+
     return {
         "id": str(station.id),
         "name": station.name,
         "sector_id": station.sector_id,
-        "station_class": station.station_class,
+        "station_class": station.station_class.value,
         "created": True
     }
 
@@ -174,7 +186,7 @@ async def create_port(
 async def create_planet(
     request: PlanetCreateRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Create a new planet in a sector"""
     # Check if sector exists and doesn't have a planet
@@ -221,7 +233,7 @@ async def create_planet(
 async def create_enhanced_warp_tunnel(
     request: WarpTunnelEnhancedRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Create a warp tunnel with enhanced options"""
     # Validate sectors exist
@@ -279,7 +291,7 @@ async def get_enhanced_sectors(
     cluster_id: Optional[str] = None,
     include_contents: bool = True,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get sectors with enhanced information"""
     query = db.query(Sector)
@@ -326,7 +338,7 @@ async def get_enhanced_sectors(
             # Add port info if exists
             if has_port:
                 station = db.query(Station).filter(Station.sector_id == sector.sector_id).first()
-                if port:
+                if station:
                     sector_data["port"] = {
                         "id": str(station.id),
                         "name": station.name,

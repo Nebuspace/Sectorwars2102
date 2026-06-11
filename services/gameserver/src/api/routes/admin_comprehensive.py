@@ -1944,20 +1944,20 @@ async def create_port_in_sector(
             raise HTTPException(status_code=400, detail="Sector already has a port")
         
         # Import and validate enums
-        from src.models.station import Station, PortClass, PortType, StationStatus
-        
+        from src.models.station import Station, StationClass, StationType, StationStatus
+
         try:
-            port_class = PortClass(station_data.station_class)
-            port_type = PortType(station_data.type)
+            port_class = StationClass(station_data.station_class)
+            port_type = StationType(station_data.type)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid port class or type: {str(e)}")
-        
+
         # Create new port
         new_port = Station(
             name=station_data.name,
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
-            port_class=port_class,
+            station_class=port_class,
             type=port_type,
             status=StationStatus.OPERATIONAL,
             size=station_data.size,
@@ -2089,8 +2089,8 @@ async def get_sector_port(
         
         # Find the port in this sector
         station = db.query(Station).filter(Station.sector_uuid == sector.id).first()
-        
-        if not port:
+
+        if not station:
             return {"has_station": False, "station": None}
         
         # Get owner information if port is owned
@@ -2492,19 +2492,19 @@ async def update_port(
     try:
         # Find the port by ID
         station = db.query(Station).filter(Station.id == station_id).first()
-        if not port:
+        if not station:
             raise HTTPException(status_code=404, detail="Station not found")
-        
+
         # Update fields that were provided
         update_data = station_data.dict(exclude_unset=True)
-        
+
         for field, value in update_data.items():
-            if field == "station_class" and value:
-                # Convert string to enum
-                from src.models.station import PortClass
+            if field == "port_class" and value:
+                # Convert string enum name (e.g. "CLASS_1") to StationClass
+                from src.models.station import StationClass
                 try:
-                    port_class_enum = getattr(PortClass, value)
-                    setattr(port, "station_class", port_class_enum)
+                    station_class_enum = getattr(StationClass, value)
+                    setattr(station, "station_class", station_class_enum)
                 except AttributeError:
                     raise HTTPException(status_code=400, detail=f"Invalid port class: {value}")
             elif field == "owner_name":
@@ -2521,8 +2521,8 @@ async def update_port(
                     station.owner_id = None
             else:
                 # Direct field update
-                setattr(port, field, value)
-        
+                setattr(station, field, value)
+
         db.commit()
         
         return {
@@ -2546,13 +2546,13 @@ async def delete_port(
     try:
         # Find the port by ID
         station = db.query(Station).filter(Station.id == station_id).first()
-        if not port:
+        if not station:
             raise HTTPException(status_code=404, detail="Station not found")
-        
+
         station_name = station.name
-        
+
         # Delete the port
-        db.delete(port)
+        db.delete(station)
         db.commit()
         
         return {
@@ -2574,12 +2574,12 @@ async def create_port(
     """Create a new port"""
     try:
         # Import and validate enums
-        from src.models.station import Station, PortClass, PortType, StationStatus
-        
+        from src.models.station import Station, StationClass, StationType, StationStatus
+
         # Validate required fields
-        if not station_data.get("name"):
+        if not port_data.get("name"):
             raise HTTPException(status_code=400, detail="Station name is required")
-        if not station_data.get("sector_id"):
+        if not port_data.get("sector_id"):
             raise HTTPException(status_code=400, detail="Sector ID is required")
         
         # Find the sector
@@ -2607,14 +2607,14 @@ async def create_port(
         
         # Parse port class
         try:
-            port_class_str = station_data.get("station_class", "CLASS_1")
-            port_class = getattr(PortClass, port_class_str)
+            port_class_str = port_data.get("station_class", "CLASS_1")
+            port_class = getattr(StationClass, port_class_str)
         except AttributeError:
             raise HTTPException(status_code=400, detail=f"Invalid port class: {port_class_str}")
-        
+
         # Handle owner assignment
         owner_id = None
-        if station_data.get("owner_name"):
+        if port_data.get("owner_name"):
             player = db.query(Player).join(User).filter(User.username == port_data["owner_name"]).first()
             if player:
                 owner_id = player.id
@@ -2626,15 +2626,15 @@ async def create_port(
             name=port_data["name"],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
-            port_class=port_class,
-            type=PortType.TRADING,  # Default to trading
+            station_class=port_class,
+            type=StationType.TRADING,  # Default to trading
             status=StationStatus.OPERATIONAL,
-            trade_volume=station_data.get("trade_volume", 1000),
-            size=station_data.get("size", 5),
+            trade_volume=port_data.get("trade_volume", 1000),
+            size=port_data.get("size", 5),
             owner_id=owner_id,
             # Set default values for required fields
-            faction_affiliation=station_data.get("faction_affiliation", None),
-            market_volatility=station_data.get("market_volatility", 50)
+            faction_affiliation=port_data.get("faction_affiliation", None),
+            market_volatility=port_data.get("market_volatility", 50)
         )
         
         # Update commodity stock levels based on port class

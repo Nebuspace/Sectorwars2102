@@ -9,10 +9,8 @@ from src.api.routes.admin import router as admin_router
 from src.api.routes.admin_first_login import router as admin_first_login_router
 from src.api.routes.admin_enhanced import router as admin_enhanced_router
 from src.api.routes.admin_comprehensive import router as admin_comprehensive_router
-from src.api.routes.combat import router as combat_router
 from src.api.routes.player_combat import router as player_combat_router
 from src.api.routes.events import router as events_router
-from src.api.routes.economy import router as economy_router
 from src.api.routes.websocket import router as websocket_router
 from src.api.routes.trading import router as trading_router
 from src.api.routes.player import router as player_router
@@ -66,10 +64,13 @@ api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
 api_router.include_router(admin_first_login_router, tags=["admin-first-login"])
 api_router.include_router(admin_enhanced_router, prefix="/admin", tags=["admin-enhanced"])
 api_router.include_router(admin_comprehensive_router, prefix="/admin", tags=["admin-comprehensive"])
-api_router.include_router(combat_router, tags=["combat"])
+# NOTE: the legacy combat.py / economy.py routers were deleted — they were
+# mounted before admin_combat.py / admin_economy.py and shadowed the working
+# /admin/combat/* and /admin/economy/* implementations with broken handlers.
+# Their still-working endpoints (/stats, /{id}/resolve, /metrics fallback,
+# /create-alert, DELETE /alerts/{id}) were ported into the admin_* routers.
 api_router.include_router(player_combat_router, tags=["player-combat"])
 api_router.include_router(events_router, tags=["events"])
-api_router.include_router(economy_router, tags=["economy"])
 api_router.include_router(websocket_router, tags=["websocket"])
 api_router.include_router(trading_router, tags=["trading"])
 api_router.include_router(player_router, tags=["player"])

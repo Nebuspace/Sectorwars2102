@@ -1,10 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
 import './mfa-setup.css';
 
 interface MFASetupProps {
   onSetupComplete?: () => void;
   onCancel?: () => void;
+}
+
+// Backend contracts (mfa.py): POST /api/v1/auth/mfa/generate and
+// POST /api/v1/auth/mfa/verify — both snake_case.
+interface MFAGenerateResponse {
+  secret: string;
+  setup_url: string;
+  qr_code_data_url: string;
+  message: string;
+}
+
+interface MFAVerifyResponse {
+  success: boolean;
+  message: string;
+  backup_codes?: string[] | null;
 }
 
 export const MFASetup: React.FC<MFASetupProps> = ({ onSetupComplete, onCancel }) => {
@@ -25,26 +41,14 @@ export const MFASetup: React.FC<MFASetupProps> = ({ onSetupComplete, onCancel })
   const generateMFASecret = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
-      const response = await fetch('/api/auth/mfa/generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to generate MFA secret');
-      }
-
-      const data = await response.json();
+      const response = await api.post('/api/v1/auth/mfa/generate');
+      const data = response.data as MFAGenerateResponse;
       setSecret(data.secret);
-      setQrCodeUrl(data.qrCodeUrl);
-      setBackupCodes(data.backupCodes);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setQrCodeUrl(data.qr_code_data_url);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to generate MFA secret');
     } finally {
       setLoading(false);
     }
@@ -60,11 +64,21 @@ export const MFASetup: React.FC<MFASetupProps> = ({ onSetupComplete, onCancel })
     setError(null);
 
     try {
-      await confirmMFASetup(verificationCode, secret);
+      // Confirm the setup against the backend; success returns backup codes.
+      const response = await api.post('/api/v1/auth/mfa/verify', {
+        code: verificationCode
+      });
+      const data = response.data as MFAVerifyResponse;
 
+      if (!data.success) {
+        setError(data.message || 'Verification failed');
+        return;
+      }
+
+      setBackupCodes(data.backup_codes || []);
       setStep('backup');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Verification failed');
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Verification failed');
     } finally {
       setLoading(false);
     }
@@ -139,11 +153,11 @@ Use these codes to access your account if you lose access to your authenticator 
 
           <div className="qr-code-container">
             {qrCodeUrl && (
-              <div className="qr-placeholder">
-                <i className="fas fa-qrcode"></i>
-                <p>QR Code will be displayed here</p>
-                <small>In production, scan with your authenticator app</small>
-              </div>
+              <img
+                src={qrCodeUrl}
+                alt="MFA setup QR code"
+                style={{ width: '200px', height: '200px', background: '#ffffff', borderRadius: '8px', padding: '8px' }}
+              />
             )}
           </div>
 
