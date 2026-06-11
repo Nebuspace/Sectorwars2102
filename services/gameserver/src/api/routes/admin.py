@@ -1104,6 +1104,7 @@ async def get_all_clusters(
 async def get_all_stations(
     limit: int = 100,
     offset: int = 0,
+    search: Optional[str] = None,
     current_admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
@@ -1112,6 +1113,8 @@ async def get_all_stations(
         from src.services.docking_service import docking_fee_for
 
         query = db.query(Station)
+        if search:
+            query = query.filter(Station.name.ilike(f"%{search}%"))
         total = query.count()
         stations = query.offset(offset).limit(limit).all()
 

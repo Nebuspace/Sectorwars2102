@@ -43,7 +43,7 @@ const StationsManager: React.FC = () => {
       setLoading(true);
       const offset = (currentPage - 1) * itemsPerPage;
       const response = await api.get('/api/v1/admin/stations', {
-        params: { limit: itemsPerPage, offset }
+        params: { limit: itemsPerPage, offset, ...(searchTerm ? { search: searchTerm } : {}) }
       });
       setPorts(response.data.stations || []);
       setTotal(response.data.total ?? (response.data.stations || []).length);
@@ -56,8 +56,9 @@ const StationsManager: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchPorts();
-  }, [currentPage]);
+    const handle = setTimeout(fetchPorts, searchTerm ? 300 : 0);
+    return () => clearTimeout(handle);
+  }, [currentPage, searchTerm]);
 
   // Handler functions
   const handleViewPort = (port: Station) => {
@@ -109,16 +110,10 @@ const StationsManager: React.FC = () => {
     fetchPorts(); // Refresh to get updated data
   };
 
-  // Filter and search logic operates over the current server page only.
-  const filteredPorts = ports.filter(port => {
-    const matchesSearch = port.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         port.sector_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         port.owner_name?.toLowerCase().includes(searchTerm.toLowerCase());
-
-    const matchesFilter = filterClass === 'all' || port.station_type.toLowerCase().includes(filterClass.toLowerCase());
-
-    return matchesSearch && matchesFilter;
-  });
+  // Name search is server-side (search param); the type filter operates on the current page.
+  const filteredPorts = ports.filter(port =>
+    filterClass === 'all' || port.station_type.toLowerCase().includes(filterClass.toLowerCase())
+  );
 
   // Server-side pagination: total reflects the full station count, not this page.
   const totalPages = Math.max(1, Math.ceil(total / itemsPerPage));
@@ -159,9 +154,9 @@ const StationsManager: React.FC = () => {
         <div className="search-section">
           <input
             type="text"
-            placeholder="Search stations, sectors, or owners..."
+            placeholder="Search stations by name..."
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}
             className="search-input"
           />
         </div>
