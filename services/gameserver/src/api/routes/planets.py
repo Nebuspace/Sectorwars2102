@@ -222,9 +222,11 @@ async def claim_planet(
             detail="This planet is already claimed by another player"
         )
 
-    # Check if planet is claimable (not uninhabitable, gas giant, or restricted)
-    non_claimable_statuses = [PlanetStatus.UNINHABITABLE, PlanetStatus.RESTRICTED]
-    if planet.status in non_claimable_statuses:
+    # RESTRICTED worlds are off-limits; UNINHABITABLE rocks ARE claimable —
+    # the canon growth table (FEATURES/planets/colonization #population-growth)
+    # lists rates down to VOLCANIC ~0.17%/day and BARREN 0%, and terraforming
+    # exists precisely to lift marginal worlds
+    if planet.status == PlanetStatus.RESTRICTED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot claim this planet: status is {planet.status.value}"
@@ -654,9 +656,9 @@ async def land_on_planet(
             detail="Planet is not accessible from your current location"
         )
 
-    # Check if planet is landable (not uninhabitable, gas giant, or restricted)
-    non_landable_statuses = [PlanetStatus.UNINHABITABLE, PlanetStatus.RESTRICTED]
-    if planet.status in non_landable_statuses:
+    # RESTRICTED worlds are off-limits; UNINHABITABLE rocks are landable
+    # (environment suits, sealed habitats — same rationale as the claim gate)
+    if planet.status == PlanetStatus.RESTRICTED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot land on this planet: status is {planet.status.value}"
