@@ -29,138 +29,58 @@
   z-index: 1;
 }
 
-/* Enhanced Event Stats Grid */
-.event-stats-grid {
+/* Event Stats — one compact stat-card row (Dashboard "Galaxy Statistics" idiom) */
+.event-management .event-stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 24px;
-  margin-bottom: 32px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
-.stat-card {
+.event-management .event-stat-card {
   background: rgba(30, 41, 59, 0.85);
-  backdrop-filter: blur(16px);
   border: 1px solid rgba(51, 65, 85, 0.5);
-  border-radius: 16px;
-  padding: 24px;
+  border-radius: 12px;
+  padding: 16px 20px;
   text-align: center;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-  overflow: hidden;
+  transition: all 0.2s ease;
 }
 
-.stat-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 4px;
-  background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981, #8b5cf6);
-  opacity: 0;
-  transition: opacity 0.4s ease;
-}
-
-.stat-card:hover {
-  transform: translateY(-12px) scale(1.02);
-  box-shadow: 
-    0 32px 64px rgba(0, 0, 0, 0.3),
-    0 0 30px rgba(59, 130, 246, 0.15),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+.event-management .event-stat-card:hover {
   border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
-.stat-card:hover::before {
-  opacity: 1;
-}
-
-.stat-card h3 {
-  margin: 0 0 12px 0;
-  font-size: 13px;
-  font-weight: 700;
+.event-management .event-stat-title {
+  margin: 0 0 6px 0;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--text-secondary, #94a3b8);
   text-transform: uppercase;
-  letter-spacing: 1.2px;
+  letter-spacing: 0.05em;
 }
 
-.stat-value {
+.event-management .event-stat-value {
   display: block;
-  font-size: 38px;
-  font-weight: 900;
-  color: var(--primary-color, #3b82f6);
-  margin: 0 0 8px 0;
-  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  filter: drop-shadow(0 0 20px rgba(59, 130, 246, 0.5));
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-color, #e2e8f0);
+  line-height: 1.1;
 }
 
-.stat-value.combat-events {
-  background: linear-gradient(135deg, #ef4444, #dc2626);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.stat-value.trade-events {
-  background: linear-gradient(135deg, #10b981, #34d399);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.stat-value.system-events {
-  background: linear-gradient(135deg, #f59e0b, #fbbf24);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.stat-value.player-events {
-  background: linear-gradient(135deg, #8b5cf6, #a78bfa);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.stat-label {
-  font-size: 12px;
-  color: var(--text-secondary, #94a3b8);
-  margin-top: 6px;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-}
-
-/* Enhanced Event Controls */
-.events-controls,
-.event-controls {
+/* Event Controls — standard admin panel styling */
+.event-management .events-controls,
+.event-management .event-controls {
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 1.5rem;
   align-items: center;
   margin-bottom: 2rem;
-  padding: 2rem;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.08) 100%);
-  border: 1px solid rgba(106, 90, 205, 0.4);
-  border-radius: 16px;
-  backdrop-filter: blur(12px);
-  box-shadow: 
-    0 8px 32px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-  position: relative;
-  overflow: hidden;
-}
-
-.events-controls::before,
-.event-controls::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(106, 90, 205, 0.6), transparent);
+  padding: 1.25rem 1.5rem;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 .search-filter-group {
@@ -170,14 +90,15 @@
   flex-wrap: wrap;
 }
 
-/* Enhanced Search Bar and Filter Controls */
-.search-bar {
+/* Enhanced Search Bar and Filter Controls (scoped — other pages define their
+   own .search-bar/.filter-controls styling) */
+.event-management .search-bar {
   position: relative;
   min-width: 300px;
   flex: 1;
 }
 
-.search-bar::before {
+.event-management .search-bar::before {
   content: '🔍';
   position: absolute;
   left: 1rem;
@@ -188,56 +109,48 @@
   z-index: 1;
 }
 
-.search-bar input,
-.search-input {
+.event-management .search-bar input,
+.event-management .search-input {
   width: 100%;
-  padding: 1rem 1rem 1rem 3rem;
-  border: 2px solid rgba(106, 90, 205, 0.4);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.15);
-  color: white;
+  padding: 0.75rem 1rem 0.75rem 3rem;
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.6);
+  color: var(--text-color, #e2e8f0);
   font-size: 1rem;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  backdrop-filter: blur(8px);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
 }
 
-.search-bar input:focus,
-.search-input:focus {
+.event-management .search-bar input:focus,
+.event-management .search-input:focus {
   outline: none;
-  border-color: #6a5acd;
-  box-shadow: 
-    0 0 0 4px rgba(106, 90, 205, 0.25),
-    inset 0 2px 8px rgba(0, 0, 0, 0.1);
-  background: rgba(255, 255, 255, 0.2);
-  transform: translateY(-1px);
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  background: rgba(15, 23, 42, 0.8);
 }
 
-.search-bar input::placeholder,
-.search-input::placeholder {
-  color: rgba(255, 255, 255, 0.7);
-  font-style: italic;
+.event-management .search-bar input::placeholder,
+.event-management .search-input::placeholder {
+  color: var(--text-secondary, #94a3b8);
 }
 
-.filter-controls {
+.event-management .filter-controls {
   display: flex;
   gap: 1rem;
   align-items: center;
 }
 
-.filter-controls select,
-.filter-select {
-  padding: 1rem 1.25rem;
-  border: 2px solid rgba(106, 90, 205, 0.4);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.15);
-  color: white;
+.event-management .filter-controls select,
+.event-management .filter-select {
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.6);
+  color: var(--text-color, #e2e8f0);
   font-size: 1rem;
   cursor: pointer;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.2s ease;
   min-width: 140px;
-  backdrop-filter: blur(8px);
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.1);
   appearance: none;
   background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8"><path fill="%23ffffff" d="M6 8L0 2h12z"/></svg>');
   background-repeat: no-repeat;
@@ -245,27 +158,24 @@
   padding-right: 3rem;
 }
 
-.filter-controls select:focus,
-.filter-select:focus {
+.event-management .filter-controls select:focus,
+.event-management .filter-select:focus {
   outline: none;
-  border-color: #6a5acd;
-  box-shadow: 
-    0 0 0 4px rgba(106, 90, 205, 0.25),
-    inset 0 2px 8px rgba(0, 0, 0, 0.1);
-  background-color: rgba(255, 255, 255, 0.2);
-  transform: translateY(-1px);
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  background-color: rgba(15, 23, 42, 0.8);
 }
 
-.filter-controls select:hover,
-.filter-select:hover {
-  border-color: rgba(106, 90, 205, 0.6);
-  background-color: rgba(255, 255, 255, 0.18);
+.event-management .filter-controls select:hover,
+.event-management .filter-select:hover {
+  border-color: rgba(71, 85, 105, 0.9);
+  background-color: rgba(15, 23, 42, 0.8);
 }
 
-.filter-controls select option,
-.filter-select option {
-  background: #2c1810;
-  color: white;
+.event-management .filter-controls select option,
+.event-management .filter-select option {
+  background: #1e293b;
+  color: #e2e8f0;
   padding: 0.5rem;
 }
 
@@ -300,52 +210,29 @@
   box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
 }
 
-/* Enhanced Create Event Button */
+/* Create Event Button — standard admin primary button */
 .create-event-btn {
-  background: linear-gradient(135deg, #6a5acd 0%, #9370db 50%, #8a2be2 100%);
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
   color: white;
   border: none;
-  padding: 1rem 2rem;
-  border-radius: 12px;
+  padding: 0.75rem 1.5rem;
+  border-radius: 10px;
   cursor: pointer;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.2s ease;
   font-weight: 600;
-  font-size: 1rem;
-  box-shadow: 
-    0 4px 20px rgba(106, 90, 205, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-  position: relative;
-  overflow: hidden;
-  min-width: 160px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.create-event-btn::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-  transition: left 0.6s ease;
+  font-size: 0.95rem;
+  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+  min-width: 140px;
 }
 
 .create-event-btn:hover {
-  transform: translateY(-3px) scale(1.02);
-  box-shadow: 
-    0 8px 30px rgba(106, 90, 205, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
-  background: linear-gradient(135deg, #7b68ee 0%, #9370db 50%, #9932cc 100%);
-}
-
-.create-event-btn:hover::before {
-  left: 100%;
+  background: linear-gradient(135deg, #2563eb, #1e40af);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
 }
 
 .create-event-btn:active {
-  transform: translateY(-1px) scale(1.01);
+  transform: translateY(0);
   transition: all 0.1s ease;
 }
 
@@ -722,6 +609,45 @@
   font-size: 1.2rem;
 }
 
+.templates-error {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(220, 38, 38, 0.1));
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  color: #fca5a5;
+  font-size: 0.95rem;
+}
+
+.templates-error p {
+  margin: 0 0 1rem 0;
+}
+
+.templates-error .retry-button {
+  padding: 0.6rem 1.25rem;
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.8);
+  color: var(--text-color, #e2e8f0);
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.templates-error .retry-button:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+}
+
+.templates-empty {
+  margin: 0;
+  padding: 1.25rem 1.5rem;
+  color: var(--text-secondary, #94a3b8);
+  font-size: 0.95rem;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px dashed rgba(51, 65, 85, 0.7);
+  border-radius: 12px;
+}
+
 .templates-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -801,8 +727,9 @@
   margin-bottom: 2rem;
 }
 
-/* Enhanced Event Creation Modal */
-.modal-overlay {
+/* Enhanced Event Creation Modal (scoped — .modal-overlay is a shared app-wide
+   class; this backdrop-blur/animation treatment is specific to this page) */
+.event-management .modal-overlay {
   position: fixed;
   top: 0;
   left: 0;
@@ -1269,37 +1196,37 @@
     padding: 16px;
   }
   
-  .event-stats-grid {
-    grid-template-columns: 1fr;
-    gap: 16px;
+  .event-management .event-stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
   }
   
-  .events-controls,
-  .event-controls {
+  .event-management .events-controls,
+  .event-management .event-controls {
     grid-template-columns: 1fr;
     text-align: center;
     gap: 1rem;
   }
-  
-  .search-bar {
+
+  .event-management .search-bar {
     min-width: unset;
   }
-  
-  .filter-controls {
+
+  .event-management .filter-controls {
     justify-content: center;
     flex-wrap: wrap;
   }
-  
-  .filter-controls select {
+
+  .event-management .filter-controls select {
     min-width: 120px;
   }
-  
+
   .search-filter-group {
     flex-direction: column;
     gap: 12px;
   }
-  
-  .search-input {
+
+  .event-management .search-input {
     min-width: auto;
   }
   

@@ -11,6 +11,7 @@ import {
   PlayerFilters,
   PlayerAnalyticsState
 } from '../../types/playerManagement';
+import './player-analytics.css';
 
 const PlayerAnalytics: React.FC = () => {
   const [state, setState] = useState<PlayerAnalyticsState>({
@@ -64,6 +65,10 @@ const PlayerAnalytics: React.FC = () => {
 
   // Regions for location display
   const [regions, setRegions] = useState<any[]>([]);
+
+  // Whether the real-time analytics endpoint responded; when false, the
+  // analytics-backed metric cards render demoted (no invented substitutes).
+  const [analyticsAvailable, setAnalyticsAvailable] = useState(true);
 
   useEffect(() => {
     fetchPlayerData();
@@ -124,28 +129,33 @@ const PlayerAnalytics: React.FC = () => {
         }
       }));
       
-      // Fetch real-time analytics separately with fallback to calculated values
+      // Fetch real-time analytics separately. The endpoint wraps its payload
+      // in a {success, data, timestamp} envelope, so the metrics live at
+      // response.data.data. On failure the analytics-backed cards are demoted
+      // rather than silently substituting page-local (current page only) sums.
       let analyticsData: any = {};
+      let analyticsOk = true;
       try {
         const analyticsResponse = await api.get('/api/v1/admin/analytics/real-time');
-        analyticsData = analyticsResponse.data;
+        analyticsData = (analyticsResponse.data as any)?.data ?? {};
       } catch (analyticsError) {
-        console.warn('Analytics API unavailable, using calculated fallbacks:', analyticsError);
-        // Analytics will fall back to calculated values below
+        console.warn('Analytics API unavailable:', analyticsError);
+        analyticsOk = false;
       }
-      
+      setAnalyticsAvailable(analyticsOk);
+
       setState(prev => ({
         ...prev,
         players: transformedPlayers,
         totalCount: rawData.total_count || transformedPlayers.length,
         metrics: {
-          total_active_players: analyticsData.total_active_players || transformedPlayers.filter((p: any) => p.status === 'active').length,
-          total_credits_circulation: analyticsData.total_credits_circulation || transformedPlayers.reduce((sum: number, p: any) => sum + p.credits, 0),
+          total_active_players: analyticsData.total_active_players || 0,
+          total_credits_circulation: analyticsData.total_credits_circulation || 0,
           average_session_time: analyticsData.average_session_time || 0,
           new_players_today: analyticsData.new_players_today || 0,
-          player_retention_rate: analyticsData.retention_rate_7_day || 0,
+          player_retention_rate: analyticsData.player_retention_rate_7d || 0,
           players_online_now: analyticsData.players_online_now || 0,
-          total_players: analyticsData.total_players || transformedPlayers.length,
+          total_players: analyticsData.total_players || 0,
           banned_players: transformedPlayers.filter((p: any) => p.status === 'banned').length,
           suspicious_activity_alerts: analyticsData.suspicious_activity_alerts || 0
         },
@@ -248,7 +258,7 @@ const PlayerAnalytics: React.FC = () => {
   }, []);
 
   return (
-    <div className="page-container" style={{ maxWidth: '1200px' }}>
+    <div className="page-container player-analytics" style={{ maxWidth: '1200px' }}>
       <PageHeader 
         title="Players" 
         subtitle="Comprehensive player management and monitoring"
@@ -290,58 +300,58 @@ const PlayerAnalytics: React.FC = () => {
                 </div>
                 
                 <div className="grid grid-auto-fit-sm gap-4">
-                  <div className="dashboard-stat-card" data-variant="primary">
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="primary">
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">👥</span>
                       <h4 className="dashboard-stat-title">Active Players</h4>
                     </div>
-                    <div className="dashboard-stat-value">{state.metrics.total_active_players.toLocaleString()}</div>
-                    <div className="dashboard-stat-description">Online: {state.metrics.players_online_now}</div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_active_players.toLocaleString() : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? `Online: ${state.metrics.players_online_now}` : 'Analytics endpoint unavailable'}</div>
                   </div>
-                  
-                  <div className="dashboard-stat-card">
+
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">💰</span>
                       <h4 className="dashboard-stat-title">Total Credits</h4>
                     </div>
-                    <div className="dashboard-stat-value">{state.metrics.total_credits_circulation.toLocaleString()}</div>
-                    <div className="dashboard-stat-description">In Circulation</div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.total_credits_circulation.toLocaleString() : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'In Circulation' : 'Analytics endpoint unavailable'}</div>
                   </div>
-                  
-                  <div className="dashboard-stat-card">
+
+                  <div className="dashboard-stat-card stat-not-tracked">
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">⏱️</span>
                       <h4 className="dashboard-stat-title">Session Time</h4>
                     </div>
-                    <div className="dashboard-stat-value">{state.metrics.average_session_time.toFixed(1)}h</div>
-                    <div className="dashboard-stat-description">Average</div>
+                    <div className="dashboard-stat-value">&mdash;</div>
+                    <div className="dashboard-stat-description">No session tracking yet</div>
                   </div>
-                  
-                  <div className="dashboard-stat-card">
+
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`}>
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">🆕</span>
                       <h4 className="dashboard-stat-title">New Players</h4>
                     </div>
-                    <div className="dashboard-stat-value">{state.metrics.new_players_today}</div>
-                    <div className="dashboard-stat-description">Today</div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.new_players_today : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Today' : 'Analytics endpoint unavailable'}</div>
                   </div>
-                  
-                  <div className="dashboard-stat-card">
+
+                  <div className="dashboard-stat-card stat-not-tracked">
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">📈</span>
                       <h4 className="dashboard-stat-title">Retention Rate</h4>
                     </div>
-                    <div className="dashboard-stat-value">{state.metrics.player_retention_rate.toFixed(1)}%</div>
-                    <div className="dashboard-stat-description">7-Day Retention</div>
+                    <div className="dashboard-stat-value">&mdash;</div>
+                    <div className="dashboard-stat-description">No retention telemetry surfaced yet</div>
                   </div>
-                  
-                  <div className="dashboard-stat-card" data-variant="warning">
+
+                  <div className={`dashboard-stat-card${analyticsAvailable ? '' : ' stat-not-tracked'}`} data-variant="warning">
                     <div className="dashboard-stat-header">
                       <span className="dashboard-stat-icon">🚨</span>
                       <h4 className="dashboard-stat-title">Security Alerts</h4>
                     </div>
-                    <div className="dashboard-stat-value">{state.metrics.suspicious_activity_alerts}</div>
-                    <div className="dashboard-stat-description">Suspicious Activity</div>
+                    <div className="dashboard-stat-value">{analyticsAvailable ? state.metrics.suspicious_activity_alerts : <>&mdash;</>}</div>
+                    <div className="dashboard-stat-description">{analyticsAvailable ? 'Suspicious Activity' : 'Analytics endpoint unavailable'}</div>
                   </div>
                 </div>
               </section>
