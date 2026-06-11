@@ -12,6 +12,8 @@ interface NavigationMapProps {
   currentSectorId: number;
   sectors: Sector[];
   availableMoves: number[];
+  /** Turn cost per destination sector id — shown in the hover warp prompt */
+  moveCosts?: Record<number, number>;
   onNavigate: (sectorId: number) => void;
   width?: number;
   height?: number;
@@ -37,6 +39,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   currentSectorId,
   sectors,
   availableMoves,
+  moveCosts,
   onNavigate,
   width = 600,
   height = 600
@@ -394,7 +397,11 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                     fontWeight="bold"
                     style={{ pointerEvents: 'none' }}
                   >
-                    {isMoving ? '⟐ WARPING...' : '▶ CLICK TO WARP'}
+                    {isMoving
+                      ? '⟐ WARPING...'
+                      : moveCosts?.[node.id] != null
+                        ? `▶ CLICK TO WARP — ${moveCosts[node.id]} TURN${moveCosts[node.id] === 1 ? '' : 'S'}`
+                        : '▶ CLICK TO WARP'}
                   </text>
                 )}
 

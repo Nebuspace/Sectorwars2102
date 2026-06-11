@@ -443,6 +443,13 @@ async def retreat_from_sector(
             player, player.current_sector_id, target_sector.sector_id
         )
         player.current_sector_id = target_sector.sector_id
+        # Keep current_region_id in sync — region-filtered routes like
+        # /player/current-sector 404 on a stale region
+        player.current_region_id = target_sector.region_id
+        # Keep the ship row in sync too — sector views read Ship.sector_id,
+        # and a ship left behind in the fled sector renders a ghost
+        if player.current_ship:
+            player.current_ship.sector_id = target_sector.sector_id
         db.commit()
 
         return SectorRetreatResponse(

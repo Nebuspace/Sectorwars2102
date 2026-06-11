@@ -459,9 +459,25 @@ class MovementService:
     def _execute_movement(self, player: Player, destination_sector_id: int, turn_cost: int) -> Dict[str, Any]:
         """Execute a player's movement to a destination sector."""
         old_sector_id = player.current_sector_id
-        
+
+        # Fetch the destination up front: the move needs its region for the
+        # player sync below, and the response reuses it for sector_info.
+        # Fail fast BEFORE any player mutation — moving a player into a
+        # sector that doesn't exist would strand them with a stale region.
+        destination_sector = self.db.query(Sector).filter(Sector.sector_id == destination_sector_id).first()
+        if not destination_sector:
+            return {
+                "success": False,
+                "message": "Destination sector not found",
+                "turn_cost": 0
+            }
+
         # Update player position and clear all location state
         player.current_sector_id = destination_sector_id
+        # Keep current_region_id in sync with the destination — warp tunnels
+        # cross regions, and a stale region makes the region-filtered routes
+        # (e.g. /player/current-sector) 404 until the next correction
+        player.current_region_id = destination_sector.region_id
         player.is_docked = False  # Player is no longer docked at a port
         player.is_landed = False  # Player is no longer landed on a planet
         player.current_port_id = None  # Clear dangling port reference
@@ -490,15 +506,15 @@ class MovementService:
         
         # Commit changes
         self.db.commit()
-        
-        # Get sector information for response
-        destination_sector = self.db.query(Sector).filter(Sector.sector_id == destination_sector_id).first()
+
+        # Get sector information for response (sector fetched and
+        # existence-checked pre-mutation above)
         sector_info = {
             "id": destination_sector.sector_id,
             "name": destination_sector.name,
-            "type": destination_sector.type.name if destination_sector else "Unknown",
-            "hazard_level": destination_sector.hazard_level if destination_sector else 0,
-            "radiation_level": destination_sector.radiation_level if destination_sector else 0
+            "type": destination_sector.type.name,
+            "hazard_level": destination_sector.hazard_level,
+            "radiation_level": destination_sector.radiation_level
         }
         
         return {

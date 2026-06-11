@@ -179,6 +179,20 @@ const GameDashboard: React.FC = () => {
     ...availableMoves.tunnels.filter(t => t.can_afford).map(t => t.sector_id)
   ], [availableMoves]);
 
+  // Turn cost per destination for the NAV map's warp prompt. Warps first,
+  // tunnels skip sectors already present — the warp entry wins for
+  // dual-reachable destinations, mirroring the navSectors dedup rule above.
+  const moveCosts = useMemo(() => {
+    const costs: Record<number, number> = {};
+    availableMoves.warps.forEach(warp => {
+      if (!(warp.sector_id in costs)) costs[warp.sector_id] = warp.turn_cost;
+    });
+    availableMoves.tunnels.forEach(tunnel => {
+      if (!(tunnel.sector_id in costs)) costs[tunnel.sector_id] = tunnel.turn_cost;
+    });
+    return costs;
+  }, [availableMoves]);
+
   // Landed planet — used by the windshield viewport and the colonist transfer UI
   const landedPlanet = useMemo(() => (
     playerState?.is_landed
@@ -1249,6 +1263,7 @@ const GameDashboard: React.FC = () => {
                       currentSectorId={currentSector.sector_id}
                       sectors={navSectors}
                       availableMoves={affordableMoveIds}
+                      moveCosts={moveCosts}
                       onNavigate={handleMove}
                       width={440}
                       height={300}
