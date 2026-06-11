@@ -189,6 +189,16 @@ class Station(Base):
     # too because StarDock-special-location hosts also get this flag for queries
     # that don't load the parent sector's special_features array).
     is_spacedock = Column(Boolean, nullable=False, default=False, server_default="false")
+    # TradeDock tier (FEATURES/economy/tradedock-shipyard): 'A' = Warp-Jumper-
+    # capable (specialized construction slips), 'B' = standard construction.
+    # NULL = not a TradeDock. TradeDocks are NPC-neutral, never ownable.
+    tradedock_tier = Column(String(1), nullable=True)
+    # Station treasury — docking fees and trade tax accrue here
+    # (FEATURES/economy/port-ownership: the station as a small business)
+    treasury_balance = Column(Integer, nullable=False, default=0, server_default="0")
+    # Trade tax actually charged on buy/sell; previously a phantom getattr
+    # default. Owners adjust within bounds (port-ownership tariff lever).
+    tax_rate = Column(Float, nullable=False, default=0.10, server_default="0.10")
     
     # Acquisition requirements for player ownership
     acquisition_requirements = Column(JSONB, nullable=False, default={

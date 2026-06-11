@@ -175,6 +175,9 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AI_DIALOGUE_ENABLED=${AI_DIALOGUE_ENABLED:-true}
+      # Duration compression for dev (1.0 in prod): construction days,
+      # grace windows, slip tenures, takeover months all scale by this
+      - GAME_TIME_SCALE=${GAME_TIME_SCALE:-1.0}
       - AI_PROVIDER_PRIMARY=${AI_PROVIDER_PRIMARY:-openai}
       - AI_PROVIDER_SECONDARY=${AI_PROVIDER_SECONDARY:-anthropic}
       - AI_PROVIDER_FALLBACK=${AI_PROVIDER_FALLBACK:-manual}

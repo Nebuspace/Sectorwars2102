@@ -266,6 +266,8 @@ class StationSpec:
     services: Dict[str, Any]
     is_spacedock: bool
     description: Optional[str] = None
+    # 'A' | 'B' | None — ADR-0041 Phase 10.5 TradeDock seeding
+    tradedock_tier: Optional[str] = None
 
 
 @dataclass
@@ -595,6 +597,8 @@ class BangImportService:
                 # Enforce the legacy starter-region invariants per the
                 # GalaxyGenerator audit's "Top 3 risks".
                 plan = self._apply_terran_space_invariants(plan, warnings)
+            # ADR-0041 Phase 10.5: seed TradeDocks per region quota
+            plan = self._apply_tradedock_seeding(region_type, plan, warnings)
             if running_offset:
                 self._offset_region_sector_ids(plan, running_offset)
             per_region[region_type] = plan
@@ -1026,6 +1030,7 @@ class BangImportService:
                 commodities=stsp.commodities,
                 services=stsp.services,
                 is_spacedock=stsp.is_spacedock,
+                tradedock_tier=stsp.tradedock_tier,
                 description=stsp.description,
             )
             session.add(station)
@@ -1685,6 +1690,108 @@ class BangImportService:
                 description="Full-service Shipyard SpaceDock.",
             )
         )
+        return plan
+
+    # ----- ADR-0041 Phase 10.5: TradeDock seeding -------------------------
+
+    _TRADEDOCK_QUOTAS = {
+        # region_type -> list of tiers to seed (ADR-0041 #phase-105):
+        # Terran Space: 1 Tier-A guaranteed (Federation zone, local 1-99);
+        # Central Nexus: 3 (1 Tier-A + 2 Tier-B);
+        # player-owned regions are owner-funded, never auto-seeded
+        # (tradedock-shipyard #galaxy-generation-seeding).
+        "terran_space": ["A"],
+        "central_nexus": ["A", "B", "B"],
+        "player_owned": [],
+    }
+
+    _TRADEDOCK_NAMES = {
+        "A": ["TradeDock Prime", "TradeDock Apex"],
+        "B": ["TradeDock Meridian", "TradeDock Crucible", "TradeDock Bastion"],
+    }
+
+    def _apply_tradedock_seeding(
+        self,
+        region_type: str,
+        plan: RegionInsertPlan,
+        warnings: List[Dict[str, Any]],
+    ) -> RegionInsertPlan:
+        """Seed per-region TradeDocks (ADR-0041 Phase 10.5).
+
+        Runs while sector ids are still region-local, so the canonical
+        "Federation zone, sector range 1-99" placement for Terran Space
+        (tradedock-shipyard #galaxy-generation-seeding) reads directly.
+        Nexus docks prefer the upper (EXPANSE-ward) half of the region —
+        a documented simplification of "EXPANSE zones near population
+        centres" pending zone metadata in the import plan.
+        """
+        tiers = self._TRADEDOCK_QUOTAS.get(region_type, [])
+        if not tiers:
+            return plan
+
+        rng = random.Random(f"{plan.universe_seed}:tradedock:{region_type}")
+        occupied = {st.sector_int_id for st in plan.stations}
+        total = plan.total_sectors
+
+        if region_type == "terran_space":
+            candidate_pool = [i for i in range(2, min(100, total + 1)) if i not in occupied]
+        else:
+            lower = max(2, total // 2)
+            candidate_pool = [i for i in range(lower, total + 1) if i not in occupied]
+
+        name_counters = {"A": 0, "B": 0}
+        for tier in tiers:
+            if not candidate_pool:
+                warnings.append(
+                    {
+                        "category": "TRADEDOCK_SEEDING",
+                        "code": "TD-001",
+                        "message": f"{region_type}: no free sector for Tier-{tier} TradeDock",
+                    }
+                )
+                continue
+            sector_int = candidate_pool.pop(rng.randrange(len(candidate_pool)))
+            occupied.add(sector_int)
+            names = self._TRADEDOCK_NAMES[tier]
+            name = names[name_counters[tier] % len(names)]
+            name_counters[tier] += 1
+
+            plan.stations.append(
+                StationSpec(
+                    sector_int_id=sector_int,
+                    name=name,
+                    station_class=StationClass.CLASS_11,
+                    station_type=StationType.SHIPYARD,
+                    status=StationStatus.OPERATIONAL,
+                    commodities=apply_class_pattern(
+                        _build_full_commodities({}),
+                        StationClass.CLASS_11,
+                        random.Random(f"{plan.universe_seed}:{sector_int}:{name}"),
+                    ),
+                    services={
+                        "ship_dealer": True,
+                        "ship_repair": True,
+                        "ship_maintenance": True,
+                        "ship_upgrades": True,
+                        "insurance": True,
+                        "drone_shop": True,
+                        "genesis_dealer": False,
+                        "mine_dealer": True,
+                        "diplomatic_services": False,
+                        "storage_rental": True,
+                        "market_intelligence": True,
+                        "refining_facility": True,
+                        "luxury_amenities": tier == "A",
+                    },
+                    is_spacedock=False,
+                    tradedock_tier=tier,
+                    description=(
+                        "Tier-A TradeDock — Warp-Jumper-capable construction shipyard."
+                        if tier == "A"
+                        else "Tier-B TradeDock — standard construction shipyard."
+                    ),
+                )
+            )
         return plan
 
     # ----- job-table I/O --------------------------------------------------
