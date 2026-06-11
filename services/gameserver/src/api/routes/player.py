@@ -31,7 +31,8 @@ class PlayerStateResponse(BaseModel):
     current_planet_id: str | None = None
     defense_drones: int
     attack_drones: int
-    current_ship_id: str = None
+    # Optional: a player has no ship until first-login completes
+    current_ship_id: str | None = None
 
     # Reputation and Ranking
     personal_reputation: int = 0
