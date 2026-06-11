@@ -578,7 +578,9 @@ async def get_market_info(
             "name": station.name,
             "type": station.type,
             "faction": station.faction_affiliation,
-            "tax_rate": station.tax_rate if station.tax_rate is not None else 0.0,  # Real owner-set rate (port-ownership canon)
+            # EFFECTIVE rate: tax is an owner lever (port-ownership canon) —
+            # unowned stations charge nothing, so display nothing.
+            "tax_rate": station.tax_rate if (station.owner_id is not None and station.tax_rate is not None) else 0.0,
             "station_class": str(station.station_class.value) if station.station_class else None,
             "is_spacedock": bool(station.is_spacedock),
             "trade_volume": station.trade_volume,
