@@ -152,6 +152,10 @@ export const teamAPI = {
       body: JSON.stringify({ role })
     }),
 
+  // Server resolves the player's own membership; teamId kept for call-site symmetry
+  leaveTeam: (_teamId?: string) =>
+    apiRequest('/api/v1/teams/leave', { method: 'POST' }),
+
   // Team chat
   getMessages: (teamId: string, limit?: number, before?: string) => {
     const params = new URLSearchParams();

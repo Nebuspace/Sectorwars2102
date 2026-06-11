@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { gameAPI } from '../../services/api';
+import { gameAPI, teamAPI } from '../../services/api';
 import type { Team, TeamMember, TeamPermissions } from '../../types/team';
 import GameLayout from '../layouts/GameLayout';
 import './team-manager.css';
