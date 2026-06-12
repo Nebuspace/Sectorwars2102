@@ -25,12 +25,21 @@
  * - the client-side fabricated recommendation tips fallback (when the real
  *   recommendation endpoints return nothing, the panel now simply stays
  *   empty instead of inventing advice)
+ *
+ * ADR-0072 Phase 1 — ARIA navigator voice (B3):
+ * - Command grammar intercept: "plot a course to 1001", "engage", "abort"
+ *   are parsed BEFORE the WS send and resolved via AutopilotContext.
+ * - Autopilot state narration: engaged/paused/arrived events append local
+ *   ARIA> log lines; per-hop updates go to the ticker only (rate discipline).
+ * - Local nav messages (navMessages state) are rendered merged with
+ *   ariaMessages; neither touches the WS pipe.
  */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import { useAuth } from '../../contexts/AuthContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
+import { useAutopilot, CourseReachable as PlotResultReachable, CourseUnreachable as PlotResultUnreachable, CoursePlot as PlotResult } from '../../contexts/AutopilotContext';
 import './aria-console-strip.css';
 
 interface AIRecommendation {
@@ -52,6 +61,26 @@ interface AIRecommendation {
   security_clearance_required: string;
 }
 
+/** Local nav message — same shape as an ariaMessages entry so they render
+ *  identically in the log. Never sent to the WS pipe. */
+interface NavMessage {
+  id: string;
+  type: 'ai' | 'user';
+  content: string;
+  timestamp: string;
+  isNav: true; // discriminator — used internally only, not rendered
+}
+
+// ── Command grammar regexes (ADR-0072 §Pillar 3) ──────────────────────────
+const RE_PLOT_COURSE =
+  /^(plot|lay in|set)\s+(a\s+)?(course|route)\s*(to|for)?\s*#?(\d+)$/i;
+const RE_GOTO =
+  /^(goto|navigate to)\s+#?(\d+)$/i;
+const RE_ENGAGE =
+  /^(engage|engage autopilot)$/i;
+const RE_ABORT =
+  /^(abort|all stop)$/i;
+
 const MAX_MESSAGE_LENGTH = 4000;
 const MIN_REQUEST_INTERVAL = 1000; // 1 second between requests
 const MAX_REQUESTS_PER_MINUTE = 30;
@@ -71,6 +100,18 @@ const WELCOME_SUGGESTIONS = [
   'Analyze my combat readiness'
 ];
 
+// ── Helper: make a local NAV reply line ───────────────────────────────────
+let _navSeq = 0;
+function makeNavLine(content: string): NavMessage {
+  return {
+    id: `nav-${Date.now()}-${_navSeq++}`,
+    type: 'ai',
+    content,
+    timestamp: new Date().toISOString(),
+    isNav: true
+  };
+}
+
 const AriaConsoleStrip: React.FC = () => {
   // ── Console state ──────────────────────────────────────────────────
   const [expanded, setExpanded] = useState(false);
@@ -84,6 +125,13 @@ const AriaConsoleStrip: React.FC = () => {
   const [isListening, setIsListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
 
+  /** Local nav messages — ARIA navigator replies that never touch the WS pipe */
+  const [navMessages, setNavMessages] = useState<NavMessage[]>([]);
+
+  /** Ticker override for per-hop updates — cleared after 4 s */
+  const [hopTickerText, setHopTickerText] = useState<string | null>(null);
+  const hopTickerTimerRef = useRef<number | null>(null);
+
   // Client-side rate limiting (ported intact)
   const [rateLimitWarning, setRateLimitWarning] = useState(false);
   const [lastRequestTime, setLastRequestTime] = useState(0);
@@ -96,9 +144,19 @@ const AriaConsoleStrip: React.FC = () => {
   const recognitionRef = useRef<any>(null);
   const thinkingTimeoutRef = useRef<number | null>(null);
 
-  // ── Context hooks (same data path as the retired assistant) ───────
+  // ── Context hooks ──────────────────────────────────────────────────
   const { user } = useAuth();
   const { sendARIAMessage, ariaMessages, clearARIAMessages, isConnected } = useWebSocket();
+  const { course, lastPlot, status: apStatus, pauseReason, currentHopIndex, plotCourse, engage, abort } =
+    useAutopilot();
+
+  /**
+   * pendingPlotRef: when the strip issues a plotCourse() command, it stores
+   * the requested sectorId here. The useEffect below watches lastPlot and
+   * fires the narration reply when lastPlot changes and matches the pending id.
+   * Reset to null after the reply is emitted or on component unmount.
+   */
+  const pendingPlotSectorRef = useRef<number | null>(null);
 
   // Same-origin default: the Vite proxy / nginx gateway route /api to the
   // gameserver in every tier (ported from the previous assistant).
@@ -117,12 +175,20 @@ const AriaConsoleStrip: React.FC = () => {
     return '';
   }, []);
 
+  // ── Helper: append a local nav ARIA> line ──────────────────────────
+  const appendNav = useCallback((content: string) => {
+    const line = makeNavLine(content);
+    setNavMessages(prev => [...prev, line]);
+    // Surface on the unread badge if the drawer is collapsed
+    setUnread(prev => prev || !expanded);
+  }, [expanded]);
+
   // ── Auto-scroll the log while the drawer is open ───────────────────
   useEffect(() => {
     if (expanded) {
       logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [ariaMessages, isThinking, expanded]);
+  }, [ariaMessages, navMessages, isThinking, expanded]);
 
   // ── Thinking + unread bookkeeping on inbound messages ──────────────
   useEffect(() => {
@@ -143,14 +209,71 @@ const AriaConsoleStrip: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ariaMessages]);
 
-  // Clear the timeout on unmount
+  // ── Clear the timeout on unmount ───────────────────────────────────
   useEffect(() => {
     return () => {
       if (thinkingTimeoutRef.current !== null) {
         window.clearTimeout(thinkingTimeoutRef.current);
       }
+      if (hopTickerTimerRef.current !== null) {
+        window.clearTimeout(hopTickerTimerRef.current);
+      }
     };
   }, []);
+
+  // ── ADR-0072 §B3 — Autopilot state narration ──────────────────────
+  // Log lines on state changes; per-hop updates go to the ticker only
+  // (rate discipline). Track previous values to detect transitions.
+  const prevApStatusRef = useRef<string>(apStatus);
+  const prevHopIndexRef = useRef<number>(currentHopIndex);
+
+  useEffect(() => {
+    const prev = prevApStatusRef.current;
+    prevApStatusRef.current = apStatus;
+
+    // Transition: engaged
+    if (apStatus === 'engaged' && prev !== 'engaged') {
+      const totalHops = course?.hops?.length ?? 0;
+      appendNav(`Autopilot engaged — ${totalHops} hop${totalHops !== 1 ? 's' : ''}.`);
+    }
+
+    // Transition: paused
+    if (apStatus === 'paused' && prev !== 'paused') {
+      appendNav(`Autopilot paused — ${pauseReason ?? 'unknown reason'}.`);
+    }
+
+    // Transition: arrived
+    if (apStatus === 'arrived' && prev !== 'arrived') {
+      const targetId = course?.target_sector_id ?? '?';
+      const totalTurns = course?.total_turns ?? '?';
+      appendNav(`Arrival: Sector ${targetId}. ${totalTurns} turns spent. Logged.`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apStatus, pauseReason]);
+
+  // Per-hop update → ticker only (not log)
+  useEffect(() => {
+    if (apStatus !== 'engaged') return;
+    if (currentHopIndex === prevHopIndexRef.current) return;
+    prevHopIndexRef.current = currentHopIndex;
+
+    const totalHops = course?.hops?.length ?? 0;
+    if (totalHops === 0) return;
+
+    const hopSectorId = course?.hops?.[currentHopIndex - 1]?.sector_id ?? '?';
+    const tickerLine = `HOP ${currentHopIndex}/${totalHops} — SECTOR ${hopSectorId}.`;
+
+    // Set the ticker override and schedule its clearance
+    setHopTickerText(tickerLine);
+    if (hopTickerTimerRef.current !== null) {
+      window.clearTimeout(hopTickerTimerRef.current);
+    }
+    hopTickerTimerRef.current = window.setTimeout(() => {
+      setHopTickerText(null);
+      hopTickerTimerRef.current = null;
+    }, 4000);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentHopIndex, apStatus]);
 
   // ── Fetch real recommendations when the drawer opens ───────────────
   const fetchRecommendations = useCallback(async () => {
@@ -284,10 +407,99 @@ const AriaConsoleStrip: React.FC = () => {
     return sanitized.slice(0, MAX_MESSAGE_LENGTH);
   }, []);
 
-  // ── Send via WebSocket (ported intact) ─────────────────────────────
+  // ── ADR-0072 §B3 — Reactive plot reply ───────────────────────────
+  // plotCourse() stores its result in lastPlot (Promise<void>). We watch
+  // lastPlot here; when it changes AND pendingPlotSectorRef is set, emit
+  // the narration reply and clear the pending flag.
+  useEffect(() => {
+    const pending = pendingPlotSectorRef.current;
+    if (pending === null || !lastPlot) return;
+
+    // Only consume the result if the plot target matches what we requested
+    // (guard against a race where another caller triggers plotCourse).
+    if (lastPlot.target_sector_id !== pending) return;
+
+    pendingPlotSectorRef.current = null;
+
+    if (lastPlot.reachable) {
+      const reachable = lastPlot as PlotResultReachable;
+      const hopCount = reachable.hops?.length ?? 0;
+      const turns = reachable.total_turns ?? '?';
+      appendNav(
+        `Course laid in for Sector ${pending} — ${hopCount} charted hop${hopCount !== 1 ? 's' : ''}, ${turns} turns. Say engage, or use the helm.`
+      );
+    } else {
+      const unreachable = lastPlot as PlotResultUnreachable;
+      if (unreachable.nearest_known) {
+        appendNav(
+          `Sector ${pending} is beyond my charts. Nearest charted approach is Sector ${unreachable.nearest_known.sector_id}. Fly the frontier and I will learn the route.`
+        );
+      } else {
+        appendNav(`No such sector on any chart I can read.`);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastPlot]);
+
+  // ── ADR-0072 §B3 — Command grammar intercept ──────────────────────
+  // Returns true if the input was intercepted (do NOT send to WS).
+  const tryNavCommand = useCallback((raw: string): boolean => {
+    const trimmed = raw.trim();
+
+    // engage
+    if (RE_ENGAGE.test(trimmed)) {
+      engage();
+      return true;
+    }
+
+    // abort / all stop
+    if (RE_ABORT.test(trimmed)) {
+      abort('voice command');
+      return true;
+    }
+
+    // plot course to <n> / goto <n>
+    let sectorId: number | null = null;
+    const mPlot = trimmed.match(RE_PLOT_COURSE);
+    const mGoto = trimmed.match(RE_GOTO);
+    if (mPlot) {
+      sectorId = parseInt(mPlot[5], 10);
+    } else if (mGoto) {
+      sectorId = parseInt(mGoto[2], 10);
+    }
+
+    if (sectorId !== null && !Number.isNaN(sectorId)) {
+      // Append a YOU> echo (same way sendARIAMessage echoes the user line)
+      setNavMessages(prev => [
+        ...prev,
+        { id: `nav-you-${Date.now()}`, type: 'user', content: trimmed, timestamp: new Date().toISOString(), isNav: true }
+      ]);
+
+      // Store the pending sector ID; the lastPlot useEffect above fires the
+      // reply when AutopilotContext resolves the plot request.
+      pendingPlotSectorRef.current = sectorId;
+      plotCourse(sectorId).catch(() => {
+        // plotCourse threw (network error) — reply immediately
+        pendingPlotSectorRef.current = null;
+        appendNav(`No such sector on any chart I can read.`);
+      });
+
+      return true;
+    }
+
+    return false;
+  }, [plotCourse, engage, abort, appendNav]);
+
+  // ── Send via WebSocket (with nav command intercept) ─────────────────
   const sendMessage = useCallback(() => {
     if (!inputValue.trim() || isThinking || !checkRateLimit() || !isConnected) {
       if (!isConnected) {
+        // Still allow nav commands offline (they don't use WS)
+        const raw = inputValue.trim();
+        if (raw && tryNavCommand(raw)) {
+          setInputValue('');
+          return;
+        }
         setRateLimitWarning(true);
         setTimeout(() => setRateLimitWarning(false), 3000);
       }
@@ -296,6 +508,12 @@ const AriaConsoleStrip: React.FC = () => {
 
     const sanitizedMessage = sanitizeInput(inputValue.trim());
     if (!sanitizedMessage) {
+      return;
+    }
+
+    // ── Nav command intercept — before the WS send ──────────────────
+    if (tryNavCommand(sanitizedMessage)) {
+      setInputValue('');
       return;
     }
 
@@ -326,7 +544,7 @@ const AriaConsoleStrip: React.FC = () => {
       window.clearTimeout(thinkingTimeoutRef.current);
     }
     thinkingTimeoutRef.current = window.setTimeout(() => setIsThinking(false), 5000);
-  }, [inputValue, isThinking, checkRateLimit, sanitizeInput, conversationId, sendARIAMessage, selectedSystems, isConnected]);
+  }, [inputValue, isThinking, checkRateLimit, sanitizeInput, conversationId, sendARIAMessage, selectedSystems, isConnected, tryNavCommand]);
 
   // ── Collapse the drawer and hand keyboard focus back to the strip bar ─
   const collapseDrawer = useCallback(() => {
@@ -360,6 +578,7 @@ const AriaConsoleStrip: React.FC = () => {
 
   const clearConversation = useCallback(() => {
     clearARIAMessages();
+    setNavMessages([]);
     setConversationId(null);
   }, [clearARIAMessages]);
 
@@ -388,23 +607,52 @@ const AriaConsoleStrip: React.FC = () => {
     });
   }, []);
 
+  // ── Merged log: ariaMessages + navMessages, ordered by timestamp ────
+  const mergedMessages = useMemo(() => {
+    type LogEntry = {
+      id: string;
+      type: 'ai' | 'user';
+      content: string;
+      timestamp: string;
+      confidence?: number;
+      actions?: Array<{ type: string; [key: string]: any }>;
+      suggestions?: string[];
+      isNav?: true;
+    };
+
+    const all: LogEntry[] = [
+      ...ariaMessages.map(m => ({ ...m, isNav: undefined as undefined })),
+      ...navMessages
+    ];
+    all.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    return all;
+  }, [ariaMessages, navMessages]);
+
   // ── Ticker line (latest exchange preview) ──────────────────────────
-  const lastMessage = ariaMessages.length > 0 ? ariaMessages[ariaMessages.length - 1] : null;
+  const lastMessage =
+    mergedMessages.length > 0 ? mergedMessages[mergedMessages.length - 1] : null;
+
+  // Per-hop ticker override takes priority while set
+  const effectiveTickerText = hopTickerText ?? (
+    isThinking
+      ? 'PROCESSING…'
+      : lastMessage
+        ? lastMessage.content
+        : isConnected
+          ? 'SHIP INTELLIGENCE ONLINE — STANDING BY'
+          : 'UPLINK OFFLINE — AWAITING CONNECTION'
+  );
+
   // While processing, the ticker reads "PROCESSING…" — that line is ARIA
   // speaking, so the prefix must be ARIA> even when the last logged message
   // was the player's own query (otherwise it reads "YOU> PROCESSING…").
-  const tickerPrefix = isThinking
+  const tickerPrefix = hopTickerText
     ? 'ARIA>'
-    : lastMessage
-      ? (lastMessage.type === 'ai' ? 'ARIA>' : 'YOU>')
-      : 'ARIA>';
-  const tickerText = isThinking
-    ? 'PROCESSING…'
-    : lastMessage
-      ? lastMessage.content
-      : isConnected
-        ? 'SHIP INTELLIGENCE ONLINE — STANDING BY'
-        : 'UPLINK OFFLINE — AWAITING CONNECTION';
+    : isThinking
+      ? 'ARIA>'
+      : lastMessage
+        ? (lastMessage.type === 'ai' ? 'ARIA>' : 'YOU>')
+        : 'ARIA>';
 
   const coreStateClass = isThinking ? 'thinking' : isConnected ? 'idle' : 'offline';
 
@@ -441,7 +689,7 @@ const AriaConsoleStrip: React.FC = () => {
               >
                 SYS
               </button>
-              {ariaMessages.length > 0 && (
+              {mergedMessages.length > 0 && (
                 <button
                   type="button"
                   className="aria-ctl-btn"
@@ -532,7 +780,7 @@ const AriaConsoleStrip: React.FC = () => {
           )}
 
           <div className="aria-log" role="log" aria-live="polite">
-            {ariaMessages.length === 0 && (
+            {mergedMessages.length === 0 && (
               <div className="aria-welcome">
                 <div className="aria-log-line ai">
                   <span className="aria-log-prefix">ARIA&gt;</span>
@@ -556,8 +804,11 @@ const AriaConsoleStrip: React.FC = () => {
               </div>
             )}
 
-            {ariaMessages.map((message) => (
-              <div key={message.id} className={`aria-log-line ${message.type}`}>
+            {mergedMessages.map((message) => (
+              <div
+                key={message.id}
+                className={`aria-log-line ${message.type}${message.isNav ? ' nav' : ''}`}
+              >
                 <span className="aria-log-prefix">{message.type === 'ai' ? 'ARIA>' : 'YOU>'}</span>
                 <span className="aria-log-text">
                   {message.content}
@@ -666,10 +917,10 @@ const AriaConsoleStrip: React.FC = () => {
         </span>
         <span className="aria-strip-label" aria-hidden="true">ARIA</span>
         <span className="aria-ticker">
-          <span className={`aria-ticker-prefix ${!isThinking && lastMessage?.type === 'user' ? 'user' : 'ai'}`}>
+          <span className={`aria-ticker-prefix ${!isThinking && !hopTickerText && lastMessage?.type === 'user' ? 'user' : 'ai'}`}>
             {tickerPrefix}
           </span>{' '}
-          <span className="aria-ticker-text">{tickerText}</span>
+          <span className="aria-ticker-text">{effectiveTickerText}</span>
         </span>
         {unread && !expanded && <span className="aria-unread-tag">NEW</span>}
         <span className="aria-strip-chevron" aria-hidden="true">{expanded ? '▾' : '▴'}</span>

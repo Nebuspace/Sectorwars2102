@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
+import { AutopilotProvider } from '../../contexts/AutopilotContext';
 import UserProfile from '../auth/UserProfile';
 import LogoutButton from '../auth/LogoutButton';
 import AriaConsoleStrip from '../aria/AriaConsoleStrip';
@@ -299,7 +300,11 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             {/* Children render UNCONDITIONALLY — never unmounted by a
                 background refresh (see cockpit-stability note above).
                 During the initial-load overlay the viewport is `inert`
-                so its controls can't be tab-focused underneath. */}
+                so its controls can't be tab-focused underneath.
+                AutopilotProvider must wrap BOTH the viewport (helm/NAV
+                consume it) AND the ARIA console slot (the strip's command
+                grammar consumes it) — a narrower wrap crashes the strip. */}
+            <AutopilotProvider>
             <div
               className="main-viewport"
               // `inert` isn't in the installed @types/react (18.x) surface yet,
@@ -318,6 +323,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             <div className="aria-console-slot">
               <AriaConsoleStrip />
             </div>
+            </AutopilotProvider>
             {isInitialLoad && (
               <div className="viewport-loading-overlay">
                 <div className="loading-spinner"></div>

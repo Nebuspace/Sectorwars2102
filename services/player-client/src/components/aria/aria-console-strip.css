@@ -736,6 +736,21 @@
   color: rgba(180, 220, 240, 0.4);
 }
 
+/* ── ADR-0072 nav log lines ────────────────── */
+/* .nav modifier on .aria-log-line — navigator voice uses the same
+   ARIA>/YOU> prefix rules; a faint left accent distinguishes autopilot
+   narration from the WS ARIA channel without changing geometry. */
+.aria-log-line.nav {
+  border-left: 2px solid rgba(0, 217, 255, 0.25);
+  padding-left: 0.35rem;
+  margin-left: -0.35rem;
+}
+
+.aria-log-line.nav .aria-log-prefix {
+  /* navigator lines keep violet like other ARIA> lines — no override needed;
+     the border-left alone signals the nav channel. */
+}
+
 /* ── Motion preferences ────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useGame, type MoveOption } from '../../contexts/GameContext';
+import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
@@ -472,8 +473,13 @@ const GameDashboard: React.FC = () => {
     error
   } = useGame();
   
+  const autopilot = useAutopilot();
+
   const { requiresFirstLogin } = useFirstLogin();
   const { sectorPlayers, isConnected } = useWebSocket();
+
+  // Autopilot plot input state (NAV monitor destination field)
+  const [plotTarget, setPlotTarget] = useState('');
 
   const [movementResult, setMovementResult] = useState<any>(null);
   const [dockingResult, setDockingResult] = useState<any>(null);
@@ -1127,6 +1133,7 @@ const GameDashboard: React.FC = () => {
   
   const handleDock = async (stationId: string) => {
     if (helmBusy) return;
+    autopilot.abort('manual helm action');
     setHelmBusy(true);
     try {
       const result = await dockAtStation(stationId);
@@ -1154,6 +1161,7 @@ const GameDashboard: React.FC = () => {
 
   const handleLand = async (planetId: string) => {
     if (helmBusy) return;
+    autopilot.abort('manual helm action');
     setHelmBusy(true);
     try {
       const result = await landOnPlanet(planetId);
@@ -1211,6 +1219,7 @@ const GameDashboard: React.FC = () => {
 
   const handleLeavePlanet = async () => {
     if (helmBusy) return;
+    autopilot.abort('manual helm action');
     setHelmBusy(true);
     try {
       const result = await leavePlanet();
@@ -1227,6 +1236,7 @@ const GameDashboard: React.FC = () => {
 
   const handleUndock = async () => {
     if (helmBusy) return;
+    autopilot.abort('manual helm action');
     setHelmBusy(true);
     try {
       await undockFromStation();
@@ -1597,6 +1607,28 @@ const GameDashboard: React.FC = () => {
               </button>
             ) : (
               <>
+                {/* Autopilot course controls — visible in IN FLIGHT only */}
+                {autopilot.course && autopilot.status !== 'arrived' && (
+                  autopilot.status === 'engaged' ? (
+                    <button
+                      className="helm-btn autopilot-abort"
+                      onClick={() => autopilot.abort('manual abort')}
+                      disabled={helmBusy}
+                      title="Abort autopilot"
+                    >
+                      🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}
+                    </button>
+                  ) : (
+                    <button
+                      className="helm-btn autopilot-engage"
+                      onClick={() => autopilot.engage()}
+                      disabled={helmBusy}
+                      title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                    >
+                      🧭 ENGAGE AUTOPILOT · {autopilot.course.hops.length} HOPS · {autopilot.course.total_turns} TURNS
+                    </button>
+                  )
+                )}
                 {(stationsInSector || []).map((station: any) => (
                   <button
                     key={station.id}
@@ -2233,9 +2265,69 @@ const GameDashboard: React.FC = () => {
                           QUANTUM DRIVE
                         </button>
                       </div>
+                      {/* Destination plot row — sits in the NAV header for all ship types */}
+                      <div className="nav-plot-row">
+                        <input
+                          type="number"
+                          className="nav-plot-input"
+                          placeholder="SECTOR #"
+                          value={plotTarget}
+                          onChange={(e) => setPlotTarget(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              const id = parseInt(plotTarget, 10);
+                              if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                            }
+                          }}
+                          aria-label="Destination sector number"
+                          min={1}
+                        />
+                        <button
+                          className="nav-plot-btn"
+                          disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
+                          onClick={() => {
+                            const id = parseInt(plotTarget, 10);
+                            if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                          }}
+                          title="Plot course to destination sector"
+                        >
+                          {autopilot.status === 'plotting' ? '…' : 'PLOT'}
+                        </button>
+                      </div>
                     </div>
                   ) : (
-                    <div className="screen-hud-header">NAV</div>
+                    <div className="screen-hud-header nav-header-with-plot">
+                      NAV
+                      {/* Destination plot row — non-Warp-Jumper variant */}
+                      <div className="nav-plot-row">
+                        <input
+                          type="number"
+                          className="nav-plot-input"
+                          placeholder="SECTOR #"
+                          value={plotTarget}
+                          onChange={(e) => setPlotTarget(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              const id = parseInt(plotTarget, 10);
+                              if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                            }
+                          }}
+                          aria-label="Destination sector number"
+                          min={1}
+                        />
+                        <button
+                          className="nav-plot-btn"
+                          disabled={autopilot.status === 'plotting' || !plotTarget || isNaN(parseInt(plotTarget, 10))}
+                          onClick={() => {
+                            const id = parseInt(plotTarget, 10);
+                            if (!isNaN(id) && id > 0) autopilot.plotCourse(id);
+                          }}
+                          title="Plot course to destination sector"
+                        >
+                          {autopilot.status === 'plotting' ? '…' : 'PLOT'}
+                        </button>
+                      </div>
+                    </div>
                   )}
                   <div className="screen-hud-content">
                   {isWarpJumper && navMode === 'quantum' ? (
@@ -2270,6 +2362,60 @@ const GameDashboard: React.FC = () => {
                           height={300}
                         />
                       )}
+                      {/* Course strip — rendered below the warp graph whenever a course exists */}
+                      {(() => {
+                        const apCourse = autopilot.course;
+                        const apLastPlot = autopilot.lastPlot;
+                        const hopIdx = autopilot.currentHopIndex;
+                        // Unreachable refusal — show inline warning
+                        if (apLastPlot !== null && apLastPlot.reachable === false) {
+                          const unreach = apLastPlot as import('../../contexts/AutopilotContext').CourseUnreachable;
+                          const nearest = unreach.nearest_known;
+                          return (
+                            <div className="nav-course-strip nav-course-unreachable">
+                              BEYOND CHARTED SPACE — NEAREST KNOWN APPROACH:{' '}
+                              {nearest ? `SECTOR ${nearest.sector_id}` : 'UNKNOWN'}
+                            </div>
+                          );
+                        }
+                        // Reachable course breadcrumb strip
+                        if (apCourse && apCourse.hops.length > 0) {
+                          const hops = apCourse.hops;
+                          const MAX_VISIBLE = 6;
+                          const showEllipsis = hops.length > MAX_VISIBLE + 1;
+                          const visibleHops = showEllipsis ? hops.slice(0, MAX_VISIBLE) : hops;
+                          return (
+                            <div className="nav-course-strip">
+                              <div className="nav-course-breadcrumb">
+                                {visibleHops.map((hop, i) => (
+                                  <span
+                                    key={hop.sector_id}
+                                    className={`nav-course-hop${i < hopIdx ? ' nav-course-hop-done' : i === hopIdx ? ' nav-course-hop-current' : ''}`}
+                                    title={hop.name}
+                                  >
+                                    {hop.sector_id}
+                                  </span>
+                                ))}
+                                {showEllipsis && (
+                                  <>
+                                    <span className="nav-course-ellipsis">…</span>
+                                    <span
+                                      className={`nav-course-hop${hops.length - 1 < hopIdx ? ' nav-course-hop-done' : hops.length - 1 === hopIdx ? ' nav-course-hop-current' : ''}`}
+                                      title={hops[hops.length - 1].name}
+                                    >
+                                      {hops[hops.length - 1].sector_id}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                              <div className="nav-course-meta">
+                                {apCourse.total_turns} TURNS · {hops.length} HOPS
+                              </div>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </>
                   )}
                   </div>

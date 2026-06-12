@@ -93,6 +93,11 @@ class MoveResponse(BaseModel):
     new_sector_id: int = None
     turn_cost: int = 0
     turns_remaining: int = 0
+    # The movement service attaches encounter/tunnel events to its result;
+    # without these fields response_model filtering silently strips them,
+    # which blinds the autopilot's encounter-pause (ADR-0072 Phase 1).
+    encounters: list = []
+    tunnel_events: list = []
 
 class MoveOption(BaseModel):
     sector_id: int

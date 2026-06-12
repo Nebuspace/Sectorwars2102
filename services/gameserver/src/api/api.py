@@ -49,6 +49,7 @@ from src.api.routes.port_ownership import router as port_ownership_router
 from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
 from src.api.routes.warp_gates import router as warp_gates_router
+from src.api.routes.nav import router as nav_router
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -121,6 +122,9 @@ api_router.include_router(quantum_router, tags=["quantum"])
 # structure listing (router carries its own /warp-gates prefix; traversal
 # itself rides the normal /player/move endpoints via MovementService)
 api_router.include_router(warp_gates_router, tags=["warp-gates"])
+# ADR-0072 Phase 1 — course plotting through the player's known graph
+# (router carries its own /nav prefix)
+api_router.include_router(nav_router, tags=["nav"])
 # Bang galaxy generator admin endpoints (Phase 1C of bang-integration plan).
 # The legacy `/admin/galaxy/generate` route in admin.py stays intact; Phase 4
 # removes it in favour of the new job-based flow defined here.
