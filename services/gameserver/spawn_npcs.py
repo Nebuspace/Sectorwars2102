@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-Idempotent spawn: materialize v1 pirate-captain NPCs from BANG rosters.
+Idempotent Living NPC System bootstrap (wrapper around
+npc_spawn_service.bootstrap_galaxy).
 
-The BANG snapshot on each Galaxy row carries per-region NPC rosters
-(Galaxy.bang_snapshot.regions[*].universe.npcRosters) that the import
-pipeline stashes but never materializes — the galaxy launches with zero
-NPC ships. This runs npc_spawn_service.materialize_from_bang() per galaxy:
-pirate CAPTAINS only (static v1 — no movement/schedules/initiation per
-SYSTEMS/npc-scheduler.md, which is Design-only; enforcers and lords are
-held back, see the service docstring for the lord-count canon conflict).
+Per galaxy with a BANG snapshot: materialize NPCCharacter + Ship rows
+from the stashed rosters, seed NPCRoster rows (Loop B maintenance
+targets), and backfill patrol schedules onto pre-runtime NPC rows so
+the scheduler (NPC_SCHEDULER_ENABLED) can drive them.
 
 Run inside the gameserver container:
     docker compose exec gameserver python spawn_npcs.py
 
-Safe to re-run: rosters whose NPCCharacter rows already exist (including
-KIA rows) are skipped.
+Safe to re-run: every step is idempotent by bang_roster_ref.
 """
 
 import logging
@@ -26,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import src.models  # register all mappers
 from src.core.database import SessionLocal
 from src.models.galaxy import Galaxy
-from src.services.npc_spawn_service import materialize_from_bang
+from src.services.npc_spawn_service import bootstrap_galaxy
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +36,16 @@ def main() -> None:
             print("No galaxies found — nothing to spawn.")
             return
 
-        print(f"{'GALAXY':<38} {'ROSTERS':>8} {'SPAWNED':>8} {'EXISTS':>7} {'BADSEC':>7} {'CAPTAINS':>9}")
-        print("-" * 80)
+        print(
+            f"{'GALAXY':<38} {'ROSTERS':>8} {'SPAWNED':>8} {'EXISTS':>7} "
+            f"{'BADSEC':>7} {'NPCS':>6} {'R-NEW':>6} {'R-OLD':>6} {'SCHED':>6}"
+        )
+        print("-" * 100)
         for galaxy in galaxies:
             if not galaxy.bang_snapshot:
                 print(f"{str(galaxy.id):<38} {'—':>8}  (no bang_snapshot; skipped)")
                 continue
-            stats = materialize_from_bang(session, galaxy)
+            stats = bootstrap_galaxy(session, galaxy)
             session.commit()
             print(
                 f"{str(galaxy.id):<38} "
@@ -53,12 +53,15 @@ def main() -> None:
                 f"{stats['rosters_spawned']:>8} "
                 f"{stats['rosters_skipped_existing']:>7} "
                 f"{stats['rosters_skipped_bad_sector']:>7} "
-                f"{stats['captains_spawned']:>9}"
+                f"{stats['captains_spawned']:>6} "
+                f"{stats.get('rosters_created', 0):>6} "
+                f"{stats.get('rosters_existing', 0):>6} "
+                f"{stats.get('schedules_backfilled', 0):>6}"
             )
             for warning in stats["warnings"]:
                 print(f"  WARNING: {warning}")
-        print("-" * 80)
-        print("NPC spawn complete.")
+        print("-" * 100)
+        print("NPC bootstrap complete.")
     finally:
         session.close()
 

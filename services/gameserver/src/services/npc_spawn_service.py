@@ -76,6 +76,17 @@ POLICE_WANTED_THRESHOLD = -500
 # respawn_eligible_at = now + 7 days (faction-tunable cooldown).
 KIA_RESPAWN_COOLDOWN_HOURS = 7 * 24
 
+# Patrol cycle pacing (canon FEATURES/gameplay/police-forces.md: Marshal
+# squads cycle ~4h per sector, Sentinels ~3h; pirates canon-silent —
+# mirroring the Marshal cadence, flagged).
+PATROL_MINUTES_PER_SECTOR: Dict[str, int] = {
+    PIRATE_CAPTAIN_KIND: 240,
+    "federation_marshal": 240,
+    "marshal_captain": 240,
+    "nexus_sentinel": 180,
+    "sentinel_captain": 180,
+}
+
 
 class KindConfig(NamedTuple):
     """Spawn recipe for one BANG roster ``kind`` value."""
@@ -584,6 +595,203 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Living NPC System bootstrap — roster seeding + schedule backfill
+# ---------------------------------------------------------------------------
+
+def _patrol_route(db: Session, host_sector_id: int) -> List[int]:
+    """Host sector plus up to two adjacent same-region sectors — the v1
+    patrol loop. Canon defines patrol CYCLE pacing but not route
+    composition (worldgen patrol routes are Design-only); the adjacent
+    ring is the smallest canon-compatible route, flagged for the docs
+    repo."""
+    from src.models.sector import sector_warps
+
+    host = db.query(Sector).filter(Sector.sector_id == host_sector_id).first()
+    if host is None:
+        return [host_sector_id]
+
+    neighbour_pks = set()
+    for row in db.execute(
+        sector_warps.select().where(sector_warps.c.source_sector_id == host.id)
+    ).fetchall():
+        neighbour_pks.add(row.destination_sector_id)
+    for row in db.execute(
+        sector_warps.select().where(
+            sector_warps.c.destination_sector_id == host.id,
+            sector_warps.c.is_bidirectional == True,  # noqa: E712
+        )
+    ).fetchall():
+        neighbour_pks.add(row.source_sector_id)
+
+    route = [host_sector_id]
+    if neighbour_pks:
+        neighbours = (
+            db.query(Sector)
+            .filter(
+                Sector.id.in_(neighbour_pks),
+                Sector.region_id == host.region_id,
+            )
+            .order_by(Sector.sector_id)
+            .limit(2)
+            .all()
+        )
+        route.extend(s.sector_id for s in neighbours)
+    return route
+
+
+def _schedule_template(db: Session, kind: str, host_sector_id: int) -> Dict[str, Any]:
+    """V1 daily_schedule: one all-day patrol block over the host's
+    adjacent ring. The full canon daily texture (sleep / dine / train
+    blocks) needs the lodging slice for sleep locations — deferred,
+    divergence documented in SYSTEMS/npc-lifecycle.md terms."""
+    return {
+        "timezone": "utc",
+        "shift_offset_hours": 0,
+        "blocks": [
+            {
+                "start_minute": 0,
+                "end_minute": 1440,
+                "activity": "patrol",
+                "location_type": "patrol_route",
+                "location_ref": {
+                    "sectors": _patrol_route(db, host_sector_id),
+                    "minutes_per_sector": PATROL_MINUTES_PER_SECTOR.get(kind, 240),
+                },
+            }
+        ],
+    }
+
+
+def seed_rosters_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
+    """Materialize NPCRoster rows from the BANG snapshot (idempotent by
+    bang_roster_ref — the same ref format materialize_from_bang uses, so
+    rosters adopt the NPCs already spawned under it)."""
+    from src.models.npc_character import NPCRoster
+
+    snapshot = galaxy.bang_snapshot or {}
+    regions = snapshot.get("regions") or {}
+    stats: Dict[str, Any] = {"rosters_created": 0, "rosters_existing": 0, "warnings": []}
+
+    offsets = _region_offset_map(db, regions)
+
+    for region_type in REGION_ORDER:
+        region_snapshot = regions.get(region_type)
+        if not isinstance(region_snapshot, dict):
+            continue
+        universe = region_snapshot.get("universe") or {}
+        rosters = universe.get("npcRosters") or []
+        region_id = region_snapshot.get("region_id")
+        offset = offsets.get(region_type)
+        if offset is None or not region_id:
+            if any(str(r.get("kind", "")) in KIND_CONFIG for r in rosters):
+                stats["warnings"].append(
+                    f"region {region_type}: no offset/region_id — rosters not seeded"
+                )
+            continue
+
+        for roster in rosters:
+            kind = str(roster.get("kind", ""))
+            cfg = KIND_CONFIG.get(kind)
+            if cfg is None:
+                continue
+            if cfg.kind_in_roster_ref:
+                roster_ref = f"{galaxy.id}:{region_type}:{kind}:{roster.get('id')}"
+            else:
+                roster_ref = f"{galaxy.id}:{region_type}:{roster.get('id')}"
+
+            existing = (
+                db.query(NPCRoster)
+                .filter(NPCRoster.bang_roster_ref == roster_ref)
+                .first()
+            )
+            if existing is not None:
+                stats["rosters_existing"] += 1
+                continue
+
+            host_local = int(roster.get("hostSectorId", 0))
+            global_sector_id = host_local + offset
+            target_count = int(roster.get("targetCount", 0))
+            name_pool = [str(n) for n in (roster.get("namePool") or [])]
+            if target_count <= 0:
+                stats["warnings"].append(
+                    f"roster {roster_ref}: targetCount {target_count} — not seeded"
+                )
+                continue
+
+            db.add(NPCRoster(
+                region_id=region_id,
+                faction_code=str(roster.get("factionCode", cfg.default_faction_code)),
+                role=kind,
+                default_archetype=cfg.archetype,
+                schedule_template=_schedule_template(db, kind, global_sector_id),
+                default_lodging_id=roster.get("defaultLodgingId"),
+                default_lodging_type=roster.get("defaultLodgingType"),
+                target_count=target_count,
+                name_pool={"names": name_pool},
+                host_sector_id=global_sector_id,
+                bang_roster_ref=roster_ref,
+            ))
+            stats["rosters_created"] += 1
+
+    db.flush()
+    return stats
+
+
+def backfill_npc_schedules(db: Session) -> int:
+    """Give pre-runtime NPC rows (empty daily_schedule) their roster's
+    schedule template + home region. Idempotent — rows with a schedule
+    are untouched. Returns the number of rows backfilled."""
+    from sqlalchemy import cast, String as SAString
+
+    from src.models.npc_character import NPCRoster
+
+    backfilled = 0
+    for roster in db.query(NPCRoster).all():
+        npcs = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.bang_roster_ref == roster.bang_roster_ref,
+                cast(NPCCharacter.daily_schedule, SAString) == '{}',
+            )
+            .all()
+        )
+        for npc in npcs:
+            npc.daily_schedule = dict(roster.schedule_template or {})
+            npc.home_region_id = npc.home_region_id or roster.region_id
+            backfilled += 1
+    if backfilled:
+        db.flush()
+    return backfilled
+
+
+def bootstrap_galaxy(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
+    """One idempotent entry point for the Living NPC System bootstrap:
+    materialize NPCs from the BANG snapshot, seed NPCRoster rows, and
+    backfill schedules onto pre-runtime NPC rows. Flush-only; the caller
+    (spawn_npcs.py / admin tooling) commits."""
+    stats = materialize_from_bang(db, galaxy)
+    roster_stats = seed_rosters_from_bang(db, galaxy)
+    stats.update(roster_stats)
+    stats["schedules_backfilled"] = backfill_npc_schedules(db)
+    return stats
+
+
+def bootstrap_region(db: Session, region_id: uuid.UUID) -> Dict[str, Any]:
+    """Region-scoped convenience wrapper: bootstrap the galaxy whose BANG
+    snapshot contains ``region_id``. The underlying steps are all
+    idempotent, so re-running for a sibling region is harmless."""
+    for galaxy in db.query(Galaxy).all():
+        regions = (galaxy.bang_snapshot or {}).get("regions") or {}
+        for region_snapshot in regions.values():
+            if (
+                isinstance(region_snapshot, dict)
+                and str(region_snapshot.get("region_id")) == str(region_id)
+            ):
+                return bootstrap_galaxy(db, galaxy)
+    return {"warnings": [f"no galaxy snapshot contains region {region_id}"]}
+
+
 def handle_npc_ship_destroyed(db: Session, ship_id: uuid.UUID) -> Optional[NPCCharacter]:
     """KIA processing, steps 1-4 of SYSTEMS/npc-scheduler.md.
 
@@ -675,4 +883,30 @@ def handle_npc_ship_destroyed(db: Session, ship_id: uuid.UUID) -> Optional[NPCCh
         "NPC %s (%s) KIA — ship %s destroyed in sector %s",
         npc.display_name, npc.id, ship_id, sector_id,
     )
+
+    # Best-effort npc_kia realtime event. Only possible when an event
+    # loop is running (async route context); sync contexts (worker
+    # threads, CLI) rely on polled players_present, which the cleanup
+    # above already updated.
+    if sector_id is not None:
+        try:
+            import asyncio
+
+            from src.services.websocket_service import connection_manager
+
+            asyncio.get_running_loop().create_task(
+                connection_manager.broadcast_to_sector(sector_id, {
+                    "type": "npc_kia",
+                    "sector_id": sector_id,
+                    "npc_id": str(npc.id),
+                    "display_name": npc.display_name,
+                    "is_npc": True,
+                    "timestamp": now.isoformat(),
+                })
+            )
+        except RuntimeError:
+            pass  # no running loop — polled presence covers it
+        except Exception:
+            logger.exception("npc_kia broadcast failed (non-fatal)")
+
     return npc
