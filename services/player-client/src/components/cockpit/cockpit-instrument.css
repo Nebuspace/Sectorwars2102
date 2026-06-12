@@ -249,9 +249,10 @@
    "Trading Interface" <h2> inside .trading-header. Inside the instrument
    frame the LED header already carries the title, so the in-page h2 is a
    redundant second title (the leak). Hide ONLY the h2 — .connection-status
-   lives in the same .trading-header and must stay visible. CSS scope only:
-   the markup is shared with the embedded (GameDashboard docked monitor)
-   usage, so this never touches the component. */
-.instrument-monitor .trading-header h2 {
+   lives in the same .trading-header and must stay visible. CSS scope only.
+   The embedded docked monitor (.console-monitor "TRADING TERMINAL") carries
+   its own LED title too, so the h2 is redundant in both hosts. */
+.instrument-monitor .trading-header h2,
+.console-monitor .trading-header h2 {
   display: none;
 }
