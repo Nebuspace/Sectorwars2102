@@ -723,6 +723,64 @@
         "no fleet rows exist on dev to exercise the fleet serializer live",
         "terraform header block still reads (currentPlanet as any).terraform_level fiction"
       ]
+    },
+    {
+      "id": "neon-2026-06-12-d",
+      "tier": "STANDARD (directed: sector solar systems)",
+      "stage": "complete",
+      "branch_head_at_start": "3df765d",
+      "directive": "Max: every sector presents as a solar system \u2014 varied stars, mostly uninhabitable planets, huge visual variety; mostly UI, models only if needed",
+      "canon_note": "No existing canon for stellar composition \u2014 documented interpretation, deterministic from sector_id, proposed canon in report (Max-gated)",
+      "sections": [
+        {
+          "key": "celestial-composer-backend",
+          "state": "selected",
+          "proof_script": [
+            "GET /sectors/{id}/system returns a deterministic system (same sector twice -> identical JSON): star class, procedural bodies with orbits/sizes/palettes, REAL planets+stations merged at stable slots",
+            "Sector-type variants: NEBULA carries haze param, BLACK_HOLE accretion star, VOID starless, ASTEROID_FIELD belt",
+            "No DB migration; pure function of sector_id + real rows"
+          ]
+        },
+        {
+          "key": "solar-system-viewscreen",
+          "state": "selected",
+          "proof_script": [
+            "Viewscreen shows full solar system: star with class-colored corona, orbit arcs, procedural barren worlds with VARIETY (banded gas giants, rings, ice caps, lava glow, crater speckle), real planets labeled and clickable (land flow still works), stations as orbital structures",
+            "4+ different sectors screenshot distinctly different skies (variety proof); nebula + black-hole variants seen live",
+            "Slow orbital drift GIF; reduced-motion static; fetch failure falls back to current minimal view (no broken viewscreen)"
+          ]
+        }
+      ],
+      "verdict": "GLOWING",
+      "model_usage": {
+        "tier": "STANDARD",
+        "fable": {
+          "agents": 6,
+          "tokens": 453671,
+          "roles": "2 build + 4 adversarial review"
+        },
+        "opus": {
+          "agents": 1,
+          "tokens": 62805,
+          "roles": "gate fix wave"
+        },
+        "fable_lead_est": 280000,
+        "est_cost_vs_all_fable": "~0.97x (visual flagship; lead-heavy compositor forensics)"
+      },
+      "proof_evidence": {
+        "determinism": "GET /sectors/733/system byte-identical across calls; 6 sectors sampled: M_DWARF/G_YELLOW/K_ORANGE/RED_GIANT/WHITE_DWARF stars, rings, belt at 847, nebula at 12",
+        "variety_tour": "five sectors screenshot live, each distinct: 733 M-dwarf + ringed rust world; 847 K-orange + 7 orbits; 884 RED GIANT + binary companion + station hex; 12 NEBULA indigo veil + ringed gold world; 4135 GAMMA PRIME real planet labeled cyan among procedural siblings",
+        "repair_loop": "proof initially FAILED black-screen: canvas bitmap held the scene (getImageData 42k lit px) but never composited \u2014 root-caused live to .cockpit-frame z-index:0 stacking above z-auto in-flow content; fixed with position:relative z-index:2 on the canvas; re-proven cold-load",
+        "regression": "builds green; stage 200; LOCATION panel + hazard HUD intact in every frame"
+      },
+      "parking_lot": [
+        "BLACK_HOLE/VOID/STAR_CLUSTER/ASTEROID_FIELD sector types absent from dev galaxy \u2014 variants code-complete but unproven live (only STANDARD+NEBULA exist)",
+        "viewscreen land/dock click-through trace-verified via review, not browser-proven this run (extension flickered at tour end)",
+        "system layout re-rolls when sector planet count crosses procedural body count (documented modulo design)",
+        "Pydantic response model for /system endpoint (OpenAPI doc gap)",
+        "station orbit clearance from planet orbits (0.04 AU nudge idea)"
+      ],
+      "proposed_canon": "Full interpretation table (star weights, body kinds, orbit ladder, merge rules) documented in celestial_service.py module docstring \u2014 proposed for FEATURES/galaxy/sectors.md as new canon, Max-gated"
     }
   ]
 }
