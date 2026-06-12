@@ -472,6 +472,112 @@
         "sectors list per-row has_port/has_planet N+1 (reviewer LOW)",
         "AdminContext zones/addSectors/createWarpTunnel chain needs coordinated prune (worker deferred correctly)"
       ]
+    },
+    {
+      "id": "neon-2026-06-12-a",
+      "tier": "STANDARD (directed: warp jumper loop)",
+      "stage": "complete",
+      "branch_head_at_start": "73ee01d",
+      "directive": "Max: full Warp Jumper loop \u2014 build WJ, scan + directional quantum jump (non-sector-warp travel), two-way tunnel via TWO warp jumpers (canon: gates are one-way; two-way = opposing pair), impress",
+      "canon": "FEATURES/galaxy/warp-gates.md + ADR-0029 (consumption) + ADR-0030 (multi-step jump commit)",
+      "code_wins_flags": [
+        "WJ spec base_cost 500000 vs canon 1,000,000 all-in \u2014 code wins, flagged not fixed"
+      ],
+      "sections": [
+        {
+          "key": "quantum-drive-backend",
+          "state": "selected",
+          "proof_script": [
+            "POST /quantum/scan from WJ returns fuzzy resonance/texture/echo for a bearing cone; costs 5 turns; scan cooldown set (4h canonical, ~100s at scale 144)",
+            "POST /quantum/jump consumes 1 charge + 50 turns, resolves to a candidate sector 5-10 spacings along bearing (NOT adjacent, no warp link); 24h-canonical cooldown set; DB shows player+ship moved",
+            "misfire path: bearing into void arrives short with 5% hull damage"
+          ]
+        },
+        {
+          "key": "warp-gates-backend",
+          "state": "selected",
+          "proof_script": [
+            "deploy-beacon at source consumes 50T+10k cr+1000 ore+500 equip+1 crystal -> beacon row invulnerable 48h-canonical",
+            "anchor-focus at destination consumes 100T+10k+materials -> WJ HARMONIZING; ~25s later (1h canonical) WJ DESTROYED cause WARP_GATE_ANCHOR, NO insurance, NO wreck, pilot in escape pod AT DESTINATION, tunnel ACTIVE one-way",
+            "movement through gate costs 0 turns, one-way enforced (reverse rejected)",
+            "TWO-WAY FINALE: testpilot gate A->B + verifpilot gate B->A; both traverse both directions at 0 turns; psql shows 2 ARTIFICIAL tunnels created_by each pilot"
+          ]
+        },
+        {
+          "key": "quantum-console-ui",
+          "state": "selected",
+          "proof_script": [
+            "Piloting a WJ, NAV monitor offers QUANTUM DRIVE mode: bearing dial + range band + SCAN renders CRT fuzzy readout; JUMP commits with ceremony; cooldown timers visible",
+            "non-WJ ships see no quantum mode"
+          ]
+        },
+        {
+          "key": "gatewright-ui",
+          "state": "selected",
+          "proof_script": [
+            "Gatewright panel: deploy beacon flow w/ validation feedback, phase tracker (beacon->transit->anchor->harmonizing->active), materials checklist, harmonization countdown, sacrifice ceremony",
+            "new gates appear in nav as 0-turn routes"
+          ]
+        }
+      ],
+      "proof_seeding_note": "quantum shards/crystals/lumen/ore/equipment + WJ construction backdating seeded via psql for the live proof (acquisition supply chain is canon design-only); commissioning itself exercised through the real construction pipeline",
+      "verdict": "GLOWING",
+      "commits": [
+        "ebffd4f quantum drive",
+        "4cdd3a4 warp gates",
+        "6534461 consoles",
+        "<scan persistence>",
+        "466e810 gatewright shell",
+        "sw2102-docs 33d834e write-back"
+      ],
+      "model_usage": {
+        "tier": "STANDARD",
+        "fable_workers": {
+          "agents": 12,
+          "tokens": 1414151,
+          "roles": "4 build + 8 adversarial review"
+        },
+        "opus": {
+          "agents": 3,
+          "tokens": 303703,
+          "roles": "gate fix wave (exploit cluster, quantum guards, client fixes)"
+        },
+        "sonnet": {
+          "agents": 2,
+          "tokens_est": 100000,
+          "roles": "discovery scans (gameserver + player-client)"
+        },
+        "fable_lead_est": 450000,
+        "est_cost_vs_all_fable": "~0.84x (~16% saved \u2014 STANDARD is deliberately Fable-heavy for flagship work)"
+      },
+      "proof_evidence": {
+        "acquisition": "Both WJs commissioned through the REAL Tier-A TradeDock pipeline at Nexus Prime: reserve (1M, 100k deposit) -> keel milestone -> atomic delivery (5000 ore/1000 organics/2000 equipment) -> 4 phases (psql time-warp, flagged) -> claim. Bonus: first attempt overshot the claim window and the station honestly sold both hulls (70% refund) \u2014 claim-forfeit path proven by accident",
+        "quantum_scan": "Browser: echo scan from WJ console \u2014 resonance BRIGHT meter/texture TURBULENT/echo SILENT, FADES 10m countdown, far-band shard tax (12->11 shards), 5 turns, RECHARGE 100s (4h/144)",
+        "quantum_jump": "Browser: bearing 165deg FAR, two-step CONFIRM TRANSLATION -> arrived 4135 (no warp link), -50 turns, -1 charge, cooldown 10min. Transit hops via API; misfire proven: arrived short AT 6237 with 5.0% hull damage. Nebula-origin rejection proven live (6237 is NEBULA)",
+        "refinery": "Browser: QUANTUM DRIVE - REFINERY strip in docked view, 3 charges refined by clicks (shards 10->7, charges 0->3)",
+        "gate_ritual": "Browser: Gatewright Guild Console \u2014 Phase-1 manifest with live HAVE values incl. honest HAVE 0 crystal; project ribbon BEACON DEPLOYED->TRANSIT->ANCHORING; two-step COMMIT - BEGIN HARMONIZATION; HULL FUSION countdown (25s); GATE ACTIVE - 0-TURN CORRIDOR OPEN ceremony; EXPIRED beacon card with sunk-cost honesty",
+        "sacrifice_db": "Both WJs: is_destroyed=t, destruction_cause=WARP_GATE_ANCHOR, status DESTROYED; both pilots in ESCAPE_POD at their gate DESTINATIONS; lumen residue transferred to pods",
+        "two_way_finale": "testpilot pod rode verifpilot gate 6237->4495 IN BROWSER: NAVIGATION COMPLETE, turns 1636 unchanged, violet gate node + CLICK TO WARP - 0 TURNS tooltip; verifpilot rode testpilot gate 4495->6237 via API: cost 0, turns 1540 unchanged. psql: 2 ARTIFICIAL ACTIVE tunnels, turn_cost 0, is_bidirectional=f, one per builder",
+        "regression": "player-client builds green; gameserver py_compile green; stage API 200 throughout; zero console errors logged in proof session"
+      },
+      "seeding_flags": [
+        "quantum shards/crystals + lumen/ore/equipment cargo psql-seeded (supply chain is canon design-only; WJ 200-cargo cannot hold phase materials \u2014 contradiction filed)",
+        "construction phase_deadline + reservation clocks backdated (time acceleration)",
+        "jump cooldowns nulled between scripted transit hops (time acceleration)",
+        "beacon windows extended +90min for proof pacing",
+        "verifpilot teleported final 3 spacings (757->4495): jump bands cannot fine-approach <5 spacings (canon texture)",
+        "verifpilot +2 charges seeded at 6237 (no refinery venue exists in deep space \u2014 canon-correct stranding texture)"
+      ],
+      "parking_lot": [
+        "cockpit dashboard refresh remounts NAV console: resets bearing/band controls + races the 5s ARM auto-disarm (root-cause the loading flash; the scan-result loss is already fixed)",
+        "PLANETARY monitor intermittently empty on first load at a station sector (transient, pre-existing)",
+        "CORRIDORS IN SECTOR lists only outbound gates; arrival-side gate not shown",
+        "construction claim ignores custom ship_name",
+        "beacon-phase cancel exists in API but has no UI affordance",
+        "scan-detection pings to scanned cone (ADR-0030) parked; access modes/tolls/transfer/destruction/upgrades design-only per canon",
+        "Orbitron font referenced but never loaded \u2014 Max decision: load it or keep Courier New",
+        "admin WarpTunnels page now shows 4 tunnels incl. 2 player gates \u2014 admin gate-management surface is unbuilt"
+      ]
     }
   ]
 }
