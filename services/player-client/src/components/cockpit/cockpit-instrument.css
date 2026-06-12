@@ -256,3 +256,14 @@
 .console-monitor .trading-header h2 {
   display: none;
 }
+
+/* Inside an instrument (or the docked console monitor), the host's scroll
+   region owns vertical overflow. .trading-interface's own max-height:100% +
+   overflow:hidden capped it at the visible height and silently discarded
+   anything below (146px of the ledger gone at 1440x707). Let it size to its
+   content and the host scroll instead. */
+.instrument-monitor .trading-interface,
+.console-monitor .trading-interface {
+  max-height: none;
+  overflow: visible;
+}
