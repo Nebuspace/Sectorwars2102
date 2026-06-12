@@ -17,7 +17,7 @@
   width: 100%;
   height: 100%;
   cursor: default;
-  /* The .cockpit-frame sibling overlay carries z-index: 0, which stacks ABOVE
+  /* The .windshield-frame sibling overlay carries z-index: 0, which stacks ABOVE
      z-auto in-flow content and buries the canvas paint entirely. Lift the
      canvas into its own stacking position (below the HUD overlays, above the
      frame's vignette). Without this the scene renders but never composites. */

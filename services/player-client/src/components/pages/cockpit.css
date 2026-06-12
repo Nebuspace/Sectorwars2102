@@ -206,7 +206,7 @@
 }
 
 /* Cockpit frame with corner brackets */
-.cockpit-frame {
+.windshield-frame {
   position: absolute;
   top: 0;
   left: 0;
@@ -217,7 +217,7 @@
 }
 
 /* Vignette effect - subtle edge darkening */
-.cockpit-frame::before {
+.windshield-frame::before {
   content: '';
   position: absolute;
   top: 0;

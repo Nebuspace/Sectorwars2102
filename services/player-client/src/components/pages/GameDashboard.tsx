@@ -1256,7 +1256,7 @@ const GameDashboard: React.FC = () => {
               />
 
               {/* Cockpit frame vignette */}
-              <div className="cockpit-frame">
+              <div className="windshield-frame">
                 <div className="frame-corner top-left"></div>
                 <div className="frame-corner top-right"></div>
                 <div className="frame-corner bottom-left"></div>
@@ -1314,7 +1314,7 @@ const GameDashboard: React.FC = () => {
               />
 
               {/* Cockpit frame vignette */}
-              <div className="cockpit-frame">
+              <div className="windshield-frame">
                 <div className="frame-corner top-left"></div>
                 <div className="frame-corner top-right"></div>
                 <div className="frame-corner bottom-left"></div>
@@ -1364,7 +1364,7 @@ const GameDashboard: React.FC = () => {
               />
 
               {/* Cockpit frame vignette */}
-              <div className="cockpit-frame">
+              <div className="windshield-frame">
                 <div className="frame-corner top-left"></div>
                 <div className="frame-corner top-right"></div>
                 <div className="frame-corner bottom-left"></div>
