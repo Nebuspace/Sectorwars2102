@@ -22,8 +22,12 @@ class MarketTransaction(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
-    # Transaction participants
+    # Transaction participants. Exactly one of player_id / npc_id is set:
+    # npc_id attributes TRADER-archetype NPC trades (SYSTEMS/
+    # npc-lifecycle.md § Trade — NPCs are full market actors; attribution
+    # field itself is canon-silent, flagged in DECISIONS.md).
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    npc_id = Column(UUID(as_uuid=True), ForeignKey("npc_characters.id", ondelete="SET NULL"), nullable=True)
     station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id", ondelete="SET NULL"), nullable=True)
     
     # Transaction details
@@ -64,6 +68,7 @@ class MarketTransaction(Base):
         Index('ix_market_transactions_commodity', 'commodity'),
         Index('ix_market_transactions_player_id', 'player_id'),
         Index('ix_market_transactions_station_id', 'station_id'),
+        Index('ix_market_transactions_npc_id', 'npc_id'),
     )
 
 

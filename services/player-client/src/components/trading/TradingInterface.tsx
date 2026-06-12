@@ -26,6 +26,9 @@ interface Resource {
   sell_price: number;
   station_buys: boolean;
   station_sells: boolean;
+  /** Player-trade demand signal (ADR-0062 E-V4) — NPC trader activity
+   *  feeds a separate field and never skews this indicator. */
+  player_demand_score?: number;
   last_updated?: string;
 }
 
@@ -843,6 +846,15 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                         : `You have: ${playerAmount}`
                       }
                     </div>
+                    {resource.player_demand_score !== undefined && (
+                      <div className="resource-demand">
+                        Demand: {
+                          resource.player_demand_score >= 1.25 ? 'High'
+                          : resource.player_demand_score <= 0.75 ? 'Low'
+                          : 'Steady'
+                        }
+                      </div>
+                    )}
                     {canTrade && (
                       <div className="resource-trade-hint">
                         Click to {tradeMode}

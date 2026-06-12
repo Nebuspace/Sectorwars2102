@@ -229,6 +229,15 @@ async def buy_resource(
         market_price.last_transaction_at = datetime.now(UTC)
         if commodity_cfg is not None:
             commodity_cfg["quantity"] = max(0, commodity_cfg.get("quantity", 0) - trade_request.quantity)
+            # ADR-0062 E-V4 demand split: player purchases raise the
+            # PLAYER demand signal only (NPC trades feed the separate
+            # npc_restock_demand key and never blend into this one).
+            capacity = commodity_cfg.get("capacity", 0) or 0
+            if capacity > 0:
+                score = commodity_cfg.get("player_demand_score", 1.0)
+                commodity_cfg["player_demand_score"] = round(
+                    min(2.0, max(0.0, score + trade_request.quantity / capacity)), 4
+                )
             flag_modified(station, 'commodities')
 
         # Create transaction record. The station_buy/sell_price snapshots
@@ -451,6 +460,14 @@ async def sell_resource(
         market_price.last_transaction_at = datetime.now(UTC)
         if commodity_cfg is not None:
             commodity_cfg["quantity"] = commodity_cfg.get("quantity", 0) + trade_request.quantity
+            # ADR-0062 E-V4 demand split: player supply satisfies player
+            # demand — lower the PLAYER signal only.
+            capacity = commodity_cfg.get("capacity", 0) or 0
+            if capacity > 0:
+                score = commodity_cfg.get("player_demand_score", 1.0)
+                commodity_cfg["player_demand_score"] = round(
+                    min(2.0, max(0.0, score - trade_request.quantity / capacity)), 4
+                )
             flag_modified(station, 'commodities')
 
         # Create transaction record. The station_buy/sell_price snapshots
@@ -589,6 +606,10 @@ async def get_market_info(
             "sell_price": max(1, int(price.sell_price * (1 - rank_rate))),
             "station_buys": bool(cfg.get("buys", True)),
             "station_sells": bool(cfg.get("sells", True)),
+            # ADR-0062 E-V4: the player-facing demand indicator reads the
+            # PLAYER demand signal only — NPC trader activity (the
+            # npc_restock_demand key) is never surfaced here.
+            "player_demand_score": float(cfg.get("player_demand_score", 1.0)),
             "last_updated": price.updated_at.isoformat() if price.updated_at else None
         }
     
