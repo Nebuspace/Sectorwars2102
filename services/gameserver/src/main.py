@@ -135,6 +135,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     heartbeat_task = asyncio.create_task(_heartbeat_cleanup_loop())
 
+    # NPC scheduler (Living NPC System — Loops A/B/C). Env-gated so prod
+    # stays static until the system is proven on dev. Tick bodies run in
+    # a worker thread (asyncio.to_thread) so the event loop never blocks.
+    npc_scheduler_task = None
+    if settings.NPC_SCHEDULER_ENABLED:
+        from src.services.npc_scheduler_service import npc_scheduler_loop
+        npc_scheduler_task = asyncio.create_task(npc_scheduler_loop())
+        logger.info("NPC scheduler task started (NPC_SCHEDULER_ENABLED=true)")
+    else:
+        logger.info("NPC scheduler disabled (NPC_SCHEDULER_ENABLED=false)")
+
     # Orphan-recovery sweep: mark any bang generation jobs left in RUNNING
     # state for >5 minutes as FAILED. See DOCS/PLANS/bang-integration.md
     # § Phase 1B. Safe to run before migrations land (errors are logged
@@ -187,14 +198,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ---------- shutdown ----------
     logger.info("Shutting down Sectorwars 2102 Game Server...")
-    heartbeat_task.cancel()
-    try:
-        await heartbeat_task
-    except asyncio.CancelledError:
-        # Expected: we just cancelled it.
-        logger.debug("Heartbeat cleanup task cancelled cleanly")
-    except Exception as e:  # noqa: BLE001 — best-effort shutdown
-        logger.warning(f"Heartbeat cleanup raised during shutdown (ignored): {e}")
+    for task, label in ((heartbeat_task, "Heartbeat cleanup"),
+                        (npc_scheduler_task, "NPC scheduler")):
+        if task is None:
+            continue
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Expected: we just cancelled it.
+            logger.debug(f"{label} task cancelled cleanly")
+        except Exception as e:  # noqa: BLE001 — best-effort shutdown
+            logger.warning(f"{label} raised during shutdown (ignored): {e}")
 
 # Create FastAPI application
 app = FastAPI(
