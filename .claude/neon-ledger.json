@@ -862,6 +862,84 @@
         "faction missions: completion mechanics pending decision (filed)",
         "team_service contribution_credits JSONB in-place mutation may not persist"
       ]
+    },
+    {
+      "id": "neon-2026-06-12-f",
+      "tier": "STANDARD",
+      "stage": "complete",
+      "branch_head_at_start": "3d9f7a1",
+      "sections": [
+        {
+          "key": "comms-mailbox",
+          "state": "selected",
+          "effort": 3,
+          "proof_script": [
+            "COMMS monitor gains HAILS: testpilot composes a hail to verifpilot from the cockpit (contact click or mail tab) -> 200; verifpilot session shows the message with unread badge; mark-read clears it",
+            "Unread count badge on the COMMS header from real GET /messages/inbox unread data",
+            "new_message websocket event refreshes the inbox live (code-verified at minimum; live two-session if browser permits)"
+          ]
+        },
+        {
+          "key": "dead-tech-purge-and-safety",
+          "state": "selected",
+          "effort": 3,
+          "proof_script": [
+            "Orphan market-intelligence + player-analytics families + realtimeWebSocket.ts deleted after zero-routed-consumer verification; build green",
+            "Team treasury transfer of a non-credit resource to a player -> clean 400 naming the rule (was: silent resource destruction); credits transfer still works",
+            "combat_logs attacker/defender damage columns nonzero after a fight (was always 0)"
+          ]
+        },
+        {
+          "key": "living-world-ticks",
+          "state": "selected",
+          "effort": 3,
+          "proof_script": [
+            "Terraforming started on Gamma Prime (500 colonists): lazy advance applies population-scaled habitability points per canon (1 base +1/1000 colonists, cap 3) on read; psql shows habitability_score rising on the canon schedule after backdating",
+            "Ops console terraform header shows REAL terraforming status (project level/progress) instead of the (currentPlanet as any).terraform_level fiction",
+            "Siege morale advance-on-read wired via the same lazy pattern (staged proof only if cheaply stageable; else code+review evidence, honestly labeled)"
+          ]
+        }
+      ],
+      "verdict": "GLOWING",
+      "model_usage": {
+        "tier": "STANDARD",
+        "fable": {
+          "agents": 9,
+          "tokens": 1391559,
+          "roles": "3 build + 6 adversarial review"
+        },
+        "opus": {
+          "agents": 3,
+          "tokens": 306066,
+          "roles": "2 gate-fix waves + docs write-back"
+        },
+        "sonnet": {
+          "agents": 0,
+          "tokens": 0,
+          "roles": "no discovery this run (deep parking lot)"
+        },
+        "fable_lead_est": 300000,
+        "est_cost_vs_all_fable": "~0.90x (~10% saved)"
+      },
+      "proof_evidence": {
+        "mailbox": "COMMS (5) badge on cold load; HAILS tab listed 5 unread; expand auto-read dropped badge to (4); cockpit REPLY persisted threaded (RE: burst 5, is_reply=t in psql); rate limit 200x5-then-429 live; toast + ws notify path active",
+        "purge": "market-intelligence + player-analytics + SmartTradingAutomation + MarketIntelligenceDashboard + realtimeWebSocket.ts + orphan api families + 2 stale e2e specs deleted; vite build green",
+        "treasury": "fuel transfer AND organics deposit both rejected with honest cargo-routing message; credits+quantum_crystals whitelisted both directions",
+        "terraforming": "cockpit panel honest (real ladder costs, honest 400 pre-seed); L1 started (100k debit); 24 canonical hours backdated -> exactly 3 ticks at 500-colonist rate -> hab 15->18, progress 30%, tickPeriodHours 7.2, max_population recomputed 15000->18000 (ADR-0035 fix live)",
+        "regression": "build + py_compile green, stage 200 throughout"
+      },
+      "seeding_flags": [
+        "Gamma Prime organics/equipment stocked for the L1 start (planet stockpile empty)",
+        "terraforming last_tick_at backdated 10 wall minutes (time acceleration)"
+      ],
+      "parking_lot": [
+        "siege vulnerability remains display-only (pending decision filed); lift_siege/check_and_update callers still sparse",
+        "process_terraforming_tick has zero callers (scheduler-or-delete decision)",
+        "dual refresh-token locks still uncoordinated",
+        "genesis tiers price-only theater",
+        "security-validation e2e spec deleted; foundation-sprint dir could use a fuller audit",
+        "COMMS v1: no manual recipient entry, page-1-only inbox, no sent view (no backend endpoint)"
+      ]
     }
   ]
 }
