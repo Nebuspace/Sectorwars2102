@@ -130,7 +130,16 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
       setError(null);
       setSuccessMessage(null);
 
-      const response = await gameAPI.planetary.updateDefenses(planet.id, tempDefenses);
+      // The backend's DefenseUpdateRequest accepts turrets/shields/fighters —
+      // it has no 'drones' field (sending one is silently discarded). The
+      // canon name is "drones" (defense.md); the storage column is
+      // defense_fighters, and the response maps it back to 'drones'.
+      const payload: { turrets: number; shields: number; fighters: number } = {
+        turrets: tempDefenses.turrets,
+        shields: tempDefenses.shields,
+        fighters: tempDefenses.drones
+      };
+      const response = await gameAPI.planetary.updateDefenses(planet.id, payload);
       
       if (response.success) {
         setDefenses(response.defenses);

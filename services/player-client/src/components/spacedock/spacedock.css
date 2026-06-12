@@ -1140,6 +1140,37 @@
   border-color: #00d9ff;
 }
 
+.service-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.service-btn:disabled:hover {
+  background: rgba(0, 217, 255, 0.2);
+  border-color: rgba(0, 217, 255, 0.4);
+}
+
+.service-card.unavailable {
+  opacity: 0.55;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.service-unavailable-note {
+  font-size: 0.75em;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: center;
+  font-style: italic;
+}
+
+.service-unavailable-badge {
+  font-size: 0.75em;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+
 /* ========================================
    TRADING VENUE
    ======================================== */

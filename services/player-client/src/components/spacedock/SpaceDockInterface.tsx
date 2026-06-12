@@ -335,9 +335,9 @@ const SpaceDockInterface: React.FC = () => {
       id: 'services',
       name: 'Ship Services',
       icon: '🔧',
-      description: 'Repairs, upgrades, insurance, and maintenance',
+      description: 'Hull and shield repair plus ship condition readouts',
       available: Boolean(stationServices.ship_repair) || Boolean(stationServices.ship_maintenance),
-      services: ['Ship Repair', 'Shield Upgrades', 'Cargo Insurance', 'Maintenance']
+      services: ['Ship Repair', 'Hull & Shield Status', 'Cargo Readout']
     },
     {
       id: 'gambling',
@@ -762,10 +762,15 @@ const SpaceDockInterface: React.FC = () => {
 
   // Fetch current ship data including genesis device info
   const [shipData, setShipData] = useState<{
+    id: string;
     genesis_devices: number;
     max_genesis_devices: number;
     type: string;
     name: string;
+    combat?: Record<string, unknown> | null;
+    cargo?: Record<string, number> | null;
+    cargo_capacity?: number;
+    current_value?: number;
   } | null>(null);
 
   const fetchShipData = useCallback(async () => {
@@ -984,6 +989,72 @@ const SpaceDockInterface: React.FC = () => {
       setArmoryBuying(null);
     }
   }, [armoryBuying, displayCredits, updatePlayerCredits, refreshPlayerState]);
+
+  // --- Ship Services: real repair flow ---
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairError, setRepairError] = useState<string | null>(null);
+  const [repairSuccess, setRepairSuccess] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (activeVenue === 'services') {
+      // Refresh hull/shield/cargo readings on entry so the gauges are live
+      fetchShipData();
+      setRepairError(null);
+      setRepairSuccess(null);
+    }
+  }, [activeVenue, fetchShipData]);
+
+  const repairShip = useCallback(async () => {
+    const token = getToken();
+    const shipId = shipData?.id;
+    if (!token || !shipId || repairBusy) {
+      if (!token) setRepairError('Not authenticated. Please log in again.');
+      return;
+    }
+
+    setRepairBusy(true);
+    setRepairError(null);
+    setRepairSuccess(null);
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/player/ships/${shipId}/repair`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.message ?? error?.detail;
+        setRepairError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'Repair failed');
+        return;
+      }
+
+      const result = await response.json();
+      setLocalCredits(result.credits_remaining);
+      updatePlayerCredits(result.credits_remaining);
+      // Copy-reassign combat so the gauges re-render with restored values
+      setShipData(prev => prev ? {
+        ...prev,
+        combat: {
+          ...(prev.combat ?? {}),
+          hull: result.hull,
+          shields: result.shields,
+          max_hull: result.max_hull,
+          max_shields: result.max_shields
+        }
+      } : prev);
+      setRepairSuccess(result.message || 'Ship repaired.');
+      setTimeout(() => setRepairSuccess(null), 3000);
+
+      // Sync header credits and ship condition with the server
+      refreshPlayerState();
+    } catch (error) {
+      console.error('Ship repair error:', error);
+      setRepairError('Connection error. Please try again.');
+    } finally {
+      setRepairBusy(false);
+    }
+  }, [shipData?.id, repairBusy, updatePlayerCredits, refreshPlayerState]);
 
   // Credits plumbing for the Construction venue — instant optimistic feedback
   // plus authoritative totals when the server returns them
@@ -2270,88 +2341,170 @@ const SpaceDockInterface: React.FC = () => {
     );
   };
 
-  const renderServices = () => (
-    <div className="venue-container services">
-      <div className="venue-header">
-        <button className="back-button" onClick={() => setActiveVenue('hub')}>
-          ← Back to Hub
-        </button>
-        <h2>🔧 Ship Services</h2>
-      </div>
-      <div className="venue-content-area">
-        <div className="services-grid">
-          <div className="service-card">
-            <div className="service-icon">🔧</div>
-            <h3>Ship Repair</h3>
-            <p>Restore hull and shield integrity</p>
-            <div className="service-status">
-              <div className="status-bar">
-                <span className="bar-label">Hull</span>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: '85%' }}></div>
+  const renderServices = () => {
+    // Read real hull/shield condition off the current ship. The combat dict
+    // mirrors the server's ShipResponse; values are plain numbers there.
+    const combat = shipData?.combat ?? null;
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const hull = num(combat?.hull);
+    const maxHull = num(combat?.max_hull);
+    const shields = num(combat?.shields);
+    const maxShields = num(combat?.max_shields);
+
+    const hullPct = hull !== null && maxHull ? Math.max(0, Math.min(100, (hull / maxHull) * 100)) : null;
+    const shieldPct = shields !== null && maxShields ? Math.max(0, Math.min(100, (shields / maxShields) * 100)) : null;
+
+    // Mirror the server's canon pricing (player.py repair endpoint):
+    // Basic repair = 5% of ship value per +10% combined hull+shield rating
+    const totalMax = (maxHull ?? 0) + (maxShields ?? 0);
+    const deficit = ((maxHull ?? 0) - (hull ?? 0)) + ((maxShields ?? 0) - (shields ?? 0));
+    const deficitPct = totalMax > 0 ? Math.max(0, (deficit / totalMax) * 100) : 0;
+    const repairCost = totalMax > 0
+      ? Math.round((shipData?.current_value ?? 0) * 0.05 * (deficitPct / 10))
+      : null;
+    const atFullCondition = totalMax > 0 && deficitPct <= 0;
+
+    // Cargo: "used" field when present, else sum commodity values while
+    // excluding metadata keys (same convention as ShipSelector)
+    const cargo = shipData?.cargo ?? {};
+    const metadataKeys = ['capacity', 'used', 'contents'];
+    const cargoUsed = typeof cargo.used === 'number'
+      ? cargo.used
+      : Object.entries(cargo)
+          .filter(([key, val]) => !metadataKeys.includes(key) && typeof val === 'number')
+          .reduce((sum, [, val]) => sum + val, 0);
+    const cargoCapacity = shipData?.cargo_capacity ?? 0;
+    const cargoPct = cargoCapacity > 0 ? Math.max(0, Math.min(100, (cargoUsed / cargoCapacity) * 100)) : 0;
+
+    // The repair endpoint requires the docked station to offer ship_repair
+    const repairOffered = Boolean(stationServices.ship_repair);
+
+    let repairBlockReason: string | null = null;
+    if (!repairOffered) {
+      repairBlockReason = 'This station does not offer hull repair';
+    } else if (!shipData) {
+      repairBlockReason = 'Reading ship telemetry...';
+    } else if (totalMax <= 0) {
+      // Escape pods / malformed combat dicts have no repairable systems;
+      // without this branch the button enables with a "—" cost and the
+      // click can only ever earn the server's 400.
+      repairBlockReason = 'Ship has no repairable systems';
+    } else if (atFullCondition) {
+      repairBlockReason = 'Ship is at full condition';
+    } else if (repairCost !== null && displayCredits < repairCost) {
+      repairBlockReason = 'Insufficient credits';
+    }
+
+    return (
+      <div className="venue-container services">
+        <div className="venue-header">
+          <button className="back-button" onClick={() => setActiveVenue('hub')}>
+            ← Back to Hub
+          </button>
+          <h2>🔧 Ship Services</h2>
+        </div>
+        <div className="venue-content-area">
+          {repairSuccess && (
+            <div className="genesis-success-message">
+              <span className="success-icon">✅</span>
+              {repairSuccess}
+            </div>
+          )}
+          {repairError && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {repairError}
+            </div>
+          )}
+
+          <div className="services-grid">
+            <div className="service-card">
+              <div className="service-icon">🔧</div>
+              <h3>Ship Repair</h3>
+              <p>{shipData ? `Restore ${shipData.name}'s hull and shield integrity` : 'Restore hull and shield integrity'}</p>
+              <div className="service-status">
+                <div className="status-bar">
+                  <span className="bar-label">Hull</span>
+                  <div className="bar-track">
+                    <div className="bar-fill" style={{ width: `${hullPct ?? 0}%` }}></div>
+                  </div>
+                  <span className="bar-value">{hullPct !== null ? `${Math.round(hullPct)}%` : '—'}</span>
                 </div>
-                <span className="bar-value">85%</span>
-              </div>
-              <div className="status-bar">
-                <span className="bar-label">Shields</span>
-                <div className="bar-track">
-                  <div className="bar-fill shield" style={{ width: '100%' }}></div>
+                <div className="status-bar">
+                  <span className="bar-label">Shields</span>
+                  <div className="bar-track">
+                    <div className="bar-fill shield" style={{ width: `${shieldPct ?? 0}%` }}></div>
+                  </div>
+                  <span className="bar-value">{shieldPct !== null ? `${Math.round(shieldPct)}%` : '—'}</span>
                 </div>
-                <span className="bar-value">100%</span>
+              </div>
+              <div className="service-action">
+                <span className="repair-cost">
+                  {repairCost === null
+                    ? '—'
+                    : atFullCondition
+                      ? 'No repairs needed'
+                      : `${repairCost.toLocaleString()} cr`}
+                </span>
+                <button
+                  className="service-btn"
+                  onClick={repairShip}
+                  disabled={repairBusy || Boolean(repairBlockReason)}
+                  title={repairBlockReason ?? undefined}
+                >
+                  {repairBusy ? 'Repairing...' : 'Full Repair'}
+                </button>
               </div>
             </div>
-            <div className="service-action">
-              <span className="repair-cost">100 cr per 1%</span>
-              <button className="service-btn">Full Repair</button>
-            </div>
-          </div>
 
-          <div className="service-card">
-            <div className="service-icon">🛡️</div>
-            <h3>Shield Upgrade</h3>
-            <p>Enhance shield capacity and recharge rate</p>
-            <div className="upgrade-tiers">
-              <div className="tier current">Tier 2</div>
-              <div className="tier next">→ Tier 3</div>
+            <div className="service-card">
+              <div className="service-icon">📦</div>
+              <h3>Cargo Hold</h3>
+              <p>Current hold loading for {shipData?.name ?? 'your ship'}</p>
+              <div className="service-status">
+                <div className="status-bar">
+                  <span className="bar-label">Cargo</span>
+                  <div className="bar-track">
+                    <div className="bar-fill" style={{ width: `${cargoPct}%` }}></div>
+                  </div>
+                  <span className="bar-value">{cargoCapacity > 0 ? `${Math.round(cargoPct)}%` : '—'}</span>
+                </div>
+              </div>
+              <div className="cargo-info">
+                <span>{cargoUsed.toLocaleString()} / {cargoCapacity.toLocaleString()} units</span>
+              </div>
             </div>
-            <div className="service-action">
-              <span className="upgrade-cost">50,000 cr</span>
-              <button className="service-btn">Upgrade</button>
-            </div>
-          </div>
 
-          <div className="service-card">
-            <div className="service-icon">📦</div>
-            <h3>Cargo Expansion</h3>
-            <p>Increase ship cargo capacity</p>
-            <div className="cargo-info">
-              <span>Current: 50 units</span>
-              <span>Next: +25 units</span>
+            <div className="service-card unavailable">
+              <div className="service-icon">📈</div>
+              <h3>Ship Upgrades</h3>
+              <p>Hull, shield, and cargo refits</p>
+              <div className="service-unavailable-note">
+                Upgrade bays are not yet operational at this station. New hulls
+                can be commissioned at the Shipyard.
+              </div>
+              <div className="service-action">
+                <span className="service-unavailable-badge">NOT AVAILABLE</span>
+              </div>
             </div>
-            <div className="service-action">
-              <span className="upgrade-cost">25,000 cr</span>
-              <button className="service-btn">Expand</button>
-            </div>
-          </div>
 
-          <div className="service-card">
-            <div className="service-icon">📜</div>
-            <h3>Cargo Insurance</h3>
-            <p>Protect your cargo against piracy</p>
-            <div className="insurance-details">
-              <span>Coverage: 80% of value</span>
-              <span>Duration: 7 days</span>
-            </div>
-            <div className="service-action">
-              <span className="insurance-cost">5,000 cr</span>
-              <button className="service-btn">Purchase</button>
+            <div className="service-card unavailable">
+              <div className="service-icon">📜</div>
+              <h3>Cargo Insurance</h3>
+              <p>Cargo protection against piracy</p>
+              <div className="service-unavailable-note">
+                No underwriter currently operates at this station.
+              </div>
+              <div className="service-action">
+                <span className="service-unavailable-badge">NOT AVAILABLE</span>
+              </div>
             </div>
           </div>
         </div>
+        <BlackMarketButton />
       </div>
-      <BlackMarketButton />
-    </div>
-  );
+    );
+  };
 
   const renderTrading = () => (
     <div className="venue-container trading">
