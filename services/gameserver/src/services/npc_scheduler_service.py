@@ -69,6 +69,7 @@ from src.services import npc_movement_service
 from src.services.npc_spawn_service import (
     KIND_CONFIG,
     POLICE_WANTED_THRESHOLD,
+    TRADER_STARTING_CREDITS,
     _build_npc_ship,
     _presence_entry,
     _roman,
@@ -126,27 +127,41 @@ def canonical_minute_of_day(now: Optional[datetime] = None) -> int:
     return int(canonical_minutes % 1440)
 
 
+def canonical_day_number(now: Optional[datetime] = None) -> int:
+    """Canonical day counter since epoch (drives multi-day route
+    cycles)."""
+    now = now or datetime.now(UTC)
+    return int(now.timestamp() * game_time.GAME_TIME_SCALE // 86400)
+
+
 def canonical_weekday(now: Optional[datetime] = None) -> int:
     """Canonical weekday, Monday=0 (matches datetime.weekday() at scale
     1.0 — 1970-01-01 was a Thursday)."""
-    now = now or datetime.now(UTC)
-    canonical_day = int(now.timestamp() * game_time.GAME_TIME_SCALE // 86400)
-    return (canonical_day + 3) % 7
+    return (canonical_day_number(now) + 3) % 7
 
 
 def resolve_schedule_block(
     daily_schedule: Dict[str, Any],
     minute: int,
     weekday: int,
+    day_number: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """The schedule block covering ``minute``, honoring weekly_overrides
-    (SYSTEMS/npc-lifecycle.md JSONB shape). None when nothing matches."""
+    (SYSTEMS/npc-lifecycle.md JSONB shape) and multi-day route cycles
+    (TRADER pattern: blocks come from days[day_number % cycle_days]).
+    None when nothing matches."""
     if not daily_schedule:
         return None
     shift = int(daily_schedule.get("shift_offset_hours") or 0)
     minute = (minute + shift * 60) % 1440
 
     blocks = daily_schedule.get("blocks") or []
+    route_cycle = daily_schedule.get("route_cycle")
+    if isinstance(route_cycle, dict):
+        cycle_days = max(1, int(route_cycle.get("cycle_days") or 1))
+        blocks = (route_cycle.get("days") or {}).get(
+            str(day_number % cycle_days)
+        ) or blocks
     for override in daily_schedule.get("weekly_overrides") or []:
         if override.get("weekday") == weekday and override.get("blocks"):
             blocks = override["blocks"]
@@ -173,6 +188,7 @@ def run_loop_a(db: Session) -> List[Dict[str, Any]]:
     now = datetime.now(UTC)
     minute = canonical_minute_of_day(now)
     weekday = canonical_weekday(now)
+    day_number = canonical_day_number(now)
 
     npcs = (
         db.query(NPCCharacter)
@@ -186,7 +202,9 @@ def run_loop_a(db: Session) -> List[Dict[str, Any]]:
     )
 
     for npc in npcs:
-        block = resolve_schedule_block(npc.daily_schedule or {}, minute, weekday)
+        block = resolve_schedule_block(
+            npc.daily_schedule or {}, minute, weekday, day_number
+        )
         if block is None:
             continue
 
@@ -199,19 +217,30 @@ def run_loop_a(db: Session) -> List[Dict[str, Any]]:
         if npc.current_activity != activity:
             npc.current_activity = activity
 
-        # Movement is only driven for patrol blocks in this phase; other
-        # location types (station, home_sector, lodging) no-op gracefully
-        # until their slices land.
-        if (
-            activity == NPCActivity.PATROL
-            and npc.status == NPCStatus.ON_DUTY
-            and str(block.get("location_type", "")) == "patrol_route"
-        ):
-            try:
+        location_type = str(block.get("location_type", ""))
+
+        # Movement/trade drivers. Location types without a driver yet
+        # (home_sector, lodging) no-op gracefully until their slices land.
+        try:
+            if (
+                activity == NPCActivity.PATROL
+                and npc.status == NPCStatus.ON_DUTY
+                and location_type == "patrol_route"
+            ):
                 events.extend(_drive_patrol(db, npc, block, minute))
-            except Exception:
-                logger.exception("Loop A: patrol drive failed for NPC %s", npc.id)
-                db.rollback()
+            elif (
+                activity == NPCActivity.COMMUTE
+                and location_type == "station_target"
+            ):
+                events.extend(_drive_commute(db, npc, block))
+            elif (
+                activity == NPCActivity.WORK_STATION
+                and location_type == "station"
+            ):
+                events.extend(_drive_trade_stop(db, npc, block))
+        except Exception:
+            logger.exception("Loop A: drive failed for NPC %s", npc.id)
+            db.rollback()
 
     db.flush()
     return events
@@ -249,6 +278,56 @@ def _drive_patrol(
     if next_hop is None:
         return []
     return npc_movement_service.move_npc(db, npc, next_hop)
+
+
+def _drive_commute(
+    db: Session,
+    npc: NPCCharacter,
+    block: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Move a commuting NPC (trader transit day) one hop toward its
+    target sector; npc_movement_service enforces canon pacing."""
+    ref = block.get("location_ref") or {}
+    target = ref.get("sector_id")
+    if target is None or npc.current_sector_id is None:
+        return []
+    target = int(target)
+    if npc.current_sector_id == target:
+        return []
+    next_hop = npc_movement_service.next_hop_toward(
+        db, npc.current_sector_id, target
+    )
+    if next_hop is None:
+        return []
+    return npc_movement_service.move_npc(db, npc, next_hop)
+
+
+def _drive_trade_stop(
+    db: Session,
+    npc: NPCCharacter,
+    block: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Run a trader's work_station block: execute the stop's sell/buy
+    program once the NPC is at the station's sector (a trader that fell
+    behind keeps commuting instead)."""
+    ref = block.get("location_ref") or {}
+    if not ref.get("station_id"):
+        return []
+    if npc.current_sector_id != ref.get("sector_id"):
+        # Behind schedule — keep flying toward the stop.
+        return _drive_commute(db, npc, block)
+
+    route = (npc.daily_schedule or {}).get("trade_route") or []
+    stop_index = ref.get("stop_index")
+    stop = None
+    if stop_index is not None and 0 <= int(stop_index) < len(route):
+        stop = route[int(stop_index)]
+    if stop is None:
+        stop = {"station_id": ref["station_id"],
+                "sector_id": ref.get("sector_id"), "buy_here": []}
+
+    from src.services import npc_trading_service
+    return npc_trading_service.run_trade_stop(db, npc, stop)
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +485,8 @@ def _resurrect_respawned(db: Session, now: datetime) -> List[Dict[str, Any]]:
         npc.last_seen_at = now
 
         npc_movement_service.add_npc_presence(sector, npc, ship)
-        _join_squad(sector, cfg, roster, npc)
+        if cfg.joins_squad:
+            _join_squad(sector, cfg, roster, npc)
 
         logger.info(
             "Loop B: %s respawned after cooldown (roster %s)",
@@ -495,9 +575,29 @@ def _fill_roster_deficit(
         > 0
     )
 
+    is_trader = roster.default_archetype == NPCArchetype.TRADER
+
     events: List[Dict[str, Any]] = []
     for _ in range(spawn_count):
         npc_name = _next_name(db, roster)
+
+        # Traders get a PER-NPC schedule: a generated 2–4 station route
+        # encoded as multi-day blocks. No complementary stations in the
+        # region → no spawn (retried next pass as markets move).
+        daily_schedule: Dict[str, Any] = dict(roster.schedule_template or {})
+        if is_trader:
+            from src.services import npc_trading_service
+
+            route = npc_trading_service.generate_trade_route(
+                db, roster.region_id, roster.host_sector_id
+            )
+            if route is None:
+                logger.info(
+                    "Loop B: no complementary trade route in region %s — "
+                    "trader spawn deferred", roster.region_id,
+                )
+                return events
+            daily_schedule = npc_trading_service.build_trader_schedule(route)
 
         ship = _build_npc_ship(
             spec,
@@ -517,19 +617,24 @@ def _fill_roster_deficit(
             ship_id=ship.id,
             bang_roster_ref=roster.bang_roster_ref,
             home_region_id=roster.region_id,
-            current_activity=NPCActivity.PATROL,
+            current_activity=(
+                NPCActivity.COMMUTE if is_trader else NPCActivity.PATROL
+            ),
             # ADR-0063: successors spawn immediately as reduced-stat recruits.
             lifecycle_stage=NPCLifecycleStage.RECRUIT,
             # N-F1: a roster with no live primary gets one immediately
             # (the emergency-spawn fallthrough); otherwise the recruit
-            # lands in a backup slot.
-            duty_role=(
+            # lands in a backup slot. Traders are independent — no chain.
+            duty_role=None if is_trader else (
                 f"backup_{roster.role}" if has_primary
                 else f"primary_{roster.role}"
             ),
-            daily_schedule=dict(roster.schedule_template or {}),
+            daily_schedule=daily_schedule,
             engagement_eligible_at=now,
             promotion_pending_at=game_time.scaled_deadline(stage_hours, start=now),
+            # Wallet seed funds the first cargo load (canon-silent
+            # amount — flagged in DECISIONS.md).
+            credits=TRADER_STARTING_CREDITS if is_trader else 0,
             spawned_at=now,
             last_seen_at=now,
         )
@@ -538,7 +643,8 @@ def _fill_roster_deficit(
         has_primary = True
 
         npc_movement_service.add_npc_presence(sector, npc, ship)
-        _join_squad(sector, cfg, roster, npc)
+        if cfg.joins_squad:
+            _join_squad(sector, cfg, roster, npc)
         db.flush()
 
         occupied += 1

@@ -59,6 +59,21 @@ REGION_ORDER: Tuple[str, ...] = ("terran_space", "player_owned", "central_nexus"
 
 PIRATE_CAPTAIN_KIND = "pirate_captain"
 PIRATE_CAPTAIN_TITLE = "Pirate Captain"
+MERCHANT_CAPTAIN_KIND = "merchant_captain"
+
+# TRADER roster tunables. Canon is silent on both (flagged for
+# DECISIONS.md): trader counts are operator-tunable per region, and the
+# wallet seed funds the first cargo load.
+TRADERS_PER_REGION = 6
+TRADER_STARTING_CREDITS = 25_000
+
+# Gameserver-side trader name pool (BANG emits no trader rosters; names
+# are flavor, operator-replaceable — not invented canon numbers).
+TRADER_NAME_POOL: Tuple[str, ...] = (
+    "Mira Voss", "Dex Okonkwo", "Sana Albrecht", "Joaquin Reyes",
+    "Petra Lindqvist", "Tomas Ferreira", "Anneke De Vries", "Ravi Chandran",
+    "Yuki Tanahashi", "Bram Kowalczyk", "Leila Haddad", "Oskar Jensen",
+)
 
 PIRATE_PATROL_DEFENSES_KEY = "pirate_patrol_ships"
 # Police squads land under their own defenses key. Canon-divergence note:
@@ -127,6 +142,9 @@ class KindConfig(NamedTuple):
     # Police squad rows carry the canon wanted_threshold /
     # scheduled_clear_at fields; pirate rows keep the ADR-0047 shape.
     is_police: bool
+    # Patrol archetypes join a defenses squad row; independent actors
+    # (TRADER merchant captains) never do.
+    joins_squad: bool = True
 
 
 KIND_CONFIG: Dict[str, KindConfig] = {
@@ -199,6 +217,23 @@ KIND_CONFIG: Dict[str, KindConfig] = {
         default_faction_code="galactic_concord",
         kind_in_roster_ref=True,
         is_police=True,
+    ),
+    # TRADER archetype "NPC regular players" (SYSTEMS/npc-lifecycle.md:
+    # "NPC merchant captain — travel route between 2–4 stations on a
+    # schedule"). Standard merchant hull (no is_npc_only); rosters are
+    # gameserver-seeded — BANG emits no trader kind today.
+    MERCHANT_CAPTAIN_KIND: KindConfig(
+        archetype=NPCArchetype.TRADER,
+        title="Trader",
+        ship_type=ShipType.CARGO_HAULER,
+        # PLACEHOLDER naming convention, mirrors the pirate pattern.
+        ship_name_format="Trader {name}'s Hauler",
+        squad_kind=MERCHANT_CAPTAIN_KIND,
+        defenses_key=PIRATE_PATROL_DEFENSES_KEY,  # unused: joins_squad=False
+        default_faction_code="merchants",
+        kind_in_roster_ref=True,
+        is_police=False,
+        joins_squad=False,
     ),
 }
 
@@ -757,6 +792,65 @@ def seed_rosters_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     return stats
 
 
+def seed_trader_rosters(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
+    """Seed merchant_captain NPCRoster rows — one per region that has at
+    least two trading stations. Gameserver-side because BANG emits no
+    trader kind today; counts default to TRADERS_PER_REGION
+    (operator-tunable by editing the roster row's target_count).
+    Idempotent by bang_roster_ref. Routes/schedules are generated
+    PER NPC at spawn (Loop B), so the roster's schedule_template stays
+    empty."""
+    from src.models.npc_character import NPCRoster
+    from src.models.region import Region
+    from src.models.station import Station
+
+    stats: Dict[str, Any] = {
+        "trader_rosters_created": 0,
+        "trader_rosters_existing": 0,
+        "warnings": [],
+    }
+
+    for region in db.query(Region).all():
+        roster_ref = f"{galaxy.id}:trader:{region.id}"
+        existing = (
+            db.query(NPCRoster)
+            .filter(NPCRoster.bang_roster_ref == roster_ref)
+            .first()
+        )
+        if existing is not None:
+            stats["trader_rosters_existing"] += 1
+            continue
+
+        region_sector_ids = {
+            row[0]
+            for row in db.query(Sector.sector_id)
+            .filter(Sector.region_id == region.id)
+            .all()
+        }
+        stations = [
+            s for s in db.query(Station).all()
+            if s.sector_id in region_sector_ids and (s.commodities or {})
+        ]
+        if len(stations) < 2:
+            continue  # nothing to trade between — no roster
+
+        db.add(NPCRoster(
+            region_id=region.id,
+            faction_code="merchants",
+            role=MERCHANT_CAPTAIN_KIND,
+            default_archetype=NPCArchetype.TRADER,
+            schedule_template={},
+            target_count=TRADERS_PER_REGION,
+            name_pool={"names": list(TRADER_NAME_POOL)},
+            host_sector_id=stations[0].sector_id,
+            bang_roster_ref=roster_ref,
+        ))
+        stats["trader_rosters_created"] += 1
+
+    db.flush()
+    return stats
+
+
 def backfill_npc_schedules(db: Session) -> int:
     """Give pre-runtime NPC rows (empty daily_schedule) their roster's
     schedule template + home region, and assign duty roles (ADR-0063
@@ -783,7 +877,10 @@ def backfill_npc_schedules(db: Session) -> int:
             npc.home_region_id = npc.home_region_id or roster.region_id
             backfilled += 1
 
-        # Duty roles, independent of the schedule pass.
+        # Duty roles, independent of the schedule pass. Traders are
+        # independent actors — no primary/backup chain.
+        if roster.role == MERCHANT_CAPTAIN_KIND:
+            continue
         roster_npcs = (
             db.query(NPCCharacter)
             .filter(
@@ -818,6 +915,9 @@ def bootstrap_galaxy(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     stats = materialize_from_bang(db, galaxy)
     roster_stats = seed_rosters_from_bang(db, galaxy)
     stats.update(roster_stats)
+    trader_stats = seed_trader_rosters(db, galaxy)
+    stats.update({k: v for k, v in trader_stats.items() if k != "warnings"})
+    stats["warnings"].extend(trader_stats.get("warnings") or [])
     stats["schedules_backfilled"] = backfill_npc_schedules(db)
     return stats
 
