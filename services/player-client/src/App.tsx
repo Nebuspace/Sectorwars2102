@@ -7,6 +7,7 @@ import './App.css'
 import { AuthProvider } from './contexts/AuthContext'
 import { GameProvider } from './contexts/GameContext'
 import { FirstLoginProvider } from './contexts/FirstLoginContext'
+import { AutopilotProvider } from './contexts/AutopilotContext'
 import { WebSocketProvider } from './contexts/WebSocketContext'
 import { ThemeProvider } from './themes/ThemeProvider'
 
@@ -610,6 +611,11 @@ function App() {
         <AuthProvider>
           <WebSocketProvider>
             <GameProvider>
+              {/* AutopilotProvider must sit ABOVE the route tree: GameDashboard
+                  calls useAutopilot in its own body and renders GameLayout as
+                  its wrapper, so a provider inside GameLayout can never cover
+                  it. Inside GameProvider (consumes moveToSector). */}
+              <AutopilotProvider>
               <FirstLoginProvider>
                 <Routes>
               <Route path="/oauth-callback" element={<OAuthCallback />} />
@@ -659,6 +665,7 @@ function App() {
                 </Routes>
                 <FirstLoginContainer />
               </FirstLoginProvider>
+              </AutopilotProvider>
             </GameProvider>
           </WebSocketProvider>
         </AuthProvider>
