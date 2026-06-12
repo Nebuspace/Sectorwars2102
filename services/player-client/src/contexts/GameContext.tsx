@@ -273,7 +273,14 @@ interface GameContextType {
 
 
   // Loading states
+  // isLoading is TRUE ONLY during initial hydration — the first
+  // refreshPlayerState while playerState is still null. Background
+  // refreshes and mutations never touch it, so consumers can gate
+  // first-load placeholders on it without flicker/remount churn.
   isLoading: boolean;
+  // isRefreshing flips during background refreshPlayerState runs (after
+  // hydration) for any consumer that wants a lightweight activity signal.
+  isRefreshing: boolean;
   error: string | null;
   
   // General methods
@@ -285,7 +292,13 @@ const GameContext = createContext<GameContextType | undefined>(undefined);
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Latches true once the first player-state hydration succeeds. Refs (not
+  // derived from the playerState closure) so a stale function reference held
+  // by a consumer can never misclassify a background refresh as initial load.
+  const hasHydrated = useRef(false);
   
   // Player state
   const [playerState, setPlayerState] = useState<PlayerState | null>(null);
@@ -380,6 +393,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
     } else {
       initializedForUser.current = null;
+      hasHydrated.current = false;
       setPlayerState(null);
       setCurrentShip(null);
       setShips([]);
@@ -416,13 +430,24 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     refreshInProgress.current = true;
-    setIsLoading(true);
+    // Global isLoading is reserved for the true initial hydration (we have
+    // never successfully loaded player state). Every later run is a
+    // background refresh and only flips the lightweight isRefreshing flag —
+    // toggling the global flag on every scan/jump/move/dock is what caused
+    // the app-wide spinner/remount plague.
+    const isInitialHydration = !hasHydrated.current;
+    if (isInitialHydration) {
+      setIsLoading(true);
+    } else {
+      setIsRefreshing(true);
+    }
     setError(null);
-    
+
     try {
       const response = await api.get('/api/v1/player/state');
       setPlayerState(response.data as PlayerState);
-      
+      hasHydrated.current = true;
+
       // If player has a current ship, load its details
       if ((response.data as any).current_ship_id) {
         try {
@@ -458,7 +483,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setError('Failed to load player state');
       }
     } finally {
-      setIsLoading(false);
+      if (isInitialHydration) {
+        setIsLoading(false);
+      } else {
+        setIsRefreshing(false);
+      }
       refreshInProgress.current = false;
     }
   };
@@ -466,9 +495,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Load player's ships
   const loadShips = async () => {
     if (!user) return;
-    
-    setIsLoading(true);
-    
+
     try {
       const response = await api.get('/api/v1/player/ships');
       setShips(response.data || []);
@@ -487,10 +514,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // But do handle auth errors specifically since they affect everything
       if (error.response?.status === 401) {
         setError('Authentication required. Please log in again.');
+        setShips([]);
       }
-      setShips([]);
-    } finally {
-      setIsLoading(false);
+      // On transient (non-auth) errors keep the previously loaded ships
+      // rather than blanking the fleet list
     }
   };
   
@@ -498,7 +525,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const setActiveShip = async (shipId: string) => {
     if (!user) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -510,8 +536,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
       console.error('Error setting active ship:', error);
       setError('Failed to set active ship');
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -519,7 +543,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const moveToSector = async (sectorId: number) => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -537,8 +560,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error moving to sector:', error);
       setError(error.response?.data?.message || 'Failed to move to sector');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -546,7 +567,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const getAvailableMoves = async () => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -555,17 +575,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
       console.error('Error getting available moves:', error);
       setError('Failed to get available moves');
-    } finally {
-      setIsLoading(false);
     }
   };
 
   // Explore current location (sector, planets, stations)
   const exploreCurrentLocation = async () => {
     if (!user || !playerState) return;
-    
-    setIsLoading(true);
-    
+
     try {
       // Get sector info
       try {
@@ -596,8 +612,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
       console.error('GameContext: Error exploring location:', error);
       // Don't set a general error here as this is not critical for basic UI
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -605,7 +619,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const dockAtStation = async (stationId: string) => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -625,8 +638,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error docking at port:', error);
       setError(error.response?.data?.message || 'Failed to dock at port');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -653,8 +664,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       throw new Error('Not ready to dock — please try again');
     }
 
-    setIsLoading(true);
-
     let response;
     try {
       response = await api.post(`/api/v1/trading/stations/${stationId}/slips/bump`, {
@@ -662,7 +671,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
     } catch (error: any) {
       console.error('Error bumping slip occupant:', error);
-      setIsLoading(false);
       throw error;
     }
 
@@ -672,8 +680,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await refreshPlayerState();
     } catch (refreshError) {
       console.warn('Post-bump state refresh failed:', refreshError);
-    } finally {
-      setIsLoading(false);
     }
 
     return response.data;
@@ -683,7 +689,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const undockFromStation = async () => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -697,8 +702,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error undocking from station:', error);
       setError(error.response?.data?.message || 'Failed to undock from station');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -720,7 +723,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const buyResource = async (stationId: string, resourceType: string, quantity: number) => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -739,8 +741,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error buying resource:', error);
       setError(error.response?.data?.message || 'Failed to buy resource');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -748,7 +748,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const sellResource = async (stationId: string, resourceType: string, quantity: number) => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -767,8 +766,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error selling resource:', error);
       setError(error.response?.data?.message || 'Failed to sell resource');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -776,7 +773,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const claimPlanet = async (planetId: string) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -800,8 +796,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to claim planet');
       }
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -809,7 +803,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const landOnPlanet = async (planetId: string) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -823,8 +816,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error landing on planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to land on planet');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -832,7 +823,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const leavePlanet = async () => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -846,8 +836,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error leaving planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to leave planet');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -855,7 +843,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const renamePlanet = async (planetId: string, newName: string) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -869,8 +856,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error renaming planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to rename planet');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -916,7 +901,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   ) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -928,8 +912,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error updating planet defenses:', error);
       setError(error.response?.data?.detail || 'Failed to update defenses');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -937,7 +919,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const upgradePlanetBuilding = async (planetId: string, buildingType: string, targetLevel: number) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -952,8 +933,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error upgrading building:', error);
       setError(error.response?.data?.detail || 'Failed to upgrade building');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -961,7 +940,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const transferColonists = async (planetId: string, action: 'embark' | 'disembark', quantity: number) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -982,8 +960,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setError(error.response?.data?.detail || 'Failed to transfer colonists');
       }
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -1432,6 +1408,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     // Loading states
     isLoading,
+    isRefreshing,
     error,
     
     // General methods

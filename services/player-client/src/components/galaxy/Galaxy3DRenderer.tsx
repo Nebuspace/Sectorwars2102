@@ -33,7 +33,7 @@ const LOD_CONFIG: Record<string, LODLevel> = {
 // Galaxy visualization component
 function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => void }) {
   const { camera } = useThree();
-  const { currentSector, availableMoves, isLoading } = useGame();
+  const { currentSector, availableMoves } = useGame();
   const { sectorPlayers, isConnected } = useWebSocket();
   
   const [selectedSector, setSelectedSector] = useState<Sector | null>(null);
@@ -143,16 +143,24 @@ function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => 
     }
   }, [currentSector, sectorPositions, camera]);
 
-  // Only show the placeholder on the true first load (no sectors yet).
-  // Once sectors exist, a background `isLoading` (global refresh after a
-  // scan/jump/move/dock) must NOT tear down the whole Three.js scene —
-  // doing so destroys canvas/camera state on every refresh.
-  if (!sectors || (sectors.length === 0 && isLoading)) {
+  // Only show the placeholder while sector data is genuinely missing (the
+  // true first load). Never gate on the global loading flag: tearing down
+  // the Three.js scene on a background refresh destroys canvas/camera
+  // state. Once sectors exist the scene stays mounted, period.
+  if (!sectors || sectors.length === 0) {
+    // isLoading is initial-hydration-only now, so it distinguishes "still
+    // loading" from "loaded but genuinely empty" (e.g. moves fetch failed).
     return (
       <Html center>
         <div className="loading-container">
-          <div className="loading-spinner"></div>
-          <div>Loading Galaxy...</div>
+          {isLoading ? (
+            <>
+              <div className="loading-spinner"></div>
+              <div>Loading Galaxy...</div>
+            </>
+          ) : (
+            <div>NO CHART DATA — sector telemetry unavailable</div>
+          )}
         </div>
       </Html>
     );

@@ -16,20 +16,19 @@ interface GameLayoutProps {
 
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { user } = useAuth();
-  const { playerState, currentShip, currentSector, isLoading, refreshPlayerState } = useGame();
+  const { playerState, currentShip, currentSector, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // ── Cockpit stability ────────────────────────────────────────────────
-  // GameContext toggles the shared `isLoading` flag on EVERY background
-  // refresh (after each scan/jump/move/dock). The viewport children must
-  // therefore NEVER be unmounted on `isLoading` — doing so resets bearing
-  // dials, races the ARM timer, destroys canvas state, kills scroll
-  // positions and refetches the minimap. Instead:
+  // GameContext semantics after the isLoading split: `isLoading` is true
+  // ONLY during initial hydration (playerState still null); background
+  // refreshes flip the lightweight `isRefreshing` flag instead and never
+  // unmount anything. The viewport children render unconditionally:
   //   • full loading overlay ONLY during the true initial load (we have
   //     never seen player state), rendered absolutely OVER the viewport;
-  //   • background refreshes get at most a subtle SYNC indicator that
-  //     appears only if loading persists beyond ~300ms (no flicker).
+  //   • background refreshes get at most a subtle SYNC indicator (keyed on
+  //     isRefreshing) that appears only past ~300ms (no flicker).
   // State (not just a ref) so the SYNC-indicator effect below re-runs the
   // moment the latch flips. A pure ref flip during render does not retrigger
   // effects, leaving a dead window where a refresh that begins right as the
@@ -45,13 +44,13 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
 
   const [showSyncIndicator, setShowSyncIndicator] = useState(false);
   React.useEffect(() => {
-    if (isLoading && hasLoadedOnce) {
+    if (isRefreshing && hasLoadedOnce) {
       const timer = window.setTimeout(() => setShowSyncIndicator(true), 300);
       return () => window.clearTimeout(timer);
     }
     setShowSyncIndicator(false);
     return undefined;
-  }, [isLoading, hasLoadedOnce]);
+  }, [isRefreshing, hasLoadedOnce]);
 
   // Try to refresh player state on mount if we don't have it
   const hasAttemptedRefresh = React.useRef(false);

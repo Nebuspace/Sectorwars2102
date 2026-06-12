@@ -80,6 +80,9 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   const [selectedPort, setSelectedPort] = useState<string>('');
   const [selectedResource, setSelectedResource] = useState<string>('');
   const [tradeQuantity, setTradeQuantity] = useState<number>(1);
+  // Local in-flight guard: the global isLoading no longer flips on trades
+  // (initial-hydration-only semantics), so double-submit protection lives here.
+  const [isExecuting, setIsExecuting] = useState<boolean>(false);
   const [tradeMode, setTradeMode] = useState<'buy' | 'sell'>('buy');
   const [tradeCalculation, setTradeCalculation] = useState<TradeCalculation | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -419,7 +422,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   };
 
   const executeTrade = async () => {
-    if (!canExecuteTrade() || !selectedPort || !selectedResource) return;
+    if (isExecuting || !canExecuteTrade() || !selectedPort || !selectedResource) return;
+    setIsExecuting(true);
 
     try {
       let result;
@@ -457,6 +461,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         content,
         level: 'error'
       });
+    } finally {
+      setIsExecuting(false);
     }
   };
 
@@ -1010,9 +1016,9 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
               <button
                 className="confirm-trade-btn"
                 onClick={executeTrade}
-                disabled={!canExecuteTrade() || isLoading}
+                disabled={!canExecuteTrade() || isExecuting}
               >
-                {isLoading ? 'Processing...' : `Confirm ${tradeMode === 'buy' ? 'Purchase' : 'Sale'}`}
+                {isExecuting ? 'Processing...' : `Confirm ${tradeMode === 'buy' ? 'Purchase' : 'Sale'}`}
               </button>
             </div>
           </div>
