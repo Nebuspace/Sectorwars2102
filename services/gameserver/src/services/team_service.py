@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import and_, or_, func
 from sqlalchemy.exc import IntegrityError
 
@@ -18,6 +19,24 @@ from src.models.message import Message
 from src.services.audit_service import AuditService, AuditAction
 
 logger = logging.getLogger(__name__)
+
+# Treasury resources a Player row can actually hold as real columns. The Player
+# model has no commodity columns (fuel/organics/equipment/... live in ship
+# cargo), so a setattr for those would write a transient Python attribute that
+# evaporates at session end — silently destroying the resources on either a
+# deposit (player debit lost) or a withdraw/transfer (player credit lost).
+#
+# Both directions use this same whitelist so nothing becomes a one-way sink:
+# a resource you can deposit must be one a player can later retrieve, and vice
+# versa. Only columns confirmed to exist on BOTH Player (as `<resource>`) and
+# Team (as `treasury_<resource>`) belong here — currently credits and
+# quantum_crystals.
+PLAYER_TRANSFERABLE_RESOURCES = {"credits", "quantum_crystals"}
+
+# Honest, human-readable list of what a player may move to/from the treasury,
+# reused across deposit/withdraw/transfer so the error message can never drift
+# out of sync with the whitelist above.
+_TRANSFERABLE_LABEL = " and ".join(sorted(PLAYER_TRANSFERABLE_RESOURCES))
 
 
 class TeamService:
@@ -715,10 +734,21 @@ class TeamService:
         treasury_field = f"treasury_{resource_type}"
         if not hasattr(team, treasury_field):
             raise ValueError(f"Invalid resource type: {resource_type}")
-        
+
+        # Mirror the withdrawal/transfer whitelist: only resources a Player row
+        # can actually hold may be deposited. Without this, depositing a
+        # commodity would setattr a transient attribute on the player, "debit"
+        # nothing real, yet credit the treasury — minting resources from thin
+        # air. Same honest message as the outbound path.
+        if resource_type not in PLAYER_TRANSFERABLE_RESOURCES:
+            raise ValueError(
+                f"Players can only deposit {_TRANSFERABLE_LABEL} directly; "
+                "commodity transfers require cargo routing — not yet implemented"
+            )
+
         if amount <= 0:
             raise ValueError("Amount must be positive")
-        
+
         # Check if player has enough resources
         player_resource = getattr(player, resource_type, 0)
         if player_resource < amount:
@@ -729,14 +759,12 @@ class TeamService:
         current_treasury = getattr(team, treasury_field, 0)
         setattr(team, treasury_field, current_treasury + amount)
         
-        # Update member contribution tracking
-        if not member.contribution_credits:
-            member.contribution_credits = {}
-        
-        if resource_type not in member.contribution_credits:
-            member.contribution_credits[resource_type] = 0
-        
-        member.contribution_credits[resource_type] += amount
+        # Update member contribution tracking (copy-reassign: in-place JSONB
+        # mutation is invisible to SQLAlchemy's change tracking)
+        contributions = dict(member.contribution_credits or {})
+        contributions[resource_type] = contributions.get(resource_type, 0) + amount
+        member.contribution_credits = contributions
+        flag_modified(member, "contribution_credits")
         
         # Send team notification
         self._send_notification(
@@ -792,15 +820,21 @@ class TeamService:
         treasury_field = f"treasury_{resource_type}"
         if not hasattr(team, treasury_field):
             raise ValueError(f"Invalid resource type: {resource_type}")
-        
+
+        if resource_type not in PLAYER_TRANSFERABLE_RESOURCES:
+            raise ValueError(
+                f"Players can only receive {_TRANSFERABLE_LABEL} directly; "
+                "commodity transfers require cargo routing — not yet implemented"
+            )
+
         if amount <= 0:
             raise ValueError("Amount must be positive")
-        
+
         # Check if treasury has enough resources
         treasury_balance = getattr(team, treasury_field, 0)
         if treasury_balance < amount:
             raise ValueError(f"Insufficient treasury {resource_type}: have {treasury_balance}, need {amount}")
-        
+
         # Transfer resources
         setattr(team, treasury_field, treasury_balance - amount)
         player_resource = getattr(player, resource_type, 0)
@@ -876,10 +910,16 @@ class TeamService:
         treasury_field = f"treasury_{resource_type}"
         if not hasattr(team, treasury_field):
             raise ValueError(f"Invalid resource type: {resource_type}")
-        
+
+        if resource_type not in PLAYER_TRANSFERABLE_RESOURCES:
+            raise ValueError(
+                f"Players can only receive {_TRANSFERABLE_LABEL} directly; "
+                "commodity transfers require cargo routing — not yet implemented"
+            )
+
         if amount <= 0:
             raise ValueError("Amount must be positive")
-        
+
         # Check treasury balance
         treasury_balance = getattr(team, treasury_field, 0)
         if treasury_balance < amount:

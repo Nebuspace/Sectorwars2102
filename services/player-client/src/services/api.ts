@@ -431,83 +431,6 @@ export const shipAPI = {
     })
 };
 
-// Trading Intelligence APIs
-export const tradingAPI = {
-  getMarketData: (sectorId: number | null, range: number) =>
-    apiRequest('/api/v1/trading/market-data', {
-      method: 'POST',
-      body: JSON.stringify({ sectorId, range })
-    }),
-
-  getPricePredictions: (params: any) =>
-    apiRequest('/api/v1/trading/predictions', {
-      method: 'POST',
-      body: JSON.stringify(params)
-    }),
-
-  optimizeRoutes: (params: any) =>
-    apiRequest('/api/v1/trading/optimize-routes', {
-      method: 'POST',
-      body: JSON.stringify(params)
-    }),
-
-  getCompetitionAnalysis: (params: any) =>
-    apiRequest('/api/v1/trading/competition', {
-      method: 'POST',
-      body: JSON.stringify(params)
-    })
-};
-
-// Player Analytics APIs
-export const playerAPI = {
-  getAnalytics: (playerId: string, params: any) =>
-    apiRequest(`/api/v1/players/${playerId}/analytics`, {
-      method: 'POST',
-      body: JSON.stringify(params)
-    }),
-
-  getAchievements: (playerId: string) =>
-    apiRequest(`/api/v1/players/${playerId}/achievements`),
-
-  getProgressData: (playerId: string, timeRange: string) =>
-    apiRequest(`/api/v1/players/${playerId}/progress?timeRange=${timeRange}`),
-
-  getGoals: (playerId: string) =>
-    apiRequest(`/api/v1/players/${playerId}/goals`),
-
-  getGoalTemplates: () =>
-    apiRequest('/api/v1/players/goal-templates'),
-
-  createGoal: (playerId: string, goal: any) =>
-    apiRequest(`/api/v1/players/${playerId}/goals`, {
-      method: 'POST',
-      body: JSON.stringify(goal)
-    }),
-
-  updateGoal: (playerId: string, goalId: string, updates: any) =>
-    apiRequest(`/api/v1/players/${playerId}/goals/${goalId}`, {
-      method: 'PUT',
-      body: JSON.stringify(updates)
-    }),
-
-  deleteGoal: (playerId: string, goalId: string) =>
-    apiRequest(`/api/v1/players/${playerId}/goals/${goalId}`, {
-      method: 'DELETE'
-    }),
-
-  getLeaderboards: (category: string, params: any) => {
-    const queryParams = new URLSearchParams();
-    if (params.subcategory) queryParams.append('subcategory', params.subcategory);
-    if (params.timeRange) queryParams.append('timeRange', params.timeRange);
-    if (params.filters) {
-      Object.entries(params.filters).forEach(([key, value]) => {
-        if (value) queryParams.append(key, String(value));
-      });
-    }
-    return apiRequest(`/api/v1/leaderboards/${category}?${queryParams}`);
-  }
-};
-
 // Ranking & Reputation APIs
 export const rankingAPI = {
   getRank: () =>
@@ -598,8 +521,6 @@ export const gameAPI = {
   faction: factionAPI,
   message: messageAPI,
   ship: shipAPI,
-  trading: tradingAPI,
-  player: playerAPI,
   ranking: rankingAPI,
   bounty: bountyAPI,
   citadel: citadelAPI,

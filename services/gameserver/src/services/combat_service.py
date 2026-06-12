@@ -195,11 +195,13 @@ class CombatService:
             defender_drones=defender.defense_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
+            attacker_damage_dealt=combat_result["attacker_damage_dealt"],
+            defender_damage_dealt=combat_result["defender_damage_dealt"],
             cargo_looted=combat_result["cargo_stolen"] or None,
             combat_log=json.dumps(combat_result["combat_details"]),
             ended_at=datetime.now()
         )
-        
+
         self.db.add(combat_log)
 
         # Handle cargo theft BEFORE destruction — destroy_ship swaps the
@@ -400,6 +402,8 @@ class CombatService:
             defender_drones=0,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
+            attacker_damage_dealt=combat_result["attacker_damage_dealt"],
+            defender_damage_dealt=combat_result["defender_damage_dealt"],
             cargo_looted=combat_result["cargo_stolen"] or None,
             combat_log=json.dumps(combat_result["combat_details"]),
             ended_at=datetime.now()
@@ -1349,6 +1353,12 @@ class CombatService:
         round_number = 0
         attacker_drones_lost = 0
         defender_drones_lost = 0
+        # Real damage tallies (shield + hull dealt by each side across all
+        # rounds) — these feed CombatLog.attacker_damage_dealt /
+        # defender_damage_dealt, which otherwise read their default 0 under
+        # the pool-depletion model.
+        attacker_damage_dealt = 0.0
+        defender_damage_dealt = 0.0
         attacker_ship_destroyed = False
         defender_ship_destroyed = False
         fled_result = None  # Set to CombatResult.ATTACKER_FLED or DEFENDER_FLED if someone escapes
@@ -1413,6 +1423,7 @@ class CombatService:
                             * atk_weapon["base_damage"] * attacker_drone_mult
                         )
                         hit = self._apply_weapon_damage(damage, atk_weapon, defender_combat)
+                        attacker_damage_dealt += hit["shield_damage"] + hit["hull_damage"]
 
                         if hit["destroyed"]:
                             defender_ship_destroyed = True
@@ -1511,6 +1522,7 @@ class CombatService:
                             * def_weapon["base_damage"] * defender_drone_mult
                         )
                         hit = self._apply_weapon_damage(damage, def_weapon, attacker_combat)
+                        defender_damage_dealt += hit["shield_damage"] + hit["hull_damage"]
 
                         if hit["destroyed"]:
                             attacker_ship_destroyed = True
@@ -1676,6 +1688,9 @@ class CombatService:
             "rounds": round_number,
             "attacker_drones_lost": attacker_drones_lost,
             "defender_drones_lost": defender_drones_lost,
+            # CombatLog columns are Integers — round the float tallies once here
+            "attacker_damage_dealt": int(round(attacker_damage_dealt)),
+            "defender_damage_dealt": int(round(defender_damage_dealt)),
             "attacker_ship_destroyed": attacker_ship_destroyed,
             "defender_ship_destroyed": defender_ship_destroyed,
             "cargo_stolen": cargo_stolen,
