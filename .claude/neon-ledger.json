@@ -578,6 +578,54 @@
         "Orbitron font referenced but never loaded \u2014 Max decision: load it or keep Courier New",
         "admin WarpTunnels page now shows 4 tunnels incl. 2 player gates \u2014 admin gate-management surface is unbuilt"
       ]
+    },
+    {
+      "id": "neon-2026-06-12-b",
+      "tier": "HEAVY (all-Fable, directed: warp jumper bearing graphics)",
+      "stage": "complete",
+      "branch_head_at_start": "979d1e6",
+      "directive": "Max: graphical effect as the ship rotates/points in different directions through the warp jumper process; canonical (ADR-0030 3D minimap); best in class",
+      "sections": [
+        {
+          "key": "quantum-bearing-viewport",
+          "state": "selected",
+          "proof_script": [
+            "Dragging/aiming in the QUANTUM DRIVE console visibly rotates the ship glyph (yaw) and tilts it (pitch); the 15-degree scan cone sweeps with it in real time",
+            "Range band arcs render at canon distances (5-6/7-8/9-10/12-15 spacings); selected band brightens; nearby charted sectors render as parallax dots from a real minimap endpoint (positions only \u2014 no activity data, ADR-0031 fuzziness preserved)",
+            "Scan fires a sweep animation out the cone; jump commit collapses the cone into a translation streak before the outcome card",
+            "No fabricated sector data; canvas idles when not animating (no runaway rAF)"
+          ]
+        }
+      ],
+      "verdict": "GLOWING",
+      "commits": [
+        "<astrogation plot feat commit>",
+        "sw2102-docs band-minimum finding"
+      ],
+      "model_usage": {
+        "tier": "HEAVY (all-Fable per Max)",
+        "fable": {
+          "agents": 3,
+          "tokens": 367200,
+          "roles": "1 build + 1 adversarial review + 1 fix wave"
+        },
+        "fable_lead_est": 90000,
+        "est_cost_vs_all_fable": "1.0x (directed)"
+      },
+      "proof_evidence": {
+        "plot_live": "ASTROGATION PLOT renders real charted sectors from GET /quantum/minimap (positions only, no ids per ADR-0031); click-to-aim swung BRG 0->128->181 with eased glyph rotation; pitch +44 slid the chevron ladder and visibly foreshortened+dimmed the cone wedge (pitch-collapse fix on screen); FAR band lengthened the cone; scan fired (-5 turns, -1 shard) during recording",
+        "gif": "~/Downloads/warp-jumper-astrogation-plot.gif (15 frames)",
+        "gate_fixes_shipped": "sector ids stripped from minimap wire; resonance now counts warp connections (canon: warps-worth of activity) so the chart cannot precompute scan results; idle shimmer throttled ~14fps; chart-thins/loading/unavailable honest states",
+        "builds": "py_compile + vite build green; sector_warps.source_sector_id column verified by hand against models/sector.py"
+      },
+      "seeding_flags": [
+        "testpilot consumed WJ resurrected at 4495 with 2 charges/6 shards for the graphics proof (acquisition path proven in run 7)"
+      ],
+      "parking_lot": [
+        "minimap state dies with console remounts (refetch per remount; lift into GameContext with the remount root-cause fix)",
+        "DPR change across monitors not observed until next resize",
+        "drag emits integer degrees (sub-degree aim needs float state)"
+      ]
     }
   ]
 }
