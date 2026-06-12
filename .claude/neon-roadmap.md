@@ -1,7 +1,7 @@
 # NEON Roadmap — run tracking
 
 Source of the original nine: `.claude/admin-ui-master-list.md` → "SUGGESTED BATCHES (NEON-sized)"
-(8 numbered batches; #8 contained two separate runs). Status updated 2026-06-12 after run 13.
+(8 numbered batches; #8 contained two separate runs). Status updated 2026-06-12 after run 14.
 This file is the living tracker — update at every run's N10.
 
 ## The original nine (admin-UI master list batches)
@@ -21,6 +21,9 @@ This file is the living tracker — update at every run's N10.
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
 ### Gameplay-meaty
+- ✅ **Run 14 (2026-06-12)**: token-refresh unification (the 1-hour session killer), market stock regen + Class 8/9 premiums + precious_metals clamp + bounty single-tier, SpaceDock services de-mock + drone field fix (commits 2ff4eb3…b3cd066)
+- **Genesis coherence** (NEXT-RUN HEADLINE candidate) — purchase/deploy tier tables incompatible, success_rate/process_hours theater, GenesisDevice model zero writers, 7/12 planet types can never roll (genesis-devices.md bug marker confirmed)
+- **Starter ship combat stats** — hardcoded shields:10/weapons:5 ignores ship_specifications_seeder; proof needs a fresh first-login account (Max: create one, or bless a throwaway)
 - **Faction mission completion** — accept works; completion mechanics await `faction-mission-completion` pending decision (sw2102-docs DECISIONS.md)
 - **Siege semantics** — three pending decisions filed (`siege-turn-length`, `siege-vulnerability-vs-assault`, terraforming tick blessing); vulnerability is display-only until decided
 - **Port assault** — fully coded, deliberately disabled (`player_combat.py` "not yet authorized"); Max scoped military takeover as deferred — needs explicit go-ahead + Station defense scalars
@@ -51,6 +54,9 @@ This file is the living tracker — update at every run's N10.
 - **update_port blind-setattr whitelist** (admin P0.2 remnant)
 - **process_terraforming_tick** zero callers — scheduler-or-delete decision
 - **/quantum/minimap** caching + GameContext-level minimap state (refetch per remount)
+- **AuthContext parallel refresher** — delegate to apiClient's single-flight refresh (run-14 reviewer MED; widened exposure now more traffic uses apiClient)
+- **Free planet defenses** — update_defenses charges no credits server-side while the UI prices it (run-14 reviewer find)
+- **Bounty collusion faucet** — repeat-killing the same deep-negative-rep accomplice pays the system bounty every kill; rep never restored on collection
 - **team_service treasury** — commodity-to-cargo routing design (currently honestly rejected)
 - **foundation-sprint e2e dir** fuller audit (one stale spec may remain)
 - **Sector sub-50-spacing approach gap** — jump bands can't fine-approach; canon texture, maybe intentional

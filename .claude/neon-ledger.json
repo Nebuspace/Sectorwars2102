@@ -997,6 +997,56 @@
      "parked": "3D view rotation deliberately NOT built \u2014 overhead view framed as astrogation composite; canopy-view presentation is a future Max decision"
     }
    ]
+  },
+  {
+   "id": "neon-2026-06-12-h",
+   "tier": "STANDARD",
+   "stage": "complete",
+   "verdict": "GLOWING",
+   "branch_head_at_start": "0b769b8",
+   "deployed_sha": "b3cd066",
+   "docs_sha": "2797e3b",
+   "discovery": "5 sonnet scanners (gameserver, player-client, contracts, 2 docs-drift zones) + lead sortie that hit the token-expiry 401 blocker LIVE mid-flight (dock -> 'Could not validate credentials')",
+   "sections": [
+    {
+     "id": "A-token-refresh-unification",
+     "commit": "2ff4eb3",
+     "status": "PROVEN",
+     "claim": "GameContext/FirstLoginContext/api.ts all ride apiClient's single-flight refresh; refresh POST on pristine axios (AuthContext global-interceptor hang); auth-adjacent, client plumbing only",
+     "evidence": "poisoned expired token + UNDOCK -> exactly one POST /auth/refresh 200, retried action succeeded, localStorage rotated, no toast"
+    },
+    {
+     "id": "B-economy-integrity",
+     "commit": "7f1d423",
+     "status": "PROVEN",
+     "claim": "lazy stock regen (24h first-credit cap, station-lock, GAME_TIME_SCALE); precious_metals 80-180 clamp; Class 8/9 premiums at transaction time per doc design target 1.2x/1.25x (bootstrap 1.3/0.8 never live, Class 9 direction was inverted; exclusive-flag gates kill same-station pump); bounty single deepest tier",
+     "evidence": "colonists 240->480 exactly prod x 24h, exotech capacity-capped 3260; organics buy 18 = 1.2x prediction at Class-8 Trade Hub Sol (vs 15 without); precious_metals floored at 80; rep -1000 -> ONE 100k bounty (was 130k stacked). Class 9: zero Nova stations in dev galaxy - same code path, no live proof (flagged)"
+    },
+    {
+     "id": "C-client-honesty",
+     "commit": "b3cd066",
+     "status": "PROVEN",
+     "claim": "SpaceDock Ship Services de-mocked (real telemetry, wired repair, honest NOT AVAILABLE for insurance/upgrades); defense drones field fixed (fighters wire name)",
+     "evidence": "staged 400/600+350/500 rendered exactly; Full Repair charged displayed 79,545 to the credit, psql 600/500/169,705, no remount; drones=10 -> PUT 200 -> defense_fighters=10"
+    }
+   ],
+   "gate": "reviewer B-fidelity caught Class 9 DIRECTION inversion (HIGH) - ruled doc-design-target wins over never-live bootstrap; + exclusivity gates (MED), refresh-POST pristine instance (HIGH), 24h first-tick cap, drones type lie, totalMax=0 repair guard - all hand-fixed by lead",
+   "incidents": [
+    "cross-region teleport correctly 404'd (sector 10 Terran vs testpilot region) - relocated to in-region SpaceDock Castor 6295",
+    "stale slip occupancy after psql teleport 500'd docking (already-known FINDINGS item) - released, slips integrity validated",
+    "local /tmp tasks ENOSPC interference mid-proof (harness-side, intermittent)"
+   ],
+   "parked": [
+    "genesis coherence (headline candidate next run)",
+    "starter ship stats hardcoded 10/5 (needs fresh first-login proof)",
+    "fleet API dead (UI unreachable too)",
+    "faction trade modifiers unwired",
+    "team missions/alliances orphan UI",
+    "AuthContext parallel refresher race (delegate to apiClient)",
+    "defense config charges no server-side credits (free defenses LIE)",
+    "repeat-kill bounty collusion faucet (100k per kill, rep never restored)"
+   ],
+   "testpilot_endstate": "docked SpaceDock Castor sector 6295 (in-region), ship repaired full, credits 169,705"
   }
  ],
  "last_updated": "2026-06-12"
