@@ -90,6 +90,18 @@ interface SolarSystemViewscreenProps {
   stations?: any[];
   planets?: any[];
   onEntityClick?: (entity: { type: 'station' | 'planet'; id: string; name: string }) => void;
+  /**
+   * Scene mode (GLASS LAW): the windshield band always hosts this same
+   * canvas component, and the scene prop selects what it paints.
+   *   flight (default) — the procedural solar-system spectacle
+   *   docked           — station bay silhouette (no system fetch, no hit targets)
+   *   landed           — planet-surface vista (no system fetch, no hit targets)
+   */
+  scene?: 'flight' | 'docked' | 'landed';
+  /** docked scene only: tints the bay guide lights (blue) for SpaceDocks */
+  isSpaceDock?: boolean;
+  /** landed scene only: planet type drives the sky/ridge palette */
+  planetType?: string;
 }
 
 interface HitTarget {
@@ -897,6 +909,317 @@ function drawScene(
 }
 
 // ---------------------------------------------------------------------------
+// LANDED scene — planet-surface vista (horizon gradient, haze, parallax ridges)
+// ---------------------------------------------------------------------------
+
+interface LandedPalette {
+  skyTop: string;
+  skyMid: string;
+  horizon: string;
+  /** rgba() string for the low atmospheric glow near the horizon */
+  glow: string;
+  /** "r, g, b" triplet for the drifting haze bands */
+  haze: string;
+  /** ridge silhouettes, back → front (front is darkest) */
+  ridges: [string, string, string];
+}
+
+/** Sky/ridge palette per planet type — reuses the treatment mapping above. */
+function landedPalette(planetType?: string): LandedPalette {
+  // treatmentFor() buckets every UNKNOWN kind into BARREN (gray). But the
+  // cockpit tint class (getPlanetTintClass → base [class*='planet-tint-'])
+  // paints unknown types violet-dusk. Align the two: only paint the barren
+  // gray sky for a GENUINELY barren kind; anything unrecognized falls through
+  // to the violet-dusk default below (matches the legacy landed-band gradient
+  // and the tint accent), so a landed scene and its planet card agree.
+  const kind = (planetType || '').toUpperCase().replace('PLANETTYPE.', '');
+  const treatment = treatmentFor(planetType || '');
+  const effective = treatment === 'BARREN' && !KNOWN_BARREN.has(kind)
+    ? 'GAS_GIANT' // violet-dusk default branch
+    : treatment;
+  switch (effective) {
+    case 'VOLCANIC':
+      return {
+        skyTop: '#120305', skyMid: '#3a0d08', horizon: '#8a2e0a',
+        glow: 'rgba(255, 110, 30, 0.5)', haze: '255, 90, 20',
+        ridges: ['#2a0c08', '#1a0705', '#0c0303']
+      };
+    case 'ICE':
+      return {
+        skyTop: '#0c1622', skyMid: '#27435c', horizon: '#9cc4dd',
+        glow: 'rgba(210, 235, 255, 0.45)', haze: '190, 220, 240',
+        ridges: ['#5d7c93', '#3b566c', '#1d2f40']
+      };
+    case 'TERRAN':
+      return {
+        skyTop: '#04121f', skyMid: '#0d3a4a', horizon: '#2f8c74',
+        glow: 'rgba(150, 230, 200, 0.4)', haze: '120, 210, 180',
+        ridges: ['#14463c', '#0d2f29', '#061a16']
+      };
+    case 'OCEANIC':
+      return {
+        skyTop: '#03101f', skyMid: '#0a3550', horizon: '#2a7f9e',
+        glow: 'rgba(120, 210, 235, 0.4)', haze: '110, 190, 220',
+        ridges: ['#0f3f55', '#0a2b3c', '#051824']
+      };
+    case 'DESERT':
+      return {
+        skyTop: '#190b04', skyMid: '#4a2410', horizon: '#c07a2e',
+        glow: 'rgba(255, 190, 90, 0.45)', haze: '230, 160, 70',
+        ridges: ['#5c3014', '#3c1f0c', '#201006']
+      };
+    case 'BARREN':
+      return {
+        skyTop: '#0a0a12', skyMid: '#23232f', horizon: '#5a5a6e',
+        glow: 'rgba(190, 190, 210, 0.3)', haze: '160, 160, 180',
+        ridges: ['#3a3a4a', '#26262f', '#131318']
+      };
+    case 'GAS_GIANT':
+    default:
+      // Violet dusk — matches the legacy landed-band gradient language
+      return {
+        skyTop: '#120822', skyMid: '#2d1a3d', horizon: '#6a4a8a',
+        glow: 'rgba(190, 140, 255, 0.4)', haze: '170, 120, 240',
+        ridges: ['#3a2a4f', '#241a33', '#120c1c']
+      };
+  }
+}
+
+function drawLandedScene(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  sectorId: number,
+  t: number,
+  pal: LandedPalette
+): void {
+  const horizonY = h * 0.58;
+
+  // 1) Sky gradient — top of atmosphere down to the horizon line
+  const sky = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
+  sky.addColorStop(0, pal.skyTop);
+  sky.addColorStop(0.6, pal.skyMid);
+  sky.addColorStop(1, pal.horizon);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  // 2) Low sun / atmospheric glow near the horizon (seeded x per sector)
+  const anchorRng = splitmix32(sectorId * 911 + 3);
+  const gx = w * (0.25 + anchorRng() * 0.5);
+  const glow = ctx.createRadialGradient(gx, horizonY, 0, gx, horizonY, Math.max(w, h) * 0.45);
+  glow.addColorStop(0, pal.glow);
+  glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, w, h);
+
+  // 3) Parallax ridge layers (3, back → front) — deterministic jagged
+  //    silhouettes sampled from a wrapping noise strip; each layer drifts
+  //    at its own speed for depth.
+  const layers = [
+    { base: 0.6, amp: 0.1, speed: 1.2, seed: 5, color: pal.ridges[0] },
+    { base: 0.7, amp: 0.13, speed: 2.6, seed: 11, color: pal.ridges[1] },
+    { base: 0.84, amp: 0.16, speed: 4.6, seed: 23, color: pal.ridges[2] }
+  ];
+  for (const layer of layers) {
+    const rng = splitmix32(sectorId * 131 + layer.seed);
+    const period = Math.max(w * 2, 1200);
+    const n = 48;
+    const pts: number[] = [];
+    for (let i = 0; i < n; i++) pts.push(rng());
+    const off = t * layer.speed;
+    ctx.beginPath();
+    ctx.moveTo(0, h);
+    for (let x = 0; x <= w; x += 8) {
+      const u = (((x + off) % period) + period) % period;
+      const fi = (u / period) * n;
+      const i0 = Math.floor(fi) % n;
+      const i1 = (i0 + 1) % n;
+      const frac = fi - Math.floor(fi);
+      const s = frac * frac * (3 - 2 * frac); // smoothstep — soft crests
+      const v = pts[i0] * (1 - s) + pts[i1] * s;
+      ctx.lineTo(x, h * layer.base - v * h * layer.amp);
+    }
+    ctx.lineTo(w, h);
+    ctx.closePath();
+    ctx.fillStyle = layer.color;
+    ctx.fill();
+  }
+
+  // 4) Atmospheric haze — wide translucent bands drifting slowly
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const hazeRng = splitmix32(sectorId * 53 + 7);
+  for (let i = 0; i < 3; i++) {
+    const hy = h * (0.5 + i * 0.13) + Math.sin(t * 0.05 + i * 2.1) * 4;
+    const hx = ((hazeRng() * w + t * (3 + i * 2)) % (w * 1.4)) - w * 0.2;
+    const hw = w * (0.5 + hazeRng() * 0.3);
+    const grad = ctx.createRadialGradient(hx, hy, 0, hx, hy, hw);
+    grad.addColorStop(0, `rgba(${pal.haze}, 0.07)`);
+    grad.addColorStop(1, `rgba(${pal.haze}, 0)`);
+    ctx.fillStyle = grad;
+    // Squash the blob into a horizontal haze band
+    ctx.save();
+    ctx.translate(hx, hy);
+    ctx.scale(1, 0.22);
+    ctx.translate(-hx, -hy);
+    ctx.fillRect(hx - hw, hy - hw, hw * 2, hw * 2);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// DOCKED scene — station bay silhouette (hex glyph language, scaled up)
+// ---------------------------------------------------------------------------
+
+function drawDockedScene(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  sectorId: number,
+  t: number,
+  isSpaceDock: boolean
+): void {
+  // 1) Deep space behind the bay + dimmed sector starfield
+  ctx.fillStyle = '#040711';
+  ctx.fillRect(0, 0, w, h);
+  const starRng = splitmix32(sectorId * 7 + 11);
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < 90; i++) {
+    const x0 = starRng() * w;
+    const y0 = starRng() * h;
+    const size = 0.3 + starRng() * 1.1;
+    const bright = (0.25 + starRng() * 0.5) * 0.4;
+    const x = (((x0 - t * 0.8) % w) + w) % w;
+    ctx.globalAlpha = bright;
+    ctx.beginPath();
+    ctx.arc(x, y0, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Guide-light accent: SpaceDocks run blue, trading stations run green —
+  // the same color split the legacy bay lights used.
+  const ac = isSpaceDock ? { r: 0, g: 217, b: 255 } : { r: 0, g: 255, b: 65 };
+  const cx = w * 0.5;
+  const cy = h * 0.52;
+  const R = Math.min(w, h) * 0.52;
+
+  // 2) Ambient bay floodlight from above
+  const amb = ctx.createRadialGradient(cx, -h * 0.2, 0, cx, -h * 0.2, h * 1.4);
+  amb.addColorStop(0, `rgba(${ac.r}, ${ac.g}, ${ac.b}, 0.1)`);
+  amb.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = amb;
+  ctx.fillRect(0, 0, w, h);
+
+  const hexPath = (r: number, rot: number) => {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = rot + (Math.PI / 3) * i;
+      const px = cx + r * Math.cos(a);
+      const py = cy + r * Math.sin(a) * 0.92; // slight perspective squash
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+  };
+
+  // 3) Outer hull silhouette — static structural mass
+  const hullRot = Math.PI / 6;
+  hexPath(R, hullRot);
+  ctx.fillStyle = 'rgba(13, 20, 34, 0.96)';
+  ctx.fill();
+  ctx.strokeStyle = `rgba(${ac.r}, ${ac.g}, ${ac.b}, 0.35)`;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Hull panel seams, clipped to the silhouette
+  ctx.save();
+  hexPath(R, hullRot);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(120, 150, 190, 0.1)';
+  ctx.lineWidth = 1;
+  for (let y = cy - R; y <= cy + R; y += 26) {
+    ctx.beginPath();
+    ctx.moveTo(cx - R, y);
+    ctx.lineTo(cx + R, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // 4) Slowly rotating inner habitat ring + radial trusses
+  const ringRot = hullRot + t * 0.03;
+  hexPath(R * 0.62, ringRot);
+  ctx.strokeStyle = `rgba(${ac.r}, ${ac.g}, ${ac.b}, 0.22)`;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(90, 110, 140, 0.4)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 6; i++) {
+    const a = ringRot + (Math.PI / 3) * i;
+    ctx.beginPath();
+    ctx.moveTo(cx + R * 0.3 * Math.cos(a), cy + R * 0.3 * Math.sin(a) * 0.92);
+    ctx.lineTo(cx + R * 0.62 * Math.cos(a), cy + R * 0.62 * Math.sin(a) * 0.92);
+    ctx.stroke();
+  }
+
+  // 5) Core glow
+  const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 0.3);
+  core.addColorStop(0, `rgba(${ac.r}, ${ac.g}, ${ac.b}, 0.5)`);
+  core.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 6) Docking bay aperture on the near face, with blinking guide lights
+  const bayW = R * 0.78;
+  const bayH = Math.max(14, R * 0.16);
+  const bayY = cy + R * 0.46;
+  ctx.fillStyle = 'rgba(2, 4, 9, 0.95)';
+  ctx.fillRect(cx - bayW / 2, bayY - bayH / 2, bayW, bayH);
+  ctx.strokeStyle = `rgba(${ac.r}, ${ac.g}, ${ac.b}, 0.5)`;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx - bayW / 2 + 0.5, bayY - bayH / 2 + 0.5, bayW - 1, bayH - 1);
+  const lights = 5;
+  for (let i = 0; i < lights; i++) {
+    const lx = cx - bayW / 2 + bayW * ((i + 0.5) / lights);
+    const on = Math.sin(t * 3 + i * 0.9) > 0.35;
+    ctx.beginPath();
+    ctx.arc(lx, bayY, 2.2, 0, Math.PI * 2);
+    ctx.fillStyle = on
+      ? `rgba(${ac.r}, ${ac.g}, ${ac.b}, 0.95)`
+      : `rgba(${ac.r}, ${ac.g}, ${ac.b}, 0.18)`;
+    ctx.fill();
+    if (on) {
+      const lg = ctx.createRadialGradient(lx, bayY, 0, lx, bayY, 8);
+      lg.addColorStop(0, `rgba(${ac.r}, ${ac.g}, ${ac.b}, 0.45)`);
+      lg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = lg;
+      ctx.beginPath();
+      ctx.arc(lx, bayY, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // 7) Slow drifting dust motes inside the bay volume
+  const moteRng = splitmix32(sectorId * 271 + 99);
+  ctx.fillStyle = '#cfd8e6';
+  for (let i = 0; i < 36; i++) {
+    const baseX = moteRng() * w;
+    const y = moteRng() * h;
+    const speed = 1.5 + moteRng() * 3;
+    const size = 0.5 + moteRng() * 1.1;
+    const alpha = 0.08 + moteRng() * 0.18;
+    const x = (((baseX + t * speed) % w) + w) % w;
+    const bob = Math.sin(t * 0.4 + i) * 2;
+    ctx.globalAlpha = alpha;
+    ctx.fillRect(x, y + bob, size, size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -910,7 +1233,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   radiationLevel = 0,
   stations = [],
   planets = [],
-  onEntityClick
+  onEntityClick,
+  scene = 'flight',
+  isSpaceDock = false,
+  planetType
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -934,6 +1260,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   reducedMotionRef.current = reducedMotion;
   const envRef = useRef({ hazardLevel, radiationLevel });
   envRef.current = { hazardLevel, radiationLevel };
+  // Scene mode + per-scene parameters, ref-mirrored for the draw loop
+  const sceneRef = useRef({ scene, isSpaceDock, palette: landedPalette(planetType) });
+  sceneRef.current = { scene, isSpaceDock, palette: landedPalette(planetType) };
 
   // ---- Single-frame painter (shared by the loop, resize, and static mode) ----
   const drawNowRef = useRef<() => void>(() => {});
@@ -947,6 +1276,17 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const t = reducedMotionRef.current ? 0 : Date.now() / 1000;
+    const mode = sceneRef.current.scene;
+    if (mode === 'docked') {
+      hitTargetsRef.current.length = 0; // scenes expose no click targets
+      drawDockedScene(ctx, w, h, sectorId, t, sceneRef.current.isSpaceDock);
+      return;
+    }
+    if (mode === 'landed') {
+      hitTargetsRef.current.length = 0;
+      drawLandedScene(ctx, w, h, sectorId, t, sceneRef.current.palette);
+      return;
+    }
     drawScene(
       ctx, w, h, sectorId, systemRef.current, t,
       hitTargetsRef.current, hoverRef.current,
@@ -954,13 +1294,17 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     );
   };
 
-  // ---- Fetch the system snapshot on sector change ----
+  // ---- Fetch the system snapshot on sector change (flight scenes only:
+  //      docked/landed scenes are pure canvas paint, no telemetry needed) ----
   useEffect(() => {
     let cancelled = false;
     setSystem(null);
     systemRef.current = null;
     setFetchFailed(false);
     hoverRef.current = null;
+    if (scene !== 'flight') {
+      return;
+    }
     apiClient
       .get(`/api/v1/sectors/${sectorId}/system`)
       .then((res) => {
@@ -976,7 +1320,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [sectorId]);
+  }, [sectorId, scene]);
 
   // ---- Live prefers-reduced-motion tracking (always mounted) ----
   useEffect(() => {
@@ -1055,7 +1399,11 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       document.removeEventListener('visibilitychange', onVisibility);
       stop();
     };
-  }, [fetchFailed, system, sectorId, reducedMotion]);
+    // isSpaceDock is read (via sceneRef) inside the docked draw path, so a
+    // SpaceDock↔station change must restart the loop to repaint the bay
+    // guide-light tint — otherwise the stale tint persists until another dep
+    // changes.
+  }, [fetchFailed, system, sectorId, reducedMotion, scene, planetType, isSpaceDock]);
 
   // ---- Pointer interaction ----
   const hitTest = (mx: number, my: number): HitTarget | null => {

@@ -417,6 +417,13 @@ const GameDashboard: React.FC = () => {
   const [dockingResult, setDockingResult] = useState<any>(null);
   const [landingResult, setLandingResult] = useState<any>(null);
 
+  // Helm-rail busy latch: the dock/land/undock/liftoff actions each round-trip
+  // the server (and change is_docked/is_landed, which re-renders the whole
+  // rail). Guard against double-fire — a second click before the state flips
+  // would issue a duplicate transition — by disabling+dimming the rail while
+  // any one of them is in flight.
+  const [helmBusy, setHelmBusy] = useState(false);
+
   // Docked trading-station terminal: trade desk or the Port Office registry.
   // SpaceDocks/TradeDocks reach the Port Office through their own venue hub.
   const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice'>('trade');
@@ -579,6 +586,17 @@ const GameDashboard: React.FC = () => {
     return costs;
   }, [availableMoves]);
 
+  // Latch the first real (non-zero) sector_id so the docked/landed canvas
+  // scenes seed from it on a COLD load instead of seeding from 0 and then
+  // popping to a different terrain once currentSector arrives a tick later.
+  // The flight scene fetches a per-sector snapshot so it's immune; only the
+  // pure-paint docked/landed scenes (seeded straight off the id) pop.
+  const latchedSceneSectorIdRef = useRef(0);
+  if (currentSector?.sector_id && !latchedSceneSectorIdRef.current) {
+    latchedSceneSectorIdRef.current = currentSector.sector_id;
+  }
+  const sceneSectorId = currentSector?.sector_id ?? latchedSceneSectorIdRef.current;
+
   // Landed planet — used by the windshield viewport and the colonist transfer UI
   const landedPlanet = useMemo(() => (
     playerState?.is_landed
@@ -659,6 +677,14 @@ const GameDashboard: React.FC = () => {
   // Inline (non-native) confirm step for the two upgrade actions
   const [confirmUpgrade, setConfirmUpgrade] = useState<'shields' | 'citadel' | null>(null);
   const [upgradeBusy, setUpgradeBusy] = useState(false);
+
+  // Inline planet rename (lives in the planetary-ops console; the old
+  // native prompt() is gone — native dialogs freeze browser automation)
+  const [renamingPlanet, setRenamingPlanet] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  useEffect(() => {
+    setRenamingPlanet(false);
+  }, [landedPlanet?.id]);
 
   const handleUpgradeShields = async () => {
     if (!landedPlanet || upgradeBusy) return;
@@ -911,6 +937,15 @@ const GameDashboard: React.FC = () => {
     persistAllocations(landedPlanet.id, next);
   };
 
+  // The station we're docked at — drives the docked scene HUD chips and the
+  // helm rail legend (same resolution order the old bay header used).
+  const dockedStation = useMemo(() => (
+    playerState?.is_docked
+      ? stationsInSector?.find((s: any) => s.id === playerState?.current_port_id) ||
+        stationsInSector?.[0] || null
+      : null
+  ), [playerState?.is_docked, playerState?.current_port_id, stationsInSector]);
+
   // Determine if player is docked at a SpaceDock (has special services like genesis_dealer)
   const isDockedAtSpaceDock = useMemo(() => {
     if (!playerState?.is_docked || !playerState?.current_port_id || !stationsInSector) {
@@ -983,6 +1018,8 @@ const GameDashboard: React.FC = () => {
   };
   
   const handleDock = async (stationId: string) => {
+    if (helmBusy) return;
+    setHelmBusy(true);
     try {
       const result = await dockAtStation(stationId);
       // Full station: dockAtStation surfaces the 409 payload as
@@ -1002,15 +1039,21 @@ const GameDashboard: React.FC = () => {
       setDockingResult(result);
     } catch (error) {
       console.error('Error docking at port:', error);
+    } finally {
+      setHelmBusy(false);
     }
   };
 
   const handleLand = async (planetId: string) => {
+    if (helmBusy) return;
+    setHelmBusy(true);
     try {
       const result = await landOnPlanet(planetId);
       setLandingResult(result);
     } catch (error) {
       console.error('Error landing on planet:', error);
+    } finally {
+      setHelmBusy(false);
     }
   };
 
@@ -1047,13 +1090,20 @@ const GameDashboard: React.FC = () => {
       await renamePlanet(planetId, newName);
       // Refresh the sector data to show the new name
       await exploreCurrentLocation();
-    } catch (error) {
+      setOpsNotice({ type: 'success', message: `Planet registry updated — now designated "${newName}".` });
+    } catch (error: any) {
       console.error('Error renaming planet:', error);
-      alert('Failed to rename planet. Please try again.');
+      // Inline notice, never a native alert (native dialogs freeze automation)
+      setOpsNotice({
+        type: 'error',
+        message: error?.response?.data?.detail || 'Failed to rename planet. Please try again.'
+      });
     }
   };
 
   const handleLeavePlanet = async () => {
+    if (helmBusy) return;
+    setHelmBusy(true);
     try {
       const result = await leavePlanet();
       setLandingResult(null); // Clear landing result on successful departure
@@ -1062,14 +1112,20 @@ const GameDashboard: React.FC = () => {
       });
     } catch (error) {
       console.error('Error leaving planet:', error);
+    } finally {
+      setHelmBusy(false);
     }
   };
 
   const handleUndock = async () => {
+    if (helmBusy) return;
+    setHelmBusy(true);
     try {
       await undockFromStation();
     } catch (error) {
       console.error('Error undocking:', error);
+    } finally {
+      setHelmBusy(false);
     }
   };
   
@@ -1185,149 +1241,105 @@ const GameDashboard: React.FC = () => {
 
         {/* WINDSHIELD - Full immersive viewport with HUD overlays */}
         <div className="cockpit-windshield">
-          {/* LANDED STATE - Show planetary surface view */}
+          {/* LANDED STATE — planet-surface vista scene. GLASS LAW: the band
+              hosts canvas scenery + absolutely-anchored HUD chips ONLY. The
+              vitals/status/rename console moved to PLANETARY OPERATIONS
+              COMMAND below; LIFT OFF lives on the helm rail. */}
           {playerState?.is_landed && !playerState?.is_docked && (() => {
-            const isMyPlanet = isLandedPlanetMine;
             const habitability = Math.max(0, Math.min(100, landedPlanet?.habitability_score ?? 0));
-            const population = landedPlanet?.population ?? 0;
-            const maxPopulation = landedPlanet?.max_population ?? 0;
-            const detailColonists = typeof landedPlanetDetail?.colonists === 'number' ? landedPlanetDetail.colonists : null;
-            const detailMaxColonists = typeof landedPlanetDetail?.maxColonists === 'number' ? landedPlanetDetail.maxColonists : null;
-
             return (
-            <div className="landed-viewport">
-              <div className={`planet-surface ${getPlanetTintClass(landedPlanet?.type)}`}>
-                <div className="planet-header">
-                  <div className="planet-icon">{getPlanetIcon(landedPlanet?.type)}</div>
-                  <h2>LANDED ON PLANET</h2>
-                  <p className="planet-name">
-                    {landedPlanet?.name || 'Unknown Planet'}
-                    {isMyPlanet && (
-                      <button
-                        className="rename-planet-btn"
-                        onClick={() => {
-                          const newName = prompt('Enter new planet name:', landedPlanet?.name);
-                          if (newName && newName.trim() && newName !== landedPlanet?.name) {
-                            handleRenamePlanet(landedPlanet.id, newName.trim());
-                          }
-                        }}
-                        title="Rename your planet"
-                      >
-                        ✏️
-                      </button>
-                    )}
-                  </p>
-                  <p className="planet-type">
-                    {landedPlanet?.type?.toUpperCase() || 'UNKNOWN TYPE'}
-                  </p>
-                  <p className="planet-owner">
-                    {isMyPlanet ? (
-                      <span className="owner-you">👤 OWNER: YOU</span>
-                    ) : landedPlanet?.owner_name ? (
-                      <span className="owner-other">👤 OWNER: {landedPlanet.owner_name}</span>
-                    ) : landedPlanet?.owner_id ? (
-                      <span className="owner-other">👤 OWNED</span>
-                    ) : (
-                      <span className="owner-unclaimed">○ UNCLAIMED</span>
-                    )}
-                  </p>
-                </div>
-                <div className="planetary-surface-visual">
-                  <div className="surface-lights">
-                    <span className="light green"></span>
-                    <span className="light green"></span>
-                    <span className="light green"></span>
-                  </div>
-                  <div className="surface-message">LANDING GEAR DEPLOYED</div>
-                  <div className="surface-status">
-                    Surface operations available - Manage colony, collect resources, or load colonists
-                  </div>
-                  {landedPlanet && (
-                    <div className="planet-vitals">
-                      <div
-                        className="vital-dial"
-                        style={{ '--dial-pct': habitability } as React.CSSProperties}
-                        title={`Habitability: ${habitability}%`}
-                      >
-                        <div className="dial-face">
-                          <span className="dial-value">{habitability}%</span>
-                        </div>
-                        <span className="dial-label">Habitability</span>
-                      </div>
-                      <div className="vital-bars">
-                        <div className="vital-bar-row" title="Planetary population">
-                          <span className="vital-bar-label">Population</span>
-                          <div className="vital-bar-track">
-                            <div
-                              className="vital-bar-fill population"
-                              style={{ width: `${maxPopulation > 0 ? Math.min(100, (population / maxPopulation) * 100) : (population > 0 ? 100 : 0)}%` }}
-                            ></div>
-                          </div>
-                          <span className="vital-bar-value">
-                            {population.toLocaleString()}{maxPopulation > 0 ? ` / ${maxPopulation.toLocaleString()}` : ''}
-                          </span>
-                        </div>
-                        {detailColonists !== null && (
-                          <div className="vital-bar-row" title="Colonist workforce">
-                            <span className="vital-bar-label">Colonists</span>
-                            <div className="vital-bar-track">
-                              <div
-                                className="vital-bar-fill colonists"
-                                style={{ width: `${detailMaxColonists && detailMaxColonists > 0 ? Math.min(100, (detailColonists / detailMaxColonists) * 100) : (detailColonists > 0 ? 100 : 0)}%` }}
-                              ></div>
-                            </div>
-                            <span className="vital-bar-value">
-                              {detailColonists.toLocaleString()}{detailMaxColonists && detailMaxColonists > 0 ? ` / ${detailMaxColonists.toLocaleString()}` : ''}
-                            </span>
-                          </div>
-                        )}
-                        <div className="vital-bar-row status">
-                          <span className="vital-bar-label">Status</span>
-                          <span className="vital-bar-value">{landedPlanet.status?.toUpperCase() || 'UNKNOWN'}</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <button className="liftoff-button" onClick={handleLeavePlanet}>
-                  🚀 LIFT OFF &amp; DEPART
-                </button>
+            <>
+              <SolarSystemViewscreen
+                sectorId={sceneSectorId}
+                scene="landed"
+                planetType={landedPlanet?.type}
+              />
+
+              {/* Cockpit frame vignette */}
+              <div className="cockpit-frame">
+                <div className="frame-corner top-left"></div>
+                <div className="frame-corner top-right"></div>
+                <div className="frame-corner bottom-left"></div>
+                <div className="frame-corner bottom-right"></div>
               </div>
-            </div>
+
+              {/* HUD chips — fixed anchors, never flow layout */}
+              <div className="hud-overlay top-left">
+                <div className="hud-label">LANDED — PLANETARY SURFACE</div>
+                <div className="hud-value hud-chip-name" title={landedPlanet?.name || undefined}>
+                  {getPlanetIcon(landedPlanet?.type)} {landedPlanet?.name || 'Unknown Planet'}
+                </div>
+                <div className="hud-value-secondary">
+                  {landedPlanet?.type?.replace(/_/g, ' ').toUpperCase() || 'UNKNOWN TYPE'}
+                </div>
+              </div>
+
+              <div className="hud-overlay top-right">
+                <div className="hud-label">👤 OWNER</div>
+                <div className="hud-value hud-chip-name">
+                  {/* Only assert ownership once the planet record resolves —
+                      before that, an em-dash, not a false "UNCLAIMED". */}
+                  {!landedPlanet
+                    ? '—'
+                    : isLandedPlanetMine
+                      ? 'YOU'
+                      : landedPlanet.owner_name
+                        ? landedPlanet.owner_name
+                        : landedPlanet.owner_id ? 'OWNED' : 'UNCLAIMED'}
+                </div>
+              </div>
+
+              <div className="hud-overlay bottom-right">
+                <div className="hud-label">HABITABILITY</div>
+                {/* Habitability is only meaningful once the planet resolves —
+                    a 0%/empty bar before that reads as a real (false) value. */}
+                <div className="hud-value">{landedPlanet ? `${habitability}%` : '—'}</div>
+                <div className="hud-bar">
+                  <div className="hud-bar-fill" style={{ width: `${landedPlanet ? habitability : 0}%` }}></div>
+                </div>
+              </div>
+            </>
             );
           })()}
 
-          {/* DOCKED STATE - Show station interior view */}
+          {/* DOCKED STATE — station bay scene. GLASS LAW: canvas scenery +
+              absolutely-anchored HUD chips ONLY; UNDOCK lives on the helm
+              rail, the trade/SpaceDock instruments stay in the console. */}
           {playerState?.is_docked && (
-            <div className="docked-viewport">
-              <div className={`station-interior ${isDockedAtSpaceDock ? 'spacedock' : ''}`}>
-                <div className="station-header">
-                  <div className="station-icon">{isDockedAtSpaceDock ? '🚀' : '🏪'}</div>
-                  <h2>{isDockedAtSpaceDock ? 'DOCKED AT SPACEDOCK' : 'DOCKED AT STATION'}</h2>
-                  <p className="station-name">
-                    {stationsInSector?.find((s: any) => s.id === playerState?.current_port_id)?.name ||
-                      stationsInSector?.[0]?.name ||
-                      (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')}
-                  </p>
-                </div>
-                <div className="docking-bay-visual">
-                  <div className="bay-lights">
-                    <span className={`light ${isDockedAtSpaceDock ? 'blue' : 'green'}`}></span>
-                    <span className={`light ${isDockedAtSpaceDock ? 'blue' : 'green'}`}></span>
-                    <span className={`light ${isDockedAtSpaceDock ? 'blue' : 'green'}`}></span>
-                  </div>
-                  <div className="bay-message">DOCKING CLAMPS ENGAGED</div>
-                  <div className="bay-status">
-                    {isDockedAtSpaceDock
-                      ? 'Welcome to SpaceDock - Access shipyard, armory, and genesis store below'
-                      : 'All systems nominal - Ready for trading operations'}
-                  </div>
-                </div>
-                <button className="undock-button" onClick={handleUndock}>
-                  🚀 UNDOCK &amp; LAUNCH
-                </button>
+            <>
+              <SolarSystemViewscreen
+                sectorId={sceneSectorId}
+                scene="docked"
+                isSpaceDock={isDockedAtSpaceDock}
+              />
+
+              {/* Cockpit frame vignette */}
+              <div className="cockpit-frame">
+                <div className="frame-corner top-left"></div>
+                <div className="frame-corner top-right"></div>
+                <div className="frame-corner bottom-left"></div>
+                <div className="frame-corner bottom-right"></div>
               </div>
-            </div>
+
+              {/* HUD chips — fixed anchors, never flow layout */}
+              <div className="hud-overlay top-left">
+                <div className="hud-label">
+                  {isDockedAtSpaceDock ? '🚀 DOCKED — SPACEDOCK' : '🏪 DOCKED — STATION'}
+                </div>
+                <div className="hud-value hud-chip-name" title={dockedStation?.name || undefined}>
+                  {dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')}
+                </div>
+                <div className="hud-value-secondary">
+                  {dockedStation?.type?.replace(/_/g, ' ').toUpperCase() ||
+                    (isDockedAtSpaceDock ? 'SPACEDOCK' : 'TRADING STATION')}
+                </div>
+              </div>
+
+              <div className="hud-overlay top-right">
+                <div className="hud-label">BAY STATUS</div>
+                <div className="hud-value hud-chip-name hud-chip-ok">CLAMPS ENGAGED</div>
+              </div>
+            </>
           )}
 
           {/* SPACE VIEW - Normal flight mode */}
@@ -1428,6 +1440,65 @@ const GameDashboard: React.FC = () => {
           )}
         </div>
 
+        {/* HELM ACTION RAIL — the always-visible home of the primary state
+            actions (SCROLL LAW): DOCK / LAND in flight, UNDOCK while docked,
+            LIFT OFF while landed. Scenery click-throughs and the PLANETARY
+            monitor affordances remain as alternate triggers. */}
+        <div className="helm-rail">
+          <div className="helm-state">
+            {playerState?.is_landed && !playerState?.is_docked ? (
+              <>LANDED ON {(landedPlanet?.name || 'PLANET').toUpperCase()}</>
+            ) : playerState?.is_docked ? (
+              <>DOCKED AT {(dockedStation?.name || (isDockedAtSpaceDock ? 'SPACEDOCK' : 'STATION')).toUpperCase()}</>
+            ) : (
+              <>IN FLIGHT{currentSector ? ` — SECTOR ${currentSector.sector_number || currentSector.sector_id}` : ''}</>
+            )}
+          </div>
+          <div className={`helm-actions${helmBusy ? ' busy' : ''}`}>
+            {playerState?.is_landed && !playerState?.is_docked ? (
+              <button className="helm-btn liftoff" onClick={handleLeavePlanet} disabled={helmBusy}>
+                {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
+              </button>
+            ) : playerState?.is_docked ? (
+              <button className="helm-btn undock" onClick={handleUndock} disabled={helmBusy}>
+                {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
+              </button>
+            ) : (
+              <>
+                {(stationsInSector || []).map((station: any) => (
+                  <button
+                    key={station.id}
+                    className="helm-btn dock"
+                    onClick={() => handleDock(station.id)}
+                    disabled={helmBusy}
+                    title={`Dock at ${station.name}`}
+                  >
+                    ⚓ DOCK · <span className="helm-btn-target">{station.name}</span>
+                  </button>
+                ))}
+                {(planetsInSector || []).map((planet: any) => (
+                  <button
+                    key={planet.id}
+                    className="helm-btn land"
+                    onClick={() => handleLand(planet.id)}
+                    disabled={helmBusy}
+                    title={`Land on ${planet.name}`}
+                  >
+                    🛬 LAND · <span className="helm-btn-target">{planet.name}</span>
+                  </button>
+                ))}
+                {/* SCANNING until the sector telemetry resolves, so we never
+                    flash a false "NO TARGETS" during the in-flight load. */}
+                {!currentSector || !stationsInSector || !planetsInSector ? (
+                  <span className="helm-empty scanning">SCANNING SECTOR…</span>
+                ) : (stationsInSector.length === 0 && planetsInSector.length === 0) && (
+                  <span className="helm-empty">NO DOCK / LANDING TARGETS IN SECTOR</span>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
         {/* CONSOLE - Metal panel with embedded monitors */}
         <div className="cockpit-console">
           {/* DOCKED STATE: Show SpaceDock or Trading Interface */}
@@ -1500,6 +1571,12 @@ const GameDashboard: React.FC = () => {
                     //   citadelInfo  — GET /planets/{id}/citadel (owner-only)
                     //   defenseInfo  — GET /planets/{id}/defenses (public)
                     const population = currentPlanet?.population || 0;
+                    // Vitals telemetry relocated from the old landed band
+                    // (GLASS LAW: flow content lives in the console, not the glass)
+                    const habitability = Math.max(0, Math.min(100, currentPlanet?.habitability_score ?? 0));
+                    const maxPopulation = currentPlanet?.max_population ?? 0;
+                    const detailColonists = typeof landedPlanetDetail?.colonists === 'number' ? landedPlanetDetail.colonists : null;
+                    const detailMaxColonists = typeof landedPlanetDetail?.maxColonists === 'number' ? landedPlanetDetail.maxColonists : null;
                     const shieldGen = defenseInfo?.shieldGenerator || null;
                     // The Planet model has no drone column — deployed fighters
                     // fill that role (see PlanetaryService.update_defenses note)
@@ -1515,10 +1592,82 @@ const GameDashboard: React.FC = () => {
                           <div className="planet-title">
                             <span className="planet-icon-lg">{planetIcon}</span>
                             <div className="planet-name-block">
-                              <span className="planet-name">{currentPlanet?.name || 'Unknown Planet'}</span>
+                              <span className="planet-name">
+                                {currentPlanet?.name || 'Unknown Planet'}
+                                {isLandedPlanetMine && currentPlanet && !renamingPlanet && (
+                                  <button
+                                    className="rename-planet-btn"
+                                    onClick={() => {
+                                      setRenameValue(currentPlanet.name || '');
+                                      setRenamingPlanet(true);
+                                    }}
+                                    title="Rename your planet"
+                                  >
+                                    ✏️
+                                  </button>
+                                )}
+                              </span>
+                              {renamingPlanet && currentPlanet && (() => {
+                                const trimmed = renameValue.trim();
+                                // ✓ is meaningless when the name is empty or
+                                // unchanged — disable it so the only outcomes
+                                // are a real rename or an explicit cancel.
+                                const canConfirm = !!trimmed && trimmed !== currentPlanet.name;
+                                const confirmRename = () => {
+                                  if (canConfirm) {
+                                    handleRenamePlanet(currentPlanet.id, trimmed);
+                                  }
+                                  setRenamingPlanet(false);
+                                };
+                                return (
+                                <span className="planet-rename-form" role="form" aria-label="Rename planet">
+                                  <input
+                                    className="planet-rename-input"
+                                    value={renameValue}
+                                    maxLength={60}
+                                    autoFocus
+                                    onChange={(e) => setRenameValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        confirmRename();
+                                      } else if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        setRenamingPlanet(false);
+                                      }
+                                    }}
+                                    aria-label="New planet name"
+                                  />
+                                  <button
+                                    className="rename-planet-btn"
+                                    onClick={confirmRename}
+                                    disabled={!canConfirm}
+                                    title="Confirm rename"
+                                  >
+                                    ✓
+                                  </button>
+                                  <button
+                                    className="rename-planet-btn"
+                                    onClick={() => setRenamingPlanet(false)}
+                                    title="Cancel rename"
+                                  >
+                                    ✕
+                                  </button>
+                                </span>
+                                );
+                              })()}
                               <span className="planet-meta">{currentPlanet?.type?.toUpperCase().replace('_', ' ') || 'UNKNOWN'} • Hab: {currentPlanet?.habitability_score || 0}%</span>
                             </div>
                           </div>
+                          {/* Planetary-ops notice (rename / upgrade / vault outcomes)
+                              sits adjacent to the planet title so a rename
+                              confirmation lands where the player just acted —
+                              not buried down in the citadel section. */}
+                          {opsNotice && (
+                            <div className={`transfer-notice ${opsNotice.type}`} role="status">
+                              {opsNotice.message}
+                            </div>
+                          )}
                           <TerraformHeaderPanel
                             planetId={currentPlanet?.id}
                             isOwned={!!currentPlanet && isLandedPlanetMine}
@@ -1533,6 +1682,56 @@ const GameDashboard: React.FC = () => {
 
                         {/* Main content: 2 columns on top, full-width safe at bottom */}
                         <div className="planet-content">
+                          {/* VITALS — relocated from the old landed band (it used to
+                              clip inside the glass); habitability dial + population /
+                              colonist bars + colony status, tinted per planet type */}
+                          <div className={`planet-section vitals ${getPlanetTintClass(currentPlanet?.type)}`}>
+                            <div className="planet-vitals">
+                              <div
+                                className="vital-dial"
+                                style={{ '--dial-pct': habitability } as React.CSSProperties}
+                                title={`Habitability: ${habitability}%`}
+                              >
+                                <div className="dial-face">
+                                  <span className="dial-value">{habitability}%</span>
+                                </div>
+                                <span className="dial-label">Habitability</span>
+                              </div>
+                              <div className="vital-bars">
+                                <div className="vital-bar-row" title="Planetary population">
+                                  <span className="vital-bar-label">Population</span>
+                                  <div className="vital-bar-track">
+                                    <div
+                                      className="vital-bar-fill population"
+                                      style={{ width: `${maxPopulation > 0 ? Math.min(100, (population / maxPopulation) * 100) : (population > 0 ? 100 : 0)}%` }}
+                                    ></div>
+                                  </div>
+                                  <span className="vital-bar-value">
+                                    {population.toLocaleString()}{maxPopulation > 0 ? ` / ${maxPopulation.toLocaleString()}` : ''}
+                                  </span>
+                                </div>
+                                {detailColonists !== null && (
+                                  <div className="vital-bar-row" title="Colonist workforce">
+                                    <span className="vital-bar-label">Colonists</span>
+                                    <div className="vital-bar-track">
+                                      <div
+                                        className="vital-bar-fill colonists"
+                                        style={{ width: `${detailMaxColonists && detailMaxColonists > 0 ? Math.min(100, (detailColonists / detailMaxColonists) * 100) : (detailColonists > 0 ? 100 : 0)}%` }}
+                                      ></div>
+                                    </div>
+                                    <span className="vital-bar-value">
+                                      {detailColonists.toLocaleString()}{detailMaxColonists && detailMaxColonists > 0 ? ` / ${detailMaxColonists.toLocaleString()}` : ''}
+                                    </span>
+                                  </div>
+                                )}
+                                <div className="vital-bar-row status">
+                                  <span className="vital-bar-label">Status</span>
+                                  <span className="vital-bar-value">{currentPlanet?.status?.toUpperCase() || 'UNKNOWN'}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
                           {/* Top Row: Defense & Production side by side */}
                           <div className="planet-top-row">
                             <div className="planet-section defense">
@@ -1663,11 +1862,6 @@ const GameDashboard: React.FC = () => {
                                       ✕ Cancel
                                     </button>
                                   </div>
-                                </div>
-                              )}
-                              {opsNotice && (
-                                <div className={`transfer-notice ${opsNotice.type}`} role="status">
-                                  {opsNotice.message}
                                 </div>
                               )}
                             </div>

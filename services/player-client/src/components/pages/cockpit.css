@@ -155,13 +155,10 @@
 .cockpit-windshield {
   position: relative;
   width: 100%;
-  /* Use flex basis so the windshield is sized as a fixed share of the
-     cockpit-mode column, and `flex-shrink: 0` so it doesn't compress
-     when the console fills the remaining space below. 35% (was 40%)
-     trims the dead black band when a sector has few objects and gives
-     the console monitors more room — this matches the value the
-     <=1024px media query below already uses. */
-  flex: 0 0 35%;
+  /* GLASS LAW: the band is a fixed clamp — tall enough for the scene +
+     HUD chips at 1440x850, capped so the console monitors and the helm
+     rail always fit below it at 1710x947 without clipping. */
+  flex: 0 0 clamp(240px, 34vh, 380px);
   min-height: 0;
   overflow: hidden;
   background: #000;
@@ -353,6 +350,30 @@
   max-width: 600px;
 }
 
+/* Anchor normalization (GLASS LAW): opposing chips cap at 42% of the band
+   so left/right pairs can never collide, even at 1440x850 with long
+   region / station / planet names — the name lines ellipsize instead. */
+.hud-overlay.top-left,
+.hud-overlay.bottom-left,
+.hud-overlay.top-right,
+.hud-overlay.bottom-right {
+  max-width: 42%;
+}
+
+/* Entity-name readout inside a chip — smaller than the SECTOR numerals,
+   single line, ellipsized (full name in the title tooltip) */
+.hud-value.hud-chip-name {
+  font-size: 1.05rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-value.hud-chip-ok {
+  color: #00ff41;
+  text-shadow: 0 0 15px rgba(0, 255, 65, 0.8);
+}
+
 /* HUD Typography */
 .hud-label {
   font-size: 0.65rem;
@@ -469,6 +490,148 @@
   line-height: 1.4;
   font-style: italic;
   text-align: center;
+}
+
+/* ============================================
+   HELM ACTION RAIL — primary state actions
+   SCROLL LAW: DOCK / LAND / UNDOCK / LIFT OFF
+   live here — a fixed 44px strip between the
+   glass band and the console, always visible.
+   ============================================ */
+
+.helm-rail {
+  flex: 0 0 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 0.75rem;
+  background: linear-gradient(180deg, #161a22 0%, #0c0f15 100%);
+  border-top: 1px solid rgba(0, 217, 255, 0.25);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.8);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  font-family: 'Courier New', monospace;
+  position: relative;
+  z-index: 15;
+  overflow: hidden;
+}
+
+/* Compact state legend — IN FLIGHT / DOCKED AT … / LANDED ON … */
+.helm-state {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(0, 217, 255, 0.85);
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.helm-actions {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+/* CRT action button — cyan flight-ops base */
+.helm-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 30px;
+  padding: 0 0.7rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 3px;
+  color: #00d9ff;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+
+.helm-btn:hover {
+  background: rgba(0, 217, 255, 0.2);
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.35);
+}
+
+.helm-btn .helm-btn-target {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Planetary actions tint violet (per-system accent language) */
+.helm-btn.land,
+.helm-btn.liftoff {
+  background: rgba(123, 47, 255, 0.12);
+  border-color: rgba(123, 47, 255, 0.55);
+  color: #b794ff;
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+}
+
+.helm-btn.land:hover,
+.helm-btn.liftoff:hover {
+  background: rgba(123, 47, 255, 0.24);
+  box-shadow: 0 0 12px rgba(123, 47, 255, 0.35);
+}
+
+/* Disabled (a helm action is in flight): dim the CRT and kill the glow so
+   the rail visibly reads "busy" and can't be double-fired. Overrides the
+   hover rules above for both the cyan dock/undock and the violet land/liftoff
+   buttons. */
+.helm-btn:disabled,
+.helm-btn:disabled:hover {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: rgba(120, 130, 150, 0.08);
+  border-color: rgba(120, 130, 150, 0.35);
+  color: rgba(180, 190, 210, 0.6);
+  text-shadow: none;
+  box-shadow: none;
+}
+
+/* While the whole rail is busy, hint it at the container level too. */
+.helm-actions.busy {
+  cursor: progress;
+}
+
+.helm-empty {
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.35);
+  text-transform: uppercase;
+}
+
+/* SCANNING placeholder — a soft pulse so it reads as "working", not "empty". */
+.helm-empty.scanning {
+  color: rgba(0, 217, 255, 0.55);
+  animation: helm-scan-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes helm-scan-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .helm-empty.scanning { animation: none; }
 }
 
 /* ============================================
@@ -914,18 +1077,12 @@
 
 @media (max-width: 1024px) {
   /* On narrower viewports the three monitors stack vertically (1
-     column). Keep the same flex-basis pattern as the desktop rule so
-     the cockpit fits the viewport (the 50vh / 50vh values that lived
-     here previously summed to 100vh and ignored the 80px header,
-     pushing the bottom monitor past the screen edge).
+     column). The windshield keeps its base clamp(240px, 34vh, 380px)
+     basis — a fixed band at every width (GLASS LAW).
 
      The grid rows use minmax(0, 1fr) so each monitor shrinks
      correctly inside the flex-constrained console; without min-track-
      size 0, the rows default to min-content and overflow again. */
-  .cockpit-windshield {
-    flex: 0 0 35%;
-  }
-
   .cockpit-console {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
@@ -950,80 +1107,13 @@
 }
 
 /* ============================================
-   DOCKED STATE - Station Interior View
+   DOCKED STATE — the band now renders the
+   station-bay canvas scene (SolarSystemViewscreen
+   scene="docked") + HUD chips. The old static
+   interior styles are gone; .station-icon and
+   .station-name remain because tactical cards
+   share those class names.
    ============================================ */
-
-.docked-viewport {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(
-    180deg,
-    #0a1628 0%,
-    #0d1a2d 30%,
-    #1a2a40 70%,
-    #2a3a50 100%
-  );
-  position: relative;
-  overflow: hidden;
-}
-
-/* Station wall texture pattern */
-.docked-viewport::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background:
-    /* Horizontal panels */
-    repeating-linear-gradient(
-      0deg,
-      transparent 0px,
-      transparent 80px,
-      rgba(0, 217, 255, 0.05) 80px,
-      rgba(0, 217, 255, 0.05) 82px
-    ),
-    /* Vertical panels */
-    repeating-linear-gradient(
-      90deg,
-      transparent 0px,
-      transparent 120px,
-      rgba(0, 217, 255, 0.03) 120px,
-      rgba(0, 217, 255, 0.03) 122px
-    );
-  pointer-events: none;
-}
-
-/* Ambient lighting effect */
-.docked-viewport::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: radial-gradient(
-    ellipse at center top,
-    rgba(0, 217, 255, 0.15) 0%,
-    transparent 60%
-  );
-  pointer-events: none;
-}
-
-.station-interior {
-  text-align: center;
-  z-index: 10;
-  padding: 2rem;
-  max-width: 600px;
-}
-
-.station-header {
-  margin-bottom: 2rem;
-}
 
 .station-icon {
   font-size: 4rem;
@@ -1043,198 +1133,11 @@
   }
 }
 
-.station-header h2 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  color: #00d9ff;
-  text-shadow: 0 0 20px rgba(0, 217, 255, 0.8);
-  margin: 0 0 0.5rem 0;
-}
-
 .station-name {
   font-size: 1.1rem;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
   margin: 0;
-}
-
-.docking-bay-visual {
-  background: rgba(0, 20, 40, 0.8);
-  border: 2px solid rgba(0, 217, 255, 0.4);
-  border-radius: 8px;
-  padding: 1.5rem 2rem;
-  box-shadow:
-    0 0 30px rgba(0, 217, 255, 0.2),
-    inset 0 0 20px rgba(0, 0, 0, 0.5);
-}
-
-.bay-lights {
-  display: flex;
-  justify-content: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.bay-lights .light {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #333;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
-}
-
-.bay-lights .light.green {
-  background: #00ff41;
-  box-shadow:
-    0 0 10px #00ff41,
-    0 0 20px rgba(0, 255, 65, 0.5),
-    inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  animation: light-blink 2s ease-in-out infinite;
-}
-
-.bay-lights .light.green:nth-child(2) {
-  animation-delay: 0.3s;
-}
-
-.bay-lights .light.green:nth-child(3) {
-  animation-delay: 0.6s;
-}
-
-/* SpaceDock blue lights */
-.bay-lights .light.blue {
-  background: #00d9ff;
-  box-shadow:
-    0 0 10px #00d9ff,
-    0 0 20px rgba(0, 217, 255, 0.5),
-    inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  animation: light-blink-blue 2s ease-in-out infinite;
-}
-
-.bay-lights .light.blue:nth-child(2) {
-  animation-delay: 0.3s;
-}
-
-.bay-lights .light.blue:nth-child(3) {
-  animation-delay: 0.6s;
-}
-
-@keyframes light-blink-blue {
-  0%, 100% {
-    opacity: 1;
-    box-shadow:
-      0 0 10px #00d9ff,
-      0 0 20px rgba(0, 217, 255, 0.5),
-      inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  }
-  50% {
-    opacity: 0.7;
-    box-shadow:
-      0 0 5px #00d9ff,
-      0 0 10px rgba(0, 217, 255, 0.3),
-      inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  }
-}
-
-/* SpaceDock-specific interior styling */
-.station-interior.spacedock {
-  background: linear-gradient(180deg,
-    rgba(0, 30, 60, 0.95) 0%,
-    rgba(0, 50, 100, 0.9) 50%,
-    rgba(0, 30, 60, 0.95) 100%);
-  border-color: rgba(0, 217, 255, 0.5);
-  box-shadow:
-    0 0 40px rgba(0, 217, 255, 0.3),
-    inset 0 0 30px rgba(0, 0, 0, 0.5);
-}
-
-.station-interior.spacedock .station-icon {
-  filter: drop-shadow(0 0 15px rgba(0, 217, 255, 0.6));
-}
-
-.station-interior.spacedock h2 {
-  color: #00d9ff;
-  text-shadow: 0 0 20px rgba(0, 217, 255, 0.6);
-}
-
-.station-interior.spacedock .station-name {
-  color: #00d9ff;
-}
-
-.station-interior.spacedock .bay-message {
-  color: #00d9ff;
-  text-shadow: 0 0 10px rgba(0, 217, 255, 0.6);
-}
-
-.station-interior.spacedock .docking-bay-visual {
-  border-color: rgba(0, 217, 255, 0.4);
-  box-shadow:
-    0 0 30px rgba(0, 217, 255, 0.2),
-    inset 0 0 20px rgba(0, 0, 0, 0.5);
-}
-
-@keyframes light-blink {
-  0%, 100% {
-    opacity: 1;
-    box-shadow:
-      0 0 10px #00ff41,
-      0 0 20px rgba(0, 255, 65, 0.5),
-      inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  }
-  50% {
-    opacity: 0.7;
-    box-shadow:
-      0 0 5px #00ff41,
-      0 0 10px rgba(0, 255, 65, 0.3),
-      inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  }
-}
-
-.bay-message {
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: #00ff41;
-  text-shadow: 0 0 10px rgba(0, 255, 65, 0.6);
-  margin-bottom: 0.5rem;
-}
-
-.bay-status {
-  font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.7);
-}
-
-.undock-button {
-  margin-top: 1.5rem;
-  padding: 1rem 2rem;
-  background: linear-gradient(135deg, #ff6b00 0%, #ef4444 100%);
-  border: 2px solid rgba(255, 107, 0, 0.6);
-  border-radius: 8px;
-  color: white;
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow:
-    0 0 20px rgba(255, 107, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
-.undock-button:hover {
-  background: linear-gradient(135deg, #ff8533 0%, #f56565 100%);
-  border-color: rgba(255, 133, 51, 0.8);
-  transform: translateY(-2px);
-  box-shadow:
-    0 0 30px rgba(255, 107, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
-.undock-button:active {
-  transform: translateY(0);
-  box-shadow:
-    0 0 15px rgba(255, 107, 0, 0.4),
-    inset 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 /* ============================================
@@ -1243,7 +1146,9 @@
 
 .trading-monitor.full-width {
   grid-column: 1 / -1;
-  max-height: 90%;
+  /* Fill the console row — the old 90% cap left a dead band above the
+     viewport edge now that the helm rail owns the vertical seam. */
+  max-height: 100%;
 }
 
 .trading-monitor .monitor-bezel {
@@ -1396,148 +1301,64 @@
 }
 
 /* ============================================
-   LANDED STATE - Planetary Surface View
+   LANDED STATE — the band now renders the
+   planet-surface vista canvas scene
+   (SolarSystemViewscreen scene="landed") + HUD
+   chips. The vitals/status/rename console moved
+   into PLANETARY OPERATIONS COMMAND below. The
+   .planet-icon / .planet-name / .planet-type /
+   .planet-owner rules remain because tactical
+   cards share those class names.
    ============================================ */
 
-.landed-viewport {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(
-    180deg,
-    #1a0a28 0%,
-    #2d1a3d 30%,
-    #3a2a4a 70%,
-    #4a3a5a 100%
-  );
-  position: relative;
-  overflow: hidden;
-}
-
-/* Planetary surface texture pattern */
-.landed-viewport::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background:
-    /* Terrain lines */
-    repeating-linear-gradient(
-      0deg,
-      transparent 0px,
-      transparent 60px,
-      rgba(147, 51, 234, 0.05) 60px,
-      rgba(147, 51, 234, 0.05) 62px
-    ),
-    /* Rocky formations */
-    repeating-linear-gradient(
-      45deg,
-      transparent 0px,
-      transparent 100px,
-      rgba(147, 51, 234, 0.03) 100px,
-      rgba(147, 51, 234, 0.03) 102px
-    );
-  pointer-events: none;
-}
-
-/* Atmospheric glow effect */
-.landed-viewport::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: radial-gradient(
-    ellipse at center top,
-    rgba(147, 51, 234, 0.2) 0%,
-    transparent 60%
-  );
-  pointer-events: none;
-}
-
-.planet-surface {
-  text-align: center;
-  z-index: 10;
-  padding: 2rem;
-  max-width: 600px;
-  /* Default accent (purple) — overridden per planet type below */
+/* Planet-type accent tints (RGB triplets consumed via rgba(var(...))) —
+   now generic so any element (e.g. the console VITALS block) can carry
+   one. The attribute selector seeds the default purple at the same
+   specificity, ahead of the per-type overrides. */
+[class*='planet-tint-'] {
   --planet-accent: 147, 51, 234;
 }
 
-/* Planet-type accent tints (RGB triplets consumed via rgba(var(...))) */
-.planet-surface.planet-tint-terran,
-.planet-surface.planet-tint-terra,
-.planet-surface.planet-tint-m_class,
-.planet-surface.planet-tint-jungle {
+.planet-tint-terran,
+.planet-tint-terra,
+.planet-tint-m_class,
+.planet-tint-jungle {
   --planet-accent: 34, 197, 94;
 }
 
-.planet-surface.planet-tint-oceanic,
-.planet-surface.planet-tint-o_class {
+.planet-tint-oceanic,
+.planet-tint-o_class {
   --planet-accent: 56, 189, 248;
 }
 
-.planet-surface.planet-tint-desert,
-.planet-surface.planet-tint-k_class {
+.planet-tint-desert,
+.planet-tint-k_class {
   --planet-accent: 245, 158, 11;
 }
 
-.planet-surface.planet-tint-volcanic,
-.planet-surface.planet-tint-h_class {
+.planet-tint-volcanic,
+.planet-tint-h_class {
   --planet-accent: 239, 68, 68;
 }
 
-.planet-surface.planet-tint-barren,
-.planet-surface.planet-tint-d_class {
+.planet-tint-barren,
+.planet-tint-d_class {
   --planet-accent: 148, 163, 184;
 }
 
-.planet-surface.planet-tint-ice,
-.planet-surface.planet-tint-frozen,
-.planet-surface.planet-tint-c_class {
+.planet-tint-ice,
+.planet-tint-frozen,
+.planet-tint-c_class {
   --planet-accent: 125, 211, 252;
 }
 
-.planet-surface.planet-tint-mountainous,
-.planet-surface.planet-tint-l_class {
+.planet-tint-mountainous,
+.planet-tint-l_class {
   --planet-accent: 168, 162, 158;
 }
 
-.planet-surface.planet-tint-gas_giant {
+.planet-tint-gas_giant {
   --planet-accent: 192, 132, 252;
-}
-
-/* Subtle tinting of the landed header from the accent variable */
-.landed-viewport .planet-surface .planet-header h2 {
-  color: rgb(var(--planet-accent));
-  text-shadow: 0 0 20px rgba(var(--planet-accent), 0.8);
-}
-
-.landed-viewport .planet-surface .planet-header .planet-type {
-  color: rgba(var(--planet-accent), 0.9);
-}
-
-.landed-viewport .planet-surface .planet-header .planet-icon {
-  animation: planet-icon-pulse-tinted 3s ease-in-out infinite;
-  filter: drop-shadow(0 0 20px rgba(var(--planet-accent), 0.6));
-}
-
-@keyframes planet-icon-pulse-tinted {
-  0%, 100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.05);
-  }
-}
-
-.planet-header {
-  margin-bottom: 0;
 }
 
 .planet-icon {
@@ -1633,63 +1454,6 @@
   box-shadow: 0 0 15px rgba(147, 51, 234, 0.4);
 }
 
-.planetary-surface-visual {
-  background: rgba(20, 10, 30, 0.8);
-  border: 2px solid rgba(147, 51, 234, 0.4);
-  border-radius: 8px;
-  padding: 1.5rem 2rem;
-  box-shadow:
-    0 0 30px rgba(147, 51, 234, 0.2),
-    inset 0 0 20px rgba(0, 0, 0, 0.5);
-}
-
-.surface-lights {
-  display: flex;
-  justify-content: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.surface-lights .light {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #333;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
-}
-
-.surface-lights .light.green {
-  background: #00ff41;
-  box-shadow:
-    0 0 10px #00ff41,
-    0 0 20px rgba(0, 255, 65, 0.5),
-    inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  animation: light-blink 2s ease-in-out infinite;
-}
-
-.surface-lights .light.green:nth-child(2) {
-  animation-delay: 0.3s;
-}
-
-.surface-lights .light.green:nth-child(3) {
-  animation-delay: 0.6s;
-}
-
-.surface-message {
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: #00ff41;
-  text-shadow: 0 0 10px rgba(0, 255, 65, 0.6);
-  margin-bottom: 0.5rem;
-}
-
-.surface-status {
-  font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.7);
-  margin-bottom: 1rem;
-}
-
 .planet-stats {
   display: flex;
   flex-direction: column;
@@ -1721,7 +1485,9 @@
   font-family: 'Courier New', monospace;
 }
 
-/* Planet vitals — habitability dial + population/colonist bars */
+/* Planet vitals — habitability dial + population/colonist bars.
+   Relocated from the old landed band into the PLANETARY OPERATIONS
+   console (the .planet-section.vitals block below). */
 .planet-vitals {
   display: flex;
   align-items: center;
@@ -1729,6 +1495,44 @@
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid rgba(var(--planet-accent, 147, 51, 234), 0.3);
+}
+
+/* Console VITALS block — compact row at the top of planet-content,
+   tinted by the planet-tint-* accent it carries */
+.planet-section.vitals {
+  border-color: rgba(var(--planet-accent, 147, 51, 234), 0.35);
+  padding: 0.5rem 0.75rem;
+}
+
+.planet-section.vitals .planet-vitals {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* Inline planet rename (replaces the old native prompt()) */
+.planet-rename-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.2rem 0;
+}
+
+.planet-rename-input {
+  width: 170px;
+  padding: 0.15rem 0.35rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+  background: rgba(0, 5, 10, 0.8);
+  border: 1px solid rgba(147, 51, 234, 0.5);
+  border-radius: 3px;
+  color: #e9d5ff;
+}
+
+.planet-rename-input:focus {
+  outline: none;
+  border-color: rgba(168, 85, 247, 0.8);
+  box-shadow: 0 0 8px rgba(147, 51, 234, 0.35);
 }
 
 .vital-dial {
@@ -1833,46 +1637,7 @@
   font-weight: 600;
 }
 
-.liftoff-button {
-  /* Pinned inside the visible band: the landed panel's vitals can grow
-     taller than .landed-viewport (overflow: hidden), which used to push
-     this button below the clip edge — a player could land but never
-     leave via the UI. Absolute within the viewport, it cannot be clipped. */
-  position: absolute;
-  right: 1.25rem;
-  bottom: 1.25rem;
-  z-index: 5;
-  margin-top: 0;
-  padding: 0.8rem 1.4rem;
-  background: linear-gradient(135deg, #9333ea 0%, #7c3aed 100%);
-  border: 2px solid rgba(147, 51, 234, 0.6);
-  border-radius: 8px;
-  color: white;
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow:
-    0 0 20px rgba(147, 51, 234, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
-.liftoff-button:hover {
-  background: linear-gradient(135deg, #a855f7 0%, #8b5cf6 100%);
-  border-color: rgba(168, 85, 247, 0.8);
-  transform: translateY(-2px);
-  box-shadow:
-    0 0 30px rgba(147, 51, 234, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
-.liftoff-button:active {
-  transform: translateY(0);
-  box-shadow:
-    0 0 15px rgba(147, 51, 234, 0.4),
-    inset 0 2px 4px rgba(0, 0, 0, 0.3);
-}
+/* (The old .liftoff-button is gone — LIFT OFF lives on the helm rail.) */
 
 /* Landing alert details */
 .landing-details {
@@ -1897,7 +1662,7 @@
 
 .planetary-ops-monitor.full-width {
   grid-column: 1 / -1;
-  max-height: 90%;
+  max-height: 100%;
 }
 
 .planetary-ops-monitor .monitor-bezel {
@@ -4365,12 +4130,11 @@
   cursor: not-allowed;
 }
 
-/* Reduced motion: ceremony and tinted landed header stay static */
+/* Reduced motion: ceremony stays static */
 @media (prefers-reduced-motion: reduce) {
   .claim-celebration-overlay,
   .claim-celebration-card,
-  .claim-scanline,
-  .landed-viewport .planet-surface .planet-header .planet-icon {
+  .claim-scanline {
     animation: none;
   }
 
