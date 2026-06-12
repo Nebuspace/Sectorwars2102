@@ -47,6 +47,8 @@ from src.api.routes.bang_galaxy import router as bang_galaxy_router
 from src.api.routes.construction import router as construction_router
 from src.api.routes.port_ownership import router as port_ownership_router
 from src.api.routes.ranking import router as ranking_router
+from src.api.routes.quantum import router as quantum_router
+from src.api.routes.warp_gates import router as warp_gates_router
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -111,6 +113,14 @@ api_router.include_router(port_ownership_router, tags=["port-ownership"])
 # Military ranking, medals, reputation, and bounties
 # (router carries its own /ranking prefix)
 api_router.include_router(ranking_router, tags=["ranking"])
+# Quantum drive: shard/crystal/charge inventory, directional scan + jump
+# (router carries its own /quantum prefix — no other router claims /quantum,
+# so no mount-order shadowing)
+api_router.include_router(quantum_router, tags=["quantum"])
+# Player warp gates: three-phase construction ritual (ADR-0029) + sector
+# structure listing (router carries its own /warp-gates prefix; traversal
+# itself rides the normal /player/move endpoints via MovementService)
+api_router.include_router(warp_gates_router, tags=["warp-gates"])
 # Bang galaxy generator admin endpoints (Phase 1C of bang-integration plan).
 # The legacy `/admin/galaxy/generate` route in admin.py stays intact; Phase 4
 # removes it in favour of the new job-based flow defined here.

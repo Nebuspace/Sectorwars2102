@@ -104,7 +104,18 @@ class CombatService:
         # Check if defender has an active ship
         if not defender.current_ship:
             return {"success": False, "message": "Defender has no active ship"}
-        
+
+        # A Warp Jumper harmonizing into a gate focus is invulnerable for the
+        # harmonization window (ADR-0029 / warp-gates.md Phase 3: "Hostile
+        # attack during harmonization is a no-op"). Reject before any turn
+        # charge — no turns are consumed on a rejected attack.
+        if defender.current_ship.status == ShipStatus.HARMONIZING:
+            return {
+                "success": False,
+                "message": "That ship is harmonizing into a warp gate focus "
+                           "and is invulnerable",
+            }
+
         # Check if players are in the same sector
         if attacker.current_sector_id != defender.current_sector_id:
             return {"success": False, "message": "Target is not in your sector"}

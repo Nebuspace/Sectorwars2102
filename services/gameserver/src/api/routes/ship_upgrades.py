@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.ship import Ship, ShipSpecification, ShipType, UpgradeType
+from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType, UpgradeType
 from src.models.station import Station, StationType
 from src.services.ship_service import ShipService
 from src.services.ship_upgrade_service import ShipUpgradeService
@@ -252,6 +252,16 @@ async def set_active_ship(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{ship.name} is in sector {ship.sector_id}; travel there to board it",
+        )
+    if ship.is_destroyed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ship.name} is destroyed",
+        )
+    if ship.status == ShipStatus.HARMONIZING:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ship.name} is harmonizing into a warp gate focus and cannot be boarded",
         )
     if locked_player.is_landed:
         raise HTTPException(

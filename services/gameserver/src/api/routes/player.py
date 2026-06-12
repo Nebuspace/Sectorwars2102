@@ -93,6 +93,9 @@ class MoveOption(BaseModel):
     can_afford: bool
     tunnel_type: str = None
     stability: float = None
+    # Player warp gates are strictly one-way (tunnel_type "warp_gate",
+    # turn_cost 0); natural tunnels report False, direct warps omit it.
+    one_way: bool | None = None
 
 class AvailableMovesResponse(BaseModel):
     warps: List[MoveOption]
@@ -327,7 +330,8 @@ async def get_available_moves(
             turn_cost=tunnel["turn_cost"],
             can_afford=tunnel["can_afford"],
             tunnel_type=tunnel.get("tunnel_type"),
-            stability=tunnel.get("stability")
+            stability=tunnel.get("stability"),
+            one_way=tunnel.get("one_way")
         ))
 
     return AvailableMovesResponse(warps=warps, tunnels=tunnels)

@@ -115,35 +115,74 @@ class ShipService:
         """
         Destroy a ship and handle Escape Pod ejection if needed.
         Returns the ship the player ends up in (could be escape pod).
+
+        cause="warp_gate_anchor" is the ADR-0029 planned dismantle: the Warp
+        Jumper hull fuses into the gate focus, so there is NO insurance payout
+        (Warp Jumpers are non-insurable), NO 10% emergency-cargo haircut (ALL
+        non-bound cargo transfers to the pod), and destruction_cause is set to
+        WARP_GATE_ANCHOR. No CargoWreck is generated on ANY path through this
+        method — wreck generation lives in CombatService, which never handles
+        this cause.
         """
         player = ship.owner
-        
+
         # Check if ship is an Escape Pod - if so, it cannot be destroyed
         if ship.type == ShipType.ESCAPE_POD:
             logger.warning(f"Attempted to destroy indestructible Escape Pod for player {player.id}")
             return ship  # Return the same ship (indestructible)
-        
+
+        is_planned_dismantle = cause == "warp_gate_anchor"
+
+        # Is the owner actually piloting THIS hull? Only the piloted hull's
+        # destruction ejects the pilot into the escape pod. Consuming an
+        # unpiloted hull (the owner switched ships — e.g. a Warp Jumper
+        # anchored as a gate focus while the player flies something else)
+        # must NOT reseat the player or relocate their active vehicle
+        # (FIX 6 — pilot hijack). Cargo still transfers to a pod at the
+        # dead hull's sector so the owner's property isn't silently lost.
+        is_piloted = player.current_ship_id == ship.id
+
         # Mark ship as destroyed
         ship.is_destroyed = True
         ship.is_active = False
-        
-        # Create or find escape pod for the player
-        escape_pod = self._ensure_escape_pod(player, ship.sector_id)
-        
-        # Transfer emergency cargo to escape pod (10% of original cargo)
-        self._transfer_emergency_cargo(ship, escape_pod)
-        
-        # Set escape pod as player's current ship
-        player.current_ship_id = escape_pod.id
-        
-        # Apply insurance if available
-        if player.insurance:
+        # Contract: WARP_GATE_ANCHOR for the planned dismantle; other causes
+        # record their raw string (e.g. "combat").
+        ship.destruction_cause = "WARP_GATE_ANCHOR" if is_planned_dismantle else cause
+
+        if is_piloted:
+            # Pilot ejects: reuse/relocate the player's escape pod and reseat.
+            escape_pod = self._ensure_escape_pod(player, ship.sector_id)
+        else:
+            # Unpiloted hull: materialize a pod at the dead hull's sector to
+            # receive cargo WITHOUT moving the player's active pod or
+            # reseating them.
+            escape_pod = self._pod_for_unpiloted_hull(player, ship.sector_id)
+
+        if is_planned_dismantle:
+            # ADR-0029: planned dismantle — all non-bound cargo transfers
+            self._transfer_all_cargo(ship, escape_pod)
+        else:
+            # Transfer emergency cargo to escape pod (10% of original cargo)
+            self._transfer_emergency_cargo(ship, escape_pod)
+
+        # Set escape pod as player's current ship ONLY when the piloted hull
+        # was destroyed (FIX 6).
+        if is_piloted:
+            player.current_ship_id = escape_pod.id
+
+        # Apply insurance if available. Skipped entirely for the warp-gate
+        # anchor: no underwriter writes a policy on a hull whose canonical
+        # use is its own destruction (ADR-0029).
+        if not is_planned_dismantle and player.insurance:
             compensation = self._calculate_insurance_payout(ship, player.insurance)
             if compensation > 0:
                 player.credits += compensation
                 logger.info(f"Applied insurance payout of {compensation} credits to player {player.id}")
-        
-        logger.info(f"Ship {ship.name} destroyed for player {player.id}, ejected to Escape Pod")
+
+        logger.info(
+            f"Ship {ship.name} destroyed for player {player.id} (cause: {cause}), "
+            f"{'pilot ejected to Escape Pod' if is_piloted else 'unpiloted hull — pilot untouched'}"
+        )
         return escape_pod
     
     def _ensure_escape_pod(self, player: Player, sector_id: int) -> Ship:
@@ -174,6 +213,77 @@ class ShipService:
         logger.info(f"Created new Escape Pod for player {player.id}")
         return escape_pod
     
+    def _pod_for_unpiloted_hull(self, player: Player, sector_id: int) -> Ship:
+        """Provide an escape pod to receive the cargo of an UNPILOTED hull
+        being consumed, without reseating the player (FIX 6).
+
+        Preserves the single-pod-per-player invariant (_ensure_escape_pod uses
+        .first()): if the player owns a pod they are NOT currently piloting,
+        reuse it and relocate it to the dead hull's sector to receive the
+        cargo (the player isn't aboard, so relocation is harmless). If the
+        player IS currently piloting their only pod, or owns none, create a
+        fresh pod at the hull's sector so cargo isn't silently destroyed. In
+        no case is player.current_ship_id touched here."""
+        existing = self.db.query(Ship).filter(
+            Ship.owner_id == player.id,
+            Ship.type == ShipType.ESCAPE_POD,
+            Ship.is_destroyed == False  # noqa: E712
+        ).first()
+
+        if existing is not None and existing.id != player.current_ship_id:
+            existing.sector_id = sector_id
+            existing.is_active = True
+            return existing
+
+        return self.create_ship(
+            ship_type=ShipType.ESCAPE_POD,
+            owner_id=player.id,
+            sector_id=sector_id,
+            name="Emergency Escape Pod"
+        )
+
+    def _transfer_all_cargo(self, destroyed_ship: Ship, escape_pod: Ship) -> None:
+        """ADR-0029 planned-dismantle transfer: ALL non-bound cargo moves to
+        the escape pod, intentionally ignoring the pod's capacity — canon's
+        "non-bound cargo transfers to the pilot's escape pod inventory" is
+        unconditional, and dropping the gate-builder's remaining materials
+        over a capacity clamp would silently destroy player property. The pod
+        may sit over capacity until the player offloads (purchases/loads onto
+        an over-full pod are blocked by the normal space checks)."""
+        destroyed_cargo = destroyed_ship.cargo or {}
+        destroyed_contents: Dict[str, int] = destroyed_cargo.get("contents") or {}
+        if not destroyed_contents:
+            return
+
+        pod_cargo = escape_pod.cargo or {"capacity": 0, "used": 0, "contents": {}}
+        pod_contents: Dict[str, int] = pod_cargo.get("contents") or {}
+
+        transferred: Dict[str, int] = {}
+        for resource, amount in list(destroyed_contents.items()):
+            if not isinstance(amount, (int, float)) or amount <= 0:
+                continue
+            pod_contents[resource] = int(pod_contents.get(resource, 0)) + int(amount)
+            transferred[resource] = int(amount)
+            del destroyed_contents[resource]
+
+        if not transferred:
+            return
+
+        destroyed_cargo["contents"] = destroyed_contents
+        destroyed_cargo["used"] = sum(
+            int(q) for q in destroyed_contents.values() if isinstance(q, (int, float))
+        )
+        pod_cargo["contents"] = pod_contents
+        pod_cargo["used"] = sum(
+            int(q) for q in pod_contents.values() if isinstance(q, (int, float))
+        )
+        destroyed_ship.cargo = destroyed_cargo
+        escape_pod.cargo = pod_cargo
+        flag_modified(destroyed_ship, "cargo")
+        flag_modified(escape_pod, "cargo")
+
+        logger.info(f"Transferred full cargo to Escape Pod (planned dismantle): {transferred}")
+
     def _transfer_emergency_cargo(self, destroyed_ship: Ship, escape_pod: Ship) -> None:
         """Transfer 10% of cargo contents from destroyed ship to escape pod.
 

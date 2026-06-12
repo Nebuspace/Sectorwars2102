@@ -12,7 +12,7 @@ from src.models.user import User
 from src.models.player import Player
 from src.models.station import Station
 from src.models.sector import Sector
-from src.models.ship import Ship
+from src.models.ship import Ship, ShipStatus
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
 from src.models.market_transaction import MarketTransaction, MarketPrice, TransactionType
 from src.services.trading_service import TradingService
@@ -639,7 +639,15 @@ async def dock_at_station(
     # Check if landed on a planet (can't dock while landed)
     if current_player.is_landed:
         raise HTTPException(status_code=400, detail="You must leave the planet before docking at a station")
-    
+
+    # A hull fused into a warp gate focus cannot maneuver to dock
+    current_ship = db.query(Ship).filter(Ship.id == current_player.current_ship_id).first()
+    if current_ship and current_ship.status == ShipStatus.HARMONIZING:
+        raise HTTPException(
+            status_code=400,
+            detail="Your ship is harmonizing into a warp gate focus and cannot dock — cancel the anchor first"
+        )
+
     # Check if player has enough turns
     if current_player.turns < DOCKING_TURN_COST:
         raise HTTPException(

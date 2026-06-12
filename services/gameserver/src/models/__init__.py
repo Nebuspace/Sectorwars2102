@@ -49,3 +49,4 @@ from src.models.docking import DockingSlipOccupancy, DockingQueueEntry
 from src.models.npc_character import NPCCharacter, NPCArchetype, NPCStatus
 from src.models.construction import ConstructionReservation
 from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCampaign
+from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus, WarpGateBeaconStatus

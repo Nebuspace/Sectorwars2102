@@ -6,14 +6,27 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
 from src.models.player import Player
-from src.models.ship import Ship, ShipType
+from src.models.ship import Ship, ShipStatus, ShipType
 from src.models.sector import Sector, sector_warps
-from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
 from src.models.combat import CombatResult
 from src.models.combat_log import CombatLog
 from sqlalchemy.orm.attributes import flag_modified
 
+from src.services import warp_gate_service
+
 logger = logging.getLogger(__name__)
+
+
+def _is_player_gate(tunnel: WarpTunnel) -> bool:
+    """Player-built warp gate: ARTIFICIAL tunnel with created_by_player_id set
+    (the created_by_player_id IS NOT NULL predicate distinguishes player gates
+    from generator-placed ARTIFICIAL connections — warp-gates.md). Traversal
+    is 0 turns and strictly one-way."""
+    return (
+        tunnel.type == WarpTunnelType.ARTIFICIAL
+        and tunnel.created_by_player_id is not None
+    )
 
 
 class MovementService:
@@ -27,6 +40,23 @@ class MovementService:
         Move a player to a destination sector.
         Returns a dict with success status, message, and turn cost.
         """
+        # Lazily complete any HARMONIZING warp gates touching the player's
+        # current sector BEFORE locking the player row (gate row is locked
+        # first — same lock order as warp_gate_service) so a freshly
+        # harmonized gate is traversable without a separate listing call.
+        # Failures here must not block normal movement (ARIA-hook pattern).
+        try:
+            pre_player = self.db.query(Player).filter(Player.id == player_id).first()
+            if pre_player:
+                warp_gate_service.advance_gates_touching_sector(
+                    self.db, pre_player.current_sector_id
+                )
+        except Exception as e:
+            # Roll back so a failed advance can't poison the movement
+            # transaction that follows (nothing else is pending yet).
+            logger.error("Failed lazy warp-gate advance during movement: %s", e)
+            self.db.rollback()
+
         # Lock player row to prevent concurrent movement race conditions
         player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
         if not player:
@@ -41,33 +71,58 @@ class MovementService:
         # Ensure player has an active ship
         if not player.current_ship:
             return {"success": False, "message": "No active ship selected", "turn_cost": 0}
-        
+
+        # A Warp Jumper harmonizing into a gate focus is frozen in place
+        # (ADR-0029 / ADR-0036). Reject movement before any turn charge so a
+        # mid-build hull can't fly off mid-harmonization. 0 turn cost.
+        if player.current_ship.status == ShipStatus.HARMONIZING:
+            return {
+                "success": False,
+                "message": "Your ship is harmonizing into a warp gate focus "
+                           "and cannot move — cancel the anchor first",
+                "turn_cost": 0,
+            }
+
         current_sector_id = player.current_sector_id
         
         # Return early if already in the destination sector
         if current_sector_id == destination_sector_id:
             return {"success": True, "message": "Already in this sector", "turn_cost": 0}
         
+        # Prefer a 0-turn ACTIVE player-built warp gate over a parallel direct
+        # warp (FIX 7). The available-moves listing advertises the gate at 0
+        # turns; if a direct warp ALSO connects origin -> destination, charging
+        # the direct-warp cost here would contradict the advertised 0. Take the
+        # gate first so the charged cost matches what the player was shown.
+        if self._has_player_gate(current_sector_id, destination_sector_id):
+            result = self._execute_movement(player, destination_sector_id, 0)
+            tunnel_events = self._check_for_tunnel_events(
+                player, current_sector_id, destination_sector_id
+            )
+            encounters = self._check_for_encounters(player, destination_sector_id)
+            result.update({"tunnel_events": tunnel_events, "encounters": encounters})
+            return result
+
         # Check if direct warp exists
         can_warp, warp_cost, warp_message = self._check_direct_warp(
             current_sector_id, destination_sector_id, player.current_ship
         )
-        
+
         if can_warp:
             # Check if player has enough turns
             if player.turns < warp_cost:
                 return {"success": False, "message": "Not enough turns for this movement", "turn_cost": warp_cost}
-            
+
             # Execute the move
             result = self._execute_movement(player, destination_sector_id, warp_cost)
-            
+
             # Check for encounters
             encounters = self._check_for_encounters(player, destination_sector_id)
-            
+
             # Combine results
             result.update({"encounters": encounters})
             return result
-        
+
         # Check if warp tunnel exists
         can_tunnel, tunnel_cost, tunnel_message = self._check_warp_tunnel(
             current_sector_id, destination_sector_id, player.current_ship
@@ -102,7 +157,20 @@ class MovementService:
         player = self.db.query(Player).filter(Player.id == player_id).first()
         if not player:
             return {"warps": [], "tunnels": []}
-        
+
+        # Lazily complete HARMONIZING warp gates touching this sector so a
+        # freshly-harmonized gate appears in the listing without a separate
+        # poll (warp_gate_service owns the completion semantics). Listing
+        # must keep working even if the advance fails.
+        try:
+            if warp_gate_service.advance_gates_touching_sector(
+                self.db, player.current_sector_id
+            ):
+                self.db.commit()
+        except Exception as e:
+            logger.error("Failed lazy warp-gate advance during move listing: %s", e)
+            self.db.rollback()
+
         # Get current sector
         current_sector = self.db.query(Sector).filter(Sector.sector_id == player.current_sector_id).first()
         if not current_sector:
@@ -169,9 +237,13 @@ class MovementService:
             dest_sector = self.db.query(Sector).filter(Sector.id == tunnel.destination_sector_id).first()
             if dest_sector:
                 tunnel_cost = tunnel.turn_cost
+                player_gate = _is_player_gate(tunnel)
 
-                # Apply ship-specific adjustments
-                if ship and ship.warp_capable:
+                if player_gate:
+                    # Player warp gate: 0 turns flat — no ship-type
+                    # multipliers and no max(1, ...) clamp (warp-gates.md).
+                    tunnel_cost = 0
+                elif ship and ship.warp_capable:
                     tunnel_cost = max(1, int(tunnel_cost * 0.8))  # 20% reduction for warp-capable ships
 
                 warp_tunnels.append({
@@ -179,8 +251,11 @@ class MovementService:
                     "name": dest_sector.name,
                     "type": dest_sector.type.name,
                     "turn_cost": tunnel_cost,
-                    "tunnel_type": tunnel.type.name,
+                    # Contract: gate entries surface as tunnel_type
+                    # "warp_gate" so the client renders them unchanged.
+                    "tunnel_type": "warp_gate" if player_gate else tunnel.type.name,
                     "stability": tunnel.stability,
+                    "one_way": not tunnel.is_bidirectional,
                     "can_afford": player.turns >= tunnel_cost
                 })
 
@@ -212,9 +287,13 @@ class MovementService:
                     "turn_cost": tunnel_cost,
                     "tunnel_type": tunnel.type.name,
                     "stability": tunnel.stability,
+                    # This branch only matches is_bidirectional rows, so the
+                    # reverse traversal is by definition not one-way. Player
+                    # gates (always one-way) can never appear here.
+                    "one_way": False,
                     "can_afford": player.turns >= tunnel_cost
                 })
-        
+
         return {
             "warps": direct_warps,
             "tunnels": warp_tunnels
@@ -371,6 +450,27 @@ class MovementService:
 
         return True, turn_cost, "Direct warp available"
     
+    def _has_player_gate(self, current_sector_id: int, destination_sector_id: int) -> bool:
+        """True if an ACTIVE player-built warp gate connects origin ->
+        destination (FIX 7). Player gates are one-way ARTIFICIAL tunnels with
+        created_by_player_id set and a flat 0-turn cost; they outrank a
+        parallel direct warp so the charged cost matches the advertised 0."""
+        current_sector = self.db.query(Sector).filter(
+            Sector.sector_id == current_sector_id
+        ).first()
+        destination_sector = self.db.query(Sector).filter(
+            Sector.sector_id == destination_sector_id
+        ).first()
+        if not current_sector or not destination_sector:
+            return False
+
+        tunnel = self.db.query(WarpTunnel).filter(
+            WarpTunnel.origin_sector_id == current_sector.id,
+            WarpTunnel.destination_sector_id == destination_sector.id,
+            WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+        ).first()
+        return tunnel is not None and _is_player_gate(tunnel)
+
     def _check_warp_tunnel(self, current_sector_id: int, destination_sector_id: int, ship: Ship) -> Tuple[bool, int, str]:
         """Check if a warp tunnel is available and calculate turn cost."""
         # Get sector objects
@@ -399,6 +499,14 @@ class MovementService:
         if not tunnel:
             return False, 0, "No active warp tunnel found"
 
+        # Player-built warp gate: 0 turns flat, no ship-type multipliers and
+        # no max(1, ...) clamp (warp-gates.md). Strictly one-way: the reverse
+        # branch above only matches is_bidirectional rows and gates are
+        # created is_bidirectional=False, so a gate matched here is
+        # guaranteed origin -> destination.
+        if _is_player_gate(tunnel):
+            return True, tunnel.turn_cost, "Warp gate available"
+
         # Get base turn cost
         turn_cost = tunnel.turn_cost
 
@@ -407,7 +515,7 @@ class MovementService:
             turn_cost = max(1, int(turn_cost * 1.5))  # 50% surcharge for non-warp-capable ships
         elif ship and getattr(ship, 'warp_capable', False):
             turn_cost = max(1, int(turn_cost * 0.8))  # 20% reduction for warp-capable ships
-        
+
         return True, turn_cost, "Warp tunnel available"
     
     def _calculate_warp_cost(self, from_sector: Sector, to_sector: Sector, ship: Optional[Ship]) -> int:
