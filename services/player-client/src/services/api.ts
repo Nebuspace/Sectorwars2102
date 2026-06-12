@@ -1,38 +1,38 @@
 // Real API service for gameserver endpoints
-import { getAuthToken } from '../utils/auth';
+import { isAxiosError } from 'axios';
+import apiClient from './apiClient';
 
-// Same-origin by default: the Vite dev proxy and the nginx gateway both
-// route /api to the gameserver, so relative URLs work in every tier.
-// A hardcoded localhost fallback breaks any browser not on the dev box.
-const API_BASE_URL = import.meta.env.VITE_API_URL || '';
-
-// Helper function for API requests
+// Helper function for API requests.
+//
+// Delegates to the shared apiClient (axios) so every call gets the
+// centralized JWT refresh-on-401 behavior. The external contract is
+// unchanged: returns the parsed response body, throws
+// Error(detail || `API Error: <status>`) on failure.
 async function apiRequest(
-  endpoint: string, 
+  endpoint: string,
   options: RequestInit = {}
 ): Promise<any> {
-  const token = getAuthToken();
-  
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...options.headers as Record<string, string>
-  };
-  
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+  try {
+    const response = await apiClient.request({
+      url: endpoint,
+      method: (options.method || 'GET') as string,
+      // Call sites pass pre-stringified JSON bodies; forward as-is.
+      data: options.body,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers as Record<string, string>)
+      }
+    });
+    return response.data;
+  } catch (error) {
+    if (isAxiosError(error) && error.response) {
+      const data: any = error.response.data;
+      const detail = data && typeof data === 'object' ? data.detail : undefined;
+      throw new Error(detail || `API Error: ${error.response.status}`);
+    }
+    // Network-level failure (no response) – rethrow like fetch would.
+    throw error;
   }
-
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
-    throw new Error(error.detail || `API Error: ${response.status}`);
-  }
-
-  return response.json();
 }
 
 // Combat APIs
@@ -85,7 +85,10 @@ export const planetaryAPI = {
       body: JSON.stringify({ buildingType, targetLevel })
     }),
 
-  updateDefenses: (planetId: string, defenses: { turrets?: number, shields?: number, drones?: number }) =>
+  // The wire contract is turrets/shields/fighters (backend DefenseUpdateRequest);
+  // Pydantic silently drops unknown keys, so a `drones` field here would be
+  // discarded server-side. The UI labels fighters as "Drones" (canon naming).
+  updateDefenses: (planetId: string, defenses: { turrets?: number, shields?: number, fighters?: number }) =>
     apiRequest(`/api/v1/planets/${planetId}/defenses`, {
       method: 'PUT',
       body: JSON.stringify(defenses)

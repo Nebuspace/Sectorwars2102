@@ -65,9 +65,12 @@ async function doRefreshToken(): Promise<void> {
   try {
     console.log('[apiClient] Refreshing access token...');
 
-    // Use a plain axios call (not apiClient) to avoid re-entering the
-    // interceptor if the refresh endpoint itself returns 401.
-    const response = await axios.post(
+    // The refresh call must go through a PRISTINE axios instance: apiClient
+    // would re-enter this interceptor, and the GLOBAL axios instance carries
+    // AuthContext's own 401 response interceptor — routing a dead refresh
+    // token through it turns a fast-fail logout into a circular await that
+    // silently hangs every queued request.
+    const response = await axios.create().post(
       `${getBaseURL()}/api/v1/auth/refresh`,
       { refresh_token: storedRefreshToken },
       { headers: { Authorization: '' } },

@@ -1,67 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import axios from 'axios';
 import { useAuth } from './AuthContext';
+import apiClient from '../services/apiClient';
 
-// Create an axios instance that uses the Vite proxy
-const api = axios.create({
-  baseURL: '', // Empty baseURL to use current origin and proxy
-  withCredentials: false
-});
-
-// Add interceptor to include auth token
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('accessToken');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
-
-// Add response interceptor for automatic token refresh on 401
-api.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-
-    // If error is 401 and not already retrying, attempt to refresh token
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true;
-
-      try {
-        // Get the refresh token from localStorage
-        const refreshToken = localStorage.getItem('refreshToken');
-        if (!refreshToken) {
-          throw new Error('No refresh token available');
-        }
-
-        // Call refresh endpoint
-        const response = await axios.post('/api/v1/auth/refresh', {
-          refresh_token: refreshToken
-        }, {
-          headers: { Authorization: '' } // Don't send current auth header
-        });
-
-        const { access_token, refresh_token } = response.data;
-
-        // Update tokens in localStorage
-        localStorage.setItem('accessToken', access_token);
-        localStorage.setItem('refreshToken', refresh_token);
-
-        // Update the failed request's auth header and retry
-        originalRequest.headers['Authorization'] = `Bearer ${access_token}`;
-        return api(originalRequest);
-      } catch (refreshError) {
-        // If refresh fails, clear tokens and redirect to login
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
-        window.location.href = '/login';
-        return Promise.reject(refreshError);
-      }
-    }
-
-    return Promise.reject(error);
-  }
-);
+// Shared axios instance: attaches the access token from localStorage and
+// transparently refreshes it on 401 with single-flight deduplication
+// (see services/apiClient.ts). Its baseURL resolves to VITE_API_URL or
+// window.location.origin, preserving the Vite-proxy semantics this context
+// previously set up with its own axios.create.
+const api = apiClient;
 
 // Types for first login state
 export interface FirstLoginSession {
@@ -172,7 +118,7 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
   const [exchangeId, setExchangeId] = useState<string | null>(null);
   const [dialogueOutcome, setDialogueOutcome] = useState<DialogueAnalysis['outcome'] | null>(null);
   
-  // Use the axios instance configured at the top of the file (with proxy)
+  // Use the shared apiClient instance imported at the top of the file
   
   // Rate limiting state
   const [lastCheckTime, setLastCheckTime] = useState<number>(0);

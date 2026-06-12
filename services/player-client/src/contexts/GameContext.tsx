@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
-import axios from 'axios';
 import { useAuth } from './AuthContext';
+import apiClient from '../services/apiClient';
 
 // Types for game state
 export interface Ship {
@@ -365,32 +365,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // don't destroy it. Cleared whenever the player's sector changes.
   const [quantumScanResult, setQuantumScanResult] = useState<QuantumScanTelemetry | null>(null);
 
-  // Use Vite proxy for all API requests to avoid CORS issues
-  const getApiUrl = () => {
-    // If an environment variable is explicitly set, use it
-    if (import.meta.env.VITE_API_URL) {
-      return import.meta.env.VITE_API_URL;
-    }
+  // Shared axios instance: attaches the access token from localStorage and
+  // transparently refreshes it on 401 (see services/apiClient.ts). Its
+  // baseURL resolves to VITE_API_URL or window.location.origin, matching the
+  // Vite-proxy semantics this context previously set up itself.
+  const api = apiClient;
 
-    // Always use the current origin to leverage Vite proxy in Docker environments
-    // This ensures all API calls go through the Vite dev server proxy
-    return window.location.origin;  // Use current origin, which will use the proxy
-  };
 
-  // Set up axios with authorization header
-  const api = axios.create({
-    baseURL: getApiUrl(),
-  });
-  
-  // Use token from localStorage directly instead of from context
-  api.interceptors.request.use(config => {
-    const token = localStorage.getItem('accessToken');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  });
-  
   // Check first login status
   const checkFirstLoginStatus = async (): Promise<boolean> => {
     if (!user) return false;
