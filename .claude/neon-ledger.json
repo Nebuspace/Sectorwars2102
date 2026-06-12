@@ -940,6 +940,14 @@
         "security-validation e2e spec deleted; foundation-sprint dir could use a fuller audit",
         "COMMS v1: no manual recipient entry, page-1-only inbox, no sent view (no backend endpoint)"
       ]
+    },
+    {
+      "id": "neon-2026-06-12-g",
+      "tier": "HEAVY-design (directed: full Player UI cockpit identity pass; fable-led design, multi-model opinion panel)",
+      "stage": "N1-discovery",
+      "branch_head_at_start": "e881af3",
+      "directive": "Max: every player page audited for cutoff/overflow at MacBook fullscreen; cockpit identity everywhere (top band = viewscreen/canopy); ARIA integrated into the dashboard; docked/landed metaphor reconsidered; multi-model design opinions, Fable rules and builds. Beat Opus at design.",
+      "sections": []
     }
   ]
 }
