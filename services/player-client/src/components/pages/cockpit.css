@@ -656,7 +656,11 @@
   );
   border-top: 3px solid #2a2f3a;
   display: grid;
-  grid-template-columns: 460px 1fr 340px;
+  /* Elastic columns: fixed 460/340 floors summed past the row's width on a
+     1440-wide window (sidebar leaves ~1120), shoving the COMMS header off
+     the right edge. minmax() keeps the 1710 layout identical while letting
+     every column shrink before anything overflows. */
+  grid-template-columns: minmax(360px, 460px) minmax(0, 1fr) minmax(280px, 340px);
   /* Single explicit row so monitors fill the console height instead of
      auto-sizing to their content (which is what was overflowing). */
   grid-template-rows: 1fr;
@@ -700,6 +704,9 @@
 
 .console-monitor {
   position: relative;
+  /* Grid items default to min-width:auto and refuse to shrink below their
+     content, defeating the minmax() columns above. */
+  min-width: 0;
   background: transparent;
   padding: 0.4rem;
   max-height: 100%;
