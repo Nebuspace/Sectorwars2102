@@ -148,12 +148,13 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     setScanError(null);
     try {
       const result = await quantumScan(bearing);
-      if (!isMounted.current) return;
-      // Persist into context, tagged with the sector it was fired from, so a
-      // NAV mode flip doesn't discard a scan the pilot paid for.
+      // Persist into context FIRST — the context outlives this console, which
+      // can unmount mid-await when the dashboard flashes its loading branch.
+      // A paid scan must never be discarded because of a transient remount.
       if (firedFromSector !== null) {
         setQuantumScanResult({ origin_sector_id: firedFromSector, result });
       }
+      if (!isMounted.current) return;
     } catch (error: any) {
       if (!isMounted.current) return;
       setScanError(error?.response?.data?.detail || 'Echo scan failed — drive sensors unresponsive');
