@@ -521,6 +521,37 @@ async def transfer_colonists(
         # Departing colonists leave the demographic count too, but
         # population never drops below the remaining workforce
         planet.population = max(planet.colonists, (planet.population or 0) - quantity)
+
+        # Clamp production allocations to the reduced colonist count, preserving
+        # ratios (canon planetary-production-tick.md:212: "Clamp allocations to
+        # current colonist count proportionally; preserve ratios"). Fewer
+        # colonists cannot work more allocation slots than remain.
+        new_colonists = planet.colonists or 0
+        fuel_alloc = planet.fuel_allocation or 0
+        organics_alloc = planet.organics_allocation or 0
+        equipment_alloc = planet.equipment_allocation or 0
+        alloc_sum = fuel_alloc + organics_alloc + equipment_alloc
+        if alloc_sum > new_colonists:
+            if new_colonists <= 0:
+                planet.fuel_allocation = 0
+                planet.organics_allocation = 0
+                planet.equipment_allocation = 0
+            else:
+                # Floor each proportionally, then distribute the remainder in a
+                # stable order (fuel -> organics -> equipment) so the sum lands
+                # exactly on new_colonists without exceeding it.
+                scaled = [
+                    (fuel_alloc * new_colonists) // alloc_sum,
+                    (organics_alloc * new_colonists) // alloc_sum,
+                    (equipment_alloc * new_colonists) // alloc_sum,
+                ]
+                remainder = new_colonists - sum(scaled)
+                for i in range(remainder):
+                    scaled[i % 3] += 1
+                planet.fuel_allocation = scaled[0]
+                planet.organics_allocation = scaled[1]
+                planet.equipment_allocation = scaled[2]
+
         message = f"{quantity:,} colonists embarked from {planet.name}"
 
     cargo['contents'] = contents

@@ -339,7 +339,15 @@ class CitadelService:
         if amount <= 0:
             return {"success": False, "message": "Deposit amount must be positive"}
 
-        planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
+        # Lock planet row first, then player row (same order as start_upgrade)
+        # to prevent concurrent credit-minting races on safe deposits/withdrawals.
+        planet = (
+            self.db.query(Planet)
+            .filter(Planet.id == planet_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not planet:
             return {"success": False, "message": "Planet not found"}
 
@@ -350,7 +358,13 @@ class CitadelService:
         if current_level < 1:
             return {"success": False, "message": "Planet does not have a citadel"}
 
-        player = self.db.query(Player).filter(Player.id == player_id).first()
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not player:
             return {"success": False, "message": "Player not found"}
 
@@ -393,7 +407,15 @@ class CitadelService:
         if amount <= 0:
             return {"success": False, "message": "Withdrawal amount must be positive"}
 
-        planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
+        # Lock planet row first, then player row (same order as start_upgrade)
+        # to prevent concurrent credit-minting races on safe deposits/withdrawals.
+        planet = (
+            self.db.query(Planet)
+            .filter(Planet.id == planet_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not planet:
             return {"success": False, "message": "Planet not found"}
 
@@ -411,7 +433,13 @@ class CitadelService:
                 "message": f"Insufficient credits in safe. Have {safe_current:,}, requested {amount:,}.",
             }
 
-        player = self.db.query(Player).filter(Player.id == player_id).first()
+        player = (
+            self.db.query(Player)
+            .filter(Player.id == player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not player:
             return {"success": False, "message": "Player not found"}
 

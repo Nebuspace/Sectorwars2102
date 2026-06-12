@@ -225,12 +225,25 @@ interface GameContextType {
   leavePlanet: () => Promise<any>;
   renamePlanet: (planetId: string, newName: string) => Promise<any>;
   getPlanetDetails: (planetId: string) => Promise<any>;
-  updatePlanetAllocation: (planetId: string, allocations: { fuel: number; organics: number; equipment: number; ore?: number; terraform?: number }) => Promise<any>;
+  // Allocations are colonist HEADCOUNTS, not percentages — the backend
+  // (PlanetResourceAllocation + PlanetaryService.allocate_colonists)
+  // accepts exactly {fuel, organics, equipment} and validates that the
+  // sum does not exceed planet.colonists.
+  updatePlanetAllocation: (planetId: string, allocations: { fuel: number; organics: number; equipment: number }) => Promise<any>;
   updatePlanetDefenses: (planetId: string, defenses: { turrets?: number; shields?: number; fighters?: number }) => Promise<any>;
   upgradePlanetBuilding: (planetId: string, buildingType: string, targetLevel: number) => Promise<any>;
   transferColonists: (planetId: string, action: 'embark' | 'disembark', quantity: number) => Promise<any>;
-  depositToSafe: (planetId: string, resourceType: string, amount: number) => Promise<any>;
-  withdrawFromSafe: (planetId: string, resourceType: string, amount: number) => Promise<any>;
+  // Citadel (5-level) — info, upgrades, and CREDITS-ONLY safe storage.
+  // CitadelService.deposit_to_safe/withdraw_from_safe move credits between
+  // the player balance and planet.citadel_safe_credits; there is no
+  // commodity storage in the citadel safe.
+  getCitadelInfo: (planetId: string) => Promise<any>;
+  upgradeCitadel: (planetId: string) => Promise<any>;
+  depositToSafe: (planetId: string, amount: number) => Promise<any>;
+  withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
+  // Planetary defenses — shield generator status/upgrade
+  getPlanetDefenseInfo: (planetId: string) => Promise<any>;
+  upgradeShields: (planetId: string) => Promise<any>;
 
   // Port Office — station ownership, sealed-bid sales, tariffs, takeovers
   // (backend: /api/v1/port-ownership/*). Payload shapes are normalized
@@ -874,26 +887,25 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Update planet production allocation
+  // Update planet production allocation (colonist headcounts).
+  // PUT /allocate returns {success, allocations: {fuel, organics, equipment,
+  // unused}, productionRates: {fuel, organics, equipment, colonists}}.
+  // No global isLoading/error churn: the allocation sliders persist on a
+  // debounce and surface failures inline with an optimistic revert, and the
+  // endpoint touches no player-level state (no credits/turns), so there is
+  // nothing to refresh globally.
   const updatePlanetAllocation = async (
     planetId: string,
-    allocations: { fuel: number; organics: number; equipment: number; ore?: number; terraform?: number }
+    allocations: { fuel: number; organics: number; equipment: number }
   ) => {
-    if (!user || !playerState) return;
-
-    setIsLoading(true);
-    setError(null);
+    if (!user) throw new Error('Not authenticated');
 
     try {
       const response = await api.put(`/api/v1/planets/${planetId}/allocate`, allocations);
-      await refreshPlayerState();
       return response.data;
     } catch (error: any) {
       console.error('Error updating planet allocation:', error);
-      setError(error.response?.data?.detail || 'Failed to update allocation');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -975,53 +987,111 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Deposit resources to citadel safe
-  const depositToSafe = async (planetId: string, resourceType: string, amount: number) => {
-    if (!user || !playerState) return;
+  // --- Citadel: info, upgrades, and the credits-only safe ---
+  // These follow the Port Office mold: no global isLoading/error churn — the
+  // planetary ops console surfaces failures inline. Mutations that move
+  // credits refresh player state so the header credits stay authoritative.
 
-    setIsLoading(true);
-    setError(null);
+  // Citadel info — GET /planets/{id}/citadel (owner-only; 400 otherwise).
+  // Returns {citadel_level, citadel_name, max_population, safe_storage,
+  // safe_credits, drone_capacity, is_upgrading, upgrade_remaining_seconds?,
+  // next_level: {level, name, upgrade_cost, upgrade_hours, resource_cost, ...} | null}
+  const getCitadelInfo = async (planetId: string) => {
+    if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/safe/deposit`, {
-        resource_type: resourceType,
-        amount
-      });
-      await refreshPlayerState();
-      await loadShips();
-      await exploreCurrentLocation();
+      const response = await api.get(`/api/v1/planets/${planetId}/citadel`);
       return response.data;
     } catch (error: any) {
-      console.error('Error depositing to safe:', error);
-      setError(error.response?.data?.detail || 'Failed to deposit to safe');
+      console.error('Error getting citadel info:', error);
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
-  // Withdraw resources from citadel safe
-  const withdrawFromSafe = async (planetId: string, resourceType: string, amount: number) => {
-    if (!user || !playerState) return;
-
-    setIsLoading(true);
-    setError(null);
+  // Start a citadel upgrade — POST /planets/{id}/citadel/upgrade.
+  // Level 0→1 (Outpost) is free and instant; higher levels deduct credits
+  // and planet resources and run on a timer (CitadelService.start_upgrade).
+  const upgradeCitadel = async (planetId: string) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/safe/withdraw`, {
-        resource_type: resourceType,
-        amount
-      });
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/upgrade`);
+      // Upgrades from level 1+ deduct player credits
       await refreshPlayerState();
-      await loadShips();
-      await exploreCurrentLocation();
       return response.data;
     } catch (error: any) {
-      console.error('Error withdrawing from safe:', error);
-      setError(error.response?.data?.detail || 'Failed to withdraw from safe');
+      console.error('Error upgrading citadel:', error);
       throw error;
-    } finally {
-      setIsLoading(false);
+    }
+  };
+
+  // Deposit credits into the citadel safe — POST /planets/{id}/citadel/deposit
+  // {amount}. Server gating (CitadelService.deposit_to_safe): planet must be
+  // owned, citadel_level >= 1, player must hold the credits, and the safe
+  // balance may not exceed CITADEL_LEVELS[level].safe_storage. Returns
+  // {credits_deposited, safe_balance, safe_capacity, player_credits, message}.
+  const depositToSafe = async (planetId: string, amount: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/deposit`, { amount });
+      // Deposit debits the player's credit balance
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error depositing to citadel safe:', error);
+      throw error;
+    }
+  };
+
+  // Withdraw credits from the citadel safe — POST /planets/{id}/citadel/withdraw
+  // {amount}. Returns {credits_withdrawn, safe_balance, player_credits, message}.
+  const withdrawFromSafe = async (planetId: string, amount: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/withdraw`, { amount });
+      // Withdrawal credits the player's balance
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error withdrawing from citadel safe:', error);
+      throw error;
+    }
+  };
+
+  // Defense telemetry — GET /planets/{id}/defenses (no ownership required;
+  // useful for scouting). Returns {shieldGenerator: {level, maxLevel, name,
+  // strength, currentShields, regenPerHour, nextUpgrade: {level, name,
+  // strength, regenPerHour, cost} | null}, defenseLevel, damageReduction,
+  // turrets, fighters}.
+  const getPlanetDefenseInfo = async (planetId: string) => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get(`/api/v1/planets/${planetId}/defenses`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting planet defense info:', error);
+      throw error;
+    }
+  };
+
+  // Upgrade the planet's shield generator by one level — POST
+  // /planets/{id}/shields/upgrade. Returns {shieldGenerator: {level, name,
+  // strength, regenPerHour, maxLevel}, creditsCost, creditsRemaining,
+  // nextUpgradeCost}; errors arrive as 400 detail strings.
+  const upgradeShields = async (planetId: string) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/shields/upgrade`);
+      // Upgrade deducts player credits
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error upgrading shields:', error);
+      throw error;
     }
   };
 
@@ -1332,8 +1402,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     updatePlanetDefenses,
     upgradePlanetBuilding,
     transferColonists,
+    getCitadelInfo,
+    upgradeCitadel,
     depositToSafe,
     withdrawFromSafe,
+    getPlanetDefenseInfo,
+    upgradeShields,
 
     // Port Office — station ownership
     getPortListings,
