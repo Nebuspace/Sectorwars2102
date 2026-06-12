@@ -9,6 +9,7 @@ from src.models.player import Player
 from src.models.sector import Sector
 from src.models.planet import Planet
 from src.models.station import Station
+from src.services.celestial_service import generate_system
 
 router = APIRouter(
     prefix="/sectors",
@@ -137,3 +138,39 @@ async def get_sector_stations(
         ))
 
     return SectorStationsResponse(stations=station_responses)
+
+@router.get("/{sector_id}/system", response_model=Dict[str, Any])
+async def get_sector_system(
+    sector_id: int,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Get the deterministic celestial system composition for a sector.
+
+    Procedurally generated star(s)/nebula/belt/filler bodies (seeded from the
+    sector id — identical sector always returns an identical response) with
+    the sector's real Planet and Station rows merged onto stable orbits.
+    """
+    # Get player's current region (or None for regionless sectors)
+    player_region_id = player.current_region_id
+
+    # Verify sector exists in player's current region
+    sector_query = db.query(Sector).filter(Sector.sector_id == sector_id)
+    if player_region_id:
+        sector_query = sector_query.filter(Sector.region_id == player_region_id)
+    else:
+        # For players without region, get sectors with no region
+        sector_query = sector_query.filter(Sector.region_id == None)
+
+    sector = sector_query.first()
+    if not sector:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Sector {sector_id} not found in your region"
+        )
+
+    # Two simple queries: real planets + real stations in this sector (by UUID)
+    planets = db.query(Planet).filter(Planet.sector_uuid == sector.id).all()
+    stations = db.query(Station).filter(Station.sector_uuid == sector.id).all()
+
+    return generate_system(sector, planets, stations)
