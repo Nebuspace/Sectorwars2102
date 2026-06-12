@@ -28,6 +28,9 @@ class PlanetResponse(BaseModel):
     population: int
     max_population: int
     habitability_score: float
+    # Capital hubs are public worlds under regional administration — the
+    # claim endpoint refuses them, so the client must not advertise a claim
+    is_population_hub: bool = False
 
 class StationResponse(BaseModel):
     id: str
@@ -88,7 +91,8 @@ async def get_sector_planets(
             resources=planet.resources or {},
             population=planet.population,
             max_population=planet.max_population,
-            habitability_score=planet.habitability_score
+            habitability_score=planet.habitability_score,
+            is_population_hub=bool(planet.is_population_hub)
         ))
     
     return SectorPlanetsResponse(planets=planet_responses)

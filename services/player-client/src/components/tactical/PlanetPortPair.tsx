@@ -14,6 +14,7 @@ interface Planet {
   population?: number;
   max_population?: number;
   habitability_score?: number;
+  is_population_hub?: boolean;
 }
 
 interface Station {
@@ -89,13 +90,23 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
 
   // Determine if planet is unclaimed — the server now protects population
   // hubs itself, so a generic owner check is all the client needs
-  const isPlanetUnclaimed = planet && !planet.owner_id && !planet.owner_name;
+  // Capital population hubs are public worlds — the server's claim endpoint
+  // refuses them, so the card must not dangle a "Click to Claim" it can't
+  // honor. Belt-and-braces population check mirrors the server guard.
+  const isPopulationHub = Boolean(
+    planet && (planet.is_population_hub || (planet.population ?? 0) >= 1_000_000)
+  );
+  const isPlanetUnclaimed =
+    planet && !planet.owner_id && !planet.owner_name && !isPopulationHub;
 
   // In-fiction confirmation dialog state (replaces native confirm())
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
 
   const handlePlanetClick = () => {
     if (!planet || isLanded) return;
+    // Public hubs take no claim/land action from this card today (landing
+    // requires ownership server-side); the tag explains what the world is.
+    if (isPopulationHub && !planet.owner_id) return;
     // Capture narrowed values for the deferred onConfirm closure
     const targetPlanet = planet;
 
@@ -153,6 +164,8 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
                   <span className="planet-claim-hint">Click to Claim</span>
                   <span className="planet-claim-reqs">💰 10,000cr · 👥 100+ colonists aboard</span>
                 </>
+              ) : isPopulationHub ? (
+                <span className="planet-hub-tag">POPULATION HUB · REGIONAL ADMINISTRATION</span>
               ) : (
                 ownerDisplay && <span className="planet-owner">{ownerDisplay}</span>
               )}
