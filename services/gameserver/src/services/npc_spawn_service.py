@@ -39,7 +39,13 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.core.game_time import scaled_deadline
 from src.models.faction import Faction, FactionType
 from src.models.galaxy import Galaxy
-from src.models.npc_character import NPCCharacter, NPCArchetype, NPCStatus
+from src.models.npc_character import (
+    NPCCharacter,
+    NPCArchetype,
+    NPCDeathLog,
+    NPCLifecycleStage,
+    NPCStatus,
+)
 from src.models.sector import Sector
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 
@@ -75,6 +81,13 @@ POLICE_WANTED_THRESHOLD = -500
 # Canon: SYSTEMS/npc-scheduler.md "KIA processing" step 2 —
 # respawn_eligible_at = now + 7 days (faction-tunable cooldown).
 KIA_RESPAWN_COOLDOWN_HOURS = 7 * 24
+
+# ADR-0063 N-D2: respawn-permitted archetypes return as the SAME
+# identity after a 15-minute cooldown (career and reputation persist).
+# Canon grants this to "most named pirates, some trader archetypes";
+# v1 grants it to pirates — traders join in the trader slice.
+RESPAWN_COOLDOWN_MINUTES = 15
+RESPAWN_PERMITTED_ARCHETYPES = frozenset({NPCArchetype.HOSTILE_RAIDER})
 
 # Patrol cycle pacing (canon FEATURES/gameplay/police-forces.md: Marshal
 # squads cycle ~4h per sector, Sentinels ~3h; pirates canon-silent —
@@ -542,6 +555,12 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
                     current_sector_id=global_sector_id,
                     ship_id=ship.id,
                     bang_roster_ref=roster_ref,
+                    # ADR-0063 N-F1: first officer is the designated
+                    # primary authority; the rest are backups who can
+                    # zero-gap promote when the primary falls.
+                    duty_role=(
+                        f"primary_{kind}" if i == 0 else f"backup_{kind}"
+                    ),
                     spawned_at=now,
                     last_seen_at=now,
                 )
@@ -740,8 +759,11 @@ def seed_rosters_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
 
 def backfill_npc_schedules(db: Session) -> int:
     """Give pre-runtime NPC rows (empty daily_schedule) their roster's
-    schedule template + home region. Idempotent — rows with a schedule
-    are untouched. Returns the number of rows backfilled."""
+    schedule template + home region, and assign duty roles (ADR-0063
+    N-F1: one primary per roster, the rest backups) to rows that lack
+    one. Idempotent — rows with a schedule are untouched by the
+    schedule pass, rows with a duty_role by the role pass. Returns the
+    number of rows touched."""
     from sqlalchemy import cast, String as SAString
 
     from src.models.npc_character import NPCRoster
@@ -759,6 +781,29 @@ def backfill_npc_schedules(db: Session) -> int:
         for npc in npcs:
             npc.daily_schedule = dict(roster.schedule_template or {})
             npc.home_region_id = npc.home_region_id or roster.region_id
+            backfilled += 1
+
+        # Duty roles, independent of the schedule pass.
+        roster_npcs = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.bang_roster_ref == roster.bang_roster_ref,
+                NPCCharacter.status != NPCStatus.KIA,
+            )
+            .order_by(NPCCharacter.spawned_at)
+            .all()
+        )
+        has_primary = any(
+            (n.duty_role or "").startswith("primary") for n in roster_npcs
+        )
+        for npc in roster_npcs:
+            if npc.duty_role:
+                continue
+            npc.duty_role = (
+                f"backup_{roster.role}" if has_primary
+                else f"primary_{roster.role}"
+            )
+            has_primary = True
             backfilled += 1
     if backfilled:
         db.flush()
@@ -792,30 +837,43 @@ def bootstrap_region(db: Session, region_id: uuid.UUID) -> Dict[str, Any]:
     return {"warnings": [f"no galaxy snapshot contains region {region_id}"]}
 
 
-def handle_npc_ship_destroyed(db: Session, ship_id: uuid.UUID) -> Optional[NPCCharacter]:
-    """KIA processing, steps 1-4 of SYSTEMS/npc-scheduler.md.
+def handle_npc_ship_destroyed(
+    db: Session,
+    ship_id: uuid.UUID,
+    killed_by_player_id: Optional[uuid.UUID] = None,
+    combat_log_id: Optional[uuid.UUID] = None,
+    destruction_cause: str = "combat",
+) -> Optional[NPCCharacter]:
+    """KIA processing per SYSTEMS/npc-scheduler.md + ADR-0063.
 
-    Called by the combat worker (lazy import, frozen signature) when a
-    ship is destroyed. No-op (returns None) when the ship has no NPC
-    pilot, so the worker can call it unconditionally.
+    Called by the combat worker (lazy import; the extra kwargs default
+    to None so legacy positional calls keep working) when a ship is
+    destroyed. No-op (returns None) when the ship has no NPC pilot, so
+    the worker can call it unconditionally.
 
     Steps implemented:
-      1. (this handler is the destruction hook)
-      2. status=KIA, current_sector_id=NULL, destroyed_at=now,
-         respawn_eligible_at=now + 7 canonical days (scaled_deadline so
-         dev time acceleration applies)
+      2. ADR-0063 N-D2 split — respawn-permitted archetypes (pirates)
+         go status=RESPAWNING with a 15-canonical-minute cooldown and
+         keep their lifecycle stage (same identity returns, career
+         persists; Loop B resurrects them). Everyone else is
+         permanently KIA: lifecycle_stage=KIA, no respawn date —
+         Loop B fills the slot with a fresh reduced-stat recruit.
+      3. NPCDeathLog row (killer, sector, region, combat log, cause).
       4. squad row updated to drop the dead NPC; deleted when empty —
-         plus removal of the NPC's players_present entry
+         plus removal of the NPC's players_present entry.
+      N-F1 zero-gap promotion: when a primary-duty officer dies, an
+         on-duty backup from the same roster promotes to primary
+         immediately (role_history appended); the recruit fill then
+         lands in the vacated backup slot.
 
-    Deferred (documented, not dropped silently): step 3 NPCDeathLog (no
-    table in v1), step 5 ship_id detach (canonical destruction handler
-    owns the ship row), steps 6-9 realtime events, and Loop B
-    replacement. Reputation hooks live in the caller: combat_service
-    inspects the returned NPCCharacter and applies the Marshal-kill
-    Federation rep delta (police-forces.md) — this handler stays
-    rep-free.
+    Deferred (documented, not dropped silently): step 5 ship_id detach
+    (canonical destruction handler owns the ship row), and N-D3
+    handoff-invalidation (shift handoffs land in Phase 4). Reputation
+    hooks live in the caller: combat_service inspects the returned
+    NPCCharacter and applies the Marshal-kill Federation rep delta
+    (police-forces.md) — this handler stays rep-free.
 
-    Rows are never deleted — the named NPC is permanently gone but the
+    Rows are never deleted — a permanently-dead named NPC's
     NPCCharacter row persists per canon.
     """
     npc = (
@@ -825,17 +883,69 @@ def handle_npc_ship_destroyed(db: Session, ship_id: uuid.UUID) -> Optional[NPCCh
     )
     if npc is None:
         return None
-    if npc.status == NPCStatus.KIA:
+    if npc.status in (NPCStatus.KIA, NPCStatus.RESPAWNING):
         return npc  # already processed
 
     sector_id = npc.current_sector_id
     now = datetime.now(UTC)
 
-    npc.status = NPCStatus.KIA
+    if npc.archetype in RESPAWN_PERMITTED_ARCHETYPES:
+        npc.status = NPCStatus.RESPAWNING
+        npc.respawn_eligible_at = scaled_deadline(
+            RESPAWN_COOLDOWN_MINUTES / 60.0, start=now
+        )
+    else:
+        npc.status = NPCStatus.KIA
+        npc.lifecycle_stage = NPCLifecycleStage.KIA
+        npc.respawn_eligible_at = None
     npc.current_sector_id = None
     npc.destroyed_at = now
     npc.last_seen_at = now
-    npc.respawn_eligible_at = scaled_deadline(KIA_RESPAWN_COOLDOWN_HOURS, start=now)
+
+    # Step 3 — death audit row (skipped only when the NPC had no sector,
+    # which cannot happen for combat kills).
+    if sector_id is not None:
+        db.add(NPCDeathLog(
+            npc_id=npc.id,
+            killed_by_player_id=killed_by_player_id,
+            sector_id=sector_id,
+            home_region_id=npc.home_region_id,
+            combat_log_id=combat_log_id,
+            destruction_cause=destruction_cause,
+            killed_at=now,
+        ))
+
+    # N-F1 — zero-gap promotion: the on-duty backup steps up the moment
+    # the primary falls. The recruit fill (Loop B) then targets the
+    # vacated backup slot.
+    if (npc.duty_role or "").startswith("primary") and npc.bang_roster_ref:
+        backup = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.bang_roster_ref == npc.bang_roster_ref,
+                NPCCharacter.status == NPCStatus.ON_DUTY,
+                NPCCharacter.duty_role.like("backup%"),
+            )
+            .order_by(NPCCharacter.spawned_at)
+            .first()
+        )
+        if backup is not None:
+            old_role = backup.duty_role
+            backup.duty_role = npc.duty_role
+            backup.promotion_pending_at = None
+            history = list(backup.role_history or [])
+            history.append({
+                "from": old_role,
+                "to": npc.duty_role,
+                "at": now.isoformat(),
+                "reason": f"zero-gap promotion after {npc.display_name} KIA",
+            })
+            backup.role_history = history
+            flag_modified(backup, "role_history")
+            logger.info(
+                "N-F1 zero-gap promotion: %s %s -> %s after %s KIA",
+                backup.display_name, old_role, npc.duty_role, npc.display_name,
+            )
 
     if sector_id is not None:
         # Row lock: the presence cleanup below is JSONB read-modify-write —

@@ -48,7 +48,7 @@ canon's separate patrol-route registry is Design-only):
 
 import asyncio
 import logging
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -90,6 +90,15 @@ _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
+
+# ADR-0063 N-V4 genocide rapid-recovery. Detection and response windows
+# are WALL-CLOCK (the trigger keys off real player behavior — a
+# canonical window at dev time-scale would be seconds wide and
+# undetectable); the halved recruit stage stays canonical. This
+# interpretation is flagged for the docs repo.
+GENOCIDE_KILL_THRESHOLD = 3
+GENOCIDE_WINDOW_MINUTES = 30
+GENOCIDE_RESPONSE_MINUTES = 60
 
 # Statuses that count toward a roster's live headcount (DATA_MODELS/
 # npcs.md Loop B query; ENGAGED_PENDING_ARRIVAL counts as committed,
@@ -247,11 +256,23 @@ def _drive_patrol(
 # ---------------------------------------------------------------------------
 
 def run_loop_b(db: Session) -> List[Dict[str, Any]]:
-    """Fill roster deficits (immediate recruit fill, ADR-0063) and
-    promote recruits whose stage elapsed."""
+    """Roster maintenance: resurrect cooled-down respawners, fill
+    deficits (immediate recruit fill, ADR-0063), promote recruits whose
+    stage elapsed, and apply the genocide rapid-recovery flood."""
     events: List[Dict[str, Any]] = []
+    now = datetime.now(UTC)
 
-    # Recruit → active promotion (ADR-0063: 7 canonical days).
+    # ADR-0063 N-D2: respawn-permitted NPCs return as the SAME identity
+    # at full stats once the 15-minute cooldown elapses.
+    try:
+        events.extend(_resurrect_respawned(db, now))
+    except Exception:
+        logger.exception("Loop B: respawn resurrection failed")
+        db.rollback()
+
+    # Recruit → active promotion. promotion_pending_at is the explicit
+    # deadline when set (genocide-flood recruits run half-stage);
+    # otherwise the canonical 7-day stage from spawn.
     recruits = (
         db.query(NPCCharacter)
         .filter(
@@ -261,13 +282,23 @@ def run_loop_b(db: Session) -> List[Dict[str, Any]]:
         .all()
     )
     for npc in recruits:
-        anchor = npc.spawned_at
-        if anchor and game_time.canonical_hours_since(anchor) >= RECRUIT_STAGE_HOURS:
+        if npc.promotion_pending_at is not None:
+            if now >= npc.promotion_pending_at:
+                npc.lifecycle_stage = NPCLifecycleStage.ACTIVE
+        elif (
+            npc.spawned_at
+            and game_time.canonical_hours_since(npc.spawned_at) >= RECRUIT_STAGE_HOURS
+        ):
             npc.lifecycle_stage = NPCLifecycleStage.ACTIVE
+
+    flooded_regions = _genocide_flood_regions(db, now)
 
     for roster in db.query(NPCRoster).all():
         try:
-            spawned = _fill_roster_deficit(db, roster)
+            spawned = _fill_roster_deficit(
+                db, roster,
+                rapid_recovery=roster.region_id in flooded_regions,
+            )
             events.extend(spawned)
         except Exception:
             logger.exception("Loop B: roster fill failed for %s", roster.id)
@@ -277,24 +308,149 @@ def run_loop_b(db: Session) -> List[Dict[str, Any]]:
     return events
 
 
-def _fill_roster_deficit(db: Session, roster: NPCRoster) -> List[Dict[str, Any]]:
+def _genocide_flood_regions(db: Session, now: datetime) -> set:
+    """Region ids currently under the N-V4 rapid-recovery flood: ≥3
+    law-enforcement KIAs inside a 30-minute window, response active for
+    1 hour after the triggering kill."""
+    from src.models.npc_character import NPCArchetype, NPCDeathLog
+
+    lookback = timedelta(
+        minutes=GENOCIDE_WINDOW_MINUTES + GENOCIDE_RESPONSE_MINUTES
+    )
+    rows = (
+        db.query(NPCDeathLog.home_region_id, NPCDeathLog.killed_at)
+        .join(NPCCharacter, NPCDeathLog.npc_id == NPCCharacter.id)
+        .filter(
+            NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
+            NPCDeathLog.killed_at >= now - lookback,
+            NPCDeathLog.home_region_id.isnot(None),
+        )
+        .order_by(NPCDeathLog.home_region_id, NPCDeathLog.killed_at)
+        .all()
+    )
+
+    by_region: Dict[Any, List[datetime]] = {}
+    for region_id, killed_at in rows:
+        if killed_at is not None and killed_at.tzinfo is None:
+            killed_at = killed_at.replace(tzinfo=UTC)
+        by_region.setdefault(region_id, []).append(killed_at)
+
+    flooded = set()
+    window = timedelta(minutes=GENOCIDE_WINDOW_MINUTES)
+    response = timedelta(minutes=GENOCIDE_RESPONSE_MINUTES)
+    for region_id, kills in by_region.items():
+        for i in range(len(kills) - GENOCIDE_KILL_THRESHOLD + 1):
+            third = kills[i + GENOCIDE_KILL_THRESHOLD - 1]
+            if third - kills[i] <= window and now - third <= response:
+                flooded.add(region_id)
+                logger.warning(
+                    "npc.coordinated_genocide_detected: region %s — "
+                    "rapid-recovery flood active (2x recruiting, "
+                    "half-stage recruits)",
+                    region_id,
+                )
+                break
+    return flooded
+
+
+def _resurrect_respawned(db: Session, now: datetime) -> List[Dict[str, Any]]:
+    """Bring cooled-down RESPAWNING NPCs back into their slot (same
+    identity, full stats, fresh hull at the roster's host sector)."""
+    events: List[Dict[str, Any]] = []
+    due = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.status == NPCStatus.RESPAWNING,
+            NPCCharacter.respawn_eligible_at.isnot(None),
+            NPCCharacter.respawn_eligible_at <= now,
+        )
+        .all()
+    )
+    for npc in due:
+        roster = (
+            db.query(NPCRoster)
+            .filter(NPCRoster.bang_roster_ref == npc.bang_roster_ref)
+            .first()
+        )
+        cfg = KIND_CONFIG.get(roster.role) if roster is not None else None
+        if roster is None or cfg is None:
+            continue
+        spec = (
+            db.query(ShipSpecification)
+            .filter(ShipSpecification.type == cfg.ship_type)
+            .first()
+        )
+        if spec is None:
+            continue
+        sector = (
+            db.query(Sector)
+            .filter(Sector.sector_id == roster.host_sector_id)
+            .with_for_update()
+            .first()
+        )
+        if sector is None:
+            continue
+
+        ship = _build_npc_ship(
+            spec,
+            name=cfg.ship_name_format.format(name=npc.name),
+            sector_id=roster.host_sector_id,
+        )
+        db.add(ship)
+        db.flush()
+
+        npc.ship_id = ship.id
+        npc.status = NPCStatus.ON_DUTY
+        npc.current_sector_id = roster.host_sector_id
+        npc.respawn_eligible_at = None
+        npc.last_seen_at = now
+
+        npc_movement_service.add_npc_presence(sector, npc, ship)
+        _join_squad(sector, cfg, roster, npc)
+
+        logger.info(
+            "Loop B: %s respawned after cooldown (roster %s)",
+            npc.display_name, roster.bang_roster_ref,
+        )
+        events.append({
+            "type": "npc_respawned",
+            "sector_id": roster.host_sector_id,
+            "npc_id": str(npc.id),
+            "display_name": npc.display_name,
+            "ship_id": str(ship.id),
+            "ship_name": ship.name,
+            "ship_type": ship.type.name,
+            "is_npc": True,
+            "timestamp": now.isoformat(),
+        })
+    return events
+
+
+def _fill_roster_deficit(
+    db: Session,
+    roster: NPCRoster,
+    rapid_recovery: bool = False,
+) -> List[Dict[str, Any]]:
     """Spawn ONE replacement when the roster is under target (canon Loop
     B spawns one per pass — a wiped squad refills over successive
-    passes, not instantaneously)."""
+    passes, not instantaneously). Under the N-V4 genocide flood the
+    rate doubles (two per pass) and recruits run a half-length stage."""
     cfg = KIND_CONFIG.get(roster.role)
     if cfg is None:
         # Roles without a spawn recipe yet (later slices) are tolerated.
         return []
 
-    live = (
+    # RESPAWNING slots are reserved for the returning identity (ADR-0063
+    # N-D2) — counting them prevents a recruit double-fill.
+    occupied = (
         db.query(NPCCharacter)
         .filter(
             NPCCharacter.bang_roster_ref == roster.bang_roster_ref,
-            NPCCharacter.status.in_(_LIVE_STATUSES),
+            NPCCharacter.status.in_(_LIVE_STATUSES + (NPCStatus.RESPAWNING,)),
         )
         .count()
     )
-    if live >= roster.target_count:
+    if occupied >= roster.target_count:
         return []
 
     spec = (
@@ -323,57 +479,87 @@ def _fill_roster_deficit(db: Session, roster: NPCRoster) -> List[Dict[str, Any]]
         )
         return []
 
-    npc_name = _next_name(db, roster)
     now = datetime.now(UTC)
+    deficit = roster.target_count - occupied
+    spawn_count = min(deficit, 2 if rapid_recovery else 1)
+    stage_hours = RECRUIT_STAGE_HOURS / 2 if rapid_recovery else RECRUIT_STAGE_HOURS
 
-    ship = _build_npc_ship(
-        spec,
-        name=cfg.ship_name_format.format(name=npc_name),
-        sector_id=roster.host_sector_id,
+    has_primary = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.bang_roster_ref == roster.bang_roster_ref,
+            NPCCharacter.status.in_(_LIVE_STATUSES),
+            NPCCharacter.duty_role.like("primary%"),
+        )
+        .count()
+        > 0
     )
-    db.add(ship)
-    db.flush()
 
-    npc = NPCCharacter(
-        name=npc_name,
-        title=cfg.title,
-        faction_code=roster.faction_code,
-        archetype=roster.default_archetype,
-        status=NPCStatus.ON_DUTY,
-        current_sector_id=roster.host_sector_id,
-        ship_id=ship.id,
-        bang_roster_ref=roster.bang_roster_ref,
-        home_region_id=roster.region_id,
-        current_activity=NPCActivity.PATROL,
-        # ADR-0063: successors spawn immediately as reduced-stat recruits.
-        lifecycle_stage=NPCLifecycleStage.RECRUIT,
-        daily_schedule=dict(roster.schedule_template or {}),
-        engagement_eligible_at=now,
-        spawned_at=now,
-        last_seen_at=now,
-    )
-    db.add(npc)
-    db.flush()
+    events: List[Dict[str, Any]] = []
+    for _ in range(spawn_count):
+        npc_name = _next_name(db, roster)
 
-    npc_movement_service.add_npc_presence(sector, npc, ship)
-    _join_squad(sector, cfg, roster, npc)
-    db.flush()
+        ship = _build_npc_ship(
+            spec,
+            name=cfg.ship_name_format.format(name=npc_name),
+            sector_id=roster.host_sector_id,
+        )
+        db.add(ship)
+        db.flush()
 
-    logger.info(
-        "Loop B: spawned recruit %s for roster %s (%d/%d live)",
-        npc.display_name, roster.bang_roster_ref, live + 1, roster.target_count,
-    )
-    return [{
-        "type": "npc_spawned",
-        "sector_id": roster.host_sector_id,
-        "npc_id": str(npc.id),
-        "display_name": npc.display_name,
-        "ship_id": str(ship.id),
-        "ship_name": ship.name,
-        "ship_type": ship.type.name,
-        "is_npc": True,
-        "timestamp": now.isoformat(),
-    }]
+        npc = NPCCharacter(
+            name=npc_name,
+            title=cfg.title,
+            faction_code=roster.faction_code,
+            archetype=roster.default_archetype,
+            status=NPCStatus.ON_DUTY,
+            current_sector_id=roster.host_sector_id,
+            ship_id=ship.id,
+            bang_roster_ref=roster.bang_roster_ref,
+            home_region_id=roster.region_id,
+            current_activity=NPCActivity.PATROL,
+            # ADR-0063: successors spawn immediately as reduced-stat recruits.
+            lifecycle_stage=NPCLifecycleStage.RECRUIT,
+            # N-F1: a roster with no live primary gets one immediately
+            # (the emergency-spawn fallthrough); otherwise the recruit
+            # lands in a backup slot.
+            duty_role=(
+                f"backup_{roster.role}" if has_primary
+                else f"primary_{roster.role}"
+            ),
+            daily_schedule=dict(roster.schedule_template or {}),
+            engagement_eligible_at=now,
+            promotion_pending_at=game_time.scaled_deadline(stage_hours, start=now),
+            spawned_at=now,
+            last_seen_at=now,
+        )
+        db.add(npc)
+        db.flush()
+        has_primary = True
+
+        npc_movement_service.add_npc_presence(sector, npc, ship)
+        _join_squad(sector, cfg, roster, npc)
+        db.flush()
+
+        occupied += 1
+        logger.info(
+            "Loop B: spawned recruit %s for roster %s (%d/%d live%s)",
+            npc.display_name, roster.bang_roster_ref, occupied,
+            roster.target_count,
+            ", rapid-recovery" if rapid_recovery else "",
+        )
+        events.append({
+            "type": "npc_spawned",
+            "sector_id": roster.host_sector_id,
+            "npc_id": str(npc.id),
+            "display_name": npc.display_name,
+            "ship_id": str(ship.id),
+            "ship_name": ship.name,
+            "ship_type": ship.type.name,
+            "is_npc": True,
+            "timestamp": now.isoformat(),
+        })
+    return events
 
 
 def _next_name(db: Session, roster: NPCRoster) -> str:

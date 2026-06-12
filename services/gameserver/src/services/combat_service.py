@@ -457,7 +457,12 @@ class CombatService:
             dead_npc = None
             try:
                 from src.services.npc_spawn_service import handle_npc_ship_destroyed
-                dead_npc = handle_npc_ship_destroyed(self.db, npc_ship.id)
+                dead_npc = handle_npc_ship_destroyed(
+                    self.db,
+                    npc_ship.id,
+                    killed_by_player_id=attacker.id,
+                    combat_log_id=combat_log.id,
+                )
             except ImportError:
                 logger.warning(
                     "npc_spawn_service not available — NPC ship %s destroyed without KIA processing",
