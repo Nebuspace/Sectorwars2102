@@ -111,6 +111,51 @@ export interface StationSlips {
   occupants_bumpable_count: number;
 }
 
+// --- Quantum drive (Warp Jumper) ---
+export interface QuantumStatus {
+  quantum_shards: number;
+  quantum_crystals: number;
+  quantum_charges: number;
+  jump_cooldown_until: string | null;
+  scan_cooldown_until: string | null;
+  can_jump: boolean;
+  is_warp_jumper: boolean;
+  sensor_level: number;
+}
+
+export interface QuantumBearing {
+  yaw_deg: number;
+  pitch_deg: number;
+  range_band: 'near' | 'mid' | 'far' | 'extended';
+}
+
+export interface QuantumScanResult {
+  resonance: 'bright' | 'steady' | 'faint' | 'silent';
+  texture: 'hollow' | 'mineral' | 'chromatic' | 'heavy' | 'hot' | 'turbulent';
+  echo: 'silent' | 'faint motion';
+  expires_at: string;
+  scan_cooldown_until: string | null;
+  turns_remaining: number;
+}
+
+// A paid echo scan, tagged with the sector it was fired from. Lifted into
+// context so flipping the NAV monitor mode (which unmounts the console)
+// doesn't destroy telemetry the pilot spent turns/shards to obtain.
+export interface QuantumScanTelemetry {
+  origin_sector_id: number;
+  result: QuantumScanResult;
+}
+
+export interface QuantumJumpResult {
+  outcome: 'jump' | 'misfire';
+  destination_sector_id: number;
+  destination_name: string;
+  distance_jumped: number;
+  hull_damage_pct: number;
+  jump_cooldown_until: string | null;
+  turns_remaining: number;
+}
+
 export interface PlayerState {
   id: string;
   username: string;
@@ -201,6 +246,18 @@ interface GameContextType {
   launchTakeover: (stationId: string) => Promise<unknown>;
   counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') => Promise<unknown>;
 
+  // Quantum drive (Warp Jumper) — status is auto-refreshed alongside player
+  // state whenever the active ship is a WARP_JUMPER, null otherwise
+  quantumStatus: QuantumStatus | null;
+  refreshQuantumStatus: () => Promise<void>;
+  quantumScan: (payload: QuantumBearing) => Promise<QuantumScanResult>;
+  quantumJump: (payload: QuantumBearing) => Promise<QuantumJumpResult>;
+  refineQuantumCharge: () => Promise<{ quantum_charges: number; quantum_shards: number }>;
+  // Last paid echo scan, preserved across NAV mode flips and cleared on
+  // sector change (telemetry from a prior sector is meaningless here).
+  quantumScanResult: QuantumScanTelemetry | null;
+  setQuantumScanResult: (telemetry: QuantumScanTelemetry | null) => void;
+
 
   // Loading states
   isLoading: boolean;
@@ -236,7 +293,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   // Market
   const [marketInfo, setMarketInfo] = useState<MarketInfo | null>(null);
-  
+
+  // Quantum drive (Warp Jumper only)
+  const [quantumStatus, setQuantumStatus] = useState<QuantumStatus | null>(null);
+  // Paid echo scan telemetry, lifted out of the console so NAV mode flips
+  // don't destroy it. Cleared whenever the player's sector changes.
+  const [quantumScanResult, setQuantumScanResult] = useState<QuantumScanTelemetry | null>(null);
+
   // Use Vite proxy for all API requests to avoid CORS issues
   const getApiUrl = () => {
     // If an environment variable is explicitly set, use it
@@ -317,6 +380,12 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       exploreCurrentLocation();
       getAvailableMoves();
     }
+  }, [playerState?.current_sector_id]);
+
+  // A paid echo scan is only meaningful from the sector it was fired in —
+  // discard it the moment the player relocates.
+  useEffect(() => {
+    setQuantumScanResult(null);
   }, [playerState?.current_sector_id]);
   
   // Track if refresh is in progress to prevent duplicate calls
@@ -1113,6 +1182,89 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // --- Quantum drive (Warp Jumper): scan / jump / charge refinement ---
+  // These follow the Port Office mold: no global isLoading/error churn — the
+  // Quantum Drive console surfaces failures inline. Status is a lightweight
+  // read; actions that spend turns/shards/charges refresh the affected state.
+
+  const refreshQuantumStatus = async () => {
+    if (!user) return;
+
+    try {
+      const response = await api.get('/api/v1/quantum/status');
+      setQuantumStatus(response.data as QuantumStatus);
+    } catch (error) {
+      console.warn('GameContext: Failed to load quantum status:', error);
+      setQuantumStatus(null);
+    }
+  };
+
+  // Keep quantum status in lockstep with player state while piloting a
+  // Warp Jumper; clear it the moment the active ship is anything else.
+  useEffect(() => {
+    if (currentShip?.type === 'WARP_JUMPER') {
+      refreshQuantumStatus();
+    } else {
+      setQuantumStatus(null);
+    }
+  }, [currentShip?.id, currentShip?.type, playerState?.turns, playerState?.current_sector_id]);
+
+  // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
+  const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post('/api/v1/quantum/scan', payload);
+      // Scan spends turns (and a shard on the far band) — keep the header
+      // turns counter and the console's cooldowns authoritative.
+      await Promise.allSettled([refreshPlayerState(), refreshQuantumStatus()]);
+      return response.data as QuantumScanResult;
+    } catch (error: any) {
+      console.error('Error running quantum scan:', error);
+      throw error;
+    }
+  };
+
+  // Commit the jump along a bearing (1 quantum charge + turns; may misfire)
+  const quantumJump = async (payload: QuantumBearing): Promise<QuantumJumpResult> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    let response;
+    try {
+      response = await api.post('/api/v1/quantum/jump', payload);
+    } catch (error: any) {
+      console.error('Error committing quantum jump:', error);
+      throw error;
+    }
+
+    // The jump succeeded server-side (even a misfire MOVED the ship) — a
+    // failed refresh must not read as a failed jump.
+    try {
+      await refreshPlayerState();
+      await loadShips();
+      await refreshQuantumStatus();
+    } catch (refreshError) {
+      console.warn('Post-jump state refresh failed:', refreshError);
+    }
+
+    return response.data as QuantumJumpResult;
+  };
+
+  // Refine 1 quantum shard into 1 charge on the current Warp Jumper
+  // (server enforces docked-at-Class-3+/SpaceDock and charge capacity)
+  const refineQuantumCharge = async (): Promise<{ quantum_charges: number; quantum_shards: number }> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post('/api/v1/quantum/refine-charge', {});
+      await refreshQuantumStatus();
+      return response.data as { quantum_charges: number; quantum_shards: number };
+    } catch (error: any) {
+      console.error('Error refining quantum charge:', error);
+      throw error;
+    }
+  };
+
   // Handle first login completion - refresh all game data
   const onFirstLoginComplete = async () => {
     setNeedsFirstLogin(false);
@@ -1195,6 +1347,14 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     launchTakeover,
     counterTakeover,
 
+    // Quantum drive (Warp Jumper)
+    quantumStatus,
+    refreshQuantumStatus,
+    quantumScan,
+    quantumJump,
+    refineQuantumCharge,
+    quantumScanResult,
+    setQuantumScanResult,
 
     // Loading states
     isLoading,

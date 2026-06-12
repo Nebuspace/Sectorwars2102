@@ -1,0 +1,831 @@
+/* ============================================
+   QUANTUM DRIVE CONSOLE — Warp Jumper NAV mode
+   Accent: quantum violet #7B2FFF, on the cockpit
+   CRT design language (cockpit.css conventions)
+   ============================================ */
+
+.qd-console {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  color: rgba(230, 220, 255, 0.9);
+}
+
+/* Inner scroll layer — holds every section so the overlays (direct children
+   of .qd-console with inset:0) pin to the visible screen instead of
+   scrolling out of view. */
+.qd-console-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Linking / unavailable state — mirrors the nav-scan-state pattern */
+.qd-inventory-linking {
+  justify-content: center;
+  gap: 0.4rem;
+}
+
+.qd-linking-text {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: rgba(201, 168, 255, 0.75);
+}
+
+.qd-linking-spinner {
+  font-size: 0.7rem;
+  color: #c9a8ff;
+  animation: qd-linking-spin 1.1s linear infinite;
+}
+
+@keyframes qd-linking-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* --- Docked refinery strip (mounted in the trading monitor) --- */
+.qd-refinery-strip {
+  margin: 0 0 0.4rem 0;
+  padding: 0.35rem 0.45rem;
+  background: rgba(20, 8, 40, 0.45);
+  border: 1px solid rgba(123, 47, 255, 0.3);
+  border-radius: 3px;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  color: rgba(230, 220, 255, 0.9);
+}
+
+.qd-refinery-head {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  color: rgba(123, 47, 255, 0.9);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+}
+
+.qd-refinery-notice {
+  margin-top: 0.3rem;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.52rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: #c9a8ff;
+  border-left: 2px solid rgba(123, 47, 255, 0.6);
+  background: rgba(123, 47, 255, 0.08);
+}
+
+/* --- Inventory strip --- */
+.qd-inventory {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  background: rgba(123, 47, 255, 0.08);
+  border: 1px solid rgba(123, 47, 255, 0.3);
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.qd-inv-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.qd-inv-icon {
+  font-size: 0.7rem;
+}
+
+.qd-inv-count {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #c9a8ff;
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.6);
+}
+
+.qd-inv-label {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: rgba(201, 168, 255, 0.55);
+}
+
+.qd-refine-btn {
+  margin-left: auto;
+  padding: 0.25rem 0.5rem;
+  font-family: inherit;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(123, 47, 255, 0.15);
+  border: 1px solid rgba(123, 47, 255, 0.4);
+  border-radius: 3px;
+  color: #c9a8ff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.qd-refine-btn:hover:not(:disabled) {
+  background: rgba(123, 47, 255, 0.3);
+  border-color: rgba(123, 47, 255, 0.7);
+  box-shadow: 0 0 10px rgba(123, 47, 255, 0.4);
+}
+
+.qd-refine-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* --- Sections --- */
+.qd-section {
+  flex-shrink: 0;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid rgba(123, 47, 255, 0.2);
+  border-radius: 3px;
+  background: rgba(20, 8, 40, 0.35);
+}
+
+.qd-section-label {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  color: rgba(123, 47, 255, 0.9);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+}
+
+/* --- Bearing block --- */
+.qd-bearing-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.6rem;
+  align-items: start;
+}
+
+.qd-readout-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.2rem;
+}
+
+.qd-readout-label {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: rgba(201, 168, 255, 0.6);
+}
+
+.qd-readout-value {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #e0ccff;
+  text-shadow: 0 0 10px rgba(123, 47, 255, 0.7);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Yaw compass slider with cardinal ticks */
+.qd-yaw-slider {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: linear-gradient(90deg,
+    rgba(123, 47, 255, 0.15) 0%,
+    rgba(123, 47, 255, 0.5) 50%,
+    rgba(123, 47, 255, 0.15) 100%);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.qd-yaw-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #7B2FFF;
+  border: 2px solid #e0ccff;
+  box-shadow: 0 0 10px rgba(123, 47, 255, 0.8);
+  cursor: pointer;
+}
+
+.qd-yaw-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #7B2FFF;
+  border: 2px solid #e0ccff;
+  box-shadow: 0 0 10px rgba(123, 47, 255, 0.8);
+  cursor: pointer;
+}
+
+.qd-yaw-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.15rem;
+  font-size: 0.45rem;
+  letter-spacing: 0.05em;
+  color: rgba(201, 168, 255, 0.5);
+}
+
+/* Pitch: vertical slider */
+.qd-pitch-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 64px;
+}
+
+.qd-pitch-slider-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.qd-pitch-tick {
+  font-size: 0.45rem;
+  color: rgba(201, 168, 255, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+.qd-pitch-slider {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 4px;
+  height: 64px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: linear-gradient(180deg,
+    rgba(123, 47, 255, 0.15) 0%,
+    rgba(123, 47, 255, 0.5) 50%,
+    rgba(123, 47, 255, 0.15) 100%);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.qd-pitch-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #7B2FFF;
+  border: 2px solid #e0ccff;
+  box-shadow: 0 0 10px rgba(123, 47, 255, 0.8);
+  cursor: pointer;
+}
+
+.qd-pitch-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #7B2FFF;
+  border: 2px solid #e0ccff;
+  box-shadow: 0 0 10px rgba(123, 47, 255, 0.8);
+  cursor: pointer;
+}
+
+/* --- Range band selector --- */
+.qd-band-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.3rem;
+}
+
+.qd-band-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.3rem 0.15rem;
+  font-family: inherit;
+  background: rgba(123, 47, 255, 0.06);
+  border: 1px solid rgba(123, 47, 255, 0.25);
+  border-radius: 3px;
+  color: rgba(201, 168, 255, 0.8);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 0;
+}
+
+.qd-band-btn:hover:not(:disabled) {
+  background: rgba(123, 47, 255, 0.18);
+  border-color: rgba(123, 47, 255, 0.5);
+}
+
+.qd-band-btn.active {
+  background: rgba(123, 47, 255, 0.3);
+  border-color: #7B2FFF;
+  box-shadow: 0 0 12px rgba(123, 47, 255, 0.4), inset 0 0 8px rgba(123, 47, 255, 0.2);
+  color: #e0ccff;
+}
+
+.qd-band-btn.locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.qd-band-name {
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.qd-band-range {
+  font-size: 0.55rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.qd-band-tag {
+  font-size: 0.4rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #ffb000;
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
+  white-space: nowrap;
+}
+
+.qd-band-tag.locked-tag {
+  color: rgba(255, 176, 0, 0.8);
+  font-size: 0.36rem;
+}
+
+/* --- Action buttons --- */
+.qd-action-row {
+  display: flex;
+}
+
+.qd-scan-btn,
+.qd-jump-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  font-family: inherit;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.qd-scan-btn {
+  background: rgba(123, 47, 255, 0.15);
+  border: 1px solid rgba(123, 47, 255, 0.5);
+  color: #c9a8ff;
+}
+
+.qd-scan-btn:hover:not(:disabled) {
+  background: rgba(123, 47, 255, 0.3);
+  box-shadow: 0 0 12px rgba(123, 47, 255, 0.4);
+}
+
+.qd-jump-btn {
+  background: rgba(123, 47, 255, 0.25);
+  border: 1px solid #7B2FFF;
+  color: #e0ccff;
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.8);
+}
+
+.qd-jump-btn:hover:not(:disabled) {
+  background: rgba(123, 47, 255, 0.45);
+  box-shadow: 0 0 16px rgba(123, 47, 255, 0.6);
+}
+
+.qd-jump-btn.confirm {
+  background: rgba(123, 47, 255, 0.5);
+  animation: qd-confirm-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes qd-confirm-pulse {
+  from { box-shadow: 0 0 8px rgba(123, 47, 255, 0.4); }
+  to { box-shadow: 0 0 20px rgba(123, 47, 255, 0.9); }
+}
+
+.qd-scan-btn:disabled,
+.qd-jump-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.qd-cost-tag {
+  font-size: 0.48rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: rgba(201, 168, 255, 0.6);
+  white-space: nowrap;
+}
+
+.qd-confirm-row {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.qd-abort-btn {
+  padding: 0.4rem 0.6rem;
+  font-family: inherit;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  background: rgba(255, 60, 60, 0.1);
+  border: 1px solid rgba(255, 60, 60, 0.45);
+  border-radius: 3px;
+  color: #ff8a8a;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.qd-abort-btn:hover {
+  background: rgba(255, 60, 60, 0.25);
+}
+
+.qd-inline-error {
+  margin-top: 0.3rem;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.52rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: #ffb000;
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
+  border-left: 2px solid rgba(255, 176, 0, 0.6);
+  background: rgba(255, 176, 0, 0.06);
+}
+
+/* --- Echo telemetry block (CRT readout with scanline) --- */
+.qd-telemetry {
+  position: relative;
+  margin-top: 0.4rem;
+  padding: 0.35rem 0.45rem;
+  background: rgba(10, 4, 24, 0.85);
+  border: 1px solid rgba(123, 47, 255, 0.4);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+/* Subtle travelling scanline */
+.qd-telemetry::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 14px;
+  background: linear-gradient(180deg,
+    transparent 0%,
+    rgba(123, 47, 255, 0.12) 50%,
+    transparent 100%);
+  animation: qd-scanline 3.2s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes qd-scanline {
+  from { top: -14px; }
+  to { top: 100%; }
+}
+
+.qd-telemetry-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: rgba(123, 47, 255, 0.95);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+  border-bottom: 1px solid rgba(123, 47, 255, 0.3);
+  padding-bottom: 0.2rem;
+  margin-bottom: 0.3rem;
+}
+
+.qd-telemetry-expiry {
+  color: rgba(255, 176, 0, 0.85);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
+  font-variant-numeric: tabular-nums;
+}
+
+.qd-telemetry-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.12rem 0;
+}
+
+.qd-tele-label {
+  width: 64px;
+  flex-shrink: 0;
+  font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: rgba(201, 168, 255, 0.55);
+}
+
+.qd-tele-value {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #e0ccff;
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.6);
+}
+
+/* Resonance meter: 4 segments */
+.qd-resonance-meter {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.qd-res-seg {
+  width: 14px;
+  height: 8px;
+  border: 1px solid rgba(123, 47, 255, 0.4);
+  border-radius: 1px;
+  background: rgba(123, 47, 255, 0.06);
+}
+
+.qd-res-seg.lit {
+  background: #7B2FFF;
+  box-shadow: 0 0 8px rgba(123, 47, 255, 0.8);
+}
+
+.qd-res-seg.lit.dim {
+  background: rgba(123, 47, 255, 0.3);
+  box-shadow: none;
+}
+
+/* --- Footer / Gatewright --- */
+.qd-footer {
+  margin-top: auto;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.2rem;
+}
+
+.qd-gatewright-btn {
+  padding: 0.3rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  background: rgba(123, 47, 255, 0.1);
+  border: 1px solid rgba(123, 47, 255, 0.45);
+  border-radius: 3px;
+  color: #c9a8ff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.qd-gatewright-btn:hover {
+  background: rgba(123, 47, 255, 0.28);
+  box-shadow: 0 0 12px rgba(123, 47, 255, 0.45);
+}
+
+/* --- Charge-up ceremony overlay --- */
+.qd-charging-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  background: rgba(8, 2, 20, 0.92);
+  animation: qd-charge-flash 2s ease-in forwards;
+}
+
+@keyframes qd-charge-flash {
+  0% { background: rgba(8, 2, 20, 0.92); }
+  85% { background: rgba(8, 2, 20, 0.92); }
+  100% { background: rgba(123, 47, 255, 0.55); }
+}
+
+.qd-charging-rings {
+  position: relative;
+  width: 64px;
+  height: 64px;
+}
+
+.qd-charging-rings span {
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(123, 47, 255, 0.8);
+  border-radius: 50%;
+  animation: qd-ring-expand 1.4s ease-out infinite;
+}
+
+.qd-charging-rings span:nth-child(2) { animation-delay: 0.45s; }
+.qd-charging-rings span:nth-child(3) { animation-delay: 0.9s; }
+
+@keyframes qd-ring-expand {
+  from { transform: scale(0.2); opacity: 1; }
+  to { transform: scale(1.4); opacity: 0; }
+}
+
+.qd-charging-text {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  color: #e0ccff;
+  text-shadow: 0 0 12px rgba(123, 47, 255, 0.9);
+  animation: qd-text-flicker 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes qd-text-flicker {
+  from { opacity: 0.7; }
+  to { opacity: 1; }
+}
+
+/* --- Outcome card --- */
+.qd-outcome-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 31;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 2, 20, 0.88);
+  animation: qd-outcome-in 0.3s ease-out;
+}
+
+@keyframes qd-outcome-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.qd-outcome-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.9rem 1.1rem;
+  max-width: 90%;
+  text-align: center;
+  border-radius: 4px;
+  background: rgba(20, 8, 40, 0.95);
+}
+
+.qd-outcome-overlay.success .qd-outcome-card {
+  border: 1px solid #7B2FFF;
+  box-shadow: 0 0 24px rgba(123, 47, 255, 0.5);
+}
+
+.qd-outcome-overlay.misfire .qd-outcome-card {
+  border: 1px solid #ffb000;
+  box-shadow: 0 0 24px rgba(255, 176, 0, 0.4);
+}
+
+.qd-outcome-title {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+}
+
+.qd-outcome-overlay.success .qd-outcome-title {
+  color: #c9a8ff;
+  text-shadow: 0 0 10px rgba(123, 47, 255, 0.8);
+}
+
+.qd-outcome-overlay.misfire .qd-outcome-title {
+  color: #ffb000;
+  text-shadow: 0 0 10px rgba(255, 176, 0, 0.7);
+}
+
+.qd-outcome-body {
+  font-size: 0.62rem;
+  color: rgba(230, 220, 255, 0.9);
+  line-height: 1.5;
+}
+
+.qd-outcome-body strong {
+  color: #e0ccff;
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.6);
+}
+
+.qd-outcome-meta {
+  font-size: 0.48rem;
+  letter-spacing: 0.1em;
+  color: rgba(201, 168, 255, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
+.qd-outcome-dismiss {
+  margin-top: 0.2rem;
+  padding: 0.35rem 0.9rem;
+  font-family: inherit;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  background: rgba(123, 47, 255, 0.2);
+  border: 1px solid rgba(123, 47, 255, 0.6);
+  border-radius: 3px;
+  color: #e0ccff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.qd-outcome-dismiss:hover {
+  background: rgba(123, 47, 255, 0.4);
+  box-shadow: 0 0 12px rgba(123, 47, 255, 0.5);
+}
+
+/* ============================================
+   NAV MONITOR MODE SWITCH (header, WJ only)
+   ============================================ */
+
+.nav-header-with-modes {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.nav-mode-switch {
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid rgba(123, 47, 255, 0.35);
+  border-radius: 3px;
+  padding: 1px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.nav-mode-btn {
+  padding: 0.12rem 0.45rem;
+  font-family: inherit;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  background: transparent;
+  border: none;
+  border-radius: 2px;
+  color: rgba(0, 217, 255, 0.55);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.nav-mode-btn:hover {
+  color: rgba(0, 217, 255, 0.9);
+}
+
+.nav-mode-btn.active {
+  background: rgba(0, 217, 255, 0.18);
+  color: #00d9ff;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.7);
+}
+
+.nav-mode-btn.quantum.active {
+  background: rgba(123, 47, 255, 0.25);
+  color: #c9a8ff;
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.8);
+  box-shadow: 0 0 8px rgba(123, 47, 255, 0.3);
+}
+
+.nav-mode-btn.quantum:hover {
+  color: #c9a8ff;
+}
+
+/* ============================================
+   GATEWRIGHT OVERLAY (portal — owned by GameDashboard;
+   panel internals are styled by gatewright-panel.css)
+   ============================================ */
+
+.quantum-gatewright-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.7);
+  backdrop-filter: blur(3px);
+}
+
+.quantum-gatewright-shell {
+  max-width: min(720px, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  border-radius: 6px;
+}

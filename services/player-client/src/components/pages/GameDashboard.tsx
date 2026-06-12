@@ -12,9 +12,12 @@ import TacticalCard from '../tactical/TacticalCard';
 import SectorViewport from '../tactical/SectorViewport';
 import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
+import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
+import GatewrightPanel from '../gatewright/GatewrightPanel';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
+import '../quantum/quantum-drive.css';
 
 // Planet type icons (shared by the landed console and the claim ceremony)
 const PLANET_TYPE_ICONS: Record<string, string> = {
@@ -31,6 +34,80 @@ const getPlanetIcon = (type?: string): string =>
 // One accent class per planet type — the colors live in cockpit.css
 const getPlanetTintClass = (type?: string): string =>
   `planet-tint-${(type || 'unknown').toLowerCase().replace(/[^a-z_]+/g, '_')}`;
+
+/**
+ * QuantumRefineryStrip — the docked counterpart to the Quantum Drive console.
+ * Refining shards into charges requires being docked (Class-3+/SpaceDock,
+ * server-enforced), but the full drive console only mounts while undocked —
+ * so the jump loop would dead-end without this. A slim strip above the
+ * trading monitor closes the loop. Reuses the qd-inventory CRT styling.
+ */
+interface QuantumRefineryStripProps {
+  status: import('../../contexts/GameContext').QuantumStatus | null;
+  onRefine: () => Promise<{ quantum_charges: number; quantum_shards: number }>;
+}
+
+const QuantumRefineryStrip: React.FC<QuantumRefineryStripProps> = ({ status, onRefine }) => {
+  const [isRefining, setIsRefining] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const ready = !!status;
+  const shards = status?.quantum_shards ?? 0;
+  const charges = status?.quantum_charges ?? 0;
+
+  const handleRefine = async () => {
+    if (isRefining || shards < 1) return;
+    setIsRefining(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await onRefine();
+      setNotice(`Charge refined — ${result.quantum_charges} loaded, ${result.quantum_shards} shards remain.`);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Charge refinement failed');
+    } finally {
+      setIsRefining(false);
+    }
+  };
+
+  return (
+    <div className="qd-refinery-strip">
+      <div className="qd-refinery-head">QUANTUM DRIVE — REFINERY</div>
+      {!ready ? (
+        <div className="qd-inventory qd-inventory-linking" role="status" aria-live="polite">
+          <span className="qd-linking-text">LINKING DRIVE…</span>
+          <span className="qd-linking-spinner" aria-hidden="true">⟳</span>
+        </div>
+      ) : (
+        <>
+          <div className="qd-inventory">
+            <div className="qd-inv-item" title="Quantum shards (raw)">
+              <span className="qd-inv-icon">💠</span>
+              <span className="qd-inv-count">{shards}</span>
+              <span className="qd-inv-label">SHARDS</span>
+            </div>
+            <div className="qd-inv-item" title="Refined charges loaded in the drive">
+              <span className="qd-inv-icon">⚡</span>
+              <span className="qd-inv-count">{charges}</span>
+              <span className="qd-inv-label">CHARGES</span>
+            </div>
+            <button
+              className="qd-refine-btn"
+              onClick={handleRefine}
+              disabled={isRefining || shards < 1}
+              title={shards < 1 ? 'No shards to refine' : 'Refine 1 shard into 1 drive charge'}
+            >
+              {isRefining ? 'REFINING…' : 'REFINE CHARGE'}
+            </button>
+          </div>
+          {error && <div className="qd-inline-error">{error}</div>}
+          {notice && <div className="qd-refinery-notice">{notice}</div>}
+        </>
+      )}
+    </div>
+  );
+};
 
 const GameDashboard: React.FC = () => {
   const {
@@ -52,6 +129,8 @@ const GameDashboard: React.FC = () => {
     exploreCurrentLocation,
     getAvailableMoves,
     refreshPlayerState,
+    quantumStatus,
+    refineQuantumCharge,
     error
   } = useGame();
   
@@ -68,6 +147,22 @@ const GameDashboard: React.FC = () => {
   useEffect(() => {
     setStationTerminal('trade');
   }, [playerState?.current_port_id]);
+
+  // NAV monitor mode: Warp Jumpers get a second mode — the Quantum Drive
+  // console — behind a two-position switch in the NAV header. Every other
+  // ship type sees exactly the classic warp graph, no switch.
+  const isWarpJumper = currentShip?.type === 'WARP_JUMPER';
+  const [navMode, setNavMode] = useState<'graph' | 'quantum'>('graph');
+  const [showGatewright, setShowGatewright] = useState(false);
+
+  // Swapping off the Warp Jumper drops back to the warp graph and closes
+  // the Gatewright panel — neither exists without the quantum drive.
+  useEffect(() => {
+    if (!isWarpJumper) {
+      setNavMode('graph');
+      setShowGatewright(false);
+    }
+  }, [isWarpJumper]);
 
   // NAV scan loading state: show a spinner while sector telemetry loads,
   // then fall back to a retry affordance if nothing arrives within 10s.
@@ -899,6 +994,9 @@ const GameDashboard: React.FC = () => {
           {/* DOCKED STATE: Show SpaceDock or Trading Interface */}
           {playerState?.is_docked ? (
             <div className="console-monitor trading-monitor full-width">
+              {isWarpJumper && (
+                <QuantumRefineryStrip status={quantumStatus} onRefine={refineQuantumCharge} />
+              )}
               <div className="monitor-bezel">
                 <div className="bezel-corner tl"></div>
                 <div className="bezel-corner tr"></div>
@@ -1239,35 +1337,65 @@ const GameDashboard: React.FC = () => {
                   <div className="bezel-corner br"></div>
                 </div>
                 <div className="monitor-screen">
-                  <div className="screen-hud-header">NAV</div>
-                  <div className="screen-hud-content">
-                  {!currentSector && (
-                    <div className="nav-scan-state">
-                      {!navScanTimedOut ? (
-                        <>
-                          <div className="nav-scan-spinner" aria-hidden="true"></div>
-                          <span className="nav-scan-text">SCANNING SECTOR...</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="nav-scan-text warning">SECTOR SCAN TIMED OUT — NO TELEMETRY</span>
-                          <button className="nav-scan-retry" onClick={handleRetryScan}>
-                            ⟳ RETRY SCAN
-                          </button>
-                        </>
-                      )}
+                  {isWarpJumper ? (
+                    <div className="screen-hud-header nav-header-with-modes">
+                      <span>NAV</span>
+                      <div className="nav-mode-switch" role="tablist" aria-label="NAV display mode">
+                        <button
+                          className={`nav-mode-btn ${navMode === 'graph' ? 'active' : ''}`}
+                          role="tab"
+                          aria-selected={navMode === 'graph'}
+                          onClick={() => setNavMode('graph')}
+                        >
+                          WARP GRAPH
+                        </button>
+                        <button
+                          className={`nav-mode-btn quantum ${navMode === 'quantum' ? 'active' : ''}`}
+                          role="tab"
+                          aria-selected={navMode === 'quantum'}
+                          onClick={() => setNavMode('quantum')}
+                        >
+                          QUANTUM DRIVE
+                        </button>
+                      </div>
                     </div>
+                  ) : (
+                    <div className="screen-hud-header">NAV</div>
                   )}
-                  {currentSector && (
-                    <NavigationMap
-                      currentSectorId={currentSector.sector_id}
-                      sectors={navSectors}
-                      availableMoves={affordableMoveIds}
-                      moveCosts={moveCosts}
-                      onNavigate={handleMove}
-                      width={440}
-                      height={300}
-                    />
+                  <div className="screen-hud-content">
+                  {isWarpJumper && navMode === 'quantum' ? (
+                    <QuantumDriveConsole onOpenGatewright={() => setShowGatewright(true)} />
+                  ) : (
+                    <>
+                      {!currentSector && (
+                        <div className="nav-scan-state">
+                          {!navScanTimedOut ? (
+                            <>
+                              <div className="nav-scan-spinner" aria-hidden="true"></div>
+                              <span className="nav-scan-text">SCANNING SECTOR...</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="nav-scan-text warning">SECTOR SCAN TIMED OUT — NO TELEMETRY</span>
+                              <button className="nav-scan-retry" onClick={handleRetryScan}>
+                                ⟳ RETRY SCAN
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {currentSector && (
+                        <NavigationMap
+                          currentSectorId={currentSector.sector_id}
+                          sectors={navSectors}
+                          availableMoves={affordableMoveIds}
+                          moveCosts={moveCosts}
+                          onNavigate={handleMove}
+                          width={440}
+                          height={300}
+                        />
+                      )}
+                    </>
                   )}
                   </div>
                 </div>
@@ -1480,6 +1608,20 @@ const GameDashboard: React.FC = () => {
                     : transferModal === 'disembark' ? 'CONFIRM DISEMBARK' : 'CONFIRM EMBARK'}
                 </button>
               </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Gatewright project panel — portal escapes the cockpit stacking
+            context, same pattern as the colonist transfer modal above */}
+        {showGatewright && isWarpJumper && createPortal(
+          <div
+            className="quantum-gatewright-overlay"
+            onClick={() => setShowGatewright(false)}
+          >
+            <div className="quantum-gatewright-shell" onClick={(e) => e.stopPropagation()}>
+              <GatewrightPanel onClose={() => setShowGatewright(false)} />
             </div>
           </div>,
           document.body
