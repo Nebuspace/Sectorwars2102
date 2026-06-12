@@ -824,8 +824,10 @@
 }
 
 .quantum-gatewright-shell {
-  max-width: min(720px, calc(100vw - 2rem));
-  max-height: calc(100vh - 4rem);
+  /* Explicit box: the panel inside sizes itself with height:100%, which
+     collapses if the shell is content-sized (circular dependency). */
+  width: min(720px, calc(100vw - 2rem));
+  height: calc(100vh - 6rem);
   overflow-y: auto;
   border-radius: 6px;
 }
