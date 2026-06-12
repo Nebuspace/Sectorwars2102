@@ -781,6 +781,87 @@
         "station orbit clearance from planet orbits (0.04 AU nudge idea)"
       ],
       "proposed_canon": "Full interpretation table (star weights, body kinds, orbit ladder, merge rules) documented in celestial_service.py module docstring \u2014 proposed for FEATURES/galaxy/sectors.md as new canon, Max-gated"
+    },
+    {
+      "id": "neon-2026-06-12-e",
+      "tier": "STANDARD",
+      "stage": "complete",
+      "branch_head_at_start": "6fb35d7",
+      "sections": [
+        {
+          "key": "stop-the-leaks",
+          "state": "selected",
+          "effort": 3,
+          "proof_script": [
+            "DM testpilot->verifpilot succeeds end-to-end: 200, messages row in psql with recipient_id set (today: 400 Either recipient_id or team_id)",
+            "Genesis purchase at a NON-spacedock station -> 400 (today: succeeds anywhere docked); at a real SpaceDock still works; player+ship rows locked",
+            "GET /teams/{id}/wars unauthenticated -> 401 (today: open); /first-login/debug as player -> 403/404",
+            "team treasury transfer_to_player row-locked (code evidence; race not live-staged)",
+            "websocket reconnects after a logout/login cycle (shouldReconnect reset); loadShips no longer wipes the fleet on transient error (code evidence + hangar stays populated through a forced failure if stageable)"
+          ]
+        },
+        {
+          "key": "isloading-finisher",
+          "state": "selected",
+          "effort": 3,
+          "proof_script": [
+            "Galaxy 3D map (/game/map) does NOT tear down its scene during a background refresh (was: full Three.js rebuild on every action)",
+            "GameContext background ops no longer toggle the global isLoading (initial load keeps its overlay); cockpit + map + pages stable through scan/move/dock",
+            "No regression to the initial INITIALIZING overlay or SYNC beacon"
+          ]
+        },
+        {
+          "key": "factions-alive",
+          "state": "selected",
+          "effort": 2,
+          "proof_script": [
+            "GET /factions/ returns 200 with real faction rows (today: 500 AsyncSession has no attribute query \u2014 proven live)",
+            "Faction detail + missions list load; accept-mission persists to player settings JSONB in psql (today: commit never flushes)",
+            "Mission COMPLETION endpoint deliberately NOT built (no canon mechanics) \u2014 filed as pending decision"
+          ]
+        }
+      ],
+      "verdict": "GLOWING",
+      "model_usage": {
+        "tier": "STANDARD",
+        "fable": {
+          "agents": 9,
+          "tokens": 835587,
+          "roles": "3 build + 6 adversarial review"
+        },
+        "sonnet": {
+          "agents": 2,
+          "tokens": 184944,
+          "roles": "discovery scans"
+        },
+        "opus": {
+          "agents": 0,
+          "tokens": 0,
+          "roles": "gate fixes done by lead this run"
+        },
+        "fable_lead_est": 320000,
+        "est_cost_vs_all_fable": "~0.88x (~12% saved; lead hand-fixed the gate)"
+      },
+      "proof_evidence": {
+        "dm_first_ever": "send 200 with message_id; verifpilot inbox 2 messages; settings... messages row persisted; repair loop fixed the phantom ConnectionManager.send_to_player exposed by the first successful sends",
+        "factions": "GET /factions/ 200 (Terran Federation) \u2014 was 500 AsyncSession.query live-verified pre-fix; mission seeded (flagged), accepted via API, persisted in settings JSONB (psql)",
+        "auth_gates": "wars endpoint unauth 401; /first-login/debug as player 403; genesis purchase DOCKED at Class-4 Distribution Center rejected with SpaceDock message (was purchasable anywhere docked)",
+        "isloading": "Three.js galaxy map canvas node identity + custom mark survived 12s live session (was torn down on every refresh); cockpit bearing survival re-inherited from run 9",
+        "regression": "client build green, all py_compile green, stage 200 throughout"
+      },
+      "seeding_flags": [
+        "one FactionMission row seeded for the accept-persistence proof (no mission rows existed on dev)"
+      ],
+      "parking_lot": [
+        "DM inbox/send UI missing entirely (MECHANIC-NO-UI) \u2014 API + persistence proven, zero client consumers of messageAPI",
+        "team treasury resource transfers to players silently destroy non-credit resources (Player has no commodity columns) \u2014 whitelist or cargo routing needed",
+        "genesis tiers are price-only theater (success_rate/process_hours never persisted)",
+        "dual refresh-token locks (AuthContext + apiClient) still uncoordinated",
+        "orphan market-intelligence + player-analytics components call nonexistent endpoint families (tradingAPI/playerAPI) \u2014 remove or rewire",
+        "realtimeWebSocket.ts connects to nonexistent /ws/realtime with wrong token key",
+        "faction missions: completion mechanics pending decision (filed)",
+        "team_service contribution_credits JSONB in-place mutation may not persist"
+      ]
     }
   ]
 }
