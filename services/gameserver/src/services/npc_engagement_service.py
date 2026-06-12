@@ -93,7 +93,7 @@ def jurisdiction_of(db: Session, sector: Sector) -> Optional[str]:
     region = db.query(Region).filter(Region.id == sector.region_id).first()
     if region is None:
         return None
-    if region.is_nexus:
+    if region.is_central_nexus:
         return SENTINEL
     if region.is_terran_space:
         return FEDERATION
