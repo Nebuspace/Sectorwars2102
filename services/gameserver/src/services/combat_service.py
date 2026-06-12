@@ -287,6 +287,7 @@ class CombatService:
             logger.error("Failed ARIA/medal hooks after combat: %s", e)
 
         # Personal reputation + bounty hooks
+        attacked_innocent = False
         try:
             from src.services.personal_reputation_service import PersonalReputationService
             from src.services.bounty_service import BountyService
@@ -301,6 +302,7 @@ class CombatService:
                 else:
                     # Attacked an innocent (no bounty) — reputation penalty
                     rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
+                    attacked_innocent = True
                 # Check if the DESTROYED defender ship was an escape pod —
                 # evaluated against the pre-destruction snapshot, not
                 # defender.current_ship (which is now the post-kill pod).
@@ -311,6 +313,32 @@ class CombatService:
                 rep_service.adjust_reputation(defender.id, 50, "defend_against_attacker")
         except Exception as e:
             logger.error("Failed reputation/bounty hooks after combat: %s", e)
+
+        # Police engagement routing (ADR-0042 / police-forces.md). Two
+        # in-jurisdiction triggers fire from PvP combat today: an active
+        # Wanted Status (rep ≤ −500) on the aggressor, and the
+        # attack_innocent rep trigger above (code path: attacker victory
+        # with no bounty on the defender). route_engagement is
+        # best-effort and never raises into combat resolution.
+        police_response = None
+        try:
+            from src.services import npc_engagement_service
+            if (attacker.personal_reputation or 0) <= -500:
+                engagement = npc_engagement_service.route_engagement(
+                    self.db, attacker, "wanted_status", sector
+                )
+                police_response = npc_engagement_service.engagement_summary(
+                    engagement, self.db
+                ) or police_response
+            if attacked_innocent:
+                engagement = npc_engagement_service.route_engagement(
+                    self.db, attacker, "attack_innocent", sector
+                )
+                police_response = npc_engagement_service.engagement_summary(
+                    engagement, self.db
+                ) or police_response
+        except Exception as e:
+            logger.error("Failed police engagement routing after combat: %s", e)
 
         # Commit changes
         self.db.commit()
@@ -324,6 +352,8 @@ class CombatService:
             "turns_remaining": attacker.turns,
             "combat_log_id": str(combat_log.id)
         }
+        if police_response:
+            result_dict["police_response"] = police_response
         if rank_result and rank_result.get("success"):
             result_dict["rank_points_awarded"] = rank_result["points_awarded"]
             result_dict["promoted"] = rank_result["promoted"]
@@ -481,10 +511,47 @@ class CombatService:
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
 
+        # Police engagement routing (ADR-0042 / police-forces.md): a
+        # direct attack on a law-enforcement officer brings the
+        # Marshal-Captain personally; killing a Sentinel escalates the
+        # response squad from 4 to 6. Best-effort — never breaks combat.
+        police_response = None
+        try:
+            from src.models.npc_character import NPCArchetype as _NPCArchetype
+            from src.models.npc_character import NPCCharacter as _NPCCharacter
+            from src.services import npc_engagement_service
+
+            target_npc = (
+                self.db.query(_NPCCharacter)
+                .filter(_NPCCharacter.ship_id == npc_ship.id)
+                .first()
+            )
+            if (
+                target_npc is not None
+                and target_npc.archetype == _NPCArchetype.LAW_ENFORCEMENT
+            ):
+                sentinel_killed = (
+                    combat_result["defender_ship_destroyed"]
+                    and target_npc.faction_code == "galactic_concord"
+                )
+                engagement = npc_engagement_service.route_engagement(
+                    self.db,
+                    attacker,
+                    "sentinel_killed" if sentinel_killed else "attack_police",
+                    sector,
+                    squad_size_override=6 if sentinel_killed else None,
+                    include_captain=True,
+                )
+                police_response = npc_engagement_service.engagement_summary(
+                    engagement, self.db
+                )
+        except Exception as e:
+            logger.error("Failed police engagement routing after NPC combat: %s", e)
+
         # Commit changes
         self.db.commit()
 
-        return {
+        result_dict = {
             "success": True,
             "message": combat_result["message"],
             "combat_result": combat_result["result"].name,
@@ -493,6 +560,9 @@ class CombatService:
             "turns_remaining": attacker.turns,
             "combat_log_id": str(combat_log.id)
         }
+        if police_response:
+            result_dict["police_response"] = police_response
+        return result_dict
 
     def attack_sector_drones(self, attacker_id: uuid.UUID, sector_id: int) -> Dict[str, Any]:
         """Attack drones deployed in a sector."""

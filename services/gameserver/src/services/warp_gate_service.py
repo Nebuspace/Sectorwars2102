@@ -387,6 +387,30 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
     # before any deduction.
     if source.sector_id == destination.sector_id:
         raise WarpGateError(400, "A warp gate cannot loop back to its own sector")
+
+    # Sentinel-protected sectors (police-forces.md): Phase 1 deployment
+    # touching a protected Nexus sector is rejected at the API layer AND
+    # the Sentinel response fires anyway — the intercept is what makes
+    # the rejection load-bearing. The engagement row is committed before
+    # the rejection raises so it survives the error response.
+    for endpoint in (source, destination):
+        if getattr(endpoint, "is_nexus_protected", False):
+            try:
+                from src.services import npc_engagement_service
+                npc_engagement_service.route_engagement(
+                    db, player, "protected_sector_breach", endpoint,
+                    include_captain=True,
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception("Sentinel intercept dispatch failed (non-fatal)")
+            raise WarpGateError(
+                403,
+                "ERR_NEXUS_PROTECTED_SECTOR: warp-gate construction is "
+                "prohibited in Sentinel-protected sectors — a Sentinel "
+                "squad has been dispatched",
+            )
     _check_special_features(source, "Source")
     _check_special_features(destination, "Destination")
     _check_same_region(db, player, source, "Source")

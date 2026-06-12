@@ -106,6 +106,11 @@ class Sector(Base):
         "patrol_ships": []
     })
     
+    # Canon (police-forces.md "Sector protection flag"): breach of a
+    # protected Nexus sector (warp-gate Phase 1, hostile combat) triggers
+    # the Sentinel response. Default false; flagged by operator/import.
+    is_nexus_protected = Column(Boolean, nullable=False, default=False)
+
     controlling_faction = Column(String, nullable=True)  # Null means uncontrolled or contested
     controlling_team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
     last_combat = Column(DateTime(timezone=True), nullable=True)

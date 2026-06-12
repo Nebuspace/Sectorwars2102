@@ -78,6 +78,9 @@ logger = logging.getLogger(__name__)
 
 # Wake interval of the host task; loop cadences must be multiples.
 TICK_SECONDS = 60
+# ADR-0042: the PendingEngagement sweep runs every minute, distinct
+# from Loop A.
+ENGAGEMENT_SWEEP_SECONDS = 60
 LOOP_A_SECONDS = 5 * 60
 LOOP_B_SECONDS = 10 * 60
 LOOP_C_SECONDS = 30 * 60
@@ -563,8 +566,11 @@ def _run_due_ticks_sync(elapsed_seconds: int) -> List[Dict[str, Any]]:
             logger.info("NPC scheduler: advisory lock held elsewhere — skipping tick")
             return []
 
+        from src.services.npc_engagement_service import sweep_pending_engagements
+
         try:
             for cadence, loop_fn, label in (
+                (ENGAGEMENT_SWEEP_SECONDS, sweep_pending_engagements, "engagement-sweep"),
                 (LOOP_A_SECONDS, run_loop_a, "A"),
                 (LOOP_B_SECONDS, run_loop_b, "B"),
                 (LOOP_C_SECONDS, run_loop_c, "C"),
