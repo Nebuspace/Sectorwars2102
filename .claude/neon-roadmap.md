@@ -1,7 +1,7 @@
 # NEON Roadmap — run tracking
 
 Source of the original nine: `.claude/admin-ui-master-list.md` → "SUGGESTED BATCHES (NEON-sized)"
-(8 numbered batches; #8 contained two separate runs). Status updated 2026-06-12 after run 12.
+(8 numbered batches; #8 contained two separate runs). Status updated 2026-06-12 after run 13.
 This file is the living tracker — update at every run's N10.
 
 ## The original nine (admin-UI master list batches)
@@ -33,6 +33,8 @@ This file is the living tracker — update at every run's N10.
 - **Quantum supply chain** — shard harvesting + crystal assembly (canon design-only; columns exist)
 
 ### Cockpit / player UI
+- ✅ **Run 13 (2026-06-12) — cockpit identity pass**: CockpitInstrument shell on all 7 routes, HELM rail, docked/landed viewscreen scenes, ARIA console strip (FAB retired), overflow audit ZERO at 1710×947 + 1440×707 (commits 4461040…ffcc7ed)
+- **ARIA chat reply pipe dead** (pre-existing, surfaced run 13) — client sends `aria_chat` to the plain WS endpoint which has no handler ("Unknown WebSocket message type"); the handler lives only in enhanced_websocket_service. Wire the handler or point the client at the enhanced endpoint (touches AI dialogue — Max call)
 - **COMMS v2** — manual recipient entry, inbox pagination, sent view (needs backend endpoint), message delete UI
 - **Sector-type worldgen variety** — dev galaxy has only STANDARD+NEBULA; BLACK_HOLE/VOID/STAR_CLUSTER/ASTEROID_FIELD viewscreen variants code-complete but unproven (worldgen/BANG change; relates to duplicate-Earths invariant)
 - **Page-level spinner branches** — PlanetManager/TeamManager (4 sites each) still remount their own subtrees on their local loading states
