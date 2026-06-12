@@ -37,6 +37,68 @@ const getPlanetTintClass = (type?: string): string =>
   `planet-tint-${(type || 'unknown').toLowerCase().replace(/[^a-z_]+/g, '_')}`;
 
 /**
+ * HudChip — windshield HUD glass chip.
+ *
+ * Wraps the existing chip content in a pointer-events:none glass panel whose
+ * only interactive surface is a tiny minimize tab. Minimizing collapses the
+ * chip to a compact pill carrying its essential datum; the state persists
+ * per-chip in localStorage (cockpit.hud.<id>.min). Ghost-on-approach fading
+ * is driven by the windshield mousemove listener in GameDashboard via the
+ * data-hud-chip attribute (chips can't :hover — clicks pass through them).
+ */
+interface HudChipProps {
+  /** chip identity — drives the localStorage key cockpit.hud.<id>.min */
+  id: string;
+  /** compact pill content shown while minimized */
+  pill: React.ReactNode;
+  /** positioning / variant classes (top-left, top-right hazard, …) */
+  className?: string;
+  children: React.ReactNode;
+}
+
+const hudMinKey = (id: string): string => `cockpit.hud.${id}.min`;
+
+const HudChip: React.FC<HudChipProps> = ({ id, pill, className = '', children }) => {
+  const [minimized, setMinimized] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(hudMinKey(id)) === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleMinimized = () => {
+    setMinimized(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem(hudMinKey(id), next ? '1' : '0');
+      } catch {
+        /* storage unavailable (private mode) — state stays session-local */
+      }
+      return next;
+    });
+  };
+
+  return (
+    <div
+      className={`hud-overlay ${className}${minimized ? ' hud-minimized' : ''}`}
+      data-hud-chip={id}
+    >
+      <button
+        type="button"
+        className="hud-chip-tab"
+        onClick={toggleMinimized}
+        aria-label={minimized ? 'Restore HUD readout' : 'Minimize HUD readout'}
+        title={minimized ? 'Restore' : 'Minimize'}
+      >
+        {minimized ? '+' : '–'}
+      </button>
+      {minimized ? <div className="hud-pill">{pill}</div> : children}
+    </div>
+  );
+};
+
+/**
  * QuantumRefineryStrip — the docked counterpart to the Quantum Drive console.
  * Refining shards into charges requires being docked (Class-3+/SpaceDock,
  * server-enforced), but the full drive console only mounts while undocked —
@@ -416,6 +478,52 @@ const GameDashboard: React.FC = () => {
   const [movementResult, setMovementResult] = useState<any>(null);
   const [dockingResult, setDockingResult] = useState<any>(null);
   const [landingResult, setLandingResult] = useState<any>(null);
+
+  // Ghost-on-approach for the HUD glass chips: they are pointer-events:none
+  // (clicks pass through to the scene), so :hover can never fire on them.
+  // Instead, measure cursor proximity to each chip's rect on windshield
+  // mousemove and toggle .hud-ghost (CSS fades the chip to ~0.12 opacity).
+  // rAF-throttled; classes are applied imperatively so there is no per-move
+  // React state churn.
+  const windshieldRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const band = windshieldRef.current;
+    if (!band) return;
+    const PROXIMITY = 20;
+    let rafId: number | null = null;
+    let cx = -1e6;
+    let cy = -1e6;
+    const apply = () => {
+      rafId = null;
+      band.querySelectorAll<HTMLElement>('[data-hud-chip]').forEach((chip) => {
+        const r = chip.getBoundingClientRect();
+        const near =
+          cx >= r.left - PROXIMITY && cx <= r.right + PROXIMITY &&
+          cy >= r.top - PROXIMITY && cy <= r.bottom + PROXIMITY;
+        chip.classList.toggle('hud-ghost', near);
+      });
+    };
+    const schedule = () => {
+      if (rafId === null) rafId = requestAnimationFrame(apply);
+    };
+    const onMove = (e: MouseEvent) => {
+      cx = e.clientX;
+      cy = e.clientY;
+      schedule();
+    };
+    const onLeave = () => {
+      cx = -1e6;
+      cy = -1e6;
+      schedule();
+    };
+    band.addEventListener('mousemove', onMove);
+    band.addEventListener('mouseleave', onLeave);
+    return () => {
+      band.removeEventListener('mousemove', onMove);
+      band.removeEventListener('mouseleave', onLeave);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, []);
 
   // Helm-rail busy latch: the dock/land/undock/liftoff actions each round-trip
   // the server (and change is_docked/is_landed, which re-renders the whole
@@ -1240,13 +1348,22 @@ const GameDashboard: React.FC = () => {
         )}
 
         {/* WINDSHIELD - Full immersive viewport with HUD overlays */}
-        <div className="cockpit-windshield">
+        <div className="cockpit-windshield" ref={windshieldRef}>
           {/* LANDED STATE — planet-surface vista scene. GLASS LAW: the band
               hosts canvas scenery + absolutely-anchored HUD chips ONLY. The
               vitals/status/rename console moved to PLANETARY OPERATIONS
               COMMAND below; LIFT OFF lives on the helm rail. */}
           {playerState?.is_landed && !playerState?.is_docked && (() => {
             const habitability = Math.max(0, Math.min(100, landedPlanet?.habitability_score ?? 0));
+            // Only assert ownership once the planet record resolves —
+            // before that, an em-dash, not a false "UNCLAIMED".
+            const ownerText = !landedPlanet
+              ? '—'
+              : isLandedPlanetMine
+                ? 'YOU'
+                : landedPlanet.owner_name
+                  ? landedPlanet.owner_name
+                  : landedPlanet.owner_id ? 'OWNED' : 'UNCLAIMED';
             return (
             <>
               <SolarSystemViewscreen
@@ -1264,7 +1381,7 @@ const GameDashboard: React.FC = () => {
               </div>
 
               {/* HUD chips — fixed anchors, never flow layout */}
-              <div className="hud-overlay top-left">
+              <HudChip id="landed" className="top-left" pill={<>🪐 {landedPlanet?.name || 'Planet'}</>}>
                 <div className="hud-label">LANDED — PLANETARY SURFACE</div>
                 <div className="hud-value hud-chip-name" title={landedPlanet?.name || undefined}>
                   {getPlanetIcon(landedPlanet?.type)} {landedPlanet?.name || 'Unknown Planet'}
@@ -1272,24 +1389,18 @@ const GameDashboard: React.FC = () => {
                 <div className="hud-value-secondary">
                   {landedPlanet?.type?.replace(/_/g, ' ').toUpperCase() || 'UNKNOWN TYPE'}
                 </div>
-              </div>
+              </HudChip>
 
-              <div className="hud-overlay top-right">
+              <HudChip id="owner" className="top-right" pill={<>👤 {ownerText}</>}>
                 <div className="hud-label">👤 OWNER</div>
-                <div className="hud-value hud-chip-name">
-                  {/* Only assert ownership once the planet record resolves —
-                      before that, an em-dash, not a false "UNCLAIMED". */}
-                  {!landedPlanet
-                    ? '—'
-                    : isLandedPlanetMine
-                      ? 'YOU'
-                      : landedPlanet.owner_name
-                        ? landedPlanet.owner_name
-                        : landedPlanet.owner_id ? 'OWNED' : 'UNCLAIMED'}
-                </div>
-              </div>
+                <div className="hud-value hud-chip-name">{ownerText}</div>
+              </HudChip>
 
-              <div className="hud-overlay bottom-right">
+              <HudChip
+                id="habitability"
+                className="bottom-right"
+                pill={<>🌱 {landedPlanet ? `${habitability}%` : '—'}</>}
+              >
                 <div className="hud-label">HABITABILITY</div>
                 {/* Habitability is only meaningful once the planet resolves —
                     a 0%/empty bar before that reads as a real (false) value. */}
@@ -1297,7 +1408,7 @@ const GameDashboard: React.FC = () => {
                 <div className="hud-bar">
                   <div className="hud-bar-fill" style={{ width: `${landedPlanet ? habitability : 0}%` }}></div>
                 </div>
-              </div>
+              </HudChip>
             </>
             );
           })()}
@@ -1322,7 +1433,11 @@ const GameDashboard: React.FC = () => {
               </div>
 
               {/* HUD chips — fixed anchors, never flow layout */}
-              <div className="hud-overlay top-left">
+              <HudChip
+                id="station"
+                className="top-left"
+                pill={<>{isDockedAtSpaceDock ? '🚀' : '🏪'} {dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')}</>}
+              >
                 <div className="hud-label">
                   {isDockedAtSpaceDock ? '🚀 DOCKED — SPACEDOCK' : '🏪 DOCKED — STATION'}
                 </div>
@@ -1333,12 +1448,12 @@ const GameDashboard: React.FC = () => {
                   {dockedStation?.type?.replace(/_/g, ' ').toUpperCase() ||
                     (isDockedAtSpaceDock ? 'SPACEDOCK' : 'TRADING STATION')}
                 </div>
-              </div>
+              </HudChip>
 
-              <div className="hud-overlay top-right">
+              <HudChip id="baystatus" className="top-right" pill={<>⚓ CLAMPED</>}>
                 <div className="hud-label">BAY STATUS</div>
                 <div className="hud-value hud-chip-name hud-chip-ok">CLAMPS ENGAGED</div>
-              </div>
+              </HudChip>
             </>
           )}
 
@@ -1355,12 +1470,17 @@ const GameDashboard: React.FC = () => {
                 stations={stationsInSector}
                 planets={planetsInSector}
                 onEntityClick={(entity) => {
+                  // Legacy fallback viewport only (SectorViewport): the
+                  // procedural scene now opens an info popup on click and
+                  // routes actions through onRequestLand/onRequestDock.
                   if (entity.type === 'planet') {
                     handleLand(entity.id);
                   } else if (entity.type === 'station') {
                     handleDock(entity.id);
                   }
                 }}
+                onRequestLand={handleLand}
+                onRequestDock={handleDock}
               />
 
               {/* Cockpit frame vignette */}
@@ -1372,7 +1492,11 @@ const GameDashboard: React.FC = () => {
               </div>
 
               {/* HUD Overlays */}
-              <div className="hud-overlay top-left">
+              <HudChip
+                id="location"
+                className="top-left"
+                pill={<>◈ SECTOR {currentSector.sector_number || currentSector.sector_id}</>}
+              >
                 <div className="hud-label">LOCATION</div>
                 <div className="hud-value">
                   SECTOR {currentSector.sector_number || currentSector.sector_id}
@@ -1396,26 +1520,34 @@ const GameDashboard: React.FC = () => {
                     </div>
                   </div>
                 )}
-              </div>
+              </HudChip>
 
               {currentSector.hazard_level > 0 && (
-                <div className="hud-overlay top-right hazard">
+                <HudChip
+                  id="hazard"
+                  className="top-right hazard"
+                  pill={<>⚠ {currentSector.hazard_level}/10</>}
+                >
                   <div className="hud-label">⚠️ HAZARD</div>
                   <div className="hud-value danger">{currentSector.hazard_level}/10</div>
                   <div className="hud-bar">
                     <div className="hud-bar-fill danger" style={{ width: `${currentSector.hazard_level * 10}%` }}></div>
                   </div>
-                </div>
+                </HudChip>
               )}
 
               {currentSector.radiation_level > 0 && (
-                <div className="hud-overlay bottom-right radiation">
+                <HudChip
+                  id="radiation"
+                  className="bottom-right radiation"
+                  pill={<>☢ {(currentSector.radiation_level * 100).toFixed(1)}%</>}
+                >
                   <div className="hud-label">☢️ RADIATION</div>
                   <div className="hud-value warning">{(currentSector.radiation_level * 100).toFixed(1)}%</div>
                   <div className="hud-bar">
                     <div className="hud-bar-fill warning" style={{ width: `${currentSector.radiation_level * 100}%` }}></div>
                   </div>
-                </div>
+                </HudChip>
               )}
 
               {currentSector.special_features && currentSector.special_features.length > 0 && (

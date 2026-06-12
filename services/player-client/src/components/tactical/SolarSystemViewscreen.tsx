@@ -102,17 +102,54 @@ interface SolarSystemViewscreenProps {
   isSpaceDock?: boolean;
   /** landed scene only: planet type drives the sky/ridge palette */
   planetType?: string;
+  /**
+   * flight scene only: when provided, the real-planet info popup offers a
+   * 🛬 LAND action that calls this with the planet id (wire to the same
+   * helm land handler — it owns the helmBusy latch).
+   */
+  onRequestLand?: (planetId: string) => void;
+  /**
+   * flight scene only: when provided, the station info popup offers an
+   * ⚓ DOCK action that calls this with the station id (wire to the same
+   * helm dock handler — it owns the helmBusy latch).
+   */
+  onRequestDock?: (stationId: string) => void;
 }
 
+/** Per-kind payload backing the click popup card */
+type HitMeta =
+  | { kind: 'star'; label: string; starClass: string; color: string }
+  | { kind: 'planet'; planetId: string; planetKind: string; habitability?: number; owned?: boolean }
+  | { kind: 'station'; stationId: string; stationType: string }
+  | { kind: 'procedural'; designation: string; typeName: string; sizeDesc: string };
+
 interface HitTarget {
+  /** screen-space hit data in CSS pixels (the draw loop paints through a
+      setTransform(dpr, …) so every recorded coordinate is CSS-pixel space) */
   x: number;
   y: number;
   r: number;
-  kind: 'planet' | 'station' | 'procedural';
+  kind: 'star' | 'planet' | 'station' | 'procedural';
   id?: string;
   name: string;
   lines: string[];
+  meta: HitMeta;
 }
+
+interface PopupState {
+  /** identity of the body the popup is anchored to (kind:id-or-name) */
+  key: string;
+  target: HitTarget;
+  /** clamped CSS-pixel position inside the windshield band */
+  left: number;
+  top: number;
+}
+
+const popupKeyFor = (t: HitTarget): string => `${t.kind}:${t.id ?? t.name}`;
+
+// Popup card footprint used for clamping fully inside the band
+const POPUP_W = 232;
+const POPUP_H = 158;
 
 // ---------------------------------------------------------------------------
 // Deterministic PRNG (splitmix32) — every visual seed flows through this
@@ -303,6 +340,20 @@ function flavorFor(kind: string): string {
   }
   return PROC_FLAVOR[treatment];
 }
+
+/** Popup type/palette name — the flavor line's leading clause (e.g. ICE WORLD). */
+const typeNameFor = (kind: string): string => flavorFor(kind).split(' — ')[0];
+
+/** Relative size descriptor for procedural worlds, from the snapshot's size_class. */
+function sizeDescriptorFor(sizeClass: number): string {
+  if (sizeClass <= 1) return 'MINOR BODY';
+  if (sizeClass <= 3) return 'MID-SIZE WORLD';
+  return 'GIANT WORLD';
+}
+
+/** Generated designation for composer-only background worlds: <sector>-<letter>. */
+const proceduralDesignation = (sectorId: number, index: number): string =>
+  `${sectorId}-${String.fromCharCode(65 + (index % 26))}`;
 
 /** Paint the body surface (clipped to the disk), then terminator + rim light. */
 function drawPlanetSurface(
@@ -768,6 +819,17 @@ function drawScene(
   if (system.star) {
     const star = system.star;
     const sr = starRadius(star.kind, w, h);
+    hitTargets.push({
+      x: starX, y: starY, r: sr, kind: 'star',
+      name: star.label || star.kind,
+      lines: [(star.label || 'PRIMARY STAR').toUpperCase()],
+      meta: {
+        kind: 'star',
+        label: star.label || 'PRIMARY STAR',
+        starClass: (star.kind || 'UNKNOWN').replace(/_/g, ' '),
+        color: star.color
+      }
+    });
     drawables.push({
       y: starY,
       draw: () => {
@@ -783,7 +845,7 @@ function drawScene(
   }
 
   // Bodies on their orbits with slow deterministic drift
-  system.bodies.forEach((body) => {
+  system.bodies.forEach((body, bodyIdx) => {
     const rx = body.orbit_au * rxMax;
     const ry = rx * SQUASH;
     // Angular speed ~ 1/orbit_au — full orbit takes minutes
@@ -794,8 +856,6 @@ function drawScene(
     let r = (3 + body.size_class * 2.1) * bodyScale;
     if (body.real) r *= 1.2;
     const seed = (sectorId * 101 + body.slot * 7919 + Math.round(body.palette.hue)) >>> 0;
-    const isHovered = !!hover && hover.target.kind !== 'station' &&
-      hover.target.name === (body.real ? (body.name || '') : `slot-${body.slot}`);
 
     // Hit target (real planets are click targets; procedural get flavor hover)
     if (body.real && body.planet_id) {
@@ -806,13 +866,26 @@ function drawScene(
         lines: [
           (body.name || 'UNKNOWN').toUpperCase(),
           `${body.kind.replace(/_/g, ' ').toUpperCase()}${hab}${body.owned ? ' — CLAIMED' : ''}`
-        ]
+        ],
+        meta: {
+          kind: 'planet',
+          planetId: body.planet_id,
+          planetKind: body.kind,
+          habitability: body.habitability,
+          owned: body.owned
+        }
       });
     } else {
       hitTargets.push({
         x, y, r: r + 4, kind: 'procedural',
         name: `slot-${body.slot}`,
-        lines: [flavorFor(body.kind)]
+        lines: [flavorFor(body.kind)],
+        meta: {
+          kind: 'procedural',
+          designation: proceduralDesignation(sectorId, bodyIdx),
+          typeName: typeNameFor(body.kind),
+          sizeDesc: sizeDescriptorFor(body.size_class)
+        }
       });
     }
 
@@ -849,14 +922,6 @@ function drawScene(
           ctx.fillRect(x - lw2 / 2 - 3, ly - 1, lw2 + 6, 13);
           ctx.fillStyle = CYAN;
           ctx.fillText(label, x, ly);
-          if (isHovered) {
-            // Subtle selection ring
-            ctx.beginPath();
-            ctx.arc(x, y, r + 4, 0, Math.PI * 2);
-            ctx.strokeStyle = 'rgba(0, 217, 255, 0.7)';
-            ctx.lineWidth = 1;
-            ctx.stroke();
-          }
         }
       }
     });
@@ -875,7 +940,8 @@ function drawScene(
     hitTargets.push({
       x, y, r: size + 7, kind: 'station', id: st.station_id,
       name: st.name,
-      lines: [st.name.toUpperCase(), (st.type || 'STATION').replace(/_/g, ' ').toUpperCase()]
+      lines: [st.name.toUpperCase(), (st.type || 'STATION').replace(/_/g, ' ').toUpperCase()],
+      meta: { kind: 'station', stationId: st.station_id, stationType: st.type || 'STATION' }
     });
 
     drawables.push({
@@ -888,6 +954,27 @@ function drawScene(
   drawables.forEach((d) => d.draw());
 
   drawBelt('front');
+
+  // Hover affordance: faint reticle ring around the hovered hittable body,
+  // re-anchored to its CURRENT orbital position each frame (one extra stroke,
+  // no state churn — hover lives in a ref).
+  if (hover) {
+    const cur = hitTargets.find((ht) =>
+      ht.kind === hover.target.kind &&
+      (hover.target.id ? ht.id === hover.target.id : ht.name === hover.target.name)
+    );
+    if (cur) {
+      ctx.beginPath();
+      ctx.arc(cur.x, cur.y, Math.max(12, cur.r) + 3, 0, Math.PI * 2);
+      ctx.strokeStyle = cur.kind === 'procedural'
+        ? 'rgba(158, 150, 184, 0.35)'
+        : 'rgba(0, 217, 255, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
 
   // Environmental overlays — parity with the legacy viewscreen
   if (radiationLevel > 0) {
@@ -1236,7 +1323,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   onEntityClick,
   scene = 'flight',
   isSpaceDock = false,
-  planetType
+  planetType,
+  onRequestLand,
+  onRequestDock
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1253,6 +1342,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   const systemRef = useRef<SystemSnapshot | null>(null);
   const hitTargetsRef = useRef<HitTarget[]>([]);
   const hoverRef = useRef<{ target: HitTarget; mx: number; my: number } | null>(null);
+  // Celestial-body info popup (flight scene only) + click-vs-drag tracking
+  const [popup, setPopup] = useState<PopupState | null>(null);
+  const mouseDownPosRef = useRef<{ x: number; y: number } | null>(null);
   const hoverBoostUntilRef = useRef(0);
   const rafRef = useRef<number | undefined>(undefined);
   const lastDrawRef = useRef(0);
@@ -1321,6 +1413,21 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       cancelled = true;
     };
   }, [sectorId, scene]);
+
+  // ---- Body popup lifecycle: anchor vanishes on sector/scene change ----
+  useEffect(() => {
+    setPopup(null);
+  }, [sectorId, scene]);
+
+  // Escape dismisses the popup
+  useEffect(() => {
+    if (!popup) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPopup(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [popup]);
 
   // ---- Live prefers-reduced-motion tracking (always mounted) ----
   useEffect(() => {
@@ -1406,6 +1513,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   }, [fetchFailed, system, sectorId, reducedMotion, scene, planetType, isSpaceDock]);
 
   // ---- Pointer interaction ----
+  // Hit radius: recorded r + 8px slack, with a ~12px minimum effective radius
+  // so small bodies stay tappable. Coordinates are CSS pixels on both sides
+  // (getBoundingClientRect deltas vs the setTransform(dpr)-drawn targets), so
+  // no devicePixelRatio conversion is needed here.
   const hitTest = (mx: number, my: number): HitTarget | null => {
     let best: HitTarget | null = null;
     let bestDist = Infinity;
@@ -1413,7 +1524,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       const dx = mx - target.x;
       const dy = my - target.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist <= target.r && dist < bestDist) {
+      if (dist < Math.max(12, target.r) + 8 && dist < bestDist) {
         best = target;
         bestDist = dist;
       }
@@ -1430,7 +1541,8 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     const target = hitTest(mx, my);
     const prevName = hoverRef.current?.target.name ?? null;
     hoverRef.current = target ? { target, mx, my } : null;
-    canvas.style.cursor = target && target.kind !== 'procedural' ? 'pointer' : 'default';
+    // Every body is now clickable (popup), so any hit gets the pointer
+    canvas.style.cursor = target ? 'pointer' : 'default';
     if ((target?.name ?? null) !== prevName) {
       hoverBoostUntilRef.current = performance.now() + 350;
     }
@@ -1444,21 +1556,125 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     if (reducedMotionRef.current) drawNowRef.current();
   };
 
+  const handleMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    mouseDownPosRef.current = { x: event.clientX, y: event.clientY };
+  };
+
+  const openPopupFor = (target: HitTarget) => {
+    const { w, h } = sizeRef.current;
+    // Prefer beside the body; clamp the card fully inside the band
+    const left = Math.min(Math.max(6, target.x + target.r + 12), Math.max(6, w - POPUP_W - 6));
+    const top = Math.min(Math.max(6, target.y - POPUP_H / 2), Math.max(6, h - POPUP_H - 6));
+    setPopup({ key: popupKeyFor(target), target, left, top });
+  };
+
   const handleClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!onEntityClick) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // Drag guard: a press that traveled >5px before release is not a click
+    const down = mouseDownPosRef.current;
+    mouseDownPosRef.current = null;
+    if (down && Math.hypot(event.clientX - down.x, event.clientY - down.y) > 5) return;
+    // Popups belong to the flight spectacle only (docked/landed scenes
+    // clear their hit targets every frame anyway — belt and suspenders)
+    if (scene !== 'flight') return;
     // Hit-test from the click's own coordinates rather than trusting hoverRef
     // (which is stale on touch — there is no mousemove before a tap).
     const rect = canvas.getBoundingClientRect();
     const mx = event.clientX - rect.left;
     const my = event.clientY - rect.top;
     const target = hitTest(mx, my);
-    if (!target) return;
-    if (target.kind === 'planet' && target.id) {
-      onEntityClick({ type: 'planet', id: target.id, name: target.name });
-    } else if (target.kind === 'station' && target.id) {
-      onEntityClick({ type: 'station', id: target.id, name: target.name });
+    if (!target) {
+      setPopup(null);
+      return;
+    }
+    if (popup && popup.key === popupKeyFor(target)) {
+      // The closing click is consumed — never reopen the same body with it
+      setPopup(null);
+      return;
+    }
+    openPopupFor(target);
+  };
+
+  // ---- Popup card content, by body kind ----
+  const renderPopupContent = (target: HitTarget): React.ReactNode => {
+    const meta = target.meta;
+    switch (meta.kind) {
+      case 'star':
+        return (
+          <>
+            <div className="ssv-popup-title">{meta.label.toUpperCase()}</div>
+            <div className="ssv-popup-line">
+              <span
+                className="ssv-popup-swatch"
+                style={{ background: meta.color }}
+                aria-hidden="true"
+              ></span>
+              CLASS {meta.starClass}
+            </div>
+            <div className="ssv-popup-line">PRIMARY — SECTOR {sectorId}</div>
+          </>
+        );
+      case 'procedural':
+        return (
+          <>
+            <div className="ssv-popup-title proc">{meta.designation}</div>
+            <div className="ssv-popup-line proc">{meta.typeName}</div>
+            <div className="ssv-popup-line proc">{meta.sizeDesc}</div>
+            <div className="ssv-popup-status">UNSURVEYED — NO LANDING SITE</div>
+          </>
+        );
+      case 'planet': {
+        // Owner detail lives on the sector planet snapshot the dashboard
+        // already passes (the system snapshot only carries an owned flag)
+        const sectorPlanet = planets.find((p) => p && p.id === meta.planetId);
+        const ownerName: string | null = meta.owned
+          ? (typeof sectorPlanet?.owner_name === 'string' && sectorPlanet.owner_name
+              ? sectorPlanet.owner_name
+              : 'CLAIMED')
+          : null;
+        return (
+          <>
+            <div className="ssv-popup-title">{target.name.toUpperCase()}</div>
+            <div className="ssv-popup-line">{meta.planetKind.replace(/_/g, ' ').toUpperCase()}</div>
+            {typeof meta.habitability === 'number' && (
+              <div className="ssv-popup-line">HABITABILITY {Math.round(meta.habitability)}%</div>
+            )}
+            {ownerName && <div className="ssv-popup-line">OWNER — {ownerName}</div>}
+            {onRequestLand && (
+              <button
+                type="button"
+                className="ssv-popup-action"
+                onClick={() => {
+                  setPopup(null);
+                  onRequestLand(meta.planetId);
+                }}
+              >
+                🛬 LAND
+              </button>
+            )}
+          </>
+        );
+      }
+      case 'station':
+        return (
+          <>
+            <div className="ssv-popup-title">{target.name.toUpperCase()}</div>
+            <div className="ssv-popup-line">{meta.stationType.replace(/_/g, ' ').toUpperCase()}</div>
+            {onRequestDock && (
+              <button
+                type="button"
+                className="ssv-popup-action"
+                onClick={() => {
+                  setPopup(null);
+                  onRequestDock(meta.stationId);
+                }}
+              >
+                ⚓ DOCK
+              </button>
+            )}
+          </>
+        );
     }
   };
 
@@ -1488,8 +1704,27 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
         className="solar-viewscreen-canvas"
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
+        onMouseDown={handleMouseDown}
         onClick={handleClick}
       />
+      {popup && scene === 'flight' && (
+        <div
+          className="ssv-popup"
+          style={{ left: popup.left, top: popup.top }}
+          role="dialog"
+          aria-label={`${popup.target.name} details`}
+        >
+          <button
+            type="button"
+            className="ssv-popup-close"
+            onClick={() => setPopup(null)}
+            aria-label="Close details"
+          >
+            ✕
+          </button>
+          {renderPopupContent(popup.target)}
+        </div>
+      )}
     </div>
   );
 };

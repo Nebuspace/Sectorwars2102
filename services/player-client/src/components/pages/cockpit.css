@@ -276,16 +276,76 @@
 
 .hud-overlay {
   position: absolute;
-  background: linear-gradient(135deg, rgba(0, 10, 20, 0.85) 0%, rgba(0, 5, 10, 0.9) 100%);
-  border: 1px solid rgba(0, 217, 255, 0.4);
+  /* True HUD glass: readouts float over the scene instead of hiding it —
+     near-transparent frosted panel, the glowing text carries the data.
+     Clicks pass through to the scenery (pointer-events: none); the tiny
+     minimize tab is the chip's only interactive surface. */
+  background: rgba(0, 10, 16, 0.38);
+  border: 1px solid rgba(0, 217, 255, 0.25);
   border-radius: 4px;
-  padding: 0.75rem 1rem;
-  backdrop-filter: blur(8px);
+  /* Extra right padding clears the minimize tab in the corner */
+  padding: 0.75rem 1.6rem 0.75rem 1rem;
+  backdrop-filter: blur(3px);
   box-shadow:
-    0 0 20px rgba(0, 217, 255, 0.2),
-    inset 0 1px 0 rgba(0, 217, 255, 0.1);
+    0 0 14px rgba(0, 217, 255, 0.12),
+    inset 0 1px 0 rgba(0, 217, 255, 0.08);
   z-index: 20;
   animation: hud-fade-in 0.6s ease-out;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+}
+
+/* Ghost-on-approach: GameDashboard toggles this class as the cursor nears a
+   chip (chips can't use :hover — they're pointer-events: none glass), fading
+   the chip so the scene behind it stays inspectable. */
+.hud-overlay.hud-ghost {
+  opacity: 0.12;
+}
+
+/* Minimize/restore tab — the chip's ONLY interactive surface */
+.hud-chip-tab {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  background: rgba(0, 10, 16, 0.5);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 2px;
+  color: rgba(0, 217, 255, 0.85);
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.hud-chip-tab:hover {
+  background: rgba(0, 217, 255, 0.18);
+  color: #00d9ff;
+}
+
+/* Minimized chip: a compact pill carrying only the essential datum */
+.hud-overlay.hud-minimized {
+  padding: 0.3rem 1.5rem 0.3rem 0.6rem;
+}
+
+.hud-pill {
+  font-family: 'Courier New', monospace;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #00d9ff;
+  text-shadow: 0 0 10px rgba(0, 217, 255, 0.7);
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Scan-line effect on HUD */
