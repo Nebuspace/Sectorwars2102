@@ -267,3 +267,13 @@
   max-height: none;
   overflow: visible;
 }
+
+/* With the h2 hidden, .trading-header's bright blue gradient band is a
+   bare color slab that fights the CRT palette. Keep the bar (it still
+   hosts .connection-status) but mute it to console glass. */
+.instrument-monitor .trading-header,
+.console-monitor .trading-header {
+  background: rgba(0, 5, 10, 0.6);
+  border-bottom: 1px solid color-mix(in srgb, var(--instrument-accent, #FFB000) 30%, transparent);
+  padding: 0.3rem 0.6rem;
+}
