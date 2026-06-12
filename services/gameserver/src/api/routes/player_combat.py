@@ -29,6 +29,7 @@ from src.models.ship import Ship, ShipType
 from src.services.combat_service import CombatService
 from src.services.movement_service import MovementService
 from src.services.planetary_service import PlanetaryService
+from src.services.turn_service import spend_turns
 
 # Mounted under the /api/v1 api_router — a "/api/combat" prefix here doubled
 # up to /api/v1/api/combat, which no client called.
@@ -422,7 +423,7 @@ async def retreat_from_sector(
 
     if not connected_sector_uuids:
         # Deduct turns even though there's nowhere to go
-        player.turns -= turn_cost
+        spend_turns(player, turn_cost)
         db.commit()
         return SectorRetreatResponse(
             success=False,
@@ -448,7 +449,7 @@ async def retreat_from_sector(
     escape_chance = max(10, min(90, base_chance + speed_bonus + type_bonus))
 
     # Deduct turns
-    player.turns -= turn_cost
+    spend_turns(player, turn_cost)
 
     # Roll for escape
     roll = random.randint(1, 100)

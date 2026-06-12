@@ -20,6 +20,7 @@ from src.models.region import RegionType
 from src.models.station import Station
 from src.services.ship_service import ShipService
 from src.services.ranking_service import RankingService
+from src.services.turn_service import spend_turns
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,7 @@ class CombatService:
         combat_result = self._resolve_ship_combat(attacker, defender, sector)
         
         # Consume turns
-        attacker.turns -= turn_cost
+        spend_turns(attacker, turn_cost)
         
         # Create combat log (snapshots taken before destruction/drone updates)
         attacker_ship = attacker.current_ship
@@ -379,7 +380,7 @@ class CombatService:
         combat_result = self._resolve_ship_combat(attacker, None, sector, defender_ship=npc_ship)
 
         # Consume turns
-        attacker.turns -= turn_cost
+        spend_turns(attacker, turn_cost)
 
         # Create combat log — defender_id stays NULL (no Player behind the
         # ship); name/type snapshots preserve who was fought
@@ -542,7 +543,7 @@ class CombatService:
         combat_result = self._resolve_drone_combat(attacker, sector, deployments)
 
         # Consume turns
-        attacker.turns -= turn_cost
+        spend_turns(attacker, turn_cost)
 
         # Create combat log
         attacker_ship = attacker.current_ship
@@ -658,7 +659,7 @@ class CombatService:
         combat_result = self._resolve_planet_combat(attacker, planet, planet_owner)
         
         # Consume turns
-        attacker.turns -= turn_cost
+        spend_turns(attacker, turn_cost)
         
         # Create combat log
         attacker_ship = attacker.current_ship
@@ -770,7 +771,7 @@ class CombatService:
         combat_result = self._resolve_port_combat(attacker, station, port_owner)
 
         # Consume turns
-        attacker.turns -= turn_cost
+        spend_turns(attacker, turn_cost)
 
         # Create combat log
         attacker_ship = attacker.current_ship
@@ -915,7 +916,7 @@ class CombatService:
         sector.drones_present = (sector.drones_present or 0) + drone_count
         
         # Consume turns
-        player.turns -= turn_cost
+        spend_turns(player, turn_cost)
         
         # Commit changes
         self.db.commit()
@@ -996,7 +997,7 @@ class CombatService:
             })
         
         # Consume turns
-        player.turns -= turn_cost
+        spend_turns(player, turn_cost)
         
         # Commit changes
         self.db.commit()

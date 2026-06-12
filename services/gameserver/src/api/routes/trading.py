@@ -19,6 +19,7 @@ from src.services.trading_service import TradingService
 from src.services.ranking_service import RankingService
 from src.services.medal_service import MedalService
 from src.services import docking_service
+from src.services.turn_service import spend_turns
 
 import logging
 
@@ -719,7 +720,7 @@ async def dock_at_station(
         current_player.current_port_id = dock_request.station_id
 
         # Deduct turns for docking
-        current_player.turns -= DOCKING_TURN_COST
+        spend_turns(current_player, DOCKING_TURN_COST)
 
         # Charge the docking fee; fees accrue to the station treasury.
         # The station row is already locked by acquire() — one session,
@@ -789,7 +790,7 @@ async def undock_from_port(
         current_player.current_port_id = None
 
         # Deduct turns for undocking
-        current_player.turns -= UNDOCKING_TURN_COST
+        spend_turns(current_player, UNDOCKING_TURN_COST)
 
         db.commit()
 
@@ -923,7 +924,7 @@ async def bump_docking_slip(
 
         current_player.is_docked = True
         current_player.current_port_id = station.id
-        current_player.turns -= DOCKING_TURN_COST
+        spend_turns(current_player, DOCKING_TURN_COST)
 
         db.commit()
 

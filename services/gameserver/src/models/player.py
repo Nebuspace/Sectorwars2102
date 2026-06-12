@@ -30,6 +30,11 @@ class Player(Base):
     nickname = Column(String(50), nullable=True, default=None)  # Optional in-game name different from username
     credits = Column(Integer, nullable=False, default=10000)
     turns = Column(Integer, nullable=False, default=1000)
+    # Monotonic count of turns ever spent (refunds decrement). NOT the
+    # regenerating balance above — this is the cumulative clock ADR-0042
+    # police arrival watchers compare against. Mutate ONLY through
+    # turn_service.spend_turns/refund_turns.
+    lifetime_turns_spent = Column(Integer, nullable=False, default=0)
     reputation = Column(JSONB, nullable=False, default={})  # Faction reputations
 
     # Personal Reputation System (good vs evil alignment)

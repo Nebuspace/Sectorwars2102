@@ -73,6 +73,7 @@ from src.models.warp_tunnel import (
     WarpTunnelType,
 )
 from src.services.ship_service import ShipService
+from src.services.turn_service import spend_turns, refund_turns
 
 logger = logging.getLogger(__name__)
 
@@ -414,7 +415,7 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
         )
 
     # All checks passed — charge atomically.
-    player.turns -= PHASE1_TURNS
+    spend_turns(player, PHASE1_TURNS)
     player.credits -= PHASE1_CREDITS
     player.quantum_crystals = crystals - PHASE1_QUANTUM_CRYSTALS
     _charge_cargo(ship, {"ore": PHASE1_ORE, "equipment": PHASE1_EQUIPMENT})
@@ -579,7 +580,7 @@ def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
     })
 
     # Charge Phase 3 (refundable on cancel — ADR-0029).
-    player.turns -= PHASE3_TURNS
+    spend_turns(player, PHASE3_TURNS)
     player.credits -= PHASE3_CREDITS
     _charge_cargo(ship, {
         "ore": PHASE3_ORE,
@@ -672,7 +673,7 @@ def _refund_phase3_and_cancel(
         "lumen_crystals": PHASE3_LUMEN_CRYSTALS,
     }
     if player is not None:
-        player.turns += PHASE3_TURNS
+        refund_turns(player, PHASE3_TURNS)
         player.credits += PHASE3_CREDITS
     if ship is not None and not ship.is_destroyed:
         _refund_cargo(ship, {

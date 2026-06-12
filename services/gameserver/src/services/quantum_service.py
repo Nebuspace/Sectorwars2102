@@ -53,6 +53,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.game_time import scaled_deadline
+from src.services.turn_service import spend_turns
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus, ShipType
 from src.models.sector import Sector, SectorType, sector_warps
@@ -398,7 +399,7 @@ def scan(
         texture = TEXTURE_ORDER[min(len(TEXTURE_ORDER) - 1, max(0, t_idx + shift))]
 
     # Charge the scan — single commit
-    player.turns -= SCAN_TURN_COST
+    spend_turns(player, SCAN_TURN_COST)
     if shard_cost:
         player.quantum_shards -= shard_cost
     ship.quantum_scan_cooldown_until = scaled_deadline(SCAN_COOLDOWN_HOURS)
@@ -491,7 +492,7 @@ def jump(
     # Phase 2 — commit. Irreversible: charge, turns and cooldown are
     # consumed no matter how the resolve lands (ADR-0030).
     ship.quantum_charges -= 1
-    player.turns -= JUMP_TURN_COST
+    spend_turns(player, JUMP_TURN_COST)
     ship.quantum_jump_cooldown_until = scaled_deadline(JUMP_COOLDOWN_HOURS)
 
     # Phase 3 — resolve. Project the bearing to the band midpoint.

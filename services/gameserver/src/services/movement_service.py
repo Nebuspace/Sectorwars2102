@@ -14,6 +14,7 @@ from src.models.combat_log import CombatLog
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.services import warp_gate_service
+from src.services.turn_service import spend_turns
 
 logger = logging.getLogger(__name__)
 
@@ -596,7 +597,7 @@ class MovementService:
             player.current_ship.sector_id = destination_sector_id
         
         # Consume turns
-        player.turns -= turn_cost
+        spend_turns(player, turn_cost)
 
         # ARIA consciousness hook — movement counts as interaction
         try:
