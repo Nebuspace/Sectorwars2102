@@ -1,6 +1,7 @@
 import React from 'react';
 import { useGame } from '../../contexts/GameContext';
 import GameLayout from '../layouts/GameLayout';
+import CockpitInstrument from '../cockpit/CockpitInstrument';
 import RankDisplay from '../ranking/RankDisplay';
 import RankProgress from '../ranking/RankProgress';
 import MedalShowcase from '../ranking/MedalShowcase';
@@ -19,15 +20,14 @@ const RankingPage: React.FC = () => {
 
   return (
     <GameLayout>
+      <CockpitInstrument
+        title="SERVICE RECORD"
+        accent="#FFD700"
+        subtitle={'MILITARY RANKING & COMMENDATIONS'}
+      >
       <div className="ranking-page">
-        <header className="ranking-page-header hud-panel">
-          <h2 className="ranking-page-title">
-            <span className="title-icon">🎖️</span>
-            SERVICE RECORD
-          </h2>
-          <span className="ranking-page-subtitle">MILITARY RANKING &amp; COMMENDATIONS</span>
-        </header>
-
+        {/* Old page-level header removed — the instrument LED header
+            carries the title and subtitle (Law 3). */}
         <div className="ranking-page-grid">
           <section className="ranking-column ranking-column-left">
             <div className="ranking-panel hud-panel">
@@ -62,6 +62,7 @@ const RankingPage: React.FC = () => {
           </section>
         </div>
       </div>
+      </CockpitInstrument>
     </GameLayout>
   );
 };

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import GameLayout from '../layouts/GameLayout';
+import CockpitInstrument from '../cockpit/CockpitInstrument';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
 import ErrorBoundary from '../common/ErrorBoundary';
 import './galaxy-map.css';
@@ -185,9 +186,11 @@ const GalaxyMap: React.FC = () => {
   
   return (
     <GameLayout>
+      <CockpitInstrument title="NAV CHART" accent="#00D9FF" subtitle="GALACTIC CARTOGRAPHY">
       <div className="galaxy-map-container">
         <div className="map-header">
-          <h2>Galaxy Map</h2>
+          {/* Page-level title removed — the instrument LED header carries
+              NAV CHART (Law 3); this strip keeps only the view controls. */}
           <div className="map-controls">
             <button 
               className={`view-mode-button ${viewMode === '3d' ? 'active' : ''}`}
@@ -375,6 +378,7 @@ const GalaxyMap: React.FC = () => {
           </div>
         )}
       </div>
+      </CockpitInstrument>
     </GameLayout>
   );
 };

@@ -3,8 +3,21 @@ import { createPortal } from 'react-dom';
 import { useGame, StationSlips } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import GameLayout from '../layouts/GameLayout';
+import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
 import './trading-interface.css';
+
+/* TRADE LEDGER shell (Law 3) — module-level so the frame keeps its
+   identity across not-docked/market renders. Used only when the component
+   is a standalone route; embedded usage (GameDashboard docked monitor,
+   SpaceDockInterface) stays bare via Fragment. */
+const TradeLedgerShell: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
+  <GameLayout>
+    <CockpitInstrument title="TRADE LEDGER" accent="#FFB000" subtitle="COMMODITY EXCHANGE">
+      {children}
+    </CockpitInstrument>
+  </GameLayout>
+);
 
 interface Resource {
   name: string;
@@ -50,11 +63,12 @@ interface TradingInterfaceProps {
 }
 
 const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
-  // Wrap in GameLayout when standalone (no onClose prop = used as a route).
-  // When embedded as a modal (onClose provided), render bare so the parent's
-  // shell isn't duplicated inside the modal.
+  // Wrap in the cockpit shell + TRADE LEDGER instrument when standalone
+  // (no onClose prop = used as a route). When embedded (onClose provided —
+  // GameDashboard docked monitor, SpaceDockInterface), render bare so the
+  // parent's shell isn't duplicated.
   const isStandalone = !onClose;
-  const Wrapper = isStandalone ? GameLayout : React.Fragment;
+  const Wrapper = isStandalone ? TradeLedgerShell : React.Fragment;
 
   const {
     playerState,

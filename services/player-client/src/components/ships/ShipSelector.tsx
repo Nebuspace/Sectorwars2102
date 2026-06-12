@@ -11,12 +11,23 @@ import { Ship } from '../../types/game';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import { formatShipType } from '../../utils/formatters';
 import GameLayout from '../layouts/GameLayout';
+import CockpitInstrument from '../cockpit/CockpitInstrument';
 import './ship-selector.css';
 
 interface ShipSelectorProps {
   onShipSelected?: (ship: Ship) => void;
   onClose?: () => void;
 }
+
+/* HANGAR console shell (Law 3) — module-level so React never remounts the
+   frame (or the children) when the component re-renders between states. */
+const HangarShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <GameLayout>
+    <CockpitInstrument title="HANGAR" accent="#9EC5FF" subtitle="FLEET REGISTRY">
+      {children}
+    </CockpitInstrument>
+  </GameLayout>
+);
 
 export const ShipSelector: React.FC<ShipSelectorProps> = ({
   onShipSelected,
@@ -30,14 +41,15 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
   const [filter, setFilter] = useState<'all' | 'active' | 'docked'>('all');
   const [sortBy, setSortBy] = useState<'name' | 'type' | 'location' | 'condition'>('name');
 
-  // Show empty state if player has no ships
+  // Show empty state if player has no ships — inside the frame so the
+  // monitor chrome never unmounts between states.
   if (gameShips.length === 0) {
     return (
-      <GameLayout>
+      <HangarShell>
         <div className="ship-selector-empty">
           <p>No ships available. Visit a shipyard to purchase your first ship.</p>
         </div>
-      </GameLayout>
+      </HangarShell>
     );
   }
 
@@ -152,15 +164,17 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
   };
   
   return (
-    <GameLayout>
+    <HangarShell>
       <div className="ship-selector">
-      <div className="selector-header">
-        <h2>SHIP HANGAR</h2>
-        {onClose && (
+      {/* The instrument LED header carries HANGAR on the route; the old
+          page header renders only in (future) modal usage with onClose. */}
+      {onClose && (
+        <div className="selector-header">
+          <h2>SHIP HANGAR</h2>
           <button className="close-btn" onClick={onClose}>×</button>
-        )}
-      </div>
-      
+        </div>
+      )}
+
       {error && (
         <div className="selector-error">
           <span className="error-icon">⚠️</span>
@@ -310,6 +324,6 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
         )}
       </div>
     </div>
-    </GameLayout>
+    </HangarShell>
   );
 };

@@ -613,12 +613,29 @@
   box-shadow: 0 0 10px rgba(77, 132, 253, 0.3);
 }
 
+/* Active route — highlighted with its system accent (Law 5), supplied
+   per-link as --nav-accent by GameLayout. Falls back to cockpit cyan. */
 .nav-link.active {
-  background: linear-gradient(145deg, rgba(0, 217, 255, 0.2), rgba(0, 217, 255, 0.1));
-  border-color: #00d9ff;
-  color: #00d9ff;
-  box-shadow: 0 0 15px rgba(0, 217, 255, 0.4);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--nav-accent, #00d9ff) 20%, transparent),
+    color-mix(in srgb, var(--nav-accent, #00d9ff) 10%, transparent)
+  );
+  border-color: var(--nav-accent, #00d9ff);
+  color: var(--nav-accent, #00d9ff);
+  box-shadow: 0 0 15px color-mix(in srgb, var(--nav-accent, #00d9ff) 40%, transparent);
   transform: translateX(5px);
+}
+
+/* Comfortable hit targets for SHIP SYSTEMS buttons (>=40px). The
+   cockpit.css sidebar compression rules shrink padding/font with
+   !important but leave min-height/display alone, so this two-class
+   selector lands cleanly without growing the sidebar past 947px
+   (8 items x 40px + gaps + footer still fit the nav band). */
+.game-sidebar .nav-link {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
 }
 
 /* Navigation Footer - Logout button */
@@ -641,18 +658,25 @@
   box-shadow: 0 0 10px rgba(255, 68, 68, 0.4);
 }
 
-/* Main content area */
+/* Main content area — height-locked column (Law 2: 100vh minus header is
+   enforced by the flex chain .game-layout > .game-container > here, all
+   overflow:hidden; the document never scrolls). Hosts the route viewport
+   plus the reserved ARIA console slot at the bottom (Law 4). */
 .game-content {
   flex: 1;
   position: relative;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   background: linear-gradient(135deg,
     rgba(10, 10, 15, 0.95) 0%,
     rgba(13, 13, 20, 0.95) 100%);
 }
 
 .main-viewport {
-  height: 100%;
+  flex: 1 1 0;
+  min-height: 0;
   width: 100%;
   padding: 0;
   overflow: hidden;
@@ -661,6 +685,18 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+}
+
+/* ARIA console slot — slim fixed band at the bottom of the content
+   region on every /game route. The strip itself is 36px and expands
+   UPWARD as an overlay drawer (AriaConsoleStrip owns that); the slot
+   reserves the band and sits above viewport content so the drawer is
+   never clipped by .main-viewport's overflow:hidden. */
+.aria-console-slot {
+  flex: 0 0 auto;
+  min-height: 36px;
+  position: relative;
+  z-index: 60;
 }
 
 /* Loading overlay — scoped name to avoid colliding with the global

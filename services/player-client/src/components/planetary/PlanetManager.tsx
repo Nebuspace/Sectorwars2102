@@ -11,8 +11,20 @@ import { SiegeStatusMonitor } from './SiegeStatusMonitor';
 import CitadelManager from './CitadelManager';
 import TerraformingPanel from './TerraformingPanel';
 import GameLayout from '../layouts/GameLayout';
+import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import './planet-manager.css';
+
+/* COLONIAL REGISTRY console shell (Law 3) — module-level so the monitor
+   frame keeps its identity across scanning/error/empty/registry branches
+   (the scan spinner swaps INSIDE the frame, never unmounting it). */
+const ColonialShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <GameLayout>
+    <CockpitInstrument title="COLONIAL REGISTRY" accent="#7B2FFF" subtitle="PLANETARY OPERATIONS">
+      {children}
+    </CockpitInstrument>
+  </GameLayout>
+);
 
 /**
  * Optional planet fields surfaced by newer gameserver payloads.
@@ -255,7 +267,7 @@ export const PlanetManager: React.FC = () => {
 
   if (loading) {
     return (
-      <GameLayout>
+      <ColonialShell>
         <div className="planet-manager loading">
           <div className="planet-scan-state">
             {!scanTimedOut ? (
@@ -273,13 +285,13 @@ export const PlanetManager: React.FC = () => {
             )}
           </div>
         </div>
-      </GameLayout>
+      </ColonialShell>
     );
   }
 
   if (error) {
     return (
-      <GameLayout>
+      <ColonialShell>
         <div className="planet-manager error">
           <div className="planet-scan-state">
             <span className="planet-scan-text warning">{error}</span>
@@ -288,13 +300,13 @@ export const PlanetManager: React.FC = () => {
             </button>
           </div>
         </div>
-      </GameLayout>
+      </ColonialShell>
     );
   }
 
   if (planets.length === 0) {
     return (
-      <GameLayout>
+      <ColonialShell>
       <div className="planet-manager empty">
         <EmptyState
           icon="🌌"
@@ -320,12 +332,12 @@ export const PlanetManager: React.FC = () => {
           </div>
         )}
       </div>
-      </GameLayout>
+      </ColonialShell>
     );
   }
 
   return (
-    <GameLayout>
+    <ColonialShell>
     <div className="planet-manager">
       {/* Planet List Sidebar */}
       <div className="planet-list">
@@ -858,6 +870,6 @@ export const PlanetManager: React.FC = () => {
         </div>
       )}
     </div>
-    </GameLayout>
+    </ColonialShell>
   );
 };

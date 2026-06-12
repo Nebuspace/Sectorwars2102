@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import UserProfile from '../auth/UserProfile';
 import LogoutButton from '../auth/LogoutButton';
-import EnhancedAIAssistant from '../ai/EnhancedAIAssistant';
+import AriaConsoleStrip from '../aria/AriaConsoleStrip';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -14,11 +14,43 @@ interface GameLayoutProps {
   children: React.ReactNode;
 }
 
+/* SHIP SYSTEMS nav — one entry per console instrument, each carrying its
+   Law-5 accent so the active route highlights in its own system color. */
+const NAV_ITEMS: Array<{ to: string; icon: string; label: string; accent: string }> = [
+  { to: '/game', icon: '🚀', label: 'COMMAND', accent: '#00D9FF' },
+  { to: '/game/map', icon: '🗺️', label: 'NAV CHART', accent: '#00D9FF' },
+  { to: '/game/ships', icon: '🛸', label: 'HANGAR', accent: '#9EC5FF' },
+  { to: '/game/trading', icon: '💹', label: 'TRADE', accent: '#FFB000' },
+  { to: '/game/planets', icon: '🪐', label: 'COLONIES', accent: '#7B2FFF' },
+  { to: '/game/combat', icon: '⚔️', label: 'WEAPONS', accent: '#FF4D6D' },
+  { to: '/game/team', icon: '👥', label: 'CREW', accent: '#00FF7F' },
+  { to: '/game/ranking', icon: '🎖️', label: 'SERVICE RECORD', accent: '#FFD700' },
+];
+
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { user } = useAuth();
   const { playerState, currentShip, currentSector, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const location = useLocation();
+
+  // ── Scroll contract (Law 2) ──────────────────────────────────────────
+  // On /game routes the DOCUMENT never scrolls: the shell locks html/body
+  // overflow while mounted and restores the previous values on unmount
+  // (login/landing pages keep their normal scroll behavior). Only monitor
+  // interiors (.screen-hud-content) scroll.
+  React.useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtmlOverflow = html.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    html.style.overflow = 'hidden';
+    body.style.overflow = 'hidden';
+    return () => {
+      html.style.overflow = prevHtmlOverflow;
+      body.style.overflow = prevBodyOverflow;
+    };
+  }, []);
 
   // ── Cockpit stability ────────────────────────────────────────────────
   // GameContext semantics after the isLoading split: `isLoading` is true
@@ -241,14 +273,21 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             <nav className="game-nav">
               <div className="nav-header">SHIP SYSTEMS</div>
               <ul className="nav-list">
-                <li><Link to="/game" className="nav-link cockpit-btn">🚀 COMMAND</Link></li>
-                <li><Link to="/game/map" className="nav-link cockpit-btn">🗺️ NAV CHART</Link></li>
-                <li><Link to="/game/ships" className="nav-link cockpit-btn">🛸 HANGAR</Link></li>
-                <li><Link to="/game/trading" className="nav-link cockpit-btn">💹 TRADE</Link></li>
-                <li><Link to="/game/planets" className="nav-link cockpit-btn">🪐 COLONIES</Link></li>
-                <li><Link to="/game/combat" className="nav-link cockpit-btn">⚔️ WEAPONS</Link></li>
-                <li><Link to="/game/team" className="nav-link cockpit-btn">👥 CREW</Link></li>
-                <li><Link to="/game/ranking" className="nav-link cockpit-btn">🎖️ SERVICE RECORD</Link></li>
+                {NAV_ITEMS.map((item) => {
+                  const isActive = location.pathname === item.to;
+                  return (
+                    <li key={item.to}>
+                      <Link
+                        to={item.to}
+                        className={`nav-link cockpit-btn${isActive ? ' active' : ''}`}
+                        style={{ '--nav-accent': item.accent } as React.CSSProperties}
+                        aria-current={isActive ? 'page' : undefined}
+                      >
+                        {item.icon} {item.label}
+                      </Link>
+                    </li>
+                  );
+                })}
               </ul>
               <div className="nav-footer">
                 <LogoutButton className="nav-link cockpit-btn logout-btn" />
@@ -271,6 +310,14 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             >
               {children}
             </div>
+            {/* ARIA console fixture (Law 4): the shell reserves a slim
+                bottom slot on every /game route. The strip is self-
+                contained (props {}) and expands UPWARD over the viewport;
+                the slot only reserves the 36px band. The old floating FAB
+                is retired. */}
+            <div className="aria-console-slot">
+              <AriaConsoleStrip />
+            </div>
             {isInitialLoad && (
               <div className="viewport-loading-overlay">
                 <div className="loading-spinner"></div>
@@ -284,11 +331,6 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               </div>
             )}
           </main>
-
-          {/* Mount ARIA assistant once for all /game routes when a player session exists */}
-          {playerState?.id && (
-            <EnhancedAIAssistant theme="dark" />
-          )}
         </div>
       </div>
     </div>

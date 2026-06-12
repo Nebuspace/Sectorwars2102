@@ -10,9 +10,21 @@ import type {
   TeamPermissionsApiResponse
 } from '../../types/team';
 import GameLayout from '../layouts/GameLayout';
+import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
 import './team-manager.css';
+
+/* CREW MANIFEST console shell (Law 3) — module-level so the monitor frame
+   keeps its identity across loading/error/no-team/team branches and never
+   remounts mid-session. */
+const CrewShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <GameLayout>
+    <CockpitInstrument title="CREW MANIFEST" accent="#00FF7F" subtitle="TEAM OPERATIONS">
+      {children}
+    </CockpitInstrument>
+  </GameLayout>
+);
 
 // --- Wire mappers ----------------------------------------------------------
 // The gameserver speaks snake_case (teams.py response models); the UI types
@@ -426,17 +438,17 @@ export const TeamManager: React.FC = () => {
 
   if (loading || !playerState) {
     return (
-      <GameLayout>
+      <CrewShell>
         <div className="team-manager loading">
           <LoadingState message="Loading team data..." />
         </div>
-      </GameLayout>
+      </CrewShell>
     );
   }
 
   if (loadError) {
     return (
-      <GameLayout>
+      <CrewShell>
         <div className="team-manager load-error">
           <EmptyState
             icon="⚠️"
@@ -445,13 +457,13 @@ export const TeamManager: React.FC = () => {
             action={{ label: 'Retry', onClick: () => { void loadTeamData(teamId); } }}
           />
         </div>
-      </GameLayout>
+      </CrewShell>
     );
   }
 
   if (!team) {
     return (
-      <GameLayout>
+      <CrewShell>
         <div className="team-manager no-team">
           <EmptyState
             icon="👥"
@@ -474,12 +486,12 @@ export const TeamManager: React.FC = () => {
           </EmptyState>
         </div>
         {renderCreateModal()}
-      </GameLayout>
+      </CrewShell>
     );
   }
 
   return (
-    <GameLayout>
+    <CrewShell>
     <div className="team-manager">
       <div className="team-header">
         <div className="team-identity">
@@ -719,6 +731,6 @@ export const TeamManager: React.FC = () => {
         )}
       </div>
     </div>
-    </GameLayout>
+    </CrewShell>
   );
 };

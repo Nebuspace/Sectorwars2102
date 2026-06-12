@@ -12,7 +12,19 @@ import { useGame } from '../../contexts/GameContext';
 import { gameAPI } from '../../services/api';
 import { InputValidator, SecurityAudit } from '../../utils/security/inputValidation';
 import GameLayout from '../layouts/GameLayout';
+import CockpitInstrument from '../cockpit/CockpitInstrument';
 import './combat-interface.css';
+
+/* WEAPONS CONSOLE shell (Law 3) — module-level so the frame keeps its
+   identity across target-selection/engagement renders. Used only when the
+   component is a standalone route; modal usage stays bare. */
+const WeaponsConsoleShell: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
+  <GameLayout>
+    <CockpitInstrument title="WEAPONS CONSOLE" accent="#FF4D6D" subtitle="COMBAT OPERATIONS">
+      {children}
+    </CockpitInstrument>
+  </GameLayout>
+);
 
 // Shapes returned by the player_combat API (see gameserver player_combat.py)
 interface CombatRoundEvent {
@@ -50,11 +62,11 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   onCombatEnd,
   onClose
 }) => {
-  // Wrap in GameLayout when standalone (no onClose prop = used as a route).
-  // When embedded as a modal (onClose provided), render bare so the parent's
-  // shell isn't duplicated inside the modal.
+  // Wrap in the cockpit shell + WEAPONS CONSOLE instrument when standalone
+  // (no onClose prop = used as a route). When embedded as a modal (onClose
+  // provided), render bare so the parent's shell isn't duplicated.
   const isStandalone = !onClose;
-  const Wrapper = isStandalone ? GameLayout : React.Fragment;
+  const Wrapper = isStandalone ? WeaponsConsoleShell : React.Fragment;
 
   const {
     playerState,
