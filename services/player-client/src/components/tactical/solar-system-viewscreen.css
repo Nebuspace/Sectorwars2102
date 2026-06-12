@@ -1,0 +1,28 @@
+/* ============================================
+   SOLAR SYSTEM VIEWSCREEN - Cockpit windshield
+   Container-sized canvas; fills the windshield
+   band (.cockpit-windshield) edge to edge.
+   ============================================ */
+
+.solar-viewscreen-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #040711;
+}
+
+.solar-viewscreen-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: default;
+}
+
+/* When hosting the legacy SectorViewport fallback, let it fill the band
+   the same way cockpit.css expects (.sector-viewport-container rules in
+   cockpit.css still apply since the class names are unchanged). */
+.solar-viewscreen-container .sector-viewport-container {
+  width: 100%;
+  height: 100%;
+}

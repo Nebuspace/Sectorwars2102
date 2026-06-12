@@ -9,7 +9,7 @@ import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
 import TacticalCard from '../tactical/TacticalCard';
-import SectorViewport from '../tactical/SectorViewport';
+import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
@@ -1050,15 +1050,14 @@ const GameDashboard: React.FC = () => {
           {!playerState?.is_docked && !playerState?.is_landed && currentSector && (
             <>
               {/* Space viewport - edge to edge */}
-              <SectorViewport
+              <SolarSystemViewscreen
+                sectorId={currentSector.sector_id}
                 sectorType={currentSector.type?.toLowerCase() || 'normal'}
                 sectorName={currentSector.name}
                 hazardLevel={currentSector.hazard_level}
                 radiationLevel={currentSector.radiation_level}
                 stations={stationsInSector}
                 planets={planetsInSector}
-                width={Math.floor(window.innerWidth - 320)}
-                height={Math.floor((window.innerHeight - 80) * 0.35)}
                 onEntityClick={(entity) => {
                   if (entity.type === 'planet') {
                     handleLand(entity.id);
