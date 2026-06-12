@@ -662,11 +662,32 @@ class MovementService:
         }
     
     def _update_player_presence(self, player: Player, old_sector_id: int, new_sector_id: int) -> None:
-        """Update player presence records in sectors."""
-        # Get sector objects
-        old_sector = self.db.query(Sector).filter(Sector.sector_id == old_sector_id).first()
-        new_sector = self.db.query(Sector).filter(Sector.sector_id == new_sector_id).first()
-        
+        """Update player presence records in sectors.
+
+        Locks both sector rows (ascending sector_id) before the JSONB
+        read-modify-write: with NPC movers also rewriting players_present
+        (npc_movement_service), an unlocked stale-array write here would
+        silently erase or resurrect NPC presence entries. Lock order is
+        Player → Sector — the caller already holds the player row, and
+        ascending sector order matches every other NPC-system sector
+        writer, so the paths cannot deadlock AB-BA.
+        """
+        old_sector = None
+        new_sector = None
+        for sid in sorted({old_sector_id, new_sector_id}):
+            row = (
+                self.db.query(Sector)
+                .filter(Sector.sector_id == sid)
+                .with_for_update()
+                .first()
+            )
+            if row is None:
+                continue
+            if sid == old_sector_id:
+                old_sector = row
+            if sid == new_sector_id:
+                new_sector = row
+
         if old_sector:
             # Remove player from old sector's players_present
             players_present = list(old_sector.players_present or [])

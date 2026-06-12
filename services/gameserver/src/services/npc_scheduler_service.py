@@ -447,9 +447,97 @@ def _join_squad(
 def run_loop_c(db: Session) -> List[Dict[str, Any]]:
     """Canon rotation (~20% off-duty, 4-8h rest) needs the lodging slice
     (NPCBarracks/OutlawBase) so off-duty NPCs have somewhere to be —
-    graceful no-op until then."""
-    logger.debug("Loop C: off-duty rotation deferred to the lodging slice")
+    graceful no-op until then. The presence reconciliation sweep rides
+    this cadence instead."""
+    reconcile_presence(db)
     return []
+
+
+def reconcile_presence(db: Session) -> int:
+    """Periodic insurance against players_present drift (lost JSONB
+    updates accumulate monotonically without it — ghost or missing NPC
+    contacts). Rebuilds each touched sector's NPC entries from
+    npc_characters.current_sector_id and prunes player entries whose
+    Player row has moved elsewhere. Returns the number of repaired
+    sectors."""
+    from src.models.player import Player
+    from src.models.ship import Ship
+
+    # Expected NPC presence, from the relational source of truth.
+    live_npcs = (
+        db.query(NPCCharacter, Ship)
+        .outerjoin(Ship, NPCCharacter.ship_id == Ship.id)
+        .filter(
+            NPCCharacter.status.in_(_LIVE_STATUSES),
+            NPCCharacter.current_sector_id.isnot(None),
+        )
+        .all()
+    )
+    expected_npcs: Dict[int, Dict[str, Any]] = {}
+    for npc, ship in live_npcs:
+        if ship is None or ship.is_destroyed:
+            continue
+        expected_npcs.setdefault(npc.current_sector_id, {})[str(npc.id)] = (npc, ship)
+
+    # Players' actual locations (for pruning relocated entries).
+    player_sector = {
+        str(pid): sid
+        for pid, sid in db.query(Player.id, Player.current_sector_id).all()
+    }
+
+    # Sectors worth inspecting: any with presence entries, plus any that
+    # should have NPC entries.
+    sector_ids = set(expected_npcs.keys())
+    rows = db.execute(
+        text(
+            "SELECT sector_id FROM sectors "
+            "WHERE jsonb_array_length(players_present) > 0"
+        )
+    ).fetchall()
+    sector_ids.update(int(r[0]) for r in rows)
+
+    repaired = 0
+    for sid in sorted(sector_ids):
+        sector = (
+            db.query(Sector)
+            .filter(Sector.sector_id == sid)
+            .with_for_update()
+            .first()
+        )
+        if sector is None:
+            continue
+
+        current = list(sector.players_present or [])
+        expected_here = expected_npcs.get(sid, {})
+        rebuilt: List[Dict[str, Any]] = []
+        seen_npc_ids = set()
+
+        for entry in current:
+            pid = entry.get("player_id")
+            if entry.get("is_npc"):
+                if pid in expected_here:
+                    rebuilt.append(entry)
+                    seen_npc_ids.add(pid)
+                # else: stale NPC entry (moved/KIA) — drop it.
+            else:
+                # Keep player entries unless the Player row is known to
+                # be elsewhere (unknown ids are left alone).
+                if player_sector.get(pid, sid) == sid:
+                    rebuilt.append(entry)
+
+        for npc_id, (npc, ship) in expected_here.items():
+            if npc_id not in seen_npc_ids:
+                rebuilt.append(_presence_entry(npc, ship))
+
+        if rebuilt != current:
+            sector.players_present = rebuilt
+            flag_modified(sector, "players_present")
+            repaired += 1
+
+    if repaired:
+        db.flush()
+        logger.info("Presence reconciliation repaired %d sector(s)", repaired)
+    return repaired
 
 
 # ---------------------------------------------------------------------------
