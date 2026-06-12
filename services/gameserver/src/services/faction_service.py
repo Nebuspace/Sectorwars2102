@@ -245,16 +245,17 @@ class FactionService:
         reputation.port_access_level = self._calculate_port_access_level(reputation.current_value)
         reputation.combat_response = self._calculate_combat_response(reputation.current_value)
         
-        # Add to history
-        if not reputation.history:
-            reputation.history = []
-        reputation.history.append({
+        # Add to history — reassign (not in-place append) so SQLAlchemy
+        # detects the JSONB change; in-place mutation is not change-tracked.
+        history = list(reputation.history or [])
+        history.append({
             "timestamp": datetime.utcnow().isoformat(),
             "old_value": old_value,
             "new_value": reputation.current_value,
             "change": change,
             "reason": reason
         })
+        reputation.history = history
         
         reputation.last_updated = datetime.utcnow()
         self.db.commit()
@@ -642,7 +643,10 @@ class FactionService:
         for mission in missions:
             # Check reputation requirement
             reputation = await self.get_player_reputation(player_id, mission.faction_id)
-            if reputation and reputation.current_value >= mission.min_reputation:
+            # A missing reputation row means neutral (0), not hidden missions —
+            # otherwise players without initialized rows see an empty board.
+            rep_value = reputation.current_value if reputation else 0
+            if rep_value >= mission.min_reputation:
                 # Check level requirement (you'll need to implement player level)
                 # For now, assume all players meet level requirements
                 available_missions.append(mission)

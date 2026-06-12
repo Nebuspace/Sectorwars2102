@@ -7,8 +7,10 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from datetime import datetime
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.faction import Faction, FactionType, FactionMission
@@ -126,7 +128,7 @@ class TerritoryResponse(BaseModel):
 # API Endpoints
 @router.get("/", response_model=List[FactionResponse])
 async def list_factions(
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get list of all factions."""
@@ -137,7 +139,7 @@ async def list_factions(
 
 @router.get("/reputation", response_model=List[ReputationResponse])
 async def get_player_reputations(
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get current player's reputation with all factions."""
@@ -154,7 +156,7 @@ async def get_player_reputations(
 @router.get("/{faction_id}/reputation", response_model=ReputationResponse)
 async def get_faction_reputation(
     faction_id: UUID,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get player's reputation with a specific faction."""
@@ -177,7 +179,7 @@ async def get_faction_reputation(
 @router.get("/missions", response_model=List[MissionResponse])
 async def get_available_missions(
     faction_id: Optional[UUID] = Query(None, description="Filter by faction ID"),
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get available missions for the current player."""
@@ -189,7 +191,7 @@ async def get_available_missions(
 @router.get("/{faction_id}/missions", response_model=List[MissionResponse])
 async def get_faction_missions(
     faction_id: UUID,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get available missions from a specific faction."""
@@ -208,7 +210,7 @@ async def get_faction_missions(
 async def accept_mission(
     faction_id: UUID,
     request: AcceptMissionRequest,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Accept a mission from a faction."""
@@ -229,9 +231,25 @@ async def accept_mission(
             detail="Mission not found or not available to you"
         )
     
-    # Track accepted missions in the player's settings JSONB field
-    player_settings = current_player.settings or {}
-    accepted_missions = player_settings.get("accepted_missions", [])
+    # Lock the player row before mutating settings to prevent concurrent
+    # accepts racing past the duplicate/limit checks. with_for_update() does
+    # NOT refresh the already-loaded instance, so chain populate_existing()
+    # (same pattern as trading.py) and re-read settings from the locked row.
+    current_player = (
+        db.query(Player)
+        .filter(Player.id == current_player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if current_player is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    # Track accepted missions in the player's settings JSONB field.
+    # Copy the containers (no in-place mutation): JSONB in-place changes are
+    # not change-tracked by SQLAlchemy, so reassign + flag_modified below.
+    player_settings = dict(current_player.settings or {})
+    accepted_missions = list(player_settings.get("accepted_missions", []))
 
     # Check if player already accepted this mission
     if any(m.get("mission_id") == request.mission_id for m in accepted_missions):
@@ -264,11 +282,10 @@ async def accept_mission(
         "expires_at": mission.expires_at.isoformat() if mission.expires_at else None
     })
 
+    # Reassign the whole settings dict (never mutate in place) and belt-and-
+    # braces flag_modified so SQLAlchemy persists the JSONB change.
     player_settings["accepted_missions"] = accepted_missions
     current_player.settings = player_settings
-
-    # Use flag_modified to ensure SQLAlchemy detects the JSONB change
-    from sqlalchemy.orm.attributes import flag_modified
     flag_modified(current_player, "settings")
     db.commit()
 
@@ -282,7 +299,7 @@ async def accept_mission(
 @router.get("/{faction_id}/territory", response_model=TerritoryResponse)
 async def get_faction_territory(
     faction_id: UUID,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get the territory controlled by a faction."""
@@ -303,7 +320,7 @@ async def get_faction_territory(
 @router.get("/{faction_id}/pricing-modifier")
 async def get_pricing_modifier(
     faction_id: UUID,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get the pricing modifier for trading at faction-controlled ports."""
