@@ -46,7 +46,15 @@ from src.models.aria_personal_intelligence import (
 from src.models.enhanced_ai_models import AIComprehensiveAssistant
 from src.models.bang_generation_job import BangGenerationJob, BangGenerationJobStatus
 from src.models.docking import DockingSlipOccupancy, DockingQueueEntry
-from src.models.npc_character import NPCCharacter, NPCArchetype, NPCStatus
+from src.models.npc_character import (
+    NPCCharacter,
+    NPCArchetype,
+    NPCStatus,
+    NPCActivity,
+    NPCLifecycleStage,
+    NPCRoster,
+    NPCDeathLog,
+)
 from src.models.construction import ConstructionReservation
 from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCampaign
 from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus, WarpGateBeaconStatus
