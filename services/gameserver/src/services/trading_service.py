@@ -11,18 +11,22 @@ from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, UTC
 import logging
 
-from src.models.station import Station
+from src.core.game_time import canonical_hours_since
+from src.models.station import Station, StationClass
 from src.models.market_transaction import MarketPrice
 
 logger = logging.getLogger(__name__)
 
-# Spec-defined price ranges per commodity (from Resources.aispec)
+# Spec-defined price ranges per commodity (from Resources.aispec;
+# precious_metals per sw2102-docs ADR-0062 E-D1: 80-180 cr/unit, slotted
+# between equipment and exotic_technology)
 COMMODITY_PRICE_RANGES: Dict[str, Dict[str, int]] = {
     "ore":               {"min": 15,  "max": 45},
     "organics":          {"min": 8,   "max": 25},
     "gourmet_food":      {"min": 30,  "max": 70},
     "fuel":              {"min": 20,  "max": 60},
     "equipment":         {"min": 50,  "max": 120},
+    "precious_metals":   {"min": 80,  "max": 180},
     "exotic_technology":  {"min": 150, "max": 300},
     "luxury_goods":      {"min": 75,  "max": 200},
     "colonists":         {"min": 30,  "max": 80},
@@ -32,6 +36,25 @@ COMMODITY_PRICE_RANGES: Dict[str, Dict[str, int]] = {
 # This creates the profit margin that drives inter-station trade routes
 SELL_SPREAD = 1.15   # Station sell price is 15% above dynamic midpoint
 BUY_SPREAD = 0.85    # Station buy price is 15% below dynamic midpoint
+
+# Station-class premium multipliers, applied at transaction-price time so
+# they survive every dynamic reprice. Values are the trading.md
+# #class-8--class-9-premium-pricing design target (+20% buy / +25% sell,
+# both UPWARD: Class 8 pays players more, Class 9 charges players more).
+# The bootstrap-only current_price multipliers in
+# core/station_class_map.apply_stock_levels (1.3x / 0.8x — Class 9
+# DIRECTION inverted vs canon) were never live behavior — they were
+# overwritten on the first reprice — so code-wins does not attach to them.
+# Conflict recorded in the run-14 report.
+CLASS_8_BUY_PREMIUM = 1.2    # Black Hole pays players 20% more for what it buys
+CLASS_9_SELL_PREMIUM = 1.25  # Nova charges players 25% more for what it sells
+
+# Lazy stock-regen tick length, in CANONICAL hours. trading.md#stock-regen
+# specifies the advance formula (quantity = min(capacity, quantity +
+# production_rate)) but no tick period — production_rate is interpreted as
+# units per canonical HOUR, matching tick_production's long-standing
+# "once per game tick / hour" docstring. NO-CANON on the period itself.
+REGEN_TICK_HOURS = 1.0
 
 
 class TradingService:
@@ -103,6 +126,32 @@ class TradingService:
         else:
             raw_price = midpoint
 
+        # Station-class premium (Class 8 "Black Hole" / Class 9 "Nova"):
+        # applied here, after the supply/demand spread but BEFORE the canon
+        # clamp. Clamp-after-premium ordering is NO-CANON (trading.md is
+        # silent on it) — chosen so spec price ranges remain hard bounds;
+        # DECISIONS.md Pending entry filed. Premium gates require the trade
+        # flag to be EXCLUSIVE (buys and not sells / sells and not buys):
+        # the canonical class patterns are one-directional, and gating on a
+        # single flag would let a stray both-flag commodity (the model's
+        # default dict ships equipment with both) become a same-station
+        # buy/sell pump once rank trading bonuses exceed the spread.
+        station_class = station.station_class
+        if (
+            transaction_type == "buy"
+            and station_class == StationClass.CLASS_8
+            and commodity.get("buys")
+            and not commodity.get("sells")
+        ):
+            raw_price *= CLASS_8_BUY_PREMIUM
+        elif (
+            transaction_type == "sell"
+            and station_class == StationClass.CLASS_9
+            and commodity.get("sells")
+            and not commodity.get("buys")
+        ):
+            raw_price *= CLASS_9_SELL_PREMIUM
+
         # Clamp to spec ranges
         price_range = COMMODITY_PRICE_RANGES.get(commodity_name)
         if price_range:
@@ -118,13 +167,43 @@ class TradingService:
         """Recalculate all commodity prices for a station based on current
         stock levels and persist them to the MarketPrice table.
 
+        Runs the lazy stock-regen tick first (see tick_production), so
+        repriced quantities already include any production accrued since
+        the station's last market update.
+
         Returns a dict of commodity → {buy_price, sell_price, quantity} for
         every commodity that was updated.
         """
-        station = self.db.query(Station).filter(Station.id == station_id).first()
+        # Lock the station row (station-first lock order, matching the trade
+        # paths): the lazy regen below is read-modify-write on the
+        # commodities JSONB, and two concurrent market reads passing the
+        # regen gate together would otherwise double-apply production.
+        # populate_existing() refreshes the identity-map instance so the
+        # gate re-check under the lock sees the latest anchor.
+        station = (
+            self.db.query(Station)
+            .filter(Station.id == station_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not station:
             logger.error("Station %s not found for market price update", station_id)
             return {}
+
+        # LAZY STOCK REGEN (advance-on-read, same shape as the terraforming/
+        # citadel lazy ticks): regenerate stock for the canonical hours
+        # elapsed since last_market_update — the regen anchor — then reprice
+        # from the regenerated quantities. Sub-tick remainders are lost to
+        # int truncation (< 1 unit per tick). The credited interval is capped
+        # at 24 canonical hours: last_market_update is NOT NULL with a
+        # row-insert default, so the first tick after this feature deployed
+        # would otherwise retroactively credit all time since galaxy import
+        # and snap every market to capacity in one universe-wide refill.
+        if station.last_market_update is not None:
+            elapsed_hours = min(canonical_hours_since(station.last_market_update), 24.0)
+            if elapsed_hours >= REGEN_TICK_HOURS:
+                self.tick_production(station, hours=elapsed_hours)
 
         commodities = station.commodities or {}
         updated: Dict[str, Any] = {}
@@ -211,6 +290,25 @@ class TradingService:
         )
         return updated
 
+    def lazy_market_tick(self, station: Station) -> bool:
+        """Advance-on-read market tick (terraforming/citadel lazy pattern).
+
+        If at least REGEN_TICK_HOURS canonical hours have elapsed since the
+        station's last market update, regenerate stock and reprice via
+        update_market_prices. The gate keeps frequent market reads from
+        repricing on every request (and from zeroing out sub-unit production
+        through repeated int() truncation). update_market_prices re-checks
+        the anchor under the station row lock, so two requests racing past
+        this unlocked gate cannot double-apply production.
+
+        Returns True if a tick ran (caller should commit), False otherwise.
+        """
+        anchor = station.last_market_update
+        if anchor is not None and canonical_hours_since(anchor) < REGEN_TICK_HOURS:
+            return False
+        self.update_market_prices(station.id)
+        return True
+
     # ------------------------------------------------------------------
     # Spec Price Ranges
     # ------------------------------------------------------------------
@@ -225,12 +323,19 @@ class TradingService:
     # Stock Regeneration
     # ------------------------------------------------------------------
 
-    def tick_production(self, station: Station) -> Dict[str, int]:
+    def tick_production(self, station: Station, hours: float = 1.0) -> Dict[str, int]:
         """Regenerate stock based on each commodity's production_rate.
 
-        Should be called periodically (e.g. once per game tick / hour).
-        Returns a dict of commodity_name → units_produced for commodities
-        that actually gained stock.
+        Regen formula (trading.md#stock-regen: "each commodity advances
+        quantity = min(capacity, quantity + production_rate)"; the doc gives
+        no tick period, so production_rate is units per CANONICAL hour):
+
+            quantity = min(capacity, quantity + int(production_rate * hours))
+
+        Called lazily from update_market_prices with the canonical hours
+        elapsed since the station's last market update (advance-on-read —
+        there is no scheduler). Returns a dict of commodity_name →
+        units_produced for commodities that actually gained stock.
         """
         commodities = station.commodities or {}
         produced: Dict[str, int] = {}
@@ -244,11 +349,15 @@ class TradingService:
             capacity = commodity_data.get("capacity", 0)
 
             if quantity >= capacity:
-                # Already at capacity — no production
+                # Already at per-commodity capacity — no production
+                continue
+
+            units = int(production_rate * hours)
+            if units <= 0:
                 continue
 
             # Produce up to capacity
-            new_quantity = min(quantity + production_rate, capacity)
+            new_quantity = min(quantity + units, capacity)
             units_added = new_quantity - quantity
             commodity_data["quantity"] = new_quantity
             produced[commodity_name] = units_added

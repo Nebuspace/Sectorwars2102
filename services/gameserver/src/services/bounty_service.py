@@ -173,20 +173,27 @@ class BountyService:
         }
 
     def _get_system_bounties(self, target: Player) -> List[Dict[str, Any]]:
-        """Generate system bounties based on the target's personal reputation."""
+        """Generate the system bounty based on the target's personal reputation.
+
+        Canon (FEATURES/gameplay/bounties.md#system-bounty-tiers): only the
+        single HIGHEST matched tier is active — the deepest pit pays out,
+        lower-tier bounties don't stack on top of it. (Appending every
+        matched tier let a -1000 rep player carry 5k+25k+100k = 130k.)
+        """
         score = target.personal_reputation
-        bounties = []
-        for threshold, amount in SYSTEM_BOUNTY_TIERS.items():
-            if score <= threshold:
-                bounties.append({
-                    "id": f"system_{threshold}",
-                    "placed_by": "SYSTEM",
-                    "placed_by_name": "Federation Bounty Board",
-                    "amount": amount,
-                    "type": "system",
-                    "reason": f"Criminal reputation ({score})",
-                })
-        return bounties
+        matched = [t for t in SYSTEM_BOUNTY_TIERS if score <= t]
+        if not matched:
+            return []
+        # Deepest matched threshold == highest-tier (largest) bounty
+        threshold = min(matched)
+        return [{
+            "id": f"system_{threshold}",
+            "placed_by": "SYSTEM",
+            "placed_by_name": "Federation Bounty Board",
+            "amount": SYSTEM_BOUNTY_TIERS[threshold],
+            "type": "system",
+            "reason": f"Criminal reputation ({score})",
+        }]
 
     def get_available_bounties(self, limit: int = 20) -> Dict[str, Any]:
         """List all players who currently have bounties on them."""

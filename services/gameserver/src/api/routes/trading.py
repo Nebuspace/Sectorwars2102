@@ -61,22 +61,34 @@ def _get_station_or_404(db: Session, station_id: str) -> Station:
 
 
 def _ensure_market_prices(db: Session, station: Station) -> None:
-    """Bridge the station's commodities JSONB into MarketPrice rows.
+    """Bridge the station's commodities JSONB into MarketPrice rows, then
+    run the lazy stock-regen tick.
 
     Galaxy imports (BANG) stock stations only via the commodities JSONB;
     the market/buy/sell endpoints read MarketPrice rows, which otherwise
     never exist — every market in the universe reads empty. Populate them
-    lazily on first access; TradingService keeps them current afterwards.
+    lazily on first access.
+
+    LAZY STOCK REGEN (advance-on-read, terraforming/citadel pattern): there
+    is no scheduler calling TradingService.tick_production, so without this
+    tick station stock only ever drains. Every market read/trade path runs
+    through here; when >= 1 canonical hour has elapsed since the station's
+    last market update, stock regenerates from production_rate and prices
+    recompute from the new supply levels.
+
+    May COMMIT — callers must invoke this before taking any row locks
+    (update_market_prices itself locks the station row, station-first).
     """
     if not station.commodities:
         return
     has_rows = db.query(MarketPrice.id).filter(
         MarketPrice.station_id == station.id
     ).first()
-    if has_rows:
-        return
-    TradingService(db).update_market_prices(station.id)
-    db.commit()
+    if not has_rows:
+        TradingService(db).update_market_prices(station.id)
+        db.commit()
+    elif TradingService(db).lazy_market_tick(station):
+        db.commit()
 
 
 @router.post("/buy")
