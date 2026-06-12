@@ -63,6 +63,12 @@ class ShipStatus(enum.Enum):
     IN_COMBAT = "IN_COMBAT"
     DESTROYED = "DESTROYED"
     MAINTENANCE = "MAINTENANCE"
+    # Warp Jumper anchored to a beacon, harmonizing into a warp gate
+    # (ADR-0011 invulnerability window, ADR-0029 WJ consumption at gate
+    # creation, ADR-0036 harmonization atomicity). The hull cannot move,
+    # dock, or jump while harmonizing; harmonization_completes_at holds
+    # the deadline.
+    HARMONIZING = "HARMONIZING"
 
 
 class Ship(Base):
@@ -103,7 +109,23 @@ class Ship(Base):
     mines = Column(Integer, nullable=False, default=0)
     max_mines = Column(Integer, nullable=False, default=0)
     has_automated_maintenance = Column(Boolean, nullable=False, default=False)
-    
+
+    # Quantum Drive (ADR-0030) — Warp Jumper only. Charges are refined
+    # 1-Shard-to-1-Charge at any Class-3+ station or SpaceDock and sit in
+    # the WJ's special-equipment slot (this column), NOT in regular cargo.
+    quantum_charges = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    # Cooldown deadlines are wall-clock instants, pre-scaled through
+    # src.core.game_time.scaled_deadline at set time (24h jump / 4h scan
+    # canonical). NULL or in the past = no active cooldown.
+    quantum_jump_cooldown_until = Column(DateTime(timezone=True), nullable=True)
+    quantum_scan_cooldown_until = Column(DateTime(timezone=True), nullable=True)
+    # Warp gate construction (ADR-0036): set when status == HARMONIZING,
+    # cleared when harmonization resolves (1h canonical, scaled).
+    harmonization_completes_at = Column(DateTime(timezone=True), nullable=True)
+    # Why a destroyed hull died, e.g. 'WARP_GATE_ANCHOR' (ADR-0029 — the WJ
+    # is consumed as the gate's anchor mass) or 'combat'. NULL while alive.
+    destruction_cause = Column(String, nullable=True)
+
     # Combat
     combat = Column(JSONB, nullable=False)
     attack_turn_cost = Column(Integer, nullable=True)  # Turn cost to initiate combat with this ship

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
@@ -58,6 +58,12 @@ class Player(Base):
     attack_drones = Column(Integer, nullable=False, default=0)
     defense_drones = Column(Integer, nullable=False, default=0)
     mines = Column(Integer, nullable=False, default=0)
+    # Quantum resource wallet (ADR-0009 venue split, ADR-0030 Quantum Jump).
+    # Shards are the raw harvested resource; crystals are the assembled form
+    # used for warp gate construction. Refined Quantum Charges live on the
+    # Warp Jumper itself (ships.quantum_charges), not here.
+    quantum_shards = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    quantum_crystals = Column(Integer, nullable=False, default=0, server_default=text("0"))
     genesis_devices = Column(Integer, nullable=False, default=0)
     insurance = Column(JSONB, nullable=True)
     last_game_login = Column(DateTime(timezone=True), nullable=True)  # Renamed from last_login to avoid confusion
