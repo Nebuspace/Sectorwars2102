@@ -14,6 +14,7 @@ import PlanetPortPair from '../tactical/PlanetPortPair';
 import NavigationMap from '../tactical/NavigationMap';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
+import CommsMailbox from '../comms/CommsMailbox';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
@@ -109,6 +110,274 @@ const QuantumRefineryStrip: React.FC<QuantumRefineryStripProps> = ({ status, onR
   );
 };
 
+/**
+ * TerraformHeaderPanel — the terraform readout in the planetary-ops header.
+ *
+ * Replaces the old fiction (a `terraform_level` column that does not exist
+ * plus an invented growth-bonus table) with the real terraforming pipeline:
+ *   GET  /planets/{id}/terraforming/status  (owner-only; lazily advances
+ *        population-scaled ticks server-side)
+ *   POST /planets/{id}/terraforming/start   (level 1-5, real ladder costs)
+ * Non-owners see the real habitability score only. Reuses the existing
+ * header-terra-* CRT styling from cockpit.css.
+ */
+const getApiBaseUrl = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  // Current origin leverages the Vite proxy (same pattern as GameContext)
+  return window.location.origin;
+};
+
+interface TerraformLevelInfo {
+  level: number;
+  name: string;
+  creditCost: number;
+  durationHours: number;
+  habitabilityBoost: number;
+  organicsCost: number;
+  equipmentCost: number;
+}
+
+interface TerraformStatus {
+  active: boolean;
+  currentHabitability: number;
+  terraformingTarget: number | null;
+  progress: number | null;
+  level?: number | null;
+  levelName?: string | null;
+  estimatedTicksRemaining?: number | null;
+  tickPeriodHours?: number | null;
+  estimatedCompletion?: string | null;
+  populationBonus?: string;
+  availableLevels?: Record<string, TerraformLevelInfo>;
+}
+
+// Terraforming becomes unavailable once habitability reaches this score
+// (server enforces the same MIN_TARGET; mirrored here for the inline reason).
+const TERRAFORM_MAX_HABITABILITY = 90;
+
+// Render an absolute estimatedCompletion (ISO) as a compact, human countdown
+// ("~3h 20m left" / "~12m left"). Falls back to null when the field is absent
+// (legacy projects) so the caller can degrade to the tick readout.
+const formatTimeRemaining = (estimatedCompletion?: string | null): string | null => {
+  if (!estimatedCompletion) return null;
+  const ms = new Date(estimatedCompletion).getTime() - Date.now();
+  if (Number.isNaN(ms)) return null;
+  if (ms <= 0) return 'completing…';
+  const totalMinutes = Math.round(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    return `~${days}d ${remHours}h left`;
+  }
+  if (hours > 0) return `~${hours}h ${minutes}m left`;
+  return `~${minutes}m left`;
+};
+
+const TerraformHeaderPanel: React.FC<{
+  planetId?: string;
+  isOwned: boolean;
+  habitability: number;
+}> = ({ planetId, isOwned, habitability }) => {
+  // Read-only: only refreshPlayerState is used, to re-pull credits after a
+  // terraforming START debits the ladder cost server-side.
+  const { refreshPlayerState } = useGame();
+  const [status, setStatus] = useState<TerraformStatus | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const [selectedLevel, setSelectedLevel] = useState(1);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    setConfirming(false);
+    if (!planetId || !isOwned) {
+      setStatus(null);
+      return;
+    }
+    const token = localStorage.getItem('accessToken');
+    const load = () => {
+      fetch(`${getApiBaseUrl()}/api/v1/planets/${planetId}/terraforming/status`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+        .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+        .then((data: TerraformStatus) => { if (!cancelled) setStatus(data); })
+        .catch(() => { if (!cancelled) setStatus(null); });
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [planetId, isOwned, refresh]);
+
+  // Modest poll while a project is active so the server's lazy-advanced
+  // progress and countdown stay live without hammering the endpoint. Only
+  // polls when active; idle/non-owner panels never poll.
+  useEffect(() => {
+    if (!planetId || !isOwned || !status?.active) return;
+    const id = setInterval(() => setRefresh(n => n + 1), 60000);
+    return () => clearInterval(id);
+  }, [planetId, isOwned, status?.active]);
+
+  const handleStart = async () => {
+    if (!planetId || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem('accessToken');
+      const resp = await fetch(`${getApiBaseUrl()}/api/v1/planets/${planetId}/terraforming/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ target_level: selectedLevel })
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        // Surface the server's 400 detail verbatim (exact shortfall rules)
+        throw new Error(data?.detail || `Terraforming start failed (HTTP ${resp.status})`);
+      }
+      setRefresh(n => n + 1);
+      // START debited the ladder credit cost server-side; re-pull player
+      // state so the cockpit credit readout reflects the spend immediately.
+      try { await refreshPlayerState(); } catch { /* non-fatal */ }
+    } catch (e: any) {
+      setError(e?.message || 'Terraforming start failed');
+    } finally {
+      setConfirming(false);
+      setBusy(false);
+    }
+  };
+
+  const hab = status?.currentHabitability ?? habitability;
+  const active = !!status?.active;
+  const target = status?.terraformingTarget ?? null;
+  const progress = typeof status?.progress === 'number' ? status.progress : null;
+
+  // 5 segments: active projects fill by tick progress (20%/seg); idle
+  // panels fill by habitability itself (20 points/seg) — both real values.
+  const fillFraction = active && progress !== null ? progress / 100 : hab / 100;
+  const segsFilled = Math.min(5, Math.floor(fillFraction * 5));
+
+  const levels: TerraformLevelInfo[] = status?.availableLevels
+    ? Object.values(status.availableLevels).sort((a, b) => a.level - b.level)
+    : [];
+  const selectedInfo = levels.find(l => l.level === selectedLevel) || null;
+
+  return (
+    <div className="header-terraform">
+      <div className="header-terra-top">
+        <span className="header-terra-icon">🌱</span>
+        {active ? (
+          <>
+            <span className="header-terra-name">{status?.levelName || 'TERRAFORMING'}</span>
+            <span className="header-terra-level">{status?.level ? `L${status.level}` : ''} ACTIVE</span>
+          </>
+        ) : (
+          <>
+            <span className="header-terra-name">HABITABILITY</span>
+            <span className="header-terra-level">{hab}%</span>
+          </>
+        )}
+      </div>
+      <div className="header-terra-bar">
+        {[0, 1, 2, 3, 4].map(seg => (
+          <div
+            key={seg}
+            className={`header-terra-seg ${seg < segsFilled ? 'filled' : ''} ${active && seg === segsFilled && segsFilled < 5 ? 'current' : ''}`}
+          />
+        ))}
+      </div>
+      {active ? (
+        <>
+          <div className="header-terra-desc">
+            {hab}% → target {target ?? '—'}%
+            {(() => {
+              // Prefer the real countdown (estimatedCompletion); degrade to the
+              // raw tick estimate only when the server omits it (legacy data).
+              const remaining = formatTimeRemaining(status?.estimatedCompletion);
+              if (remaining) return ` • ${remaining}`;
+              return typeof status?.estimatedTicksRemaining === 'number'
+                ? ` • ~${status.estimatedTicksRemaining} ticks left`
+                : '';
+            })()}
+          </div>
+          {status?.populationBonus && (
+            <div className="header-terra-bonus">{status.populationBonus}</div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="header-terra-desc">
+            {isOwned
+              ? (status ? 'No active terraforming project' : 'Terraforming telemetry unavailable')
+              : 'Terraforming — owner telemetry only'}
+          </div>
+          {isOwned && status && hab >= TERRAFORM_MAX_HABITABILITY ? (
+            // Server rejects START at/above MIN_TARGET; surface the reason
+            // inline rather than presenting a control that always 400s.
+            <div className="header-terra-bonus" style={{ opacity: 0.8 }}>
+              Habitability {hab}% — terraforming unavailable at or above {TERRAFORM_MAX_HABITABILITY}%
+            </div>
+          ) : isOwned && status && levels.length > 0 && (
+            confirming ? (
+              <div className="header-terra-bonus">
+                <button
+                  className="header-terra-btn"
+                  onClick={handleStart}
+                  disabled={busy}
+                  title={selectedInfo
+                    ? `${selectedInfo.name}: ${selectedInfo.creditCost.toLocaleString()} cr + ${selectedInfo.organicsCost.toLocaleString()} organics + ${selectedInfo.equipmentCost.toLocaleString()} equipment (planet stock), +${selectedInfo.habitabilityBoost} hab over ${selectedInfo.durationHours}h`
+                    : undefined}
+                >
+                  {busy ? 'STARTING…' : '✓ Confirm'}
+                </button>
+                <button className="header-terra-btn" onClick={() => setConfirming(false)} disabled={busy}>
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <div className="header-terra-bonus">
+                <select
+                  value={selectedLevel}
+                  onChange={e => setSelectedLevel(Number(e.target.value))}
+                  style={{
+                    background: 'rgba(0, 100, 50, 0.3)', color: '#00ff41',
+                    border: '1px solid rgba(0, 255, 100, 0.4)', borderRadius: '3px',
+                    font: 'inherit', fontSize: '0.6rem', padding: '0.15rem'
+                  }}
+                  aria-label="Terraforming level"
+                >
+                  {levels.map(l => (
+                    <option key={l.level} value={l.level}>
+                      L{l.level} {l.name} — {l.creditCost.toLocaleString()} cr
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="header-terra-btn"
+                  onClick={() => setConfirming(true)}
+                  title={selectedInfo
+                    ? `+${selectedInfo.habitabilityBoost} habitability over ${selectedInfo.durationHours}h — also consumes ${selectedInfo.organicsCost.toLocaleString()} organics + ${selectedInfo.equipmentCost.toLocaleString()} equipment from planet stock`
+                    : undefined}
+                >
+                  START
+                </button>
+              </div>
+            )
+          )}
+        </>
+      )}
+      {error && (
+        <div className="header-terra-desc" role="alert" style={{ color: '#ff6b6b' }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const GameDashboard: React.FC = () => {
   const {
     playerState,
@@ -197,20 +466,35 @@ const GameDashboard: React.FC = () => {
     const contacts = new Map<string, any>();
     const addContact = (contact: any) => {
       if (!contact) return;
-      // NPC presence entries carry their NPCCharacter id in player_id —
-      // key on it ONLY for NPCs so same-named captains stay distinct,
-      // while real players keep WS-vs-snapshot dedupe via user_id/id.
-      const key = String(
-        (contact.is_npc ? contact.player_id : null) ||
-        contact.user_id || contact.id || contact.username || ''
-      );
+      // Real players surface twice — once from live WS presence (keyed only
+      // by user_id) and once from the API snapshot (carries player_id +
+      // username, the hailable form). Keying real players on a normalized
+      // (lowercased) username collapses both into one row; NPC presence
+      // entries carry their NPCCharacter id in player_id and have no stable
+      // username, so key those on player_id to keep same-named captains
+      // distinct. Fall back to user_id/id only when neither is available.
+      const key = contact.is_npc
+        ? String(contact.player_id || contact.user_id || contact.id || '')
+        : String(
+            (contact.username && contact.username.toLowerCase()) ||
+            contact.user_id || contact.id || ''
+          );
       if (!key) return;
       const isSelf = playerState && (
         key === String(playerState.id) ||
-        (contact.username && contact.username === playerState.username)
+        (contact.username && playerState.username &&
+         contact.username.toLowerCase() === playerState.username.toLowerCase())
       );
       if (isSelf) return;
-      if (!contacts.has(key)) contacts.set(key, contact);
+      const existing = contacts.get(key);
+      if (!existing) {
+        contacts.set(key, contact);
+      } else if (!existing.player_id && contact.player_id) {
+        // Prefer the entry carrying player_id so the surviving row is
+        // hailable — merge the snapshot's player_id (and richer fields)
+        // over the bare WS-presence entry without losing either source.
+        contacts.set(key, { ...existing, ...contact });
+      }
     };
     sectorPlayers.forEach(addContact);
     (currentSector?.players_present || []).forEach(addContact);
@@ -1224,20 +1508,6 @@ const GameDashboard: React.FC = () => {
 
                     const planetIcon = getPlanetIcon(currentPlanet?.type);
 
-                    // Terraform values for header
-                    const terraformLevel = (currentPlanet as any)?.terraform_level || 0;
-                    const terraformBonuses = [0, 5, 15, 30, 50, 75];
-                    const terraformNames = ['Barren', 'Stabilized', 'Atmospheric', 'Regulated', 'Engineered', 'Paradise'];
-                    const terraformDescs = [
-                      'Unmodified planet surface',
-                      'Basic life support active',
-                      'Breathable atmosphere',
-                      'Climate controlled zones',
-                      'Fully terraformed biomes',
-                      'Perfect living conditions'
-                    ];
-                    const isTerraMaxed = terraformLevel >= 5;
-
                     return (
                       <div className="planet-ui">
                         {/* Header with planet name, terraform, and key stats */}
@@ -1249,24 +1519,11 @@ const GameDashboard: React.FC = () => {
                               <span className="planet-meta">{currentPlanet?.type?.toUpperCase().replace('_', ' ') || 'UNKNOWN'} • Hab: {currentPlanet?.habitability_score || 0}%</span>
                             </div>
                           </div>
-                          <div className="header-terraform">
-                            <div className="header-terra-top">
-                              <span className="header-terra-icon">🌱</span>
-                              <span className="header-terra-name">{terraformNames[terraformLevel]}</span>
-                              <span className="header-terra-level">L{terraformLevel}</span>
-                              {isTerraMaxed && <span className="paradise-badge">✨</span>}
-                            </div>
-                            <div className="header-terra-bar">
-                              {[0, 1, 2, 3, 4].map((level) => (
-                                <div
-                                  key={level}
-                                  className={`header-terra-seg ${level < terraformLevel ? 'filled' : ''} ${level === terraformLevel && !isTerraMaxed ? 'current' : ''}`}
-                                />
-                              ))}
-                            </div>
-                            <div className="header-terra-desc">{terraformDescs[terraformLevel]}</div>
-                            <div className="header-terra-bonus">+{terraformBonuses[terraformLevel]}% Growth</div>
-                          </div>
+                          <TerraformHeaderPanel
+                            planetId={currentPlanet?.id}
+                            isOwned={!!currentPlanet && isLandedPlanetMine}
+                            habitability={currentPlanet?.habitability_score || 0}
+                          />
                           <div className="planet-stats">
                             <div className="stat"><span className="label">Population</span><span className="value green">{population.toLocaleString()}</span></div>
                             {/* Server-computed damage reduction (defense_level × per-level factor) */}
@@ -1737,7 +1994,9 @@ const GameDashboard: React.FC = () => {
                 </div>
               </div>
 
-              {/* RIGHT MONITOR: Contacts */}
+              {/* RIGHT MONITOR: COMMS — CONTACTS (sector presence) / HAILS
+                  (player-to-player mailbox). CommsMailbox owns the header
+                  (mode switch + unread badge) and content. */}
               <div className="console-monitor comms-monitor">
                 <div className="monitor-bezel">
                   <div className="bezel-corner tl"></div>
@@ -1746,39 +2005,7 @@ const GameDashboard: React.FC = () => {
                   <div className="bezel-corner br"></div>
                 </div>
                 <div className="monitor-screen">
-                  <div className="screen-hud-header">COMMS</div>
-                  <div className="screen-hud-content">
-                  {sectorContacts.length > 0 ? (
-                    <div className="contacts-compact-list">
-                      {sectorContacts.map((player: any) => (
-                        <div key={(player.is_npc && player.player_id) || player.user_id || player.id || player.username} className="contact-list-item">
-                          <span className="status-indicator online"></span>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
-                            <span
-                              className="comms-contact-name"
-                              style={{ color: player.name_color || '#FFFFFF' }}
-                            >
-                              <span className="comms-contact-name-text">
-                                {player.military_rank ? `${player.military_rank.toUpperCase()} ` : ''}
-                                {player.username || player.name || 'UNKNOWN CONTACT'}
-                              </span>
-                              {player.is_npc && (
-                                <span className="contact-npc-badge">NPC</span>
-                              )}
-                            </span>
-                            {(player.reputation_tier || typeof player.personal_reputation === 'number') && (
-                              <span style={{ fontSize: '0.7em', opacity: 0.7 }}>
-                                {player.reputation_tier || 'Neutral'} ({(player.personal_reputation ?? 0) >= 0 ? '+' : ''}{player.personal_reputation ?? 0})
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-state">No other contacts in sector</div>
-                  )}
-                  </div>
+                  <CommsMailbox contacts={sectorContacts} />
                 </div>
               </div>
             </>
