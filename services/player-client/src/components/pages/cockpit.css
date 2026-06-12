@@ -989,6 +989,14 @@
   pointer-events: none;
 }
 
+/* The planetary monitor's content region is a named inline-size container
+   so planet/station pair internals (planet-port-pair.css) can adapt to the
+   monitor's real width instead of the viewport's. */
+.planetary-monitor .screen-hud-content {
+  container-type: inline-size;
+  container-name: planetary-content;
+}
+
 .planetary-monitor .monitor-bezel {
   border-color: rgba(147, 51, 234, 0.3);
 }

@@ -42,7 +42,11 @@
   flex-shrink: 0;
 }
 
-.status-indicator {
+/* Scoped to the trade header's connection pill: the bare .status-indicator
+   selector leaked this 110px pill body onto every other status dot in the
+   app (the cockpit COMMS contact list most visibly) once this stylesheet
+   loaded. Same class-collision disease as .contact-list-name before it. */
+.connection-status .status-indicator {
   padding: 6px 12px;
   border-radius: 20px;
   font-size: 0.875rem;
@@ -52,13 +56,13 @@
   text-align: center;
 }
 
-.status-indicator.connected {
+.connection-status .status-indicator.connected {
   background: rgba(16, 185, 129, 0.2);
   color: var(--accent-color);
   border: 1px solid var(--accent-color);
 }
 
-.status-indicator.disconnected {
+.connection-status .status-indicator.disconnected {
   background: rgba(239, 68, 68, 0.2);
   color: #ef4444;
   border: 1px solid #ef4444;
