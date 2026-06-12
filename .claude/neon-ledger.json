@@ -1047,6 +1047,41 @@
     "repeat-kill bounty collusion faucet (100k per kill, rep never restored)"
    ],
    "testpilot_endstate": "docked SpaceDock Castor sector 6295 (in-region), ship repaired full, credits 169,705"
+  },
+  {
+   "id": "adr0072-phase1-2026-06-12",
+   "tier": "SONNET-BUILD (Max directive: implement with sonnet agents; Fable lead held contracts + gate + proofs)",
+   "stage": "complete",
+   "verdict": "GLOWING",
+   "deployed_sha": "278360d",
+   "docs_sha": "FINDINGS update",
+   "sections": [
+    {
+     "id": "B1-nav-backend",
+     "status": "PROVEN",
+     "claim": "POST /nav/plot \u2014 sync Dijkstra over known graph (own visits + corp + current sector); unreachable -> nearest known approach; 200-hop guard",
+     "evidence": "4x plot 200; 2-hop course priced exactly; refusal shape with nearest_known live"
+    },
+    {
+     "id": "B2-autopilot-client",
+     "status": "PROVEN",
+     "claim": "AutopilotContext (refs-disciplined hop chain via ordinary moveToSector, 800ms cadence, pause/invalidate/abort) + helm ENGAGE/ABORT + NAV plot input + course breadcrumb",
+     "evidence": "autopilot flew 5819->5880->5960; turns 1532->1530 exactly; breadcrumb + ENGAGE rendered; manual helm actions abort; audit zero"
+    },
+    {
+     "id": "B3-aria-voice",
+     "status": "PROVEN",
+     "claim": "strip command grammar (plot/engage/abort) + journey narration; per-hop ticker only",
+     "evidence": "full voice transcript verbatim incl. P-N4 refusal-as-quest-hook; HOP 1/2 ticker; arrival line"
+    }
+   ],
+   "gate": "Fable lead caught: (1) FATAL \u2014 AutopilotProvider wrapped only main-viewport while the strip lives outside it AND GameDashboard calls the hook above its own GameLayout wrapper \u2014 provider moved to App.tsx above the route tree (the first placement white-screened /game on dev, fixed in one redeploy); (2) MoveResponse response_model silently stripped encounters \u2014 widened model + fixed client field names (new_sector_id; success=false pauses, bounce invalidates); (3) DISCOVERY: aria_exploration_maps had ZERO rows galaxy-wide \u2014 the canon-claimed visit hook never existed; wired it into movement_service (the autopilot exposed a launch-day theater feature)",
+   "parked": [
+    "unknown-sector voice reply uses beyond-my-charts phrasing (kept: epistemically correct)",
+    "plotCourse network-error is silent (no ARIA reply)",
+    "Phase 2: player_known_sectors + Federation public layer + cartography desks",
+    "ADR-0072 Accepted flip is Max-gated"
+   ]
   }
  ],
  "last_updated": "2026-06-12"

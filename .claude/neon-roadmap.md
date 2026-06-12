@@ -21,6 +21,7 @@ This file is the living tracker — update at every run's N10.
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
 ### Gameplay-meaty
+- ✅ **ADR-0072 Phase 1 (2026-06-12)**: ARIA course plotting + autopilot + navigator voice, sonnet-built (278360d); exploration-map visit hook wired (was zero rows galaxy-wide). Phase 2 = charts/public layer.
 - ✅ **Run 14 (2026-06-12)**: token-refresh unification (the 1-hour session killer), market stock regen + Class 8/9 premiums + precious_metals clamp + bounty single-tier, SpaceDock services de-mock + drone field fix (commits 2ff4eb3…b3cd066)
 - **Genesis coherence** (NEXT-RUN HEADLINE candidate) — purchase/deploy tier tables incompatible, success_rate/process_hours theater, GenesisDevice model zero writers, 7/12 planet types can never roll (genesis-devices.md bug marker confirmed)
 - **Starter ship combat stats** — hardcoded shields:10/weapons:5 ignores ship_specifications_seeder; proof needs a fresh first-login account (Max: create one, or bless a throwaway)
