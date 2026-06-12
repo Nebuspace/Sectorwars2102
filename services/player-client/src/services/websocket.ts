@@ -79,6 +79,7 @@ class WebSocketService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000; // Start with 1 second
+  private reconnectTimer: number | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private messageHandlers: Set<MessageHandler> = new Set();
   private isConnected = false;
@@ -144,6 +145,13 @@ class WebSocketService {
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       return;
     }
+
+    // Re-arm auto-reconnect AFTER the guards: disconnect() (logout) sets
+    // shouldReconnect=false; a fresh authenticated connect re-enables the
+    // loop and resets the backoff so a new session retries from scratch.
+    this.shouldReconnect = true;
+    this.reconnectAttempts = 0;
+    this.reconnectDelay = 1000;
 
     try {
       const wsUrl = `${this.getWebSocketUrl()}?token=${encodeURIComponent(this.token)}`;
@@ -225,7 +233,10 @@ class WebSocketService {
 
     console.warn(`WebSocket: Scheduling reconnect attempt ${this.reconnectAttempts + 1} in ${this.reconnectDelay}ms`);
     
-    setTimeout(() => {
+    this.reconnectTimer = window.setTimeout(() => {
+      // Re-check at fire time: a logout (disconnect) between scheduling and
+      // firing must not resurrect the dead session's socket.
+      if (!this.shouldReconnect) return;
       this.reconnectAttempts++;
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000); // Max 30 seconds
       this.connect();
@@ -345,12 +356,19 @@ class WebSocketService {
   disconnect(): void {
     this.shouldReconnect = false;
     this.stopHeartbeat();
-    
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    // Drop the token so online/visibility handlers cannot reconnect a
+    // logged-out session.
+    this.token = null;
+
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
       this.ws = null;
     }
-    
+
     this.isConnected = false;
   }
 

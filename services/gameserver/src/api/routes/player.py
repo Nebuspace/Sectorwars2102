@@ -526,22 +526,57 @@ async def purchase_genesis_device(
     tier_info = GENESIS_TIERS[tier]
     price = tier_info["price"]
 
+    # Lock the player row so the credit charge is race-safe (mirrors
+    # repair_player_ship above; populate_existing() refreshes the loaded
+    # instance under the lock — trading.py pattern).
+    player = (
+        db.query(Player)
+        .filter(Player.id == player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if player is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+
     # Check if player is docked (required to purchase)
-    if not player.is_docked:
+    if not player.is_docked or not player.current_port_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You must be docked at a SpaceDock to purchase Genesis Devices"
         )
 
-    # Check credits
+    # Genesis Devices are sold at SpaceDocks (which carry every service) or
+    # stations advertising genesis_dealer — same gating rule as
+    # _station_offers_service in armory.py / _station_offers_shipyard in
+    # ship_upgrades.py.
+    station = db.query(Station).filter(
+        Station.id == player.current_port_id
+    ).first()
+    station_services = (station.services or {}) if station else {}
+    if not station or not (
+        bool(station.is_spacedock) or bool(station_services.get("genesis_dealer"))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be docked at a SpaceDock to purchase Genesis Devices"
+        )
+
+    # Check credits (under the player row lock)
     if player.credits < price:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Insufficient credits. Need {price:,}, have {player.credits:,}"
         )
 
-    # Get current ship
-    ship = db.query(Ship).filter(Ship.id == player.current_ship_id).first()
+    # Lock the active ship row before reading/mutating genesis capacity
+    ship = (
+        db.query(Ship)
+        .filter(Ship.id == player.current_ship_id, Ship.owner_id == player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if not ship:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

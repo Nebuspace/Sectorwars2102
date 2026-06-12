@@ -806,6 +806,7 @@ async def declare_war(
 async def list_wars(
     team_id: UUID,
     status: Optional[str] = Query(None, pattern="^(active|ceased)$"),
+    current_player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
     """List wars for a team, optionally filtered by status."""

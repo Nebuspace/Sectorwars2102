@@ -357,12 +357,14 @@ export const messageAPI = {
   sendMessage: (recipientId: string, content: string, subject?: string) =>
     apiRequest('/api/v1/messages/send', {
       method: 'POST',
-      body: JSON.stringify({ recipientId, subject, content })
+      // Backend MessageCreateRequest expects snake_case fields
+      body: JSON.stringify({ recipient_id: recipientId, subject, content })
     }),
 
   getInbox: (page: number = 1, unreadOnly?: boolean) => {
     const params = new URLSearchParams({ page: page.toString() });
-    if (unreadOnly) params.append('unreadOnly', 'true');
+    // Backend query param is snake_case: unread_only
+    if (unreadOnly) params.append('unread_only', 'true');
     return apiRequest(`/api/v1/messages/inbox?${params}`);
   },
 

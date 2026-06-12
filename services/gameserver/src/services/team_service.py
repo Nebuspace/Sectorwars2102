@@ -707,7 +707,7 @@ class TeamService:
             raise ValueError("Player is not a team member")
 
         # Get player with lock
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
         
@@ -784,7 +784,7 @@ class TeamService:
             raise ValueError("Insufficient permissions to manage treasury")
 
         # Get player with lock
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
         
@@ -842,17 +842,28 @@ class TeamService:
     def transfer_to_player(self, team_id: uuid.UUID, actor_id: uuid.UUID,
                           recipient_nickname: str, resource_type: str, amount: int) -> Dict[str, Any]:
         """Transfer resources from treasury to a specific player"""
-        team = self.get_team(team_id)
+        # Lock the team row before reading the treasury balance (mirrors
+        # deposit_to_treasury/withdraw_from_treasury; populate_existing()
+        # refreshes any already-loaded instance under the lock)
+        team = (
+            self.db.query(Team)
+            .filter(Team.id == team_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not team:
             raise ValueError("Team not found")
-        
+
         # Check permissions
         actor_member = self._get_team_member(team_id, actor_id)
         if not actor_member or not actor_member.can_manage_treasury:
             raise ValueError("Insufficient permissions to manage treasury")
-        
-        # Find recipient
-        recipient = self.db.query(Player).filter(Player.nickname == recipient_nickname).first()
+
+        # Find recipient (locked — their balance is mutated below)
+        recipient = self.db.query(Player).filter(
+            Player.nickname == recipient_nickname
+        ).populate_existing().with_for_update().first()
         if not recipient:
             raise ValueError("Recipient player not found")
         

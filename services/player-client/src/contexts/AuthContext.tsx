@@ -34,11 +34,16 @@ interface AuthResponse {
   [key: string]: any;
 }
 
+// Module-level refresh lock (NOT React state — state updates are async, so
+// two concurrent 401s could both pass the "already refreshing" check and both
+// refresh, burning rotated refresh tokens). Mirrors the module-level
+// isRefreshing/refreshPromise pattern in services/apiClient.ts.
+let isRefreshing = false;
+let refreshPromise: Promise<void> | null = null;
+
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProviderProps) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
-  const [refreshPromise, setRefreshPromise] = useState<Promise<void> | null>(null);
   
   // Use Vite proxy for all API requests to avoid CORS issues
   const getApiUrl = () => {
@@ -301,37 +306,38 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
     if (!storedRefreshToken) {
       throw new Error('No refresh token available');
     }
-    
-    // Create a new refresh promise
+
+    // Take the lock synchronously (module-level, not React state) so a
+    // concurrent caller sees it before any await yields control
+    isRefreshing = true;
+
     const newRefreshPromise = (async () => {
-      setIsRefreshing(true);
-      
       try {
         const response = await axios.post<AuthResponse>(
           `${apiUrl}/api/v1/auth/refresh`,
           { refresh_token: storedRefreshToken },
           { headers: { Authorization: '' } } // Don't send current auth header
         );
-        
+
         const { access_token, refresh_token } = response.data;
-        
+
         // Store new tokens
         localStorage.setItem('accessToken', access_token);
         localStorage.setItem('refreshToken', refresh_token);
-        
+
         // Update auth header
         axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
-        
-        // Clear the refresh promise and state
-        setIsRefreshing(false);
-        setRefreshPromise(null);
+
+        // Release the lock
+        isRefreshing = false;
+        refreshPromise = null;
       } catch (error) {
         console.error('Token refresh failed:', error);
-        
-        // Clear the refresh promise and state
-        setIsRefreshing(false);
-        setRefreshPromise(null);
-        
+
+        // Release the lock
+        isRefreshing = false;
+        refreshPromise = null;
+
         // Clear tokens and user on refresh failure
         localStorage.removeItem('accessToken');
         localStorage.removeItem('refreshToken');
@@ -340,8 +346,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
         throw error;
       }
     })();
-    
-    setRefreshPromise(newRefreshPromise);
+
+    refreshPromise = newRefreshPromise;
     return newRefreshPromise;
   };
   

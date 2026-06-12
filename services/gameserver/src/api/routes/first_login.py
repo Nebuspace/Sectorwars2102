@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_player
+from src.auth.dependencies import get_current_player, get_current_admin_user
 from src.models.player import Player
+from src.models.user import User
 from src.models.first_login import ShipChoice
 from src.services.first_login_service import FirstLoginService
 from src.services.ai_dialogue_service import get_ai_dialogue_service, AIDialogueService
@@ -419,13 +420,21 @@ async def complete_first_login(
 
 @router.get("/debug", include_in_schema=False)
 async def debug_first_login_state(
-    player: Player = Depends(get_current_player),
+    player_id: UUID,
+    admin: User = Depends(get_current_admin_user),
     db: Session = Depends(get_db),
     ai_service: AIDialogueService = Depends(get_ai_dialogue_service)
 ):
-    """Debug endpoint to check player's first login state"""
+    """Admin-only debug endpoint to inspect a player's first login state"""
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if not player:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Player not found"
+        )
+
     service = FirstLoginService(db, ai_service)
-    
+
     # Get all the player's state
     state = service.get_player_first_login_state(player.id)
     
