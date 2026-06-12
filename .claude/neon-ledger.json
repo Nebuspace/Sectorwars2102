@@ -985,6 +985,17 @@
    "parking_lot_additions": [
     "ARIA chat reply pipe dead: client websocket_service endpoint lacks aria_chat handler (enhanced_websocket_service has it); wire or route",
     "hud-overlay inner scrollHeight ~37px phantom (invisible; detector noise) - identify the generated box someday"
+   ],
+   "followups": [
+    {
+     "id": "living-viewscreen",
+     "commit": "602f591",
+     "status": "PROVEN",
+     "directive": "Max: chips occlude scene + block clicks; want clickable planets with info popups; minimize + HUD transparency",
+     "claim": "HUD-glass chips (frosted, pointer-events pass-through, ghost-on-approach, per-chip minimize pills in localStorage) + interactive flight scene (per-frame hit data; popups for star/planet/station/procedural with LAND/DOCK wired to helm)",
+     "evidence": "Click through ghosted LOCATION chip hit the station orbiting BEHIND it (popup + DOCK) \u2014 the exact reported scenario; planet popup LAND button landed the ship (rail confirmed) then lift-off; HAZARD minimized to pill '+ \u26a0 3/10'; audit zero at 1710x947; zero new console errors. Procedural-body popup unproven by automation (tiny moving target, 3 missed clicks) \u2014 same code path as proven kinds",
+     "parked": "3D view rotation deliberately NOT built \u2014 overhead view framed as astrogation composite; canopy-view presentation is a future Max decision"
+    }
    ]
   }
  ],
