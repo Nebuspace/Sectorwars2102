@@ -609,6 +609,34 @@ class MovementService:
         except Exception as e:
             logger.error("Failed ARIA hook during movement: %s", e)
 
+        # ARIA exploration map — the per-sector visit record aria-companion.md
+        # documents. This table is the known-graph source for course plotting
+        # (ADR-0072): without the row ARIA has no memory of ever being here
+        # and refuses to plot back. Best-effort like the consciousness hook
+        # above; rides the move's own commit.
+        try:
+            from src.models.aria_personal_intelligence import ARIAExplorationMap
+            visit = (
+                self.db.query(ARIAExplorationMap)
+                .filter(
+                    ARIAExplorationMap.player_id == player.id,
+                    ARIAExplorationMap.sector_id == destination_sector.id,
+                )
+                .first()
+            )
+            if visit:
+                visit.visit_count = (visit.visit_count or 0) + 1
+                visit.last_visit = datetime.utcnow()
+            else:
+                self.db.add(
+                    ARIAExplorationMap(
+                        player_id=player.id,
+                        sector_id=destination_sector.id,
+                    )
+                )
+        except Exception as e:
+            logger.error("Failed ARIA exploration-map hook during movement: %s", e)
+
         # Updates player's presence in sector records
         self._update_player_presence(player, old_sector_id, destination_sector_id)
         
