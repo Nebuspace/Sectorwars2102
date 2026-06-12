@@ -19,7 +19,40 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { playerState, currentShip, currentSector, isLoading, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  
+
+  // ── Cockpit stability ────────────────────────────────────────────────
+  // GameContext toggles the shared `isLoading` flag on EVERY background
+  // refresh (after each scan/jump/move/dock). The viewport children must
+  // therefore NEVER be unmounted on `isLoading` — doing so resets bearing
+  // dials, races the ARM timer, destroys canvas state, kills scroll
+  // positions and refetches the minimap. Instead:
+  //   • full loading overlay ONLY during the true initial load (we have
+  //     never seen player state), rendered absolutely OVER the viewport;
+  //   • background refreshes get at most a subtle SYNC indicator that
+  //     appears only if loading persists beyond ~300ms (no flicker).
+  // State (not just a ref) so the SYNC-indicator effect below re-runs the
+  // moment the latch flips. A pure ref flip during render does not retrigger
+  // effects, leaving a dead window where a refresh that begins right as the
+  // latch flips mid-load never starts the SYNC timer.
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  if (playerState && !hasLoadedOnce) {
+    // Idempotent render-time latch: flips false→true exactly once,
+    // safe under StrictMode double-render (setState during render with an
+    // already-true value is a no-op).
+    setHasLoadedOnce(true);
+  }
+  const isInitialLoad = isLoading && !hasLoadedOnce;
+
+  const [showSyncIndicator, setShowSyncIndicator] = useState(false);
+  React.useEffect(() => {
+    if (isLoading && hasLoadedOnce) {
+      const timer = window.setTimeout(() => setShowSyncIndicator(true), 300);
+      return () => window.clearTimeout(timer);
+    }
+    setShowSyncIndicator(false);
+    return undefined;
+  }, [isLoading, hasLoadedOnce]);
+
   // Try to refresh player state on mount if we don't have it
   const hasAttemptedRefresh = React.useRef(false);
   React.useEffect(() => {
@@ -224,15 +257,31 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             </nav>
           </aside>
         
-          <main className="game-content">
-            {isLoading ? (
-              <div className="loading-overlay">
+          <main className="game-content" aria-busy={isInitialLoad}>
+            {/* Children render UNCONDITIONALLY — never unmounted by a
+                background refresh (see cockpit-stability note above).
+                During the initial-load overlay the viewport is `inert`
+                so its controls can't be tab-focused underneath. */}
+            <div
+              className="main-viewport"
+              // `inert` isn't in the installed @types/react (18.x) surface yet,
+              // but the DOM supports it and React passes unknown lowercase
+              // attrs through. Spread it so hidden controls under the
+              // initial-load overlay can't be tab-focused.
+              {...(isInitialLoad ? { inert: '' } : {})}
+            >
+              {children}
+            </div>
+            {isInitialLoad && (
+              <div className="viewport-loading-overlay">
                 <div className="loading-spinner"></div>
                 <p className="loading-text animate-typing">INITIALIZING SYSTEMS...</p>
               </div>
-            ) : (
-              <div className="main-viewport">
-                {children}
+            )}
+            {showSyncIndicator && !isInitialLoad && (
+              <div className="sync-indicator" role="status" aria-live="polite" aria-label="Synchronizing">
+                <span className="sync-indicator-dot"></span>
+                <span className="sync-indicator-label">SYNC</span>
               </div>
             )}
           </main>

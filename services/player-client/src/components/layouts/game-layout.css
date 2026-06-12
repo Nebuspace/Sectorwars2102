@@ -663,8 +663,9 @@
   box-sizing: border-box;
 }
 
-/* Loading overlay */
-.loading-overlay {
+/* Loading overlay — scoped name to avoid colliding with the global
+   .loading-overlay defined in first-login.css. */
+.viewport-loading-overlay {
   position: absolute;
   top: 0;
   left: 0;
@@ -702,6 +703,66 @@
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
+}
+
+/* Background-sync indicator — shown for refreshes AFTER initial load.
+   Non-blocking by design: the viewport children stay mounted underneath
+   (the full .viewport-loading-overlay is reserved for the true initial load).
+   Appears only when a refresh persists >300ms (delayed in GameLayout.tsx
+   to avoid flicker on fast scans/jumps). pointer-events: none so it can
+   never intercept cockpit controls. Same CRT idiom as .data-readout /
+   .genesis-ready-indicator: cyan glow, mono caps, pulsing beacon dot. */
+.sync-indicator {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-md);
+  z-index: 90; /* over viewport content, under the initial-load overlay (100) */
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0.25rem 0.6rem;
+  background: rgba(10, 10, 15, 0.85);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 12px rgba(0, 217, 255, 0.2);
+  pointer-events: none;
+  animation: sync-indicator-in 0.2s ease-out;
+}
+
+.sync-indicator-dot {
+  width: 7px;
+  height: 7px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  animation: sync-dot-pulse 1s ease-in-out infinite;
+}
+
+.sync-indicator-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.6);
+  line-height: 1;
+}
+
+@keyframes sync-indicator-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sync-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 4px rgba(0, 217, 255, 0.8);
+  }
+  50% {
+    opacity: 0.4;
+    box-shadow: 0 0 10px rgba(0, 217, 255, 0.9), 0 0 18px rgba(0, 217, 255, 0.4);
+  }
 }
 
 /* Responsive design */

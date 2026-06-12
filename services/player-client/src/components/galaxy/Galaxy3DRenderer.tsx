@@ -143,7 +143,11 @@ function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => 
     }
   }, [currentSector, sectorPositions, camera]);
 
-  if (isLoading || !sectors) {
+  // Only show the placeholder on the true first load (no sectors yet).
+  // Once sectors exist, a background `isLoading` (global refresh after a
+  // scan/jump/move/dock) must NOT tear down the whole Three.js scene —
+  // doing so destroys canvas/camera state on every refresh.
+  if (!sectors || (sectors.length === 0 && isLoading)) {
     return (
       <Html center>
         <div className="loading-container">
