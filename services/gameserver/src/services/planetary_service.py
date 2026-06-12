@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 import logging
 
+from src.core.game_time import canonical_hours_since
 from src.models.player import Player
 from src.models.planet import Planet, player_planets
 from src.models.sector import Sector
@@ -30,6 +31,16 @@ DEFENSE_MAX_LEVEL = 10          # Maximum defense level
 # Canon: DOCS/API/v1/sectors-planets.aispec — siege morale loss is
 # "mitigated by 0.05 × defense_level", i.e. 5% damage reduction per level
 DEFENSE_DAMAGE_REDUCTION_PER_LEVEL = 0.05
+
+# Lazy siege cadence. Canon (FEATURES/planets/defense.md "Siege") defines the
+# per-turn effects (SIEGE_MORALE_LOSS_PER_TURN, defense mitigation) but never
+# a wall-clock length for a siege "turn" — apply_siege_effects was written
+# for a turn-processing scheduler that does not exist. NO-CANON: one siege
+# turn = 24 canonical hours (one canonical day), matching the daily cadence
+# of production and colonist growth; an undefended planet (100 morale,
+# 5/turn) becomes capture-vulnerable after ~20 canonical days under siege.
+# Runs through GAME_TIME_SCALE like every other duration.
+SIEGE_TURN_HOURS = 24.0
 
 # Shield Generator Levels (0-10)
 # Uses planet.defense_shields to track generator level, planet.shields for strength
@@ -123,7 +134,22 @@ class PlanetaryService:
             raise ValueError("Planet not found or not owned by player")
 
         # Lazily apply colonist growth accrued since the last read
-        if self.apply_population_growth(planet):
+        changed = self.apply_population_growth(planet)
+
+        # Siege validity check BEFORE decay (S2): re-evaluate whether the siege
+        # still holds (enemies present AND owner absent) before applying any
+        # morale loss. Canon (defense.md "Siege") requires owner ABSENCE for a
+        # siege — so the owner standing on the planet (the common case for this
+        # owner-facing detail read) must LIFT the siege, not decay morale. A
+        # stale siege whose enemies have left also lifts here rather than
+        # bleeding morale on every detail fetch. _detect_siege commits its own
+        # state change; only the remaining lazy mutations need our commit.
+        if planet.under_siege:
+            self._detect_siege(planet, planet.owner_id or player_id)
+        # Apply accrued morale decay only if the siege survived validation.
+        if planet.under_siege:
+            changed = self.advance_siege(planet) or changed
+        if changed:
             self.db.commit()
 
         return self._format_planet_data(planet)
@@ -526,8 +552,19 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found or not owned by player")
 
-        # Run siege detection to get current state
+        # Settle accrued morale decay BEFORE re-evaluating siege validity (S1):
+        # if the siege is about to lift this read, the turns that already
+        # elapsed under it must still be applied — detecting first would clear
+        # siege_started_at and silently forgive that decay.
+        siege_advanced = planet.under_siege and self.advance_siege(planet)
+
+        # Run siege detection to get current state (may lift the siege)
         siege_info = self._detect_siege(planet, player_id)
+
+        if siege_advanced:
+            # advance_siege mutated morale/siege_turns; _detect_siege already
+            # committed its own changes, so persist the decay too.
+            self.db.commit()
 
         if not planet.under_siege:
             return {
@@ -542,7 +579,11 @@ class PlanetaryService:
             "underSiege": True,
             "siegeDetails": {
                 "siegeStartedAt": planet.siege_started_at.isoformat() if planet.siege_started_at else None,
-                "siegeTurns": planet.siege_turns,
+                # Display turns = turns actually applied since onset (S4):
+                # siege_turns carries the escalation threshold as a baseline,
+                # so subtract it so the client shows "siege turns elapsed", not
+                # the internal counter that starts at SIEGE_TURNS_THRESHOLD.
+                "siegeTurns": max(0, (planet.siege_turns or 0) - SIEGE_TURNS_THRESHOLD),
                 "attackerId": str(planet.siege_attacker_id) if planet.siege_attacker_id else None,
                 "enemyShips": siege_info.get("enemy_ship_count", 0),
                 "effects": {
@@ -577,11 +618,21 @@ class PlanetaryService:
             return {"underSiege": False, "changed": False}
 
         owner_id = owner_record[0]
+
+        # Settle accrued morale decay BEFORE re-evaluating siege validity (S1),
+        # so a siege that lifts this turn still applies the elapsed decay rather
+        # than forgiving it when _detect_siege clears siege_started_at.
+        siege_advanced = planet.under_siege and self.advance_siege(planet)
+
         siege_info = self._detect_siege(planet, owner_id)
+
+        if siege_advanced:
+            # _detect_siege committed its own changes; persist the decay too.
+            self.db.commit()
 
         return {
             "underSiege": planet.under_siege,
-            "changed": siege_info.get("state_changed", False),
+            "changed": siege_info.get("state_changed", False) or siege_advanced,
             "morale": planet.morale,
             "isVulnerable": planet.morale <= 0
         }
@@ -599,6 +650,20 @@ class PlanetaryService:
         if not planet.under_siege:
             return {"applied": False, "reason": "Planet is not under siege"}
 
+        effects_applied = self._apply_siege_turn(planet)
+
+        self.db.commit()
+
+        return {
+            "applied": True,
+            "effects": effects_applied
+        }
+
+    def _apply_siege_turn(self, planet: Planet) -> Dict[str, Any]:
+        """
+        One siege turn's effects (canon numbers from defense.md "Siege").
+        Mutates the planet; the caller commits.
+        """
         effects_applied = {}
 
         # 1. Morale decreases by SIEGE_MORALE_LOSS_PER_TURN per turn
@@ -629,12 +694,49 @@ class PlanetaryService:
         planet.siege_turns = (planet.siege_turns or 0) + 1
         effects_applied["siegeTurns"] = planet.siege_turns
 
-        self.db.commit()
+        return effects_applied
 
-        return {
-            "applied": True,
-            "effects": effects_applied
-        }
+    def advance_siege(self, planet: Planet) -> bool:
+        """
+        Advance-on-read siege progression: apply every siege turn accrued
+        since the siege began (no scheduler calls apply_siege_effects, so
+        reads keep besieged planets honest — same lazy pattern as colonist
+        growth and terraforming).
+
+        Anchor arithmetic: `siege_turns` doubles as the applied-turn marker.
+        At siege onset _detect_siege leaves it exactly at
+        SIEGE_TURNS_THRESHOLD (the escalation counter that triggered the
+        siege), so turns applied since onset = siege_turns - threshold.
+        Elapsed turns derive from siege_started_at via canonical hours
+        (GAME_TIME_SCALE-aware) at SIEGE_TURN_HOURS per turn.
+
+        Mutates the planet (morale, siege_turns); caller commits.
+        Returns True if any turns were applied.
+        """
+        if not planet.under_siege or not planet.siege_started_at:
+            return False
+
+        elapsed_turns = int(
+            canonical_hours_since(planet.siege_started_at) // SIEGE_TURN_HOURS
+        )
+        applied_turns = max(0, (planet.siege_turns or 0) - SIEGE_TURNS_THRESHOLD)
+        pending = elapsed_turns - applied_turns
+        if pending <= 0:
+            return False
+
+        # Morale floors at 0, so very old sieges converge quickly; the cap
+        # only guards against pathological anchors.
+        applied = min(pending, 1000)
+        for _ in range(applied):
+            self._apply_siege_turn(planet)
+
+        # Report the capped, actually-applied count (S4) — logging `pending`
+        # would overstate the work for a pathologically old anchor.
+        logger.info(
+            f"Lazy siege advance on planet {planet.name} (id={planet.id}): "
+            f"{applied} turn(s) applied, morale now {planet.morale}"
+        )
+        return True
 
     def upgrade_defense(
         self,
@@ -849,6 +951,11 @@ class PlanetaryService:
         if not planet.under_siege:
             return {"success": True, "message": "Planet was not under siege"}
 
+        # Settle pending morale decay BEFORE clearing siege state (S1): the
+        # turns that elapsed while the siege stood are earned and must be
+        # applied; clearing siege_started_at first would discard them.
+        self.advance_siege(planet)
+
         planet.under_siege = False
         planet.siege_started_at = None
         planet.siege_attacker_id = None
@@ -926,6 +1033,12 @@ class PlanetaryService:
                     planet.siege_started_at = datetime.utcnow()
                     # Record the first enemy ship's owner as the attacker
                     planet.siege_attacker_id = enemy_ships[0].owner_id
+                    # Pin the counter to exactly the threshold at onset (S4):
+                    # advance_siege derives applied_turns as
+                    # siege_turns - threshold, so any escalation overshoot left
+                    # here would be mistaken for already-applied decay turns,
+                    # silently bypassing morale loss on a re-siege after a lift.
+                    planet.siege_turns = SIEGE_TURNS_THRESHOLD
                     result["state_changed"] = True
                     logger.info(
                         f"Siege begun on planet {planet.name} (id={planet.id}) "
@@ -971,7 +1084,8 @@ class PlanetaryService:
         if planet.under_siege:
             siege_details = {
                 "siegeStartedAt": planet.siege_started_at.isoformat() if planet.siege_started_at else None,
-                "siegeTurns": planet.siege_turns or 0,
+                # Applied-turns display (S4): subtract the threshold baseline.
+                "siegeTurns": max(0, (planet.siege_turns or 0) - SIEGE_TURNS_THRESHOLD),
                 "attackerId": str(planet.siege_attacker_id) if planet.siege_attacker_id else None,
                 "effects": {
                     "moraleLossPerTurn": SIEGE_MORALE_LOSS_PER_TURN,

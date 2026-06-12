@@ -28,6 +28,7 @@ from src.models.sector import Sector, sector_warps
 from src.models.ship import Ship, ShipType
 from src.services.combat_service import CombatService
 from src.services.movement_service import MovementService
+from src.services.planetary_service import PlanetaryService
 
 # Mounted under the /api/v1 api_router — a "/api/combat" prefix here doubled
 # up to /api/v1/api/combat, which no client called.
@@ -88,10 +89,42 @@ def _execute_planet_assault(db: Session, player: Player, planet_id: UUID) -> dic
     if (planet.defense_level or 0) <= 0 and (planet.shields or 0) <= 0:
         raise HTTPException(status_code=400, detail="Planet has no defenses to assault")
 
+    # Materialize accrued siege state when the ATTACKER acts (S3): siege morale
+    # decay was previously lazy on the VICTIM's reads only (get_siege_status /
+    # get_planet_details), so an attacker assaulting a long-besieged planet saw
+    # stale morale. Settle the siege here — advance accrued morale decay and
+    # re-evaluate siege validity — so the target's morale/vulnerability reflect
+    # reality at the moment of attack. check_and_update_siege detects + advances
+    # + commits, so the fresh planet query inside attack_planet sees the
+    # settled state.
+    #
+    # CANON GAP (honest note): combat_service._resolve_planet_combat gates
+    # capture purely on planet_damage >= planet_defense_level — morale<=0
+    # "vulnerability" does NOT shortcut or cheapen capture in the resolution
+    # math, and defense.md does not define what siege vulnerability MEANS for a
+    # direct assault (only that morale<=0 marks a planet "vulnerable to
+    # capture"). With canon silent on the assault×vulnerability interaction we
+    # do NOT invent a morale-based capture path; we only settle the siege state
+    # so morale/isVulnerable are truthful. Flagged for Max — see return.
+    if planet.under_siege:
+        try:
+            PlanetaryService(db).check_and_update_siege(planet_id)
+        except ValueError:
+            pass  # unowned/transient — attack_planet's own guards still apply
+
     # Remaining guards (sector match, ownership, active ship, docked/landed,
     # turn availability) live in CombatService.attack_planet, which charges
     # the canon 3-turn cost and locks the attacker row.
-    return CombatService(db).attack_planet(attacker_id=player.id, planet_id=planet_id)
+    result = CombatService(db).attack_planet(attacker_id=player.id, planet_id=planet_id)
+    if isinstance(result, dict):
+        # Surface the canon gap to callers/telemetry without altering capture
+        # mechanics (morale vulnerability is settled but not wired to capture).
+        result.setdefault(
+            "siegeVulnerabilityNote",
+            "Siege morale state settled at assault time; canon does not define "
+            "a morale-based capture shortcut, so capture remains defense-gated."
+        )
+    return result
 
 
 def _get_combat_log_for_player(db: Session, combat_id_raw: str, player: Player) -> CombatLog:

@@ -2,11 +2,14 @@
 Message Service for handling player communication
 """
 
-from typing import Optional, List, Dict, Any
+from collections import defaultdict, deque
+from typing import Optional, List, Dict, Any, Deque
 from datetime import datetime
+from time import monotonic
 from uuid import UUID, uuid4
 import logging
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, desc
 
@@ -20,10 +23,51 @@ manager = ConnectionManager()
 
 logger = logging.getLogger(__name__)
 
+# Anti-spam send rate limit (sliding window).
+# NOTE: This window lives in process memory, so it is per-worker and resets on
+# restart — adequate for single-process dev. A multi-worker / multi-replica
+# deployment must move this to a shared store (e.g. a Redis sorted-set per
+# sender keyed on timestamp) for the limit to hold globally.
+_SEND_RATE_MAX = 5            # max sends ...
+_SEND_RATE_WINDOW = 60.0      # ... per this many seconds, per sender
+_send_history: Dict[UUID, Deque[float]] = defaultdict(deque)
+
 
 class MessageService:
     """Service for managing player messages"""
-    
+
+    @staticmethod
+    def check_send_rate_limit(sender_id: UUID) -> None:
+        """Enforce a per-sender sliding-window send limit.
+
+        Raises HTTPException(429) with an honest retry hint when the sender has
+        already sent _SEND_RATE_MAX messages within the last _SEND_RATE_WINDOW
+        seconds. On success it records the current send.
+
+        In-memory / per-process scope (see module note) — fine for dev; promote
+        to Redis for multi-worker production.
+        """
+        now = monotonic()
+        window_start = now - _SEND_RATE_WINDOW
+        history = _send_history[sender_id]
+
+        # Drop timestamps that have aged out of the window
+        while history and history[0] < window_start:
+            history.popleft()
+
+        if len(history) >= _SEND_RATE_MAX:
+            retry_after = max(1, int(history[0] + _SEND_RATE_WINDOW - now) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Too many messages — limit is {_SEND_RATE_MAX} per "
+                    f"{int(_SEND_RATE_WINDOW)}s. Try again in {retry_after}s."
+                ),
+            )
+
+        history.append(now)
+
+
     @staticmethod
     async def send_message(
         db: Session,
@@ -45,6 +89,10 @@ class MessageService:
         
         # Validate recipient or team
         if recipient_id:
+            # A player cannot hail themselves — reject cleanly (the route maps
+            # ValueError -> 400) rather than creating a useless self-message.
+            if recipient_id == sender_id:
+                raise ValueError("Cannot send a message to yourself")
             recipient = db.query(Player).filter(Player.id == recipient_id).first()
             if not recipient:
                 raise ValueError("Recipient not found")
@@ -60,14 +108,24 @@ class MessageService:
         else:
             raise ValueError("Either recipient_id or team_id must be provided")
         
-        # Handle threading
+        # Handle threading. A reply only inherits the referenced message's
+        # thread when the sender actually participated in it (was the original
+        # sender or recipient) — otherwise the reply link is silently ignored
+        # (treated as a fresh thread) so a guessed/forged reply_to_id can't
+        # splice a stranger into someone else's conversation. We never error on
+        # a bad reply_to_id; the message still sends as a new thread.
         if reply_to_id:
-            # Get the original message to inherit thread_id
             original = db.query(Message).filter(Message.id == reply_to_id).first()
-            if original:
+            sender_participated = original is not None and sender_id in (
+                original.sender_id, original.recipient_id
+            )
+            if sender_participated:
                 thread_id = original.thread_id or original.id
             else:
-                raise ValueError("Reply-to message not found")
+                # Drop the unauthorized/unknown reply link; start a new thread.
+                reply_to_id = None
+                if not thread_id:
+                    thread_id = uuid4()
         elif not thread_id:
             # New thread
             thread_id = uuid4()

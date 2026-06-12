@@ -2,6 +2,7 @@
 Message API endpoints for player communication
 """
 
+import logging
 from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
@@ -12,6 +13,8 @@ from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.services.message_service import MessageService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
@@ -44,13 +47,17 @@ async def send_message(
                 status_code=400,
                 detail="Either recipient_id or team_id must be provided"
             )
-        
+
         if request.recipient_id and request.team_id:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot send to both recipient and team"
             )
-        
+
+        # Anti-spam: per-sender sliding window. Raises HTTPException(429)
+        # with an honest retry detail when the sender is over the limit.
+        MessageService.check_send_rate_limit(current_player.id)
+
         # Send the message
         message = await MessageService.send_message(
             db=db,
@@ -62,16 +69,19 @@ async def send_message(
             priority=request.priority,
             reply_to_id=request.reply_to_id
         )
-        
+
         return MessageResponse(
             message_id=str(message.id),
             sent_at=message.sent_at.isoformat() if message.sent_at else ""
         )
-        
+
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to send message")
+        raise HTTPException(status_code=500, detail="Failed to send message")
 
 
 @router.get("/inbox")
@@ -90,11 +100,14 @@ async def get_inbox(
             page=page,
             limit=50
         )
-        
+
         return result
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to load inbox")
+        raise HTTPException(status_code=500, detail="Failed to load inbox")
 
 
 @router.get("/team/{team_id}")
@@ -113,13 +126,16 @@ async def get_team_messages(
             page=page,
             limit=50
         )
-        
+
         return result
-        
+
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to load team messages")
+        raise HTTPException(status_code=500, detail="Failed to load team messages")
 
 
 @router.put("/{message_id}/read")
@@ -138,11 +154,14 @@ async def mark_message_read(
         
         if not success:
             raise HTTPException(status_code=404, detail="Message not found")
-        
+
         return {"success": True}
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to mark message read")
+        raise HTTPException(status_code=500, detail="Failed to mark message as read")
 
 
 @router.delete("/{message_id}")
@@ -161,11 +180,14 @@ async def delete_message(
         
         if not success:
             raise HTTPException(status_code=404, detail="Message not found")
-        
+
         return {"success": True}
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to delete message")
+        raise HTTPException(status_code=500, detail="Failed to delete message")
 
 
 @router.get("/conversations")
@@ -182,11 +204,14 @@ async def get_conversations(
             page=page,
             limit=20
         )
-        
+
         return result
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to load conversations")
+        raise HTTPException(status_code=500, detail="Failed to load conversations")
 
 
 @router.post("/{message_id}/flag")
@@ -207,8 +232,11 @@ async def flag_message(
         
         if not success:
             raise HTTPException(status_code=404, detail="Message not found")
-        
+
         return {"success": True}
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to flag message")
+        raise HTTPException(status_code=500, detail="Failed to flag message")

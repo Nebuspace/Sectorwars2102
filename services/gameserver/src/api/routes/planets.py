@@ -452,6 +452,15 @@ async def transfer_colonists(
     service = PlanetaryService(db)
     service.apply_population_growth(planet)
 
+    # Settle banked terraforming ticks at the CURRENT population rate BEFORE
+    # the embark/disembark changes population (T2): the lazy terraforming
+    # advance scales habitability gain by population, so reconciling after the
+    # transfer would settle ticks earned under the old population at the new
+    # rate (a retroactive rate change a player could game by timing transfers).
+    if planet.terraforming_active:
+        from src.services.terraforming_service import TerraformingService
+        TerraformingService(db).settle_terraforming(planet)
+
     cargo = ship.cargo or {'used': 0, 'capacity': 50, 'contents': {}}
     contents = cargo.get('contents', {})
     ship_colonists = contents.get('colonists', 0)
@@ -1227,8 +1236,11 @@ async def get_terraforming_status(
     """
     Get terraforming status for a planet you own.
 
-    Reading status also lazily advances time-based progress and
-    completes the project once its duration has fully elapsed.
+    Reading status lazily applies every population-scaled tick accrued
+    since the project's last advance (1-3 habitability points per tick,
+    tick period derived from the level duration so a < 1,000-population
+    planet completes in exactly the documented duration) and completes
+    the project once the target habitability is reached.
     """
     try:
         pid = UUID(planet_id)
