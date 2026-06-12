@@ -156,6 +156,27 @@ export interface QuantumJumpResult {
   turns_remaining: number;
 }
 
+// One inbox entry, exactly as Message.to_dict() serializes it on the
+// gameserver (GET /api/v1/messages/inbox → {messages: [...], unread_count,
+// total, page, limit, pages}).
+export interface PlayerMessage {
+  id: string;
+  sender_id: string;
+  recipient_id: string | null;
+  team_id: string | null;
+  subject: string | null;
+  content: string;
+  sent_at: string | null;
+  read_at: string | null;
+  message_type: string;
+  priority: string;
+  thread_id: string | null;
+  reply_to_id: string | null;
+  flagged: boolean;
+  is_read: boolean;
+  sender_name?: string;
+}
+
 export interface PlayerState {
   id: string;
   username: string;
@@ -259,6 +280,20 @@ interface GameContextType {
   launchTakeover: (stationId: string) => Promise<unknown>;
   counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') => Promise<unknown>;
 
+  // Player-to-player hails (COMMS mailbox) — bound to /api/v1/messages/*.
+  // Follows the Port Office mold: no global isLoading/error churn, the
+  // COMMS monitor surfaces failures inline.
+  inboxMessages: PlayerMessage[];
+  unreadMessageCount: number;
+  refreshInbox: () => Promise<void>;
+  sendPlayerMessage: (
+    recipientId: string,
+    content: string,
+    subject?: string | null,
+    replyToId?: string | null
+  ) => Promise<{ message_id: string; sent_at: string }>;
+  markMessageRead: (messageId: string) => Promise<void>;
+
   // Quantum drive (Warp Jumper) — status is auto-refreshed alongside player
   // state whenever the active ship is a WARP_JUMPER, null otherwise
   quantumStatus: QuantumStatus | null;
@@ -319,6 +354,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   // Market
   const [marketInfo, setMarketInfo] = useState<MarketInfo | null>(null);
+
+  // Player-to-player hails (COMMS mailbox)
+  const [inboxMessages, setInboxMessages] = useState<PlayerMessage[]>([]);
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
 
   // Quantum drive (Warp Jumper only)
   const [quantumStatus, setQuantumStatus] = useState<QuantumStatus | null>(null);
@@ -1228,6 +1267,84 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // --- Player-to-player hails: the COMMS mailbox ---
+  // These follow the getStationSlips/Port Office mold: no global
+  // isLoading/error churn — the COMMS monitor surfaces failures inline.
+
+  // Pull the inbox (first page covers the cockpit mailbox; the backend
+  // serves 50 per page). Sets both the message list and the unread badge
+  // count from the same authoritative response.
+  const refreshInbox = async () => {
+    if (!user) return;
+
+    try {
+      const response = await api.get('/api/v1/messages/inbox');
+      const data = response.data as { messages: PlayerMessage[]; unread_count: number };
+      setInboxMessages(data.messages || []);
+      setUnreadMessageCount(data.unread_count || 0);
+      // Server count is authoritative again — drop the local decrement guard
+      locallyReadIds.current.clear();
+    } catch (error) {
+      console.warn('GameContext: Failed to load message inbox:', error);
+      // Keep the previously loaded inbox on transient failures
+    }
+  };
+
+  // Send a hail to another player — POST /api/v1/messages/send
+  // {recipient_id, subject?, content, reply_to_id?} (snake_case per
+  // MessageCreateRequest). Returns {message_id, sent_at}.
+  const sendPlayerMessage = async (
+    recipientId: string,
+    content: string,
+    subject?: string | null,
+    replyToId?: string | null
+  ): Promise<{ message_id: string; sent_at: string }> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post('/api/v1/messages/send', {
+        recipient_id: recipientId,
+        subject: subject || null,
+        content,
+        reply_to_id: replyToId || null
+      });
+      return response.data as { message_id: string; sent_at: string };
+    } catch (error: any) {
+      console.error('Error sending player message:', error);
+      throw error;
+    }
+  };
+
+  // Mark one hail read — PUT /api/v1/messages/{id}/read — then update the
+  // local list and badge in place (no refetch needed for a single flag).
+  // The ref guard makes the badge decrement idempotent per message id even
+  // under stale closures / rapid double-expands; refreshInbox resets it
+  // because a fresh server count re-baselines everything.
+  const locallyReadIds = useRef<Set<string>>(new Set());
+  const markMessageRead = async (messageId: string): Promise<void> => {
+    if (!user) throw new Error('Not authenticated');
+
+    const wasUnread =
+      !locallyReadIds.current.has(messageId) &&
+      inboxMessages.some(msg => msg.id === messageId && !msg.is_read);
+
+    try {
+      await api.put(`/api/v1/messages/${messageId}/read`);
+      setInboxMessages(prev => prev.map(msg =>
+        msg.id === messageId && !msg.is_read
+          ? { ...msg, is_read: true, read_at: new Date().toISOString() }
+          : msg
+      ));
+      if (wasUnread) {
+        locallyReadIds.current.add(messageId);
+        setUnreadMessageCount(prev => Math.max(0, prev - 1));
+      }
+    } catch (error: any) {
+      console.error('Error marking message read:', error);
+      throw error;
+    }
+  };
+
   // --- Quantum drive (Warp Jumper): scan / jump / charge refinement ---
   // These follow the Port Office mold: no global isLoading/error churn — the
   // Quantum Drive console surfaces failures inline. Status is a lightweight
@@ -1396,6 +1513,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     getTakeoverStatus,
     launchTakeover,
     counterTakeover,
+
+    // Player-to-player hails (COMMS mailbox)
+    inboxMessages,
+    unreadMessageCount,
+    refreshInbox,
+    sendPlayerMessage,
+    markMessageRead,
 
     // Quantum drive (Warp Jumper)
     quantumStatus,

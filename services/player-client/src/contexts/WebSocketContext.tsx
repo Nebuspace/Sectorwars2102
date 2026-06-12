@@ -54,6 +54,20 @@ interface WebSocketContextType {
   // Player movement tracking
   recentMovements: PlayerMovementMessage[];
 
+  // Player-to-player hails: bumps once per inbound `new_message`
+  // notification (message_service._send_notification). Consumers (the
+  // COMMS mailbox) watch this counter and refresh the inbox — the badge
+  // updates live without a reload. lastNewMessage carries the payload.
+  newMessageSignal: number;
+  lastNewMessage: {
+    message_id: string;
+    sender_id: string;
+    sender_name: string;
+    preview: string;
+    sent_at: string | null;
+    priority: string;
+  } | null;
+
   // Connection management
   connect: () => void;
   disconnect: () => void;
@@ -101,6 +115,15 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   }>>([]);
   const [notifications, setNotifications] = useState<NotificationMessage[]>([]);
   const [recentMovements, setRecentMovements] = useState<PlayerMovementMessage[]>([]);
+  const [newMessageSignal, setNewMessageSignal] = useState(0);
+  const [lastNewMessage, setLastNewMessage] = useState<{
+    message_id: string;
+    sender_id: string;
+    sender_name: string;
+    preview: string;
+    sent_at: string | null;
+    priority: string;
+  } | null>(null);
 
   // Keep track of cleanup functions
   const cleanupFunctions = useRef<Array<() => void>>([]);
@@ -308,6 +331,27 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           });
           break;
           
+        case 'new_message':
+          // Player-to-player hail (message_service._send_notification).
+          // Stash the payload + bump the signal so the COMMS mailbox can
+          // refresh its inbox, and surface a toast for pilots who aren't
+          // watching the COMMS monitor.
+          setLastNewMessage({
+            message_id: String(message.message_id || ''),
+            sender_id: String(message.sender_id || ''),
+            sender_name: String(message.sender_name || 'UNKNOWN'),
+            preview: String(message.preview || ''),
+            sent_at: message.sent_at || null,
+            priority: String(message.priority || 'normal')
+          });
+          setNewMessageSignal(prev => prev + 1);
+          addNotification({
+            title: `Incoming hail from ${message.sender_name || 'unknown contact'}`,
+            content: message.preview || 'New transmission received',
+            level: 'info'
+          });
+          break;
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -402,6 +446,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
 
     // Player movement tracking
     recentMovements,
+
+    // Player-to-player hails
+    newMessageSignal,
+    lastNewMessage,
 
     // Connection management
     connect,
