@@ -147,7 +147,7 @@ async def create_fleet(
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
-            commander_name=fleet.commander.name if fleet.commander else None,
+            commander_name=fleet.commander.username if fleet.commander else None,
             sector_id=fleet.sector_id,
             sector_name=fleet.sector.name if fleet.sector else None,
             member_count=len(fleet.members)
@@ -183,7 +183,7 @@ async def get_team_fleets(
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
-            commander_name=fleet.commander.name if fleet.commander else None,
+            commander_name=fleet.commander.username if fleet.commander else None,
             sector_id=fleet.sector_id,
             sector_name=fleet.sector.name if fleet.sector else None,
             member_count=len(fleet.members)
@@ -216,7 +216,7 @@ async def get_my_fleets(
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
-            commander_name=fleet.commander.name if fleet.commander else None,
+            commander_name=fleet.commander.username if fleet.commander else None,
             sector_id=fleet.sector_id,
             sector_name=fleet.sector.name if fleet.sector else None,
             member_count=len(fleet.members)
@@ -336,7 +336,7 @@ async def get_fleet(
         morale=fleet.morale,
         supply_level=fleet.supply_level,
         commander_id=fleet.commander_id,
-        commander_name=fleet.commander.name if fleet.commander else None,
+        commander_name=fleet.commander.username if fleet.commander else None,
         sector_id=fleet.sector_id,
         sector_name=fleet.sector.name if fleet.sector else None,
         member_count=len(fleet.members)
@@ -368,7 +368,7 @@ async def get_fleet_members(
             ship_name=member.ship.name if member.ship else "Unknown",
             ship_type=member.ship.type if member.ship else "Unknown",
             player_id=member.player_id,
-            player_name=member.player.name if member.player else "Unknown",
+            player_name=member.player.username if member.player else "Unknown",
             role=member.role,
             position=member.position,
             ready_status=member.ready_status
@@ -413,7 +413,7 @@ async def add_ship_to_fleet(
             ship_name=member.ship.name,
             ship_type=member.ship.type,
             player_id=member.player_id,
-            player_name=member.player.name,
+            player_name=member.player.username,
             role=member.role,
             position=member.position,
             ready_status=member.ready_status

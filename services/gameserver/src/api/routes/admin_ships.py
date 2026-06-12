@@ -10,6 +10,7 @@ from uuid import UUID
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import and_, or_, func
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -222,12 +223,17 @@ async def emergency_ship_action(
         combat["hull"] = combat.get("max_hull", 100)
         combat["shields"] = combat.get("max_shields", 100)
         ship.combat = combat
+        # `combat = ship.combat or {}` returns the SAME dict reference when the
+        # column is already populated; reassigning it to itself does not mark
+        # the attribute dirty. flag_modified guarantees the JSONB UPDATE fires.
+        flag_modified(ship, "combat")
 
         maintenance = ship.maintenance or {}
         maintenance["condition"] = 100.0
         maintenance["last_maintenance"] = datetime.utcnow().isoformat()
         maintenance["repair_needed"] = False
         ship.maintenance = maintenance
+        flag_modified(ship, "maintenance")
 
         ship.status = ShipStatus.DOCKED.value
         ship.is_active = True
@@ -239,6 +245,7 @@ async def emergency_ship_action(
         maintenance = ship.maintenance or {}
         maintenance["condition"] = 100.0
         ship.maintenance = maintenance
+        flag_modified(ship, "maintenance")
 
         ship.status = ShipStatus.DOCKED.value
         ship.is_active = True

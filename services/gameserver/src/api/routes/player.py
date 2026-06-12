@@ -6,11 +6,13 @@ from pydantic import BaseModel
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.ship import Ship
+from src.models.ship import Ship, ShipType
 from src.models.sector import Sector
+from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel
 from src.services.movement_service import MovementService
 from src.services.ranking_service import RankingService
+from src.services.ship_service import ShipService
 
 router = APIRouter(
     prefix="/player",
@@ -58,6 +60,16 @@ class ShipResponse(BaseModel):
     current_value: int
     genesis_devices: int = 0
     max_genesis_devices: int = 0
+
+class RepairShipResponse(BaseModel):
+    success: bool
+    message: str
+    credits_charged: int = 0
+    credits_remaining: int = 0
+    hull: float = 0
+    shields: float = 0
+    max_hull: float = 0
+    max_shields: float = 0
 
 class SectorResponse(BaseModel):
     id: str
@@ -209,6 +221,130 @@ async def get_current_ship(
         current_value=ship.current_value,
         genesis_devices=ship.genesis_devices or 0,
         max_genesis_devices=ship.max_genesis_devices or 0
+    )
+
+@router.post("/ships/{ship_id}/repair", response_model=RepairShipResponse)
+async def repair_player_ship(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Repair the player's ship at a docked station offering ship_repair.
+
+    Canon pricing (FEATURES/gameplay/ships.md:84 "Repair options — Basic"):
+    "5% of ship value per +10% rating". "Ship value" is the ship's
+    current_value; "rating" is the combined hull+shields condition. The
+    player must be docked at a station whose services include ship_repair.
+    Charges the full restore-to-max cost atomically, then restores hull and
+    shields to max via ShipService.repair_ship (Basic = full restore).
+    """
+    # Lock the player row so the credit charge is race-safe.
+    locked_player = db.query(Player).filter(
+        Player.id == player.id
+    ).with_for_update().first()
+
+    if not locked_player.is_docked or not locked_player.current_port_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be docked at a station to repair"
+        )
+
+    station = db.query(Station).filter(
+        Station.id == locked_player.current_port_id
+    ).first()
+    if not station:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Docked station not found"
+        )
+
+    services = station.services or {}
+    if not services.get("ship_repair"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This station does not offer ship repair services"
+        )
+
+    # Lock the ship row; must be the player's own ship.
+    ship = db.query(Ship).filter(
+        Ship.id == ship_id
+    ).with_for_update().first()
+    if not ship or ship.owner_id != locked_player.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ship not found"
+        )
+    if ship.is_destroyed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot repair a destroyed ship"
+        )
+    if ship.type == ShipType.ESCAPE_POD:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Escape pods do not require paid repair"
+        )
+
+    combat = ship.combat or {}
+    max_hull = combat.get("max_hull") or 0
+    max_shields = combat.get("max_shields") or 0
+    cur_hull = combat.get("hull") or 0
+    cur_shields = combat.get("shields") or 0
+
+    # Combined rating deficit as a percentage of the combined max pool. This is
+    # the "rating" the canon price is keyed to (hull + shields condition).
+    total_max = max_hull + max_shields
+    if total_max <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ship has no repairable systems"
+        )
+    deficit = (max_hull - cur_hull) + (max_shields - cur_shields)
+    deficit_pct = max(0.0, (deficit / total_max) * 100.0)
+
+    if deficit_pct <= 0:
+        return RepairShipResponse(
+            success=True,
+            message="Ship is already at full condition",
+            credits_charged=0,
+            credits_remaining=locked_player.credits,
+            hull=cur_hull,
+            shields=cur_shields,
+            max_hull=max_hull,
+            max_shields=max_shields,
+        )
+
+    # Basic repair: 5% of current_value per +10% rating restored.
+    cost = int(round((ship.current_value or 0) * 0.05 * (deficit_pct / 10.0)))
+
+    if locked_player.credits < cost:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Not enough credits to repair (need {cost})"
+        )
+
+    locked_player.credits -= cost
+
+    # Basic repair fully restores hull/shields (repair_percentage=100).
+    ship_service = ShipService(db)
+    repair_result = ship_service.repair_ship(ship, repair_percentage=100.0)
+    if not repair_result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=repair_result.get("message", "Repair failed")
+        )
+
+    db.commit()
+
+    return RepairShipResponse(
+        success=True,
+        message=f"Ship repaired for {cost} credits",
+        credits_charged=cost,
+        credits_remaining=locked_player.credits,
+        hull=ship.combat.get("hull", max_hull),
+        shields=ship.combat.get("shields", max_shields),
+        max_hull=max_hull,
+        max_shields=max_shields,
     )
 
 @router.get("/current-sector", response_model=SectorResponse)

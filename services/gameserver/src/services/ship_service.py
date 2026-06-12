@@ -381,19 +381,41 @@ class ShipService:
             # Escape pods have minimal repair needs
             ship.combat["hull"] = ship.combat["max_hull"]
             ship.combat["shields"] = ship.combat["max_shields"]
+            # In-place JSONB mutation needs an explicit dirty flag or the
+            # caller's commit silently drops the restore.
+            flag_modified(ship, "combat")
             return {"success": True, "message": "Escape Pod systems restored"}
-        
+
         # Get current combat stats
         combat = ship.combat
-        
-        # Calculate repair amounts
-        hull_repair = int((combat["max_hull"] - combat["hull"]) * (repair_percentage / 100.0))
-        shield_repair = int((combat["max_shields"] - combat["shields"]) * (repair_percentage / 100.0))
-        
+        max_hull = combat["max_hull"]
+        max_shields = combat["max_shields"]
+        cur_hull = combat["hull"]
+        cur_shields = combat["shields"]
+
+        if repair_percentage >= 100:
+            # Full repair restores hull/shields to max exactly — no float
+            # truncation gap at the cap.
+            new_hull = max_hull
+            new_shields = max_shields
+        else:
+            # Partial repair: restore repair_percentage of the missing pool.
+            # Round to 1 decimal to match the resolver's stored precision
+            # (combat-resolver.md damage stack rounds hull/shields to 1dp);
+            # the old int() truncated fractional restores away.
+            new_hull = min(max_hull, round(cur_hull + (max_hull - cur_hull) * (repair_percentage / 100.0), 1))
+            new_shields = min(max_shields, round(cur_shields + (max_shields - cur_shields) * (repair_percentage / 100.0), 1))
+
+        hull_repair = round(new_hull - cur_hull, 1)
+        shield_repair = round(new_shields - cur_shields, 1)
+
         # Apply repairs
-        combat["hull"] = min(combat["max_hull"], combat["hull"] + hull_repair)
-        combat["shields"] = min(combat["max_shields"], combat["shields"] + shield_repair)
-        
+        combat["hull"] = new_hull
+        combat["shields"] = new_shields
+        # In-place JSONB mutation: SQLAlchemy needs flag_modified to detect it
+        # and emit the UPDATE, otherwise the repair is lost on commit.
+        flag_modified(ship, "combat")
+
         # Update maintenance
         if "maintenance" not in ship.maintenance:
             ship.maintenance = {}

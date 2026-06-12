@@ -90,20 +90,47 @@ class CombatService:
     
     def attack_player(self, attacker_id: uuid.UUID, defender_id: uuid.UUID) -> Dict[str, Any]:
         """Initiate ship-to-ship combat between two players."""
+        # Self-attack guard (combat-resolver.md Invariant 5:
+        # attacker.id != defender.id). Reject before any lock/charge.
+        if attacker_id == defender_id:
+            return {"success": False, "message": "You cannot attack yourself"}
+
         # Get players with row locks to prevent concurrent combat race conditions
         attacker = self.db.query(Player).filter(Player.id == attacker_id).with_for_update().first()
         defender = self.db.query(Player).filter(Player.id == defender_id).with_for_update().first()
-        
+
         if not attacker or not defender:
             return {"success": False, "message": "Player not found"}
-        
+
         # Check if attacker has an active ship
         if not attacker.current_ship:
             return {"success": False, "message": "Attacker has no active ship"}
-        
+
         # Check if defender has an active ship
         if not defender.current_ship:
             return {"success": False, "message": "Defender has no active ship"}
+
+        # Lock both current_ship rows as well as the player rows, mirroring the
+        # NPC path's ship lock (attack_npc_ship locks the target Ship FOR
+        # UPDATE). Without this the combat JSONB (hull/shields) read+mutated
+        # below is racy against a concurrent fight on the same ship. Single
+        # ordered query (by id) to keep a deterministic lock order and avoid
+        # deadlock between two symmetric attacks.
+        ship_ids = sorted(
+            {attacker.current_ship_id, defender.current_ship_id},
+            key=lambda sid: str(sid),
+        )
+        self.db.query(Ship).filter(
+            Ship.id.in_(ship_ids)
+        ).order_by(Ship.id).populate_existing().with_for_update().all()
+
+        # Escape pods are indestructible — the resolver rejects them as valid
+        # targets at the validation step before any turn charge or damage roll
+        # (combat-resolver.md S-V1: "target.type == 'escape_pod' raises
+        # ERR_INVALID_TARGET with escape_pods_are_indestructible"). Closes the
+        # kick-them-while-they're-down vector.
+        if defender.current_ship.type == ShipType.ESCAPE_POD:
+            return {"success": False, "message": "escape_pods_are_indestructible"}
 
         # A Warp Jumper harmonizing into a gate focus is invulnerable for the
         # harmonization window (ADR-0029 / warp-gates.md Phase 3: "Hostile
@@ -180,6 +207,15 @@ class CombatService:
         # pod's emergency cargo instead of the defeated ship's hold
         if combat_result["cargo_stolen"]:
             self._transfer_cargo(defender_ship, attacker_ship, combat_result["cargo_stolen"])
+
+        # Snapshot the defender's PRE-destruction ship type. _handle_ship_destruction
+        # swaps the destroyed defender into an escape pod, so reading
+        # defender.current_ship.type AFTER the swap would always see ESCAPE_POD
+        # and misfire the kill_escape_pod reputation penalty on every kill. The
+        # penalty must be evaluated against the ship that was actually destroyed.
+        defender_pre_destruction_type = (
+            defender.current_ship.type if defender.current_ship else None
+        )
 
         # Apply combat effects
         if combat_result["defender_ship_destroyed"]:
@@ -262,8 +298,10 @@ class CombatService:
                 else:
                     # Attacked an innocent (no bounty) — reputation penalty
                     rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
-                # Check if defender was in escape pod
-                if defender.current_ship and defender.current_ship.type == ShipType.ESCAPE_POD:
+                # Check if the DESTROYED defender ship was an escape pod —
+                # evaluated against the pre-destruction snapshot, not
+                # defender.current_ship (which is now the post-kill pod).
+                if defender_pre_destruction_type == ShipType.ESCAPE_POD:
                     rep_service.adjust_reputation(attacker.id, -500, "kill_escape_pod")
             elif combat_result["result"] == CombatResult.DEFENDER_VICTORY:
                 # Defender successfully defended — reputation boost
@@ -1151,7 +1189,117 @@ class CombatService:
 
         # player_owned, central_nexus, or unresolved region: combat allowed
         return True
-    
+
+    def _ensure_combat_state(self, ship: Ship) -> Dict[str, Any]:
+        """Return the ship's live combat-state dict, seeding any missing
+        shield/hull keys from the ship's ShipSpecification — the same source
+        npc_spawn_service and ShipService.create_ship seed Ship.combat from,
+        so no constants are invented here.
+
+        The returned dict IS ship.combat (mutated in place by the resolver);
+        callers must flag_modified(ship, "combat") after the battle so the
+        in-place JSONB mutation is persisted.
+        """
+        if ship.combat is None:
+            ship.combat = {}
+        combat = ship.combat
+
+        needed = ("shields", "max_shields", "hull", "max_hull")
+        if any(key not in combat for key in needed):
+            spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == ship.type
+            ).first()
+            if spec is not None:
+                # Mirror the npc_spawn_service / ShipService seeding shape
+                combat.setdefault("max_shields", spec.max_shields or 0)
+                combat.setdefault("shields", combat["max_shields"])
+                combat.setdefault("max_hull", spec.hull_points or 1)
+                combat.setdefault("hull", combat["max_hull"])
+                combat.setdefault("shield_recharge_rate", spec.shield_recharge_rate)
+                combat.setdefault("evasion", spec.evasion)
+                combat.setdefault("attack_rating", spec.attack_rating)
+                combat.setdefault("defense_rating", spec.defense_rating)
+            else:
+                # Pathological: no specification row for this ship type.
+                # Guard rails only (not game constants): zero shields and a
+                # 1-point hull floor so the hull<=0 destruction check can't
+                # turn missing data into an instant kill.
+                logger.warning(
+                    "Ship %s (%s) has no ShipSpecification — seeding minimal "
+                    "combat state", ship.id, ship.type
+                )
+                combat.setdefault("max_shields", 0)
+                combat.setdefault("shields", 0)
+                combat.setdefault("max_hull", 1)
+                combat.setdefault("hull", 1)
+
+        # Data-anomaly guard: a live (non-destroyed) ship persisted at
+        # hull <= 0 — e.g. an indestructible escape pod that "lost" a fight
+        # but was never actually destroyed. Clamp to a 1-point hull so the
+        # next battle doesn't open with an instant destruction.
+        if not ship.is_destroyed and (combat.get("hull") or 0) <= 0:
+            combat["hull"] = 1
+
+        # Floors on entry — never operate on negative pools
+        combat["shields"] = max(0, combat.get("shields") or 0)
+        return combat
+
+    @staticmethod
+    def _apply_weapon_damage(
+        damage: float,
+        weapon: Dict[str, Any],
+        target_combat: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Apply one weapon hit per the canon damage stack
+        (combat-resolver.md "Damage stack — order of operations"):
+
+            shield_hit = min(damage, shields) * weapon.shield_effectiveness
+            residual   = damage - min(damage, shields)
+            hull_hit   = residual * weapon.hull_effectiveness
+            critical   = (RNG < 0.05) ? hull_hit * 0.5 : 0
+
+        Shields absorb first, the residual bleeds into hull, and a 5%
+        critical adds half the hull hit again. The canon stack's
+        shield_resistance / armor_rating terms are not part of the seeded
+        Ship.combat JSONB today, so they resolve to 0 here (flagged, not
+        invented). The canon defense-drones passive (-5% per 10 drones) is
+        structurally moot in this resolver: drones are a discrete screen
+        layer that must be fully destroyed before any ship hit lands, so
+        the defender's drone count is always 0 when this runs.
+
+        Floors: shields and hull are never written below 0. Mutates
+        target_combat in place and returns the hit summary.
+        """
+        shields = max(0.0, float(target_combat.get("shields") or 0))
+        hull = max(0.0, float(target_combat.get("hull") or 0))
+
+        absorbed = min(damage, shields)
+        shield_hit = absorbed * weapon["shield_effectiveness"]
+        residual = damage - absorbed
+        hull_hit = residual * weapon["hull_effectiveness"]
+
+        critical = 0.0
+        if hull_hit > 0 and random.random() < 0.05:
+            critical = hull_hit * 0.5
+
+        new_shields = max(0.0, shields - shield_hit)
+        new_hull = max(0.0, hull - hull_hit - critical)
+        target_combat["shields"] = round(new_shields, 1)
+        target_combat["hull"] = round(new_hull, 1)
+
+        return {
+            "shield_damage": round(shields - new_shields, 1),
+            "hull_damage": round(hull - new_hull, 1),
+            "critical": critical > 0,
+            "shields_remaining": target_combat["shields"],
+            "hull_remaining": target_combat["hull"],
+            # Destruction is decided on the UNROUNDED hull. Rounding the stored
+            # value to 1 decimal could round a tiny positive residual (e.g.
+            # 0.04 → 0.0) into a false kill, or a value like 0.04 staying
+            # positive — read the true depletion, not the display value.
+            "destroyed": new_hull <= 0,
+        }
+
     def _resolve_ship_combat(
         self,
         attacker: Player,
@@ -1189,7 +1337,14 @@ class CombatService:
         attacker_drones = attacker.defense_drones
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         defender_defense = self._calculate_defense_power(defender_ship, defender_drones)
-        
+
+        # Live shield/hull pools — seeded from ShipSpecification when a
+        # ship's combat JSONB lacks keys. These dicts ARE the ships' combat
+        # columns; the resolver mutates them in place and flag_modified()s
+        # them after the battle so attrition persists.
+        attacker_combat = self._ensure_combat_state(attacker_ship)
+        defender_combat = self._ensure_combat_state(defender_ship)
+
         # Track combat details
         round_number = 0
         attacker_drones_lost = 0
@@ -1239,37 +1394,63 @@ class CombatService:
                             "weapon_effectiveness": atk_weapon["shield_effectiveness"]
                         })
                     else:
-                        # Attack ship - calculate ship damage with rank bonus, weapon type, and type modifier
+                        # Attack ship — canon damage stack (combat-resolver.md):
+                        # base roll × rank bonus × type matchup × weapon base
+                        # damage, then shields absorb first and the residual
+                        # bleeds into hull. Destruction is hull <= 0 — real
+                        # depletion, not a destruction-chance dice roll.
                         base_damage = random.randint(1, 10)
                         type_modifier = self.SHIP_COMBAT_MODIFIERS.get(
                             (attacker_ship.type, defender_ship.type), 1.0
                         )
-                        weapon_base = atk_weapon["base_damage"]
-                        # Drones gone = hull exposed, use hull_effectiveness
-                        weapon_eff = atk_weapon["hull_effectiveness"]
-                        damage = int(base_damage * attacker_damage_mult * type_modifier * weapon_base * weapon_eff)
+                        # Attack-drones offensive bonus: +5% per 10 attack
+                        # drones (combat-resolver.md:83 "attack_drones_modifier
+                        # +5% per 10 drones"). Uses the in-loop attacker drone
+                        # count so it decays as drones are lost mid-fight.
+                        attacker_drone_mult = 1 + 0.05 * (attacker_drones // 10)
+                        damage = (
+                            base_damage * attacker_damage_mult * type_modifier
+                            * atk_weapon["base_damage"] * attacker_drone_mult
+                        )
+                        hit = self._apply_weapon_damage(damage, atk_weapon, defender_combat)
 
-                        # Check if defender ship destroyed
-                        ship_destruction_chance = damage / 50  # Example: 10 damage = 20% chance
-                        if random.random() < ship_destruction_chance:
+                        if hit["destroyed"]:
                             defender_ship_destroyed = True
+                            # NPC defenders (defender is None) have no escape
+                            # pod to eject into — the vessel is simply
+                            # destroyed. Player defenders eject to a pod.
+                            destroy_flavor = (
+                                "destroying the vessel" if defender is None
+                                else "forcing ejection"
+                            )
                             combat_details.append({
                                 "round": round_number,
                                 "actor": "attacker",
                                 "action": "ship_destroyed",
-                                "message": f"{attacker.username}'s {atk_weapon_name} critically damaged {defender_name}'s ship, forcing ejection",
-                                "weapon_type": atk_weapon_name
+                                "message": f"{attacker.username}'s {atk_weapon_name} critically damaged {defender_name}'s ship, {destroy_flavor}",
+                                "weapon_type": atk_weapon_name,
+                                "shield_damage": hit["shield_damage"],
+                                "hull_damage": hit["hull_damage"],
+                                "critical_hit": hit["critical"]
                             })
                         else:
                             modifier_note = f" (x{type_modifier:.1f} type advantage)" if type_modifier != 1.0 else ""
-                            weapon_note = f" [{atk_weapon_name} x{weapon_eff:.1f} hull eff.]"
+                            crit_note = " [CRITICAL HIT]" if hit["critical"] else ""
                             combat_details.append({
                                 "round": round_number,
                                 "actor": "attacker",
                                 "action": "ship_attack",
-                                "message": f"{attacker.username}'s {atk_weapon_name} hit {defender_name}'s ship for {damage} damage{modifier_note}{weapon_note}",
+                                "message": (
+                                    f"{attacker.username}'s {atk_weapon_name} hit {defender_name}'s ship for "
+                                    f"{hit['shield_damage']} shield / {hit['hull_damage']} hull damage"
+                                    f"{crit_note}{modifier_note}"
+                                ),
                                 "weapon_type": atk_weapon_name,
-                                "weapon_effectiveness": weapon_eff
+                                "shield_damage": hit["shield_damage"],
+                                "hull_damage": hit["hull_damage"],
+                                "critical_hit": hit["critical"],
+                                "defender_shields": hit["shields_remaining"],
+                                "defender_hull": hit["hull_remaining"]
                             })
                 else:
                     # Miss
@@ -1314,37 +1495,53 @@ class CombatService:
                             "weapon_effectiveness": def_weapon["shield_effectiveness"]
                         })
                     else:
-                        # Attack ship - calculate ship damage with rank bonus, weapon type, and type modifier
+                        # Attack ship — same canon damage stack, symmetric
+                        # to the attacker's turn: shields absorb first,
+                        # residual into hull, destruction at hull <= 0.
                         base_damage = random.randint(1, 10)
                         type_modifier = self.SHIP_COMBAT_MODIFIERS.get(
                             (defender_ship.type, attacker_ship.type), 1.0
                         )
-                        weapon_base = def_weapon["base_damage"]
-                        # Drones gone = hull exposed, use hull_effectiveness
-                        weapon_eff = def_weapon["hull_effectiveness"]
-                        damage = int(base_damage * defender_damage_mult * type_modifier * weapon_base * weapon_eff)
+                        # Symmetric attack-drones bonus on the defender's
+                        # return fire, using the defender's in-loop drone count
+                        # (combat-resolver.md:83, +5% per 10 drones).
+                        defender_drone_mult = 1 + 0.05 * (defender_drones // 10)
+                        damage = (
+                            base_damage * defender_damage_mult * type_modifier
+                            * def_weapon["base_damage"] * defender_drone_mult
+                        )
+                        hit = self._apply_weapon_damage(damage, def_weapon, attacker_combat)
 
-                        # Check if attacker ship destroyed
-                        ship_destruction_chance = damage / 50  # Example: 10 damage = 20% chance
-                        if random.random() < ship_destruction_chance:
+                        if hit["destroyed"]:
                             attacker_ship_destroyed = True
                             combat_details.append({
                                 "round": round_number,
                                 "actor": "defender",
                                 "action": "ship_destroyed",
                                 "message": f"{defender_name}'s {def_weapon_name} critically damaged {attacker.username}'s ship, forcing ejection",
-                                "weapon_type": def_weapon_name
+                                "weapon_type": def_weapon_name,
+                                "shield_damage": hit["shield_damage"],
+                                "hull_damage": hit["hull_damage"],
+                                "critical_hit": hit["critical"]
                             })
                         else:
                             modifier_note = f" (x{type_modifier:.1f} type advantage)" if type_modifier != 1.0 else ""
-                            weapon_note = f" [{def_weapon_name} x{weapon_eff:.1f} hull eff.]"
+                            crit_note = " [CRITICAL HIT]" if hit["critical"] else ""
                             combat_details.append({
                                 "round": round_number,
                                 "actor": "defender",
                                 "action": "ship_attack",
-                                "message": f"{defender_name}'s {def_weapon_name} hit {attacker.username}'s ship for {damage} damage{modifier_note}{weapon_note}",
+                                "message": (
+                                    f"{defender_name}'s {def_weapon_name} hit {attacker.username}'s ship for "
+                                    f"{hit['shield_damage']} shield / {hit['hull_damage']} hull damage"
+                                    f"{crit_note}{modifier_note}"
+                                ),
                                 "weapon_type": def_weapon_name,
-                                "weapon_effectiveness": weapon_eff
+                                "shield_damage": hit["shield_damage"],
+                                "hull_damage": hit["hull_damage"],
+                                "critical_hit": hit["critical"],
+                                "attacker_shields": hit["shields_remaining"],
+                                "attacker_hull": hit["hull_remaining"]
                             })
                 else:
                     # Miss
@@ -1409,7 +1606,18 @@ class CombatService:
                     "message": "Combat ends in a draw after 10 rounds"
                 })
                 break
-        
+
+        # Persist post-battle attrition on BOTH hulls. Shields and hull stay
+        # damaged after the fight even when nobody dies — there is no
+        # automatic between-battle shield regeneration here (the seeded
+        # combat JSONB carries shield_recharge_rate for a future regen
+        # slice; restoring shields/hull is ShipService.repair_ship's job at
+        # repair facilities). The dicts were mutated in place, so
+        # flag_modified is required for the JSONB write; the caller's single
+        # post-battle commit (attack_player / attack_npc_ship) lands both.
+        flag_modified(attacker_ship, "combat")
+        flag_modified(defender_ship, "combat")
+
         # Determine result
         if fled_result is not None:
             result = fled_result
@@ -1471,7 +1679,19 @@ class CombatService:
             "attacker_ship_destroyed": attacker_ship_destroyed,
             "defender_ship_destroyed": defender_ship_destroyed,
             "cargo_stolen": cargo_stolen,
-            "combat_details": combat_details
+            "combat_details": combat_details,
+            "attacker_ship_state": {
+                "shields": attacker_combat.get("shields"),
+                "max_shields": attacker_combat.get("max_shields"),
+                "hull": attacker_combat.get("hull"),
+                "max_hull": attacker_combat.get("max_hull")
+            },
+            "defender_ship_state": {
+                "shields": defender_combat.get("shields"),
+                "max_shields": defender_combat.get("max_shields"),
+                "hull": defender_combat.get("hull"),
+                "max_hull": defender_combat.get("max_hull")
+            }
         }
     
     def _resolve_drone_combat(self, attacker: Player, sector: Sector, deployments: List[DroneDeployment]) -> Dict[str, Any]:
@@ -2038,6 +2258,18 @@ class CombatService:
         pursuing_speed = pursuing_ship.current_speed if pursuing_ship else 1.0
 
         chance = 30 + int(fleeing_speed * 10) - int(pursuing_speed * 5)
+
+        # Hull-ratio valve (combat-resolver.md:128-133): the more damaged the
+        # fleeing ship's hull, the more desperate/likely the escape — up to a
+        # +30 bonus at near-zero hull: int((1 - hull/max_hull) * 30). Reads the
+        # live combat JSONB; guards missing keys and a zero/absent max_hull.
+        if fleeing_ship:
+            combat = getattr(fleeing_ship, "combat", None) or {}
+            max_hull = combat.get("max_hull") or 0
+            hull = combat.get("hull") or 0
+            if max_hull > 0:
+                hull_ratio = max(0.0, min(1.0, hull / max_hull))
+                chance += int((1 - hull_ratio) * 30)
 
         # Fast/agile ships get a flat +20% bonus
         if fleeing_ship and fleeing_ship.type in self.FAST_ESCAPE_SHIP_TYPES:
