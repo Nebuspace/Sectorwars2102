@@ -626,6 +626,103 @@
         "DPR change across monitors not observed until next resize",
         "drag emits integer degrees (sub-degree aim needs float state)"
       ]
+    },
+    {
+      "id": "neon-2026-06-12-c",
+      "tier": "STANDARD",
+      "stage": "complete",
+      "branch_head_at_start": "29e6b5d",
+      "sections": [
+        {
+          "key": "cockpit-stability",
+          "state": "selected",
+          "effort": 1,
+          "proof_script": [
+            "Set bearing 222 in quantum console, fire ECHO SCAN -> bearing remains 222 after the refresh (fails today: resets to 000)",
+            "ARM -> CONFIRM TRANSLATION clickable at human pace (no remount disarm race)",
+            "Monitors do not flash/unmount during actions; initial page load still shows a loading state"
+          ]
+        },
+        {
+          "key": "combat-real-damage",
+          "state": "selected",
+          "effort": 4,
+          "proof_script": [
+            "Attack an NPC: psql shows defender Ship.combat shields/hull DECREASED after a non-lethal round (today: never written)",
+            "High-HP Sentinel Interdictor survives meaningfully longer than a Marauder freighter under identical attacker",
+            "Destruction occurs at hull <= 0, not via instant dice; combat log rounds reflect attrition",
+            "GET /api/v1/fleets returns 200 (commander.name AttributeError fixed at all 6 sites)"
+          ]
+        },
+        {
+          "key": "planetary-ops-honesty",
+          "state": "selected",
+          "effort": 3,
+          "proof_script": [
+            "Land on owned planet: allocation sliders initialize from the planet's REAL stored allocations; moving a slider persists via PUT /allocate (psql delta + survives reload)",
+            "Citadel Safe panel shows real safe contents from GET /citadel; deposit 100cr works end-to-end (psql delta); buttons enabled at citadel L2+ per canon",
+            "Defense quick-action buttons either wired to real endpoints or removed (no permanently-disabled dead-ends)"
+          ]
+        }
+      ],
+      "parking_lot_inherited": [
+        "port assault coded-but-disabled + Station defense scalars missing",
+        "siege/terraforming tick loops have no scheduler (design question)",
+        "pirate captains ship LIGHT_FREIGHTER placeholder hulls",
+        "premium buyer/seller class multipliers unapplied",
+        "BuildingManager mock affordability",
+        "stale-marker write-back batch: ranking x3, insurance, citadel names, tradedock-shipyard, combat.md fleet bug scope"
+      ],
+      "verdict": "GLOWING",
+      "commits": [
+        "cockpit stability",
+        "combat real damage (5b632f2-area)",
+        "planetary ops honesty (9d3baab head)",
+        "sw2102-docs 1e2d0b0 write-back"
+      ],
+      "model_usage": {
+        "tier": "STANDARD",
+        "fable": {
+          "agents": 9,
+          "tokens": 862312,
+          "roles": "3 build + 6 adversarial review"
+        },
+        "opus": {
+          "agents": 4,
+          "tokens": 304898,
+          "roles": "3 gate-fix agents + docs write-back"
+        },
+        "sonnet": {
+          "agents": 4,
+          "tokens": 353200,
+          "roles": "discovery: 2 code scans + 2 docs drift audits"
+        },
+        "fable_lead_est": 250000,
+        "est_cost_vs_all_fable": "~0.71x (~29% saved)"
+      },
+      "proof_evidence": {
+        "cockpit": "bearing 222 held through scan-triggered refresh (was 000 \u2014 exact repro, before/after via live DOM stopwatch); 56s idle baseline showed zero resets pre-fix proving action-triggered mechanism",
+        "combat": "Crow Talon Marauder shields 300 -> 298.6 persisted in DB after 2-round non-lethal fight; WJ hull 570/600 still carrying run-7 misfire scar (persistence across runs); GET /fleets/ 200 (empty set; 6-site fix review-verified); kill_escape_pod penalty was misfiring on EVERY kill \u2014 fixed",
+        "planetary": "allocation slider 200->250 persisted via PUT /allocate (psql); citadel safe deposit 100cr end-to-end (safe 0->100, wallet 349800->349700) under new planet+player row locks; real Outpost L1 + drone capacity 10 + capacity 100k rendered from GET /citadel; Withdraw honestly disabled at 0 balance",
+        "regression": "player-client build green, all backend py_compile green, stage API 200 throughout"
+      },
+      "seeding_flags": [
+        "Gamma Prime (4135) granted to testpilot with 500 colonists + citadel L1 + 200/150/100 allocations (ownership claim flow not in section scope)",
+        "testpilot teleported 4495->4135->733 between proof legs"
+      ],
+      "parking_lot": [
+        "port assault coded-but-disabled + Station defense scalars missing",
+        "siege/terraforming tick loops have no scheduler (design question)",
+        "pirate captains ship LIGHT_FREIGHTER placeholder hulls",
+        "premium buyer/seller class multipliers unapplied",
+        "BuildingManager mock affordability",
+        "stale-marker write-back batch: ranking x3, insurance, citadel names, tradedock-shipyard, combat.md fleet bug scope",
+        "combat_log damage columns read 0 for the new attrition model (log tally not wired to pool deltas)",
+        "page-level isLoading spinner branches (PlanetManager/TeamManager 4 sites each) still remount their subtrees \u2014 GameLayout is immune but pages keep the anti-pattern",
+        "GameContext refreshPlayerState still toggles global isLoading (GameLayout now immune; removing the toggle entirely per GameContext:622 pattern would finish the job)",
+        "no fleet rows exist on dev to exercise the fleet serializer live",
+        "terraform header block still reads (currentPlanet as any).terraform_level fiction"
+      ]
     }
   ]
 }
