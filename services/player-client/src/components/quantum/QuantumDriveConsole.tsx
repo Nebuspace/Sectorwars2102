@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useGame, type QuantumBearing, type QuantumScanResult, type QuantumJumpResult } from '../../contexts/GameContext';
+import apiClient from '../../services/apiClient';
+import QuantumBearingViewport, { type MinimapSector } from './QuantumBearingViewport';
 import './quantum-drive.css';
 
 /**
@@ -16,6 +18,17 @@ interface QuantumDriveConsoleProps {
 }
 
 type RangeBandId = QuantumBearing['range_band'];
+
+/** GET /api/v1/quantum/minimap — astrogation chart (ADR-0030 Phase 1).
+ *  Anonymous positions only per ADR-0031 (no ids/type/activity/presence).
+ *  complete_radius_spacings = how far (in spacings) the chart is complete
+ *  (25.0 unless the server's 400-sector cap truncated it). */
+interface QuantumMinimap {
+  origin_sector_id: number;
+  spacing: number;
+  complete_radius_spacings: number;
+  sectors: MinimapSector[];
+}
 
 const RANGE_BANDS: { id: RangeBandId; label: string; range: string; tag?: string }[] = [
   { id: 'near', label: 'NEAR', range: '5–6' },
@@ -80,6 +93,48 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   // --- Charge refinement (docked at Class-3+/SpaceDock) ---
   const [isRefining, setIsRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+
+  // --- Astrogation chart (minimap) — fetched once per sector while piloting
+  // a Warp Jumper. On fetch failure the viewport renders WITHOUT dots and
+  // shows an honest CHART UNAVAILABLE notice; we never fabricate sectors. ---
+  const [minimap, setMinimap] = useState<QuantumMinimap | null>(null);
+  const [chartFailed, setChartFailed] = useState(false);
+  const [chartLoading, setChartLoading] = useState(false);
+  const isWarpJumper = !!quantumStatus?.is_warp_jumper;
+  useEffect(() => {
+    if (!isWarpJumper || originSectorId === null) return;
+    let cancelled = false;
+    setChartFailed(false);
+    setChartLoading(true);
+    // Drop the previous sector's chart immediately — relative coordinates
+    // from the old origin would plot dots in the wrong places.
+    setMinimap((current) =>
+      current && current.origin_sector_id !== originSectorId ? null : current
+    );
+    apiClient
+      .get('/api/v1/quantum/minimap')
+      .then((response) => {
+        if (cancelled) return;
+        const chart = response.data as QuantumMinimap;
+        // Stale-response guard: a jump can land between request and reply;
+        // a chart whose origin no longer matches our sector is garbage.
+        if (chart.origin_sector_id === originSectorId) setMinimap(chart);
+        setChartLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMinimap(null);
+          setChartFailed(true);
+          setChartLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [isWarpJumper, originSectorId]);
+
+  // Render-time origin gate: never let a previous sector's chart (or one
+  // that raced in around a jump) reach the viewport.
+  const chart =
+    minimap && minimap.origin_sector_id === originSectorId ? minimap : null;
 
   // 1s local tick drives every countdown (cooldowns + scan expiry)
   const [now, setNow] = useState(() => Date.now());
@@ -203,6 +258,10 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     setJumpPhase('idle');
   };
 
+  // Astrogation viewport phase mirrors the existing scan/jump state machine
+  const viewportPhase: 'idle' | 'scanning' | 'charging' =
+    jumpPhase === 'charging' ? 'charging' : isScanning ? 'scanning' : 'idle';
+
   return (
     <div className="qd-console">
       {/* Scroll container — overlays below stay pinned to the visible screen */}
@@ -244,33 +303,27 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
       )}
       {refineError && <div className="qd-inline-error">{refineError}</div>}
 
-      {/* Bearing block */}
+      {/* Bearing block — astrogation viewport (drag = yaw), pitch slider
+          beside it, yaw fine-tune slider beneath. The viewport is a pure
+          instrument: this console owns all bearing state. */}
       <div className="qd-section qd-bearing">
         <div className="qd-section-label">BEARING</div>
-        <div className="qd-bearing-grid">
-          <div className="qd-yaw-block">
-            <div className="qd-readout-row">
-              <span className="qd-readout-label">YAW</span>
-              <span className="qd-readout-value">{String(yaw).padStart(3, '0')}°</span>
-            </div>
-            <input
-              type="range"
-              className="qd-yaw-slider"
-              min={0}
-              max={360}
-              step={1}
-              value={yaw}
-              onChange={(e) => setYaw(Math.min(360, Math.max(0, parseInt(e.target.value, 10) || 0)))}
-              aria-label="Yaw bearing in degrees"
-            />
-            <div className="qd-yaw-ticks" aria-hidden="true">
-              <span>N·000</span>
-              <span>E·090</span>
-              <span>S·180</span>
-              <span>W·270</span>
-              <span>N·360</span>
-            </div>
-          </div>
+        <div className="qd-viewport-row">
+          <QuantumBearingViewport
+            yawDeg={yaw}
+            pitchDeg={pitch}
+            rangeBand={rangeBand}
+            onBearingChange={(newYaw, newPitch) => {
+              setYaw(Math.min(360, Math.max(0, Math.round(newYaw))));
+              setPitch(Math.min(90, Math.max(-90, Math.round(newPitch))));
+            }}
+            phase={viewportPhase}
+            spacing={chart?.spacing ?? null}
+            sectors={chartFailed ? null : (chart?.sectors ?? [])}
+            chartLoading={chartLoading}
+            completeRadiusSpacings={chart?.complete_radius_spacings ?? null}
+            scanResult={liveScan}
+          />
           <div className="qd-pitch-block">
             <div className="qd-readout-row">
               <span className="qd-readout-label">PITCH</span>
@@ -290,6 +343,29 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
               />
               <span className="qd-pitch-tick" aria-hidden="true">−90</span>
             </div>
+          </div>
+        </div>
+        <div className="qd-yaw-block qd-yaw-finetune">
+          <div className="qd-readout-row">
+            <span className="qd-readout-label">YAW · FINE</span>
+            <span className="qd-readout-value">{String(yaw).padStart(3, '0')}°</span>
+          </div>
+          <input
+            type="range"
+            className="qd-yaw-slider"
+            min={0}
+            max={360}
+            step={1}
+            value={yaw}
+            onChange={(e) => setYaw(Math.min(360, Math.max(0, parseInt(e.target.value, 10) || 0)))}
+            aria-label="Yaw bearing in degrees"
+          />
+          <div className="qd-yaw-ticks" aria-hidden="true">
+            <span>N·000</span>
+            <span>E·090</span>
+            <span>S·180</span>
+            <span>W·270</span>
+            <span>N·360</span>
           </div>
         </div>
       </div>

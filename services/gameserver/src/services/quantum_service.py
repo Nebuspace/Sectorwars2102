@@ -55,7 +55,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.core.game_time import scaled_deadline
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus, ShipType
-from src.models.sector import Sector, SectorType
+from src.models.sector import Sector, SectorType, sector_warps
 from src.models.station import Station
 
 logger = logging.getLogger(__name__)
@@ -243,15 +243,18 @@ def _lock_player(db: Session, player_id: uuid.UUID) -> Player:
     return player
 
 
-def _require_warp_jumper(db: Session, player: Player) -> Ship:
+def _require_warp_jumper(db: Session, player: Player, refresh: bool = True) -> Ship:
     ship = player.current_ship
     if not ship or ship.is_destroyed:
         raise QuantumError("No active ship selected")
     if ship.type != ShipType.WARP_JUMPER:
         raise QuantumError("The quantum drive is exclusive to the Warp Jumper hull")
-    # Re-read the piloted ship under the player lock: charges and cooldowns
-    # mutated below must be read fresh, not from the pre-lock identity map.
-    db.refresh(ship)
+    if refresh:
+        # Re-read the piloted ship under the player lock: charges and cooldowns
+        # mutated by the caller must be read fresh, not from the pre-lock
+        # identity map. Read-only paths (get_minimap) pass refresh=False —
+        # only the hull check matters there and no lock is held.
+        db.refresh(ship)
     return ship
 
 
@@ -337,13 +340,26 @@ def scan(
     direction = _bearing_unit_vector(yaw_deg, pitch_deg)
     cone = _sectors_in_cone(points, origin, direction, band_max * spacing)
 
-    # Resonance: fuzzy density band, never exact counts (ADR-0031)
-    count = len(cone)
-    if count >= 5:
+    # Resonance: fuzzy WARP-ACTIVITY band, never exact counts. Canon
+    # (ADR-0030): resonance reads "warps' worth of activity" — bright 5+,
+    # steady 3-4, faint 1-2, silent 0. Counting warp CONNECTIONS rooted in
+    # the cone (not cone sectors: the minimap discloses positions, so a
+    # sector count would be client-precomputable and worth nothing).
+    warp_count = 0
+    cone_pk_ids = [p.id for p in cone]
+    if cone_pk_ids:
+        warp_count = (
+            db.query(func.count())
+            .select_from(sector_warps)
+            .filter(sector_warps.c.source_sector_id.in_(cone_pk_ids))
+            .scalar()
+            or 0
+        )
+    if warp_count >= 5:
         resonance = "bright"
-    elif count >= 3:
+    elif warp_count >= 3:
         resonance = "steady"
-    elif count >= 1:
+    elif warp_count >= 1:
         resonance = "faint"
     else:
         resonance = "silent"
@@ -625,6 +641,85 @@ def refine_charge(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     return {
         "quantum_charges": ship.quantum_charges,
         "quantum_shards": player.quantum_shards,
+    }
+
+
+# --- minimap (astrogation chart) ---
+
+# ADR-0030 Phase 1: "shown a 3D minimap of sectors within roughly 25
+# hop-units Euclidean distance."
+MINIMAP_RANGE_SPACINGS = 25.0
+# Payload cap: keep the chart to the ~400 NEAREST sectors by Euclidean
+# distance. A dense galaxy could put thousands of sectors inside the
+# 25-spacing sphere; the client plots a ~16-spacing viewport anyway, so
+# the nearest 400 always cover everything it can draw.
+MINIMAP_SECTOR_CAP = 400
+
+
+def get_minimap(db: Session, player: Player) -> Dict[str, Any]:
+    """Astrogation chart for the Quantum Drive console (ADR-0030 Phase 1).
+
+    READ-ONLY and always available to a Warp Jumper pilot: no turn cost,
+    no cooldown, allowed while docked or landed — the astrogation plot is
+    just the chart, not a sensor sweep.
+
+    DISCLOSURE LIMIT (ADR-0031): relative POSITIONS ONLY ("the specific
+    sector ID is not disclosed" — bearing-and-band commits, not identity).
+    No sector ids, no type, no name, no activity, no player presence. The
+    fuzzy echo scan is the only telescope; the minimap is the chart it is
+    read against.
+
+    Returns coordinates RELATIVE to the origin sector (dx/dy/dz in the
+    galaxy's absolute coordinate units) plus the same inter-sector spacing
+    the scan/jump code paths compute, so viewport band geometry and server
+    band geometry always agree. ``complete_radius_spacings`` reports how
+    far (in spacings) the returned chart is COMPLETE: 25.0 when nothing was
+    truncated, otherwise the distance of the furthest returned sector — the
+    client dims coverage beyond it so a truncated chart never reads as
+    empty space.
+    """
+    # Reuse the hull requirement helper (no player lock: nothing mutates;
+    # only the Warp-Jumper check matters, the returned ship is unused —
+    # refresh=False skips the pointless db.refresh on this read-only path).
+    _require_warp_jumper(db, player, refresh=False)
+
+    points = _load_sector_points(db)
+    origin = _origin_point(points, player.current_sector_id)
+    spacing = _inter_sector_spacing(points)
+    max_distance = MINIMAP_RANGE_SPACINGS * spacing
+
+    nearby: List[Tuple[float, float, float, float]] = []
+    for p in points:
+        if p.sector_id == origin.sector_id:
+            continue
+        dx = p.x_coord - origin.x_coord
+        dy = p.y_coord - origin.y_coord
+        dz = p.z_coord - origin.z_coord
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if dist <= max_distance:
+            nearby.append((dist, dx, dy, dz))
+
+    nearby.sort(key=lambda r: r[0])
+    truncated = len(nearby) > MINIMAP_SECTOR_CAP
+    nearby = nearby[:MINIMAP_SECTOR_CAP]
+
+    # Cap honesty: when truncated, the chart is only complete out to the
+    # furthest sector we actually returned; report that radius (in
+    # spacings) so the client can dim the unreliable annulus beyond it.
+    if truncated and nearby:
+        complete_radius_spacings = round(nearby[-1][0] / spacing, 2)
+    else:
+        complete_radius_spacings = MINIMAP_RANGE_SPACINGS
+
+    return {
+        "origin_sector_id": origin.sector_id,
+        "spacing": spacing,
+        "complete_radius_spacings": complete_radius_spacings,
+        # ADR-0031: positions only — deliberately NO sector ids
+        "sectors": [
+            {"dx": dx, "dy": dy, "dz": dz}
+            for _, dx, dy, dz in nearby
+        ],
     }
 
 

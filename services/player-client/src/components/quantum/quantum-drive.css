@@ -168,13 +168,6 @@
 }
 
 /* --- Bearing block --- */
-.qd-bearing-grid {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.6rem;
-  align-items: start;
-}
-
 .qd-readout-row {
   display: flex;
   justify-content: space-between;
@@ -300,6 +293,142 @@
   border: 2px solid #e0ccff;
   box-shadow: 0 0 10px rgba(123, 47, 255, 0.8);
   cursor: pointer;
+}
+
+/* --- Astrogation bearing viewport (QuantumBearingViewport) --- */
+.qd-viewport-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.qbv-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.qbv-canvas {
+  display: block;
+  width: 100%;
+  background:
+    radial-gradient(ellipse at center, rgba(20, 8, 40, 0.6) 0%, rgba(4, 1, 12, 0.95) 100%);
+  border-radius: 2px;
+  cursor: crosshair;
+  touch-action: none; /* pointer drag-to-aim must own touch gestures */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 'ASTROGATION PLOT' chrome — .screen-hud-header language, violet accent */
+.qbv-header {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  padding: 0.12rem 0.4rem 0.12rem 0.3rem;
+  font-size: 0.46rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: #c9a8ff;
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.8);
+  border-top: 2px solid rgba(123, 47, 255, 0.7);
+  border-left: 2px solid rgba(123, 47, 255, 0.7);
+  border-bottom: 1px solid rgba(123, 47, 255, 0.4);
+  border-radius: 2px 0 0 0;
+  box-shadow:
+    0 0 8px rgba(123, 47, 255, 0.35),
+    inset 0 0 8px rgba(123, 47, 255, 0.12);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Live bearing readout, bottom-right, tabular Courier */
+.qbv-readout {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #e0ccff;
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.7);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Faint horizontal scanline overlay, consistent with the cockpit CRT */
+.qbv-scanlines {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 2px,
+    rgba(123, 47, 255, 0.04) 2px,
+    rgba(123, 47, 255, 0.04) 3px
+  );
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Chart fetch in flight — violet chip, same corner as the amber warn */
+.qbv-chart-loading {
+  position: absolute;
+  left: 6px;
+  bottom: 5px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.44rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #c9a8ff;
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+  border-left: 2px solid rgba(123, 47, 255, 0.6);
+  background: rgba(123, 47, 255, 0.08);
+  pointer-events: none;
+  z-index: 2;
+  animation: qd-text-flicker 0.9s ease-in-out infinite alternate;
+}
+
+/* Honest degraded state: chart fetch failed, instrument is bearing-only */
+.qbv-chart-warn {
+  position: absolute;
+  left: 6px;
+  bottom: 5px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.44rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ffb000;
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
+  border-left: 2px solid rgba(255, 176, 0, 0.6);
+  background: rgba(255, 176, 0, 0.08);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Slim yaw fine-tune strip beneath the viewport */
+.qd-yaw-finetune {
+  margin-top: 0.35rem;
+}
+
+/* Pitch column sits snug beside the viewport: stretch the rail to match
+   the instrument height instead of the old 64px stub */
+.qd-viewport-row .qd-pitch-block {
+  min-width: 56px;
+  justify-content: flex-start;
+}
+
+.qd-viewport-row .qd-pitch-slider-rail {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.qd-viewport-row .qd-pitch-slider {
+  height: 150px;
+  flex: 1 1 auto;
 }
 
 /* --- Range band selector --- */

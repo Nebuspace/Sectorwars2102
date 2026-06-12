@@ -66,6 +66,23 @@ async def quantum_status(
     return quantum_service.get_status(db, player)
 
 
+@router.get("/minimap")
+async def quantum_minimap(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Astrogation chart (ADR-0030 Phase 1): anonymous sector positions
+    relative to the pilot's sector, within ~25 hop-units. Read-only —
+    no cost, no cooldown, available docked. Per ADR-0031 it discloses
+    positions ONLY (no ids, no type/activity/presence); the payload's
+    complete_radius_spacings reports how far the chart is complete when
+    the sector cap truncates it."""
+    try:
+        return quantum_service.get_minimap(db, player)
+    except QuantumError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
 @router.post("/scan")
 async def quantum_scan(
     request: ScanRequest,
