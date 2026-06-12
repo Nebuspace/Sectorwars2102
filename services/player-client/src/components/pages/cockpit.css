@@ -1834,8 +1834,16 @@
 }
 
 .liftoff-button {
-  margin-top: 1.5rem;
-  padding: 1rem 2rem;
+  /* Pinned inside the visible band: the landed panel's vitals can grow
+     taller than .landed-viewport (overflow: hidden), which used to push
+     this button below the clip edge — a player could land but never
+     leave via the UI. Absolute within the viewport, it cannot be clipped. */
+  position: absolute;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 5;
+  margin-top: 0;
+  padding: 0.8rem 1.4rem;
   background: linear-gradient(135deg, #9333ea 0%, #7c3aed 100%);
   border: 2px solid rgba(147, 51, 234, 0.6);
   border-radius: 8px;
