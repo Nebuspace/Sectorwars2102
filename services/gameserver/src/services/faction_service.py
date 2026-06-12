@@ -262,7 +262,10 @@ class FactionService:
         
         # Send WebSocket notification if reputation level changed
         if old_level != reputation.current_level:
-            await manager.send_to_player(str(player_id), {
+            recipient = self.db.query(Player).filter(Player.id == player_id).first()
+            if not (recipient and recipient.user_id):
+                return
+            await manager.send_personal_message(str(recipient.user_id), {
                 "type": "reputation_changed",
                 "faction_id": str(faction_id),
                 "faction_name": reputation.faction.name,

@@ -109,19 +109,26 @@ class MessageService:
             "priority": message.priority
         }
 
-        if message.recipient_id:
-            # Send to specific player
-            await manager.send_to_player(str(message.recipient_id), notification)
-        elif message.team_id:
-            # Send to all team members except the sender
-            team_members = db.query(Player).filter(
-                Player.team_id == message.team_id,
-                Player.id != message.sender_id,
-                Player.is_active == True
-            ).all()
-            for member in team_members:
-                await manager.send_to_player(str(member.id), notification)
-            logger.info(f"Team message notification sent to {len(team_members)} members of team {message.team_id}")
+        # Notification failures must never fail an already-committed send.
+        # The manager keys connections by USER id, not player id — resolve.
+        try:
+            if message.recipient_id:
+                recipient = db.query(Player).filter(Player.id == message.recipient_id).first()
+                if recipient and recipient.user_id:
+                    await manager.send_personal_message(str(recipient.user_id), notification)
+            elif message.team_id:
+                # Send to all team members except the sender
+                team_members = db.query(Player).filter(
+                    Player.team_id == message.team_id,
+                    Player.id != message.sender_id,
+                    Player.is_active == True
+                ).all()
+                for member in team_members:
+                    if member.user_id:
+                        await manager.send_personal_message(str(member.user_id), notification)
+                logger.info(f"Team message notification sent to {len(team_members)} members of team {message.team_id}")
+        except Exception as notify_error:
+            logger.warning(f"Message {message.id} delivered but live notification failed: {notify_error}")
     
     @staticmethod
     async def get_inbox(
@@ -354,7 +361,7 @@ class MessageService:
                     "sender_id": str(message.sender_id),
                     "flagged_at": datetime.utcnow().isoformat()
                 }
-                await manager.send_to_player(str(admin_user.id), admin_notification)
+                await manager.send_personal_message(str(admin_user.id), admin_notification)
 
             logger.warning(
                 f"Message {message_id} flagged by {flagged_by} for: {reason}. "
