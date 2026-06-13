@@ -207,21 +207,46 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
   };
 
   // Build target lists from the current sector (GameContext)
-  type TargetOption = CombatTarget & { subtype: string };
+  type TargetOption = CombatTarget & {
+    subtype: string;
+    /** false → not attackable (renders a disabled note instead of ENGAGE) */
+    engageable?: boolean;
+    note?: string;
+    /** NPC moral standing: true = a lawful target a paladin can engage freely */
+    lawful?: boolean;
+  };
+
+  // NPC standing read for the target list (mirrors the server notoriety tiers).
+  const npcStanding = (p: any): { label: string; lawful: boolean } | null => {
+    if (!p.is_npc) return null;
+    const arch = String(p.archetype || '').toUpperCase();
+    if (arch === 'LAW_ENFORCEMENT') return { label: 'law enforcement', lawful: false };
+    if (arch === 'HOSTILE_RAIDER') return { label: 'hostile', lawful: true };
+    const n = typeof p.notoriety === 'number' ? p.notoriety : 0;
+    if (n >= 75) return { label: 'notorious trader — fair game', lawful: true };
+    if (n >= 50) return { label: 'unscrupulous trader — fair game', lawful: true };
+    if (n >= 25) return { label: 'merchant — protected', lawful: false };
+    return { label: 'reputable merchant — protected', lawful: false };
+  };
 
   const shipTargets: TargetOption[] = (currentSector?.players_present ?? [])
     .filter((p: any) => p && p.player_id && p.player_id !== playerState?.id && p.ship_id)
-    .map((p: any) => ({
-      id: p.ship_id as string,
-      name: p.ship_name && p.ship_name !== 'None'
-        ? `${p.username} — ${p.ship_name}`
-        : p.username || 'Unknown pilot',
-      type: 'ship' as const,
-      isNpc: !!p.is_npc,
-      subtype: p.ship_type && p.ship_type !== 'None'
+    .map((p: any) => {
+      const standing = npcStanding(p);
+      const hull = p.ship_type && p.ship_type !== 'None'
         ? String(p.ship_type).replace(/_/g, ' ').toLowerCase()
-        : 'ship'
-    }));
+        : 'ship';
+      return {
+        id: p.ship_id as string,
+        name: p.ship_name && p.ship_name !== 'None'
+          ? `${p.username} — ${p.ship_name}`
+          : p.username || 'Unknown pilot',
+        type: 'ship' as const,
+        isNpc: !!p.is_npc,
+        subtype: standing ? `${hull} · ${standing.label}` : hull,
+        lawful: standing?.lawful
+      };
+    });
 
   const planetTargets: TargetOption[] = planetsInSector
     .filter(planet => !planet.owner_id || planet.owner_id !== playerState?.id)
@@ -234,11 +259,16 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
         : `${planet.type} — unclaimed`
     }));
 
+  // Port assault is intentionally not yet authorized (player_combat.py), so
+  // stations are shown as targets but NOT engageable — a disabled note instead
+  // of an ENGAGE that would hard-error. (Was: every station fired a 400.)
   const stationTargets: TargetOption[] = stationsInSector.map(station => ({
     id: station.id,
     name: station.name,
     type: 'port' as const,
-    subtype: station.type
+    subtype: station.type,
+    engageable: false,
+    note: 'ASSAULT NOT AUTHORIZED'
   }));
 
   const renderTargetGroup = (
@@ -257,16 +287,28 @@ export const CombatInterface: React.FC<CombatInterfaceProps> = ({
               <span className="target-name">
                 {t.name}
                 {t.isNpc && <span className="npc-badge"> NPC</span>}
+                {t.isNpc && t.lawful === false && (
+                  <span className="npc-badge" style={{ color: '#00ff41', borderColor: 'rgba(0,255,65,0.5)' }}> PROTECTED</span>
+                )}
+                {t.isNpc && t.lawful === true && (
+                  <span className="npc-badge" style={{ color: '#ffb000', borderColor: 'rgba(255,176,0,0.5)' }}> FAIR GAME</span>
+                )}
               </span>
               <span className="target-type-label">{t.subtype}</span>
             </div>
-            <button
-              className="cockpit-btn danger engage-target-btn"
-              onClick={() => handleEngageTarget({ id: t.id, name: t.name, type: t.type, isNpc: t.isNpc })}
-              disabled={isEngaging}
-            >
-              {isEngaging ? '...' : 'ENGAGE'}
-            </button>
+            {t.engageable === false ? (
+              <button className="cockpit-btn engage-target-btn" disabled title="Port assault is not yet authorized">
+                {t.note || 'N/A'}
+              </button>
+            ) : (
+              <button
+                className="cockpit-btn danger engage-target-btn"
+                onClick={() => handleEngageTarget({ id: t.id, name: t.name, type: t.type, isNpc: t.isNpc })}
+                disabled={isEngaging}
+              >
+                {isEngaging ? '...' : 'ENGAGE'}
+              </button>
+            )}
           </div>
         ))
       )}
