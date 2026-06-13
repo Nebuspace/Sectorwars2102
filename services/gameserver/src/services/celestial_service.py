@@ -470,7 +470,9 @@ def generate_system(
         debris = {
             "inner_au": round(inner, 4),
             "outer_au": round(inner + rng.uniform(0.1, 0.25), 4),
-            "hue": rng.randint(0, 359),
+            # Warm rocky tones (rust/ember) so the collision wreck reads as rock
+            # and never blends with the green habitable-zone band.
+            "hue": rng.randint(8, 38),
         }
 
     habitable_zone = {"inner_au": round(hz[0], 4), "outer_au": round(hz[1], 4)} if hz else None
