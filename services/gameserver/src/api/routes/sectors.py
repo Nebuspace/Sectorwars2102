@@ -177,6 +177,24 @@ async def get_sector_system(
     planets = db.query(Planet).filter(Planet.sector_uuid == sector.id).all()
     stations = db.query(Station).filter(Station.sector_uuid == sector.id).all()
 
+    # ADR-0073: viewing a sector's system discovers its planets (first wins);
+    # mark BEFORE generating so the merged bodies carry the fresh discoverer.
+    from src.services.discovery_service import mark_planet_discovered, mark_feature_discovered
+    for p in planets:
+        mark_planet_discovered(db, p, player.id)
+
     result = generate_system(db, sector, planets, stations)
-    db.commit()  # persist the celestial skeleton created on first visit
+
+    # Discover the per-sector features present (kept separate from planets).
+    for feat in ("belt", "debris", "nebula"):
+        if result.get(feat):
+            mark_feature_discovered(db, sector.id, feat, player.id)
+
+    # can_rename: only the discoverer may rename a planet (claimed or not).
+    pid = str(player.id)
+    for b in (result.get("bodies") or []):
+        if b.get("real"):
+            b["can_rename"] = (b.get("discovered_by") == pid)
+
+    db.commit()  # persist celestial skeleton + discovery marks
     return result

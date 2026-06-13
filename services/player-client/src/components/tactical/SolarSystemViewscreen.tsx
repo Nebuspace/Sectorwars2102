@@ -74,6 +74,8 @@ interface SystemBody {
   name?: string;
   habitability?: number;
   owned?: boolean;
+  /** ADR-0073: true when the viewer is this planet's discoverer (may rename). */
+  can_rename?: boolean;
 }
 
 interface SystemStation {
@@ -2040,6 +2042,34 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   const zoomFromTRef = useRef(0); // frozen scene clock during the zoom transition
   // HUD (name card + BACK) reveals only once the zoom-in settles.
   const [hudVisible, setHudVisible] = useState(false);
+  // ADR-0073 discoverer rename: draft text + busy/error state for the closeup.
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  const submitRename = async () => {
+    const orb = orbitRef.current;
+    const value = renameDraft.trim();
+    if (!orb || !value) return;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      await apiClient.post(`/api/v1/planets/${orb.planetId}/name`, { name: value });
+      // Reflect the new name immediately in the closeup HUD.
+      setOrbit((prev) => (prev ? { ...prev, name: value } : prev));
+      // Refresh the system snapshot so the system view + label update too.
+      apiClient.get(`/api/v1/sectors/${sectorId}/system`)
+        .then((res) => { systemRef.current = res.data as SystemSnapshot; setSystem(res.data as SystemSnapshot); })
+        .catch(() => {});
+      setRenameOpen(false);
+      setRenameDraft('');
+    } catch (e: any) {
+      setRenameError(e?.response?.data?.detail || 'Rename failed');
+    } finally {
+      setRenameBusy(false);
+    }
+  };
 
   // ---- Single-frame painter (shared by the loop, resize, and static mode) ----
   const drawNowRef = useRef<() => void>(() => {});
@@ -2660,6 +2690,68 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
                 >
                   🛬 LAND
                 </button>
+              )}
+              {/* ADR-0073: the discoverer may name this world. */}
+              {orbit.body.can_rename && !renameOpen && (
+                <button
+                  type="button"
+                  onClick={() => { setRenameDraft(orbit.name); setRenameError(null); setRenameOpen(true); }}
+                  style={{
+                    marginTop: 7, ...glass, color: '#ffd166',
+                    border: '1px solid rgba(255, 209, 102, 0.5)', padding: '6px 10px',
+                    fontSize: 11, cursor: 'pointer', borderRadius: 3, width: '100%',
+                    letterSpacing: '0.08em'
+                  }}
+                >
+                  ✎ NAME THIS WORLD
+                </button>
+              )}
+              {orbit.body.can_rename && renameOpen && (
+                <div style={{ marginTop: 7 }}>
+                  <input
+                    type="text"
+                    value={renameDraft}
+                    maxLength={50}
+                    autoFocus
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setRenameOpen(false); }}
+                    placeholder="New name…"
+                    style={{
+                      width: '100%', boxSizing: 'border-box', ...glass,
+                      color: '#e8f4ff', border: '1px solid rgba(255, 209, 102, 0.6)',
+                      padding: '5px 8px', fontSize: 11, borderRadius: 3,
+                      fontFamily: "'Courier New', monospace"
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                    <button
+                      type="button"
+                      disabled={renameBusy || !renameDraft.trim()}
+                      onClick={submitRename}
+                      style={{
+                        flex: 1, ...glass, color: '#ffd166',
+                        border: '1px solid rgba(255, 209, 102, 0.5)', padding: '5px',
+                        fontSize: 11, cursor: 'pointer', borderRadius: 3, letterSpacing: '0.06em'
+                      }}
+                    >
+                      {renameBusy ? '…' : 'SET'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRenameOpen(false)}
+                      style={{
+                        flex: 1, ...glass, color: 'rgba(0, 217, 255, 0.8)',
+                        border: '1px solid rgba(0, 217, 255, 0.4)', padding: '5px',
+                        fontSize: 11, cursor: 'pointer', borderRadius: 3, letterSpacing: '0.06em'
+                      }}
+                    >
+                      CANCEL
+                    </button>
+                  </div>
+                  {renameError && (
+                    <div style={{ ...line, color: '#ff6b6b', marginTop: 4 }}>{renameError}</div>
+                  )}
+                </div>
               )}
             </div>
           </>

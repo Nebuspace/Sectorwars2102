@@ -54,6 +54,14 @@ class Planet(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), nullable=False)
+    # ADR-0073 No-Man's-Sky naming: auto_name is the generated default; the
+    # discoverer may set custom_name. Display resolves custom_name -> auto_name
+    # -> legacy name. Discovery (separate from sector discovery) records the
+    # first discoverer, who alone may rename (claimed or not).
+    auto_name = Column(String(100), nullable=True)
+    custom_name = Column(String(50), nullable=True)
+    discovered_by = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    discovered_at = Column(DateTime(timezone=True), nullable=True)
     sector_id = Column(Integer, nullable=False)
     sector_uuid = Column(UUID(as_uuid=True), ForeignKey("sectors.id", ondelete="CASCADE"), nullable=True)
     owner_id = Column(UUID(as_uuid=True), nullable=True)
@@ -184,5 +192,11 @@ class Planet(Base):
     formation = relationship("PlanetFormation", foreign_keys="[PlanetFormation.resulting_planet_id]", back_populates="resulting_planet", uselist=False)
     region = relationship("Region", back_populates="planets")
     
+    @property
+    def display_name(self) -> str:
+        """The name shown to players: a discoverer's custom name wins, else the
+        generated auto-name, else the legacy stored name (ADR-0073)."""
+        return self.custom_name or self.auto_name or self.name
+
     def __repr__(self):
-        return f"<Planet {self.name} ({self.type.name}) - Sector: {self.sector_id}, Status: {self.status.name}>" 
+        return f"<Planet {self.name} ({self.type.name}) - Sector: {self.sector_id}, Status: {self.status.name}>"

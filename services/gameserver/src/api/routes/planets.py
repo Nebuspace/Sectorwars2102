@@ -601,6 +601,61 @@ async def transfer_colonists(
     )
 
 
+def _rename_planet_by_discoverer(planet_id: str, request: RenameRequest,
+                                 player: Player, db: Session) -> RenameResponse:
+    """ADR-0073 rename: ONLY the planet's discoverer may set its name (claimed
+    or not). Writes ``custom_name`` (the auto-name is preserved); display
+    resolves custom_name -> auto_name -> name. New name 1-50 chars."""
+    try:
+        planet_uuid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == planet_uuid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+
+    # Discoverer-only (NOT owner) — claimed or not.
+    if planet.discovered_by is None or planet.discovered_by != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the discoverer of this planet may rename it",
+        )
+
+    old_name = planet.display_name
+    new_name = (request.name or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Planet name cannot be empty")
+    if len(new_name) > 50:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Planet name must be 50 characters or fewer")
+
+    planet.custom_name = new_name
+    db.commit()
+    db.refresh(planet)
+    return RenameResponse(
+        success=True,
+        message=f"Planet renamed from '{old_name}' to '{new_name}'",
+        planet_id=str(planet.id),
+        old_name=old_name,
+        new_name=new_name,
+    )
+
+
+@router.post("/{planet_id}/name", response_model=RenameResponse)
+async def name_planet(
+    planet_id: str,
+    request: RenameRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Set a planet's name (ADR-0073). Authority: the planet's discoverer only,
+    claimed or not. Canonical No-Man's-Sky naming endpoint."""
+    return _rename_planet_by_discoverer(planet_id, request, player, db)
+
+
 @router.put("/{planet_id}/rename", response_model=RenameResponse)
 async def rename_planet(
     planet_id: str,
@@ -608,61 +663,9 @@ async def rename_planet(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
-    """
-    Rename a planet that you own.
-
-    Requirements:
-    - Player must own the planet
-    - New name must be 1-50 characters
-    """
-    from src.models.planet import player_planets
-
-    try:
-        planet_uuid = UUID(planet_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid planet ID format"
-        )
-
-    # Get the planet and verify ownership
-    planet = db.query(Planet).filter(Planet.id == planet_uuid).first()
-    if not planet:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Planet not found"
-        )
-
-    # Check ownership
-    if planet.owner_id != player.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not own this planet"
-        )
-
-    # Store old name for response
-    old_name = planet.name
-    new_name = request.name.strip()
-
-    # Validate new name
-    if not new_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Planet name cannot be empty"
-        )
-
-    # Update the planet name
-    planet.name = new_name
-    db.commit()
-    db.refresh(planet)
-
-    return RenameResponse(
-        success=True,
-        message=f"Planet renamed from '{old_name}' to '{new_name}'",
-        planet_id=str(planet.id),
-        old_name=old_name,
-        new_name=new_name
-    )
+    """Rename a planet (legacy path, now discoverer-gated + custom_name to match
+    ADR-0073). Prefer POST /{planet_id}/name."""
+    return _rename_planet_by_discoverer(planet_id, request, player, db)
 
 
 @router.post("/land", response_model=LandResponse)

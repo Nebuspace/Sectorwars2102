@@ -232,6 +232,7 @@ class GenesisService:
         # --- Create planet in forming state ---
         planet = Planet(
             name=planet_name,
+            auto_name=planet_name,  # ADR-0073: generated default; discoverer may override
             sector_id=sector_id,
             sector_uuid=sector.id,
             type=planet_type,

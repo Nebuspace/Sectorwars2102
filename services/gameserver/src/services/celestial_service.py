@@ -364,7 +364,10 @@ def _merge_real_planets(
         body["kind"] = planet_type
         body["real"] = True
         body["planet_id"] = str(planet.id)
-        body["name"] = planet.name
+        # ADR-0073: show the discoverer's custom name, else the auto-name, else
+        # the legacy name; carry the discoverer so the route can gate renaming.
+        body["name"] = planet.display_name
+        body["discovered_by"] = str(planet.discovered_by) if planet.discovered_by else None
         body["habitability"] = planet.habitability_score
         body["owned"] = planet.owner_id is not None
         # Real gas giants keep the gas-giant size floor for visual sanity.
@@ -452,6 +455,12 @@ def generate_skeleton(sector: Sector, min_bodies: int = 0) -> Dict[str, Any]:
         _make_body(root_seed, slot, body_count, orbit_au)
         for slot, orbit_au in enumerate(orbits)
     ]
+    # Composer-only bodies get a real name from the corpus (replacing the old
+    # "<sector>-<letter>" designation); real planets overwrite this at merge.
+    # Deferred import avoids a module-load cycle (planet_naming -> celestial).
+    from src.services.planet_naming_service import name_for_body
+    for b in bodies:
+        b["name"] = name_for_body(sector.sector_id, b["slot"])
 
     # --- Collision-debris ring (two worlds that collided long ago, their wreck
     #     spread into a belt encircling the orbital plane) — rolled LAST so
