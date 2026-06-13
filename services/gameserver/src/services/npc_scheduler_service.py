@@ -266,9 +266,22 @@ def _drive_patrol(
     if not sectors or npc.current_sector_id is None:
         return []
 
-    start = int(block.get("start_minute", 0))
-    minutes_into = max(0, minute - start)
-    desired = sectors[(minutes_into // max(1, minutes_per_sector)) % len(sectors)]
+    # Pick the next waypoint to head for. The earlier absolute-time index
+    # (minutes_into // minutes_per_sector) is degenerate when the Loop A
+    # cadence times the time-scale is an exact multiple of minutes_per_sector
+    # (e.g. 300s tick x GAME_TIME_SCALE 144 = 720 canonical min = 3 x 240):
+    # the index then never changes between ticks and patrols freeze. Advance
+    # ROUND-ROBIN to the sector after the NPC's current position instead — one
+    # hop per eligible tick, continuous and time-scale-independent. (V1 dwell
+    # is therefore the Loop A cadence; finer per-sector dwell is deferred with
+    # the lodging slice — flagged for the docs repo.)
+    _ = minutes_per_sector  # retained in the schedule shape; unused by v1 round-robin
+    if npc.current_sector_id in sectors:
+        idx = sectors.index(npc.current_sector_id)
+        desired = sectors[(idx + 1) % len(sectors)]
+    else:
+        # Off-route (e.g. just respawned elsewhere) — head back to the anchor.
+        desired = sectors[0]
     if npc.current_sector_id == desired:
         return []
 
