@@ -75,6 +75,10 @@ from src.services.npc_spawn_service import (
     TRADER_SHIP_TYPES,
     TRADER_STARTING_CREDITS,
     TRADER_TITLES,
+    TRADER_TITLES_BY_TIER,
+    notoriety_from_title,
+    notoriety_tier,
+    roll_notoriety,
     _build_npc_ship,
     _presence_entry,
     _roman,
@@ -703,6 +707,7 @@ def _fill_roster_deficit(
         spawn_spec = spec
         spawn_title = cfg.title
         ship_name = cfg.ship_name_format.format(name=npc_name)
+        spawn_notoriety = None  # traders only (set below)
 
         if is_trader:
             # Each captain gets one of the pre-generated randomized routes —
@@ -723,7 +728,14 @@ def _fill_roster_deficit(
                     .first()
                 )
             spawn_spec = spec_cache[hull] or spec
-            spawn_title = random.choice(TRADER_TITLES)
+            # Notoriety drives the persona: most captains are reputable, a
+            # minority unscrupulous — and the title hints at which (a "Smuggler"
+            # is fair game; a "Merchant Prince" is an innocent).
+            spawn_notoriety = roll_notoriety(random.random())
+            tier_titles = TRADER_TITLES_BY_TIER.get(
+                notoriety_tier(spawn_notoriety), TRADER_TITLES
+            )
+            spawn_title = random.choice(tier_titles)
             ship_name = (
                 f"{spawn_title} {npc_name}'s "
                 f"{TRADER_SHIP_NOUN.get(hull, 'Hauler')}"
@@ -766,6 +778,7 @@ def _fill_roster_deficit(
             # Wallet seed funds the first cargo load (canon-silent
             # amount — flagged in DECISIONS.md).
             credits=TRADER_STARTING_CREDITS if is_trader else 0,
+            notoriety=spawn_notoriety,
             spawned_at=now,
             last_seen_at=now,
         )
@@ -1108,6 +1121,42 @@ def _seed_trader_rosters_sync() -> int:
         db.close()
 
 
+def _assign_trader_notoriety_sync() -> int:
+    """Backfill notoriety onto pre-existing TRADER NPCs that have none (the
+    column shipped after they spawned). Derived from each captain's existing
+    persona title (+ a STABLE per-id jitter) so it's coherent with the name
+    players see and deterministic across restarts. Idempotent: only NULL rows
+    are touched. xact-advisory-lock-gated like the other startup repairs."""
+    from src.core.database import SessionLocal
+    from src.services.npc_spawn_service import notoriety_from_title
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        rows = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.archetype == NPCArchetype.TRADER,
+                NPCCharacter.notoriety.is_(None),
+            )
+            .all()
+        )
+        for npc in rows:
+            # Stable per-id jitter in [0,1) (hash of the uuid → fraction).
+            u = (npc.id.int % 1000) / 1000.0
+            npc.notoriety = notoriety_from_title(npc.title, u)
+        if rows:
+            db.commit()  # releases the xact lock
+        return len(rows)
+    finally:
+        db.close()
+
+
 def _bulk_fill_traders_sync() -> int:
     """Spawn merchant captains up to each trader roster's target_count in one
     pass, so the galaxy reaches its full trader population at boot instead of
@@ -1191,6 +1240,13 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: bulk-spawned %d trader(s) to target", filled)
     except Exception:
         logger.exception("NPC scheduler: trader bulk-fill failed")
+    # Backfill notoriety onto traders that predate the column.
+    try:
+        scored = await asyncio.to_thread(_assign_trader_notoriety_sync)
+        if scored:
+            logger.info("NPC scheduler: assigned notoriety to %d trader(s)", scored)
+    except Exception:
+        logger.exception("NPC scheduler: trader notoriety backfill failed")
     elapsed = 0
     while True:
         await asyncio.sleep(TICK_SECONDS)

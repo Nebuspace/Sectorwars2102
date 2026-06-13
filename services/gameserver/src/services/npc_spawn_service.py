@@ -96,6 +96,63 @@ TRADER_TITLES = (
     "Cargo Runner", "Smuggler", "Star Trader", "Merchant Prince",
 )
 
+# --- Trader notoriety (scruples axis) --------------------------------------
+# 0–100; low = reputable merchant (attacking is a crime), high = unscrupulous
+# smuggler (a lawful target). A player at/above this threshold is "fair game"
+# — attacking below it triggers the canon attack_innocent reputation penalty.
+LAWFUL_TARGET_THRESHOLD = 50
+
+# Persona pool by tier so the visible title hints at the captain's reputation:
+# an honest "Merchant Prince" vs a "Smuggler" you can hunt without dishonor.
+TRADER_TITLES_BY_TIER = {
+    "REPUTABLE": ("Trader", "Merchant", "Star Trader", "Merchant Prince", "Freight Captain"),
+    "STANDARD": ("Trader", "Merchant", "Freight Captain", "Trade Baron", "Cargo Runner"),
+    "UNSCRUPULOUS": ("Cargo Runner", "Trade Baron", "Freight Captain", "Smuggler"),
+    "NOTORIOUS": ("Smuggler", "Cargo Runner", "Black Marketeer"),
+}
+
+
+def roll_notoriety(u: float) -> int:
+    """Map a uniform draw u∈[0,1) to a notoriety score, weighted toward
+    reputable: ~50% reputable, ~25% standard, ~17% unscrupulous, ~8% notorious.
+    Used at spawn (random draw) and at backfill (stable per-id draw)."""
+    if u < 0.50:
+        n = int(u / 0.50 * 25)             # 0–24 reputable
+    elif u < 0.75:
+        n = 25 + int((u - 0.50) / 0.25 * 25)   # 25–49 standard
+    elif u < 0.92:
+        n = 50 + int((u - 0.75) / 0.17 * 25)   # 50–74 unscrupulous
+    else:
+        n = 75 + int((u - 0.92) / 0.08 * 26)   # 75–100 notorious
+    return max(0, min(100, n))
+
+
+def notoriety_tier(n: Optional[int]) -> str:
+    """Tier key for a notoriety score (None → REPUTABLE)."""
+    v = n or 0
+    if v >= 75:
+        return "NOTORIOUS"
+    if v >= LAWFUL_TARGET_THRESHOLD:
+        return "UNSCRUPULOUS"
+    if v >= 25:
+        return "STANDARD"
+    return "REPUTABLE"
+
+
+def notoriety_from_title(title: Optional[str], u: float) -> int:
+    """Derive a notoriety score from a trader's EXISTING persona title (+ a
+    stable jitter u∈[0,1)) so backfilled captains stay coherent with the name
+    players already see — a Smuggler reads notorious, a Merchant Prince
+    reputable — without renaming anyone."""
+    t = (title or "").lower()
+    if "smuggler" in t or "marketeer" in t:
+        return min(100, 75 + int(u * 26))      # 75–100 notorious
+    if "cargo runner" in t:
+        return 45 + int(u * 30)                # 45–74 unscrupulous-leaning
+    if "trade baron" in t:
+        return 35 + int(u * 30)                # 35–64 standard→unscrupulous
+    return int(u * 45)                         # 0–44 reputable→standard
+
 # Gameserver-side trader name pool (BANG emits no trader rosters; names
 # are flavor, operator-replaceable — not invented canon numbers).
 TRADER_NAME_POOL: Tuple[str, ...] = (
@@ -391,6 +448,10 @@ def _presence_entry(npc: NPCCharacter, ship: Ship) -> Dict[str, Any]:
         "team_id": None,
         "arrived_at": datetime.now(UTC).isoformat(),
         "is_npc": True,
+        # Authoritative archetype (so the client colors law/raider/trader
+        # without guessing from the ship name) + the trader scruples axis.
+        "archetype": npc.archetype.name if npc.archetype else None,
+        "notoriety": npc.notoriety,
     }
 
 

@@ -440,6 +440,26 @@ class CombatService:
                 attacker.credits = (attacker.credits or 0) + looted_credits
                 looted_npc.credits = 0
 
+            # Notoriety consequence: gunning down a REPUTABLE merchant is a
+            # crime — the canon attack_innocent penalty (−100, mirroring PvP).
+            # An UNSCRUPULOUS / NOTORIOUS trader (notoriety ≥ threshold) is a
+            # lawful target — no penalty. Raiders are always fair game;
+            # marshals carry their own faction penalty further below.
+            if looted_npc is not None:
+                from src.models.npc_character import NPCArchetype as _Arch
+                from src.services.npc_spawn_service import LAWFUL_TARGET_THRESHOLD
+                if (looted_npc.archetype == _Arch.TRADER
+                        and (looted_npc.notoriety or 0) < LAWFUL_TARGET_THRESHOLD):
+                    try:
+                        from src.services.personal_reputation_service import (
+                            PersonalReputationService,
+                        )
+                        PersonalReputationService(self.db).adjust_reputation(
+                            attacker.id, -100, "attack_innocent"
+                        )
+                    except Exception as e:
+                        logger.error("Failed innocent-trader reputation hook: %s", e)
+
         # Create combat log — defender_id stays NULL (no Player behind the
         # ship); name/type snapshots preserve who was fought
         attacker_ship = attacker.current_ship

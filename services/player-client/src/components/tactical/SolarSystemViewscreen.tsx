@@ -129,7 +129,8 @@ type HitMeta =
   | { kind: 'station'; stationId: string; stationType: string }
   | { kind: 'procedural'; designation: string; typeName: string; sizeDesc: string }
   | { kind: 'ship'; shipId: string; shipName: string; shipType: string; captain: string;
-      isNpc: boolean; factionLabel: string; factionColor: string };
+      isNpc: boolean; factionLabel: string; factionColor: string; lawful: boolean;
+      notoriety?: number };
 
 interface HitTarget {
   /** screen-space hit data in CSS pixels (the draw loop paints through a
@@ -154,21 +155,32 @@ interface ShipPresence {
   ship_type?: string;
   is_npc?: boolean;
   team_id?: string | null;
+  /** Authoritative NPC archetype (LAW_ENFORCEMENT | HOSTILE_RAIDER | TRADER). */
+  archetype?: string | null;
+  /** Trader scruples 0–100: low = reputable, ≥50 = unscrupulous (fair game). */
+  notoriety?: number | null;
 }
 
-/** Faction read of a ship from its presence entry — drives glyph color + label.
- *  Heuristic on ship_type / ship_name since presence carries no archetype. */
-function shipFaction(s: ShipPresence): { key: string; color: string; label: string } {
-  if (!s.is_npc) return { key: 'pilot', color: '#00d9ff', label: 'PILOT' };
+/** Faction read of a ship — drives glyph color + label. Uses the authoritative
+ *  archetype when present (falls back to ship_type/name); traders are further
+ *  graded by notoriety so a paladin can tell an honest merchant (green) from a
+ *  shady one (amber) or a notorious smuggler (orange) at a glance. */
+function shipFaction(s: ShipPresence): { key: string; color: string; label: string; lawful: boolean } {
+  if (!s.is_npc) return { key: 'pilot', color: '#00d9ff', label: 'PILOT', lawful: false };
+  const arch = (s.archetype || '').toUpperCase();
   const tp = (s.ship_type || '').toUpperCase();
   const nm = (s.ship_name || '').toUpperCase();
-  if (tp.includes('MARSHAL') || tp.includes('SENTINEL') || tp.includes('INTERDICTOR')) {
-    return { key: 'law', color: '#5b8dff', label: 'LAW ENFORCEMENT' };
-  }
-  if (nm.includes('MARAUDER') || tp.includes('PIRATE')) {
-    return { key: 'raider', color: '#ff5a5a', label: 'HOSTILE' };
-  }
-  return { key: 'trader', color: '#00ff41', label: 'MERCHANT' };
+  const isLaw = arch === 'LAW_ENFORCEMENT'
+    || tp.includes('MARSHAL') || tp.includes('SENTINEL') || tp.includes('INTERDICTOR');
+  if (isLaw) return { key: 'law', color: '#5b8dff', label: 'LAW ENFORCEMENT', lawful: false };
+  const isRaider = arch === 'HOSTILE_RAIDER' || nm.includes('MARAUDER') || tp.includes('PIRATE');
+  if (isRaider) return { key: 'raider', color: '#ff5a5a', label: 'HOSTILE', lawful: true };
+  // Trader — grade by notoriety
+  const n = typeof s.notoriety === 'number' ? s.notoriety : 0;
+  if (n >= 75) return { key: 'notorious', color: '#ff7a3c', label: 'NOTORIOUS TRADER', lawful: true };
+  if (n >= 50) return { key: 'unscrupulous', color: '#ffb000', label: 'UNSCRUPULOUS TRADER', lawful: true };
+  if (n >= 25) return { key: 'merchant', color: '#7fe0a0', label: 'MERCHANT', lawful: false };
+  return { key: 'reputable', color: '#00ff41', label: 'REPUTABLE MERCHANT', lawful: false };
 }
 
 interface PopupState {
@@ -1163,7 +1175,8 @@ function drawScene(
       meta: {
         kind: 'ship', shipId: s.ship_id, shipName: s.ship_name || contactName,
         shipType: s.ship_type || 'UNKNOWN', captain, isNpc: !!s.is_npc,
-        factionLabel: fac.label, factionColor: fac.color
+        factionLabel: fac.label, factionColor: fac.color, lawful: fac.lawful,
+        notoriety: typeof s.notoriety === 'number' ? s.notoriety : undefined
       }
     });
     drawShipGlyph(ctx, x, y, size, fac.color, angle);
@@ -2055,6 +2068,14 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
             <div className="ssv-popup-line">
               {meta.isNpc ? 'NPC' : 'PILOT'} — {meta.captain.toUpperCase()}
             </div>
+            {meta.isNpc && (
+              <div
+                className="ssv-popup-status"
+                style={{ color: meta.lawful ? '#ffb000' : '#00ff41' }}
+              >
+                {meta.lawful ? '⚑ LAWFUL TARGET' : '✋ PROTECTED — ATTACK IS A CRIME'}
+              </div>
+            )}
           </>
         );
       case 'station':

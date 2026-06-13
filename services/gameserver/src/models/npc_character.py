@@ -221,6 +221,12 @@ class NPCCharacter(Base):
     # TRADER wallet — canon-silent for spot market trades (pending
     # decision); profit feeds the 100-route career metric.
     credits = Column(Integer, nullable=False, default=0)
+    # Notoriety 0–100 (TRADER scruples axis): low = reputable merchant
+    # (attacking is a crime — innocent-attack rep penalty), high = unscrupulous
+    # smuggler / black-marketeer (a lawful target). Nullable so pre-existing
+    # rows backfill at scheduler startup. Maps to the canon Shadow-Syndicate /
+    # smuggling reputation surface (ADR-0018/0032, ADR-0042 attack_innocent).
+    notoriety = Column(Integer, nullable=True)
 
     # Lifecycle timestamps (canon names)
     spawned_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
