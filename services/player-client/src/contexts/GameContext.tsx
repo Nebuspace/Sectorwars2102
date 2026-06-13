@@ -471,7 +471,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // backgrounded; cleared on sector change / unmount.
   useEffect(() => {
     if (!playerState?.current_sector_id) return;
-    const SECTOR_PRESENCE_POLL_MS = 12000;
+    const SECTOR_PRESENCE_POLL_MS = 5000;
     const id = window.setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       try {

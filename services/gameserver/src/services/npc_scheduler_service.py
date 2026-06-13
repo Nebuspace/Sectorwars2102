@@ -212,6 +212,37 @@ def run_loop_a(db: Session, tick: int = 0) -> List[Dict[str, Any]]:
         .all()
     )
 
+    # Assign an EVEN phase to every NPC sharing a patrol route. A phase hashed
+    # from the id alone splits unevenly on a small squad (e.g. 14 NPCs -> 9/3/2
+    # across 3 sectors), which clumps them into a subset of waypoints and lets a
+    # sector — notably the capital — fall empty. Enumerating each route's squad
+    # (stable id sort) and assigning index % N spreads them uniformly, so ~1/N
+    # is anchored to each waypoint. Phase seeds both the cursor and the per-tick
+    # stagger in _drive_patrol.
+    from collections import defaultdict
+    route_squads: Dict[tuple, List[NPCCharacter]] = defaultdict(list)
+    for npc in npcs:
+        b = resolve_schedule_block(
+            npc.daily_schedule or {}, minute, weekday, day_number
+        )
+        if b is None or str(b.get("location_type")) != "patrol_route":
+            continue
+        ref = b.get("location_ref")
+        if isinstance(ref, dict):
+            secs = tuple(int(s) for s in (ref.get("sectors") or []))
+        elif isinstance(ref, list):
+            secs = tuple(int(s) for s in ref)
+        else:
+            secs = ()
+        if secs:
+            route_squads[secs].append(npc)
+    patrol_phase: Dict[Any, int] = {}
+    for secs, squad in route_squads.items():
+        squad.sort(key=lambda member: str(member.id))
+        width = len(secs)
+        for i, member in enumerate(squad):
+            patrol_phase[member.id] = i % width
+
     for npc in npcs:
         block = resolve_schedule_block(
             npc.daily_schedule or {}, minute, weekday, day_number
@@ -238,7 +269,12 @@ def run_loop_a(db: Session, tick: int = 0) -> List[Dict[str, Any]]:
                 and npc.status == NPCStatus.ON_DUTY
                 and location_type == "patrol_route"
             ):
-                events.extend(_drive_patrol(db, npc, block, minute, tick))
+                events.extend(
+                    _drive_patrol(
+                        db, npc, block, minute, tick,
+                        patrol_phase.get(npc.id, 0),
+                    )
+                )
             elif (
                 activity == NPCActivity.COMMUTE
                 and location_type == "station_target"
@@ -263,56 +299,58 @@ def _drive_patrol(
     block: Dict[str, Any],
     minute: int,
     tick: int = 0,
+    phase: int = 0,
 ) -> List[Dict[str, Any]]:
-    """Move a patrolling NPC toward its route's current waypoint (single
-    hop per call; npc_movement_service enforces canon transit pacing)."""
+    """Advance a patrolling NPC one hop along its route.
+
+    The NPC follows its route as a cycle via a per-NPC cursor persisted in the
+    schedule block (``patrol_cursor``): it heads for ``sectors[cursor]`` and,
+    on arrival, advances the cursor to the next waypoint. Targeting a waypoint
+    cursor — rather than the sector AFTER the NPC's current position, as the
+    earlier round-robin did — is what makes STAR-shaped routes traverse
+    correctly: when the host sits between two non-adjacent neighbours, a
+    position-derived target oscillates host<->neighbour and the third sector is
+    never visited; a cursor that only advances on arrival walks the full cycle.
+
+    ``phase`` is assigned EVENLY per route by the caller (``run_loop_a``), not
+    hashed from the id — a hash distributes unevenly on a small squad and lets
+    a sector (notably the capital) fall empty. It seeds the cursor so the squad
+    starts dispersed across all waypoints, and gates which slice of the squad
+    hops this tick so the squad churns through a sector a few at a time rather
+    than teleporting as a block. Net effect: ~1/N of every squad is anchored to
+    each waypoint at all times, so no sector on the route is ever empty.
+    """
     ref = block.get("location_ref")
     if isinstance(ref, dict):
         sectors = [int(s) for s in (ref.get("sectors") or [])]
-        minutes_per_sector = int(ref.get("minutes_per_sector") or 240)
     elif isinstance(ref, list):
         sectors = [int(s) for s in ref]
-        minutes_per_sector = 240
     else:
         return []
-    if not sectors or npc.current_sector_id is None:
+    n = len(sectors)
+    if n < 2 or npc.current_sector_id is None:
         return []
 
-    # Pick the next waypoint to head for. The earlier absolute-time index
-    # (minutes_into // minutes_per_sector) is degenerate when the Loop A
-    # cadence times the time-scale is an exact multiple of minutes_per_sector
-    # (e.g. 300s tick x GAME_TIME_SCALE 144 = 720 canonical min = 3 x 240):
-    # the index then never changes between ticks and patrols freeze. Advance
-    # ROUND-ROBIN to the sector after the NPC's current position instead — one
-    # hop per eligible tick, continuous and time-scale-independent. (V1 dwell
-    # is therefore the Loop A cadence; finer per-sector dwell is deferred with
-    # the lodging slice — flagged for the docs repo.)
-    _ = minutes_per_sector  # retained in the schedule shape; unused by v1 round-robin
-    on_route = npc.current_sector_id in sectors
+    # Stagger: only the phase-matching slice of the squad hops this tick, so a
+    # route's NPCs arrive and depart a sector a few at a time (continuous churn)
+    # rather than the whole squad moving in unison.
+    if (tick + phase) % n != 0:
+        return []
 
-    # Per-NPC phase stagger. Without it, every NPC on a route spawns at the
-    # same anchor and round-robins in unison, so a whole squad is permanently
-    # co-located in ONE sector — the world reads as a frozen pile that
-    # teleports as a block (the BLUE-mode "28 NPCs sitting in 1001" symptom).
-    # A stable phase derived from the NPC id makes only the matching slice of a
-    # squad hop on any given tick: a clumped squad SMEARS across its route over
-    # the first few ticks (emergent dispersion) and thereafter motion is a
-    # continuous trickle rather than a herd pulse. Off-route NPCs (just
-    # respawned elsewhere) are always eligible so they rejoin promptly.
-    if on_route and len(sectors) > 1:
-        stagger = len(sectors)
-        phase = npc.id.int % stagger
-        if (tick + phase) % stagger != 0:
-            return []
-
-    if on_route:
-        idx = sectors.index(npc.current_sector_id)
-        desired = sectors[(idx + 1) % len(sectors)]
-    else:
-        # Off-route (e.g. just respawned elsewhere) — head back to the anchor.
-        desired = sectors[0]
+    # Per-NPC route cursor — defaults to the even phase until first persisted,
+    # so an un-migrated NPC still starts at a dispersed, route-correct slot.
+    try:
+        cursor = int(block.get("patrol_cursor", phase)) % n
+    except (TypeError, ValueError):
+        cursor = phase % n
+    desired = sectors[cursor]
     if npc.current_sector_id == desired:
-        return []
+        # Arrived at the current waypoint — advance the cursor and aim for the
+        # next, so the NPC keeps moving instead of idling on top of its target.
+        cursor = (cursor + 1) % n
+        block["patrol_cursor"] = cursor
+        flag_modified(npc, "daily_schedule")
+        desired = sectors[cursor]
 
     next_hop = npc_movement_service.next_hop_toward(
         db, npc.current_sector_id, desired
