@@ -1249,6 +1249,49 @@
     "genesis formation env not wired to compose",
     "port assault targetType=port 400"
    ]
+  },
+  {
+   "id": "neon-2026-06-13-e",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "lead_model": "opus-4.8",
+   "pilot": "testpilot",
+   "branch_head_at_start": "1144a50",
+   "deployed_sha_end": "8f6f33d",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "npc-trader-economy",
+     "state": "proven",
+     "effort": 4,
+     "findings": [
+      "trader rosters never seeded (CLI-only)",
+      "NameError trap NPCArchetype not module-imported",
+      "over-seed across 3 stale galaxies",
+      "buy_here dropped from trader schedule -> traders never traded"
+     ],
+     "files_owned": [
+      "services/gameserver/src/services/npc_scheduler_service.py",
+      "services/gameserver/src/services/npc_spawn_service.py",
+      "services/gameserver/src/services/npc_trading_service.py"
+     ],
+     "commits": [
+      "c6e5f75",
+      "d21d93a",
+      "8f6f33d"
+     ],
+     "proof": "live deployed code: seeded 3 trader rosters; Loop B spawned 3 merchant captains (COMMUTE,25k,4-stop routes); trade-stop executed BUY ore x1000=13000cr as MarketTransaction w/ npc_id, credits 25k->12k, cargo+stock mutated"
+    }
+   ],
+   "gate": "2 adversarial reviewers; reviewer1 caught CRITICAL NameError (fixed); proof surfaced over-seed + buy_here bugs (fixed in repair loop)",
+   "parking_lot": [
+    "npc-scheduler.md banner Max-gated flip",
+    "TRADERS_PER_REGION=6 NO-CANON",
+    "npc_restock_demand has no reader",
+    "prune stale galaxy rows",
+    "quantum sector.is_discovered on jump",
+    "port assault 400"
+   ]
   }
  ],
  "last_updated": "2026-06-12"
