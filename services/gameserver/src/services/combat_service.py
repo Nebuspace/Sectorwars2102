@@ -412,6 +412,34 @@ class CombatService:
         # Consume turns
         spend_turns(attacker, turn_cost)
 
+        # NPC kills yield the FULL haul. Win the fight and you take ALL the
+        # credits and goods the NPC was carrying — a loaded merchant captain is
+        # a genuine prize, unlike the random partial salvage of player-vs-player
+        # combat. Done BEFORE the combat log so the log records the true haul.
+        # Cargo is still capped to the attacker's free hold by _transfer_cargo
+        # (a hold has finite volume); credits are not (a wallet has none). The
+        # trader spawn seed is deliberately small, so this loots genuinely-earned
+        # profit rather than minting a large seed into the economy.
+        looted_credits = 0
+        if combat_result["result"] == CombatResult.ATTACKER_VICTORY:
+            full_contents = (npc_ship.cargo or {}).get("contents") or {}
+            combat_result["cargo_stolen"] = {
+                resource: int(qty)
+                for resource, qty in full_contents.items()
+                if isinstance(qty, (int, float)) and qty > 0
+            }
+            from src.models.npc_character import NPCCharacter as _NPCCharacterLoot
+            looted_npc = (
+                self.db.query(_NPCCharacterLoot)
+                .filter(_NPCCharacterLoot.ship_id == npc_ship.id)
+                .with_for_update()
+                .first()
+            )
+            if looted_npc is not None and (looted_npc.credits or 0) > 0:
+                looted_credits = int(looted_npc.credits)
+                attacker.credits = (attacker.credits or 0) + looted_credits
+                looted_npc.credits = 0
+
         # Create combat log — defender_id stays NULL (no Player behind the
         # ship); name/type snapshots preserve who was fought
         attacker_ship = attacker.current_ship
@@ -563,7 +591,9 @@ class CombatService:
             "combat_details": combat_result["combat_details"],
             "turns_consumed": turn_cost,
             "turns_remaining": attacker.turns,
-            "combat_log_id": str(combat_log.id)
+            "combat_log_id": str(combat_log.id),
+            "credits_looted": looted_credits,
+            "cargo_looted": combat_result["cargo_stolen"] or {},
         }
         if police_response:
             result_dict["police_response"] = police_response

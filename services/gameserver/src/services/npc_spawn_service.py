@@ -63,9 +63,13 @@ MERCHANT_CAPTAIN_KIND = "merchant_captain"
 
 # TRADER roster tunables. Canon is silent on both (flagged for
 # DECISIONS.md): trader counts are operator-tunable per region, and the
-# wallet seed funds the first cargo load.
+# wallet seed funds the first cargo load. The seed is deliberately SMALL: a
+# trader earns its wealth by trading, so a kill loots genuinely-earned profit
+# rather than minting a large spawn seed into the player economy (the credit
+# faucet risk when combat loots the full NPC wallet). A few thousand funds a
+# modest first load; the wallet grows from there.
 TRADERS_PER_REGION = 6
-TRADER_STARTING_CREDITS = 25_000
+TRADER_STARTING_CREDITS = 3_000
 
 # Gameserver-side trader name pool (BANG emits no trader rosters; names
 # are flavor, operator-replaceable — not invented canon numbers).
