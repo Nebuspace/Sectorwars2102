@@ -1164,6 +1164,49 @@
     "port assault targetType=port 400",
     "leaderboard padded with npc_filler accounts"
    ]
+  },
+  {
+   "id": "neon-2026-06-13-c",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "lead_model": "opus-4.8",
+   "branch_head_at_start": "6f520a6",
+   "deployed_sha_end": "a3cd68d",
+   "verdict": "STEADY",
+   "sections": [
+    {
+     "key": "genesis-deploy-end-to-end",
+     "state": "proven",
+     "effort": 4,
+     "findings": [
+      "deploy never decremented ship.genesis_devices (unlimited planets)",
+      "rolled TERRAN (ADR-0014 reserved)",
+      "response snake_case client never read",
+      "formation completion never triggered by any client"
+     ],
+     "files_owned": [
+      "services/gameserver/src/services/genesis_service.py",
+      "services/gameserver/src/api/routes/planets.py"
+     ],
+     "commits": [
+      "a3cd68d"
+     ],
+     "proof": "live container+DB: device 1->0, OCEANIC planet Aquarius-1010-832 created forming, max_colonists=1000/max_pop=52000, 0-device deploy -> 400, complete_due_formations -> COLONIZED 100 colonists; XelaNull persistently owns it. UI leg blocked by recurring XelaNull session-token expiry (could not re-auth)."
+    }
+   ],
+   "notes": [
+    "UI proof leg blocked: XelaNull browser session token expired twice mid-loop; proved via gameserver container against live DB instead (exercises the actual deployed code)."
+   ],
+   "parking_lot": [
+    "wire GENESIS_FORMATION_HOURS into gameserver compose env (repo/dev compose divergence)",
+    "genesis deploy tier hardwired basic (untiered devices)",
+    "advanced-tier extra device per ADR-0013",
+    "dead GenesisDevice/PlanetFormation ORM models",
+    "NPC traders never spawn (rosters empty)",
+    "npc_restock_demand never read by pricing",
+    "Quantum Jump FEATURES design-only but shipped",
+    "port assault targetType=port 400"
+   ]
   }
  ],
  "last_updated": "2026-06-12"
