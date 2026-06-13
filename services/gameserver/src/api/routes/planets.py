@@ -5,6 +5,7 @@ Handles planet colonization, resource allocation, building construction,
 defenses, sieges, and landing/departing operations.
 """
 
+import logging
 from datetime import datetime, UTC
 from typing import List, Optional
 from uuid import UUID
@@ -26,6 +27,8 @@ from src.services.planetary_service import (
 )
 
 router = APIRouter(prefix="/planets", tags=["planets"])
+
+logger = logging.getLogger(__name__)
 
 # Traditional colonization requirements (FEATURES/planets/colonization.md
 # "#1-traditional-colonization" / "#fulfilling-the-contract"):
@@ -95,6 +98,10 @@ class LandResponse(BaseModel):
     population: int
     owner_id: Optional[str] = None
     is_owned_by_player: bool
+    # Population-hub affordances: the client renders the Population Center UI
+    # (Pioneer Office) instead of the generic colony console when this is set.
+    is_population_hub: bool = False
+    services: List[str] = Field(default_factory=list)
 
 
 class ClaimResponse(BaseModel):
@@ -315,6 +322,14 @@ async def claim_planet(
     flag_modified(ship, 'cargo')
 
     planet.colonists = (planet.colonists or 0) + colonists_settled
+    # Migration-contract ledger: attribute the just-settled pioneers to the
+    # player's open contracts FIFO (advances `delivered`). Best-effort — a
+    # ledger hiccup must never block a colony founding.
+    try:
+        from src.services import pioneer_service
+        pioneer_service.attribute_settlement(db, player.id, colonists_settled)
+    except Exception:
+        logger.exception("Migration-contract attribution failed on claim")
     # Dual ceilings at colonization (ADR-0035 "Genesis and colonization
     # initialization"): max_colonists = L1 cap; max_population =
     # habitability_score × 1,000.
@@ -510,6 +525,13 @@ async def transfer_colonists(
         planet.colonists = planet_colonists + quantity
         # Simplification: total demographic tracks the workforce floor
         planet.population = max(planet.population or 0, planet.colonists)
+        # Migration-contract ledger: settling pioneers advances `delivered`
+        # on the player's open contracts FIFO. Best-effort.
+        try:
+            from src.services import pioneer_service
+            pioneer_service.attribute_settlement(db, player.id, quantity)
+        except Exception:
+            logger.exception("Migration-contract attribution failed on disembark")
         message = f"{quantity:,} colonists disembarked onto {planet.name}"
     else:  # embark
         if planet_colonists < quantity:
@@ -753,7 +775,9 @@ async def land_on_planet(
         habitability_score=planet.habitability_score,
         population=planet.population,
         owner_id=str(planet.owner_id) if planet.owner_id else None,
-        is_owned_by_player=is_owned_by_player
+        is_owned_by_player=is_owned_by_player,
+        is_population_hub=bool(is_population_hub),
+        services=["pioneer_office"] if is_population_hub else [],
     )
 
 

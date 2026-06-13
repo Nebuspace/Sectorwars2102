@@ -50,6 +50,30 @@ export interface Planet {
   population: number;
   max_population: number;
   habitability_score: number;
+  is_population_hub?: boolean;
+}
+
+// A pioneer migration contract brokered at a capital population hub.
+export interface MigrationContract {
+  id: string;
+  source_planet_id: string;
+  source_planet_name?: string | null;
+  source_sector_id: number;
+  cohort_total: number;
+  loaded: number;
+  delivered: number;
+  remaining_to_load: number;
+  fee_per_pioneer_locked: number;
+  status: 'BROKERED' | 'IN_PROGRESS' | 'FULFILLED' | 'VOID';
+}
+
+export interface PioneerOffice {
+  planet_id: string;
+  planet_name: string;
+  fee_per_pioneer: number;
+  cargo_colonists: number;
+  cargo_free: number;
+  contracts: MigrationContract[];
 }
 
 export interface Station {
@@ -254,6 +278,12 @@ interface GameContextType {
   updatePlanetDefenses: (planetId: string, defenses: { turrets?: number; shields?: number; fighters?: number }) => Promise<any>;
   upgradePlanetBuilding: (planetId: string, buildingType: string, targetLevel: number) => Promise<any>;
   transferColonists: (planetId: string, action: 'embark' | 'disembark', quantity: number) => Promise<any>;
+  // Pioneer Office (population-hub migration contracts)
+  getPioneerOffice: () => Promise<PioneerOffice>;
+  brokerMigrationContract: (cohortTotal: number) => Promise<MigrationContract>;
+  loadPioneerBatch: (contractId: string, quantity: number) => Promise<MigrationContract>;
+  listMigrationContracts: (includeClosed?: boolean) => Promise<MigrationContract[]>;
+  cancelMigrationContract: (contractId: string) => Promise<MigrationContract>;
   // Citadel (5-level) — info, upgrades, and CREDITS-ONLY safe storage.
   // CitadelService.deposit_to_safe/withdraw_from_safe move credits between
   // the player balance and planet.citadel_safe_credits; there is no
@@ -983,6 +1013,39 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // --- Pioneer Office: migration contracts at a population hub ---
+  // Follow the Port Office mold: no global isLoading/error churn — the venue
+  // surfaces 400/403 refusals inline. Mutations that move credits or cargo
+  // refresh player + ship state so the cockpit stays authoritative.
+  const getPioneerOffice = async (): Promise<PioneerOffice> => {
+    const response = await api.get('/api/v1/pioneer/office');
+    return response.data;
+  };
+
+  const brokerMigrationContract = async (cohortTotal: number): Promise<MigrationContract> => {
+    const response = await api.post('/api/v1/pioneer/contracts', { cohort_total: cohortTotal });
+    return response.data;
+  };
+
+  const loadPioneerBatch = async (contractId: string, quantity: number): Promise<MigrationContract> => {
+    const response = await api.post(`/api/v1/pioneer/contracts/${contractId}/load`, { quantity });
+    await refreshPlayerState();
+    await loadShips();
+    return response.data;
+  };
+
+  const listMigrationContracts = async (includeClosed = false): Promise<MigrationContract[]> => {
+    const response = await api.get('/api/v1/pioneer/contracts', {
+      params: { include_closed: includeClosed },
+    });
+    return response.data;
+  };
+
+  const cancelMigrationContract = async (contractId: string): Promise<MigrationContract> => {
+    const response = await api.post(`/api/v1/pioneer/contracts/${contractId}/cancel`);
+    return response.data;
+  };
+
   // --- Citadel: info, upgrades, and the credits-only safe ---
   // These follow the Port Office mold: no global isLoading/error churn — the
   // planetary ops console surfaces failures inline. Mutations that move
@@ -1476,6 +1539,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     updatePlanetDefenses,
     upgradePlanetBuilding,
     transferColonists,
+    getPioneerOffice,
+    brokerMigrationContract,
+    loadPioneerBatch,
+    listMigrationContracts,
+    cancelMigrationContract,
     getCitadelInfo,
     upgradeCitadel,
     depositToSafe,

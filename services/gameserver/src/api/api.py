@@ -27,6 +27,7 @@ from src.api.routes.admin_drones import router as admin_drones_router
 from src.api.routes.fleets import router as fleets_router
 from src.api.routes.admin_fleets import router as admin_fleets_router
 from src.api.routes.planets import router as planets_router
+from src.api.routes.pioneer import router as pioneer_router
 from src.api.routes.teams import router as teams_router
 from src.api.routes.admin_economy import router as admin_economy_router
 from src.api.routes.admin_combat import router as admin_combat_router
@@ -90,6 +91,7 @@ api_router.include_router(admin_drones_router, tags=["admin-drones"])
 api_router.include_router(fleets_router, tags=["fleets"])
 api_router.include_router(admin_fleets_router, tags=["admin-fleets"])
 api_router.include_router(planets_router, tags=["planets"])
+api_router.include_router(pioneer_router, tags=["pioneer"])
 api_router.include_router(teams_router, tags=["teams"])
 api_router.include_router(admin_economy_router, tags=["admin-economy"])
 api_router.include_router(admin_combat_router, tags=["admin-combat"])

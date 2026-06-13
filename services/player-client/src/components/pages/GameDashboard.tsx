@@ -9,6 +9,7 @@ import GameLayout from '../layouts/GameLayout';
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
+import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
 import TacticalCard from '../tactical/TacticalCard';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
 import PlanetPortPair from '../tactical/PlanetPortPair';
@@ -1716,6 +1717,10 @@ const GameDashboard: React.FC = () => {
                 </div>
               </div>
             </div>
+          ) : playerState?.is_landed && landedPlanet?.is_population_hub ? (
+            /* LANDED ON A POPULATION HUB: the Capital Sector welcome +
+               Pioneer Office, not the generic owned-colony console. */
+            <PopulationCenterInterface planet={landedPlanet} />
           ) : playerState?.is_landed ? (
             /* LANDED STATE: Show Comprehensive Planetary Operations Terminal */
             <div className="console-monitor planetary-ops-monitor full-width">
