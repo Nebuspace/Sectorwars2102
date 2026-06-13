@@ -828,6 +828,15 @@ async def get_owned_planets(
     db: Session = Depends(get_db)
 ):
     """Get all planets owned by the player."""
+    # Lazily complete any genesis planets whose formation timer has elapsed,
+    # so a freshly-formed colony shows up usable when the player checks the
+    # Colonial Registry (formation completion is lazy poll-on-read).
+    try:
+        from src.services.genesis_service import GenesisService
+        GenesisService(db).complete_due_formations(player.id)
+    except Exception:
+        logger.exception("Genesis formation sweep failed on owned-planets fetch")
+
     service = PlanetaryService(db)
     planets = service.get_player_planets(player.id)
 
@@ -1071,7 +1080,18 @@ async def deploy_genesis_device_legacy(
             sector_id=sector_num,
             tier="basic",
         )
-        return result
+        # Translate the service's snake_case result into the camelCase keys
+        # the client reads (genesisDevicesRemaining / deploymentTime / planetId);
+        # returning the raw dict left all three undefined client-side.
+        return {
+            "success": result["success"],
+            "planetId": result["planet_id"],
+            "planetName": result["planet_name"],
+            "planetType": result["planet_type"],
+            "genesisDevicesRemaining": result["genesis_devices_remaining"],
+            "deploymentTime": result["deployment_seconds"],
+            "formationStatus": result["formation_status"],
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

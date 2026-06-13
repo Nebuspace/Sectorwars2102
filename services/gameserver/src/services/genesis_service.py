@@ -5,6 +5,7 @@ Handles device tiers, 48-hour formation timers, probabilistic planet type
 selection, rate limiting, and ship cargo capacity for genesis devices.
 """
 
+import os
 import random
 import logging
 from typing import Dict, Any, List, Optional
@@ -20,20 +21,24 @@ from src.models.sector import Sector
 
 logger = logging.getLogger(__name__)
 
-# Default formation time in hours (configurable via settings)
-GENESIS_FORMATION_HOURS = 48
+# Default formation time in hours. Env-configurable so dev can accelerate it
+# (the deployment formation timer is wall-clock, NOT GAME_TIME_SCALE-driven).
+GENESIS_FORMATION_HOURS = float(os.getenv("GENESIS_FORMATION_HOURS", "48"))
 
 # Device tier definitions
 GENESIS_TIERS = {
+    # PlanetType.TERRA(N) is reserved for the Capital-welcome planet
+    # (ADR-0014) and is never genesis-rollable; the rollable set is
+    # OCEANIC / DESERT / ICE / VOLCANIC / MOUNTAINOUS.
     "basic": {
         "cost": 25000,
         "requires_ship_sacrifice": False,
         "planet_type_weights": {
-            PlanetType.TERRAN: 50,
-            PlanetType.OCEANIC: 20,
-            PlanetType.DESERT: 15,
-            PlanetType.ICE: 10,
-            PlanetType.VOLCANIC: 5,
+            PlanetType.OCEANIC: 50,
+            PlanetType.DESERT: 20,
+            PlanetType.ICE: 15,
+            PlanetType.VOLCANIC: 10,
+            PlanetType.MOUNTAINOUS: 5,
         },
         "habitability_range": (40, 60),
         "resource_richness_range": (0.5, 1.0),
@@ -43,11 +48,11 @@ GENESIS_TIERS = {
         "cost": 75000,
         "requires_ship_sacrifice": False,
         "planet_type_weights": {
-            PlanetType.TERRAN: 60,
-            PlanetType.OCEANIC: 20,
-            PlanetType.DESERT: 10,
-            PlanetType.ICE: 5,
+            PlanetType.OCEANIC: 60,
+            PlanetType.DESERT: 20,
+            PlanetType.ICE: 10,
             PlanetType.VOLCANIC: 5,
+            PlanetType.MOUNTAINOUS: 5,
         },
         "habitability_range": (55, 75),
         "resource_richness_range": (0.8, 1.5),
@@ -58,11 +63,11 @@ GENESIS_TIERS = {
         "requires_ship_sacrifice": True,
         "sacrifice_ship_type": ShipType.COLONY_SHIP,
         "planet_type_weights": {
-            PlanetType.TERRAN: 80,
-            PlanetType.OCEANIC: 10,
-            PlanetType.DESERT: 5,
-            PlanetType.ICE: 3,
-            PlanetType.VOLCANIC: 2,
+            PlanetType.OCEANIC: 80,
+            PlanetType.DESERT: 10,
+            PlanetType.ICE: 5,
+            PlanetType.VOLCANIC: 3,
+            PlanetType.MOUNTAINOUS: 2,
         },
         "habitability_range": (70, 90),
         "resource_richness_range": (1.2, 2.0),
@@ -90,7 +95,7 @@ MAX_PLANETS_PER_SECTOR = 5
 class GenesisService:
     """Service for the full genesis device system."""
 
-    def __init__(self, db: Session, formation_hours: int = GENESIS_FORMATION_HOURS):
+    def __init__(self, db: Session, formation_hours: float = GENESIS_FORMATION_HOURS):
         self.db = db
         self.formation_hours = formation_hours
 
@@ -181,13 +186,17 @@ class GenesisService:
             raise ValueError(
                 f"Your ship ({ship.type.value}) cannot carry genesis devices"
             )
-        # For simplicity, we check the ship has room (genesis_devices < capacity)
+        # Non-sacrifice tiers consume one loaded genesis device. Require the
+        # player to actually carry one (purchased at a genesis dealer) — the
+        # old escape hatch let deploy proceed with zero devices and never
+        # decremented the count, so a single device could found unlimited
+        # planets.
         current_devices_on_ship = ship.genesis_devices or 0
-        if current_devices_on_ship <= 0:
-            # Player must have at least one genesis device loaded on the ship
-            # OR we allow them to purchase-and-deploy in one step
-            # Since the old system used a player-level count, we allow purchase+deploy
-            pass
+        if not tier_config.get("requires_ship_sacrifice") and current_devices_on_ship <= 0:
+            raise ValueError(
+                "You have no genesis devices loaded. Purchase one from a "
+                "genesis dealer (SpaceDock) before deploying."
+            )
 
         # --- Advanced tier: require colony ship sacrifice ---
         if tier_config.get("requires_ship_sacrifice"):
@@ -242,15 +251,21 @@ class GenesisService:
             organics=0,
             equipment=0,
             colonists=0,
-            max_colonists=planet_size * 2000,
+            # Canon dual ceilings (ADR-0035): L1 workforce cap = 1,000;
+            # demographic ceiling = habitability_score * 1,000.
+            max_colonists=1000,
             population=0,
-            max_population=planet_size * 100000,
+            max_population=habitability * 1000,
         )
 
         self.db.add(planet)
 
         # --- Deduct credits ---
         player.credits -= cost
+
+        # --- Consume one loaded genesis device (non-sacrifice tiers) ---
+        if not tier_config.get("requires_ship_sacrifice"):
+            ship.genesis_devices = max(0, current_devices_on_ship - 1)
 
         # --- Record the purchase in player settings for rate limiting ---
         self._record_genesis_purchase(player, tier)
@@ -307,6 +322,10 @@ class GenesisService:
             "formation_started_at": now.isoformat(),
             "formation_complete_at": formation_complete_at.isoformat(),
             "formation_hours_remaining": self.formation_hours,
+            # The legacy route maps these to the camelCase keys the client
+            # reads (genesisDevicesRemaining / deploymentTime).
+            "genesis_devices_remaining": ship.genesis_devices or 0,
+            "deployment_seconds": int(self.formation_hours * 3600),
             "credits_spent": cost,
             "credits_remaining": player.credits,
             "genesis_purchases_this_week": purchases_this_week + 1,
@@ -413,6 +432,30 @@ class GenesisService:
             "progress_percent": progress,
             "is_usable": False,
         }
+
+    def complete_due_formations(self, player_id: UUID) -> int:
+        """Lazily complete any of the player's genesis planets whose formation
+        timer has elapsed. Called on the owned-planets fetch so a colony the
+        player founded actually becomes usable when they next check the
+        Colonial Registry — without it, formation completion (lazy poll-on-GET)
+        was never triggered by any client. Returns the count completed."""
+        now = datetime.now(timezone.utc)
+        due = (
+            self.db.query(Planet)
+            .filter(
+                Planet.owner_id == player_id,
+                Planet.genesis_created == True,  # noqa: E712
+                Planet.formation_status == "forming",
+                Planet.formation_complete_at.isnot(None),
+                Planet.formation_complete_at <= now,
+            )
+            .all()
+        )
+        for planet in due:
+            self._complete_formation(planet)
+        if due:
+            self.db.commit()
+        return len(due)
 
     def get_available_purchases(self, player_id: UUID) -> Dict[str, Any]:
         """
@@ -605,6 +648,7 @@ class GenesisService:
             PlanetType.DESERT: ["Arrakis", "Sahara", "Dune", "Scorched", "Arid"],
             PlanetType.ICE: ["Frostholm", "Glacius", "Cryo", "Frozen", "Tundra"],
             PlanetType.VOLCANIC: ["Vulcan", "Magmus", "Inferno", "Ember", "Igneous"],
+            PlanetType.MOUNTAINOUS: ["Ironpeak", "Highspire", "Craghold", "Summit", "Stonereach"],
         }
 
         prefix_list = prefixes.get(planet_type, ["Genesis"])
