@@ -1207,6 +1207,48 @@
     "Quantum Jump FEATURES design-only but shipped",
     "port assault targetType=port 400"
    ]
+  },
+  {
+   "id": "neon-2026-06-13-d",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "lead_model": "opus-4.8",
+   "pilot": "testpilot (Warp Jumper)",
+   "branch_head_at_start": "15ec4e8",
+   "deployed_sha_end": "c814d32",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "threat-page-bounty",
+     "state": "proven",
+     "effort": 2,
+     "findings": [
+      "THREAT MFD page promised threat intel but showed only environmental fields (status partial)"
+     ],
+     "files_owned": [
+      "services/player-client/src/components/mfd/pages/ThreatPage.tsx",
+      "services/player-client/src/components/mfd/mfdRegistry.tsx"
+     ],
+     "commits": [
+      "c814d32"
+     ],
+     "proof": "live testpilot: BOUNTY NONE -> 50,000 cr / WANTED BY PLAYER BOARD (CAUTION accent) after seeding, zero console errors, status flipped shipped; test bounty cleaned up"
+    }
+   ],
+   "docs_writeback": [
+    "sectors.md:99 Quantum Jump 6 design-only -> shipped (Echo Scan proven live)"
+   ],
+   "notes": [
+    "Quantum Jump confirmed fully shipped (backend+client) via live Echo Scan; pure docs drift, no build needed. NPC traders root-caused (bootstrap_galaxy never auto-called)."
+   ],
+   "parking_lot": [
+    "NPC traders never spawn (bootstrap_galaxy not auto-called; DEFICIT_RATIO)",
+    "quantum sector.is_discovered not set on jump (small buildable)",
+    "quantum passive compass (design-only)",
+    "sectors.md wrong /quantum-jump paths (Max-gated)",
+    "genesis formation env not wired to compose",
+    "port assault targetType=port 400"
+   ]
   }
  ],
  "last_updated": "2026-06-12"
