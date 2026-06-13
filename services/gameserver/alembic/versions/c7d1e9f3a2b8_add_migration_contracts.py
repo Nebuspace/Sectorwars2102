@@ -8,7 +8,7 @@ pioneer_service). Indexed on (player_id, status) for the active-contract
 list and the settlement match, and on (player_id, source_planet_id) for
 the load-batch lookup.
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: c7d1e9f3a2b8
 Revises: f8d3a1c9e527
 Create Date: 2026-06-13 00:00:00.000000
 
@@ -19,7 +19,7 @@ from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
-revision = 'a1b2c3d4e5f6'
+revision = 'c7d1e9f3a2b8'
 down_revision = 'f8d3a1c9e527'
 branch_labels = None
 depends_on = None
