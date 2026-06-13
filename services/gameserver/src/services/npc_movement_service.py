@@ -397,6 +397,11 @@ def disperse_law_patrols(db: Session) -> int:
         ).get("sectors")
         if cur_route == route and npc.current_sector_id == anchor:
             continue  # already dispersed to its anchor
+        # Relocate FIRST — _relocate_npc does db.refresh(npc), which would
+        # discard an unflushed daily_schedule change; set the scattered route
+        # AFTER so it survives (the caller commits).
+        if npc.current_sector_id != anchor:
+            _relocate_npc(db, npc, anchor)
         npc.daily_schedule = {
             "timezone": "utc",
             "shift_offset_hours": 0,
@@ -407,7 +412,5 @@ def disperse_law_patrols(db: Session) -> int:
             }],
         }
         npc.home_region_id = npc.home_region_id or region_id
-        if npc.current_sector_id != anchor:
-            _relocate_npc(db, npc, anchor)
         dispersed += 1
     return dispersed
