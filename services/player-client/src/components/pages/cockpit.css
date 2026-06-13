@@ -38,6 +38,121 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Animate the band height so the docked-minimize glides (see .docked-min) */
+  transition: flex-basis 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* DOCKED-MINIMIZE: a few seconds after docking the low-value station-bay
+   scenery collapses to a thin identity strip, handing the band to the station
+   console (the buy/sell desk + venues). Toggleable by the player. */
+.cockpit-mode.docked-min .cockpit-windshield {
+  flex-basis: 34px;
+}
+/* Hide the bay canvas, frame and HUD chips while minimized — show only the
+   slim docked strip. */
+.cockpit-mode.docked-min .cockpit-windshield > *:not(.docked-min-bar) {
+  display: none !important;
+}
+.docked-min-bar { display: none; }
+.cockpit-mode.docked-min .docked-min-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  height: 34px;
+  padding: 0 14px;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(0, 30, 40, 0.95), rgba(0, 12, 20, 0.95));
+  border-bottom: 1px solid rgba(0, 217, 255, 0.3);
+  font-family: 'Courier New', monospace;
+}
+.docked-min-name {
+  color: #00d9ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.5);
+}
+.docked-min-expand {
+  flex-shrink: 0;
+  background: rgba(0, 217, 255, 0.1);
+  color: #00d9ff;
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.docked-min-expand:hover {
+  background: rgba(0, 217, 255, 0.22);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+/* Manual "minimize bay" button — bottom-center of the expanded bay. */
+.bay-minimize-btn {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  background: rgba(0, 12, 20, 0.7);
+  color: rgba(0, 217, 255, 0.85);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  padding: 3px 12px;
+  cursor: pointer;
+  backdrop-filter: blur(3px);
+  transition: all 0.15s ease;
+}
+.bay-minimize-btn:hover {
+  background: rgba(0, 217, 255, 0.18);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.35);
+}
+/* While minimized the manual button is irrelevant (whole bay hidden) */
+.cockpit-mode.docked-min .bay-minimize-btn { display: none; }
+
+/* STATION VENUE TABS — the places you can visit while docked, in the console
+   header. Buy/sell (TRADE) is the default tab. */
+.screen-hud-header.station-venue-header {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.station-venue-tabs {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.venue-tab {
+  background: rgba(0, 217, 255, 0.06);
+  color: rgba(0, 217, 255, 0.7);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 4px 4px 0 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.venue-tab:hover {
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.14);
+}
+.venue-tab.active {
+  color: #00121a;
+  background: #00d9ff;
+  border-color: #00d9ff;
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.4);
 }
 
 /* Override SectorViewport styles for full immersion */

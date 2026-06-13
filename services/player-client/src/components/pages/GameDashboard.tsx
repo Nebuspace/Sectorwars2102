@@ -546,6 +546,19 @@ const GameDashboard: React.FC = () => {
     setStationTerminal('trade');
   }, [playerState?.current_port_id]);
 
+  // Docked chrome minimize: a few seconds after docking, collapse the
+  // station-bay windshield (low-value scenery) so the station console — the
+  // buy/sell desk + venues, the reason you docked — gets ~85% of the band and
+  // fits without scrolling. Auto-fires once per dock; the player can expand/
+  // re-minimize manually. Resets on undock.
+  const [dockedChromeMin, setDockedChromeMin] = useState(false);
+  useEffect(() => {
+    if (!playerState?.is_docked) { setDockedChromeMin(false); return; }
+    setDockedChromeMin(false); // start expanded so the dock "lands" visibly
+    const t = window.setTimeout(() => setDockedChromeMin(true), 3500);
+    return () => window.clearTimeout(t);
+  }, [playerState?.is_docked, playerState?.current_port_id]);
+
   // NAV monitor mode: Warp Jumpers get a second mode — the Quantum Drive
   // console — behind a two-position switch in the NAV header. Every other
   // ship type sees exactly the classic warp graph, no switch.
@@ -1285,7 +1298,7 @@ const GameDashboard: React.FC = () => {
 
   return (
     <GameLayout>
-      <div className="game-dashboard cockpit-mode">
+      <div className={`game-dashboard cockpit-mode${dockedChromeMin && playerState?.is_docked ? ' docked-min' : ''}`}>
         {/* System Alerts - Float over cockpit */}
         {error && (
           <div className="cockpit-alert error">
@@ -1494,6 +1507,33 @@ const GameDashboard: React.FC = () => {
                 <div className="hud-label">BAY STATUS</div>
                 <div className="hud-value hud-chip-name hud-chip-ok">CLAMPS ENGAGED</div>
               </HudChip>
+
+              {/* Manual minimize — collapse the bay scenery to give the console
+                  the band (only shown while the bay is expanded). */}
+              <button
+                type="button"
+                className="bay-minimize-btn"
+                onClick={() => setDockedChromeMin(true)}
+                title="Minimize the bay view — expand the station console"
+              >
+                ▴ MINIMIZE BAY
+              </button>
+
+              {/* Collapsed strip (shown only when minimized via CSS): station
+                  identity + expand affordance. */}
+              <div className="docked-min-bar">
+                <span className="docked-min-name">
+                  {isDockedAtSpaceDock ? '🚀' : '🏪'} DOCKED — {(dockedStation?.name || (isDockedAtSpaceDock ? 'SpaceDock' : 'Trading Station')).toUpperCase()}
+                </span>
+                <button
+                  type="button"
+                  className="docked-min-expand"
+                  onClick={() => setDockedChromeMin(false)}
+                  title="Expand the docking-bay view"
+                >
+                  ⤢ EXPAND BAY
+                </button>
+              </div>
             </>
           )}
 
@@ -1710,22 +1750,32 @@ const GameDashboard: React.FC = () => {
                 <div className="bezel-corner br"></div>
               </div>
               <div className="monitor-screen">
-                <div className="screen-hud-header">
-                  {isDockedAtSpaceDock
-                    ? 'SPACEDOCK TERMINAL'
-                    : stationTerminal === 'portoffice' ? 'PORT OFFICE' : 'TRADING TERMINAL'}
-                  {!isDockedAtSpaceDock && (
-                    <button
-                      className="hud-header-toggle"
-                      style={{
-                        float: 'right', background: 'transparent', color: 'inherit',
-                        border: '1px solid currentColor', borderRadius: '3px',
-                        font: 'inherit', fontSize: '0.85em', padding: '0 8px', cursor: 'pointer'
-                      }}
-                      onClick={() => setStationTerminal(prev => prev === 'trade' ? 'portoffice' : 'trade')}
-                    >
-                      {stationTerminal === 'trade' ? '🏛️ Port Office' : '📈 Trade Desk'}
-                    </button>
+                <div className="screen-hud-header station-venue-header">
+                  {isDockedAtSpaceDock ? (
+                    <span>SPACEDOCK TERMINAL</span>
+                  ) : (
+                    /* Station venues as tabs — the places you can visit while
+                       docked. Buy/sell (TRADE) is the default. */
+                    <div className="station-venue-tabs" role="tablist">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={stationTerminal === 'trade'}
+                        className={`venue-tab${stationTerminal === 'trade' ? ' active' : ''}`}
+                        onClick={() => setStationTerminal('trade')}
+                      >
+                        🛒 TRADE
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={stationTerminal === 'portoffice'}
+                        className={`venue-tab${stationTerminal === 'portoffice' ? ' active' : ''}`}
+                        onClick={() => setStationTerminal('portoffice')}
+                      >
+                        🏛️ PORT OFFICE
+                      </button>
+                    </div>
                   )}
                 </div>
                 <div className="screen-hud-content trading-content">

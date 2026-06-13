@@ -1545,3 +1545,40 @@
     flex: 0 0 calc(33.33% - var(--space-xs));
   }
 }
+/* =============================================================================
+   DOCKED-CONSOLE COMPACTION (NEON station-presentation pass)
+   Scoped to the cockpit station console (.screen-hud-content) so the buy/sell
+   desk is the DEFAULT thing presented on docking and fits without scrolling.
+   The standalone TradingInterface (used elsewhere) is untouched.
+============================================================================= */
+.screen-hud-content .trading-interface {
+  max-width: none;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  height: 100%;
+}
+/* The console venue header already labels the terminal — drop the internal
+   gradient title bar that repeats it and pushes the grid below the fold. */
+.screen-hud-content .trading-interface > .trading-header { display: none; }
+.screen-hud-content .trading-interface > .trading-content {
+  padding: 8px 10px;
+  gap: 6px;
+}
+/* Compact the buy/sell toggle */
+.screen-hud-content .trade-mode-selection { margin-bottom: 8px; gap: 8px; }
+.screen-hud-content .mode-button { padding: 6px 14px; border-width: 1px; border-radius: 6px; }
+/* Market identity + port details + player bar → tight rows, not blocks */
+.screen-hud-content .market-info { margin-bottom: 6px; }
+.screen-hud-content .market-info-header { margin-bottom: 6px; }
+.screen-hud-content .market-info-header h3 { font-size: 1rem; }
+.screen-hud-content .port-details { margin-bottom: 6px; padding: 5px 10px; gap: 14px; }
+.screen-hud-content .player-status-bar { margin-bottom: 8px; padding: 5px 10px; }
+/* The buy/sell grid is the star — shorter cards so more fit on one screen */
+.screen-hud-content .resources-grid {
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.screen-hud-content .resource-card { min-height: 138px; padding: 10px; border-radius: 8px; }

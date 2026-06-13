@@ -668,23 +668,26 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
       )}
 
       <div className="trading-content">
-        {/* Station Selection */}
-        <div className="port-selection">
-          <label htmlFor="port-select">Select Station:</label>
-          <select 
-            id="port-select"
-            value={selectedPort} 
-            onChange={(e) => handlePortChange(e.target.value)}
-            disabled={portsInSector.length <= 1}
-          >
-            <option value="">Choose a port...</option>
-            {portsInSector.map(port => (
-              <option key={port.id} value={port.id}>
-                {port.name} ({port.type})
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Station Selection — only when there's an actual choice (multiple
+            ports in the sector). The lone-port case is just chrome that pushes
+            the buy/sell grid below the fold. */}
+        {portsInSector.length > 1 && (
+          <div className="port-selection">
+            <label htmlFor="port-select">Select Station:</label>
+            <select
+              id="port-select"
+              value={selectedPort}
+              onChange={(e) => handlePortChange(e.target.value)}
+            >
+              <option value="">Choose a port...</option>
+              {portsInSector.map(port => (
+                <option key={port.id} value={port.id}>
+                  {port.name} ({port.type})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Trade Mode Selection */}
         <div className="trade-mode-selection">
