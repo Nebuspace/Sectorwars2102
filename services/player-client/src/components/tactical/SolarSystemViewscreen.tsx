@@ -89,6 +89,12 @@ interface SolarSystemViewscreenProps {
   /** Legacy sector entities — only used by the SectorViewport fallback */
   stations?: any[];
   planets?: any[];
+  /**
+   * flight scene only: ships present in the sector (the dashboard's filtered
+   * players_present — NPC captains and other pilots, excluding self). Rendered
+   * as clickable glyphs in the foreground; each opens a contact popup.
+   */
+  ships?: any[];
   onEntityClick?: (entity: { type: 'station' | 'planet'; id: string; name: string }) => void;
   /**
    * Scene mode (GLASS LAW): the windshield band always hosts this same
@@ -121,7 +127,9 @@ type HitMeta =
   | { kind: 'star'; label: string; starClass: string; color: string }
   | { kind: 'planet'; planetId: string; planetKind: string; habitability?: number; owned?: boolean }
   | { kind: 'station'; stationId: string; stationType: string }
-  | { kind: 'procedural'; designation: string; typeName: string; sizeDesc: string };
+  | { kind: 'procedural'; designation: string; typeName: string; sizeDesc: string }
+  | { kind: 'ship'; shipId: string; shipName: string; shipType: string; captain: string;
+      isNpc: boolean; factionLabel: string; factionColor: string };
 
 interface HitTarget {
   /** screen-space hit data in CSS pixels (the draw loop paints through a
@@ -129,11 +137,38 @@ interface HitTarget {
   x: number;
   y: number;
   r: number;
-  kind: 'star' | 'planet' | 'station' | 'procedural';
+  kind: 'star' | 'planet' | 'station' | 'procedural' | 'ship';
   id?: string;
   name: string;
   lines: string[];
   meta: HitMeta;
+}
+
+/** Sector ship presence (subset of players_present the dashboard passes). */
+interface ShipPresence {
+  player_id?: string;
+  user_id?: string;
+  username?: string;
+  ship_id?: string;
+  ship_name?: string;
+  ship_type?: string;
+  is_npc?: boolean;
+  team_id?: string | null;
+}
+
+/** Faction read of a ship from its presence entry — drives glyph color + label.
+ *  Heuristic on ship_type / ship_name since presence carries no archetype. */
+function shipFaction(s: ShipPresence): { key: string; color: string; label: string } {
+  if (!s.is_npc) return { key: 'pilot', color: '#00d9ff', label: 'PILOT' };
+  const tp = (s.ship_type || '').toUpperCase();
+  const nm = (s.ship_name || '').toUpperCase();
+  if (tp.includes('MARSHAL') || tp.includes('SENTINEL') || tp.includes('INTERDICTOR')) {
+    return { key: 'law', color: '#5b8dff', label: 'LAW ENFORCEMENT' };
+  }
+  if (nm.includes('MARAUDER') || tp.includes('PIRATE')) {
+    return { key: 'raider', color: '#ff5a5a', label: 'HOSTILE' };
+  }
+  return { key: 'trader', color: '#00ff41', label: 'MERCHANT' };
 }
 
 interface PopupState {
@@ -680,6 +715,114 @@ function drawTooltip(
 }
 
 // ---------------------------------------------------------------------------
+// Ship glyph — a small chevron with an engine glow, colored by faction
+// ---------------------------------------------------------------------------
+
+function drawShipGlyph(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+  color: string,
+  angle: number
+): void {
+  const rgb = hexToRgb(color);
+  ctx.save();
+  ctx.translate(x, y);
+  // Soft engine/contact glow
+  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, size * 2.6);
+  glow.addColorStop(0, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.5)`);
+  glow.addColorStop(1, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0)`);
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 2.6, 0, Math.PI * 2);
+  ctx.fill();
+  // Hull chevron pointing along its drift heading
+  ctx.rotate(angle);
+  ctx.beginPath();
+  ctx.moveTo(size * 1.3, 0);
+  ctx.lineTo(-size * 0.9, size * 0.85);
+  ctx.lineTo(-size * 0.45, 0);
+  ctx.lineTo(-size * 0.9, -size * 0.85);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+  ctx.lineWidth = 0.7;
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Orbital closeup — a single planet filling the viewport, "from orbit"
+// ---------------------------------------------------------------------------
+
+function drawOrbitCloseup(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  sectorId: number,
+  body: SystemBody,
+  t: number,
+  progress: number
+): void {
+  // Deep space + drifting starfield (parallax conveys the zoom settling in)
+  ctx.fillStyle = '#040711';
+  ctx.fillRect(0, 0, w, h);
+  const rng = splitmix32(sectorId * 7 + 11);
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < 150; i++) {
+    const x0 = rng() * w;
+    const y0 = rng() * h;
+    const size = 0.3 + rng() * 1.4;
+    const bright = (0.3 + rng() * 0.7) * 0.7;
+    const x = (((x0 - t * 2.0) % w) + w) % w;
+    ctx.globalAlpha = bright;
+    ctx.fillRect(x, y0, size, size);
+  }
+  ctx.globalAlpha = 1;
+
+  const cx = w * 0.44;
+  const cy = h * 0.54;
+  const bigR = Math.min(w * 0.30, h * 0.42);
+  const ease = 1 - Math.pow(1 - Math.max(0, Math.min(1, progress)), 3);
+  // Grow from a quarter-size up to full as the zoom settles
+  const r = Math.max(6, bigR * (0.25 + 0.75 * ease));
+  const seed = (sectorId * 101 + body.slot * 7919 + Math.round(body.palette.hue)) >>> 0;
+  // Light from far off-screen left → a crescent terminator (true orbital look)
+  const lightX = -w * 0.5;
+  const lightY = cy - h * 0.12;
+  const ringTilt = -0.32 + ((seed % 100) / 100 - 0.5) * 0.3;
+
+  // Atmosphere halo behind the limb
+  const atm = ctx.createRadialGradient(cx, cy, r * 0.92, cx, cy, r * 1.4);
+  atm.addColorStop(0, `hsla(${body.palette.hue}, 70%, 62%, 0.28)`);
+  atm.addColorStop(1, `hsla(${body.palette.hue}, 70%, 62%, 0)`);
+  ctx.fillStyle = atm;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 1.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (body.rings) drawRingHalf(ctx, cx, cy, r, body.palette.hue, ringTilt, 'back');
+  drawPlanetSurface(ctx, body, cx, cy, r, lightX, lightY, seed);
+  if (body.rings) drawRingHalf(ctx, cx, cy, r, body.palette.hue, ringTilt, 'front');
+
+  // A couple of moons sweeping the closeup for scale + motion
+  const moonRng = splitmix32(seed + 9);
+  const moonCount = Math.min(3, body.moons);
+  for (let m = 0; m < moonCount; m++) {
+    const mo = moonRng() * Math.PI * 2;
+    const ms = 0.25 + moonRng() * 0.3;
+    const mr = r * (1.5 + m * 0.4);
+    const ma = mo + t * ms;
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(ma) * mr, cy + Math.sin(ma) * mr * 0.5, 2.4, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(205, 205, 220, 0.85)';
+    ctx.fill();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Scene draw — pure function of (snapshot, size, clock)
 // ---------------------------------------------------------------------------
 
@@ -693,7 +836,8 @@ function drawScene(
   hitTargets: HitTarget[],
   hover: { target: HitTarget; mx: number; my: number } | null,
   hazardLevel: number,
-  radiationLevel: number
+  radiationLevel: number,
+  ships: ShipPresence[] = []
 ): void {
   hitTargets.length = 0;
 
@@ -954,6 +1098,44 @@ function drawScene(
   drawables.forEach((d) => d.draw());
 
   drawBelt('front');
+
+  // Ships in the sector — foreground contacts (NPC captains, other pilots).
+  // They carry no orbital telemetry, so place each at a stable seeded spot in
+  // the near field (right of the star) and let it drift slowly; the chevron
+  // points along its drift heading. Each is a click target → contact popup.
+  ships.forEach((s) => {
+    if (!s || !s.ship_id) return;
+    let hseed = 0;
+    const key = s.ship_id;
+    for (let i = 0; i < key.length; i++) hseed = (hseed * 31 + key.charCodeAt(i)) >>> 0;
+    const srng = splitmix32(hseed || 1);
+    const baseX = w * (0.5 + srng() * 0.4);
+    const baseY = h * (0.16 + srng() * 0.66);
+    const phase = srng() * Math.PI * 2;
+    const driftSpd = 0.05 + srng() * 0.07;
+    const driftAmp = Math.min(w, h) * 0.035;
+    const theta = t * driftSpd + phase;
+    const x = baseX + Math.cos(theta) * driftAmp;
+    const y = baseY + Math.sin(theta * 0.8) * driftAmp * 0.6;
+    const vx = -Math.sin(theta);
+    const vy = Math.cos(theta * 0.8) * 0.48;
+    const angle = Math.atan2(vy, vx);
+    const size = 6.0 * Math.min(1.5, bodyScale);
+    const fac = shipFaction(s);
+    const contactName = (s.ship_name || s.username || 'CONTACT').toUpperCase();
+    const captain = s.username || (s.is_npc ? 'NPC' : 'PILOT');
+    hitTargets.push({
+      x, y, r: size + 8, kind: 'ship', id: s.ship_id,
+      name: contactName,
+      lines: [contactName, `${fac.label}${s.ship_type ? ' — ' + s.ship_type.replace(/_/g, ' ') : ''}`],
+      meta: {
+        kind: 'ship', shipId: s.ship_id, shipName: s.ship_name || contactName,
+        shipType: s.ship_type || 'UNKNOWN', captain, isNpc: !!s.is_npc,
+        factionLabel: fac.label, factionColor: fac.color
+      }
+    });
+    drawShipGlyph(ctx, x, y, size, fac.color, angle);
+  });
 
   // Hover affordance: faint reticle ring around the hovered hittable body,
   // re-anchored to its CURRENT orbital position each frame (one extra stroke,
@@ -1320,6 +1502,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   radiationLevel = 0,
   stations = [],
   planets = [],
+  ships = [],
   onEntityClick,
   scene = 'flight',
   isSpaceDock = false,
@@ -1356,6 +1539,18 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   const sceneRef = useRef({ scene, isSpaceDock, palette: landedPalette(planetType) });
   sceneRef.current = { scene, isSpaceDock, palette: landedPalette(planetType) };
 
+  // Sector ships, ref-mirrored so the draw loop reads the latest poll without
+  // restarting the animation effect every 5s.
+  const shipsRef = useRef<ShipPresence[]>(ships as ShipPresence[]);
+  shipsRef.current = ships as ShipPresence[];
+
+  // Orbital closeup: when set, the windshield zooms to a single planet. The
+  // body snapshot is captured on entry; zoomStartRef stamps the transition.
+  const [orbit, setOrbit] = useState<{ planetId: string; name: string; body: SystemBody } | null>(null);
+  const orbitRef = useRef(orbit);
+  orbitRef.current = orbit;
+  const zoomStartRef = useRef(0);
+
   // ---- Single-frame painter (shared by the loop, resize, and static mode) ----
   const drawNowRef = useRef<() => void>(() => {});
   drawNowRef.current = () => {
@@ -1379,10 +1574,23 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       drawLandedScene(ctx, w, h, sectorId, t, sceneRef.current.palette);
       return;
     }
+    const orb = orbitRef.current;
+    if (orb) {
+      // Closeup: LAND and BACK are DOM controls, so the canvas exposes no
+      // click targets. Animate the zoom unless reduced-motion is set.
+      hitTargetsRef.current.length = 0;
+      const dur = reducedMotionRef.current ? 0 : 450;
+      const progress = dur <= 0
+        ? 1
+        : Math.min(1, (Date.now() - zoomStartRef.current) / dur);
+      drawOrbitCloseup(ctx, w, h, sectorId, orb.body, t, progress);
+      return;
+    }
     drawScene(
       ctx, w, h, sectorId, systemRef.current, t,
       hitTargetsRef.current, hoverRef.current,
-      envRef.current.hazardLevel, envRef.current.radiationLevel
+      envRef.current.hazardLevel, envRef.current.radiationLevel,
+      shipsRef.current
     );
   };
 
@@ -1414,20 +1622,23 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     };
   }, [sectorId, scene]);
 
-  // ---- Body popup lifecycle: anchor vanishes on sector/scene change ----
+  // ---- Body popup + orbital closeup reset on sector/scene change ----
   useEffect(() => {
     setPopup(null);
+    setOrbit(null);
   }, [sectorId, scene]);
 
-  // Escape dismisses the popup
+  // Escape dismisses the popup, or backs out of the orbital closeup
   useEffect(() => {
-    if (!popup) return;
+    if (!popup && !orbit) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPopup(null);
+      if (e.key !== 'Escape') return;
+      if (popup) setPopup(null);
+      else if (orbit) setOrbit(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [popup]);
+  }, [popup, orbit]);
 
   // ---- Live prefers-reduced-motion tracking (always mounted) ----
   useEffect(() => {
@@ -1510,7 +1721,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     // SpaceDock↔station change must restart the loop to repaint the bay
     // guide-light tint — otherwise the stale tint persists until another dep
     // changes.
-  }, [fetchFailed, system, sectorId, reducedMotion, scene, planetType, isSpaceDock]);
+  }, [fetchFailed, system, sectorId, reducedMotion, scene, planetType, isSpaceDock, orbit]);
 
   // ---- Pointer interaction ----
   // Hit radius: recorded r + 8px slack, with a ~12px minimum effective radius
@@ -1560,6 +1771,17 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     mouseDownPosRef.current = { x: event.clientX, y: event.clientY };
   };
 
+  // ---- Orbital closeup enter/exit ----
+  const enterOrbit = (planetId: string, name: string) => {
+    const body = systemRef.current?.bodies.find((b) => b.planet_id === planetId);
+    if (!body) return; // no snapshot body → can't render the closeup
+    setPopup(null);
+    hoverRef.current = null;
+    zoomStartRef.current = Date.now();
+    setOrbit({ planetId, name, body });
+  };
+  const exitOrbit = () => setOrbit(null);
+
   const openPopupFor = (target: HitTarget) => {
     const { w, h } = sizeRef.current;
     // Prefer beside the body; clamp the card fully inside the band
@@ -1586,6 +1808,12 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     const target = hitTest(mx, my);
     if (!target) {
       setPopup(null);
+      return;
+    }
+    // Clicking a planet zooms the windshield to an orbital closeup of it
+    // (the LAND action moves into the closeup HUD). Other bodies keep popups.
+    if (target.kind === 'planet' && target.meta.kind === 'planet') {
+      enterOrbit(target.meta.planetId, target.name);
       return;
     }
     if (popup && popup.key === popupKeyFor(target)) {
@@ -1625,6 +1853,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           </>
         );
       case 'planet': {
+        // NOTE: clicking a real planet now enters the orbital closeup
+        // (handleClick intercepts kind==='planet'), so this popup branch is a
+        // fallback only — kept for the LAND action if a planet popup is ever
+        // opened by another path.
         // Owner detail lives on the sector planet snapshot the dashboard
         // already passes (the system snapshot only carries an owned flag)
         const sectorPlanet = planets.find((p) => p && p.id === meta.planetId);
@@ -1656,6 +1888,24 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           </>
         );
       }
+      case 'ship':
+        return (
+          <>
+            <div className="ssv-popup-title">{meta.shipName.toUpperCase()}</div>
+            <div className="ssv-popup-line">
+              <span
+                className="ssv-popup-swatch"
+                style={{ background: meta.factionColor }}
+                aria-hidden="true"
+              ></span>
+              {meta.factionLabel}
+            </div>
+            <div className="ssv-popup-line">{meta.shipType.replace(/_/g, ' ').toUpperCase()}</div>
+            <div className="ssv-popup-line">
+              {meta.isNpc ? 'NPC' : 'PILOT'} — {meta.captain.toUpperCase()}
+            </div>
+          </>
+        );
       case 'station':
         return (
           <>
@@ -1725,6 +1975,84 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           {renderPopupContent(popup.target)}
         </div>
       )}
+      {orbit && scene === 'flight' && (() => {
+        // Inline styles (not a CSS class) so the orbital HUD renders correctly
+        // even when a modified stylesheet is stale in the dev cache.
+        const glass: React.CSSProperties = {
+          background: 'rgba(0, 10, 16, 0.72)',
+          border: '1px solid rgba(0, 217, 255, 0.45)',
+          boxShadow: '0 0 14px rgba(0, 217, 255, 0.18)',
+          fontFamily: "'Courier New', monospace",
+          color: '#00d9ff',
+          backdropFilter: 'blur(3px)'
+        };
+        const sp = planets.find((p) => p && p.id === orbit.planetId);
+        const hab = orbit.body.habitability;
+        const ownerName: string | null =
+          (typeof sp?.owner_name === 'string' && sp.owner_name)
+            ? sp.owner_name
+            : (orbit.body.owned ? 'CLAIMED' : null);
+        const pop = typeof sp?.population === 'number' ? sp.population : null;
+        const fmtPop = (n: number): string =>
+          n >= 1e9 ? `${(n / 1e9).toFixed(1)}B`
+            : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M`
+            : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K`
+            : `${n}`;
+        const line: React.CSSProperties = {
+          fontSize: 10.5, color: 'rgba(0, 217, 255, 0.85)', letterSpacing: '0.05em'
+        };
+        return (
+          <>
+            <button
+              type="button"
+              onClick={exitOrbit}
+              style={{
+                position: 'absolute', top: 8, left: 8, zIndex: 6, ...glass,
+                padding: '5px 10px', fontSize: 11, letterSpacing: '0.08em',
+                cursor: 'pointer', borderRadius: 3
+              }}
+            >
+              ◄ SYSTEM VIEW
+            </button>
+            <div
+              style={{
+                position: 'absolute', top: 8, right: 8, zIndex: 6, ...glass,
+                padding: '9px 12px', minWidth: 168, maxWidth: 230,
+                borderRadius: 4, lineHeight: 1.5
+              }}
+              role="dialog"
+              aria-label={`${orbit.name} orbital view`}
+            >
+              <div style={{
+                fontSize: 14, fontWeight: 700, letterSpacing: '0.06em',
+                textShadow: '0 0 10px rgba(0, 217, 255, 0.8)', marginBottom: 4
+              }}>
+                {orbit.name.toUpperCase()}
+              </div>
+              <div style={line}>{orbit.body.kind.replace(/_/g, ' ').toUpperCase()}</div>
+              {typeof hab === 'number' && (
+                <div style={line}>HABITABILITY {Math.round(hab)}%</div>
+              )}
+              {pop != null && <div style={line}>POPULATION {fmtPop(pop)}</div>}
+              {ownerName && <div style={line}>OWNER — {ownerName.toUpperCase()}</div>}
+              {onRequestLand && (
+                <button
+                  type="button"
+                  onClick={() => { exitOrbit(); onRequestLand(orbit.planetId); }}
+                  style={{
+                    marginTop: 9, ...glass, color: '#00ff41',
+                    border: '1px solid rgba(0, 255, 65, 0.5)', padding: '6px 10px',
+                    fontSize: 11, cursor: 'pointer', borderRadius: 3, width: '100%',
+                    letterSpacing: '0.08em'
+                  }}
+                >
+                  🛬 LAND
+                </button>
+              )}
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 };

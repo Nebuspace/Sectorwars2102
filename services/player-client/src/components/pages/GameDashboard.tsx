@@ -623,6 +623,23 @@ const GameDashboard: React.FC = () => {
     return Array.from(contacts.values());
   }, [sectorPlayers, currentSector?.players_present, playerState]);
 
+  // Ships present in the sector for the windshield viewport — the API snapshot
+  // entries that carry ship telemetry (ship_id/ship_name/ship_type), excluding
+  // our own ship. WS-presence rows have no ship fields, so we read
+  // players_present directly rather than reusing the merged contact list.
+  const shipsInSector = useMemo(() => {
+    const self = playerState;
+    return (currentSector?.players_present || []).filter((p: any) => {
+      if (!p || !p.ship_id) return false;
+      const isSelf = self && (
+        String(p.player_id || '') === String(self.id) ||
+        (p.username && self.username &&
+         p.username.toLowerCase() === self.username.toLowerCase())
+      );
+      return !isSelf;
+    });
+  }, [currentSector?.players_present, playerState]);
+
   // NAV map sectors: one node per destination sector. A sector reachable by
   // BOTH a warp and a tunnel used to be listed twice (duplicate React keys in
   // NavigationMap + phantom overlapping nodes), so build through a Map keyed
@@ -1480,6 +1497,7 @@ const GameDashboard: React.FC = () => {
                 radiationLevel={currentSector.radiation_level}
                 stations={stationsInSector}
                 planets={planetsInSector}
+                ships={shipsInSector}
                 onEntityClick={(entity) => {
                   // Legacy fallback viewport only (SectorViewport): the
                   // procedural scene now opens an info popup on click and
