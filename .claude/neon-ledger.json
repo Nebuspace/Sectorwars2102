@@ -1124,6 +1124,46 @@
     "alembic-tree drift (b42e19a78c52 missing)",
     "Quantum Jump FEATURES status design-only but shipped"
    ]
+  },
+  {
+   "id": "neon-2026-06-13-b",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "lead_model": "opus-4.8",
+   "branch_head_at_start": "552ff0c",
+   "deployed_sha_end": "0d1dbea",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "mfd-comms-shows-npcs",
+     "state": "proven",
+     "effort": 1,
+     "findings": [
+      "MFD COMMS/CREW page read only sectorPlayers (WS human) - blind to the now-living NPCs"
+     ],
+     "files_owned": [
+      "services/player-client/src/components/mfd/pages/CommsCrewPage.tsx",
+      "services/player-client/src/components/mfd/pages/pages-ops.css"
+     ],
+     "commits": [
+      "e7f008c",
+      "0d1dbea"
+     ],
+     "proof": "MFD COMM page empty in NPC-free sector; lists 14 marshals with [NPC] chips when present (sector 1003), matches main COMMS; zero console errors"
+    }
+   ],
+   "notes": [
+    "DEV INFRA: modified existing pages-ops.css served STALE (JS hot-reloaded, CSS bundle cached) across 2 restarts+hard-reloads; worked around with inline styles. Future runs editing EXISTING css files on dev should expect this and prefer new css files or inline-critical styles."
+   ],
+   "parking_lot": [
+    "Genesis two half-systems (repeatedly-flagged headline)",
+    "NPC traders never spawn (rosters empty)",
+    "npc_restock_demand never read by pricing",
+    "npc-scheduler.md Status banner flip (Max-gated)",
+    "Quantum Jump FEATURES design-only but shipped",
+    "port assault targetType=port 400",
+    "leaderboard padded with npc_filler accounts"
+   ]
   }
  ],
  "last_updated": "2026-06-12"
