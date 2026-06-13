@@ -177,4 +177,6 @@ async def get_sector_system(
     planets = db.query(Planet).filter(Planet.sector_uuid == sector.id).all()
     stations = db.query(Station).filter(Station.sector_uuid == sector.id).all()
 
-    return generate_system(sector, planets, stations)
+    result = generate_system(db, sector, planets, stations)
+    db.commit()  # persist the celestial skeleton created on first visit
+    return result

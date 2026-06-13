@@ -60,3 +60,4 @@ from src.models.npc_character import (
 from src.models.construction import ConstructionReservation
 from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCampaign
 from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus, WarpGateBeaconStatus
+from src.models.sector_celestial import SectorCelestial, SectorFeatureDiscovery

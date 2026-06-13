@@ -389,16 +389,13 @@ def _make_stations(stations: List[Station], root_seed: int) -> List[Dict[str, An
     return results
 
 
-def generate_system(
-    sector: Sector,
-    planets: List[Planet],
-    stations: List[Station],
-) -> Dict[str, Any]:
-    """Compose the full deterministic system description for a sector.
-
-    Two simple queries feed this (planets + stations for the sector); this
-    function itself touches no database session.
-    """
+def generate_skeleton(sector: Sector, min_bodies: int = 0) -> Dict[str, Any]:
+    """The deterministic procedural SKELETON of a sector's system — everything
+    except real Planet/Station rows: star(s), nebula, asteroid belt, body
+    skeleton, collision-debris ring, habitable zone. Persisted once
+    (SectorCelestial) then read back; real planets/stations are merged over it
+    at request time. ``min_bodies`` (the real-planet count at first generation)
+    guarantees the skeleton has enough body slots for them."""
     sector_type = sector.type.value if hasattr(sector.type, "value") else str(sector.type)
     root_seed = (sector.sector_id * SECTOR_SEED_SALT) & _MASK64
     rng = SplitMix64(root_seed)
@@ -439,16 +436,13 @@ def generate_system(
             "outer_au": round(inner + rng.uniform(0.08, 0.2), 4),
         }
 
-    # --- Bodies ------------------------------------------------------------
+    # --- Bodies (procedural skeleton; real planets merged later) -----------
     if sector_type == "VOID":
         body_count = rng.randint(0, 2)  # rogue bodies adrift in the dark
     else:
         body_count = rng.randint(1, 7)
-    # Real planets beyond the rolled count still need homes; grow (cap at 9).
-    body_count = min(MAX_BODIES, max(body_count, len(planets)))
-    # More real planets than MAX_BODIES is a data anomaly: merge the first 9
-    # by sorted id, skip the rest (deterministic, flagged here for the report).
-    real_planets = sorted(planets, key=_planet_sort_key)[:MAX_BODIES]
+    # Real planets need homes; grow the skeleton to fit them (cap at 9).
+    body_count = min(MAX_BODIES, max(body_count, min_bodies))
 
     # Habitable zone for this star (None for dead/degenerate stars).
     hz = _habitable_zone(star.get("kind") if star else None)
@@ -458,7 +452,6 @@ def generate_system(
         _make_body(root_seed, slot, body_count, orbit_au)
         for slot, orbit_au in enumerate(orbits)
     ]
-    _merge_real_planets(bodies, real_planets, root_seed, hz)
 
     # --- Collision-debris ring (two worlds that collided long ago, their wreck
     #     spread into a belt encircling the orbital plane) — rolled LAST so
@@ -477,17 +470,91 @@ def generate_system(
 
     habitable_zone = {"inner_au": round(hz[0], 4), "outer_au": round(hz[1], 4)} if hz else None
 
-    response: Dict[str, Any] = {
-        "sector_id": sector.sector_id,
+    skeleton: Dict[str, Any] = {
         "sector_type": sector_type,
+        "seed": root_seed,
         "star": star,
+        "extra_stars": extra_stars,
         "nebula": nebula,
         "belt": belt,
         "debris": debris,
         "habitable_zone": habitable_zone,
         "bodies": bodies,
+    }
+    return skeleton
+
+
+def get_or_create_celestial(db, sector: Sector, min_bodies: int = 0) -> Dict[str, Any]:
+    """Read the persisted procedural skeleton for a sector, generating + storing
+    it on first visit. Race-safe (INSERT ... ON CONFLICT DO NOTHING, then
+    re-select) so concurrent first-visits don't double-insert. Returns the
+    composition dict (the skeleton)."""
+    from src.models.sector_celestial import SectorCelestial
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    row = (
+        db.query(SectorCelestial)
+        .filter(SectorCelestial.sector_uuid == sector.id)
+        .first()
+    )
+    if row is not None:
+        return row.composition
+
+    comp = generate_skeleton(sector, min_bodies=min_bodies)
+    stmt = (
+        pg_insert(SectorCelestial.__table__)
+        .values(
+            sector_uuid=sector.id,
+            sector_id=sector.sector_id,
+            composition=comp,
+            seed=int(comp["seed"]),
+        )
+        .on_conflict_do_nothing(index_elements=["sector_uuid"])
+    )
+    db.execute(stmt)
+    db.flush()
+    row = (
+        db.query(SectorCelestial)
+        .filter(SectorCelestial.sector_uuid == sector.id)
+        .first()
+    )
+    return row.composition if row is not None else comp
+
+
+def generate_system(
+    db,
+    sector: Sector,
+    planets: List[Planet],
+    stations: List[Station],
+) -> Dict[str, Any]:
+    """Compose the full system description for a sector: the persisted procedural
+    skeleton (star/belt/nebula/debris/HZ/body slots) with the real Planet and
+    Station rows merged over it. Response shape is unchanged from the legacy
+    per-request generator."""
+    import copy
+
+    real_planets = sorted(planets, key=_planet_sort_key)[:MAX_BODIES]
+    comp = get_or_create_celestial(db, sector, min_bodies=len(real_planets))
+
+    root_seed = int(comp.get("seed") or ((sector.sector_id * SECTOR_SEED_SALT) & _MASK64))
+    # Deep-copy the skeleton bodies before merging — _merge_real_planets mutates
+    # in place and the persisted skeleton must stay pristine.
+    bodies = copy.deepcopy(comp.get("bodies") or [])
+    hz_dict = comp.get("habitable_zone")
+    hz = (hz_dict["inner_au"], hz_dict["outer_au"]) if hz_dict else None
+    _merge_real_planets(bodies, real_planets, root_seed, hz)
+
+    response: Dict[str, Any] = {
+        "sector_id": sector.sector_id,
+        "sector_type": comp.get("sector_type"),
+        "star": comp.get("star"),
+        "nebula": comp.get("nebula"),
+        "belt": comp.get("belt"),
+        "debris": comp.get("debris"),
+        "habitable_zone": hz_dict,
+        "bodies": bodies,
         "stations": _make_stations(stations, root_seed),
     }
-    if extra_stars is not None:
-        response["extra_stars"] = extra_stars
+    if comp.get("extra_stars"):
+        response["extra_stars"] = comp["extra_stars"]
     return response
