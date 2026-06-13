@@ -1,0 +1,396 @@
+/* ============================================================
+   MFD CONSOLE FRAMEWORK — NEON15
+   Modern flat LCD in a riveted bezel. Crisp 1px accent border,
+   faint 2px pixel grid. NO phosphor radial glow, NO scanline
+   sweep — these screens are a generation newer than the lower
+   console monitors. Everything is .mfd-* namespaced (Law-2).
+   ============================================================ */
+
+/* ---------- Screen housing (bezel) ---------- */
+
+.mfd-screen {
+  --mfd-accent: #00d9ff;
+  --mfd-glass: #04090f;
+  --mfd-key-h: 26px;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  background: linear-gradient(#23262e, #15171c);
+  border: 1px solid #0c0e12;
+  border-radius: 6px;
+  padding: 16px 8px 8px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 2px 6px rgba(0, 0, 0, 0.5);
+  font-family: 'Courier New', monospace;
+}
+
+.mfd-system-label {
+  position: absolute;
+  top: 3px;
+  left: 14px;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  color: rgba(170, 185, 205, 0.55);
+  z-index: 2;
+  user-select: none;
+}
+
+/* Bezel corner rivets — cockpit idiom scaled to 7px */
+.mfd-rivet {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  background: radial-gradient(circle, #5a6070 0%, #3a3f4a 100%);
+  border: 1px solid #1a1d24;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.2),
+    0 1px 2px rgba(0, 0, 0, 0.6);
+  z-index: 2;
+}
+
+.mfd-rivet-tl { top: 4px; left: 4px; }
+.mfd-rivet-tr { top: 4px; right: 4px; }
+.mfd-rivet-bl { bottom: 4px; left: 4px; }
+.mfd-rivet-br { bottom: 4px; right: 4px; }
+
+/* ---------- Viewport glass ---------- */
+
+.mfd-viewport {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--mfd-glass);
+  border: 1px solid var(--mfd-accent);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+/* Faint 2px pixel grid — the only texture this glass gets */
+.mfd-viewport::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.015) 0 1px,
+      transparent 1px 2px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.015) 0 1px,
+      transparent 1px 2px
+    );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ---------- Page header — thin LED line ---------- */
+
+.mfd-page-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 6px 0;
+  padding: 3px 6px;
+  border-top: 2px solid var(--mfd-accent);
+  border-left: 2px solid var(--mfd-accent);
+  border-radius: 2px 0 0 0;
+}
+
+.mfd-page-title {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--mfd-accent);
+  text-shadow: 0 0 8px var(--mfd-accent);
+}
+
+.mfd-chip-partial {
+  margin-left: auto;
+  padding: 1px 4px;
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: #ffb000;
+  border: 1px solid rgba(255, 176, 0, 0.6);
+  border-radius: 2px;
+}
+
+/* ---------- Page body — stable scroll container ---------- */
+
+.mfd-page-body {
+  flex: 1 1 0;
+  min-height: 0;
+  margin: 0 6px 6px;
+  padding: 6px 4px 6px 6px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-variant-numeric: tabular-nums;
+  color: #c8dcec;
+}
+
+/* 8px CRT-style scrollbar, matched to the lower-console monitors */
+.mfd-page-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mfd-page-body::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+}
+
+.mfd-page-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--mfd-accent) 30%, transparent);
+  border-radius: 4px;
+}
+
+.mfd-page-body::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--mfd-accent) 50%, transparent);
+}
+
+/* ---------- Field atom ---------- */
+
+.mfd-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 0.65rem;
+}
+
+.mfd-field-label {
+  flex-shrink: 0;
+  letter-spacing: 0.08em;
+  color: rgba(160, 180, 200, 0.7);
+}
+
+.mfd-field-value {
+  text-align: right;
+  color: #cfe8ff;
+  overflow-wrap: anywhere;
+}
+
+.mfd-field-accent .mfd-field-value {
+  color: var(--mfd-accent);
+  text-shadow: 0 0 6px var(--mfd-accent);
+}
+
+/* ---------- Honest empty / insufficient states ---------- */
+
+.mfd-empty,
+.mfd-insufficient {
+  margin: 10px 4px;
+  padding: 10px 8px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.mfd-empty {
+  color: rgba(160, 180, 200, 0.5);
+  border: 1px dashed rgba(160, 180, 200, 0.25);
+  border-radius: 3px;
+}
+
+.mfd-insufficient {
+  color: rgba(255, 176, 0, 0.75);
+  border: 1px dashed rgba(255, 176, 0, 0.35);
+  border-radius: 3px;
+}
+
+/* ---------- Softkey rail ---------- */
+
+.mfd-softkey-rail {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.mfd-key {
+  --mfd-key-accent: var(--mfd-accent);
+
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  height: var(--mfd-key-h);
+  padding: 0 2px;
+  font-family: inherit;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--mfd-key-accent);
+  background: linear-gradient(#1c1f26, #12141a);
+  border: 1px solid rgba(120, 135, 155, 0.3);
+  border-radius: 3px;
+  cursor: pointer;
+  /* Press feel: 90ms ease-out release; :active overrides to a 40ms depress */
+  transition:
+    transform 90ms ease-out,
+    box-shadow 90ms ease-out,
+    background-color 90ms ease-out,
+    color 90ms ease-out;
+}
+
+.mfd-key:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--mfd-key-accent) 50%, transparent);
+}
+
+.mfd-key:focus-visible {
+  outline: 1px solid var(--mfd-key-accent);
+  outline-offset: 1px;
+}
+
+.mfd-key:active:not(:disabled) {
+  transition-duration: 40ms;
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.7);
+}
+
+/* Active page key is INVERTED — accent-filled face, dark text */
+.mfd-key[aria-selected='true'] {
+  background: var(--mfd-key-accent);
+  border-color: var(--mfd-key-accent);
+  color: #06080c;
+  text-shadow: none;
+}
+
+.mfd-key:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Alert badge — pulsing dot on a non-visible page's softkey */
+.mfd-key-badge {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ffb000;
+  box-shadow: 0 0 4px rgba(255, 176, 0, 0.8);
+  animation: mfd-badge-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mfd-badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ---------- PAGE FAULT (boundary UI) ---------- */
+
+.mfd-fault {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  text-align: center;
+}
+
+.mfd-fault-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  color: #ff4d6d;
+  text-shadow: 0 0 10px rgba(255, 77, 109, 0.6);
+  animation: mfd-fault-blink 1.2s steps(2, start) infinite;
+}
+
+.mfd-fault-sub {
+  font-size: 0.55rem;
+  letter-spacing: 0.15em;
+  color: rgba(255, 77, 109, 0.6);
+}
+
+.mfd-fault-retry {
+  padding: 0.35rem 0.9rem;
+  font-family: inherit;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ff4d6d;
+  background: rgba(255, 77, 109, 0.12);
+  border: 1px solid rgba(255, 77, 109, 0.45);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background-color 90ms ease-out, box-shadow 90ms ease-out;
+}
+
+.mfd-fault-retry:hover {
+  background: rgba(255, 77, 109, 0.22);
+  box-shadow: 0 0 10px rgba(255, 77, 109, 0.3);
+}
+
+@keyframes mfd-fault-blink {
+  50% { opacity: 0.45; }
+}
+
+/* ---------- Suspense skeleton (minimal — chunks are tiny) ---------- */
+
+.mfd-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 10px;
+}
+
+.mfd-skeleton-line {
+  height: 8px;
+  border-radius: 2px;
+  background: rgba(120, 150, 180, 0.12);
+  animation: mfd-skeleton-breathe 1s ease-in-out infinite alternate;
+}
+
+.mfd-skeleton-w45 { width: 45%; }
+.mfd-skeleton-w60 { width: 60%; }
+.mfd-skeleton-w70 { width: 70%; }
+.mfd-skeleton-w80 { width: 80%; }
+
+@keyframes mfd-skeleton-breathe {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
+}
+
+/* ---------- Utilities ---------- */
+
+.mfd-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ---------- Reduced motion: everything collapses ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .mfd-screen *,
+  .mfd-screen *::before,
+  .mfd-screen *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
+import { useWebSocket } from '../../contexts/WebSocketContext';
+import { useAutopilot } from '../../contexts/AutopilotContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
 import UserProfile from '../auth/UserProfile';
-import LogoutButton from '../auth/LogoutButton';
-import AriaConsoleStrip from '../aria/AriaConsoleStrip';
+import { MFDProvider, useMFD } from '../mfd/MFDContext';
+import MFDScreen from '../mfd/MFDScreen';
+import { SIDEBAR_A, SIDEBAR_B } from '../mfd/sidebarScreens';
+import { ariaFeed } from '../mfd/ariaFeedStore';
+import RouteRail from '../mfd/RouteRail';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -14,25 +18,68 @@ interface GameLayoutProps {
   children: React.ReactNode;
 }
 
-/* SHIP SYSTEMS nav — one entry per console instrument, each carrying its
-   Law-5 accent so the active route highlights in its own system color. */
-const NAV_ITEMS: Array<{ to: string; icon: string; label: string; accent: string }> = [
-  { to: '/game', icon: '🚀', label: 'COMMAND', accent: '#00D9FF' },
-  { to: '/game/map', icon: '🗺️', label: 'NAV CHART', accent: '#00D9FF' },
-  { to: '/game/ships', icon: '🛸', label: 'HANGAR', accent: '#9EC5FF' },
-  { to: '/game/trading', icon: '💹', label: 'TRADE', accent: '#FFB000' },
-  { to: '/game/planets', icon: '🪐', label: 'COLONIES', accent: '#7B2FFF' },
-  { to: '/game/combat', icon: '⚔️', label: 'WEAPONS', accent: '#FF4D6D' },
-  { to: '/game/team', icon: '👥', label: 'CREW', accent: '#00FF7F' },
-  { to: '/game/ranking', icon: '🎖️', label: 'SERVICE RECORD', accent: '#FFD700' },
-];
+/* MFD alert wiring — lives inside the MFDProvider subtree so it can badge
+   softkeys; renders nothing. Each effect compares against the previous
+   value held in a ref, so alerts fire on TRANSITIONS only (growth /
+   became-paused / unread increase) and never on mount — a reload doesn't
+   badge stale state. raiseAlert itself skips pages currently visible on
+   either screen, so no visibility check is needed here. */
+const MFDAlertWiring: React.FC = () => {
+  const { raiseAlert } = useMFD();
+  const { ariaMessages } = useWebSocket();
+  const { status, course, pauseReason } = useAutopilot();
+  const { unreadMessageCount } = useGame();
+
+  const prevAriaCount = React.useRef(ariaMessages.length);
+  React.useEffect(() => {
+    if (ariaMessages.length > prevAriaCount.current) {
+      raiseAlert('aria-event');
+    }
+    prevAriaCount.current = ariaMessages.length;
+  }, [ariaMessages.length, raiseAlert]);
+
+  // Autopilot transitions: badge AND narrate into the ARIA feed store.
+  // Narration lives here (always mounted) rather than in AriaTerminalPage,
+  // which unmounts whenever another MFD-B page is shown — transitions must
+  // never be lost to softkey state (ADR-0072 §B3).
+  const prevStatus = React.useRef(status);
+  React.useEffect(() => {
+    const prev = prevStatus.current;
+    prevStatus.current = status;
+    if (status === prev) return;
+
+    if (status === 'engaged') {
+      const totalHops = course?.hops?.length ?? 0;
+      ariaFeed.appendNav(`Autopilot engaged — ${totalHops} hop${totalHops !== 1 ? 's' : ''}.`);
+    }
+    if (status === 'paused') {
+      raiseAlert('autopilot-pause');
+      ariaFeed.appendNav(`Autopilot paused — ${pauseReason ?? 'unknown reason'}.`);
+    }
+    if (status === 'arrived') {
+      const targetId = course?.target_sector_id ?? '?';
+      const totalTurns = course?.total_turns ?? '?';
+      ariaFeed.appendNav(`Arrival: Sector ${targetId}. ${totalTurns} turns spent. Logged.`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, raiseAlert]);
+
+  const prevUnread = React.useRef(unreadMessageCount);
+  React.useEffect(() => {
+    if (unreadMessageCount > prevUnread.current) {
+      raiseAlert('new-message');
+    }
+    prevUnread.current = unreadMessageCount;
+  }, [unreadMessageCount, raiseAlert]);
+
+  return null;
+};
 
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { user } = useAuth();
-  const { playerState, currentShip, currentSector, isLoading, isRefreshing, refreshPlayerState } = useGame();
+  const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const location = useLocation();
 
   // ── Scroll contract (Law 2) ──────────────────────────────────────────
   // On /game routes the DOCUMENT never scrolls: the shell locks html/body
@@ -153,148 +200,18 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
         </header>
 
         <div className="game-container">
+          {/* Left console (NEON15): route rail on top, then two MFD
+              screens splitting the remaining height. MFDProvider hosts
+              page selection/alert state plus the alert wiring effects. */}
           <aside className={`game-sidebar hud-panel ${sidebarOpen ? 'open' : 'closed'}`}>
-            <div className="cockpit-card ship-info">
-              <div className="cockpit-card-header">
-                <h3 className="cockpit-card-title">VESSEL STATUS</h3>
-              </div>
-              {currentShip ? (
-                <div className="current-ship">
-                  <div className="ship-name">{currentShip.name || 'UNNAMED VESSEL'}</div>
-                  <div className="ship-type">{currentShip.type || 'UNKNOWN CLASS'}</div>
-                  <div className="ship-cargo">
-                    <h4 className="cargo-header">CARGO BAY</h4>
-                    {(() => {
-                      // Cargo shape: { used, capacity, contents: { commodity: qty } }
-                      // Render the actual goods, not the raw structure
-                      const cargo = (currentShip.cargo ?? {}) as Record<string, any>;
-                      const contents: Record<string, number> =
-                        cargo.contents && typeof cargo.contents === 'object'
-                          ? cargo.contents
-                          : Object.fromEntries(
-                              Object.entries(cargo).filter(([k, v]) =>
-                                typeof v === 'number' && !['used', 'capacity'].includes(k))
-                            );
-                      const used = typeof cargo.used === 'number' ? cargo.used : null;
-                      const capacity = typeof cargo.capacity === 'number' ? cargo.capacity : null;
-                      const items = Object.entries(contents).filter(([, qty]) => qty > 0);
-                      return (
-                        <>
-                          {used !== null && capacity !== null && (
-                            <div className="cargo-item">
-                              <span className="resource-name">Hold</span>
-                              <span className="data-readout">{used} / {capacity}</span>
-                            </div>
-                          )}
-                          {items.length > 0 ? (
-                            <ul className="cargo-list">
-                              {items.map(([resource, qty]) => (
-                                <li key={resource} className="cargo-item">
-                                  <span className="resource-name">
-                                    {resource.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                                  </span>
-                                  <span className="data-readout">× {qty}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          ) : (
-                            <p className="empty-cargo">CARGO BAY EMPTY</p>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-
-                  {/* Genesis Device Display - Special Items */}
-                  {(currentShip.max_genesis_devices ?? 0) > 0 && (
-                    <div className="ship-genesis">
-                      <h4 className="genesis-header">
-                        <span className="genesis-icon">🌍</span>
-                        GENESIS BAY
-                      </h4>
-                      <div className="genesis-status">
-                        <div className="genesis-slots">
-                          {Array.from({ length: currentShip.max_genesis_devices || 0 }, (_, i) => (
-                            <div
-                              key={i}
-                              className={`genesis-slot ${i < (currentShip.genesis_devices || 0) ? 'loaded' : 'empty'}`}
-                              title={i < (currentShip.genesis_devices || 0) ? 'Genesis Device Loaded' : 'Empty Slot'}
-                            >
-                              {i < (currentShip.genesis_devices || 0) ? '🌍' : '○'}
-                            </div>
-                          ))}
-                        </div>
-                        <div className="genesis-count">
-                          <span className={`data-readout ${(currentShip.genesis_devices || 0) > 0 ? 'genesis-active' : ''}`}>
-                            {currentShip.genesis_devices || 0} / {currentShip.max_genesis_devices || 0}
-                          </span>
-                        </div>
-                      </div>
-                      {(currentShip.genesis_devices || 0) > 0 && (
-                        <div className="genesis-ready-indicator">
-                          <span className="pulse-dot"></span>
-                          TERRAFORM READY
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="no-ship">NO ACTIVE VESSEL</div>
-              )}
-            </div>
-          
-            <div className="cockpit-card location-info">
-              <div className="cockpit-card-header">
-                <h3 className="cockpit-card-title">NAV COORDS</h3>
-              </div>
-              {currentSector ? (
-                <div className="current-sector">
-                  <div className="sector-name">SECTOR {playerState?.current_sector_id || currentSector.id || 'UNKNOWN'}</div>
-                  <div className="sector-designation">{currentSector.name || 'UNCHARTED'}</div>
-                  <div className="sector-type">{currentSector.type?.toUpperCase() || 'UNKNOWN'}</div>
-                  {(currentSector.hazard_level || 0) > 0 && (
-                    <div className="sector-hazard">
-                      <span className="hazard-label">THREAT LEVEL:</span>
-                      <span className="data-readout hazard">{currentSector.hazard_level || 0}</span>
-                    </div>
-                  )}
-                </div>
-              ) : playerState?.current_sector_id ? (
-                <div className="current-sector">
-                  <div className="sector-name">SECTOR {playerState.current_sector_id}</div>
-                  <div className="unknown-sector">LOADING SECTOR DATA...</div>
-                </div>
-              ) : (
-                <div className="unknown-sector">COORDINATES UNKNOWN</div>
-              )}
-            </div>
-          
-            <nav className="game-nav">
-              <div className="nav-header">SHIP SYSTEMS</div>
-              <ul className="nav-list">
-                {NAV_ITEMS.map((item) => {
-                  const isActive = location.pathname === item.to;
-                  return (
-                    <li key={item.to}>
-                      <Link
-                        to={item.to}
-                        className={`nav-link cockpit-btn${isActive ? ' active' : ''}`}
-                        style={{ '--nav-accent': item.accent } as React.CSSProperties}
-                        aria-current={isActive ? 'page' : undefined}
-                      >
-                        {item.icon} {item.label}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-              <div className="nav-footer">
-                <LogoutButton className="nav-link cockpit-btn logout-btn" />
-              </div>
-            </nav>
+            <MFDProvider>
+              <RouteRail />
+              <MFDScreen config={SIDEBAR_A} />
+              <MFDScreen config={SIDEBAR_B} />
+              <MFDAlertWiring />
+            </MFDProvider>
           </aside>
-        
+
           <main className="game-content" aria-busy={isInitialLoad}>
             {/* Children render UNCONDITIONALLY — never unmounted by a
                 background refresh (see cockpit-stability note above).
@@ -309,14 +226,6 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               {...(isInitialLoad ? { inert: '' } : {})}
             >
               {children}
-            </div>
-            {/* ARIA console fixture (Law 4): the shell reserves a slim
-                bottom slot on every /game route. The strip is self-
-                contained (props {}) and expands UPWARD over the viewport;
-                the slot only reserves the 36px band. The old floating FAB
-                is retired. */}
-            <div className="aria-console-slot">
-              <AriaConsoleStrip />
             </div>
             {isInitialLoad && (
               <div className="viewport-loading-overlay">

@@ -1,0 +1,374 @@
+/* ============================================
+   MFD OPS PAGES — B3 (NEON15)
+   nav-position / aria-terminal / comms-crew / reputation
+   Page-body layouts ONLY — bezel, softkey rail, page
+   header chrome belong to components/mfd/mfd.css (B1).
+   Every class is .mfd-page-* namespaced (contract rule 2).
+   Color values in the ARIA section quote the retired
+   aria-console-strip.css palette (violet identity).
+   ============================================ */
+
+/* Shared page column: header atom on top, MFDPageBody owns the scroll.
+   flex + min-height:0 lets the body shrink inside the half-height screen. */
+.mfd-page-ops {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
+  font-family: 'Courier New', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thin accent-tinted section divider label (CHARTED EXITS, CREW, …) */
+.mfd-page-section-label {
+  flex-shrink: 0;
+  margin: 0.55rem 0 0.25rem 0;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--mfd-accent, #00D9FF);
+  opacity: 0.85;
+  border-bottom: 1px solid color-mix(in srgb, var(--mfd-accent, #00D9FF) 25%, transparent);
+  padding-bottom: 0.15rem;
+}
+
+/* ── NAV / POSITION — charted exits list ───── */
+
+.mfd-page-nav-exits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mfd-page-nav-exit {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.66rem;
+  line-height: 1.5;
+  padding: 0.12rem 0;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.08);
+}
+
+.mfd-page-nav-exit-num {
+  min-width: 2.8em;
+  font-weight: 700;
+  color: var(--mfd-accent, #00D9FF);
+}
+
+.mfd-page-nav-exit-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(220, 235, 255, 0.85);
+}
+
+.mfd-page-nav-exit-tag {
+  flex-shrink: 0;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 0.05rem 0.25rem;
+  border: 1px solid rgba(123, 47, 255, 0.5);
+  color: #c9a8ff;
+}
+
+.mfd-page-nav-exit-cost {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #00FF7F;
+}
+
+/* can_afford === false — honest signal, not a disabled control */
+.mfd-page-nav-exit-cost.over {
+  color: #FF4D6D;
+}
+
+/* ── COMMS / CREW — sector contacts list ───── */
+
+.mfd-page-comms-contacts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mfd-page-comms-contact {
+  font-size: 0.66rem;
+  line-height: 1.6;
+  padding: 0.1rem 0;
+  color: rgba(220, 235, 255, 0.85);
+  border-bottom: 1px solid rgba(0, 255, 127, 0.08);
+}
+
+/* ── ARIA TERMINAL ──────────────────────────
+   Feed scrolls inside MFDPageBody; status row +
+   input row are pinned below it by .mfd-page-ops.
+   Violet identity quoted from the retired strip:
+   cyan #00D9FF / violet #7B2FFF.               */
+
+.mfd-page-aria {
+  --mfd-aria-cyan: #00D9FF;
+  --mfd-aria-violet: #7B2FFF;
+}
+
+.mfd-page-aria-log {
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem 0.1rem;
+}
+
+.mfd-page-aria-line {
+  font-size: 0.68rem;
+  line-height: 1.5;
+  margin-bottom: 0.35rem;
+  word-break: break-word;
+}
+
+.mfd-page-aria-prefix {
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  margin-right: 0.4rem;
+}
+
+.mfd-page-aria-line.ai .mfd-page-aria-prefix {
+  color: var(--mfd-aria-violet);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.6);
+}
+
+.mfd-page-aria-line.user .mfd-page-aria-prefix {
+  color: var(--mfd-aria-cyan);
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+}
+
+.mfd-page-aria-text {
+  color: rgba(220, 235, 255, 0.85);
+}
+
+.mfd-page-aria-meta {
+  color: rgba(123, 47, 255, 0.7);
+  font-size: 0.6rem;
+}
+
+.mfd-page-aria-thinking {
+  color: rgba(201, 168, 255, 0.8);
+  letter-spacing: 0.15em;
+}
+
+.mfd-page-aria-ellipsis::after {
+  content: '…';
+  animation: mfd-page-aria-blink 1s steps(2, start) infinite;
+}
+
+/* Navigator (autopilot) lines: faint left accent distinguishes the local
+   nav channel from the WS ARIA channel without changing geometry. */
+.mfd-page-aria-line.nav {
+  border-left: 2px solid rgba(0, 217, 255, 0.25);
+  padding-left: 0.35rem;
+}
+
+.mfd-page-aria-actions {
+  margin: 0.2rem 0 0 1.6rem;
+}
+
+.mfd-page-aria-action {
+  font-size: 0.6rem;
+  color: rgba(180, 220, 240, 0.6);
+  border-left: 2px solid rgba(0, 217, 255, 0.3);
+  padding-left: 0.4rem;
+  margin-bottom: 0.15rem;
+  word-break: break-all;
+}
+
+.mfd-page-aria-action-type {
+  color: var(--mfd-aria-cyan);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* Suggestion chips (welcome + inline under AI replies) */
+.mfd-page-aria-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+
+.mfd-page-aria-chips.inline {
+  margin-left: 1.6rem;
+}
+
+.mfd-page-aria-chip {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  padding: 0.2rem 0.45rem;
+  background: transparent;
+  color: rgba(0, 217, 255, 0.75);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mfd-page-aria-chip:hover {
+  border-color: rgba(123, 47, 255, 0.7);
+  color: #c9a8ff;
+  background: rgba(123, 47, 255, 0.08);
+}
+
+/* Rate-limit warning band (pinned, above the status row) */
+.mfd-page-aria-rate {
+  flex-shrink: 0;
+  margin-top: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #FFB000;
+  border: 1px solid rgba(255, 176, 0, 0.5);
+  background: rgba(255, 176, 0, 0.06);
+}
+
+/* Status row: hop ticker / link state + char count + CLR key */
+.mfd-page-aria-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+  padding: 0.15rem 0.1rem;
+  border-top: 1px solid rgba(123, 47, 255, 0.25);
+}
+
+.mfd-page-aria-status-text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  color: rgba(180, 220, 240, 0.6);
+}
+
+.mfd-page-aria-status-text.hop {
+  color: var(--mfd-aria-cyan);
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.4);
+}
+
+.mfd-page-aria-status-text.offline {
+  color: #FF4D6D;
+}
+
+.mfd-page-aria-count {
+  flex-shrink: 0;
+  font-size: 0.52rem;
+  letter-spacing: 0.1em;
+  color: rgba(180, 220, 240, 0.4);
+}
+
+/* Input row pinned at the page bottom */
+.mfd-page-aria-input-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.3rem;
+  padding-bottom: 0.1rem;
+}
+
+.mfd-page-aria-prompt {
+  color: var(--mfd-aria-violet);
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.6);
+}
+
+.mfd-page-aria-input {
+  flex: 1 1 0;
+  min-width: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  padding: 0.3rem 0.45rem;
+  background: rgba(0, 5, 10, 0.9);
+  color: rgba(220, 235, 255, 0.9);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 0;
+  caret-color: var(--mfd-aria-cyan);
+}
+
+.mfd-page-aria-input::placeholder {
+  color: rgba(0, 217, 255, 0.3);
+  letter-spacing: 0.12em;
+}
+
+.mfd-page-aria-input:focus {
+  outline: none;
+  border-color: rgba(123, 47, 255, 0.8);
+  box-shadow: 0 0 8px rgba(123, 47, 255, 0.25);
+}
+
+.mfd-page-aria-input:disabled {
+  opacity: 0.5;
+}
+
+/* Square CRT keys (CLR / XMIT) — press feel matches the softkey grammar:
+   40ms depress, ease-out release, collapsed under reduced motion. */
+.mfd-page-aria-key {
+  flex-shrink: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  padding: 0.3rem 0.55rem;
+  background: rgba(123, 47, 255, 0.1);
+  color: #c9a8ff;
+  border: 1px solid rgba(123, 47, 255, 0.55);
+  border-radius: 0;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: background 90ms ease-out, box-shadow 90ms ease-out, transform 90ms ease-out;
+}
+
+.mfd-page-aria-key:hover:not(:disabled) {
+  background: rgba(123, 47, 255, 0.22);
+  border-color: var(--mfd-aria-violet);
+  box-shadow: 0 0 8px rgba(123, 47, 255, 0.4);
+}
+
+.mfd-page-aria-key:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.6);
+  transition-duration: 40ms;
+}
+
+.mfd-page-aria-key:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+@keyframes mfd-page-aria-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* ── Motion preferences ─────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .mfd-page-aria-ellipsis::after {
+    animation: none;
+  }
+
+  .mfd-page-aria-key {
+    transition: none;
+  }
+
+  .mfd-page-aria-key:active:not(:disabled) {
+    transform: none;
+  }
+}

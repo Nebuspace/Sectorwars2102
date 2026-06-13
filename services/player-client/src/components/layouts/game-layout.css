@@ -213,12 +213,15 @@
   position: relative;
 }
 
-/* Sidebar redesign */
+/* Sidebar — MFD console stack (NEON15). No longer a scrolling card
+   column: it hosts the fixed route rail on top and two MFD screens that
+   split the remaining height 50/50. Scrolling happens INSIDE each MFD
+   page body (mfd.css), never at the sidebar level, so the old sidebar
+   scrollbar theming is gone with the cards it served. */
 .game-sidebar {
   width: 320px;
   transition: width 0.3s ease;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -230,45 +233,10 @@
   box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
   position: relative;
   z-index: 10;
-  /* Firefox scrollbar theming (webkit equivalent below) */
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 217, 255, 0.3) rgba(0, 0, 0, 0.5);
 }
 
 .game-sidebar.open {
   width: 320px;
-  /* The sidebar element also carries .hud-panel (cockpit-components.css),
-     which sets `overflow: hidden` and — being imported AFTER this file in
-     GameLayout.tsx — wins the single-class cascade tie against the
-     `overflow-y: auto` above. Computed overflow-y was therefore hidden:
-     at 1440x900 the sidebar content (~935px: vessel status + genesis bay
-     + nav coords + SHIP SYSTEMS nav + logout) overflowed its ~643px box
-     and everything below 🚀 COMMAND was unreachable, while the page
-     itself must never scroll (cockpit invariant). The two-class selector
-     here outranks .hud-panel, restoring internal scrolling for any
-     number of nav items. */
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* Sidebar scrollbar — same retro-CRT idiom as .monitor-screen
-   (cockpit.css) and .venues-grid (spacedock.css). */
-.game-sidebar::-webkit-scrollbar {
-  width: 8px;
-}
-
-.game-sidebar::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.5);
-  border-radius: 4px;
-}
-
-.game-sidebar::-webkit-scrollbar-thumb {
-  background: rgba(0, 217, 255, 0.3);
-  border-radius: 4px;
-}
-
-.game-sidebar::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 217, 255, 0.5);
 }
 
 .game-sidebar.closed {
@@ -277,27 +245,23 @@
   overflow: hidden;
 }
 
-/* Player info section */
-.player-info {
-  margin: 0;
+/* MFD console layout: rail fixed top, screens share the leftover height.
+   Descendant (not child) selectors so an extra provider wrapper between
+   the aside and the screens can never silently break the split. */
+.game-sidebar .route-rail {
+  flex: 0 0 auto;
 }
 
-.commander-name {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--color-primary);
-  margin-bottom: 0.5rem;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  text-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
+.game-sidebar .mfd-screen {
+  flex: 1 1 0;
+  min-height: 0;
 }
 
-.player-stats {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
+/* The rules below once styled the sidebar cards but their class names are
+   shared by ships/, planetary/, trading/ and spacedock/ components, so
+   they survive the NEON15 sidebar redesign untouched. Sidebar-private
+   rules (.game-nav, .nav-link, .location-info, genesis slots, ...) were
+   removed with the markup they served. */
 .stat-item {
   display: flex;
   justify-content: space-between;
@@ -336,23 +300,6 @@
   text-transform: uppercase;
 }
 
-.cargo-header {
-  font-size: 0.9rem;
-  color: var(--color-text-muted);
-  margin: var(--space-md) 0 var(--space-sm) 0;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.cargo-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-}
-
 .cargo-item {
   display: flex;
   justify-content: space-between;
@@ -369,9 +316,10 @@
   text-transform: capitalize;
 }
 
+/* .empty-cargo / .no-ship are NOT sidebar-private — TradingInterface and
+   ShipSelection render them — so they survive the sidebar redesign. */
 .empty-cargo,
-.no-ship,
-.unknown-sector {
+.no-ship {
   font-size: 0.9rem;
   color: var(--color-text-muted);
   text-align: center;
@@ -381,7 +329,7 @@
   letter-spacing: 0.5px;
 }
 
-/* Genesis Device Display in Sidebar */
+/* Genesis Device Display — kept: SpaceDockInterface renders these. */
 .ship-genesis {
   margin-top: var(--space-md);
   padding-top: var(--space-md);
@@ -400,123 +348,12 @@
   text-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
 }
 
-.genesis-icon {
-  font-size: 1.1em;
-  filter: drop-shadow(0 0 4px rgba(76, 175, 80, 0.6));
-}
-
-.genesis-status {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--space-sm);
-  background: rgba(76, 175, 80, 0.1);
-  border: 1px solid rgba(76, 175, 80, 0.3);
-  border-radius: 6px;
-}
-
-.genesis-slots {
-  display: flex;
-  gap: 6px;
-}
-
-.genesis-slot {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  font-size: 1rem;
-  transition: all 0.3s ease;
-}
-
-.genesis-slot.loaded {
-  background: radial-gradient(circle at 30% 30%, #4CAF50, #1B5E20);
-  box-shadow: 0 0 10px rgba(76, 175, 80, 0.6);
-  animation: genesis-glow 2s ease-in-out infinite;
-}
-
-.genesis-slot.empty {
-  background: rgba(30, 40, 50, 0.6);
-  border: 1px dashed rgba(255, 255, 255, 0.2);
-  color: rgba(255, 255, 255, 0.3);
-  font-size: 0.8rem;
-}
-
-@keyframes genesis-glow {
-  0%, 100% {
-    box-shadow: 0 0 10px rgba(76, 175, 80, 0.6);
-    transform: scale(1);
-  }
-  50% {
-    box-shadow: 0 0 18px rgba(76, 175, 80, 0.8);
-    transform: scale(1.05);
-  }
-}
-
-.genesis-count .data-readout {
-  font-size: 1rem;
-  color: var(--color-text-secondary);
-}
-
-.genesis-count .data-readout.genesis-active {
-  color: #4CAF50;
-  text-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
-  font-weight: bold;
-}
-
-.genesis-ready-indicator {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  margin-top: var(--space-sm);
-  padding: var(--space-xs) var(--space-sm);
-  background: rgba(76, 175, 80, 0.15);
-  border-radius: 4px;
-  font-size: 0.75rem;
-  color: #4CAF50;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  font-weight: bold;
-}
-
-.pulse-dot {
-  width: 8px;
-  height: 8px;
-  background: #4CAF50;
-  border-radius: 50%;
-  animation: pulse-beacon 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse-beacon {
-  0%, 100% {
-    opacity: 1;
-    box-shadow: 0 0 4px #4CAF50;
-  }
-  50% {
-    opacity: 0.5;
-    box-shadow: 0 0 12px #4CAF50, 0 0 20px rgba(76, 175, 80, 0.5);
-  }
-}
-
-/* Location info section */
-.location-info {
-  margin: 0;
-}
-
 .sector-name {
   font-size: 1rem;
   font-weight: 600;
   color: var(--color-primary);
   margin-bottom: var(--space-xs);
   text-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
-}
-
-.sector-designation {
-  font-size: 0.9rem;
-  color: var(--color-text);
-  margin-bottom: var(--space-xs);
 }
 
 .sector-type {
@@ -529,139 +366,9 @@
   display: inline-block;
 }
 
-.sector-hazard {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: var(--space-sm);
-  padding: var(--space-xs) var(--space-sm);
-  background: rgba(255, 68, 68, 0.1);
-  border: 1px solid rgba(255, 68, 68, 0.3);
-  border-radius: 4px;
-}
-
-.hazard-label {
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-}
-
-/* Navigation */
-.game-nav {
-  margin-top: auto;
-  flex-shrink: 0;
-  min-height: 0;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.nav-header {
-  font-size: 0.9rem;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-bottom: var(--space-md);
-  text-align: center;
-  border-bottom: 1px solid var(--color-border);
-  padding-bottom: var(--space-sm);
-}
-
-.nav-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  width: 100%;
-}
-
-.nav-list li {
-  width: 100%;
-  display: block;
-  margin: 0;
-  padding: 0;
-}
-
-.nav-link {
-  display: block;
-  text-decoration: none;
-  width: 100%;
-  text-align: left;
-  font-size: 0.85rem;
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
-  transition: all 0.3s ease;
-  position: relative;
-  overflow: hidden;
-  color: #a3b1cc;
-  background: rgba(26, 31, 46, 0.6);
-  border: 1px solid rgba(77, 132, 253, 0.2);
-  box-sizing: border-box;
-  margin: 0;
-  line-height: 1.4;
-  white-space: nowrap;
-  z-index: 1;
-}
-
-.nav-link:hover {
-  transform: translateX(3px);
-  background: rgba(77, 132, 253, 0.1);
-  border-color: rgba(77, 132, 253, 0.4);
-  color: #ffffff;
-  box-shadow: 0 0 10px rgba(77, 132, 253, 0.3);
-}
-
-/* Active route — highlighted with its system accent (Law 5), supplied
-   per-link as --nav-accent by GameLayout. Falls back to cockpit cyan. */
-.nav-link.active {
-  background: linear-gradient(
-    145deg,
-    color-mix(in srgb, var(--nav-accent, #00d9ff) 20%, transparent),
-    color-mix(in srgb, var(--nav-accent, #00d9ff) 10%, transparent)
-  );
-  border-color: var(--nav-accent, #00d9ff);
-  color: var(--nav-accent, #00d9ff);
-  box-shadow: 0 0 15px color-mix(in srgb, var(--nav-accent, #00d9ff) 40%, transparent);
-  transform: translateX(5px);
-}
-
-/* Comfortable hit targets for SHIP SYSTEMS buttons (>=40px). The
-   cockpit.css sidebar compression rules shrink padding/font with
-   !important but leave min-height/display alone, so this two-class
-   selector lands cleanly without growing the sidebar past 947px
-   (8 items x 40px + gaps + footer still fit the nav band). */
-.game-sidebar .nav-link {
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-}
-
-/* Navigation Footer - Logout button */
-.nav-footer {
-  margin-top: var(--space-lg);
-  padding-top: var(--space-md);
-  border-top: 1px solid var(--color-border);
-}
-
-.nav-footer .logout-btn {
-  background: rgba(255, 68, 68, 0.1);
-  border-color: rgba(255, 68, 68, 0.3);
-  color: #ff6b6b;
-}
-
-.nav-footer .logout-btn:hover {
-  background: rgba(255, 68, 68, 0.2);
-  border-color: rgba(255, 68, 68, 0.5);
-  color: #ff4444;
-  box-shadow: 0 0 10px rgba(255, 68, 68, 0.4);
-}
-
 /* Main content area — height-locked column (Law 2: 100vh minus header is
    enforced by the flex chain .game-layout > .game-container > here, all
-   overflow:hidden; the document never scrolls). Hosts the route viewport
-   plus the reserved ARIA console slot at the bottom (Law 4). */
+   overflow:hidden; the document never scrolls). */
 .game-content {
   flex: 1;
   position: relative;
@@ -685,18 +392,6 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-}
-
-/* ARIA console slot — slim fixed band at the bottom of the content
-   region on every /game route. The strip itself is 36px and expands
-   UPWARD as an overlay drawer (AriaConsoleStrip owns that); the slot
-   reserves the band and sits above viewport content so the drawer is
-   never clipped by .main-viewport's overflow:hidden. */
-.aria-console-slot {
-  flex: 0 0 auto;
-  min-height: 36px;
-  position: relative;
-  z-index: 60;
 }
 
 /* Loading overlay — scoped name to avoid colliding with the global
@@ -746,8 +441,8 @@
    (the full .viewport-loading-overlay is reserved for the true initial load).
    Appears only when a refresh persists >300ms (delayed in GameLayout.tsx
    to avoid flicker on fast scans/jumps). pointer-events: none so it can
-   never intercept cockpit controls. Same CRT idiom as .data-readout /
-   .genesis-ready-indicator: cyan glow, mono caps, pulsing beacon dot. */
+   never intercept cockpit controls. Same CRT idiom as .data-readout:
+   cyan glow, mono caps, pulsing beacon dot. */
 .sync-indicator {
   position: absolute;
   top: var(--space-sm);
@@ -856,11 +551,6 @@
   
   .title-year {
     font-size: 0.7rem;
-  }
-  
-  .nav-link {
-    font-size: 0.8rem;
-    padding: var(--space-sm) var(--space-md);
   }
 }
 

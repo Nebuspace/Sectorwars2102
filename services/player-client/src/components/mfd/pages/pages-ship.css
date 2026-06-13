@@ -1,0 +1,181 @@
+/* ============================================================
+   NEON15 B2 — ship-page BODY layouts only (Vessel / Cargo /
+   TurnEconomy / Threat / Quantum). Bezel, softkeys, housing and
+   the MFDField/MFDEmpty atoms are styled in mfd.css (zone B1).
+   Every selector here is .mfd-page-* namespaced per the contract.
+   Visual language: modern flat LCD — crisp 1px borders, no
+   phosphor radial glow, no scanline sweep, tabular-nums digits.
+   ============================================================ */
+
+.mfd-page-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Subsection block (MANIFEST, GENESIS BAY) */
+.mfd-page-section {
+  margin-top: 10px;
+}
+
+.mfd-page-section-title {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--mfd-accent, #9ec5ff);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 2px;
+  margin-bottom: 4px;
+}
+
+/* Failure / alert line (vessel maintenance failure) */
+.mfd-page-warnline {
+  margin-top: 8px;
+  padding: 3px 6px;
+  border-left: 2px solid #ff4d6d;
+  background: rgba(255, 77, 109, 0.08);
+  color: #ff4d6d;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+/* ── Cargo manifest ─────────────────────────────────────────── */
+
+.mfd-page-cargo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mfd-page-cargo-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.mfd-page-cargo-row:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mfd-page-cargo-name {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(225, 235, 245, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mfd-page-cargo-qty {
+  font-variant-numeric: tabular-nums;
+  color: var(--mfd-accent, #9ec5ff);
+  flex-shrink: 0;
+}
+
+/* ── Genesis bay (ported from the retired sidebar, LCD restyle) ── */
+
+.mfd-page-genesis-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mfd-page-genesis-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.mfd-page-genesis-slot {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.mfd-page-genesis-slot.loaded {
+  color: #00ff7f;
+  border: 1px solid rgba(0, 255, 127, 0.55);
+  box-shadow: 0 0 6px rgba(0, 255, 127, 0.35);
+  animation: mfd-page-genesis-glow 2s ease-in-out infinite;
+}
+
+.mfd-page-genesis-slot.empty {
+  color: rgba(255, 255, 255, 0.25);
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+}
+
+@keyframes mfd-page-genesis-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 6px rgba(0, 255, 127, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 10px rgba(0, 255, 127, 0.6);
+  }
+}
+
+.mfd-page-genesis-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.68rem;
+  color: rgba(225, 235, 245, 0.6);
+  flex-shrink: 0;
+}
+
+.mfd-page-genesis-count.active {
+  color: #00ff7f;
+  font-weight: 700;
+}
+
+.mfd-page-genesis-ready {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  padding: 2px 6px;
+  border: 1px solid rgba(0, 255, 127, 0.3);
+  border-radius: 3px;
+  background: rgba(0, 255, 127, 0.08);
+  color: #00ff7f;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.mfd-page-genesis-ready-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #00ff7f;
+  animation: mfd-page-genesis-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes mfd-page-genesis-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Motion collapses per contract */
+@media (prefers-reduced-motion: reduce) {
+  .mfd-page-genesis-slot.loaded,
+  .mfd-page-genesis-ready-dot {
+    animation: none;
+  }
+}
