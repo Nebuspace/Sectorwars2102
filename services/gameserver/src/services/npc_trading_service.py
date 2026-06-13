@@ -41,6 +41,7 @@ players; canon silent on NPC liability).
 """
 
 import logging
+import random
 import uuid
 from datetime import datetime, UTC
 from typing import Any, Dict, List, Optional
@@ -122,25 +123,34 @@ def generate_trade_route(
 
     profiles = {s.id: _station_profile(s) for s in stations}
 
-    # Start from the supplying station nearest the trader's home sector.
+    # Start from a RANDOM supplying station reachable from the trader's home
+    # sector (within the hop budget). Randomizing the start — rather than always
+    # taking the nearest supplier — gives each captain a distinct route, so a
+    # roster of merchants spreads across the region's lanes instead of all
+    # walking one path.
     home_distances = _hop_distances(db, home_sector_id, ROUTE_HOP_BUDGET)
-    candidates = sorted(
-        (s for s in stations if profiles[s.id]["supplies"]),
-        key=lambda s: home_distances.get(s.sector_id, 10_000),
-    )
+    candidates = [
+        s for s in stations
+        if profiles[s.id]["supplies"]
+        and home_distances.get(s.sector_id) is not None
+    ]
+    if not candidates:
+        # Fall back to any supplier (home graph may be sparse) so marginal
+        # regions can still seed a route rather than going trader-less.
+        candidates = [s for s in stations if profiles[s.id]["supplies"]]
     if not candidates:
         return None
 
     route: List[Dict[str, Any]] = []
-    current = candidates[0]
+    current = random.choice(candidates)
     visited = {current.id}
 
     while len(route) < ROUTE_MAX_STOPS:
         supplies = profiles[current.id]["supplies"]
         distances = _hop_distances(db, current.sector_id, ROUTE_HOP_BUDGET)
-        best: Optional[Station] = None
-        best_goods: List[str] = []
-        best_hops = ROUTE_HOP_BUDGET + 1
+        # Gather ALL complementary stations within budget, then pick one at
+        # random (weighting nothing) for route variety — not just the nearest.
+        options: List[tuple] = []
         for nxt in stations:
             if nxt.id in visited:
                 continue
@@ -148,10 +158,11 @@ def generate_trade_route(
             if hops is None or hops == 0:
                 continue
             goods = [c for c in supplies if c in profiles[nxt.id]["wants"]]
-            if goods and hops < best_hops:
-                best, best_goods, best_hops = nxt, goods, hops
-        if best is None:
+            if goods:
+                options.append((nxt, goods))
+        if not options:
             break
+        best, best_goods = random.choice(options)
         route.append({
             "station_id": str(current.id),
             "sector_id": current.sector_id,

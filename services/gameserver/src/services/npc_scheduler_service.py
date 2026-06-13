@@ -669,6 +669,30 @@ def _fill_roster_deficit(
     # Per-hull spec cache so trader variety doesn't re-query the same spec.
     spec_cache: Dict[Any, ShipSpecification] = {}
 
+    # Trader route pool: generate up to 8 randomized routes ONCE and assign
+    # spawns from it. generate_trade_route runs an expensive warp-graph BFS, so
+    # generating one per spawn would make a bulk fill crawl AND hold the
+    # scheduler advisory lock for minutes (freezing all NPC movement). A shared
+    # pool keeps the fill fast while the randomized variants still give the
+    # squad varied lanes. Empty pool → the region has no complementary route, so
+    # defer (retried next pass as markets move).
+    route_pool: List[List[Dict[str, Any]]] = []
+    if is_trader:
+        from src.services import npc_trading_service
+
+        for _ in range(min(spawn_count, 8)):
+            generated = npc_trading_service.generate_trade_route(
+                db, roster.region_id, roster.host_sector_id
+            )
+            if generated is not None:
+                route_pool.append(generated)
+        if not route_pool:
+            logger.info(
+                "Loop B: no complementary trade route in region %s — "
+                "trader spawn deferred", roster.region_id,
+            )
+            return []
+
     events: List[Dict[str, Any]] = []
     for _ in range(spawn_count):
         npc_name = _next_name(db, roster)
@@ -681,20 +705,10 @@ def _fill_roster_deficit(
         ship_name = cfg.ship_name_format.format(name=npc_name)
 
         if is_trader:
-            from src.services import npc_trading_service
-
-            # Traders get a PER-NPC schedule: a generated 2–4 station route
-            # encoded as multi-day blocks. No complementary stations in the
-            # region → no spawn (retried next pass as markets move).
-            route = npc_trading_service.generate_trade_route(
-                db, roster.region_id, roster.host_sector_id
-            )
-            if route is None:
-                logger.info(
-                    "Loop B: no complementary trade route in region %s — "
-                    "trader spawn deferred", roster.region_id,
-                )
-                return events
+            # Each captain gets one of the pre-generated randomized routes —
+            # a PER-NPC schedule of 2–4 station stops encoded as multi-day
+            # blocks (varied lanes across the squad, cheap to assign).
+            route = random.choice(route_pool)
             daily_schedule = npc_trading_service.build_trader_schedule(route)
 
             # Variety: each captain flies a different hull, carries a persona
