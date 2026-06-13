@@ -2,10 +2,19 @@
    NAVIGATION MAP - Constellation Graph
    ============================================ */
 
+/* Outer wrapper: flex column so the legend gets its own row below the map */
+.navigation-map-wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
 .navigation-map-container {
   position: relative;
   width: 100%;
-  height: 100%;
+  flex: 1 1 0;
   /* `min-height: 600px` used to force this 600px tall regardless of the
      parent monitor cell. In the new compact cockpit the NAV cell is
      ~200-300px, and the 600px container both overflowed downward AND
@@ -15,7 +24,7 @@
      centering. */
   min-height: 0;
   background: radial-gradient(circle at center, rgba(10, 14, 26, 0.95) 0%, rgba(5, 8, 16, 0.98) 100%);
-  border-radius: 8px;
+  border-radius: 8px 8px 0 0;
   overflow: hidden;
   box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.5);
 }
@@ -138,22 +147,20 @@
   }
 }
 
-/* Navigation Instructions */
+/* Navigation legend — sits in its own row below the map, never overlapping nodes */
 .navigation-instructions {
-  position: absolute;
-  bottom: 1rem;
-  right: 1rem;
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  flex-direction: row;
+  gap: 1.25rem;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   background: linear-gradient(135deg, rgba(10, 14, 26, 0.9) 0%, rgba(5, 8, 16, 0.95) 100%);
   border: 1px solid rgba(0, 217, 255, 0.3);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  font-size: 0.75rem;
-  backdrop-filter: blur(10px);
-  /* Purely informational legend painted over the SVG; without this it
-     intercepts clicks on warp nodes beneath it. */
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  padding: 0.35rem 1rem;
+  font-size: 0.7rem;
   pointer-events: none;
 }
 
@@ -188,17 +195,6 @@
   }
 }
 
-/* Compact cockpit heights: the stacked legend sits over the lower-left of
-   the graph and visually occludes warp nodes. Fade its backdrop and lay
-   the items out as one slim horizontal row so nodes beneath stay legible. */
-@media (max-height: 900px) {
-  .navigation-instructions {
-    flex-direction: row;
-    gap: 0.75rem;
-    padding: 0.3rem 0.6rem;
-    background: linear-gradient(135deg, rgba(10, 14, 26, 0.55) 0%, rgba(5, 8, 16, 0.55) 100%);
-  }
-}
 
 /* Accessibility */
 @media (prefers-reduced-motion: reduce) {

@@ -256,6 +256,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   };
 
   return (
+    <div className="navigation-map-wrapper">
     <div className="navigation-map-container">
       <svg
         ref={svgRef}
@@ -425,8 +426,10 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
           })}
         </g>
       </svg>
+    </div>
 
-      {/* Navigation instructions */}
+      {/* Navigation legend — lives OUTSIDE the SVG container so it
+          never overlaps clickable warp nodes regardless of graph layout */}
       <div className="navigation-instructions">
         <div className="instruction-item">
           <span className="instruction-icon" style={{ color: '#00ff41' }}>●</span>
