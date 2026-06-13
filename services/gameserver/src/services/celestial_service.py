@@ -549,6 +549,12 @@ def generate_system(
     # Deep-copy the skeleton bodies before merging — _merge_real_planets mutates
     # in place and the persisted skeleton must stay pristine.
     bodies = copy.deepcopy(comp.get("bodies") or [])
+    # Ensure every composer body has a corpus name (older persisted skeletons
+    # predate composer naming); real planets overwrite this at merge.
+    from src.services.planet_naming_service import name_for_body
+    for b in bodies:
+        if not b.get("name"):
+            b["name"] = name_for_body(sector.sector_id, b.get("slot", 0))
     hz_dict = comp.get("habitable_zone")
     hz = (hz_dict["inner_au"], hz_dict["outer_au"]) if hz_dict else None
     _merge_real_planets(bodies, real_planets, root_seed, hz)
