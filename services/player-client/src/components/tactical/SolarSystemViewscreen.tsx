@@ -1414,31 +1414,41 @@ function drawScene(
     const sel = hitTargets.find((ht) => ht.kind === 'ship' && ht.id === selectedShipId);
     if (sel) {
       const pulse = 0.5 + 0.5 * Math.sin(t * 4);
-      const rr = Math.max(13, sel.r) + 4 + pulse * 3;
+      const rr = Math.max(15, sel.r) + 6 + pulse * 4;
       ctx.save();
-      ctx.strokeStyle = `rgba(0, 255, 65, ${0.55 + 0.35 * pulse})`;
-      ctx.lineWidth = 1.6;
+      // Soft green halo so the spotlight reads instantly against the dark field
+      const halo = ctx.createRadialGradient(sel.x, sel.y, rr * 0.4, sel.x, sel.y, rr + 8);
+      halo.addColorStop(0, 'rgba(0, 255, 65, 0)');
+      halo.addColorStop(0.7, `rgba(0, 255, 65, ${0.12 + 0.1 * pulse})`);
+      halo.addColorStop(1, 'rgba(0, 255, 65, 0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(sel.x, sel.y, rr + 8, 0, Math.PI * 2);
+      ctx.fill();
+      // Bold pulsing selection ring
+      ctx.strokeStyle = `rgba(40, 255, 90, ${0.85 + 0.15 * pulse})`;
+      ctx.lineWidth = 2.6;
       ctx.beginPath();
       ctx.arc(sel.x, sel.y, rr, 0, Math.PI * 2);
       ctx.stroke();
       // Four corner ticks framing the contact
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 2.2;
       for (let q = 0; q < 4; q++) {
         const a = Math.PI / 4 + (Math.PI / 2) * q;
         const ix = sel.x + Math.cos(a) * rr;
         const iy = sel.y + Math.sin(a) * rr;
-        const ox = sel.x + Math.cos(a) * (rr + 5);
-        const oy = sel.y + Math.sin(a) * (rr + 5);
+        const ox = sel.x + Math.cos(a) * (rr + 7);
+        const oy = sel.y + Math.sin(a) * (rr + 7);
         ctx.beginPath();
         ctx.moveTo(ix, iy);
         ctx.lineTo(ox, oy);
         ctx.stroke();
       }
-      ctx.font = FONT;
+      ctx.font = 'bold 11px "Courier New", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillStyle = 'rgba(0, 255, 65, 0.95)';
-      ctx.fillText('◉ SELECTED', sel.x, sel.y - rr - 6);
+      ctx.fillStyle = 'rgba(120, 255, 150, 1)';
+      ctx.fillText('◉ SELECTED', sel.x, sel.y - rr - 7);
       ctx.restore();
     }
   }
