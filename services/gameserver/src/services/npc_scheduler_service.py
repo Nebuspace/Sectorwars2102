@@ -1186,6 +1186,31 @@ def _seed_trader_rosters_sync() -> int:
         db.close()
 
 
+def _relocate_stranded_npcs_sync() -> int:
+    """Un-stick NPCs frozen in a sector that can't reach their route (the
+    silent next_hop_toward→None no-op — e.g. a trader stranded in the wrong
+    region after a galaxy re-bootstrap). Teleport-repairs each onto one of its
+    own route sectors. Safe + idempotent (only genuinely stranded NPCs move);
+    no roster/galaxy surgery. xact-advisory-lock-gated like the other repairs.
+    Returns the number of NPCs relocated."""
+    from src.core.database import SessionLocal
+    from src.services.npc_movement_service import relocate_stranded_npcs
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        count = relocate_stranded_npcs(db)
+        db.commit()  # releases the xact lock
+        return count
+    finally:
+        db.close()
+
+
 def _assign_trader_notoriety_sync() -> int:
     """Backfill notoriety onto pre-existing TRADER NPCs that have none (the
     column shipped after they spawned). Derived from each captain's existing
@@ -1382,6 +1407,14 @@ async def npc_scheduler_loop() -> None:
                         missions.get("colonist", 0), missions.get("science", 0))
     except Exception:
         logger.exception("NPC scheduler: trader mission assignment failed")
+    # Un-stick NPCs stranded in sectors they can't path out of (e.g. left in
+    # the wrong region by a galaxy re-bootstrap) so they resume moving.
+    try:
+        unstuck = await asyncio.to_thread(_relocate_stranded_npcs_sync)
+        if unstuck:
+            logger.info("NPC scheduler: relocated %d stranded NPC(s)", unstuck)
+    except Exception:
+        logger.exception("NPC scheduler: stranded-NPC relocation failed")
     elapsed = 0
     while True:
         await asyncio.sleep(TICK_SECONDS)

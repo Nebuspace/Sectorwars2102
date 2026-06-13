@@ -249,3 +249,101 @@ def next_hop_toward(db: Session, origin_sector_id: int,
     if len(path) < 2:
         return None
     return int(path[1]["sector_id"])
+
+
+# ---------------------------------------------------------------------------
+# Stranded-NPC repair
+# ---------------------------------------------------------------------------
+
+def _collect_sector_ids(obj: Any, out: set) -> None:
+    """Recursively gather every ``sector_id`` int and ``sectors`` list entry
+    referenced anywhere in a daily_schedule JSON blob."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "sector_id" and isinstance(v, int):
+                out.add(v)
+            elif k == "sectors" and isinstance(v, list):
+                out.update(x for x in v if isinstance(x, int))
+            else:
+                _collect_sector_ids(v, out)
+    elif isinstance(obj, list):
+        for x in obj:
+            _collect_sector_ids(x, out)
+
+
+def _schedule_target_sectors(npc: NPCCharacter) -> set:
+    out: set = set()
+    _collect_sector_ids(npc.daily_schedule or {}, out)
+    return out
+
+
+def _relocate_npc(db: Session, npc: NPCCharacter, dest_sector_id: int) -> bool:
+    """Teleport-repair a stranded NPC to ``dest_sector_id`` (no warp-link,
+    cost or pacing — this fixes a frozen NPC, it is not a normal move).
+    Same lock order as ``move_npc`` (ship row, then both sectors ascending)
+    so it can't deadlock against movers or the KIA path. Returns True when
+    the NPC was relocated. Flush-only; caller owns the commit."""
+    if npc.ship_id is None or npc.current_sector_id is None:
+        return False
+    origin_id = npc.current_sector_id
+    if origin_id == dest_sector_id:
+        return False
+    ship = db.query(Ship).filter(Ship.id == npc.ship_id).with_for_update().first()
+    if ship is None or ship.is_destroyed:
+        return False
+    db.refresh(npc)
+    if npc.status in _UNMOVABLE_STATUSES or npc.current_sector_id != origin_id:
+        return False
+    sectors = _locked_sectors(db, [origin_id, dest_sector_id])
+    dest = sectors.get(dest_sector_id)
+    if dest is None:  # destination sector must exist
+        return False
+    origin = sectors.get(origin_id)
+    if origin is not None:
+        remove_npc_presence(origin, npc.id)
+    add_npc_presence(dest, npc, ship)
+    npc.current_sector_id = dest_sector_id
+    npc.home_region_id = npc.home_region_id or dest.region_id
+    npc.last_seen_at = datetime.now(UTC)
+    ship.sector_id = dest_sector_id
+    db.flush()
+    return True
+
+
+def relocate_stranded_npcs(db: Session) -> int:
+    """Find NPCs frozen because their current sector can't reach their
+    schedule's target sectors (the silent ``next_hop_toward``→None no-op that
+    leaves a trader stuck in the wrong region forever) and teleport-repair
+    each onto one of its own route sectors so it can resume moving.
+
+    An NPC is considered fine (skipped) when its current sector IS a target,
+    or when ANY target is reachable from it (it's simply en route). Idempotent:
+    a healthy NPC is never touched. Flush-only; caller owns the commit."""
+    movable = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.status.notin_(_UNMOVABLE_STATUSES),
+            NPCCharacter.ship_id.isnot(None),
+            NPCCharacter.current_sector_id.isnot(None),
+        )
+        .all()
+    )
+    msvc = MovementService(db)
+    relocated = 0
+    for npc in movable:
+        targets = _schedule_target_sectors(npc)
+        if not targets or npc.current_sector_id in targets:
+            continue  # no schedule, or already on its route
+        cur = npc.current_sector_id
+        reachable = any(
+            len(msvc.get_path_between_sectors(cur, t)) >= 2
+            for t in sorted(targets)
+        )
+        if reachable:
+            continue  # en route — it will arrive on its own
+        dest = min(targets)  # deterministic anchor on its own route
+        if _relocate_npc(db, npc, dest):
+            relocated += 1
+            logger.info("Relocated stranded NPC %s: sector %s -> %s",
+                        npc.id, cur, dest)
+    return relocated
