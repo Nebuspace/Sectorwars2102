@@ -1186,6 +1186,28 @@ def _seed_trader_rosters_sync() -> int:
         db.close()
 
 
+def _disperse_law_patrols_sync() -> int:
+    """Scatter LAW_ENFORCEMENT NPCs across their region (deterministic per-NPC
+    anchors) so they stop swarming the roster's single host sector. Idempotent +
+    self-healing across restarts. xact-advisory-lock-gated. Returns dispersed."""
+    from src.core.database import SessionLocal
+    from src.services.npc_movement_service import disperse_law_patrols
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        count = disperse_law_patrols(db)
+        db.commit()  # releases the xact lock
+        return count
+    finally:
+        db.close()
+
+
 def _relocate_stranded_npcs_sync() -> int:
     """Un-stick NPCs frozen in a sector that can't reach their route (the
     silent next_hop_toward→None no-op — e.g. a trader stranded in the wrong
@@ -1415,6 +1437,13 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: relocated %d stranded NPC(s)", unstuck)
     except Exception:
         logger.exception("NPC scheduler: stranded-NPC relocation failed")
+    # Disperse LAW patrols across their region (stop the single-host swarm).
+    try:
+        spread = await asyncio.to_thread(_disperse_law_patrols_sync)
+        if spread:
+            logger.info("NPC scheduler: dispersed %d LAW patrol(s)", spread)
+    except Exception:
+        logger.exception("NPC scheduler: LAW patrol dispersal failed")
     elapsed = 0
     while True:
         await asyncio.sleep(TICK_SECONDS)

@@ -37,12 +37,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.game_time import canonical_hours_since
-from src.models.npc_character import NPCCharacter, NPCStatus
+from src.models.npc_character import NPCCharacter, NPCStatus, NPCArchetype
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services.movement_service import MovementService, _is_player_gate
-from src.services.npc_spawn_service import _presence_entry
+from src.services.npc_spawn_service import _presence_entry, _patrol_route
 
 logger = logging.getLogger(__name__)
 
@@ -347,3 +347,67 @@ def relocate_stranded_npcs(db: Session) -> int:
             logger.info("Relocated stranded NPC %s: sector %s -> %s",
                         npc.id, cur, dest)
     return relocated
+
+
+def disperse_law_patrols(db: Session) -> int:
+    """Spread LAW_ENFORCEMENT NPCs across their region instead of swarming the
+    roster's single host sector (24 Sentinels anchored to one sector + its two
+    neighbours made ~6-8 pile into every sector around the host). Each LAW NPC
+    gets a DETERMINISTIC scattered patrol anchor (seeded by its id) somewhere in
+    its region, a small local patrol loop around that anchor, and is relocated
+    there. Deterministic + idempotent: an NPC already on its scattered anchor is
+    left untouched, so this self-heals re-clustered respawns each startup without
+    churn. Pirates are intentionally NOT dispersed (their clustering is canon —
+    holdings/strongholds). Flush-only; caller owns the commit."""
+    law = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
+            NPCCharacter.status.notin_(_UNMOVABLE_STATUSES),
+            NPCCharacter.ship_id.isnot(None),
+        )
+        .all()
+    )
+    if not law:
+        return 0
+    region_sectors: Dict[Any, List[int]] = {}
+    dispersed = 0
+    for npc in law:
+        region_id = npc.home_region_id
+        if region_id is None:
+            cur = db.query(Sector).filter(Sector.sector_id == npc.current_sector_id).first()
+            region_id = cur.region_id if cur else None
+        if region_id is None:
+            continue
+        if region_id not in region_sectors:
+            region_sectors[region_id] = sorted(
+                sid for (sid,) in db.query(Sector.sector_id)
+                .filter(Sector.region_id == region_id).all()
+            )
+        sids = region_sectors[region_id]
+        if not sids:
+            continue
+        # Deterministic per-NPC anchor (stable across restarts → idempotent).
+        h = int(str(npc.id).replace("-", "")[:12], 16)
+        anchor = sids[h % len(sids)]
+        route = _patrol_route(db, anchor)
+        cur_route = (
+            ((npc.daily_schedule or {}).get("blocks") or [{}])[0]
+            .get("location_ref") or {}
+        ).get("sectors")
+        if cur_route == route and npc.current_sector_id == anchor:
+            continue  # already dispersed to its anchor
+        npc.daily_schedule = {
+            "timezone": "utc",
+            "shift_offset_hours": 0,
+            "blocks": [{
+                "start_minute": 0, "end_minute": 1440,
+                "activity": "patrol", "location_type": "patrol_route",
+                "location_ref": {"sectors": route, "minutes_per_sector": 240},
+            }],
+        }
+        npc.home_region_id = npc.home_region_id or region_id
+        if npc.current_sector_id != anchor:
+            _relocate_npc(db, npc, anchor)
+        dispersed += 1
+    return dispersed
