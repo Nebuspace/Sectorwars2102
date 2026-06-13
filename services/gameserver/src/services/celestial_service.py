@@ -167,6 +167,10 @@ BODY_KIND_WEIGHTS: Dict[str, float] = {
 ROCKY_KINDS = ("BARREN", "ICE", "VOLCANIC", "DESERT")
 
 BELT_CHANCE_DEFAULT = 0.15
+# Chance a system carries a destroyed-planet debris field (two worlds that
+# collided): pure cosmetic flourish, like the belt — not a click target, not
+# persisted. Rolled LAST in generate_system so it never perturbs body layout.
+DEBRIS_CHANCE = 0.12
 
 MAX_BODIES = 9
 MIN_ORBIT_AU = 0.15
@@ -399,12 +403,24 @@ def generate_system(
     ]
     _merge_real_planets(bodies, real_planets, root_seed)
 
+    # --- Debris field (destroyed/colliding worlds) — rolled LAST so adding it
+    #     leaves every existing system's star/belt/body layout untouched. -----
+    debris: Optional[Dict[str, Any]] = None
+    if star is not None and body_count > 0 and rng.random() < DEBRIS_CHANCE:
+        debris = {
+            "orbit_au": round(rng.uniform(0.35, 0.92), 4),
+            "phase_deg": rng.randint(0, 359),
+            "hue": rng.randint(0, 359),
+            "size": rng.randint(2, 4),
+        }
+
     response: Dict[str, Any] = {
         "sector_id": sector.sector_id,
         "sector_type": sector_type,
         "star": star,
         "nebula": nebula,
         "belt": belt,
+        "debris": debris,
         "bodies": bodies,
         "stations": _make_stations(stations, root_seed),
     }

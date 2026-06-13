@@ -640,6 +640,18 @@ const GameDashboard: React.FC = () => {
     });
   }, [currentSector?.players_present, playerState]);
 
+  // COMMS↔viewport link: ship_id of the contact the player picked in the Comms
+  // window. Its glyph gets a selection reticle in the cockpit viewport. Cleared
+  // automatically when that ship is no longer present (it warped out, or the
+  // player changed sector).
+  const [selectedShipId, setSelectedShipId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selectedShipId &&
+        !shipsInSector.some((s: any) => String(s.ship_id) === selectedShipId)) {
+      setSelectedShipId(null);
+    }
+  }, [shipsInSector, selectedShipId]);
+
   // NAV map sectors: one node per destination sector. A sector reachable by
   // BOTH a warp and a tunnel used to be listed twice (duplicate React keys in
   // NavigationMap + phantom overlapping nodes), so build through a Map keyed
@@ -1510,6 +1522,7 @@ const GameDashboard: React.FC = () => {
                 }}
                 onRequestLand={handleLand}
                 onRequestDock={handleDock}
+                selectedShipId={selectedShipId}
               />
 
               {/* Cockpit frame vignette */}
@@ -2500,7 +2513,13 @@ const GameDashboard: React.FC = () => {
                   <div className="bezel-corner br"></div>
                 </div>
                 <div className="monitor-screen">
-                  <CommsMailbox contacts={sectorContacts} />
+                  <CommsMailbox
+                    contacts={sectorContacts}
+                    selectedShipId={selectedShipId}
+                    onSelectContact={(c) =>
+                      setSelectedShipId(c?.ship_id ? String(c.ship_id) : null)
+                    }
+                  />
                 </div>
               </div>
             </>

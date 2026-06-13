@@ -27,6 +27,7 @@ interface SectorContact {
   player_id?: string;
   user_id?: string;
   id?: string;
+  ship_id?: string;
   username?: string;
   name?: string;
   is_npc?: boolean;
@@ -38,6 +39,10 @@ interface SectorContact {
 
 interface CommsMailboxProps {
   contacts: SectorContact[];
+  /** ship_id of the currently selected contact (spotlit in the viewport). */
+  selectedShipId?: string | null;
+  /** Clicking a contact row selects its ship in the cockpit viewport. */
+  onSelectContact?: (contact: SectorContact | null) => void;
 }
 
 interface ComposeTarget {
@@ -62,7 +67,7 @@ const timeAgo = (iso: string | null): string => {
 const contactDisplayName = (contact: SectorContact): string =>
   contact.username || contact.name || 'UNKNOWN CONTACT';
 
-const CommsMailbox: React.FC<CommsMailboxProps> = ({ contacts }) => {
+const CommsMailbox: React.FC<CommsMailboxProps> = ({ contacts, selectedShipId, onSelectContact }) => {
   const {
     inboxMessages,
     unreadMessageCount,
@@ -221,10 +226,22 @@ const CommsMailbox: React.FC<CommsMailboxProps> = ({ contacts }) => {
         {mode === 'contacts' ? (
           contacts.length > 0 ? (
             <div className="contacts-compact-list">
-              {contacts.map((player) => (
+              {contacts.map((player) => {
+                const selectable = !!onSelectContact && !!player.ship_id;
+                const selected = !!player.ship_id &&
+                  String(player.ship_id) === String(selectedShipId ?? '');
+                return (
                 <div
                   key={(player.is_npc && player.player_id) || player.user_id || player.id || player.username}
-                  className="contact-list-item"
+                  className={`contact-list-item${selected ? ' selected' : ''}`}
+                  onClick={selectable
+                    ? () => onSelectContact!(selected ? null : player)
+                    : undefined}
+                  style={selectable ? { cursor: 'pointer' } : undefined}
+                  title={selectable
+                    ? (selected ? 'Deselect — clear viewport spotlight'
+                                : `Spotlight ${contactDisplayName(player)} in the viewport`)
+                    : undefined}
                 >
                   <span className="status-indicator online"></span>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
@@ -249,14 +266,15 @@ const CommsMailbox: React.FC<CommsMailboxProps> = ({ contacts }) => {
                   {!player.is_npc && player.player_id && (
                     <button
                       className="comms-hail-btn"
-                      onClick={() => startHail(player)}
+                      onClick={(e) => { e.stopPropagation(); startHail(player); }}
                       title={`Open a hail to ${contactDisplayName(player)}`}
                     >
                       HAIL
                     </button>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="empty-state">No other contacts in sector</div>

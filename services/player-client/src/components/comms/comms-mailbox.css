@@ -110,6 +110,17 @@
   text-shadow: 0 0 6px rgba(0, 217, 255, 0.6);
 }
 
+/* --- CONTACTS view: row selection spotlights the ship in the viewport --- */
+
+.contact-list-item.selected {
+  background: rgba(0, 255, 65, 0.1);
+  box-shadow: inset 3px 0 0 rgba(0, 255, 65, 0.8);
+}
+
+.contact-list-item.selected .comms-contact-name-text {
+  text-shadow: 0 0 6px rgba(0, 255, 65, 0.5);
+}
+
 /* --- HAILS view layout: scrolling inbox + pinned compose strip --- */
 
 /* The hud-content itself stops scrolling in HAILS mode; the inbox list

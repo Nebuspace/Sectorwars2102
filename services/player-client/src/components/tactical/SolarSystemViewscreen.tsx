@@ -45,6 +45,15 @@ interface SystemBelt {
   outer_au: number;
 }
 
+/** Destroyed-planet / collision flourish: a debris cluster on one orbit.
+ *  Cosmetic only — non-clickable, like the belt and nebula. */
+interface SystemDebris {
+  orbit_au: number;
+  phase_deg: number;
+  hue: number;
+  size: number;
+}
+
 interface SystemBody {
   slot: number;
   orbit_au: number;
@@ -76,6 +85,7 @@ interface SystemSnapshot {
   extra_stars?: SystemStarSecondary[];
   nebula: SystemNebula | null;
   belt: SystemBelt | null;
+  debris?: SystemDebris | null;
   bodies: SystemBody[];
   stations: SystemStation[];
 }
@@ -120,6 +130,12 @@ interface SolarSystemViewscreenProps {
    * helm dock handler — it owns the helmBusy latch).
    */
   onRequestDock?: (stationId: string) => void;
+  /**
+   * flight scene only: ship_id of the COMMS-selected contact. Its glyph gets a
+   * pulsing selection reticle so clicking a contact in the Comms window
+   * spotlights that ship in the main cockpit viewport.
+   */
+  selectedShipId?: string | null;
 }
 
 /** Per-kind payload backing the click popup card */
@@ -231,6 +247,31 @@ const FONT = '10px "Courier New", monospace';
 
 // Vertical squash applied to every orbital ellipse (slight perspective)
 const SQUASH = 0.35;
+
+// Global pacing knob — Max asked for calmer celestial motion. One multiplier
+// scales every ORBITAL / ROTATIONAL / SHIP-TRANSIT rate: the sun's planets,
+// moon spins, station drift, belt churn, debris tumble and ship cruise all
+// slow together. Ambient cadence — starfield parallax, station blink lights,
+// hazard pulse — keeps its own timing; this knob is "the rotation" only.
+const MOTION_SCALE = 0.4;
+
+/** A moon's screen position on its planet's SINGLE shared orbital plane.
+ *  Every moon of a body rides the same tilted/foreshortened ellipse (one
+ *  inclination per planet) so they read as a coplanar system rather than each
+ *  spinning on its own axis. `depth` (>0 in front of the planet, <0 behind)
+ *  lets the caller dim the far side for a 3-D read. */
+function moonPlanePos(
+  cx: number, cy: number, radius: number, ang: number,
+  tilt: number, squash: number
+): { x: number; y: number; depth: number } {
+  const ex = Math.cos(ang) * radius;
+  const ey = Math.sin(ang) * radius * squash;
+  return {
+    x: cx + ex * Math.cos(tilt) - ey * Math.sin(tilt),
+    y: cy + ex * Math.sin(tilt) + ey * Math.cos(tilt),
+    depth: Math.sin(ang),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Star rendering
@@ -694,6 +735,79 @@ function drawStationGlyph(
 }
 
 // ---------------------------------------------------------------------------
+// Debris field — two worlds that collided: a couple of big shattered chunks
+// wreathed in a slowly tumbling cloud of rubble and a faint impact-dust haze.
+// Purely decorative (no hit target); seeded so it's stable per sector.
+// ---------------------------------------------------------------------------
+
+function drawDebrisField(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  debris: SystemDebris,
+  sectorId: number,
+  t: number,
+  scale: number
+): void {
+  const rng = splitmix32((sectorId * 9176 + Math.round(debris.phase_deg)) >>> 0);
+  const spread = (8 + debris.size * 5) * scale;
+  // Faint reddish impact-dust haze around the wreck
+  const haze = ctx.createRadialGradient(x, y, 0, x, y, spread * 1.8);
+  haze.addColorStop(0, `hsla(${debris.hue}, 45%, 55%, 0.16)`);
+  haze.addColorStop(1, `hsla(${debris.hue}, 45%, 55%, 0)`);
+  ctx.fillStyle = haze;
+  ctx.beginPath();
+  ctx.arc(x, y, spread * 1.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Two larger shattered chunks drifting apart (the colliding pair)
+  for (let c = 0; c < 2; c++) {
+    const a = rng() * Math.PI * 2 + t * MOTION_SCALE * 0.12 * (c ? -1 : 1);
+    const d = spread * (0.3 + c * 0.25);
+    const cx = x + Math.cos(a) * d;
+    const cy = y + Math.sin(a) * d * 0.6;
+    const cr = (2.2 + debris.size * 0.7) * scale * (c ? 0.8 : 1);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(a * 1.7);
+    ctx.beginPath();
+    // Irregular lumpy rock
+    const verts = 7;
+    for (let v = 0; v <= verts; v++) {
+      const va = (Math.PI * 2 * v) / verts;
+      const vr = cr * (0.7 + rng() * 0.5);
+      const px = Math.cos(va) * vr;
+      const py = Math.sin(va) * vr;
+      if (v === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = `hsl(${debris.hue}, 18%, 32%)`;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 230, 210, 0.25)';
+    ctx.lineWidth = 0.6;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Tumbling rubble cloud
+  const rocks = 22 + debris.size * 6;
+  for (let i = 0; i < rocks; i++) {
+    const a0 = rng() * Math.PI * 2;
+    const dist = spread * (0.2 + rng() * 0.9);
+    const spd = (0.05 + rng() * 0.12) * MOTION_SCALE;
+    const a = a0 + t * spd;
+    const rx = x + Math.cos(a) * dist;
+    const ry = y + Math.sin(a) * dist * 0.6;
+    const sz = (0.5 + rng() * 1.2) * scale;
+    ctx.globalAlpha = 0.35 + rng() * 0.45;
+    ctx.fillStyle = '#b6a89e';
+    ctx.fillRect(rx, ry, sz, sz);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------------------------------------------------------------------------
 // Tooltip drawn on-canvas (never DOM)
 // ---------------------------------------------------------------------------
 
@@ -795,7 +909,7 @@ function shipPlacement(shipId: string, w: number, h: number): ShipPlace {
     baseX: w * (0.5 + srng() * 0.4),
     baseY: h * (0.16 + srng() * 0.66),
     phase: srng() * Math.PI * 2,
-    driftSpd: 0.05 + srng() * 0.07,
+    driftSpd: (0.05 + srng() * 0.07) * MOTION_SCALE,
     seed: hseed || 1,
   };
 }
@@ -837,9 +951,9 @@ function shipItinerary(
     return { ...shipPos(p, w, h, t), docked: false };
   }
   docks = pool;
-  // Per-ship cycle length 22–42s and a seeded phase offset so ships are out of
-  // step with each other.
-  const period = 22 + (p.seed % 21);
+  // Per-ship cycle length (seeded, out of step with each other) — divided by
+  // the global pacing knob so transits between docks read slow and deliberate.
+  const period = (22 + (p.seed % 21)) / MOTION_SCALE;
   const cyclePos = t / period + (p.seed % 1000) / 1000;
   const cycle = Math.floor(cyclePos);
   const frac = cyclePos - cycle;
@@ -929,17 +1043,20 @@ function drawOrbitCloseup(
   drawPlanetSurface(ctx, body, cx, cy, r, lightX, lightY, seed);
   if (body.rings) drawRingHalf(ctx, cx, cy, r, body.palette.hue, ringTilt, 'front');
 
-  // A couple of moons sweeping the closeup for scale + motion
+  // A couple of moons sweeping the closeup for scale + motion — all on the
+  // planet's single shared orbital plane (coplanar), far side dimmed.
   const moonRng = splitmix32(seed + 9);
   const moonCount = Math.min(3, body.moons);
+  const moonTilt = ((seed % 200) / 200 - 0.5) * 1.0;
   for (let m = 0; m < moonCount; m++) {
     const mo = moonRng() * Math.PI * 2;
-    const ms = 0.25 + moonRng() * 0.3;
+    const ms = (0.25 + moonRng() * 0.3) * MOTION_SCALE;
     const mr = r * (1.5 + m * 0.4);
     const ma = mo + t * ms;
+    const mp = moonPlanePos(cx, cy, mr, ma, moonTilt, 0.42);
     ctx.beginPath();
-    ctx.arc(cx + Math.cos(ma) * mr, cy + Math.sin(ma) * mr * 0.5, 2.4, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(205, 205, 220, 0.85)';
+    ctx.arc(mp.x, mp.y, 2.4, 0, Math.PI * 2);
+    ctx.fillStyle = mp.depth >= 0 ? 'rgba(215, 215, 230, 0.9)' : 'rgba(150, 150, 170, 0.6)';
     ctx.fill();
   }
 }
@@ -960,7 +1077,8 @@ function drawScene(
   hazardLevel: number,
   radiationLevel: number,
   ships: ShipPresence[] = [],
-  departures: ShipDeparture[] = []
+  departures: ShipDeparture[] = [],
+  selectedShipId: string | null = null
 ): void {
   hitTargets.length = 0;
 
@@ -1023,13 +1141,21 @@ function drawScene(
   // Seeded star-anchor jitter (±3% w, ±4% h) so the layout skeleton varies
   // per sector instead of every system sharing one fixed anchor.
   const anchorRng = splitmix32(sectorId * 2654435761 + 97);
-  const starX = w * 0.3 + (anchorRng() - 0.5) * 2 * (w * 0.03);
+  // Star anchored just right of centre (Max: "move the sun right so we can see
+  // more of the rotation") — centring the primary lets the FULL orbital ellipse
+  // fall on-screen instead of the left arc clipping the cap. Small seeded
+  // jitter keeps systems from sharing one fixed skeleton.
+  const starX = w * 0.54 + (anchorRng() - 0.5) * 2 * (w * 0.03);
   const starY = h * 0.52 + (anchorRng() - 0.5) * 2 * (h * 0.04);
   const margin = 14;
-  // Cap the orbital extent so the outermost ellipse never drifts off the left
-  // edge (which would put hit targets out of reach): (starX - margin) bounds
-  // the leftward reach in addition to the right/vertical bounds.
-  const rxMax = Math.min(w * 0.64, (h * 0.5 - margin) / SQUASH, starX - margin);
+  // Cap orbital extent so the outermost ellipse stays fully on-screen on BOTH
+  // sides of the (now more central) star — left reach (starX - margin), right
+  // reach (w - starX - margin), and the vertical squash bound.
+  const rxMax = Math.min(
+    (h * 0.5 - margin) / SQUASH,
+    starX - margin,
+    w - starX - margin
+  );
   const bodyScale = Math.min(2.2, Math.max(0.8, Math.min(w, h) / 340));
 
   // Extra stars (STAR_CLUSTER) scattered behind everything else
@@ -1064,7 +1190,7 @@ function drawScene(
     for (let i = 0; i < count; i++) {
       const frac = system.belt.inner_au + rng() * Math.max(0.01, system.belt.outer_au - system.belt.inner_au);
       const a0 = rng() * Math.PI * 2;
-      const speed = (0.018 + rng() * 0.014) / Math.max(0.1, frac);
+      const speed = MOTION_SCALE * (0.018 + rng() * 0.014) / Math.max(0.1, frac);
       const size = 0.5 + rng() * 1.1;
       const alpha = 0.2 + rng() * 0.4;
       const ang = a0 + t * speed;
@@ -1118,8 +1244,9 @@ function drawScene(
   system.bodies.forEach((body, bodyIdx) => {
     const rx = body.orbit_au * rxMax;
     const ry = rx * SQUASH;
-    // Angular speed ~ 1/orbit_au — full orbit takes minutes
-    const omega = (Math.PI * 2) / (180 + body.orbit_au * 420);
+    // Angular speed ~ 1/orbit_au — full orbit takes minutes (slowed by the
+    // global pacing knob so the rotation reads calm and watchable).
+    const omega = MOTION_SCALE * (Math.PI * 2) / (180 + body.orbit_au * 420);
     const ang = (body.phase_deg * Math.PI) / 180 + t * omega;
     const x = starX + Math.cos(ang) * rx;
     const y = starY + Math.sin(ang) * ry;
@@ -1168,16 +1295,19 @@ function drawScene(
         drawPlanetSurface(ctx, body, x, y, r, starX, starY, seed);
         if (body.rings) drawRingHalf(ctx, x, y, r, body.palette.hue, ringTilt, 'front');
 
-        // Moons — tiny dots orbiting close
+        // Moons — tiny dots, all on this planet's SINGLE shared orbital plane
+        // (coplanar); far-side moons dimmed for a 3-D read.
         const moonRng = splitmix32(seed + 9);
+        const moonTilt = ((seed % 200) / 200 - 0.5) * 1.0;
         for (let m = 0; m < body.moons; m++) {
           const mo = moonRng() * Math.PI * 2;
-          const ms = 0.4 + moonRng() * 0.5;
+          const ms = (0.4 + moonRng() * 0.5) * MOTION_SCALE;
           const mr = r + 3 + m * 3.2;
           const ma = mo + t * ms;
+          const mp = moonPlanePos(x, y, mr, ma, moonTilt, 0.34);
           ctx.beginPath();
-          ctx.arc(x + Math.cos(ma) * mr, y + Math.sin(ma) * mr * 0.6, 1.1, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(200, 200, 215, 0.8)';
+          ctx.arc(mp.x, mp.y, 1.1, 0, Math.PI * 2);
+          ctx.fillStyle = mp.depth >= 0 ? 'rgba(205, 205, 220, 0.85)' : 'rgba(140, 140, 160, 0.55)';
           ctx.fill();
         }
 
@@ -1202,7 +1332,7 @@ function drawScene(
   system.stations.forEach((st, idx) => {
     const rx = st.orbit_au * rxMax;
     const ry = rx * SQUASH;
-    const omega = (Math.PI * 2) / (160 + st.orbit_au * 380);
+    const omega = MOTION_SCALE * (Math.PI * 2) / (160 + st.orbit_au * 380);
     const ang = (st.phase_deg * Math.PI) / 180 + t * omega;
     const x = starX + Math.cos(ang) * rx;
     const y = starY + Math.sin(ang) * ry;
@@ -1221,6 +1351,22 @@ function drawScene(
       draw: () => drawStationGlyph(ctx, x, y, size, t, idx)
     });
   });
+
+  // Debris field (destroyed/colliding worlds) — orbits like a body, depth
+  // sorted with everything else, never a click target.
+  if (system.debris) {
+    const dbz = system.debris;
+    const rx = dbz.orbit_au * rxMax;
+    const ry = rx * SQUASH;
+    const omega = MOTION_SCALE * (Math.PI * 2) / (200 + dbz.orbit_au * 500);
+    const ang = (dbz.phase_deg * Math.PI) / 180 + t * omega;
+    const dx = starX + Math.cos(ang) * rx;
+    const dy = starY + Math.sin(ang) * ry;
+    drawables.push({
+      y: dy,
+      draw: () => drawDebrisField(ctx, dx, dy, dbz, sectorId, t, bodyScale)
+    });
+  }
 
   drawables.sort((a, b) => a.y - b.y);
   drawables.forEach((d) => d.draw());
@@ -1260,6 +1406,42 @@ function drawScene(
       drawShipGlyph(ctx, x, y, size, fac.color, angle);
     }
   });
+
+  // Selection reticle — the COMMS-selected contact gets a bold pulsing ring +
+  // corner ticks so picking a contact spotlights its ship in the windshield.
+  // Re-anchored to the glyph's CURRENT position each frame (like hover).
+  if (selectedShipId) {
+    const sel = hitTargets.find((ht) => ht.kind === 'ship' && ht.id === selectedShipId);
+    if (sel) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 4);
+      const rr = Math.max(13, sel.r) + 4 + pulse * 3;
+      ctx.save();
+      ctx.strokeStyle = `rgba(0, 255, 65, ${0.55 + 0.35 * pulse})`;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(sel.x, sel.y, rr, 0, Math.PI * 2);
+      ctx.stroke();
+      // Four corner ticks framing the contact
+      ctx.lineWidth = 1.4;
+      for (let q = 0; q < 4; q++) {
+        const a = Math.PI / 4 + (Math.PI / 2) * q;
+        const ix = sel.x + Math.cos(a) * rr;
+        const iy = sel.y + Math.sin(a) * rr;
+        const ox = sel.x + Math.cos(a) * (rr + 5);
+        const oy = sel.y + Math.sin(a) * (rr + 5);
+        ctx.beginPath();
+        ctx.moveTo(ix, iy);
+        ctx.lineTo(ox, oy);
+        ctx.stroke();
+      }
+      ctx.font = FONT;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = 'rgba(0, 255, 65, 0.95)';
+      ctx.fillText('◉ SELECTED', sel.x, sel.y - rr - 6);
+      ctx.restore();
+    }
+  }
 
   // Departing ships — a ship that left the sector streaks off into the
   // distance (accelerating along its heading, shrinking + fading, with a warp
@@ -1666,7 +1848,8 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   isSpaceDock = false,
   planetType,
   onRequestLand,
-  onRequestDock
+  onRequestDock,
+  selectedShipId = null
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1701,6 +1884,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   // restarting the animation effect every 5s.
   const shipsRef = useRef<ShipPresence[]>(ships as ShipPresence[]);
   shipsRef.current = ships as ShipPresence[];
+  // COMMS-selected contact's ship id, ref-mirrored for the draw loop.
+  const selectedShipRef = useRef<string | null>(selectedShipId);
+  selectedShipRef.current = selectedShipId;
   // Ships that have left the sector, animating their departure streak.
   const departuresRef = useRef<ShipDeparture[]>([]);
   // Previous ship roster (id → faction color) for departure diffing.
@@ -1785,7 +1971,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       ctx, w, h, sectorId, systemRef.current, t,
       hitTargetsRef.current, hoverRef.current,
       envRef.current.hazardLevel, envRef.current.radiationLevel,
-      shipsRef.current, departuresRef.current
+      shipsRef.current, departuresRef.current, selectedShipRef.current
     );
   };
 
@@ -1868,6 +2054,12 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [popup, orbit]);
+
+  // ---- Selection change → repaint immediately in reduced-motion (static)
+  //      mode, where there's no animation loop to pick up the new reticle ----
+  useEffect(() => {
+    if (reducedMotionRef.current) drawNowRef.current();
+  }, [selectedShipId]);
 
   // ---- Live prefers-reduced-motion tracking (always mounted) ----
   useEffect(() => {
