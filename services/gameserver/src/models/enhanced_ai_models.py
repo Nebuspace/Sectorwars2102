@@ -84,8 +84,11 @@ class AIComprehensiveAssistant(Base):
     # Performance and rate limiting
     api_request_quota = Column(Integer, nullable=False, default=1000)
     api_requests_used = Column(Integer, nullable=False, default=0)
-    quota_reset_date = Column(Date, nullable=False, default=func.current_date)
-    
+    # Python-side callable default (date.today) — the previous
+    # `default=func.current_date` passed a SQL function OBJECT as a bind value,
+    # which asyncpg cannot serialize (DataError on every assistant INSERT).
+    quota_reset_date = Column(Date, nullable=False, default=date.today)
+
     # Metadata
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_active = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
