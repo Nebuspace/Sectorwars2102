@@ -966,12 +966,17 @@ def _seed_trader_rosters_sync() -> int:
         ).scalar()
         if not got_lock:
             return 0
-        created = 0
-        for galaxy in db.query(Galaxy).all():
-            stats = seed_trader_rosters(db, galaxy)
-            created += stats.get("trader_rosters_created", 0)
+        # seed_trader_rosters loops ALL regions (it is not galaxy-scoped),
+        # so it must be called exactly ONCE — calling it per-galaxy would
+        # create one roster per region PER stale galaxy row. The galaxy.id is
+        # only a namespace prefix on bang_roster_ref; the most-recent galaxy
+        # is a stable choice that keeps the seed idempotent across restarts.
+        galaxy = db.query(Galaxy).order_by(Galaxy.created_at.desc()).first()
+        if galaxy is None:
+            return 0
+        stats = seed_trader_rosters(db, galaxy)
         db.commit()  # releases the xact lock
-        return created
+        return stats.get("trader_rosters_created", 0)
     finally:
         db.close()
 
