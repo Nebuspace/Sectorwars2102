@@ -537,7 +537,7 @@ class EnhancedAIService:
                 FleetBattle.attacker_fleet_id.in_([f.id for f in fleets]),
                 FleetBattle.defender_fleet_id.in_([f.id for f in fleets])
             ),
-            FleetBattle.status == "active"
+            FleetBattle.ended_at.is_(None)
         )
         result = await self.db.execute(stmt)
         active_battles = result.scalars().all()
@@ -979,7 +979,11 @@ class EnhancedAIService:
                 select(func.count(Fleet.id)).where(
                     Fleet.commander_id == assistant.player_id,
                     Fleet.disbanded_at.is_(None)))).scalar() or 0
-            recs = await self._get_combat_recommendations(assistant, 3)
+            try:
+                recs = await self._get_combat_recommendations(assistant, 3)
+            except Exception as rec_err:
+                logger.warning(f"combat recommendations unavailable: {rec_err}")
+                recs = []
 
             lines = [
                 "Here's your combat picture, Commander:",
