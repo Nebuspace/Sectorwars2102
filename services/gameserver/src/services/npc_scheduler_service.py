@@ -293,6 +293,11 @@ def run_loop_a(db: Session, tick: int = 0) -> List[Dict[str, Any]]:
                 and location_type == "station"
             ):
                 events.extend(_drive_trade_stop(db, npc, block))
+            elif (
+                activity == NPCActivity.WORK_STATION
+                and location_type == "mission_stop"
+            ):
+                events.extend(_drive_mission_stop(db, npc, block))
         except Exception:
             logger.exception("Loop A: drive failed for NPC %s", npc.id)
             db.rollback()
@@ -416,6 +421,35 @@ def _drive_trade_stop(
 
     from src.services import npc_trading_service
     return npc_trading_service.run_trade_stop(db, npc, stop)
+
+
+def _drive_mission_stop(
+    db: Session,
+    npc: NPCCharacter,
+    block: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Drive a colonist-courier / science-vessel mission stop: fly to the
+    stop's sector, then execute its action (load colonists / deliver them and
+    grow the planet / survey). A courier that fell behind keeps commuting."""
+    ref = block.get("location_ref") or {}
+    target_sector = ref.get("sector_id")
+    if target_sector is None:
+        return []
+    if npc.current_sector_id != target_sector:
+        # Behind schedule — keep flying toward the stop.
+        return _drive_commute(db, npc, block)
+
+    from src.services import npc_mission_service
+    route = (npc.daily_schedule or {}).get("mission_route") or []
+    stop_index = ref.get("stop_index")
+    stop = None
+    if stop_index is not None and 0 <= int(stop_index) < len(route):
+        stop = route[int(stop_index)]
+    if stop is None:
+        stop = {"sector_id": ref.get("sector_id"),
+                "planet_id": ref.get("planet_id"),
+                "action": ref.get("action")}
+    return npc_mission_service.run_mission_stop(db, npc, stop)
 
 
 # ---------------------------------------------------------------------------
@@ -681,8 +715,11 @@ def _fill_roster_deficit(
     # squad varied lanes. Empty pool → the region has no complementary route, so
     # defer (retried next pass as markets move).
     route_pool: List[List[Dict[str, Any]]] = []
+    colonist_pool: List[List[Dict[str, Any]]] = []
+    science_pool: List[List[Dict[str, Any]]] = []
     if is_trader:
         from src.services import npc_trading_service
+        from src.services import npc_mission_service
 
         for _ in range(min(spawn_count, 8)):
             generated = npc_trading_service.generate_trade_route(
@@ -690,9 +727,19 @@ def _fill_roster_deficit(
             )
             if generated is not None:
                 route_pool.append(generated)
-        if not route_pool:
+        # Mission pools (colonist couriers + science vessels). A few routes
+        # each, generated once — generate_*_route runs a warp-graph BFS.
+        for _ in range(3):
+            cr = npc_mission_service.generate_colonist_route(db, roster.host_sector_id)
+            if cr is not None:
+                colonist_pool.append(cr)
+        for _ in range(3):
+            sr = npc_mission_service.generate_science_route(db, roster.host_sector_id)
+            if sr is not None:
+                science_pool.append(sr)
+        if not route_pool and not colonist_pool and not science_pool:
             logger.info(
-                "Loop B: no complementary trade route in region %s — "
+                "Loop B: no trade/mission routes available in region %s — "
                 "trader spawn deferred", roster.region_id,
             )
             return []
@@ -710,11 +757,29 @@ def _fill_roster_deficit(
         spawn_notoriety = None  # traders only (set below)
 
         if is_trader:
-            # Each captain gets one of the pre-generated randomized routes —
-            # a PER-NPC schedule of 2–4 station stops encoded as multi-day
-            # blocks (varied lanes across the squad, cheap to assign).
-            route = random.choice(route_pool)
-            daily_schedule = npc_trading_service.build_trader_schedule(route)
+            # Roll the captain's mission: most run commerce (station commodity
+            # routes), some are colonist couriers (hub → frontier-planet runs
+            # that grow population and carry lootable colonists), a few are
+            # science vessels surveying uninhabited worlds. Fall back to whatever
+            # pool actually has routes.
+            roll = random.random()
+            if roll < 0.40 and colonist_pool:
+                route = random.choice(colonist_pool)
+                daily_schedule = npc_mission_service.build_mission_schedule(
+                    route, npc_mission_service.COLONIST_MISSION)
+            elif roll < 0.55 and science_pool:
+                route = random.choice(science_pool)
+                daily_schedule = npc_mission_service.build_mission_schedule(
+                    route, npc_mission_service.SCIENCE_MISSION)
+            elif route_pool:
+                route = random.choice(route_pool)
+                daily_schedule = npc_trading_service.build_trader_schedule(route)
+            elif colonist_pool:
+                daily_schedule = npc_mission_service.build_mission_schedule(
+                    random.choice(colonist_pool), npc_mission_service.COLONIST_MISSION)
+            else:
+                daily_schedule = npc_mission_service.build_mission_schedule(
+                    random.choice(science_pool), npc_mission_service.SCIENCE_MISSION)
 
             # Variety: each captain flies a different hull, carries a persona
             # title, and runs on a staggered day clock — so the lanes read as a
@@ -1157,6 +1222,68 @@ def _assign_trader_notoriety_sync() -> int:
         db.close()
 
 
+def _assign_trader_missions_sync() -> Dict[str, int]:
+    """Convert a share of existing commerce traders into colonist couriers and
+    science vessels so the galaxy has purposeful missions immediately (new
+    spawns already roll missions; this brings the pre-existing fleet along).
+    Idempotent: converges to ~40% colonist / ~15% science and stops — only
+    commerce traders (no 'mission' in their schedule) are ever reassigned."""
+    from src.core.database import SessionLocal
+    from src.services import npc_mission_service as MS
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return {}
+        traders = (
+            db.query(NPCCharacter)
+            .filter(
+                NPCCharacter.archetype == NPCArchetype.TRADER,
+                NPCCharacter.status == NPCStatus.ON_DUTY,
+                NPCCharacter.ship_id.isnot(None),
+            )
+            .all()
+        )
+        if not traders:
+            return {}
+
+        def mission_of(t):
+            return (t.daily_schedule or {}).get("mission")
+
+        total = len(traders)
+        need_col = max(0, int(total * 0.40) - sum(1 for t in traders if mission_of(t) == MS.COLONIST_MISSION))
+        need_sci = max(0, int(total * 0.15) - sum(1 for t in traders if mission_of(t) == MS.SCIENCE_MISSION))
+        if need_col == 0 and need_sci == 0:
+            return {"colonist": 0, "science": 0}
+
+        hub = MS._population_hub(db)
+        anchor = hub.sector_id if hub is not None else traders[0].current_sector_id
+        col_pool = [r for r in (MS.generate_colonist_route(db, anchor) for _ in range(6)) if r]
+        sci_pool = [r for r in (MS.generate_science_route(db, anchor) for _ in range(6)) if r]
+
+        convertible = [t for t in traders if mission_of(t) is None]
+        assigned = {"colonist": 0, "science": 0}
+        for t in convertible:
+            if need_col > 0 and col_pool:
+                t.daily_schedule = MS.build_mission_schedule(random.choice(col_pool), MS.COLONIST_MISSION)
+                need_col -= 1
+                assigned["colonist"] += 1
+            elif need_sci > 0 and sci_pool:
+                t.daily_schedule = MS.build_mission_schedule(random.choice(sci_pool), MS.SCIENCE_MISSION)
+                need_sci -= 1
+                assigned["science"] += 1
+            if need_col == 0 and need_sci == 0:
+                break
+        db.commit()  # releases the xact lock
+        return assigned
+    finally:
+        db.close()
+
+
 def _bulk_fill_traders_sync() -> int:
     """Spawn merchant captains up to each trader roster's target_count in one
     pass, so the galaxy reaches its full trader population at boot instead of
@@ -1247,6 +1374,14 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: assigned notoriety to %d trader(s)", scored)
     except Exception:
         logger.exception("NPC scheduler: trader notoriety backfill failed")
+    # Give a share of the existing fleet colonist-courier / science missions.
+    try:
+        missions = await asyncio.to_thread(_assign_trader_missions_sync)
+        if missions and (missions.get("colonist") or missions.get("science")):
+            logger.info("NPC scheduler: assigned missions — %d colonist courier(s), %d science vessel(s)",
+                        missions.get("colonist", 0), missions.get("science", 0))
+    except Exception:
+        logger.exception("NPC scheduler: trader mission assignment failed")
     elapsed = 0
     while True:
         await asyncio.sleep(TICK_SECONDS)
