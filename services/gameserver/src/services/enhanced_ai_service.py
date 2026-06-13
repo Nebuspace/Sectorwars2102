@@ -709,7 +709,7 @@ class EnhancedAIService:
         player_data = await self._analyze_player_strategic_position(assistant.player_id)
         
         # Generate strategic insights
-        if player_data["credits"] > 1000000 and not player_data["owns_ports"]:
+        if player_data["credits"] > 1000000 and not player_data["owns_stations"]:
             rec = CrossSystemRecommendation(
                 id=str(uuid.uuid4()),
                 category=AISystemType.STRATEGIC,
@@ -969,8 +969,42 @@ class EnhancedAIService:
         """
         if not assistant.has_permission("combat"):
             return "I don't currently have access to combat systems. Please upgrade your AI assistant permissions for tactical analysis."
-        
-        return "Combat tactical analysis is coming soon! I'll be able to provide fleet formation recommendations, battle strategy, and tactical coordination guidance."
+
+        try:
+            player = (await self.db.execute(
+                select(Player).where(Player.id == assistant.player_id))).scalar_one()
+            fleet_count = (await self.db.execute(
+                select(func.count(Fleet.id)).where(
+                    Fleet.player_id == assistant.player_id,
+                    Fleet.is_destroyed == False))).scalar() or 0
+            recs = await self._get_combat_recommendations(assistant, 3)
+
+            lines = [
+                "Here's your combat picture, Commander:",
+                f"• Military rank: {str(player.military_rank).replace('_', ' ').title()}",
+                f"• Defense drones: {player.defense_drones}",
+                f"• Active fleets: {fleet_count}",
+            ]
+            if recs:
+                lines.append("")
+                lines.append("Tactical recommendations:")
+                for i, r in enumerate(recs, 1):
+                    lines.append(f"{i}. {r.title} — {r.summary}")
+            else:
+                lines.append("")
+                lines.append(
+                    "No active battles. Keep your shields charged and drones stocked, watch your "
+                    "sector contacts for hostiles, and only engage targets you can out-gun — note "
+                    "that attacking reputable traders or fleeing escape pods costs you reputation."
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error building combat response: {e}")
+            return (
+                "Keep your shields up and your drones stocked. Engage only targets you can beat, "
+                "disengage early if a fight turns against you, and remember that attacking innocents "
+                "carries a reputation penalty."
+            )
 
     async def _generate_colony_response(self, assistant: AIComprehensiveAssistant,
                                       entities: Dict[str, List[str]], context: ConversationContext) -> str:
@@ -979,8 +1013,39 @@ class EnhancedAIService:
         """
         if not assistant.has_permission("colony"):
             return "I don't currently have access to colonization data. Please upgrade your AI assistant permissions for planetary guidance."
-        
-        return "Planetary colonization guidance is coming soon! I'll help you optimize terraforming, colonist allocation, and planetary development strategies."
+
+        try:
+            planets = (await self.db.execute(
+                select(Planet).where(Planet.owner_id == assistant.player_id))).scalars().all()
+            if not planets:
+                return (
+                    "You haven't founded any colonies yet. Land on an unclaimed world and claim it "
+                    "to establish your first — you'll receive a founding grant and a level-1 citadel. "
+                    "High-habitability oceanic and terran worlds make the strongest starts; pick up "
+                    "colonists from a population hub like New Earth and ferry them out to settle."
+                )
+            lines = [f"You command {len(planets)} colon{'y' if len(planets) == 1 else 'ies'}:"]
+            for p in planets[:5]:
+                cap = int((p.population / p.max_population) * 100) if p.max_population else 0
+                lines.append(f"• {p.name}: {p.population:,}/{p.max_population:,} colonists ({cap}% of capacity)")
+            recs = await self._get_colonization_recommendations(assistant, 3)
+            lines.append("")
+            if recs:
+                lines.append("Development advice:")
+                for i, r in enumerate(recs, 1):
+                    lines.append(f"{i}. {r.summary}")
+            else:
+                lines.append(
+                    "Your colonies are near capacity. Raise habitability through terraforming to lift "
+                    "the population ceiling, and invest in citadel defenses to protect your output."
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error building colony response: {e}")
+            return (
+                "For colony growth: ferry colonists from a population hub to your worlds, terraform to "
+                "raise habitability and the population ceiling, and build citadel defenses to protect them."
+            )
 
     async def _generate_station_response(self, assistant: AIComprehensiveAssistant,
                                     entities: Dict[str, List[str]], context: ConversationContext) -> str:
@@ -989,15 +1054,81 @@ class EnhancedAIService:
         """
         if not assistant.has_permission("station"):
             return "I don't currently have access to station investment data. Please upgrade your AI assistant permissions for investment analysis."
-        
-        return "Station investment analysis is coming soon! I'll help you identify profitable station acquisition opportunities and optimize revenue from owned stations."
+
+        try:
+            owned = (await self.db.execute(
+                select(Station).where(Station.owner_id == assistant.player_id))).scalars().all()
+            lines: List[str] = []
+            if owned:
+                lines.append(f"You own {len(owned)} station{'s' if len(owned) != 1 else ''}:")
+                for s in owned[:5]:
+                    lines.append(f"• {s.name} (sector {s.sector_id})")
+            else:
+                lines.append(
+                    "You don't own any stations yet — owning one turns a trade hub into passive income "
+                    "from transaction fees."
+                )
+            # Investment opportunities (the helper touches several optional Station
+            # fields; degrade gracefully if any are absent on this deployment).
+            try:
+                recs = await self._get_station_recommendations(assistant, 3)
+            except Exception as rec_err:
+                logger.warning(f"station recommendations unavailable: {rec_err}")
+                recs = []
+            if recs:
+                lines.append("")
+                lines.append("Investment opportunities:")
+                for i, r in enumerate(recs, 1):
+                    lines.append(f"{i}. {r.summary}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error building station response: {e}")
+            return (
+                "Station ownership earns passive income from transaction fees — look for ownable ports "
+                "in high-traffic sectors where the trade volume pays back the acquisition cost quickly."
+            )
 
     async def _generate_strategic_response(self, assistant: AIComprehensiveAssistant,
                                          entities: Dict[str, List[str]], context: ConversationContext) -> str:
         """
         Generate strategic planning response
         """
-        return "Strategic planning analysis is coming soon! I'll provide comprehensive guidance spanning trading, combat, colonization, and station management to optimize your overall position."
+        try:
+            pos = await self._analyze_player_strategic_position(assistant.player_id)
+            lines = [
+                "Strategic overview across your operations:",
+                f"• Credits: {pos['credits']:,}",
+                f"• Stations owned: {pos['station_count']}",
+                f"• Colonies: {pos['planet_count']}",
+                f"• Fleets: {pos['fleet_count']}",
+                f"• Diversification: {pos['strategic_diversity']}/3 domains active",
+            ]
+            recs = await self._get_strategic_recommendations(assistant, 3)
+            lines.append("")
+            lines.append("Strategic moves:")
+            if recs:
+                for i, r in enumerate(recs, 1):
+                    lines.append(f"{i}. {r.title} — {r.summary}")
+            else:
+                tips = []
+                if pos["credits"] > 1_000_000 and pos["station_count"] == 0:
+                    tips.append("Your reserves are strong — acquiring a station would diversify into passive income.")
+                if pos["planet_count"] == 0:
+                    tips.append("You hold no colonies; founding one secures long-term production and growth.")
+                if pos["strategic_diversity"] < 2:
+                    tips.append("You're concentrated in one domain — spreading across trade, colonies, and fleets hedges risk.")
+                if not tips:
+                    tips.append("You're well diversified. Press your advantage where your rank and reputation open the best markets.")
+                for i, tip in enumerate(tips, 1):
+                    lines.append(f"{i}. {tip}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error building strategic response: {e}")
+            return (
+                "Think across systems: keep credits flowing from trade, convert surplus into colonies and "
+                "stations for passive income, and maintain a fleet strong enough to defend it all. Diversify "
+                "so no single setback can cripple you."
+            )
 
     async def _generate_help_response(self, assistant: AIComprehensiveAssistant,
                                     entities: Dict[str, List[str]], context: ConversationContext) -> str:
