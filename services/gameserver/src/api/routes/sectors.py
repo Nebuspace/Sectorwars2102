@@ -83,7 +83,9 @@ async def get_sector_planets(
     for planet in planets:
         planet_responses.append(PlanetResponse(
             id=str(planet.id),
-            name=planet.name,
+            # ADR-0073: show the discoverer's custom name (else auto/legacy) so
+            # the PLANETARY panel + helm controls match the windshield label.
+            name=planet.display_name,
             type=planet.type.value if hasattr(planet.type, 'value') else str(planet.type),
             status=planet.status.value if hasattr(planet.status, 'value') else str(planet.status),
             sector_id=planet.sector_id,

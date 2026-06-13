@@ -2658,7 +2658,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
             </button>
             <div
               style={{
-                position: 'absolute', top: 8, right: 8, zIndex: 6, ...glass,
+                // Drop below the top-right HAZARD chip when it's showing so the
+                // two never overlap (the chip only renders when hazard > 0).
+                position: 'absolute', top: hazardLevel > 0 ? 112 : 8, right: 8,
+                zIndex: 6, ...glass,
                 padding: '9px 12px', minWidth: 168, maxWidth: 230,
                 borderRadius: 4, lineHeight: 1.5
               }}
