@@ -69,9 +69,13 @@ const CommsCrewPage: React.FC = () => {
               const name = c.username || c.name || 'UNKNOWN CONTACT';
               const key = (c.is_npc && c.player_id) || c.user_id || c.id || name;
               return (
-                <li key={key} className="mfd-page-comms-contact">
-                  <span>{name}</span>
-                  {c.is_npc && <span className="mfd-page-npc-badge">NPC</span>}
+                <li
+                  key={key}
+                  className="mfd-page-comms-contact"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem' }}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                  {c.is_npc && <span className="mfd-page-npc-badge" style={{ flexShrink: 0, fontSize: '0.5rem', fontWeight: 700, letterSpacing: '0.06em', padding: '0.05rem 0.3rem', border: '1px solid rgba(0,217,255,0.45)', borderRadius: '3px', color: '#00d9ff' }}>NPC</span>}
                 </li>
               );
             })}
