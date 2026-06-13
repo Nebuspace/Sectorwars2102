@@ -719,8 +719,16 @@ async def land_on_planet(
             detail="This planet is still forming and cannot be landed on yet. Check formation status at GET /genesis/status/{planet_id}"
         )
 
-    # Check if planet is unclaimed - require claiming first
-    if planet.owner_id is None:
+    # Check if planet is unclaimed - require claiming first.
+    # EXCEPTION: capital population hubs (the TERRA Capital-welcome planet)
+    # are public and can never be claimed (see the claim guard above), yet
+    # canon makes the Capital Sector the welcome hub where new arrivals dock
+    # and brokers the colonist migration contracts at the Pioneer Office
+    # (FEATURES/planets/colonization.md). They must be landable by anyone
+    # without ownership. Belt-and-braces population check mirrors the claim
+    # guard so a missed flag can't re-strand the hub.
+    is_population_hub = planet.is_population_hub or (planet.population or 0) >= 1_000_000
+    if planet.owner_id is None and not is_population_hub:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This planet is unclaimed. You must claim it first before landing. Use POST /planets/{id}/claim"
