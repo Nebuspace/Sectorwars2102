@@ -638,8 +638,91 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
                 "timestamp": datetime.now(UTC).isoformat()
             })
     
+    elif message_type == "aria_chat":
+        await handle_aria_chat(user_id, message_data)
+
     else:
         logger.warning(f"Unknown WebSocket message type: {message_type} from user {user_id}")
+
+
+async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
+    """Route a player's ARIA chat message to the AI service and return an
+    aria_response. The plain WS endpoint uses the sync connection manager, but
+    EnhancedAIService needs an AsyncSession, so we open one here. AI safety —
+    input sanitization, prompt-injection filtering, and response sanitization —
+    lives INSIDE EnhancedAIService.process_natural_language_query (the same
+    proven path the /enhanced-ai/chat REST route uses); we do not bypass it."""
+    import uuid as _uuid
+
+    metadata = connection_manager.connection_metadata.get(user_id, {})
+    user_data = metadata.get("user_data", {})
+    player_id = user_data.get("player_id")
+    content = (message_data.get("content") or "").strip()
+    conversation_id = message_data.get("conversation_id")
+    context_type = message_data.get("context") or "query"
+
+    if not player_id or not content:
+        await connection_manager.send_personal_message(user_id, {
+            "type": "error",
+            "message": "ARIA request missing player context or message content",
+        })
+        return
+
+    try:
+        from src.core.database import AsyncSessionLocal
+        from src.services.enhanced_ai_service import EnhancedAIService, ConversationContext
+        from src.models.enhanced_ai_models import SecurityLevel
+
+        async with AsyncSessionLocal() as adb:
+            ai_service = EnhancedAIService(adb)
+            # Continue an existing thread when the client supplies a valid id;
+            # otherwise the service mints a fresh conversation context.
+            conversation_context = None
+            if conversation_id:
+                try:
+                    conversation_context = ConversationContext(
+                        session_id=conversation_id,
+                        conversation_type=context_type,
+                        player_id=str(player_id),
+                        assistant_id="",  # populated by the service
+                        security_level=SecurityLevel.STANDARD,
+                    )
+                except ValueError:
+                    conversation_context = None
+
+            result = await ai_service.process_natural_language_query(
+                player_id=_uuid.UUID(str(player_id)),
+                user_input=content,
+                conversation_context=conversation_context,
+            )
+            await adb.commit()
+
+        await connection_manager.send_personal_message(user_id, {
+            "type": "aria_response",
+            "conversation_id": result.get("conversation_id"),
+            "data": {
+                "message": result.get("response", ""),
+                "confidence": 0.95,
+                "context_used": context_type,
+                "actions": [],
+                "suggestions": [],
+                "learning_note": None,
+            },
+        })
+    except Exception as e:
+        logger.error(f"ARIA chat handling failed for user {user_id}: {e}")
+        await connection_manager.send_personal_message(user_id, {
+            "type": "aria_response",
+            "conversation_id": conversation_id,
+            "data": {
+                "message": "ARIA is temporarily unavailable. Please try again.",
+                "confidence": 0,
+                "context_used": context_type,
+                "actions": [],
+                "suggestions": [],
+                "learning_note": None,
+            },
+        })
 
 
 async def handle_admin_websocket_message(admin_id: str, message_data: Dict[str, Any]):
