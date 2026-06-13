@@ -198,7 +198,12 @@ def build_trader_schedule(route: List[Dict[str, Any]]) -> Dict[str, Any]:
              "location_type": "station",
              "location_ref": {"station_id": stop["station_id"],
                               "sector_id": stop["sector_id"],
-                              "stop_index": i}},
+                              "stop_index": i,
+                              # Thread the route's buy plan into the stop so
+                              # run_trade_stop's BUY loop (reads
+                              # stop["buy_here"]) actually loads outbound goods.
+                              # Without this the trader commutes but never trades.
+                              "buy_here": stop.get("buy_here") or []}},
             {"start_minute": 1140, "end_minute": 1440, "activity": "socialize",
              "location_type": "station",
              "location_ref": {"station_id": stop["station_id"],
