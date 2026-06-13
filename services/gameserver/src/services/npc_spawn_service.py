@@ -68,8 +68,33 @@ MERCHANT_CAPTAIN_KIND = "merchant_captain"
 # rather than minting a large spawn seed into the player economy (the credit
 # faucet risk when combat loots the full NPC wallet). A few thousand funds a
 # modest first load; the wallet grows from there.
-TRADERS_PER_REGION = 6
+#
+# TRADERS_PER_REGION drives a galaxy of ~100 merchant captains (~3 trade
+# regions x 34). The roster target_count is the single source of truth —
+# seed_trader_rosters re-syncs existing rosters to this value on boot.
+TRADERS_PER_REGION = 34
 TRADER_STARTING_CREDITS = 3_000
+
+# Trader variety (canon-silent flavor — flagged in DECISIONS.md). Merchant
+# captains vary by hull, persona title and daily rhythm so the lanes read as a
+# living, diverse merchant class rather than a fleet of identical Haulers.
+# All three hulls have ShipSpecification rows; the named noun renders in the
+# ship name so a Courier isn't called a "Hauler".
+TRADER_SHIP_TYPES = (
+    ShipType.CARGO_HAULER,     # big hold, slow — the bulk freighter
+    ShipType.LIGHT_FREIGHTER,  # balanced mid-size
+    ShipType.FAST_COURIER,     # small, fast runner
+)
+TRADER_SHIP_NOUN = {
+    ShipType.CARGO_HAULER: "Hauler",
+    ShipType.LIGHT_FREIGHTER: "Freighter",
+    ShipType.FAST_COURIER: "Clipper",
+}
+# Persona titles render before the name in UI ("Smuggler Petra Lindqvist").
+TRADER_TITLES = (
+    "Trader", "Merchant", "Freight Captain", "Trade Baron",
+    "Cargo Runner", "Smuggler", "Star Trader", "Merchant Prince",
+)
 
 # Gameserver-side trader name pool (BANG emits no trader rosters; names
 # are flavor, operator-replaceable — not invented canon numbers).
@@ -822,6 +847,14 @@ def seed_trader_rosters(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
             .first()
         )
         if existing is not None:
+            # The constant is authoritative: re-sync the target so bumping
+            # TRADERS_PER_REGION takes effect on the next boot without a manual
+            # DB edit (the roster row is otherwise left untouched — idempotent).
+            if existing.target_count != TRADERS_PER_REGION:
+                existing.target_count = TRADERS_PER_REGION
+                stats["trader_rosters_retargeted"] = (
+                    stats.get("trader_rosters_retargeted", 0) + 1
+                )
             stats["trader_rosters_existing"] += 1
             continue
 

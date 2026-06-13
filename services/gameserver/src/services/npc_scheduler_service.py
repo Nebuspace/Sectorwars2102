@@ -48,6 +48,7 @@ canon's separate patrol-route registry is Design-only):
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, List, Optional
 
@@ -70,7 +71,10 @@ from src.services import npc_movement_service
 from src.services.npc_spawn_service import (
     KIND_CONFIG,
     POLICE_WANTED_THRESHOLD,
+    TRADER_SHIP_NOUN,
+    TRADER_SHIP_TYPES,
     TRADER_STARTING_CREDITS,
+    TRADER_TITLES,
     _build_npc_ship,
     _presence_entry,
     _roman,
@@ -590,11 +594,14 @@ def _fill_roster_deficit(
     db: Session,
     roster: NPCRoster,
     rapid_recovery: bool = False,
+    fill_all: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Spawn ONE replacement when the roster is under target (canon Loop
-    B spawns one per pass — a wiped squad refills over successive
-    passes, not instantaneously). Under the N-V4 genocide flood the
-    rate doubles (two per pass) and recruits run a half-length stage."""
+    """Spawn replacements when the roster is under target. Canon Loop B
+    spawns one per pass (a wiped squad refills over successive passes, not
+    instantaneously); the N-V4 genocide flood doubles the rate. ``fill_all``
+    bypasses the cadence and fills the entire deficit in one pass — used by the
+    startup bulk-fill so the galaxy reaches its full trader population promptly
+    instead of one-per-10min."""
     cfg = KIND_CONFIG.get(roster.role)
     if cfg is None:
         # Roles without a spawn recipe yet (later slices) are tolerated.
@@ -641,7 +648,10 @@ def _fill_roster_deficit(
 
     now = datetime.now(UTC)
     deficit = roster.target_count - occupied
-    spawn_count = min(deficit, 2 if rapid_recovery else 1)
+    if fill_all:
+        spawn_count = deficit
+    else:
+        spawn_count = min(deficit, 2 if rapid_recovery else 1)
     stage_hours = RECRUIT_STAGE_HOURS / 2 if rapid_recovery else RECRUIT_STAGE_HOURS
 
     has_primary = (
@@ -656,18 +666,26 @@ def _fill_roster_deficit(
     )
 
     is_trader = roster.default_archetype == NPCArchetype.TRADER
+    # Per-hull spec cache so trader variety doesn't re-query the same spec.
+    spec_cache: Dict[Any, ShipSpecification] = {}
 
     events: List[Dict[str, Any]] = []
     for _ in range(spawn_count):
         npc_name = _next_name(db, roster)
 
-        # Traders get a PER-NPC schedule: a generated 2–4 station route
-        # encoded as multi-day blocks. No complementary stations in the
-        # region → no spawn (retried next pass as markets move).
+        # Defaults: the kind's single hull, title and ship-name convention.
+        # Traders override all three below for variety.
         daily_schedule: Dict[str, Any] = dict(roster.schedule_template or {})
+        spawn_spec = spec
+        spawn_title = cfg.title
+        ship_name = cfg.ship_name_format.format(name=npc_name)
+
         if is_trader:
             from src.services import npc_trading_service
 
+            # Traders get a PER-NPC schedule: a generated 2–4 station route
+            # encoded as multi-day blocks. No complementary stations in the
+            # region → no spawn (retried next pass as markets move).
             route = npc_trading_service.generate_trade_route(
                 db, roster.region_id, roster.host_sector_id
             )
@@ -679,9 +697,28 @@ def _fill_roster_deficit(
                 return events
             daily_schedule = npc_trading_service.build_trader_schedule(route)
 
+            # Variety: each captain flies a different hull, carries a persona
+            # title, and runs on a staggered day clock — so the lanes read as a
+            # diverse merchant class AND the galaxy always has awake traders (a
+            # shared sleep window would otherwise park them all at once).
+            hull = random.choice(TRADER_SHIP_TYPES)
+            if hull not in spec_cache:
+                spec_cache[hull] = (
+                    db.query(ShipSpecification)
+                    .filter(ShipSpecification.type == hull)
+                    .first()
+                )
+            spawn_spec = spec_cache[hull] or spec
+            spawn_title = random.choice(TRADER_TITLES)
+            ship_name = (
+                f"{spawn_title} {npc_name}'s "
+                f"{TRADER_SHIP_NOUN.get(hull, 'Hauler')}"
+            )
+            daily_schedule["shift_offset_hours"] = random.randint(0, 23)
+
         ship = _build_npc_ship(
-            spec,
-            name=cfg.ship_name_format.format(name=npc_name),
+            spawn_spec,
+            name=ship_name,
             sector_id=roster.host_sector_id,
         )
         db.add(ship)
@@ -689,7 +726,7 @@ def _fill_roster_deficit(
 
         npc = NPCCharacter(
             name=npc_name,
-            title=cfg.title,
+            title=spawn_title,
             faction_code=roster.faction_code,
             archetype=roster.default_archetype,
             status=NPCStatus.ON_DUTY,
@@ -1057,6 +1094,37 @@ def _seed_trader_rosters_sync() -> int:
         db.close()
 
 
+def _bulk_fill_traders_sync() -> int:
+    """Spawn merchant captains up to each trader roster's target_count in one
+    pass, so the galaxy reaches its full trader population at boot instead of
+    crawling there one-per-10min via Loop B. Idempotent (only fills the
+    deficit) and xact-advisory-lock-gated like the other startup repairs.
+    Runs AFTER _seed_trader_rosters_sync so rosters exist and carry the current
+    target. Returns the number of traders spawned."""
+    from src.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        rosters = (
+            db.query(NPCRoster)
+            .filter(NPCRoster.default_archetype == NPCArchetype.TRADER)
+            .all()
+        )
+        spawned = 0
+        for roster in rosters:
+            spawned += len(_fill_roster_deficit(db, roster, fill_all=True))
+        db.commit()  # releases the xact lock
+        return spawned
+    finally:
+        db.close()
+
+
 async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
     """Broadcast realtime events from the EVENT LOOP (never the worker
     thread). Sector routing is best-effort: sector_connections only
@@ -1101,6 +1169,14 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: seeded %d trader roster(s)", seeded)
     except Exception:
         logger.exception("NPC scheduler: trader roster seeding failed")
+    # Bulk-fill trader rosters to target so the galaxy reaches its full
+    # merchant population immediately rather than crawling via Loop B.
+    try:
+        filled = await asyncio.to_thread(_bulk_fill_traders_sync)
+        if filled:
+            logger.info("NPC scheduler: bulk-spawned %d trader(s) to target", filled)
+    except Exception:
+        logger.exception("NPC scheduler: trader bulk-fill failed")
     elapsed = 0
     while True:
         await asyncio.sleep(TICK_SECONDS)
