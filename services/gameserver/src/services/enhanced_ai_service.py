@@ -526,7 +526,7 @@ class EnhancedAIService:
         # Get player's fleet information
         stmt = select(Fleet).where(
             Fleet.commander_id == assistant.player_id,
-            Fleet.is_destroyed == False
+            Fleet.disbanded_at.is_(None)
         ).options(selectinload(Fleet.members))
         result = await self.db.execute(stmt)
         fleets = result.scalars().all()
@@ -760,7 +760,7 @@ class EnhancedAIService:
         # Check fleet strength
         stmt = select(func.count(Fleet.id)).where(
             Fleet.commander_id == player_id,
-            Fleet.is_destroyed == False
+            Fleet.disbanded_at.is_(None)
         )
         result = await self.db.execute(stmt)
         fleet_count = result.scalar()
@@ -978,7 +978,7 @@ class EnhancedAIService:
             fleet_count = (await self.db.execute(
                 select(func.count(Fleet.id)).where(
                     Fleet.commander_id == assistant.player_id,
-                    Fleet.is_destroyed == False))).scalar() or 0
+                    Fleet.disbanded_at.is_(None)))).scalar() or 0
             recs = await self._get_combat_recommendations(assistant, 3)
 
             lines = [
