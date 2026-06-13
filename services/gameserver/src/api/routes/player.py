@@ -381,6 +381,28 @@ async def get_current_sector(
     if sector.region:
         region_name = sector.region.display_name or sector.region.name
 
+    # Enrich NPC presence entries with LIVE activity + mission so the client can
+    # render ships honestly (a transiting ship cruises out; a working ship
+    # loiters at the right dock type for its mission) rather than guessing.
+    present = list(sector.players_present or [])
+    npc_ids = [e.get("player_id") for e in present
+               if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")]
+    if npc_ids:
+        from src.models.npc_character import NPCCharacter
+        npcs = db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids)).all()
+        by_id = {str(n.id): n for n in npcs}
+        enriched = []
+        for e in present:
+            if isinstance(e, dict) and e.get("is_npc"):
+                n = by_id.get(str(e.get("player_id")))
+                if n is not None:
+                    e = dict(e)
+                    act = n.current_activity
+                    e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
+                    e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
+            enriched.append(e)
+        present = enriched
+
     return SectorResponse(
         id=str(sector.id),
         sector_id=sector.sector_id,
@@ -392,7 +414,7 @@ async def get_current_sector(
         hazard_level=sector.hazard_level,
         radiation_level=sector.radiation_level,
         resources=sector.resources or {},
-        players_present=sector.players_present or [],
+        players_present=present,
         x_coord=sector.x_coord,
         y_coord=sector.y_coord,
         z_coord=sector.z_coord

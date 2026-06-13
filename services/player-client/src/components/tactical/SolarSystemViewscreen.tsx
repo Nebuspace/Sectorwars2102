@@ -159,6 +159,10 @@ interface ShipPresence {
   archetype?: string | null;
   /** Trader scruples 0–100: low = reputable, ≥50 = unscrupulous (fair game). */
   notoriety?: number | null;
+  /** Live activity (COMMUTE | WORK_STATION | PATROL | …) — drives honest motion. */
+  activity?: string | null;
+  /** Trader mission (commerce | colonist | science) — drives which dock type. */
+  mission?: string | null;
 }
 
 /** Faction read of a ship — drives glyph color + label. Uses the authoritative
@@ -814,11 +818,25 @@ function shipPos(
 // gentle drift when the sector has no dock targets.
 function shipItinerary(
   p: ShipPlace, w: number, h: number, t: number,
-  docks: Array<{ x: number; y: number }>
+  docks: Array<{ x: number; y: number; kind: string }>,
+  activity?: string | null, mission?: string | null
 ): { x: number; y: number; angle: number; docked: boolean } {
-  if (docks.length === 0) {
+  // HONEST motion: only a ship actually WORKING a stop in this sector loiters
+  // at a dock; a commuting/patrolling/idle ship just cruises (it's passing
+  // through and will warp out — its real target is elsewhere). And it loiters
+  // at the dock TYPE its mission uses: commerce → stations, colonist/science →
+  // planets. This stops e.g. a commerce trader from appearing to land on a
+  // planet, or a transiting ship from "docking" somewhere it isn't going.
+  if (activity && activity !== 'WORK_STATION') {
     return { ...shipPos(p, w, h, t), docked: false };
   }
+  const wantPlanet = mission === 'colonist' || mission === 'science';
+  let pool = docks.filter((d) => (wantPlanet ? d.kind === 'planet' : d.kind === 'station'));
+  if (pool.length === 0) pool = docks;
+  if (pool.length === 0) {
+    return { ...shipPos(p, w, h, t), docked: false };
+  }
+  docks = pool;
   // Per-ship cycle length 22–42s and a seeded phase offset so ships are out of
   // step with each other.
   const period = 22 + (p.seed % 21);
@@ -1066,7 +1084,7 @@ function drawScene(
   const drawables: Array<{ y: number; draw: () => void }> = [];
   // Dock targets ships travel to and dwell at (stations + planets), captured at
   // their CURRENT screen positions this frame so ships home on moving bodies.
-  const dockPoints: Array<{ x: number; y: number }> = [];
+  const dockPoints: Array<{ x: number; y: number; kind: string }> = [];
 
   if (system.star) {
     const star = system.star;
@@ -1108,7 +1126,7 @@ function drawScene(
     let r = (3 + body.size_class * 2.1) * bodyScale;
     if (body.real) r *= 1.2;
     const seed = (sectorId * 101 + body.slot * 7919 + Math.round(body.palette.hue)) >>> 0;
-    dockPoints.push({ x, y }); // ships can travel here to "land"
+    dockPoints.push({ x, y, kind: 'planet' }); // colonist/science ships land here
 
     // Hit target (real planets are click targets; procedural get flavor hover)
     if (body.real && body.planet_id) {
@@ -1189,7 +1207,7 @@ function drawScene(
     const x = starX + Math.cos(ang) * rx;
     const y = starY + Math.sin(ang) * ry;
     const size = 6.5 * Math.min(1.4, bodyScale);
-    dockPoints.push({ x, y }); // ships can travel here to "dock"
+    dockPoints.push({ x, y, kind: 'station' }); // commerce ships dock here
 
     hitTargets.push({
       x, y, r: size + 7, kind: 'station', id: st.station_id,
@@ -1216,7 +1234,7 @@ function drawScene(
   ships.forEach((s) => {
     if (!s || !s.ship_id) return;
     const place = shipPlacement(s.ship_id, w, h);
-    const { x, y, angle, docked } = shipItinerary(place, w, h, t, dockPoints);
+    const { x, y, angle, docked } = shipItinerary(place, w, h, t, dockPoints, s.activity, s.mission);
     const size = (docked ? 4.6 : 6.0) * Math.min(1.5, bodyScale);
     const fac = shipFaction(s);
     const contactName = (s.ship_name || s.username || 'CONTACT').toUpperCase();
