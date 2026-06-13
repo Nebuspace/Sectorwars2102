@@ -840,50 +840,63 @@ def reconcile_presence(db: Session) -> int:
 # ---------------------------------------------------------------------------
 
 def _run_due_ticks_sync(elapsed_seconds: int) -> List[Dict[str, Any]]:
-    """Run every loop whose cadence divides ``elapsed_seconds``. One
-    session per tick; commit per loop so a later loop's failure cannot
-    roll back an earlier loop's work."""
+    """Run every loop whose cadence divides ``elapsed_seconds``.
+
+    Locking: a DEDICATED lock session acquires pg_try_advisory_xact_lock
+    (transaction-level). Transaction-level locks auto-release on commit or
+    rollback — including when the session is returned to the connection pool
+    — so they cannot get stuck on an idle pooled connection the way
+    session-level pg_try_advisory_lock can. The lock session never commits
+    its open transaction; closing it triggers a rollback which releases the
+    lock cleanly regardless of what happens in the work sessions.
+
+    Isolation: each loop gets its OWN fresh session and commits
+    independently so a later loop's failure cannot roll back earlier work.
+    """
     from src.core.database import SessionLocal
 
     events: List[Dict[str, Any]] = []
-    db = SessionLocal()
+
+    # --- advisory lock on a dedicated session ---------------------------------
+    lock_db = SessionLocal()
     try:
-        # Multi-instance guard (session advisory lock, auto-released on
-        # session close). A sibling instance skips its tick.
-        got_lock = db.execute(
-            text("SELECT pg_try_advisory_lock(:key)"),
+        got_lock = lock_db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
             {"key": _ADVISORY_LOCK_KEY},
         ).scalar()
         if not got_lock:
             logger.info("NPC scheduler: advisory lock held elsewhere — skipping tick")
             return []
 
+        # Lock is now held for the duration of lock_db's open transaction.
+        # Run each loop in its own session so per-loop commits don't touch
+        # lock_db's transaction (and therefore don't release the lock early).
         from src.services.npc_engagement_service import sweep_pending_engagements
 
-        try:
-            for cadence, loop_fn, label in (
-                (ENGAGEMENT_SWEEP_SECONDS, sweep_pending_engagements, "engagement-sweep"),
-                (LOOP_A_SECONDS, run_loop_a, "A"),
-                (LOOP_B_SECONDS, run_loop_b, "B"),
-                (LOOP_C_SECONDS, run_loop_c, "C"),
-            ):
-                if elapsed_seconds % cadence != 0:
-                    continue
-                try:
-                    loop_events = loop_fn(db)
-                    db.commit()
-                    events.extend(loop_events)
-                except Exception:
-                    logger.exception("NPC scheduler: Loop %s failed", label)
-                    db.rollback()
-        finally:
-            db.execute(
-                text("SELECT pg_advisory_unlock(:key)"),
-                {"key": _ADVISORY_LOCK_KEY},
-            )
-            db.commit()
+        for cadence, loop_fn, label in (
+            (ENGAGEMENT_SWEEP_SECONDS, sweep_pending_engagements, "engagement-sweep"),
+            (LOOP_A_SECONDS, run_loop_a, "A"),
+            (LOOP_B_SECONDS, run_loop_b, "B"),
+            (LOOP_C_SECONDS, run_loop_c, "C"),
+        ):
+            if elapsed_seconds % cadence != 0:
+                continue
+            work_db = SessionLocal()
+            try:
+                loop_events = loop_fn(work_db)
+                work_db.commit()
+                events.extend(loop_events)
+            except Exception:
+                logger.exception("NPC scheduler: Loop %s failed", label)
+                work_db.rollback()
+            finally:
+                work_db.close()
+
     finally:
-        db.close()
+        # Closing lock_db without committing rolls back its transaction,
+        # which releases the xact-level advisory lock automatically.
+        lock_db.close()
+
     return events
 
 
