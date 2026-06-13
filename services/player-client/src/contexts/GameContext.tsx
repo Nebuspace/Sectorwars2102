@@ -459,6 +459,31 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [playerState?.current_sector_id]);
 
+  // Keep the sector snapshot live. NPC ships (patrolling marshals, raiders,
+  // merchant captains) and other pilots move through the sector continuously,
+  // but the snapshot — including players_present, which carries NPC entries
+  // the COMMS contacts list renders — was only fetched on arrival, so the
+  // crowd appeared frozen no matter how much the galaxy moved underneath it.
+  // Poll current-sector on an interval so contacts visibly arrive and depart.
+  // The gameserver documents polled players_present as the authoritative
+  // visibility path (its websocket sector routing is best-effort), so this is
+  // the intended sync mechanism, not a workaround. Skipped while the tab is
+  // backgrounded; cleared on sector change / unmount.
+  useEffect(() => {
+    if (!playerState?.current_sector_id) return;
+    const SECTOR_PRESENCE_POLL_MS = 12000;
+    const id = window.setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const res = await api.get('/api/v1/player/current-sector');
+        setCurrentSector(res.data);
+      } catch {
+        // Transient — the next tick retries.
+      }
+    }, SECTOR_PRESENCE_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [playerState?.current_sector_id]);
+
   // A paid echo scan is only meaningful from the sector it was fired in —
   // discard it the moment the player relocates.
   useEffect(() => {
