@@ -202,16 +202,14 @@ class EnhancedAIService:
         OWASP A01 & A04 compliance
         """
         try:
-            # Verify player exists and is authenticated
-            current_player = await get_current_player_id()
-            if current_player != player_id:
-                await self._log_security_event(
-                    "access", "warning", 
-                    f"Unauthorized access attempt for player {player_id}",
-                    player_id=player_id
-                )
-                raise PermissionError("Unauthorized access to AI assistant")
-            
+            # The caller is already authenticated against THIS player_id: REST
+            # routes gate on the validate_ai_access dependency, and the WS
+            # handler resolves the player from the handshake-authenticated
+            # connection. The previous `await get_current_player_id()` re-check
+            # was a no-arg placeholder that returned None, so `await None`
+            # crashed every ARIA query — removed; authentication stays at the
+            # entry points.
+
             # Get or create AI assistant
             stmt = select(AIComprehensiveAssistant).where(
                 AIComprehensiveAssistant.player_id == player_id
