@@ -845,27 +845,30 @@ class EnhancedAIService:
         # Convert to lowercase for analysis
         input_lower = user_input.lower()
         
-        # Define intent patterns
+        # Define intent patterns. Keyword lists include the root words AND common
+        # word-forms (e.g. "colony"/"colonies", "strategy"/"strategic") because a
+        # plain substring test would otherwise miss "colonies" or "combat".
         intent_patterns = {
-            "trading": ["trade", "buy", "sell", "price", "profit", "route", "commodity", "market"],
-            "combat": ["battle", "fight", "attack", "defend", "fleet", "tactical", "formation", "war"],
-            "colony": ["planet", "colony", "colonist", "terraform", "genesis", "population", "development"],
-            "station": ["station", "buy station", "own", "investment", "acquire", "purchase"],
-            "strategic": ["strategy", "plan", "recommend", "advice", "next move", "best option", "should i"],
-            "navigation": ["go to", "travel", "navigate", "route to", "path", "direction"],
-            "help": ["help", "how to", "what is", "explain", "tutorial", "guide"]
+            "trading": ["trade", "trading", "buy", "sell", "price", "profit", "route", "commodity", "market", "cargo"],
+            "combat": ["combat", "battle", "fight", "attack", "defend", "fleet", "tactical", "formation", "war", "weapon", "shield", "drone", "engage", "threat", "readiness"],
+            "colony": ["colony", "colonies", "colonist", "planet", "terraform", "genesis", "population", "develop", "settle", "habitability"],
+            "station": ["station", "port", "investment", "invest", "acquire", "ownership", "dock"],
+            "strategic": ["strategic", "strategy", "plan", "recommend", "advice", "next move", "best option", "should i", "overall", "position", "focus", "priorit"],
+            "navigation": ["go to", "travel", "navigate", "warp", "path", "heading", "direction", "jump"],
+            "help": ["help", "how to", "what is", "explain", "tutorial", "guide", "what can you"]
         }
-        
-        # Score each intent
+
+        # Score each intent by raw count of matched keywords (most matches wins).
+        # Normalizing by list length penalized intents with richer keyword sets.
         intent_scores = {}
         for intent, keywords in intent_patterns.items():
             score = sum(1 for keyword in keywords if keyword in input_lower)
             if score > 0:
-                intent_scores[intent] = score / len(keywords)  # Normalize by keyword count
-        
+                intent_scores[intent] = score
+
         # Determine primary intent
         primary_intent = max(intent_scores.items(), key=lambda x: x[1])[0] if intent_scores else "general"
-        confidence = intent_scores.get(primary_intent, 0.5)
+        confidence = min(1.0, 0.5 + 0.2 * intent_scores.get(primary_intent, 0))
         
         # Extract entities (sectors, commodities, etc.)
         entities = self._extract_entities(user_input)
@@ -967,9 +970,8 @@ class EnhancedAIService:
         """
         Generate combat tactical response
         """
-        if not assistant.has_permission("combat"):
-            return "I don't currently have access to combat systems. Please upgrade your AI assistant permissions for tactical analysis."
-
+        # Advisory responses (read-only analysis of the player's own holdings) are
+        # open to any assistant — no per-domain permission gate.
         try:
             player = (await self.db.execute(
                 select(Player).where(Player.id == assistant.player_id))).scalar_one()
@@ -1011,9 +1013,7 @@ class EnhancedAIService:
         """
         Generate colonization response
         """
-        if not assistant.has_permission("colony"):
-            return "I don't currently have access to colonization data. Please upgrade your AI assistant permissions for planetary guidance."
-
+        # Advisory: read-only, open to any assistant.
         try:
             planets = (await self.db.execute(
                 select(Planet).where(Planet.owner_id == assistant.player_id))).scalars().all()
@@ -1052,9 +1052,7 @@ class EnhancedAIService:
         """
         Generate station ownership response
         """
-        if not assistant.has_permission("station"):
-            return "I don't currently have access to station investment data. Please upgrade your AI assistant permissions for investment analysis."
-
+        # Advisory: read-only, open to any assistant.
         try:
             owned = (await self.db.execute(
                 select(Station).where(Station.owner_id == assistant.player_id))).scalars().all()

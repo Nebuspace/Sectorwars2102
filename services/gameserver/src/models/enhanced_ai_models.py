@@ -79,7 +79,9 @@ class AIComprehensiveAssistant(Base):
     # Security and access control
     security_level = Column(String(20), nullable=False, default=SecurityLevel.STANDARD)
     encryption_key_id = Column(UUID(as_uuid=True), nullable=True)  # External key management
-    access_permissions = Column(JSONB, nullable=False, default={"trading": True, "combat": False, "colony": False, "station": False})
+    # ARIA advises across all systems by default (read-only analysis of the
+    # player's own holdings); action-taking features still gate elsewhere.
+    access_permissions = Column(JSONB, nullable=False, default={"trading": True, "combat": True, "colony": True, "station": True})
     
     # Performance and rate limiting
     api_request_quota = Column(Integer, nullable=False, default=1000)
