@@ -57,6 +57,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from src.core import game_time
 from src.models.npc_character import (
+    NPCArchetype,
     NPCCharacter,
     NPCActivity,
     NPCLifecycleStage,
@@ -940,6 +941,41 @@ def _repair_orphan_schedules_sync() -> int:
         db.close()
 
 
+def _seed_trader_rosters_sync() -> int:
+    """Ensure merchant_captain NPCRoster rows exist for every galaxy so the
+    NPC trader economy actually runs.
+
+    seed_trader_rosters generates trader rosters from station topology (one
+    per region with >=2 trading stations) — it is gameserver-side because
+    BANG emits no trader kind. It was only ever invoked by the manual
+    spawn_npcs.py CLI, so on a galaxy where that was never run there are zero
+    trader rosters and Loop B never spawns merchant captains. Seeding it at
+    scheduler startup makes the trader economy self-heal. Idempotent by
+    bang_roster_ref; xact-advisory-lock-gated like the orphan repair.
+    Returns the number of trader rosters created.
+    """
+    from src.core.database import SessionLocal
+    from src.models.galaxy import Galaxy
+    from src.services.npc_spawn_service import seed_trader_rosters
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        created = 0
+        for galaxy in db.query(Galaxy).all():
+            stats = seed_trader_rosters(db, galaxy)
+            created += stats.get("trader_rosters_created", 0)
+        db.commit()  # releases the xact lock
+        return created
+    finally:
+        db.close()
+
+
 async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
     """Broadcast realtime events from the EVENT LOOP (never the worker
     thread). Sector routing is best-effort: sector_connections only
@@ -976,6 +1012,14 @@ async def npc_scheduler_loop() -> None:
             logger.info("NPC scheduler: repaired %d orphan NPC schedules", repaired)
     except Exception:
         logger.exception("NPC scheduler: orphan schedule repair failed")
+    # Ensure trader rosters exist so Loop B spawns merchant captains and the
+    # NPC trade economy runs (seed_trader_rosters was previously CLI-only).
+    try:
+        seeded = await asyncio.to_thread(_seed_trader_rosters_sync)
+        if seeded:
+            logger.info("NPC scheduler: seeded %d trader roster(s)", seeded)
+    except Exception:
+        logger.exception("NPC scheduler: trader roster seeding failed")
     elapsed = 0
     while True:
         await asyncio.sleep(TICK_SECONDS)

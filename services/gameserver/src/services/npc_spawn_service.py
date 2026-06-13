@@ -931,7 +931,6 @@ def backfill_orphan_npc_schedules(db: Session) -> int:
     archetype_kind = {
         NPCArchetype.LAW_ENFORCEMENT: "federation_marshal",
         NPCArchetype.HOSTILE_RAIDER: PIRATE_CAPTAIN_KIND,
-        NPCArchetype.TRADER: MERCHANT_CAPTAIN_KIND,
     }
 
     repaired = 0
@@ -942,6 +941,10 @@ def backfill_orphan_npc_schedules(db: Session) -> int:
             NPCCharacter.lifecycle_stage.notin_(
                 (NPCLifecycleStage.KIA, NPCLifecycleStage.RETIRED)
             ),
+            # TRADERS are excluded: they get a generated trade route at spawn
+            # (Loop B). A trader should never be handed a patrol route — that
+            # would freeze its economy behaviour.
+            NPCCharacter.archetype != NPCArchetype.TRADER,
             cast(NPCCharacter.daily_schedule, SAString) == '{}',
             NPCCharacter.current_sector_id.isnot(None),
         )
