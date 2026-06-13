@@ -753,6 +753,43 @@ function drawShipGlyph(
   ctx.restore();
 }
 
+/** A ship that has left the sector, mid departure-streak. */
+interface ShipDeparture {
+  shipId: string;
+  x: number;
+  y: number;
+  angle: number;
+  color: string;
+  size: number;
+  startMs: number;
+}
+
+// Deterministic foreground placement for a ship glyph (seeded by ship id) and
+// its drifting position/heading at clock t — shared by the live render and the
+// departure animation so a ship streaks off from exactly where it last was.
+function shipPlacement(shipId: string, w: number, h: number) {
+  let hseed = 0;
+  for (let i = 0; i < shipId.length; i++) hseed = (hseed * 31 + shipId.charCodeAt(i)) >>> 0;
+  const srng = splitmix32(hseed || 1);
+  return {
+    baseX: w * (0.5 + srng() * 0.4),
+    baseY: h * (0.16 + srng() * 0.66),
+    phase: srng() * Math.PI * 2,
+    driftSpd: 0.05 + srng() * 0.07
+  };
+}
+function shipPos(
+  p: { baseX: number; baseY: number; phase: number; driftSpd: number },
+  w: number, h: number, t: number
+): { x: number; y: number; angle: number } {
+  const driftAmp = Math.min(w, h) * 0.035;
+  const theta = t * p.driftSpd + p.phase;
+  const x = p.baseX + Math.cos(theta) * driftAmp;
+  const y = p.baseY + Math.sin(theta * 0.8) * driftAmp * 0.6;
+  const angle = Math.atan2(Math.cos(theta * 0.8) * 0.48, -Math.sin(theta));
+  return { x, y, angle };
+}
+
 // ---------------------------------------------------------------------------
 // Orbital closeup — a single planet filling the viewport, "from orbit"
 // ---------------------------------------------------------------------------
@@ -764,7 +801,10 @@ function drawOrbitCloseup(
   sectorId: number,
   body: SystemBody,
   t: number,
-  progress: number
+  progress: number,
+  fromX: number,
+  fromY: number,
+  fromR: number
 ): void {
   // Deep space + drifting starfield (parallax conveys the zoom settling in)
   ctx.fillStyle = '#040711';
@@ -782,12 +822,16 @@ function drawOrbitCloseup(
   }
   ctx.globalAlpha = 1;
 
-  const cx = w * 0.44;
-  const cy = h * 0.54;
+  const targetCx = w * 0.44;
+  const targetCy = h * 0.54;
   const bigR = Math.min(w * 0.30, h * 0.42);
   const ease = 1 - Math.pow(1 - Math.max(0, Math.min(1, progress)), 3);
-  // Grow from a quarter-size up to full as the zoom settles
-  const r = Math.max(6, bigR * (0.25 + 0.75 * ease));
+  // Camera push-in: interpolate the planet from its clicked position/size in
+  // the system view to the centered closeup, so it visibly zooms IN on the
+  // body the player picked rather than snapping to a centered view.
+  const cx = fromX + (targetCx - fromX) * ease;
+  const cy = fromY + (targetCy - fromY) * ease;
+  const r = Math.max(4, fromR + (bigR - fromR) * ease);
   const seed = (sectorId * 101 + body.slot * 7919 + Math.round(body.palette.hue)) >>> 0;
   // Light from far off-screen left → a crescent terminator (true orbital look)
   const lightX = -w * 0.5;
@@ -837,7 +881,8 @@ function drawScene(
   hover: { target: HitTarget; mx: number; my: number } | null,
   hazardLevel: number,
   radiationLevel: number,
-  ships: ShipPresence[] = []
+  ships: ShipPresence[] = [],
+  departures: ShipDeparture[] = []
 ): void {
   hitTargets.length = 0;
 
@@ -1105,21 +1150,8 @@ function drawScene(
   // points along its drift heading. Each is a click target → contact popup.
   ships.forEach((s) => {
     if (!s || !s.ship_id) return;
-    let hseed = 0;
-    const key = s.ship_id;
-    for (let i = 0; i < key.length; i++) hseed = (hseed * 31 + key.charCodeAt(i)) >>> 0;
-    const srng = splitmix32(hseed || 1);
-    const baseX = w * (0.5 + srng() * 0.4);
-    const baseY = h * (0.16 + srng() * 0.66);
-    const phase = srng() * Math.PI * 2;
-    const driftSpd = 0.05 + srng() * 0.07;
-    const driftAmp = Math.min(w, h) * 0.035;
-    const theta = t * driftSpd + phase;
-    const x = baseX + Math.cos(theta) * driftAmp;
-    const y = baseY + Math.sin(theta * 0.8) * driftAmp * 0.6;
-    const vx = -Math.sin(theta);
-    const vy = Math.cos(theta * 0.8) * 0.48;
-    const angle = Math.atan2(vy, vx);
+    const place = shipPlacement(s.ship_id, w, h);
+    const { x, y, angle } = shipPos(place, w, h, t);
     const size = 6.0 * Math.min(1.5, bodyScale);
     const fac = shipFaction(s);
     const contactName = (s.ship_name || s.username || 'CONTACT').toUpperCase();
@@ -1136,6 +1168,39 @@ function drawScene(
     });
     drawShipGlyph(ctx, x, y, size, fac.color, angle);
   });
+
+  // Departing ships — a ship that left the sector streaks off into the
+  // distance (accelerating along its heading, shrinking + fading, with a warp
+  // trail) and is then pruned from the list.
+  if (departures.length) {
+    const DEP_MS = 1300;
+    const nowMs = Date.now();
+    const reach = Math.max(w, h) * 1.5;
+    for (let i = departures.length - 1; i >= 0; i--) {
+      const d = departures[i];
+      const p = Math.min(1, (nowMs - d.startMs) / DEP_MS);
+      if (p >= 1) { departures.splice(i, 1); continue; }
+      const travel = p * p * reach; // ease-in: accelerate away
+      const dx = d.x + Math.cos(d.angle) * travel;
+      const dy = d.y + Math.sin(d.angle) * travel;
+      const sz = Math.max(0.5, d.size * (1 - 0.8 * p));
+      const alpha = 1 - p;
+      // Warp trail behind the hull
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.55;
+      ctx.strokeStyle = d.color;
+      ctx.lineWidth = Math.max(0.6, sz * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(dx - Math.cos(d.angle) * sz * 7, dy - Math.sin(d.angle) * sz * 7);
+      ctx.lineTo(dx, dy);
+      ctx.stroke();
+      ctx.restore();
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      drawShipGlyph(ctx, dx, dy, sz, d.color, d.angle);
+      ctx.restore();
+    }
+  }
 
   // Hover affordance: faint reticle ring around the hovered hittable body,
   // re-anchored to its CURRENT orbital position each frame (one extra stroke,
@@ -1543,13 +1608,24 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   // restarting the animation effect every 5s.
   const shipsRef = useRef<ShipPresence[]>(ships as ShipPresence[]);
   shipsRef.current = ships as ShipPresence[];
+  // Ships that have left the sector, animating their departure streak.
+  const departuresRef = useRef<ShipDeparture[]>([]);
+  // Previous ship roster (id → faction color) for departure diffing.
+  const prevShipsRef = useRef<Map<string, string>>(new Map());
 
   // Orbital closeup: when set, the windshield zooms to a single planet. The
-  // body snapshot is captured on entry; zoomStartRef stamps the transition.
-  const [orbit, setOrbit] = useState<{ planetId: string; name: string; body: SystemBody } | null>(null);
+  // body snapshot + the clicked screen geometry (fromX/Y/R) are captured on
+  // entry so the zoom interpolates from the planet's spot in the system view.
+  const [orbit, setOrbit] = useState<
+    { planetId: string; name: string; body: SystemBody; fromX: number; fromY: number; fromR: number } | null
+  >(null);
   const orbitRef = useRef(orbit);
   orbitRef.current = orbit;
   const zoomStartRef = useRef(0);
+  const zoomDirRef = useRef(1); // 1 = zooming in, -1 = zooming back out
+  const zoomFromTRef = useRef(0); // frozen scene clock during the zoom transition
+  // HUD (name card + BACK) reveals only once the zoom-in settles.
+  const [hudVisible, setHudVisible] = useState(false);
 
   // ---- Single-frame painter (shared by the loop, resize, and static mode) ----
   const drawNowRef = useRef<() => void>(() => {});
@@ -1577,20 +1653,46 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     const orb = orbitRef.current;
     if (orb) {
       // Closeup: LAND and BACK are DOM controls, so the canvas exposes no
-      // click targets. Animate the zoom unless reduced-motion is set.
+      // click targets. Animate the zoom (in or out) unless reduced-motion.
       hitTargetsRef.current.length = 0;
-      const dur = reducedMotionRef.current ? 0 : 450;
-      const progress = dur <= 0
-        ? 1
-        : Math.min(1, (Date.now() - zoomStartRef.current) / dur);
-      drawOrbitCloseup(ctx, w, h, sectorId, orb.body, t, progress);
+      const dur = reducedMotionRef.current ? 0 : 600;
+      const raw = dur <= 0 ? 1 : Math.min(1, (Date.now() - zoomStartRef.current) / dur);
+      const progress = zoomDirRef.current >= 0 ? raw : 1 - raw;
+      if (progress < 1 && orb.fromR > 0.5) {
+        // Continuous camera push-in over the FROZEN system scene: scale the
+        // whole view up around the clicked planet so the entire system — sun,
+        // orbits, ships — zooms toward it, rather than snapping to a closeup.
+        const targetCx = w * 0.44;
+        const targetCy = h * 0.54;
+        const bigR = Math.min(w * 0.30, h * 0.42);
+        const ease = 1 - Math.pow(1 - progress, 3);
+        const s = 1 + (bigR / orb.fromR - 1) * ease;
+        const curCx = orb.fromX + (targetCx - orb.fromX) * ease;
+        const curCy = orb.fromY + (targetCy - orb.fromY) * ease;
+        ctx.fillStyle = '#040711';
+        ctx.fillRect(0, 0, w, h); // cover the area outside the scaled scene
+        ctx.save();
+        ctx.translate(curCx, curCy);
+        ctx.scale(s, s);
+        ctx.translate(-orb.fromX, -orb.fromY);
+        drawScene(
+          ctx, w, h, sectorId, systemRef.current, zoomFromTRef.current,
+          hitTargetsRef.current, null,
+          envRef.current.hazardLevel, envRef.current.radiationLevel,
+          shipsRef.current, []
+        );
+        ctx.restore();
+        hitTargetsRef.current.length = 0; // scaled hit coords are meaningless
+        return;
+      }
+      drawOrbitCloseup(ctx, w, h, sectorId, orb.body, t, 1, orb.fromX, orb.fromY, orb.fromR);
       return;
     }
     drawScene(
       ctx, w, h, sectorId, systemRef.current, t,
       hitTargetsRef.current, hoverRef.current,
       envRef.current.hazardLevel, envRef.current.radiationLevel,
-      shipsRef.current
+      shipsRef.current, departuresRef.current
     );
   };
 
@@ -1626,7 +1728,36 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   useEffect(() => {
     setPopup(null);
     setOrbit(null);
+    setHudVisible(false);
+    departuresRef.current.length = 0;
   }, [sectorId, scene]);
+
+  // ---- Detect ships leaving the sector → launch a departure streak ----
+  useEffect(() => {
+    const prev = prevShipsRef.current;
+    const list = ships as ShipPresence[];
+    const nextIds = new Set<string>();
+    list.forEach((s) => { if (s && s.ship_id) nextIds.add(s.ship_id); });
+    if (!reducedMotionRef.current && scene === 'flight') {
+      const { w, h } = sizeRef.current;
+      if (w > 2 && h > 2) {
+        const tNow = Date.now() / 1000;
+        const size = 6.0 * Math.min(1.5, Math.max(0.8, Math.min(w, h) / 340));
+        prev.forEach((color, id) => {
+          if (!nextIds.has(id)) {
+            const pos = shipPos(shipPlacement(id, w, h), w, h, tNow);
+            departuresRef.current.push({
+              shipId: id, x: pos.x, y: pos.y, angle: pos.angle,
+              color, size, startMs: Date.now()
+            });
+          }
+        });
+      }
+    }
+    const m = new Map<string, string>();
+    list.forEach((s) => { if (s && s.ship_id) m.set(s.ship_id, shipFaction(s).color); });
+    prevShipsRef.current = m;
+  }, [ships, scene]);
 
   // Escape dismisses the popup, or backs out of the orbital closeup
   useEffect(() => {
@@ -1771,16 +1902,36 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     mouseDownPosRef.current = { x: event.clientX, y: event.clientY };
   };
 
-  // ---- Orbital closeup enter/exit ----
-  const enterOrbit = (planetId: string, name: string) => {
+  // ---- Orbital closeup enter/exit (animated zoom) ----
+  const enterOrbit = (target: HitTarget) => {
+    if (target.meta.kind !== 'planet') return;
+    const planetId = target.meta.planetId;
     const body = systemRef.current?.bodies.find((b) => b.planet_id === planetId);
     if (!body) return; // no snapshot body → can't render the closeup
     setPopup(null);
     hoverRef.current = null;
     zoomStartRef.current = Date.now();
-    setOrbit({ planetId, name, body });
+    zoomDirRef.current = 1;
+    zoomFromTRef.current = reducedMotionRef.current ? 0 : Date.now() / 1000;
+    // Run the loop at full framerate through the zoom for a smooth push-in.
+    hoverBoostUntilRef.current = performance.now() + 700;
+    setHudVisible(false);
+    setOrbit({
+      planetId, name: target.name, body,
+      fromX: target.x, fromY: target.y, fromR: target.r
+    });
+    // Reveal the name card + BACK control once the zoom has essentially landed.
+    window.setTimeout(() => setHudVisible(true), 520);
   };
-  const exitOrbit = () => setOrbit(null);
+  const exitOrbit = () => {
+    if (reducedMotionRef.current) { setOrbit(null); return; }
+    // Zoom back out, then drop the closeup once the animation completes.
+    zoomStartRef.current = Date.now();
+    zoomDirRef.current = -1;
+    hoverBoostUntilRef.current = performance.now() + 700;
+    setHudVisible(false);
+    window.setTimeout(() => setOrbit(null), 600);
+  };
 
   const openPopupFor = (target: HitTarget) => {
     const { w, h } = sizeRef.current;
@@ -1813,7 +1964,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     // Clicking a planet zooms the windshield to an orbital closeup of it
     // (the LAND action moves into the closeup HUD). Other bodies keep popups.
     if (target.kind === 'planet' && target.meta.kind === 'planet') {
-      enterOrbit(target.meta.planetId, target.name);
+      enterOrbit(target);
       return;
     }
     if (popup && popup.key === popupKeyFor(target)) {
@@ -1975,7 +2126,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           {renderPopupContent(popup.target)}
         </div>
       )}
-      {orbit && scene === 'flight' && (() => {
+      {orbit && hudVisible && scene === 'flight' && (() => {
         // Inline styles (not a CSS class) so the orbital HUD renders correctly
         // even when a modified stylesheet is stale in the dev cache.
         const glass: React.CSSProperties = {
