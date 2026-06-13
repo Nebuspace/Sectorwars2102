@@ -1082,6 +1082,48 @@
     "Phase 2: player_known_sectors + Federation public layer + cartography desks",
     "ADR-0072 Accepted flip is Max-gated"
    ]
+  },
+  {
+   "id": "neon-2026-06-13-a",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "b536a59",
+   "deployed_sha_end": "67479af",
+   "verdict": "GLOWING",
+   "baseline": {
+    "health": "healthy",
+    "npcs": "80 ON_DUTY all frozen PATROL, 0 schedules, rosters empty"
+   },
+   "sections": [
+    {
+     "key": "npc-patrols-come-alive",
+     "state": "proven",
+     "effort": 2,
+     "findings": [
+      "NPCs frozen: empty daily_schedule (roster-gated backfill never ran)",
+      "patrol waypoint resonance under accelerated time"
+     ],
+     "files_owned": [
+      "services/gameserver/src/services/npc_spawn_service.py",
+      "services/gameserver/src/services/npc_scheduler_service.py"
+     ],
+     "commits": [
+      "045e497",
+      "67479af"
+     ],
+     "proof": "log repaired 80; psql all 80 moved off anchor in 1 Loop A tick (1001 14->0 marshals, squad to 1002); UI COMMS 1001 full->No other contacts"
+    }
+   ],
+   "parking_lot": [
+    "npc-scheduler.md Status banner flip (Max-gated)",
+    "Loop A patrol-only / Loop C stub",
+    "all-law-enforcement NPC set (rosters empty, no traders)",
+    "npc_restock_demand never read by pricing",
+    "pirate LIGHT_FREIGHTER hull",
+    "port assault targetType=port 400",
+    "alembic-tree drift (b42e19a78c52 missing)",
+    "Quantum Jump FEATURES status design-only but shipped"
+   ]
   }
  ],
  "last_updated": "2026-06-12"
