@@ -2043,6 +2043,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   const arrivalsRef = useRef<ShipArrival[]>([]);
   // Previous ship roster (id → faction color) for departure/arrival diffing.
   const prevShipsRef = useRef<Map<string, string>>(new Map());
+  // The sector the previous roster belonged to — so a SECTOR CHANGE (the player
+  // warped) doesn't mass-animate the old sector's ships departing and the new
+  // sector's ships arriving. Streaks only fire for in-sector roster churn.
+  const prevSectorRef = useRef<number | null>(null);
 
   // Orbital closeup: when set, the windshield zooms to a single planet. The
   // body snapshot + the clicked screen geometry (fromX/Y/R) are captured on
@@ -2171,7 +2175,11 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     const list = ships as ShipPresence[];
     const nextIds = new Set<string>();
     list.forEach((s) => { if (s && s.ship_id) nextIds.add(s.ship_id); });
-    if (!reducedMotionRef.current && scene === 'flight') {
+    // Sector change (the player warped) → don't animate the old sector's ships
+    // leaving or the new sector's ships arriving; just rebase the roster.
+    const sectorChanged = prevSectorRef.current !== sectorId;
+    prevSectorRef.current = sectorId;
+    if (!sectorChanged && !reducedMotionRef.current && scene === 'flight') {
       const { w, h } = sizeRef.current;
       if (w > 2 && h > 2) {
         const tNow = Date.now() / 1000;
