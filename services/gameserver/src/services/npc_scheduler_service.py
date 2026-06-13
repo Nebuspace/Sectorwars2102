@@ -83,7 +83,12 @@ TICK_SECONDS = 60
 # ADR-0042: the PendingEngagement sweep runs every minute, distinct
 # from Loop A.
 ENGAGEMENT_SWEEP_SECONDS = 60
-LOOP_A_SECONDS = 5 * 60
+# Loop A runs every tick (60s). The OLD 5-minute cadence made patrols read as
+# dead: a co-located squad held position for 4m59s then teleported one hop in
+# unison. At the tick cadence, combined with the per-NPC phase stagger in
+# _drive_patrol, only a slice of any squad hops each minute — continuous motion
+# instead of a herd pulse, and a clumped squad smears across its route.
+LOOP_A_SECONDS = 60
 LOOP_B_SECONDS = 10 * 60
 LOOP_C_SECONDS = 30 * 60
 
@@ -183,8 +188,13 @@ def resolve_schedule_block(
 # Loop A — schedule executor
 # ---------------------------------------------------------------------------
 
-def run_loop_a(db: Session) -> List[Dict[str, Any]]:
-    """Resolve schedule blocks, transition activities, move patrollers."""
+def run_loop_a(db: Session, tick: int = 0) -> List[Dict[str, Any]]:
+    """Resolve schedule blocks, transition activities, move patrollers.
+
+    ``tick`` is the monotonic Loop-A invocation index; it feeds the per-NPC
+    patrol stagger in ``_drive_patrol`` so co-located squads disperse rather
+    than advancing in unison.
+    """
     events: List[Dict[str, Any]] = []
     now = datetime.now(UTC)
     minute = canonical_minute_of_day(now)
@@ -228,7 +238,7 @@ def run_loop_a(db: Session) -> List[Dict[str, Any]]:
                 and npc.status == NPCStatus.ON_DUTY
                 and location_type == "patrol_route"
             ):
-                events.extend(_drive_patrol(db, npc, block, minute))
+                events.extend(_drive_patrol(db, npc, block, minute, tick))
             elif (
                 activity == NPCActivity.COMMUTE
                 and location_type == "station_target"
@@ -252,6 +262,7 @@ def _drive_patrol(
     npc: NPCCharacter,
     block: Dict[str, Any],
     minute: int,
+    tick: int = 0,
 ) -> List[Dict[str, Any]]:
     """Move a patrolling NPC toward its route's current waypoint (single
     hop per call; npc_movement_service enforces canon transit pacing)."""
@@ -277,7 +288,24 @@ def _drive_patrol(
     # is therefore the Loop A cadence; finer per-sector dwell is deferred with
     # the lodging slice — flagged for the docs repo.)
     _ = minutes_per_sector  # retained in the schedule shape; unused by v1 round-robin
-    if npc.current_sector_id in sectors:
+    on_route = npc.current_sector_id in sectors
+
+    # Per-NPC phase stagger. Without it, every NPC on a route spawns at the
+    # same anchor and round-robins in unison, so a whole squad is permanently
+    # co-located in ONE sector — the world reads as a frozen pile that
+    # teleports as a block (the BLUE-mode "28 NPCs sitting in 1001" symptom).
+    # A stable phase derived from the NPC id makes only the matching slice of a
+    # squad hop on any given tick: a clumped squad SMEARS across its route over
+    # the first few ticks (emergent dispersion) and thereafter motion is a
+    # continuous trickle rather than a herd pulse. Off-route NPCs (just
+    # respawned elsewhere) are always eligible so they rejoin promptly.
+    if on_route and len(sectors) > 1:
+        stagger = len(sectors)
+        phase = npc.id.int % stagger
+        if (tick + phase) % stagger != 0:
+            return []
+
+    if on_route:
         idx = sectors.index(npc.current_sector_id)
         desired = sectors[(idx + 1) % len(sectors)]
     else:
@@ -887,6 +915,12 @@ def _run_due_ticks_sync(elapsed_seconds: int) -> List[Dict[str, Any]]:
         # lock_db's transaction (and therefore don't release the lock early).
         from src.services.npc_engagement_service import sweep_pending_engagements
 
+        # Monotonic Loop-A invocation index — drives the per-NPC patrol
+        # stagger so a co-located squad disperses across its route instead of
+        # advancing in unison. Resets on process restart; stable per-NPC
+        # phases re-establish the spread within a few ticks regardless.
+        loop_a_tick = elapsed_seconds // LOOP_A_SECONDS
+
         for cadence, loop_fn, label in (
             (ENGAGEMENT_SWEEP_SECONDS, sweep_pending_engagements, "engagement-sweep"),
             (LOOP_A_SECONDS, run_loop_a, "A"),
@@ -897,7 +931,11 @@ def _run_due_ticks_sync(elapsed_seconds: int) -> List[Dict[str, Any]]:
                 continue
             work_db = SessionLocal()
             try:
-                loop_events = loop_fn(work_db)
+                loop_events = (
+                    run_loop_a(work_db, loop_a_tick)
+                    if label == "A"
+                    else loop_fn(work_db)
+                )
                 work_db.commit()
                 events.extend(loop_events)
             except Exception:
