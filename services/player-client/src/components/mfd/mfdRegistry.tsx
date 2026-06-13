@@ -54,7 +54,7 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
     title: 'THREAT READINESS',
     softLabel: 'THRT',
     accent: '#FF4D6D',
-    status: 'partial',
+    status: 'shipped',
     Component: React.lazy(() => import('./pages/ThreatPage')),
   },
   'quantum-drive': {
