@@ -45,13 +45,19 @@ interface SystemBelt {
   outer_au: number;
 }
 
-/** Destroyed-planet / collision flourish: a debris cluster on one orbit.
- *  Cosmetic only — non-clickable, like the belt and nebula. */
+/** Collision-debris ring: two worlds that collided long ago, their wreck
+ *  spread into a belt encircling the orbital plane. An annulus like the
+ *  asteroid belt (reddish). Cosmetic only — non-clickable. */
 interface SystemDebris {
-  orbit_au: number;
-  phase_deg: number;
+  inner_au: number;
+  outer_au: number;
   hue: number;
-  size: number;
+}
+
+/** Habitable zone band (inner/outer in normalized orbit-AU space). */
+interface SystemHabitableZone {
+  inner_au: number;
+  outer_au: number;
 }
 
 interface SystemBody {
@@ -86,6 +92,7 @@ interface SystemSnapshot {
   nebula: SystemNebula | null;
   belt: SystemBelt | null;
   debris?: SystemDebris | null;
+  habitable_zone?: SystemHabitableZone | null;
   bodies: SystemBody[];
   stations: SystemStation[];
 }
@@ -738,79 +745,6 @@ function drawStationGlyph(
 }
 
 // ---------------------------------------------------------------------------
-// Debris field — two worlds that collided: a couple of big shattered chunks
-// wreathed in a slowly tumbling cloud of rubble and a faint impact-dust haze.
-// Purely decorative (no hit target); seeded so it's stable per sector.
-// ---------------------------------------------------------------------------
-
-function drawDebrisField(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  debris: SystemDebris,
-  sectorId: number,
-  t: number,
-  scale: number
-): void {
-  const rng = splitmix32((sectorId * 9176 + Math.round(debris.phase_deg)) >>> 0);
-  const spread = (8 + debris.size * 5) * scale;
-  // Faint reddish impact-dust haze around the wreck
-  const haze = ctx.createRadialGradient(x, y, 0, x, y, spread * 1.8);
-  haze.addColorStop(0, `hsla(${debris.hue}, 45%, 55%, 0.16)`);
-  haze.addColorStop(1, `hsla(${debris.hue}, 45%, 55%, 0)`);
-  ctx.fillStyle = haze;
-  ctx.beginPath();
-  ctx.arc(x, y, spread * 1.8, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Two larger shattered chunks drifting apart (the colliding pair)
-  for (let c = 0; c < 2; c++) {
-    const a = rng() * Math.PI * 2 + t * MOTION_SCALE * 0.12 * (c ? -1 : 1);
-    const d = spread * (0.3 + c * 0.25);
-    const cx = x + Math.cos(a) * d;
-    const cy = y + Math.sin(a) * d * 0.6;
-    const cr = (2.2 + debris.size * 0.7) * scale * (c ? 0.8 : 1);
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(a * 1.7);
-    ctx.beginPath();
-    // Irregular lumpy rock
-    const verts = 7;
-    for (let v = 0; v <= verts; v++) {
-      const va = (Math.PI * 2 * v) / verts;
-      const vr = cr * (0.7 + rng() * 0.5);
-      const px = Math.cos(va) * vr;
-      const py = Math.sin(va) * vr;
-      if (v === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.closePath();
-    ctx.fillStyle = `hsl(${debris.hue}, 18%, 32%)`;
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255, 230, 210, 0.25)';
-    ctx.lineWidth = 0.6;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // Tumbling rubble cloud
-  const rocks = 22 + debris.size * 6;
-  for (let i = 0; i < rocks; i++) {
-    const a0 = rng() * Math.PI * 2;
-    const dist = spread * (0.2 + rng() * 0.9);
-    const spd = (0.05 + rng() * 0.12) * MOTION_SCALE;
-    const a = a0 + t * spd;
-    const rx = x + Math.cos(a) * dist;
-    const ry = y + Math.sin(a) * dist * 0.6;
-    const sz = (0.5 + rng() * 1.2) * scale;
-    ctx.globalAlpha = 0.35 + rng() * 0.45;
-    ctx.fillStyle = '#b6a89e';
-    ctx.fillRect(rx, ry, sz, sz);
-  }
-  ctx.globalAlpha = 1;
-}
-
-// ---------------------------------------------------------------------------
 // Tooltip drawn on-canvas (never DOM)
 // ---------------------------------------------------------------------------
 
@@ -1261,13 +1195,49 @@ function drawScene(
     ctx.stroke();
   });
 
-  // 6) Asteroid belt — speckled annulus, two passes for depth
-  const drawBelt = (pass: 'back' | 'front') => {
-    if (!system.belt) return;
-    const rng = splitmix32(sectorId * 41 + 1337);
-    const count = 110;
+  // 4b) Habitable-zone band — a soft green annulus where liquid-water worlds
+  // live (habitable planets are placed inside it). Drawn behind the bodies.
+  if (system.habitable_zone) {
+    const hz = system.habitable_zone;
+    const rIn = hz.inner_au * rxMax;
+    const rOut = hz.outer_au * rxMax;
+    ctx.save();
+    // Filled ring via even-odd: outer ellipse minus inner ellipse.
+    ctx.beginPath();
+    ctx.ellipse(starX, starY, rOut, rOut * SQUASH, 0, 0, Math.PI * 2);
+    ctx.ellipse(starX, starY, rIn, rIn * SQUASH, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(40, 200, 90, 0.07)';
+    ctx.fill('evenodd');
+    // Edge rings to delineate the band
+    ctx.strokeStyle = 'rgba(60, 220, 110, 0.28)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.ellipse(starX, starY, rIn, rIn * SQUASH, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(starX, starY, rOut, rOut * SQUASH, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Label on the band's right edge
+    ctx.font = FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(90, 230, 130, 0.7)';
+    ctx.fillText('HABITABLE ZONE', starX + rIn + 4, starY - (rIn + rOut) / 2 * SQUASH - 4);
+    ctx.restore();
+  }
+
+  // 6) Asteroid belt — speckled annulus, two passes for depth.
+  //    speckleRing renders a seeded particle annulus (shared by the grey
+  //    asteroid belt and the reddish collision-debris ring).
+  const speckleRing = (
+    inner: number, outer: number, pass: 'back' | 'front',
+    seed: number, count: number, color: string, chunks: number
+  ) => {
+    const rng = splitmix32(seed);
     for (let i = 0; i < count; i++) {
-      const frac = system.belt.inner_au + rng() * Math.max(0.01, system.belt.outer_au - system.belt.inner_au);
+      const frac = inner + rng() * Math.max(0.01, outer - inner);
       const a0 = rng() * Math.PI * 2;
       const speed = MOTION_SCALE * (0.018 + rng() * 0.014) / Math.max(0.1, frac);
       const size = 0.5 + rng() * 1.1;
@@ -1278,12 +1248,36 @@ function drawScene(
       const isBack = ay < starY;
       if ((pass === 'back') !== isBack) continue;
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = '#aaaabe';
+      ctx.fillStyle = color;
       ctx.fillRect(ax, ay, size, size);
+    }
+    // A few larger shattered chunks (collision-ring flavor)
+    for (let c = 0; c < chunks; c++) {
+      const frac = inner + rng() * Math.max(0.01, outer - inner);
+      const a0 = rng() * Math.PI * 2;
+      const speed = MOTION_SCALE * 0.014 / Math.max(0.1, frac);
+      const ang = a0 + t * speed;
+      const ax = starX + Math.cos(ang) * frac * rxMax;
+      const ay = starY + Math.sin(ang) * frac * rxMax * SQUASH;
+      const isBack = ay < starY;
+      if ((pass === 'back') !== isBack) continue;
+      ctx.globalAlpha = 0.7;
+      ctx.fillStyle = color;
+      ctx.fillRect(ax - 1, ay - 1, 2.4 + rng() * 1.6, 2.0 + rng() * 1.4);
     }
     ctx.globalAlpha = 1;
   };
+  const drawBelt = (pass: 'back' | 'front') => {
+    if (system.belt) speckleRing(system.belt.inner_au, system.belt.outer_au, pass, sectorId * 41 + 1337, 110, '#aaaabe', 0);
+  };
+  // Collision-debris ring — reddish, denser, with shattered chunks.
+  const drawDebrisRing = (pass: 'back' | 'front') => {
+    if (!system.debris) return;
+    const hue = system.debris.hue;
+    speckleRing(system.debris.inner_au, system.debris.outer_au, pass, sectorId * 9176 + 4242, 150, `hsl(${hue}, 30%, 45%)`, 7);
+  };
   drawBelt('back');
+  drawDebrisRing('back');
 
   // 3/5) Star + bodies + stations, depth-sorted by screen y
   const drawables: Array<{ y: number; draw: () => void }> = [];
@@ -1431,26 +1425,11 @@ function drawScene(
     });
   });
 
-  // Debris field (destroyed/colliding worlds) — orbits like a body, depth
-  // sorted with everything else, never a click target.
-  if (system.debris) {
-    const dbz = system.debris;
-    const rx = dbz.orbit_au * rxMax;
-    const ry = rx * SQUASH;
-    const omega = MOTION_SCALE * (Math.PI * 2) / (200 + dbz.orbit_au * 500);
-    const ang = (dbz.phase_deg * Math.PI) / 180 + t * omega;
-    const dx = starX + Math.cos(ang) * rx;
-    const dy = starY + Math.sin(ang) * ry;
-    drawables.push({
-      y: dy,
-      draw: () => drawDebrisField(ctx, dx, dy, dbz, sectorId, t, bodyScale)
-    });
-  }
-
   drawables.sort((a, b) => a.y - b.y);
   drawables.forEach((d) => d.draw());
 
   drawBelt('front');
+  drawDebrisRing('front');
 
   // Ships in the sector — foreground contacts (NPC captains, other pilots),
   // each animated by its real activity/mission/archetype (orbit a planet, dock

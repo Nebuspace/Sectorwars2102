@@ -151,6 +151,40 @@ STAR_LABELS: Dict[str, str] = {
     "BLACK_HOLE": "Black Hole",
 }
 
+# Habitable zone per star kind, expressed as (inner, outer) in the SAME
+# normalized 0.15–1.0 display-orbit space the bodies use. Dimmer stars
+# (M_DWARF, WHITE_DWARF) hold a tight HZ close in; hotter/brighter stars push
+# it outward. Degenerate/dead stars have no HZ. Display-oriented, not real AU.
+HZ_BANDS: Dict[str, Tuple[float, float]] = {
+    "M_DWARF": (0.20, 0.34),
+    "K_ORANGE": (0.28, 0.45),
+    "G_YELLOW": (0.40, 0.62),
+    "F_WHITE": (0.50, 0.74),
+    "A_BLUE": (0.60, 0.85),
+    "B_BLUE_GIANT": (0.70, 0.95),
+    "O_BLUE_SUPER": (0.78, 1.0),
+    "RED_GIANT": (0.55, 0.90),
+    "WHITE_DWARF": (0.16, 0.26),
+    # NEUTRON / BLACK_HOLE have no habitable zone.
+}
+
+# Planet kinds that count as habitable (must sit within the HZ).
+HABITABLE_KINDS = {"TERRAN", "OCEANIC", "TROPICAL", "JUNGLE"}
+HABITABLE_SCORE_MIN = 50
+
+
+def _habitable_zone(star_kind: Optional[str]) -> Optional[Tuple[float, float]]:
+    """The (inner, outer) habitable-zone band for a star kind, or None."""
+    if not star_kind:
+        return None
+    return HZ_BANDS.get(star_kind)
+
+
+def _is_habitable_planet(planet_type: str, habitability_score: Optional[int]) -> bool:
+    if planet_type and planet_type.upper().replace("PLANETTYPE.", "") in HABITABLE_KINDS:
+        return True
+    return bool(habitability_score and habitability_score >= HABITABLE_SCORE_MIN)
+
 # ---------------------------------------------------------------------------
 # Procedural body tables
 # ---------------------------------------------------------------------------
@@ -276,6 +310,7 @@ def _merge_real_planets(
     bodies: List[Dict[str, Any]],
     planets: List[Planet],
     root_seed: int,
+    hz: Optional[Tuple[float, float]] = None,
 ) -> None:
     """Merge real Planet rows into the procedural bodies, in place.
 
@@ -285,6 +320,11 @@ def _merge_real_planets(
     Collision handling: if the chosen slot already holds a real planet,
     linear-probe upward (slot + 1, + 2, ... mod len) until a procedural slot
     is found — deterministic because processing order is deterministic.
+
+    Habitable placement: a habitable planet (TERRAN/OCEANIC/… or habitability
+    >= 50) is steered to a free slot whose orbit lies within the star's
+    habitable zone ``hz`` so green worlds only ever appear in the green band.
+    Falls back to the hash slot when no HZ slot is free (or the star has none).
     """
     if not bodies or not planets:
         return
@@ -303,10 +343,24 @@ def _merge_real_planets(
             # All slots hold real planets already (more real planets than
             # bodies should be prevented by the caller sizing bodies first).
             continue
+
+        planet_type = planet.type.value if hasattr(planet.type, "value") else str(planet.type)
+        # Steer habitable worlds into the habitable zone: if the hash slot's
+        # orbit is outside the HZ, re-home to the nearest free in-HZ slot
+        # (deterministic scan). Non-habitable planets keep the hash slot.
+        if hz is not None and _is_habitable_planet(planet_type, planet.habitability_score):
+            lo, hi = hz
+            if not (lo <= bodies[slot]["orbit_au"] <= hi):
+                hz_slots = sorted(
+                    (i for i in range(len(bodies))
+                     if i not in taken and lo <= bodies[i]["orbit_au"] <= hi),
+                    key=lambda i: abs(bodies[i]["orbit_au"] - (lo + hi) / 2),
+                )
+                if hz_slots:
+                    slot = hz_slots[0]
         taken.add(slot)
 
         body = bodies[slot]
-        planet_type = planet.type.value if hasattr(planet.type, "value") else str(planet.type)
         body["kind"] = planet_type
         body["real"] = True
         body["planet_id"] = str(planet.id)
@@ -396,23 +450,30 @@ def generate_system(
     # by sorted id, skip the rest (deterministic, flagged here for the report).
     real_planets = sorted(planets, key=_planet_sort_key)[:MAX_BODIES]
 
+    # Habitable zone for this star (None for dead/degenerate stars).
+    hz = _habitable_zone(star.get("kind") if star else None)
+
     orbits = _make_orbits(rng, body_count)
     bodies = [
         _make_body(root_seed, slot, body_count, orbit_au)
         for slot, orbit_au in enumerate(orbits)
     ]
-    _merge_real_planets(bodies, real_planets, root_seed)
+    _merge_real_planets(bodies, real_planets, root_seed, hz)
 
-    # --- Debris field (destroyed/colliding worlds) — rolled LAST so adding it
-    #     leaves every existing system's star/belt/body layout untouched. -----
+    # --- Collision-debris ring (two worlds that collided long ago, their wreck
+    #     spread into a belt encircling the orbital plane) — rolled LAST so
+    #     adding it leaves every existing system's star/belt/body layout
+    #     untouched. An annulus like the asteroid belt, not a single cluster. ---
     debris: Optional[Dict[str, Any]] = None
     if star is not None and body_count > 0 and rng.random() < DEBRIS_CHANCE:
+        inner = rng.uniform(0.3, 0.7)
         debris = {
-            "orbit_au": round(rng.uniform(0.35, 0.92), 4),
-            "phase_deg": rng.randint(0, 359),
+            "inner_au": round(inner, 4),
+            "outer_au": round(inner + rng.uniform(0.1, 0.25), 4),
             "hue": rng.randint(0, 359),
-            "size": rng.randint(2, 4),
         }
+
+    habitable_zone = {"inner_au": round(hz[0], 4), "outer_au": round(hz[1], 4)} if hz else None
 
     response: Dict[str, Any] = {
         "sector_id": sector.sector_id,
@@ -421,6 +482,7 @@ def generate_system(
         "nebula": nebula,
         "belt": belt,
         "debris": debris,
+        "habitable_zone": habitable_zone,
         "bodies": bodies,
         "stations": _make_stations(stations, root_seed),
     }
