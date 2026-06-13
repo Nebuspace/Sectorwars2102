@@ -900,6 +900,33 @@ def _run_due_ticks_sync(elapsed_seconds: int) -> List[Dict[str, Any]]:
     return events
 
 
+def _repair_orphan_schedules_sync() -> int:
+    """Give roster-less NPCs a patrol schedule so Loop A can drive them.
+
+    Gated by the same xact-level advisory lock the ticks use, so when
+    several gameserver workers boot together only one performs the repair
+    (the others see the lock held and skip — the write is deterministic, but
+    serializing it keeps the count honest and matches the scheduler's
+    locking discipline). Idempotent: only empty-schedule rows are touched.
+    """
+    from src.core.database import SessionLocal
+    from src.services.npc_spawn_service import backfill_orphan_npc_schedules
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        repaired = backfill_orphan_npc_schedules(db)
+        db.commit()  # releases the xact lock
+        return repaired
+    finally:
+        db.close()
+
+
 async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
     """Broadcast realtime events from the EVENT LOOP (never the worker
     thread). Sector routing is best-effort: sector_connections only
@@ -926,6 +953,16 @@ async def npc_scheduler_loop() -> None:
         "NPC scheduler started (Loop A %ds / Loop B %ds / Loop C %ds)",
         LOOP_A_SECONDS, LOOP_B_SECONDS, LOOP_C_SECONDS,
     )
+    # One-time startup repair: NPCs spawned from a BANG snapshot that
+    # carried no rosters have empty daily_schedules and would freeze in
+    # PATROL (Loop A resolves no block for them). Give them patrol routes
+    # so the world is actually alive. Idempotent + best-effort.
+    try:
+        repaired = await asyncio.to_thread(_repair_orphan_schedules_sync)
+        if repaired:
+            logger.info("NPC scheduler: repaired %d orphan NPC schedules", repaired)
+    except Exception:
+        logger.exception("NPC scheduler: orphan schedule repair failed")
     elapsed = 0
     while True:
         await asyncio.sleep(TICK_SECONDS)

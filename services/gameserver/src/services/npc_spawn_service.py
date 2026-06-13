@@ -907,6 +907,55 @@ def backfill_npc_schedules(db: Session) -> int:
     return backfilled
 
 
+def backfill_orphan_npc_schedules(db: Session) -> int:
+    """Repair NPCs that have an empty ``daily_schedule`` and no roster to
+    inherit one from.
+
+    ``backfill_npc_schedules`` only touches NPCs whose ``bang_roster_ref``
+    matches an existing ``NPCRoster`` row. Any NPC present in the DB with an
+    empty schedule and no matching roster (the drifted-galaxy case observed
+    on dev: 80 spawned NPCs, zero rosters — provenance predates this code)
+    is therefore never scheduled, so Loop A can never resolve a block for it
+    and it freezes in PATROL forever, making the world read as dead.
+
+    This gives each such NPC a patrol-route schedule derived from its
+    CURRENT sector (the same ``_schedule_template`` shape rosters use), so
+    the scheduler can drive it. Idempotent: only schedulable, non-KIA rows
+    with an empty schedule and a known sector are touched. Returns the
+    number repaired.
+    """
+    from sqlalchemy import cast, String as SAString
+
+    # Kind only selects PATROL_MINUTES_PER_SECTOR pacing (default 240), so a
+    # coarse archetype->kind map is sufficient; unknown kinds fall back.
+    archetype_kind = {
+        NPCArchetype.LAW_ENFORCEMENT: "federation_marshal",
+        NPCArchetype.HOSTILE_RAIDER: PIRATE_CAPTAIN_KIND,
+        NPCArchetype.TRADER: MERCHANT_CAPTAIN_KIND,
+    }
+
+    repaired = 0
+    npcs = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.status.in_((NPCStatus.ON_DUTY, NPCStatus.OFF_DUTY)),
+            NPCCharacter.lifecycle_stage.notin_(
+                (NPCLifecycleStage.KIA, NPCLifecycleStage.RETIRED)
+            ),
+            cast(NPCCharacter.daily_schedule, SAString) == '{}',
+            NPCCharacter.current_sector_id.isnot(None),
+        )
+        .all()
+    )
+    for npc in npcs:
+        kind = archetype_kind.get(npc.archetype, "federation_marshal")
+        npc.daily_schedule = _schedule_template(db, kind, npc.current_sector_id)
+        repaired += 1
+    if repaired:
+        db.flush()
+    return repaired
+
+
 def bootstrap_galaxy(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     """One idempotent entry point for the Living NPC System bootstrap:
     materialize NPCs from the BANG snapshot, seed NPCRoster rows, and
@@ -919,6 +968,9 @@ def bootstrap_galaxy(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     stats.update({k: v for k, v in trader_stats.items() if k != "warnings"})
     stats["warnings"].extend(trader_stats.get("warnings") or [])
     stats["schedules_backfilled"] = backfill_npc_schedules(db)
+    # Catch NPCs with no roster to inherit from (drifted snapshot) so they
+    # still get a patrol schedule and are not frozen.
+    stats["orphan_schedules_backfilled"] = backfill_orphan_npc_schedules(db)
     return stats
 
 
