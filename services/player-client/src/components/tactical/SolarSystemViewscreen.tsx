@@ -248,12 +248,15 @@ const FONT = '10px "Courier New", monospace';
 // Vertical squash applied to every orbital ellipse (slight perspective)
 const SQUASH = 0.35;
 
-// Global pacing knob — Max asked for calmer celestial motion. One multiplier
-// scales every ORBITAL / ROTATIONAL / SHIP-TRANSIT rate: the sun's planets,
-// moon spins, station drift, belt churn, debris tumble and ship cruise all
-// slow together. Ambient cadence — starfield parallax, station blink lights,
-// hazard pulse — keeps its own timing; this knob is "the rotation" only.
-const MOTION_SCALE = 0.4;
+// Pacing knobs — calm but ALIVE. Decoupled so planets visibly orbit the sun
+// while moons/ships stay unhurried (Max: planet orbit was "slightly too slow").
+// Ambient cadence — starfield parallax, station blink, hazard pulse — keeps its
+// own timing; these scale "the rotation/motion" only.
+const ORBIT_SCALE = 0.85;  // planets + stations orbiting the star (perceptible)
+const MOON_SCALE = 0.4;    // moons spinning around their planet (gentle)
+const SHIP_SCALE = 0.6;    // ship transit / drift between objects
+// Back-compat alias for the belt/debris churn (kept calm).
+const MOTION_SCALE = MOON_SCALE;
 
 /** A moon's screen position on its planet's SINGLE shared orbital plane.
  *  Every moon of a body rides the same tilted/foreshortened ellipse (one
@@ -894,6 +897,21 @@ interface ShipDeparture {
   startMs: number;
 }
 
+/** A ship warping IN from another sector, mid arrival-streak (it decelerates
+ *  from a screen edge to its in-sector position). While active the normal glyph
+ *  is suppressed so it doesn't double-draw. */
+interface ShipArrival {
+  shipId: string;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  angle: number;
+  color: string;
+  size: number;
+  startMs: number;
+}
+
 // Deterministic foreground placement for a ship glyph (seeded by ship id) and
 // its drifting position/heading at clock t — shared by the live render and the
 // departure animation so a ship streaks off from exactly where it last was.
@@ -909,7 +927,7 @@ function shipPlacement(shipId: string, w: number, h: number): ShipPlace {
     baseX: w * (0.5 + srng() * 0.4),
     baseY: h * (0.16 + srng() * 0.66),
     phase: srng() * Math.PI * 2,
-    driftSpd: (0.05 + srng() * 0.07) * MOTION_SCALE,
+    driftSpd: (0.05 + srng() * 0.07) * SHIP_SCALE,
     seed: hseed || 1,
   };
 }
@@ -925,61 +943,121 @@ function shipPos(
   return { x, y, angle };
 }
 
-// Purposeful ship motion: each ship hops between dock targets (stations /
-// planets), CRUISING to one then DWELLING (docked/landed) a while before moving
-// on — stateless, derived from the ship's seed + the clock, so every ship runs
-// its own staggered itinerary (no synchronized movement). Falls back to the
-// gentle drift when the sector has no dock targets.
-function shipItinerary(
-  p: ShipPlace, w: number, h: number, t: number,
-  docks: Array<{ x: number; y: number; kind: string }>,
-  activity?: string | null, mission?: string | null
-): { x: number; y: number; angle: number; docked: boolean } {
-  // HONEST motion: only a ship actually WORKING a stop in this sector loiters
-  // at a dock; a commuting/patrolling/idle ship just cruises (it's passing
-  // through and will warp out — its real target is elsewhere). And it loiters
-  // at the dock TYPE its mission uses: commerce → stations, colonist/science →
-  // planets. This stops e.g. a commerce trader from appearing to land on a
-  // planet, or a transiting ship from "docking" somewhere it isn't going.
-  if (activity && activity !== 'WORK_STATION') {
-    return { ...shipPos(p, w, h, t), docked: false };
-  }
-  const wantPlanet = mission === 'colonist' || mission === 'science';
-  let pool = docks.filter((d) => (wantPlanet ? d.kind === 'planet' : d.kind === 'station'));
-  if (pool.length === 0) pool = docks;
-  if (pool.length === 0) {
-    return { ...shipPos(p, w, h, t), docked: false };
-  }
-  docks = pool;
-  // Per-ship cycle length (seeded, out of step with each other) — divided by
-  // the global pacing knob so transits between docks read slow and deliberate.
-  const period = (22 + (p.seed % 21)) / MOTION_SCALE;
+type ShipMotion = { x: number; y: number; angle: number; docked: boolean };
+type DockPoint = { x: number; y: number; kind: string };
+
+// CRUISE→DWELL cycle among a pool of docks: a ship travels to one, parks a
+// while, then moves on. Stateless (seed + clock), staggered per ship.
+function dockCycle(p: ShipPlace, t: number, pool: DockPoint[]): ShipMotion {
+  const period = (22 + (p.seed % 21)) / SHIP_SCALE;
   const cyclePos = t / period + (p.seed % 1000) / 1000;
   const cycle = Math.floor(cyclePos);
   const frac = cyclePos - cycle;
-  const pick = (n: number) => docks[(p.seed + n) % docks.length];
-  const from = pick(cycle);          // where this leg starts (a dock)
-  const to = pick(cycle + 1);        // the dock being travelled to
-  const CRUISE = 0.45;               // first 45% cruising, then docked
-  let x: number, y: number, angle: number, docked: boolean;
+  const pick = (n: number) => pool[(p.seed + n) % pool.length];
+  const from = pick(cycle);
+  const to = pick(cycle + 1);
+  const CRUISE = 0.45;
   if (frac < CRUISE) {
     const e = frac / CRUISE;
     const ease = e * e * (3 - 2 * e); // smoothstep
-    x = from.x + (to.x - from.x) * ease;
-    y = from.y + (to.y - from.y) * ease;
-    angle = Math.atan2(to.y - from.y, to.x - from.x);
-    docked = false;
-  } else {
-    // Parked just off the dock (small seeded offset so it doesn't overlap the
-    // glyph dead-centre), facing the way it arrived.
-    const off = 9 + (p.seed % 6);
-    const oa = (p.seed % 360) * Math.PI / 180;
-    x = to.x + Math.cos(oa) * off;
-    y = to.y + Math.sin(oa) * off;
-    angle = Math.atan2(to.y - from.y, to.x - from.x);
-    docked = true;
+    return {
+      x: from.x + (to.x - from.x) * ease,
+      y: from.y + (to.y - from.y) * ease,
+      angle: Math.atan2(to.y - from.y, to.x - from.x),
+      docked: false,
+    };
   }
-  return { x, y, angle, docked };
+  const off = 9 + (p.seed % 6);
+  const oa = (p.seed % 360) * Math.PI / 180;
+  return {
+    x: to.x + Math.cos(oa) * off,
+    y: to.y + Math.sin(oa) * off,
+    angle: Math.atan2(to.y - from.y, to.x - from.x),
+    docked: true,
+  };
+}
+
+// Steady orbit around a body (a colonist/science ship circling a planet it is
+// servicing). Tangential heading; foreshortened to match the orbital plane.
+function orbitBody(cx: number, cy: number, p: ShipPlace, t: number, radius: number): ShipMotion {
+  const spd = (0.25 + (p.seed % 30) / 100) * SHIP_SCALE;
+  const a = (p.seed % 360) * Math.PI / 180 + t * spd;
+  const x = cx + Math.cos(a) * radius;
+  const y = cy + Math.sin(a) * radius * 0.55;
+  // Heading tangent to the (squashed) orbit
+  const tx = -Math.sin(a);
+  const ty = Math.cos(a) * 0.55;
+  return { x, y, angle: Math.atan2(ty, tx), docked: false };
+}
+
+// Outbound: a commuting ship heading for the sector edge to warp away. Eases
+// from its drift spot toward a seeded edge point and loiters near the rim.
+function outbound(p: ShipPlace, w: number, h: number, t: number): ShipMotion {
+  const base = shipPos(p, w, h, t);
+  const ang = (p.seed % 360) * Math.PI / 180;
+  const edgeX = w * (0.5 + Math.cos(ang) * 0.52);
+  const edgeY = h * (0.5 + Math.sin(ang) * 0.46);
+  const e = 0.55 + 0.45 * Math.sin(t * 0.05 * SHIP_SCALE + p.phase); // breathe toward/from rim
+  const x = base.x + (edgeX - base.x) * Math.max(0, e);
+  const y = base.y + (edgeY - base.y) * Math.max(0, e);
+  return { x, y, angle: Math.atan2(edgeY - base.y, edgeX - base.x), docked: false };
+}
+
+// Behavior dispatcher: map a ship's real activity/mission/archetype to a
+// recognizable on-screen behavior. Purely cosmetic visualization of NPC state
+// (intra-sector pixel position is not game state), but legible: orbiting
+// planets, docking, rendezvousing, heading out, patrolling, or drifting.
+function shipBehavior(
+  p: ShipPlace, w: number, h: number, t: number,
+  docks: DockPoint[],
+  activity: string | null | undefined,
+  mission: string | null | undefined,
+  archetype: string | null | undefined,
+  rendezvous: { x: number; y: number } | null
+): ShipMotion {
+  const act = (activity || '').toUpperCase();
+  const arch = (archetype || '').toUpperCase();
+  const planets = docks.filter((d) => d.kind === 'planet');
+  const stations = docks.filter((d) => d.kind === 'station');
+
+  // SOCIALIZE → rendezvous: ease to the shared meeting point and sit there.
+  if (act === 'SOCIALIZE' && rendezvous) {
+    const base = shipPos(p, w, h, t);
+    const e = 0.5 + 0.5 * Math.sin(t * 0.06 * SHIP_SCALE + p.phase);
+    return {
+      x: base.x + (rendezvous.x - base.x) * e,
+      y: base.y + (rendezvous.y - base.y) * e,
+      angle: Math.atan2(rendezvous.y - base.y, rendezvous.x - base.x),
+      docked: e > 0.85,
+    };
+  }
+
+  // COMMUTE → outbound toward the rim (about to warp out).
+  if (act === 'COMMUTE') return outbound(p, w, h, t);
+
+  // PATROL (law/raider) → sweep between dock points across the sector.
+  if (act === 'PATROL') {
+    const pool = docks.length >= 2 ? docks : [];
+    if (pool.length >= 2) return dockCycle(p, t, pool);
+    return { ...shipPos(p, w, h, t), docked: false };
+  }
+
+  // WORK_STATION → actually servicing a stop here.
+  if (act === 'WORK_STATION') {
+    const wantPlanet = mission === 'colonist' || mission === 'science';
+    if (wantPlanet && planets.length > 0) {
+      const target = planets[p.seed % planets.length];
+      return orbitBody(target.x, target.y, p, t, 16 + (p.seed % 8));
+    }
+    const pool = stations.length > 0 ? stations : docks;
+    if (pool.length > 0) return dockCycle(p, t, pool);
+    return { ...shipPos(p, w, h, t), docked: true };
+  }
+
+  // Raiders with no explicit activity prowl between points; everyone else
+  // (SLEEP / unknown) drifts gently.
+  if (arch === 'HOSTILE_RAIDER' && docks.length >= 2) return dockCycle(p, t, docks);
+  return { ...shipPos(p, w, h, t), docked: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,7 +1156,8 @@ function drawScene(
   radiationLevel: number,
   ships: ShipPresence[] = [],
   departures: ShipDeparture[] = [],
-  selectedShipId: string | null = null
+  selectedShipId: string | null = null,
+  arrivals: ShipArrival[] = []
 ): void {
   hitTargets.length = 0;
 
@@ -1246,7 +1325,7 @@ function drawScene(
     const ry = rx * SQUASH;
     // Angular speed ~ 1/orbit_au — full orbit takes minutes (slowed by the
     // global pacing knob so the rotation reads calm and watchable).
-    const omega = MOTION_SCALE * (Math.PI * 2) / (180 + body.orbit_au * 420);
+    const omega = ORBIT_SCALE * (Math.PI * 2) / (180 + body.orbit_au * 420);
     const ang = (body.phase_deg * Math.PI) / 180 + t * omega;
     const x = starX + Math.cos(ang) * rx;
     const y = starY + Math.sin(ang) * ry;
@@ -1332,7 +1411,7 @@ function drawScene(
   system.stations.forEach((st, idx) => {
     const rx = st.orbit_au * rxMax;
     const ry = rx * SQUASH;
-    const omega = MOTION_SCALE * (Math.PI * 2) / (160 + st.orbit_au * 380);
+    const omega = ORBIT_SCALE * (Math.PI * 2) / (160 + st.orbit_au * 380);
     const ang = (st.phase_deg * Math.PI) / 180 + t * omega;
     const x = starX + Math.cos(ang) * rx;
     const y = starY + Math.sin(ang) * ry;
@@ -1373,14 +1452,43 @@ function drawScene(
 
   drawBelt('front');
 
-  // Ships in the sector — foreground contacts (NPC captains, other pilots).
-  // They carry no orbital telemetry, so place each at a stable seeded spot in
-  // the near field (right of the star) and let it drift slowly; the chevron
-  // points along its drift heading. Each is a click target → contact popup.
+  // Ships in the sector — foreground contacts (NPC captains, other pilots),
+  // each animated by its real activity/mission/archetype (orbit a planet, dock
+  // at a station, rendezvous in empty space, head out to warp, patrol, drift).
+  // Each is a click target → contact popup.
+  //
+  // Rendezvous pairing: socializing ships pair off (sorted by id, consecutive)
+  // and each pair shares a seeded meeting point in empty space, away from any
+  // station/planet, so two contacts visibly meet up.
+  const rendezvousById = new Map<string, { x: number; y: number }>();
+  const socialIds = ships
+    .filter((s) => s && s.ship_id && (s.activity || '').toUpperCase() === 'SOCIALIZE')
+    .map((s) => s.ship_id as string)
+    .sort();
+  for (let i = 0; i + 1 < socialIds.length; i += 2) {
+    const a = socialIds[i], b = socialIds[i + 1];
+    let hs = 0; const key = a + b;
+    for (let k = 0; k < key.length; k++) hs = (hs * 31 + key.charCodeAt(k)) >>> 0;
+    const rr = splitmix32(hs || 1);
+    const pt = { x: w * (0.32 + rr() * 0.4), y: h * (0.28 + rr() * 0.5) };
+    rendezvousById.set(a, pt);
+    rendezvousById.set(b, pt);
+  }
+
+  // Ships currently warping IN have their normal glyph suppressed (the arrival
+  // streak draws them) until the arrival completes.
+  const arrivingNow = new Set<string>();
+  const arrNow = Date.now();
+  for (const a of arrivals) { if (arrNow - a.startMs < 1100) arrivingNow.add(a.shipId); }
+
   ships.forEach((s) => {
     if (!s || !s.ship_id) return;
+    if (arrivingNow.has(s.ship_id)) return; // arrival animation owns it this frame
     const place = shipPlacement(s.ship_id, w, h);
-    const { x, y, angle, docked } = shipItinerary(place, w, h, t, dockPoints, s.activity, s.mission);
+    const { x, y, angle, docked } = shipBehavior(
+      place, w, h, t, dockPoints, s.activity, s.mission, s.archetype,
+      rendezvousById.get(s.ship_id) || null
+    );
     const size = (docked ? 4.6 : 6.0) * Math.min(1.5, bodyScale);
     const fac = shipFaction(s);
     const contactName = (s.ship_name || s.username || 'CONTACT').toUpperCase();
@@ -1483,6 +1591,38 @@ function drawScene(
       ctx.save();
       ctx.globalAlpha = alpha;
       drawShipGlyph(ctx, dx, dy, sz, d.color, d.angle);
+      ctx.restore();
+    }
+  }
+
+  // Arriving ships — a ship warping IN from another sector decelerates from a
+  // screen edge to its in-sector spot (ease-out), growing + fading in with a
+  // warp trail, then hands off to the normal glyph.
+  if (arrivals.length) {
+    const ARR_MS = 1100;
+    const nowMs = Date.now();
+    for (let i = arrivals.length - 1; i >= 0; i--) {
+      const a = arrivals[i];
+      const p = (nowMs - a.startMs) / ARR_MS;
+      if (p >= 1) { arrivals.splice(i, 1); continue; }
+      if (p < 0) continue; // staggered entry not reached yet
+      const ease = 1 - Math.pow(1 - p, 3); // ease-out: rush in, settle
+      const ax = a.fromX + (a.toX - a.fromX) * ease;
+      const ay = a.fromY + (a.toY - a.fromY) * ease;
+      const sz = Math.max(0.5, a.size * (0.3 + 0.7 * ease));
+      const alpha = Math.min(1, p * 2);
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.5;
+      ctx.strokeStyle = a.color;
+      ctx.lineWidth = Math.max(0.6, sz * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(ax - Math.cos(a.angle) * sz * 9 * (1 - ease), ay - Math.sin(a.angle) * sz * 9 * (1 - ease));
+      ctx.lineTo(ax, ay);
+      ctx.stroke();
+      ctx.restore();
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      drawShipGlyph(ctx, ax, ay, sz, a.color, a.angle);
       ctx.restore();
     }
   }
@@ -1899,7 +2039,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   selectedShipRef.current = selectedShipId;
   // Ships that have left the sector, animating their departure streak.
   const departuresRef = useRef<ShipDeparture[]>([]);
-  // Previous ship roster (id → faction color) for departure diffing.
+  // Ships warping IN, animating their arrival streak.
+  const arrivalsRef = useRef<ShipArrival[]>([]);
+  // Previous ship roster (id → faction color) for departure/arrival diffing.
   const prevShipsRef = useRef<Map<string, string>>(new Map());
 
   // Orbital closeup: when set, the windshield zooms to a single planet. The
@@ -1981,7 +2123,8 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       ctx, w, h, sectorId, systemRef.current, t,
       hitTargetsRef.current, hoverRef.current,
       envRef.current.hazardLevel, envRef.current.radiationLevel,
-      shipsRef.current, departuresRef.current, selectedShipRef.current
+      shipsRef.current, departuresRef.current, selectedShipRef.current,
+      arrivalsRef.current
     );
   };
 
@@ -2019,9 +2162,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     setOrbit(null);
     setHudVisible(false);
     departuresRef.current.length = 0;
+    arrivalsRef.current.length = 0;
   }, [sectorId, scene]);
 
-  // ---- Detect ships leaving the sector → launch a departure streak ----
+  // ---- Detect ships entering/leaving the sector → warp-in / warp-out streaks ----
   useEffect(() => {
     const prev = prevShipsRef.current;
     const list = ships as ShipPresence[];
@@ -2032,9 +2176,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       if (w > 2 && h > 2) {
         const tNow = Date.now() / 1000;
         const size = 6.0 * Math.min(1.5, Math.max(0.8, Math.min(w, h) / 340));
-        // Stagger the streak launches so a whole batch leaving on the same poll
-        // doesn't all warp out at the same instant (the unrealistic mass exodus).
         const STAGGER_MS = 500;
+        // Departures: ships gone from the roster streak off (staggered so a
+        // batch doesn't all warp out at the same instant).
         let depIndex = 0;
         prev.forEach((color, id) => {
           if (!nextIds.has(id)) {
@@ -2046,6 +2190,28 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
             depIndex++;
           }
         });
+        // Arrivals: ships newly in the roster warp IN from a seeded edge — but
+        // ONLY on subsequent polls (prev non-empty), so entering a sector shows
+        // its ships in place rather than warping the whole crowd in at once.
+        if (prev.size > 0) {
+          let arrIndex = 0;
+          list.forEach((s) => {
+            if (!s || !s.ship_id || prev.has(s.ship_id)) return;
+            const place = shipPlacement(s.ship_id, w, h);
+            const to = shipPos(place, w, h, tNow);
+            const ea = (place.seed % 360) * Math.PI / 180;
+            const from = {
+              x: w * (0.5 + Math.cos(ea) * 0.7),
+              y: h * (0.5 + Math.sin(ea) * 0.7),
+            };
+            arrivalsRef.current.push({
+              shipId: s.ship_id, fromX: from.x, fromY: from.y, toX: to.x, toY: to.y,
+              angle: Math.atan2(to.y - from.y, to.x - from.x),
+              color: shipFaction(s).color, size, startMs: Date.now() + arrIndex * STAGGER_MS,
+            });
+            arrIndex++;
+          });
+        }
       }
     }
     const m = new Map<string, string>();

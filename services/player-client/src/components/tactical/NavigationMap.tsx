@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import './navigation-map.css';
 
 interface Sector {
@@ -59,7 +59,21 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   const availableMovesRef = useRef(availableMoves);
   availableMovesRef.current = availableMoves;
 
-  // Initialize nodes with force-directed layout
+  // Topology signature: the layout depends only on WHICH sectors exist, the
+  // current sector, the available moves, and the canvas size — NOT on the
+  // sector objects' identity. The dashboard re-fetches currentSector every 5s
+  // for live ship presence, which hands NavigationMap brand-new `sectors`/
+  // `availableMoves` array refs with identical content. Keying the layout
+  // effect on this stable STRING (instead of the array refs) stops the force
+  // simulation from re-initializing — and the nodes from bobbing/resizing —
+  // on every poll. It re-runs only when the actual graph changes.
+  const topoSig = useMemo(() => {
+    const ids = (sectors || []).map(s => s.id).sort((a, b) => a - b).join(',');
+    const moves = [...(availableMoves || [])].sort((a, b) => a - b).join(',');
+    return `${ids}|${currentSectorId}|${moves}|${width}x${height}`;
+  }, [sectors, availableMoves, currentSectorId, width, height]);
+
+  // Initialize nodes with force-directed layout (only when topology changes)
   useEffect(() => {
     if (!sectors || sectors.length === 0) return;
 
@@ -112,7 +126,10 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
 
     setNodes(newNodes);
     setIsSimulating(true);
-  }, [sectors, currentSectorId, availableMoves, width, height]);
+    // Keyed on the stable topology signature so a 5s presence poll (which only
+    // changes array identity, not graph content) does NOT restart the layout.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topoSig]);
 
   // Force-directed graph simulation - stops when settled
   useEffect(() => {
