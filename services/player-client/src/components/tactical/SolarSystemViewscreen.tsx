@@ -779,7 +779,11 @@ interface ShipDeparture {
 // Deterministic foreground placement for a ship glyph (seeded by ship id) and
 // its drifting position/heading at clock t — shared by the live render and the
 // departure animation so a ship streaks off from exactly where it last was.
-function shipPlacement(shipId: string, w: number, h: number) {
+interface ShipPlace {
+  baseX: number; baseY: number; phase: number; driftSpd: number; seed: number;
+}
+
+function shipPlacement(shipId: string, w: number, h: number): ShipPlace {
   let hseed = 0;
   for (let i = 0; i < shipId.length; i++) hseed = (hseed * 31 + shipId.charCodeAt(i)) >>> 0;
   const srng = splitmix32(hseed || 1);
@@ -787,12 +791,13 @@ function shipPlacement(shipId: string, w: number, h: number) {
     baseX: w * (0.5 + srng() * 0.4),
     baseY: h * (0.16 + srng() * 0.66),
     phase: srng() * Math.PI * 2,
-    driftSpd: 0.05 + srng() * 0.07
+    driftSpd: 0.05 + srng() * 0.07,
+    seed: hseed || 1,
   };
 }
+
 function shipPos(
-  p: { baseX: number; baseY: number; phase: number; driftSpd: number },
-  w: number, h: number, t: number
+  p: ShipPlace, w: number, h: number, t: number
 ): { x: number; y: number; angle: number } {
   const driftAmp = Math.min(w, h) * 0.035;
   const theta = t * p.driftSpd + p.phase;
@@ -800,6 +805,49 @@ function shipPos(
   const y = p.baseY + Math.sin(theta * 0.8) * driftAmp * 0.6;
   const angle = Math.atan2(Math.cos(theta * 0.8) * 0.48, -Math.sin(theta));
   return { x, y, angle };
+}
+
+// Purposeful ship motion: each ship hops between dock targets (stations /
+// planets), CRUISING to one then DWELLING (docked/landed) a while before moving
+// on — stateless, derived from the ship's seed + the clock, so every ship runs
+// its own staggered itinerary (no synchronized movement). Falls back to the
+// gentle drift when the sector has no dock targets.
+function shipItinerary(
+  p: ShipPlace, w: number, h: number, t: number,
+  docks: Array<{ x: number; y: number }>
+): { x: number; y: number; angle: number; docked: boolean } {
+  if (docks.length === 0) {
+    return { ...shipPos(p, w, h, t), docked: false };
+  }
+  // Per-ship cycle length 22–42s and a seeded phase offset so ships are out of
+  // step with each other.
+  const period = 22 + (p.seed % 21);
+  const cyclePos = t / period + (p.seed % 1000) / 1000;
+  const cycle = Math.floor(cyclePos);
+  const frac = cyclePos - cycle;
+  const pick = (n: number) => docks[(p.seed + n) % docks.length];
+  const from = pick(cycle);          // where this leg starts (a dock)
+  const to = pick(cycle + 1);        // the dock being travelled to
+  const CRUISE = 0.45;               // first 45% cruising, then docked
+  let x: number, y: number, angle: number, docked: boolean;
+  if (frac < CRUISE) {
+    const e = frac / CRUISE;
+    const ease = e * e * (3 - 2 * e); // smoothstep
+    x = from.x + (to.x - from.x) * ease;
+    y = from.y + (to.y - from.y) * ease;
+    angle = Math.atan2(to.y - from.y, to.x - from.x);
+    docked = false;
+  } else {
+    // Parked just off the dock (small seeded offset so it doesn't overlap the
+    // glyph dead-centre), facing the way it arrived.
+    const off = 9 + (p.seed % 6);
+    const oa = (p.seed % 360) * Math.PI / 180;
+    x = to.x + Math.cos(oa) * off;
+    y = to.y + Math.sin(oa) * off;
+    angle = Math.atan2(to.y - from.y, to.x - from.x);
+    docked = true;
+  }
+  return { x, y, angle, docked };
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,6 +1064,9 @@ function drawScene(
 
   // 3/5) Star + bodies + stations, depth-sorted by screen y
   const drawables: Array<{ y: number; draw: () => void }> = [];
+  // Dock targets ships travel to and dwell at (stations + planets), captured at
+  // their CURRENT screen positions this frame so ships home on moving bodies.
+  const dockPoints: Array<{ x: number; y: number }> = [];
 
   if (system.star) {
     const star = system.star;
@@ -1057,6 +1108,7 @@ function drawScene(
     let r = (3 + body.size_class * 2.1) * bodyScale;
     if (body.real) r *= 1.2;
     const seed = (sectorId * 101 + body.slot * 7919 + Math.round(body.palette.hue)) >>> 0;
+    dockPoints.push({ x, y }); // ships can travel here to "land"
 
     // Hit target (real planets are click targets; procedural get flavor hover)
     if (body.real && body.planet_id) {
@@ -1137,6 +1189,7 @@ function drawScene(
     const x = starX + Math.cos(ang) * rx;
     const y = starY + Math.sin(ang) * ry;
     const size = 6.5 * Math.min(1.4, bodyScale);
+    dockPoints.push({ x, y }); // ships can travel here to "dock"
 
     hitTargets.push({
       x, y, r: size + 7, kind: 'station', id: st.station_id,
@@ -1163,8 +1216,8 @@ function drawScene(
   ships.forEach((s) => {
     if (!s || !s.ship_id) return;
     const place = shipPlacement(s.ship_id, w, h);
-    const { x, y, angle } = shipPos(place, w, h, t);
-    const size = 6.0 * Math.min(1.5, bodyScale);
+    const { x, y, angle, docked } = shipItinerary(place, w, h, t, dockPoints);
+    const size = (docked ? 4.6 : 6.0) * Math.min(1.5, bodyScale);
     const fac = shipFaction(s);
     const contactName = (s.ship_name || s.username || 'CONTACT').toUpperCase();
     const captain = s.username || (s.is_npc ? 'NPC' : 'PILOT');
@@ -1179,7 +1232,15 @@ function drawScene(
         notoriety: typeof s.notoriety === 'number' ? s.notoriety : undefined
       }
     });
-    drawShipGlyph(ctx, x, y, size, fac.color, angle);
+    if (docked) {
+      // Parked at a dock — dimmed so cruising ships read as the active ones.
+      ctx.save();
+      ctx.globalAlpha = 0.7;
+      drawShipGlyph(ctx, x, y, size, fac.color, angle);
+      ctx.restore();
+    } else {
+      drawShipGlyph(ctx, x, y, size, fac.color, angle);
+    }
   });
 
   // Departing ships — a ship that left the sector streaks off into the
@@ -1191,8 +1252,9 @@ function drawScene(
     const reach = Math.max(w, h) * 1.5;
     for (let i = departures.length - 1; i >= 0; i--) {
       const d = departures[i];
-      const p = Math.min(1, (nowMs - d.startMs) / DEP_MS);
+      const p = (nowMs - d.startMs) / DEP_MS;
       if (p >= 1) { departures.splice(i, 1); continue; }
+      if (p < 0) continue; // staggered launch time not reached yet
       const travel = p * p * reach; // ease-in: accelerate away
       const dx = d.x + Math.cos(d.angle) * travel;
       const dy = d.y + Math.sin(d.angle) * travel;
@@ -1756,13 +1818,18 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       if (w > 2 && h > 2) {
         const tNow = Date.now() / 1000;
         const size = 6.0 * Math.min(1.5, Math.max(0.8, Math.min(w, h) / 340));
+        // Stagger the streak launches so a whole batch leaving on the same poll
+        // doesn't all warp out at the same instant (the unrealistic mass exodus).
+        const STAGGER_MS = 500;
+        let depIndex = 0;
         prev.forEach((color, id) => {
           if (!nextIds.has(id)) {
             const pos = shipPos(shipPlacement(id, w, h), w, h, tNow);
             departuresRef.current.push({
               shipId: id, x: pos.x, y: pos.y, angle: pos.angle,
-              color, size, startMs: Date.now()
+              color, size, startMs: Date.now() + depIndex * STAGGER_MS,
             });
+            depIndex++;
           }
         });
       }
