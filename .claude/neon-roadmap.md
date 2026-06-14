@@ -172,5 +172,8 @@ Living-NPC + viewport session. This file is the living tracker — update at eve
 ### NEON 2026-06-13-f (gameserver) — ✅ mines honest-disabled (`a28a734`)
 - ✅ **Armory no longer sells no-op mines** (`a28a734`): limpet/armored mines were buyable but `player.mines` is never read (no deploy/detonate path) — a credit sink. Catalog flags them `available=false` ("Mine deployment is not yet available"; client already renders disabled + reason) + purchase endpoint 400s. Proven live (catalog flag, purchase 400, credits unchanged). Real mine deployment remains a future feature (effort 5+).
 
+### NEON 2026-06-14-g (gameserver, RED) — ✅ Blackjack credit faucet closed (`b0b988d`)
+- ✅ **Stellar Blackjack credit faucet CLOSED** (`b0b988d`): /blackjack/action trusted client cards + was stateless (fabricate a win / no-deal / replay → mint credits). Now server-authoritative — active game in Player.settings, hands rebuilt from the server seed, payout from the stored bet, cleared on settle. **Proven live** (no-deal→400, fabricated cards/bet ignored, replay→400, DB reconciles). Adversarial review caught 2 CRITICALs pre-deploy (locks needed populate_existing; double-into-bust paid double). Closes the discovery-scan RED candidate.
+
 ## How to use
 Say `neon` and the run self-selects from this file + fresh discovery. Say `neon <batch name>` to direct a run at a specific row. Rows needing Max decisions are marked — they cannot self-select.

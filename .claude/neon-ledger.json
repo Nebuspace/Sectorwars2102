@@ -1433,6 +1433,34 @@
     "GOLD purge of dead player-client mock components (still pending Max/GOLD)"
    ],
    "last_updated": "2026-06-13"
+  },
+  {
+   "id": "neon-2026-06-14-g",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "mode": "RED",
+   "branch_head_at_start": "a28a734",
+   "deployed_sha_end": "b0b988d",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "blackjack-faucet-server-authoritative",
+     "state": "proven",
+     "effort": 2,
+     "files_owned": [
+      "services/gameserver/src/api/routes/gambling.py"
+     ],
+     "commit": "b0b988d",
+     "proof": "no-deal /action->400; fabricated cards+bet ignored (real seed hand 20v19, win=stored bet x2); replay->400; DB credits reconcile 160555, active game cleared.",
+     "note": "Adversarial review caught 2 CRITICALs (both locks needed populate_existing -> concurrent double-settle; double-into-bust paid double) -> fixed pre-deploy. Server-authoritative via Player.settings JSONB, no migration."
+    }
+   ],
+   "gate": "2 adversarial reviewers (RED-focused); BOTH returned CRITICAL (stale-lock faucet + double-bust-win faucet); both hand-fixed pre-deploy; re-verified live.",
+   "parking_lot": [
+    "slots/roulette endpoints (gambling.py) \u2014 audit for the same client-trust pattern",
+    "deck index could overflow 52 on an implausibly long hit streak (pre-existing, no modulo on deck[cards_dealt])"
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"
