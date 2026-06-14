@@ -145,9 +145,9 @@ export const ColonyOverview: React.FC = () => {
           energy: colony.fuel_ore || 0,
           minerals: colony.equipment || 0,
           food: colony.organics || 0,
-          // Derived from habitability_score (a 0-1 fraction) -> shown as a %,
-          // labelled "Habitability" in the UI so it isn't read as a unit count.
-          water: Math.min(100, Math.round((colony.habitability_score || 0) * 100))
+          // habitability_score is stored on a 0-100 scale; shown as a %, labelled
+          // "Habitability" in the UI so it isn't read as a unit count.
+          water: Math.min(100, Math.round(colony.habitability_score || 0))
         },
         buildings: {
           residential: colony.farm_level || 0,
@@ -155,7 +155,12 @@ export const ColonyOverview: React.FC = () => {
           research: colony.research_level || 0,
           defense: colony.mine_level || 0
         },
-        status: colony.owner_id ? 'active' : 'abandoned',
+        // Status is derived from morale on the same 0-100 scale + threshold
+        // (morale < 50) used for the "troubled" summary stat below, so the
+        // per-card badge stays consistent with the aggregate counts.
+        status: colony.owner_id
+          ? (Math.min(100, colony.habitability_score || 50) < 50 ? 'troubled' : 'active')
+          : 'abandoned',
         foundedAt: colony.colonized_at || new Date().toISOString(),
         lastActivity: colony.colonized_at || new Date().toISOString()
       }));
