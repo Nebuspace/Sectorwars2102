@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'r
 import { AuthProvider } from './contexts/AuthContext';
 import { AdminProvider } from './contexts/AdminContext';
 import { WebSocketProvider } from './contexts/WebSocketContext';
+import { ToastProvider } from './contexts/ToastContext';
 import './App.css';
 
 // Layouts
@@ -69,6 +70,7 @@ function App() {
     <AuthProvider>
       <AdminProvider>
         <WebSocketProvider>
+          <ToastProvider>
           <Router>
             <Routes>
               <Route path="/" element={<AppLayout />}>
@@ -120,6 +122,7 @@ function App() {
               </Route>
             </Routes>
           </Router>
+          </ToastProvider>
         </WebSocketProvider>
       </AdminProvider>
     </AuthProvider>
