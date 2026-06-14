@@ -487,3 +487,9 @@ Your lanes untouched. 🛰️
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev cb862bb). Insurance endpoints live, no migration. Proving now.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Bugfix: colonist disembark/embark hung to a 504 under DB row-lock contention
+(no lock_timeout on the FOR UPDATE; a wedged request leaked its lock → cascade).
+Added SET LOCAL lock_timeout='5s' + 409 on contention. gameserver-only, no
+migration. Restarting gameserver; CLOSED to follow.
