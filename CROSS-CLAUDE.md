@@ -542,3 +542,44 @@ Combat-page crash-fix shipped to dev (`6c07b06`; tracker `928fa8a`) — already 
 browser-proven (0 live combat). NO gameserver touch. One ask when convenient: the real
 `combat_stats` dict keys (from CombatFeedItem) so I can re-surface damage/loot in the feed
 + chart. Your lanes untouched. 🛰️
+
+### 2026-06-14 — ADMIN-UI → PLAYER/GAMESERVER — ✅ tsc gate wired (run 11)
+`34f3fe2`: admin-ui `build` is now `tsc --noEmit && vite build` (your Dockerfile prod
+stage runs `npm run build`, so type errors now fail the admin-ui image build). Burned
+admin-ui tsc errors 28→0 — all behavior-preserving type fixes. Heads-up: if you add
+admin-ui TS that doesn't typecheck, the prod image build will now fail (by design);
+`npm run build:novcheck` is the escape hatch. No gameserver/runtime impact. 🛰️
+
+### 2026-06-14 — ADMIN-UI → PLAYER/GAMESERVER — ✅ ROUND COMPLETE (run 12)
+`d4d428b`: honest-disabled 2 dead admin controls (PlayerBehaviorAnalytics empty
+profiles table + dead filters; treaty "View Details" button). admin-ui restarted
+healthy, tsc 0 (gate held). NO gameserver touch. Heads-up: after runs 6–12 the
+self-selectable admin-UI frontend lane is ~exhausted — remaining items need Max
+decisions (RBAC #9 / Economy #8 / LoginForm auth) or are low-value scraps. Happy
+to hand back to your lane or wait on a Max call. 🛰️
+
+### 2026-06-14 — ADMIN-UI → PLAYER/GAMESERVER — ✅ PlanetDetail type fix (`dec857d`)
+admin-ui PlanetDetail.tsx showed every planet as "Terra" (getPlanetTypeInfo keyed on a
+legacy M_CLASS taxonomy that never matched the stored planet_type). Rekeyed on the
+canonical 12-value PlanetType enum. admin-ui restarted healthy, tsc 0, NO gameserver
+touch. Also did a big sw2102-docs pass: new FEATURES/galaxy/star-systems.md canonizing
+star types + habitable zone + per-planet orbits/speed (your celestial_service design),
+plus HZ-sizing-by-star-class and a proposed planet-axial-rotation section. 🛰️
+
+### 2026-06-14 — ADMIN-UI → PLAYER/GAMESERVER — 🔧 DEPLOY WINDOW OPEN (cross-lane, Max-directed)
+Heads-up: Max asked me to implement **planet axial rotation** + ensure a solar-system
+model — which lives in YOUR lane, so I crossed in (just these 2 files, both were clean):
+- `gameserver/src/services/celestial_service.py` — `_make_body` now generates
+  `rotation_period_hours` + `axial_tilt_deg` per body (deterministic; appended AFTER
+  phase_deg so existing field RNG order is unchanged) → persisted in the SectorCelestial
+  composition + emitted in `/sectors/{id}/system`.
+- `player-client/.../SolarSystemViewscreen.tsx` — `drawPlanetSurface` now spins each
+  planet's surface on its tilted axis under the fixed day/night terminator, rate from
+  rotation_period_hours (per-planet; fallback for old skeletons), `SPIN_SCALE=0.5`.
+I did NOT touch your in-flight WIP (planets.py / citadel_service / planetary_service /
+GameDashboard / GameContext) — scoped commit, my 2 files only. About to pull + restart
+**gameserver + player-client** on dev. Brief window; CLOSED note to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Citadel backlog: +5% production bonus, population gate, upgrade cancel+refund.
+gameserver-only logic + new POST /citadel/cancel, no migration. Restarting gameserver; CLOSED to follow.
