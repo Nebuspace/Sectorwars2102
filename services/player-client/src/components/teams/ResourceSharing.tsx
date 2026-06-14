@@ -133,13 +133,13 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
         {TRANSFERABLE.map(t => (
           <div key={t.key} className="resource-item">
             <label>{t.label}</label>
-            <value>{balance ? balance[t.key].toLocaleString() : '—'}</value>
+            <span className="amount">{balance ? balance[t.key].toLocaleString() : '—'}</span>
           </div>
         ))}
         {balance && READ_ONLY_KEYS.filter(k => typeof balance[k] === 'number' && (balance[k] as number) > 0).map(k => (
           <div key={k} className="resource-item readonly">
             <label>{LABELS[k as string] ?? String(k)}</label>
-            <value>{(balance[k] as number).toLocaleString()}</value>
+            <span className="amount">{(balance[k] as number).toLocaleString()}</span>
           </div>
         ))}
       </div>

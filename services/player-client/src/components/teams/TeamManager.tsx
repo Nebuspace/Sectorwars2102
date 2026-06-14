@@ -644,7 +644,10 @@ export const TeamManager: React.FC = () => {
             playerCredits={playerState.credits}
             canManageTreasury={permissions?.canManageTreasury ?? false}
             onChanged={() => {
-              void loadTeamData(team.id);
+              // Treasury balance refreshes inside ResourceSharing; only the
+              // player's wallet (header credits) needs a top-level refresh.
+              // Avoid loadTeamData here — it flips global `loading` and would
+              // flash the whole panel + reset the op selector after each op.
               void refreshPlayerState();
             }}
           />

@@ -7,6 +7,14 @@
   color: var(--text-primary);
 }
 
+/* Treasury balance figure (replaces the legacy <value> element) */
+.treasury-balance .resource-item .amount {
+  display: block;
+  color: var(--primary-green);
+  font-size: 18px;
+  font-weight: bold;
+}
+
 /* Treasury-managed resources are server-fed; show them muted */
 .resource-item.readonly {
   opacity: 0.7;
