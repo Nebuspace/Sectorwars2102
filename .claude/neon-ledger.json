@@ -1550,6 +1550,35 @@
     "Max-gated: drone costs, faction-mission completion, faction pricing stacking, pirate hulls; GOLD purge"
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-k",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "f558e98",
+   "deployed_sha_end": "945668d",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "colony-specialization-ui-honesty",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/player-client/src/components/planetary/ColonySpecialization.tsx"
+     ],
+     "commit": "945668d",
+     "proof": "Gamma Prime Specialize: agricultural shows +50% organics/+20% colonist growth/-20% fuel/-20% equipment; no +50% defense or +50% research badges; balanced=baseline; military/research flag headline bonus 'not yet active'. Matches planetary_service._calculate_specialization_bonuses (production-only applied).",
+     "note": "Client-only, no backend change. Surfaced + filed DECISIONS colony-specialization-defense-research-unapplied (backend computes military-defense/research-research multipliers but never applies them; balanced is a no-op)."
+    }
+   ],
+   "gate": "lead self-review (data+copy aligned to verified backend behavior; tsc clean; live UI proof)",
+   "parking_lot": [
+    "AI market predicted_price 1.05 fallback (buildable, next)",
+    "/combat/engage port 200->403 (buildable)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: specialization defense/research (DECISIONS), drone costs, faction-mission completion; GOLD purge"
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"

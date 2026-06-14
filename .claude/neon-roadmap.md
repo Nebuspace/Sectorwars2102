@@ -192,7 +192,7 @@ All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Tra
 
 ### Fresh discovery queue (2026-06-14 full scan — BUILDABLE, in-lane, provable, NOT Max-gated)
 - ✅ **/drones/sector/{id} auth FIXED (2026-06-14, `f558e98`)** — was unauthenticated (anonymous drone-presence enumeration); now requires get_current_player. Proven: unauth→401, auth→200.
-- 🟢 **ColonySpecialization UI lies about bonuses** (ColonySpecialization.tsx:58) — benefits prose claims effects (ship-upgrade discounts, colonist growth, food consumption, drone bonuses) the backend never applies (real = productionBonuses + defenseBonuses only). Fix: align the benefits copy to what's applied. eff1. PlanetManager→Specialize.
+- ✅ **ColonySpecialization UI honesty FIXED (2026-06-14, `945668d`)** — benefits now show the real applied production deltas incl. penalties; dead defense/research badges removed; balanced honestly baseline. Proven live. Backend gap (defense/research multipliers unapplied) → DECISIONS colony-specialization-defense-research-unapplied.
 - 🟢 **AI market predicted_price fallback = last×1.05** (ai_trading_service) — on predict_prices() failure, /ai/market-analysis returns a fabricated guess as a prediction. eff1.
 - 🟢 **/combat/engage port returns 200 'error'** (player_combat.py:197) — disabled-feature path returns HTTP 200 with an error body; should be 403/501 so the client can distinguish. eff1.
 - 🟢 **First-login ShipSelection JSON.stringify dump** (ShipSelection.tsx:108) — raw JSON shown to new players on ship-list fetch error. eff1.
