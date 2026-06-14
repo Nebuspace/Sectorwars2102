@@ -2806,6 +2806,15 @@
   text-align: right;
 }
 
+.alloc-stored {
+  font-size: 0.62rem;
+  color: #7dd3fc;
+  width: 66px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Safe Grid - Expanded for all commodities */
 .planet-section.storage {
   border-color: rgba(59, 130, 246, 0.3);

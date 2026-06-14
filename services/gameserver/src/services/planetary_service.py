@@ -139,8 +139,9 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found or not owned by player")
 
-        # Lazily apply colonist growth accrued since the last read
+        # Lazily apply colonist growth + commodity production accrued since the last read
         changed = self.apply_population_growth(planet)
+        changed = self.apply_resource_production(planet) or changed
 
         # Siege validity check BEFORE decay (S2): re-evaluate whether the siege
         # still holds (enemies present AND owner absent) before applying any
@@ -254,7 +255,85 @@ class PlanetaryService:
             f"(now {planet.colonists}, ceiling {ceiling})"
         )
         return True
-        
+
+    def apply_resource_production(self, planet: Planet) -> bool:
+        """Lazily accrue commodity production since planet.last_production.
+
+        Mirrors apply_population_growth: production rates from
+        _calculate_production_rates (per-day, already including building,
+        specialization, citadel and siege modifiers) are pro-rated by elapsed
+        wall-clock time and added to the planet's fuel_ore/organics/equipment
+        stockpiles. This is the lazy advance-on-read realization of the
+        documented production tick (SYSTEMS/planetary-production-tick.md) — no
+        scheduler.
+
+        Sub-unit progress is banked exactly in a per-resource fractional carry
+        stored in planet.active_events['production_carry'] (JSONB, no migration),
+        so a fast resource never robs a slow one of its accruing fraction when
+        the anchor advances. Stockpiles are uncapped for now (the storage-cap
+        formula is design-only); the citadel safe provides the protected,
+        capacity-limited store.
+
+        Returns True if any state changed (whole units accrued, or the anchor
+        was initialized/advanced) so callers know to commit.
+        """
+        now = datetime.now(UTC)
+
+        if planet.last_production is None:
+            # First read since the column landed: anchor now, accrue later.
+            planet.last_production = now
+            return True
+
+        anchor = planet.last_production
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+
+        elapsed_seconds = (now - anchor).total_seconds()
+        if elapsed_seconds <= 0:
+            return False
+
+        rates = self._calculate_production_rates(planet)
+        # Map production-rate keys to stockpile columns.
+        resource_cols = (("fuel", "fuel_ore"), ("organics", "organics"), ("equipment", "equipment"))
+
+        if all((rates.get(key, 0) or 0) <= 0 for key, _ in resource_cols):
+            # Nothing allocated to production; keep the anchor current so a
+            # later allocation doesn't accrue retroactively.
+            planet.last_production = now
+            return True
+
+        events = planet.active_events if isinstance(planet.active_events, dict) else {}
+        carry = dict(events.get("production_carry", {})) if isinstance(events.get("production_carry"), dict) else {}
+
+        gains = {}
+        for key, col in resource_cols:
+            rate_per_day = rates.get(key, 0) or 0
+            produced = carry.get(col, 0.0) + rate_per_day * (elapsed_seconds / SECONDS_PER_DAY)
+            gained = int(produced)
+            gains[col] = (gained, produced - gained)
+
+        if sum(g for g, _ in gains.values()) <= 0:
+            # Not enough elapsed time for a whole unit of any resource yet;
+            # leave the anchor (and stored carry) untouched so fractions keep
+            # banking against the growing elapsed window.
+            return False
+
+        for col, (gained, remainder) in gains.items():
+            if gained > 0:
+                setattr(planet, col, (getattr(planet, col) or 0) + gained)
+            carry[col] = remainder
+
+        new_events = dict(events)
+        new_events["production_carry"] = carry
+        planet.active_events = new_events
+        planet.last_production = now
+
+        logger.debug(
+            f"Lazy production on planet {planet.id}: "
+            + ", ".join(f"+{g} {c}" for c, (g, _) in gains.items() if g > 0)
+        )
+        return True
+
     def allocate_colonists(
         self,
         planet_id: UUID,
@@ -1177,6 +1256,14 @@ class PlanetaryService:
             },
             "morale": planet.morale,
             "productionRates": production_rates,
+            # Current commodity stockpiles + the accrual anchor so the client can
+            # project a live per-second count between polls (keys match productionRates).
+            "stockpiles": {
+                "fuel": planet.fuel_ore or 0,
+                "organics": planet.organics or 0,
+                "equipment": planet.equipment or 0,
+            },
+            "lastProductionAt": planet.last_production.isoformat() if planet.last_production else None,
             "allocations": {
                 "fuel": planet.fuel_allocation or 0,
                 "organics": planet.organics_allocation or 0,

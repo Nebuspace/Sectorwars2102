@@ -897,6 +897,25 @@ const GameDashboard: React.FC = () => {
     return `${s}s`;
   };
 
+  // Live production projection: tick a clock every second while landed so the
+  // displayed stockpiles climb on screen between polls (server accrues lazily
+  // on read; we project base + rate×elapsed from lastProductionAt locally).
+  const [prodNow, setProdNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!landedPlanetDetail?.lastProductionAt) return;
+    const id = window.setInterval(() => setProdNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [landedPlanetDetail?.lastProductionAt]);
+
+  const projectedStock = (key: 'fuel' | 'organics' | 'equipment'): number => {
+    const base = Number(landedPlanetDetail?.stockpiles?.[key] ?? 0);
+    const rate = Number(landedPlanetDetail?.productionRates?.[key] ?? 0); // per day
+    const anchorIso = landedPlanetDetail?.lastProductionAt;
+    if (!anchorIso || rate <= 0) return base;
+    const elapsedS = Math.max(0, (prodNow - new Date(anchorIso).getTime()) / 1000);
+    return base + (rate / 86400) * elapsedS;
+  };
+
   // Planetary-ops notice (upgrade/safe outcomes), auto-dismissed like the
   // colonist transfer notice
   const [opsNotice, setOpsNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -2464,6 +2483,9 @@ const GameDashboard: React.FC = () => {
                                           />
                                           <span className="alloc-pct">{allocations[key].toLocaleString()}</span>
                                           <span className="alloc-rate">+{Number(allocRates?.[key] ?? 0).toLocaleString()}/day</span>
+                                          <span className="alloc-stored" title={`${name} in colony stockpile (accruing live)`}>
+                                            📦 {Math.floor(projectedStock(key)).toLocaleString()}
+                                          </span>
                                         </div>
                                       ))}
                                     </div>
