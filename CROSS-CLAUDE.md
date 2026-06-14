@@ -604,3 +604,9 @@ API (queued, −75k cr, operational count untouched, complete_at +48h) → DB
 (defense_build_queue → lazy-settled to defense_buildings on read) → UI (0/1 +🏗️,
 "1d 23h" countdown + progress bar). Pre-flight checklist + safe presets proven too.
 No migration. Test fixture reverted. Your lane untouched.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Commodity production now accrues (lazy advance-on-read in planetary_service.apply_resource_production; per-resource fractional carry in active_events JSONB, NO migration) + planet response gains stockpiles + lastProductionAt. Restarting gameserver; CLOSED to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev 124e104). Commodity production now accrues lazily on read (proven: 653-allocation planet, 1h backdated anchor -> +285 fuel; carry banked in active_events JSONB). Hardened: get_planet_details now sets lock_timeout=3s + serves un-accrued data on contention (proven: GET under a held FOR UPDATE lock returned 200 in 3.2s, no 504). NB: cleared 2 leaked idle-in-transaction locks (17min old) during testing — a pre-existing client-disconnect-on-FOR-UPDATE issue worth a broader look. NO migration.

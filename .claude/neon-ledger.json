@@ -1916,6 +1916,37 @@
     "Stardock: buy drones + mines; track mines carried (no mine slot/UI today)."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-w",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "STEADY",
+   "theme": "User batch: real-time production (Section 1 of 3). Discovery on safe-commodities + drones/mines.",
+   "sections": [
+    {
+     "key": "commodity-production-accrual",
+     "state": "shipped-proven-server",
+     "commit": "682e385",
+     "proof": "Production now actually accrues (was a dead rate-calc). apply_resource_production lazy advance-on-read; per-resource fractional carry in active_events JSONB, no migration. API+DB proven: +285 fuel from 1h anchor, carry banked, continues on read. Client live \ud83d\udce6 tick build+contract-verified; live on-screen visual BLOCKED by lost stage browser cookie-session (needs real login)."
+    },
+    {
+     "key": "get-planet-details-lock-timeout",
+     "state": "shipped-proven",
+     "commit": "124e104",
+     "proof": "Hardening: the accrual turned the hot read into a write -> leaked FOR UPDATE lock could 504-cascade. Added lock_timeout=3s + serve-without-accrual. PROVEN: GET under held lock = 200 in 3.26s (no hang), accrual skipped; after release accrues in 0.21s. Also cleared 2 leaked idle-in-transaction locks (pre-existing)."
+    }
+   ],
+   "remaining_user_batch": [
+    "Section 2 \u2014 Citadel safe COMMODITY storage: canon = single cr-equivalent cap (numbers exist: 100k/500k/2M/10M/50M). BLOCKED on a decision: the cr-equivalent rate per commodity unit (economy base prices exist: ore 15/organics 18/equipment 35/fuel 12). Needs Max bless or DECISIONS entry.",
+    "Section 3a \u2014 Drones: already work end-to-end (likely user wasn't at a drone_shop/spacedock). Verify live.",
+    "Section 3b \u2014 Mines: intentionally disabled (nothing reads player.mines; no deploy mechanic). HUD mine counter missing. Deploy/detonate + damage numbers are canon-gated (combat.md: 2000cr 'damages hostile entrants', design)."
+   ],
+   "blockers": [
+    "Live UI proofs need a warm logged-in stage browser tab (cookie session) \u2014 my stray / navigation logged it out; JWT-in-localStorage alone doesn't re-warm the app's auth context.",
+    "Pre-existing infra: client-disconnect on FOR UPDATE routes leaks idle-in-transaction locks (cleared 2 this run)."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
