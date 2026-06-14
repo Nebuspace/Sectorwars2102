@@ -628,3 +628,9 @@ Fix: /drones/deploy contract returned a random deploymentId (recall 404d) -> now
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev d7a2cf6). /drones/deploy now returns real DroneDeployment ids (was random uuid4 -> recall 404). Fix is correct by inspection but the full create->deploy->recall flow is NOT provable: the drone subsystem is broken deeper (DroneStatus has no idle/available state so created drones default to deployed; deploy_drone raises a DB error). That subsystem is unmounted + Max-gated; not expanding. Test drones cleaned up.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Genesis buildable fixes: honor planet name (legacy deploy endpoint + service) + planetType now optional. gameserver restart. CLOSED to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev a61022b). Genesis buildable fixes proven: deploy now honors the player chosen name (PROVEN: deploy Maxhaven Prime -> planet named Maxhaven Prime, oceanic, forming, device 1->0; was auto-named before), planetType optional (server rolls biome). Client: labeled Deploy Genesis button + current-sector default + honest biome note. Tier/device-count/buy-cards untouched (Max-gated DECISIONS). Test planet + fixtures reverted.

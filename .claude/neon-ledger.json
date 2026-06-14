@@ -2018,6 +2018,31 @@
     "DroneService.deploy_drone: greenlet_spawn await_only (ASYNC-SYNC) -> /drones/deploy 500."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-z",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis: record Max-gated decisions + fix the buildable deploy bugs",
+   "sections": [
+    {
+     "key": "genesis-decisions-recorded",
+     "state": "docs",
+     "commit": "ba71eb3",
+     "proof": "DECISIONS: genesis-device-tiering-model, genesis-light-freighter-capacity, genesis-deploy-restrictions (reputation>=8, anti-monopoly 25%, 5-jump, 2-sector)."
+    },
+    {
+     "key": "genesis-deploy-buildable-fixes",
+     "state": "shipped-proven",
+     "commit": "a61022b",
+     "proof": "Honored chosen colony name (PROVEN: Maxhaven Prime, oceanic, forming, device 1->0). Labeled discoverable Deploy Genesis button (was bare icon, empty-state only). Deploy defaults to current sector (was raw id type-in). Honest biome note replacing the ignored non-canon type-picker; planetType optional."
+    }
+   ],
+   "deferred_max_gated": [
+    "Genesis tier vocab unification + device counts + fake buy-card stats \u2014 blocked on genesis-device-tiering-model decision."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
