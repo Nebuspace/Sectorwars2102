@@ -1,7 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { gameAPI } from '../../services/api';
+import { useGame } from '../../contexts/GameContext';
 import type { Planet, Building, BuildingType } from '../../types/planetary';
 import './building-manager.css';
+
+/**
+ * The ACTUAL cost the gameserver charges for a building upgrade — credits only.
+ * Mirrors planetary_service._calculate_upgrade_cost (credits =
+ * 1000·(target−current)·(target+current)/2) and its upgrade flow, which checks
+ * and deducts ONLY player.credits — fuel/organics/equipment are never spent.
+ * (The per-building BUILDING_INFO.upgradeCost tables show a different,
+ * unenforced credit figure plus fictional resource costs; this is the honest
+ * one a player is actually gated on.) Time: the server takes 1 hour per level.
+ */
+const serverUpgradeCost = (currentLevel: number): { credits: number; timeHours: number } => {
+  const target = currentLevel + 1;
+  return {
+    credits: Math.floor((1000 * (target - currentLevel) * (target + currentLevel)) / 2),
+    timeHours: target - currentLevel,
+  };
+};
 
 interface BuildingManagerProps {
   planet: Planet;
@@ -126,6 +144,7 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
   onUpdate,
   onClose 
 }) => {
+  const { playerState } = useGame();
   const [selectedBuilding, setSelectedBuilding] = useState<Building | null>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -143,35 +162,15 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
     return bonus;
   };
 
-  // Calculate if player can afford upgrade
+  // Calculate if player can afford upgrade — against REAL credits and the
+  // server's actual gate (credits only; resources are never charged).
   const canAffordUpgrade = (building: Building): { canAfford: boolean; missing: string[] } => {
-    const info = BUILDING_INFO[building.type];
-    const cost = info.upgradeCost(building.level);
+    const cost = serverUpgradeCost(building.level);
+    const playerCredits = playerState?.credits ?? 0;
     const missing: string[] = [];
-
-    // Check credits (mock - in real game would check player credits)
-    const playerCredits = 50000; // Mock value
     if (playerCredits < cost.credits) {
       missing.push(`${(cost.credits - playerCredits).toLocaleString()} credits`);
     }
-
-    // Check resources (mock - in real game would check player resources)
-    const playerResources = {
-      fuel: 5000,
-      organics: 5000,
-      equipment: 5000
-    };
-
-    if (playerResources.fuel < cost.resources.fuel) {
-      missing.push(`${cost.resources.fuel - playerResources.fuel} fuel`);
-    }
-    if (playerResources.organics < cost.resources.organics) {
-      missing.push(`${cost.resources.organics - playerResources.organics} organics`);
-    }
-    if (playerResources.equipment < cost.resources.equipment) {
-      missing.push(`${cost.resources.equipment - playerResources.equipment} equipment`);
-    }
-
     return {
       canAfford: missing.length === 0,
       missing
@@ -331,21 +330,18 @@ export const BuildingManager: React.FC<BuildingManagerProps> = ({
                   <div className="upgrade-section">
                     <div className="upgrade-cost">
                       <h5>Upgrade to Level {building.level + 1}:</h5>
+                      {/* Show the REAL cost the server charges (credits only) +
+                          the player's actual balance — no fictional resource
+                          costs the upgrade never spends. */}
                       <div className="cost-items">
-                        <span className="cost-item">
-                          💰 {info.upgradeCost(building.level).credits.toLocaleString()} credits
+                        <span className={`cost-item${(playerState?.credits ?? 0) < serverUpgradeCost(building.level).credits ? ' insufficient' : ''}`}>
+                          💰 {serverUpgradeCost(building.level).credits.toLocaleString()} credits
                         </span>
-                        <span className="cost-item">
-                          ⛽ {info.upgradeCost(building.level).resources.fuel} fuel
-                        </span>
-                        <span className="cost-item">
-                          🌿 {info.upgradeCost(building.level).resources.organics} organics
-                        </span>
-                        <span className="cost-item">
-                          ⚙️ {info.upgradeCost(building.level).resources.equipment} equipment
+                        <span className="cost-item balance">
+                          (you have {(playerState?.credits ?? 0).toLocaleString()})
                         </span>
                         <span className="cost-item time">
-                          ⏱️ {formatTime(info.upgradeCost(building.level).time)}
+                          ⏱️ {serverUpgradeCost(building.level).timeHours}h
                         </span>
                       </div>
                     </div>
