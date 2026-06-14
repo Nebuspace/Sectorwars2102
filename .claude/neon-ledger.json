@@ -1635,6 +1635,33 @@
     "Max-gated: specialization defense/research, drone costs, faction-mission completion; GOLD purge"
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-n",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "fa05b38",
+   "deployed_sha_end": "c0fbcf8",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "apirequest-real-error-messages",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/player-client/src/services/api.ts"
+     ],
+     "commit": "c0fbcf8",
+     "proof": "live error responses (envelope {error,message,error_id,timestamp}, no detail): NEW extraction yields '+Port assault operations are not yet authorized' (501) / 'Target ship not found' (404); OLD yielded 'API Error: 501/404'. App-wide for apiRequest-based UIs.",
+     "note": "Client-only. Discovered during the port-501 fix. detail (string) || message, 422 detail-arrays skipped to generic."
+    }
+   ],
+   "gate": "lead self-review (additive extraction fallback; tsc clean; proven vs real server error envelopes)",
+   "parking_lot": [
+    "first-login ShipSelection JSON dump (buildable, next)",
+    "Max-gated: specialization defense/research, drone costs/repair, faction-mission completion, faction pricing stacking, pirate hulls; GOLD dead-component purge"
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"
