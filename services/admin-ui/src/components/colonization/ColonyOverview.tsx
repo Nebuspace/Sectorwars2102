@@ -486,10 +486,10 @@ export const ColonyOverview: React.FC = () => {
               <div className="detail-section">
                 <h3>Actions</h3>
                 <div className="action-buttons">
-                  <button className="action-button primary">View Planet</button>
-                  <button className="action-button">Contact Owner</button>
-                  <button className="action-button">View History</button>
-                  <button className="action-button warning">Send Resources</button>
+                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
+                    Colony actions (view planet, contact owner, view history, send
+                    resources) are not yet available — no backend exists for them.
+                  </p>
                 </div>
               </div>
             </div>

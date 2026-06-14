@@ -356,13 +356,11 @@ export const GenesisDeviceTracking: React.FC = () => {
               <div className="detail-section">
                 <h3>Actions</h3>
                 <div className="action-buttons">
-                  <button className="action-button primary">Track Location</button>
-                  <button className="action-button">View Owner Profile</button>
-                  <button className="action-button">Monitor Activity</button>
-                  <button className="action-button warning">Disable Device</button>
-                  {selectedDevice.status === 'destroyed' && (
-                    <button className="action-button error">Investigate Destruction</button>
-                  )}
+                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
+                    Device actions (track location, view owner, monitor activity,
+                    disable device, investigate destruction) are not yet available —
+                    no backend exists for them.
+                  </p>
                 </div>
               </div>
             </div>
