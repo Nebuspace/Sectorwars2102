@@ -196,7 +196,7 @@ All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Tra
 - ✅ **AI market predicted_price fallback FIXED (2026-06-14, `ce77c8c`)** — engine-failure fallback now returns the flat last price (no fabricated +5%). Proven via diag (None/raise → 120.0 not 126.0).
 - ✅ **/combat/engage port -> 501 FIXED (2026-06-14, `fa05b38`)** — disabled-feature path now returns 501 Not Implemented (was 200 error body). Proven.
 - ✅ **apiRequest error messages FIXED (2026-06-14, `c0fbcf8`)** — now detail||message; real server messages surface app-wide. Proven (501→"Port assault...", 404→"Target ship not found", were "API Error: code").
-- 🟢 **First-login ShipSelection JSON.stringify dump** (ShipSelection.tsx:108) — raw JSON shown to new players on ship-list fetch error. eff1.
+- 🟡 **First-login ShipSelection JSON dump FIXED build-verified (2026-06-14, `27fc2fe`)** — raw JSON.stringify + session-state debug replaced with a friendly empty-ships message. tsc-clean, error-branch-only. LIVE-PROOF DEFERRED: only renders during first-login (empty-ships branch); not reproducible without a fresh first-login account (account creation out of bounds). Re-prove if Max provides a throwaway first-login account.
 - 🟢 **/drones/deploy random deploymentId** (drones.py:508) — returned id not tied to a DB row → recall 404s (note: DroneManager UI unmounted, so API-only).
 - ⛔ Max-gated/large: drone create/upgrade/repair costs (no canon + UI unmounted), faction-mission completion, faction pricing-modifier stacking order, pirate hull stats, enhanced-WS trading stubs (client never connects), GOLD purge of dead components.
 

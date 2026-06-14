@@ -1662,6 +1662,32 @@
     "Max-gated: specialization defense/research, drone costs/repair, faction-mission completion, faction pricing stacking, pirate hulls; GOLD dead-component purge"
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-o",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "c0fbcf8",
+   "deployed_sha_end": "27fc2fe",
+   "verdict": "STEADY",
+   "sections": [
+    {
+     "key": "first-login-shipselection-json-dump",
+     "state": "shipped-build-verified",
+     "effort": 1,
+     "files_owned": [
+      "services/player-client/src/components/first-login/ShipSelection.tsx"
+     ],
+     "commit": "27fc2fe",
+     "proof": "DEFERRED (not live): ShipSelection renders only in first-login; the empty-ships error branch isn't reproducible without a fresh first-login account (account creation out of bounds). Verified by tsc + code review; error-branch-only JSX text swap, happy path untouched.",
+     "note": "Last item of the 2026-06-14 scan queue. Self-provable in-lane backlog now EXHAUSTED."
+    }
+   ],
+   "gate": "lead self-review + tsc; live proof not attainable without a fresh first-login account",
+   "parking_lot": [
+    "EXHAUSTED of self-provable in-lane items. Remaining = Max-gated (specialization defense/research [DECISIONS], drone costs/repair, faction-mission completion, faction pricing stacking, pirate hull stats) + GOLD dead-component purge (needs Max bless) + first-login items need a throwaway account from Max (starter-ship-stats, this JSON-dump live-proof)."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"
