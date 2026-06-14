@@ -1688,7 +1688,50 @@
     "EXHAUSTED of self-provable in-lane items. Remaining = Max-gated (specialization defense/research [DECISIONS], drone costs/repair, faction-mission completion, faction pricing stacking, pirate hull stats) + GOLD dead-component purge (needs Max bless) + first-login items need a throwaway account from Max (starter-ship-stats, this JSON-dump live-proof)."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-p",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Flip GOLD purge -> NEON build: flesh team scaffolds into real code",
+   "sections": [
+    {
+     "key": "team-treasury-resource-sharing",
+     "state": "shipped-proven",
+     "effort": 3,
+     "files_owned": [
+      "services/player-client/src/components/teams/ResourceSharing.tsx",
+      "services/player-client/src/components/teams/resource-sharing.css",
+      "services/player-client/src/components/teams/TeamManager.tsx",
+      "services/player-client/src/services/api.ts",
+      "services/player-client/src/types/team.ts"
+     ],
+     "commit": "f3e249e+bcbdd50",
+     "proof": "Live as verifpilot (LEADER) in Neon Raiders: deposit 50k (treasury 0->50000, wallet 667782->617782), withdraw 20k (->30000, ->637782), transfer 10k->testpilot (->20000, testpilot 160470->170470), all psql-exact; zero console errors."
+    },
+    {
+     "key": "team-chat",
+     "state": "shipped-proven",
+     "effort": 2,
+     "files_owned": [
+      "services/player-client/src/components/teams/TeamChat.tsx",
+      "services/player-client/src/components/teams/TeamManager.tsx"
+     ],
+     "commit": "f3e249e+bcbdd50",
+     "proof": "Live as verifpilot: sent message renders + persists (psql messages row team_id=636c18e0 message_type=team); real member count; sender role-crown from roster; zero console errors."
+    }
+   ],
+   "gate": "adversarial review (2 reviewers) + vite build + live triple-evidence",
+   "parking_lot": [
+    "Insurance + maintenance: need gameserver mechanics (decay loop, destruction-handler payout); premium % still 'proposed' in ship-insurance.md.",
+    "Fleet coordination UI: supply/coordination-bonus/non-flagship roles are design-only.",
+    "Alliances/diplomacy: design-only, no schema.",
+    "Treasury transaction-history not built (no treasury_transactions table) \u2014 needs a migration; flagged in factions-and-teams.md.",
+    "TeamAnalytics still unmounted (no /analytics backend) \u2014 lone no-canon component."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
- "last_updated": "2026-06-12"
+ "last_updated": "2026-06-14"
 }

@@ -220,3 +220,19 @@ Max chose the purge but added "be sure it is not a planned feature in sw2102-doc
 
 ## How to use
 Say `neon` and the run self-selects from this file + fresh discovery. Say `neon <batch name>` to direct a run at a specific row. Rows needing Max decisions are marked — they cannot self-select.
+
+### NEON BUILD round — 2026-06-14 (player-client; flip from GOLD purge to build)
+Max redirected the aborted GOLD purge into a **build**: the "dead" team scaffolds
+are canon-backed planned features, so flesh them into real code instead of deleting.
+Selected 2 (both backends already implemented → wire + mount, no migration):
+- **Team Treasury** (ResourceSharing) — ✅ DONE/PROVEN (`f3e249e`+`bcbdd50`). Real
+  deposit/withdraw/transfer + balance vs the live treasury; credits+quantum_crystals
+  only (server whitelist); withdraw/transfer gated on can_manage_treasury; mounted in
+  the Treasury tab. psql-exact deposit/withdraw/transfer proof as verifpilot.
+- **Team Chat** (TeamChat) — ✅ DONE/PROVEN. Real send/read (fixed response-shape +
+  missing subject), real member count, new Chat tab; message persists (psql).
+
+**Deferred (bigger / Max-gated):** insurance + maintenance (need gameserver
+mechanics; premium % still 'proposed'), fleet-coordination UI (supply/coord-bonus/
+non-flagship roles design-only), alliances/diplomacy (design-only, no schema),
+treasury transaction-history (needs a migration), TeamAnalytics (no backend).
