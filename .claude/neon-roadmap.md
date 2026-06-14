@@ -13,7 +13,7 @@ Living-NPC + viewport session. This file is the living tracker — update at eve
 | 3 | **Honest lists** | station hardcodes → real fields, pagination, sector locations | ✅ DONE — run 6 section A (`5147620`, `d6ee03e`) |
 | 4 | **Security console** | P0.8/P0.9/P3.4 + remaining auth gaps: real security overview page | ⬜ NOT RUN |
 | 5 | **Fleet & drone command** | surface working fleet/drone admin | ✅ DONE — Fleet Operations tab (`2b7d455`) + **Drone Operations section in CombatOverview (run 2, `bc8a1e4`)** surfacing `/admin/drones/*` (stats + active/destroyed lists + force-recall/restore), proven live |
-| 6 | **Governor retheme + presentation pass** | P4.1–4.6 display-sensibility batch | 🚧 PARTIAL — P4.1 Governor retheme DONE (`2b7d455`); **P4.2 Event Management de-purpled (run 2, `007c3ff`)**; **P4.7 native-dialog sweep started (run 2): toast/typed-confirm system (`7218b5b`) + StationsManager & EventManagement retrofits.** P4.3–4.6 (Players/Combat/Colonization) + remaining P4.7 offenders (WarpTunnels/FleetManagement/PlayerDetailEditor/SectorDetail…) still open |
+| 6 | **Governor retheme + presentation pass** | P4.1–4.6 display-sensibility batch | 🚧 PARTIAL — P4.1 Governor retheme DONE (`2b7d455`); P4.2 Event de-purpled (`007c3ff`); **P4.6 Combat red-zero card neutralized (run 3, `c6bb218`)**; **P4.7 native-dialog sweep COMPLETE (run 2 toast system `7218b5b` + run 3 sweep `48b13cf` — zero native dialogs remain admin-wide).** Still open: P4.3 Players, P4.4 Galaxy Map, P4.5 Colonization |
 | 7 | **Dead code purge + typecheck gate** | P5.* purge + tsc gate in CI | 🚧 PARTIAL — purge done (runs 6 + 12, ~8,500 lines); **tsc gate not wired** (vite builds don't typecheck; ~78 pre-existing tsc errors ship silently) |
 | 8 | **Economy levers** (own run) | P2.2 admin economy control panel | ⬜ NOT RUN — needs Max design decisions first |
 | 9 | **Scopes** (own run) | P2.1 AdminScopeGrant per ADR-0058 | ⬜ NOT RUN — needs Max decisions first |
@@ -40,6 +40,16 @@ Living-NPC + viewport session. This file is the living tracker — update at eve
 - Adversarial review caught + fixed a HIGH (toast light-mode unreadability) and a MED (concurrent-confirm promise leak) pre-deploy.
 
 **Parked:** remaining P4.7 native-dialog offenders (WarpTunnels 5, FleetManagement 5, PlayerDetailEditor 5, SectorDetail 3, …); drone status-badge color variants (returning/damaged default green); event-management dead CSS blocks; **Cloudflare stale-CSS** on the stage host (purge or wait for expiry to see the de-purple there).
+
+### Admin-UI NEON run 3 — 2026-06-13 (frontend-only)
+**Shipped + PROVEN live (`48b13cf` → `f670722`):**
+- **Native-dialog sweep COMPLETE** (P4.7) — WarpTunnels/FleetManagement/PlayerDetailEditor/SectorDetail/SectorEditModal → toast/confirm; **zero native `alert()/confirm()` remain admin-wide** (build-grep verified). The freeze-trap dialog class is gone.
+- **Combat Balance Analytics** (ZONE-C-07) — new section in CombatOverview surfacing `/admin/combat/balance` + `/stats` (group-by, win-rate spread, outliers, recommendations); filters the synthetic `all_players` aggregate. Proven live (200).
+- **P4.6** — ACTIVE BATTLES=0 card neutralized (alarm-red only when intervention needed). Proven.
+- **Dashboard Recent Audit Events** (D-02) — `/admin/audit/logs` surfaced on the operator hub. Proven live (200).
+- Review caught + fixed a MED (all_players aggregate rendered as a peer rank row).
+
+**Parked:** P4.3 Players page, P4.4 Galaxy Map, P4.5 Colonization (presentation); pre-existing tsc errors (PlayerDetailEditor `current_region_id`, AITradingDashboard ws-events — not introduced this run); Dashboard audit-feed inline styles → move to CSS classes; audit-log entries show actor `anonymous` for the read-endpoints (backend data-quality note).
 
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
