@@ -28,6 +28,12 @@ SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
 DEFENSE_UPGRADE_COST = 1000     # Credits per defense level
 DEFENSE_MAX_LEVEL = 10          # Maximum defense level
+# Per-unit credit cost to ADD planetary defense units, mirroring the price the
+# player-client DefenseConfiguration UI already shows and gates affordability on
+# (DEFENSE_TYPES: turrets 500, shields 1000, drones/fighters 2000). The server
+# must charge these or the UI's "you can afford this" is a lie and defenses are
+# free (an economic faucet). Reducing units is free (no refund).
+DEFENSE_UNIT_COST = {"turrets": 500, "shields": 1000, "fighters": 2000}
 # Canon: DOCS/API/v1/sectors-planets.aispec — siege morale loss is
 # "mitigated by 0.05 × defense_level", i.e. 5% damage reduction per level
 DEFENSE_DAMAGE_REDUCTION_PER_LEVEL = 0.05
@@ -377,15 +383,52 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found or not owned by player")
 
+        # Lock the planet row before reading its defense counts: the cost is a
+        # read-then-overwrite (absolute targets), so without the lock two
+        # concurrent saves could each price against the same stale baseline and
+        # the player-row lock would then serialize a double deduction (a
+        # player-harming overcharge). Lock order here is planet→player; no other
+        # method locks player→planet-row, so this cannot deadlock.
+        planet = self.db.query(Planet).filter(
+            Planet.id == planet.id
+        ).with_for_update().first()
+
+        # Price the upgrade: only ADDED units cost credits (decreases are free,
+        # no refund). Mirrors the client DefenseConfiguration cost so the UI's
+        # affordability gate is honest. Without this, defenses are free.
+        new_turrets = max(0, turrets) if turrets is not None else planet.defense_turrets
+        new_shields = max(0, shields) if shields is not None else planet.defense_shields
+        new_fighters = max(0, fighters) if fighters is not None else planet.defense_fighters
+        cost = (
+            DEFENSE_UNIT_COST["turrets"] * max(0, new_turrets - (planet.defense_turrets or 0))
+            + DEFENSE_UNIT_COST["shields"] * max(0, new_shields - (planet.defense_shields or 0))
+            + DEFENSE_UNIT_COST["fighters"] * max(0, new_fighters - (planet.defense_fighters or 0))
+        )
+
+        if cost > 0:
+            # Lock the player row before reading/deducting credits (economic
+            # integrity — same pattern as the rest of this service).
+            player = self.db.query(Player).filter(
+                Player.id == player_id
+            ).with_for_update().first()
+            if not player:
+                raise ValueError("Player not found")
+            if (player.credits or 0) < cost:
+                raise ValueError(
+                    f"Insufficient credits: defense upgrade costs {cost:,}, "
+                    f"you have {int(player.credits or 0):,}"
+                )
+            player.credits -= cost
+
         # Update defenses if provided.
         # Note: the Planet model has no defense_drones column; deployed
         # fighters (defense_fighters) are the drone-equivalent here.
         if turrets is not None:
-            planet.defense_turrets = max(0, turrets)
+            planet.defense_turrets = new_turrets
         if shields is not None:
-            planet.defense_shields = max(0, shields)
+            planet.defense_shields = new_shields
         if fighters is not None:
-            planet.defense_fighters = max(0, fighters)
+            planet.defense_fighters = new_fighters
 
         # Calculate total defense power
         defense_power = (
@@ -404,7 +447,8 @@ class PlanetaryService:
                 "shields": planet.defense_shields,
                 "drones": planet.defense_fighters
             },
-            "defensePower": defense_power
+            "defensePower": defense_power,
+            "creditsSpent": cost
         }
         
     def deploy_genesis_device(

@@ -55,7 +55,7 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
   onUpdate,
   onClose
 }) => {
-  const { playerState } = useGame();
+  const { playerState, refreshPlayerState } = useGame();
   const [defenses, setDefenses] = useState<PlanetDefenses>(planet.defenses);
   const [tempDefenses, setTempDefenses] = useState<PlanetDefenses>(planet.defenses);
   const [saving, setSaving] = useState(false);
@@ -84,8 +84,11 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
     const currentCost = DEFENSE_TYPES.reduce((total, type) => {
       const current = defenses[type.type];
       const target = tempDefenses[type.type];
-      const diff = Math.abs(target - current);
-      return total + (diff * type.cost);
+      // Only ADDED units cost credits — the server charges for increases only
+      // (reducing defenses is free, no refund). Mirror that here so the shown
+      // cost matches what is actually deducted.
+      const added = Math.max(0, target - current);
+      return total + (added * type.cost);
     }, 0);
     return currentCost;
   };
@@ -144,6 +147,10 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
       if (response.success) {
         setDefenses(response.defenses);
         setSuccessMessage('Planetary defenses updated successfully!');
+        // Reflect the credit deduction in the cockpit balance immediately
+        // (the server charged response.creditsSpent) instead of waiting for
+        // the next background poll.
+        void refreshPlayerState();
         
         // Update parent component
         if (onUpdate) {
@@ -268,7 +275,9 @@ export const DefenseConfiguration: React.FC<DefenseConfigurationProps> = ({
             const currentValue = tempDefenses[defenseType.type];
             const originalValue = defenses[defenseType.type];
             const diff = currentValue - originalValue;
-            const cost = Math.abs(diff) * defenseType.cost;
+            // Only added units cost credits (matches the server + the total);
+            // `diff` is still used below for the +/- direction badge.
+            const cost = Math.max(0, diff) * defenseType.cost;
 
             return (
               <div key={defenseType.type} className="defense-control">
