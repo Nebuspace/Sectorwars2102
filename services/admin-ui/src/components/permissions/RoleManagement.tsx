@@ -89,63 +89,15 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
     setShowCreateModal(true);
   };
 
-  const handleSaveRole = async () => {
-    if (!editingRole) return;
-
-    try {
-      const isNew = !editingRole.id;
-      const url = isNew ? '/api/admin/roles' : `/api/admin/roles/${editingRole.id}`;
-      const method = isNew ? 'POST' : 'PUT';
-
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        },
-        body: JSON.stringify(editingRole)
-      });
-
-      if (response.ok) {
-        const savedRole = await response.json();
-        if (isNew) {
-          setRoles([...roles, savedRole]);
-        } else {
-          setRoles(roles.map(r => r.id === savedRole.id ? savedRole : r));
-        }
-        setShowCreateModal(false);
-        setEditingRole(null);
-        onRoleUpdate?.(savedRole);
-      } else {
-        setError('Failed to save role — role endpoints are not implemented (RBAC is design-only).');
-      }
-    } catch (error) {
-      console.error('Error saving role:', error);
-      setError('Network error while saving role.');
-    }
+  // RBAC role create/edit is design-only (ADR-0027 / ADR-0058) — there is no
+  // backend (/api/v1/admin/roles does not exist). The Create/Save buttons are
+  // disabled, but guard the handlers too so no dead write call is ever fired.
+  const handleSaveRole = () => {
+    setError('Role create/edit is design-only (ADR-0027 / ADR-0058) — no backend endpoint exists.');
   };
 
-  const handleDeleteRole = async (roleId: string) => {
-    try {
-      const response = await fetch(`/api/v1/admin/roles/${roleId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        }
-      });
-
-      if (response.ok) {
-        setRoles(roles.filter(r => r.id !== roleId));
-        if (selectedRole?.id === roleId) {
-          setSelectedRole(null);
-        }
-      } else {
-        setError('Failed to delete role — role endpoints are not implemented (RBAC is design-only).');
-      }
-    } catch (error) {
-      console.error('Error deleting role:', error);
-      setError('Network error while deleting role.');
-    }
+  const handleDeleteRole = (_roleId: string) => {
+    setError('Role deletion is design-only (ADR-0027 / ADR-0058) — no backend endpoint exists.');
   };
 
   const togglePermission = (permissionId: string) => {

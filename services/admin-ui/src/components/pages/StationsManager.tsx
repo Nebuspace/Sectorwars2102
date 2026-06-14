@@ -79,7 +79,7 @@ const StationsManager: React.FC = () => {
     }
 
     try {
-      await api.delete(`/api/v1/admin/stations/${port.id}`);
+      await api.delete(`/api/v1/admin/ports/${port.id}`);
       setPorts(ports.filter(p => p.id !== port.id));
       alert('Station deleted successfully');
     } catch (err: any) {

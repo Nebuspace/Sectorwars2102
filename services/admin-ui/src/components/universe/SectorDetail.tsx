@@ -79,8 +79,8 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       setIsUpdating(true);
       const value = editValues[field];
       
-      // Update sector via API
-      await api.patch(`/api/v1/admin/sectors/${sector.id}`, {
+      // Update sector via API (PUT — matches SectorEditModal; backend only has PUT)
+      await api.put(`/api/v1/admin/sectors/${sector.id}`, {
         [field]: value
       });
       
