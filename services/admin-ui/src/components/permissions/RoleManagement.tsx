@@ -38,41 +38,17 @@ export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) 
     fetchRolesAndPermissions();
   }, []);
 
-  const fetchRolesAndPermissions = async () => {
-    setLoading(true);
+  const fetchRolesAndPermissions = () => {
+    // RBAC role/permission management is design-only (ADR-0027/0058): the
+    // /api/v1/admin/roles and /api/v1/admin/permissions endpoints do not exist.
+    // Skip the network calls entirely so we don't spam the console with 404s.
+    // The persistent design-only banner in the render conveys this honestly; we
+    // deliberately do NOT set `error` (a red failure box would misrepresent an
+    // intended design-only state as a load failure).
+    setRoles([]);
+    setPermissions([]);
     setError(null);
-    try {
-      const [rolesResponse, permissionsResponse] = await Promise.all([
-        fetch('/api/v1/admin/roles', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-          }
-        }),
-        fetch('/api/v1/admin/permissions', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-          }
-        })
-      ]);
-
-      if (rolesResponse.ok && permissionsResponse.ok) {
-        const rolesData = await rolesResponse.json();
-        const permissionsData = await permissionsResponse.json();
-        setRoles(rolesData.roles ?? []);
-        setPermissions(permissionsData.permissions ?? []);
-      } else {
-        setRoles([]);
-        setPermissions([]);
-        setError('Failed to load roles and permissions — /api/v1/admin/roles and /api/v1/admin/permissions are not implemented.');
-      }
-    } catch (error) {
-      console.error('Error fetching roles and permissions:', error);
-      setRoles([]);
-      setPermissions([]);
-      setError('Failed to load roles and permissions. Please check your connection and try again.');
-    } finally {
-      setLoading(false);
-    }
+    setLoading(false);
   };
 
   const handleCreateRole = () => {
