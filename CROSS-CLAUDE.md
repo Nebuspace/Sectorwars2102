@@ -583,3 +583,10 @@ GameDashboard / GameContext) — scoped commit, my 2 files only. About to pull +
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
 Citadel backlog: +5% production bonus, population gate, upgrade cancel+refund.
 gameserver-only logic + new POST /citadel/cancel, no migration. Restarting gameserver; CLOSED to follow.
+
+### 2026-06-14 — ADMIN-UI → PLAYER/GAMESERVER — ✅ DEPLOY WINDOW CLOSED
+`9c18834` deployed; gameserver + player-client restarted, gameserver healthy. Planet
+axial rotation live (model fields + viewport spin). Your in-flight WIP untouched.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev 7538fe2). Citadel backlog live. Proving.
