@@ -13,6 +13,7 @@
 import React from 'react';
 import { useGame } from '../../../contexts/GameContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
+import { teamAPI } from '../../../services/api';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty } from '../atoms';
 import './pages-ops.css';
 
@@ -21,6 +22,25 @@ const ACCENT = '#00FF7F';
 const CommsCrewPage: React.FC = () => {
   const { playerState, currentSector, unreadMessageCount } = useGame();
   const { isConnected, sectorPlayers } = useWebSocket();
+
+  // Resolve the player's team name for the CREW affiliation line (playerState
+  // carries only team_id, not the name). One fetch per team_id change; falls
+  // back to "ACTIVE" while loading or if the lookup fails.
+  const [teamLabel, setTeamLabel] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    const teamId = playerState?.team_id;
+    if (!teamId) { setTeamLabel(null); return; }
+    let cancelled = false;
+    teamAPI.getTeam(teamId)
+      .then((t: any) => {
+        if (cancelled) return;
+        const name = t?.name as string | undefined;
+        const tag = t?.tag as string | undefined;
+        setTeamLabel(name ? (tag ? `[${tag}] ${name}` : name) : null);
+      })
+      .catch(() => { if (!cancelled) setTeamLabel(null); });
+    return () => { cancelled = true; };
+  }, [playerState?.team_id]);
 
   // Merge WS presence + API snapshot, drop self, de-dupe. Mirrors the main
   // COMMS contact merge (GameDashboard.sectorContacts): real pilots key on
@@ -84,8 +104,7 @@ const CommsCrewPage: React.FC = () => {
 
         <div className="mfd-page-section-label">CREW</div>
         {playerState?.team_id ? (
-          // Presence only — resolving the team name needs a fetch v1 skips.
-          <MFDField label="AFFILIATION" value="ACTIVE" accent />
+          <MFDField label="AFFILIATION" value={teamLabel || 'ACTIVE'} accent />
         ) : (
           <MFDEmpty text="NO CREW AFFILIATION" />
         )}
