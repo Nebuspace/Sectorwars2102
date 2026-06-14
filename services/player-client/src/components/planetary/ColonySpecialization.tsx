@@ -29,17 +29,23 @@ interface SpecializationInfo {
   recommendedFor: string[];
 }
 
+// Benefits below reflect what the gameserver ACTUALLY applies — the production
+// multipliers in planetary_service._calculate_specialization_bonuses (organics/
+// fuel/equipment/colonist output). Specialization is a TRADE-OFF, so penalties
+// are shown, not hidden. The defense/research multipliers in that table are
+// computed but never applied anywhere, so they are NOT advertised here (see
+// DECISIONS: colony-specialization-defense-research-unapplied).
 const SPECIALIZATIONS: SpecializationInfo[] = [
   {
     type: 'agricultural',
     name: 'Agricultural Colony',
     icon: '🌾',
-    description: 'Focus on food production and organic materials to support your empire',
+    description: 'Food-focused colony: trades industrial output for organics and population growth',
     benefits: [
       '+50% organics production',
-      '+10% colonist growth rate',
-      'Reduced food consumption',
-      'Export surplus for high profits'
+      '+20% colonist growth',
+      '−20% fuel output',
+      '−20% equipment output'
     ],
     productionBonuses: {
       organics: 50
@@ -54,18 +60,16 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'industrial',
     name: 'Industrial Complex',
     icon: '🏭',
-    description: 'Manufacturing hub producing equipment and machinery for your fleet',
+    description: 'Manufacturing hub: maximises equipment output at the cost of food and growth',
     benefits: [
       '+50% equipment production',
-      '+25% fuel production',
-      'Ship upgrade discounts',
-      'Advanced manufacturing capabilities'
+      '−10% fuel output',
+      '−20% organics output',
+      '−10% colonist growth'
     ],
     productionBonuses: {
-      equipment: 50,
-      fuel: 25
+      equipment: 50
     },
-    defenseBonuses: 10,
     requirements: {
       minColonists: 15000,
       minBuildings: { factory: 2, mine: 1 }
@@ -76,17 +80,16 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'military',
     name: 'Military Outpost',
     icon: '⚔️',
-    description: 'Fortified colony focused on defense and military operations',
+    description: 'Fortified colony. (Production trade-off below; the defensive bonus is not yet active.)',
     benefits: [
-      '+50% defense effectiveness',
-      '+25% equipment production',
-      'Drone squadron bonuses',
-      'Rapid deployment capabilities'
+      '+10% equipment production',
+      '−10% fuel & organics output',
+      '−20% colonist growth',
+      'Defensive bonus: not yet active'
     ],
     productionBonuses: {
-      equipment: 25
+      equipment: 10
     },
-    defenseBonuses: 50,
     requirements: {
       minColonists: 20000,
       minBuildings: { defense: 3, factory: 1 }
@@ -97,15 +100,15 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'research',
     name: 'Research Station',
     icon: '🔬',
-    description: 'Scientific colony advancing technology and discovering new possibilities',
+    description: 'Scientific colony. (Research-output bonus is not yet active — currently a production trade-off only.)',
     benefits: [
-      '+50% research points',
-      'Technology breakthroughs',
-      'Efficiency improvements',
-      'Unique research projects'
+      'Research-point bonus: not yet active',
+      '−20% fuel output',
+      '−20% organics output',
+      '−10% equipment output',
+      '−10% colonist growth'
     ],
     productionBonuses: {},
-    researchBonuses: 50,
     requirements: {
       minColonists: 25000,
       minBuildings: { research: 2 }
@@ -116,20 +119,13 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'balanced',
     name: 'Balanced Colony',
     icon: '⚖️',
-    description: 'Well-rounded colony with diverse capabilities and steady growth',
+    description: 'No specialization trade-off: every output stays at baseline',
     benefits: [
-      '+10% all production types',
-      '+10% defense bonus',
-      '+10% research bonus',
-      'Flexible development options'
+      'Baseline output — no bonuses or penalties',
+      'Lowest requirement (5,000 colonists)',
+      'Re-specialize later as the colony grows'
     ],
-    productionBonuses: {
-      fuel: 10,
-      organics: 10,
-      equipment: 10
-    },
-    defenseBonuses: 10,
-    researchBonuses: 10,
+    productionBonuses: {},
     requirements: {
       minColonists: 5000,
       minBuildings: {}
