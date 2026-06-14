@@ -1379,6 +1379,33 @@
     "full canon: gate routes by ARIAExplorationMap + personal observations"
    ],
    "last_updated": "2026-06-13"
+  },
+  {
+   "id": "neon-2026-06-13-e",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "9078da5",
+   "deployed_sha_end": "3ccd063",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "comms-crew-team-name",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/player-client/src/components/mfd/pages/CommsCrewPage.tsx"
+     ],
+     "commit": "3ccd063",
+     "proof": "COMMS/CREW MFD affiliation 'ACTIVE' -> '[NEON] Neon Raiders' (testpilot assigned to Neon Raiders, reverted). teamAPI.getTeam fetch.",
+     "note": "Player-client is well-maintained \u2014 this was the one live half-wire. Discovery confirmed ShipDetails/TeamChat/TeamAnalytics/FleetCoordination/MaintenanceManager/AllianceManager/DiplomacyInterface are dead/unmounted mock code (GOLD purge candidate, not player-visible)."
+    }
+   ],
+   "gate": "lead self-review (single read-only fetch + display; tsc clean); no workflow review (low-risk 1-component display fix)",
+   "parking_lot": [
+    "GOLD purge of ~7 dead mock-laden player-client components + their orphan team APIs",
+    "CommsCrewPage could also show member_count (TeamResponse has it)"
+   ],
+   "last_updated": "2026-06-13"
   }
  ],
  "last_updated": "2026-06-12"
