@@ -1761,6 +1761,33 @@
     "ShipSpecification.insurable boolean (ADR-0029) not added; non-insurable gated by ship type {WARP_JUMPER,ESCAPE_POD}."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-r",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Ship maintenance v1 \u2014 decay + combat-band penalty + tiered shipyard servicing (ships.md)",
+   "sections": [
+    {
+     "key": "maintenance-decay-combat",
+     "state": "shipped-proven",
+     "commit": "f080ce6",
+     "proof": "Scout backdated 65d -> GET condition 35.0 (Degraded, canon band exact); real combat service attack 26.25(100%)->20.0(35%)->6.25(5%), defense likewise. Lazy decay, no migration. applied_effects=[combat] honest."
+    },
+    {
+     "key": "maintenance-servicing",
+     "state": "shipped-proven",
+     "commit": "f080ce6",
+     "proof": "POST /maintenance/repair basic: condition 35->100, cost 325 (=6.5x0.05x1000), credits 175270->174945 (psql). Locked, cost<=0/non-shipyard/escape-pod/pristine rejected. MaintenanceManager canon rebuild + SpaceDock mount; VesselPage reads condition."
+    }
+   ],
+   "parking_lot": [
+    "DEFERRED (own round): per-jump failure roll Minor/Major/Catastrophic (catastrophic touches destruction handler), speed+fuel band consumption in movement, repair timers, self-repair Maintenance Kit, MAINTENANCE_SYSTEM auto-upkeep upgrade.",
+    "ShipSpecification.maintenance_rate seed (0.05-0.30) is dead + mismatches canon %/day \u2014 cleanup candidate.",
+    "Stage CF cache serves stale maintenance-manager.css -> modal unstyled until purge (same as insurance); CSS correct in repo."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"

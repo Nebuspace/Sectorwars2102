@@ -267,3 +267,14 @@ Selected 2 (both backends already implemented → wire + mount, no migration):
 mechanics; premium % still 'proposed'), fleet-coordination UI (supply/coord-bonus/
 non-flagship roles design-only), alliances/diplomacy (design-only, no schema),
 treasury transaction-history (needs a migration), TeamAnalytics (no backend).
+
+### NEON BUILD — 2026-06-14 — Ship Maintenance v1 (scaffold-build series, 3rd)
+✅ DONE/PROVEN (f080ce6). Lazy condition decay (canon per-hull rates, advance-on-read,
+no migration) + performance-band COMBAT penalty consumed in combat + tiered shipyard
+servicing (GET/POST /ships/{id}/maintenance). MaintenanceManager rebuilt to canon +
+mounted in SpaceDock Ship Services; VesselPage reads real `condition`. Proven: Scout
+decay 100→35 @65d (band exact); combat attack 26.25/20.0/6.25 across bands; basic
+service 35→100 for 325cr. ships.md status flipped.
+**Deferred (own round):** per-jump failure roll (Minor/Major/Catastrophic — catastrophic
+touches the destruction handler), speed/fuel band consumption, repair timers, self-repair
+Maintenance Kit. maintenance_rate seed is dead/mismatched (cleanup).
