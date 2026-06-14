@@ -51,6 +51,14 @@ Living-NPC + viewport session. This file is the living tracker — update at eve
 
 **Parked:** P4.3 Players page, P4.4 Galaxy Map, P4.5 Colonization (presentation); pre-existing tsc errors (PlayerDetailEditor `current_region_id`, AITradingDashboard ws-events — not introduced this run); Dashboard audit-feed inline styles → move to CSS classes; audit-log entries show actor `anonymous` for the read-endpoints (backend data-quality note).
 
+### Admin-UI NEON run 4 — 2026-06-13 (frontend-only)
+**Shipped + PROVEN live (`951cbda` → `dc6b598`):**
+- **Colonization overview honesty** (P1.3/P4.5/B-05) — owned-colony filter: TOTAL COLONIES **1490→3**, population **8B→200** (DB: 3 owned of 1491 planets); deduped doubled planet name; unit labels on mixed-unit resource bars. Proven live.
+- **Economy Health snapshot** (D-05) — `/admin/economy/dashboard-summary` surfaced on the Economy page (gini/velocity/M2/GDP/alerts); labels disambiguated from the legacy grid (review MED fix). Proven live (200).
+- **CentralNexusManager dark retheme** (B-02) — light CSS fallbacks → dark tokens. Proven dark live.
+
+**Parked:** ColonyOverview status is now always 'active' after the owned filter (active/total redundant, abandoned/developing/troubled filter options unreachable) — derive status from the real `planet.status` field next time; ColonyOverview `morale` derived from `habitability_score` (0–1) treated as 0–100 (pre-existing unit bug); Colonization page heading/tabs still indigo (separate chrome); DashboardSummary `critical_alerts`/`top_trading_ports` interface fields unused/inaccurately-typed (trim).
+
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
 ### Gameplay-meaty
