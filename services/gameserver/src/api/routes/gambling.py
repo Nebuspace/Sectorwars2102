@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional
 import random
 
+from sqlalchemy.orm.attributes import flag_modified
+
 from src.core.database import get_db
 from src.auth.dependencies import get_current_user, get_current_player
 from src.models.user import User
@@ -109,6 +111,30 @@ def calculate_hand_total(cards: list[dict], count_hidden: bool = False) -> tuple
 def deal_card(deck: list[dict], index: int) -> dict:
     """Get a card from the deck at given index"""
     return deck[index % len(deck)]
+
+
+def reconstruct_blackjack_hands(deck: list[dict], player_card_count: int):
+    """Rebuild the blackjack hands deterministically from the seeded deck and
+    the (server-tracked) number of player cards — NEVER from client-supplied
+    cards. Deal order: player deck[0], dealer deck[1], player deck[2], dealer
+    deck[3], then every subsequent draw (player hits first, dealer afterward)
+    consumes the next deck index. Returns (player_cards, dealer_cards,
+    next_free_index) with the dealer's hole card hidden.
+    """
+    player_cards = [
+        {'rank': deck[0]['rank'], 'suit': deck[0]['suit']},
+        {'rank': deck[2]['rank'], 'suit': deck[2]['suit']},
+    ]
+    hit_count = max(0, player_card_count - 2)
+    for i in range(hit_count):
+        c = deck[4 + i]
+        player_cards.append({'rank': c['rank'], 'suit': c['suit']})
+    dealer_cards = [
+        {'rank': deck[1]['rank'], 'suit': deck[1]['suit'], 'hidden': False},
+        {'rank': deck[3]['rank'], 'suit': deck[3]['suit'], 'hidden': True},
+    ]
+    next_free_index = 4 + hit_count
+    return player_cards, dealer_cards, next_free_index
 
 router = APIRouter(prefix="/gambling", tags=["gambling"])
 
@@ -449,10 +475,21 @@ async def blackjack_deal(
             detail="You must be docked at a SpaceDock to gamble"
         )
 
+    # Lock the player row so the bet deduction + active-game write are atomic
+    # against a concurrent deal/action (no double-spend, no two live games).
+    current_player = db.query(Player).filter(
+        Player.id == current_player.id
+    ).populate_existing().with_for_update().first()
+    if current_player.credits < request.bet_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+        )
+
     # Deduct bet amount
     current_player.credits -= request.bet_amount
 
-    # Create a new shuffled deck with random seed
+    # Create a new shuffled deck with a SERVER-chosen seed (never client-supplied)
     deck_seed = random.randint(1, 1000000)
     deck = create_deck(deck_seed)
 
@@ -491,6 +528,22 @@ async def blackjack_deal(
         game_over = True
         current_player.credits += win_amount
 
+    # Persist the authoritative game state server-side so /blackjack/action can
+    # rebuild the hands from the seed (never trusting client-sent cards) and so
+    # a payout cannot be claimed without a real, un-settled deal. Cleared the
+    # moment the hand ends (here on a natural blackjack).
+    settings = dict(current_player.settings or {})
+    if game_over:
+        settings.pop('blackjack_game', None)
+    else:
+        settings['blackjack_game'] = {
+            'deck_seed': deck_seed,
+            'bet_amount': request.bet_amount,
+            'player_card_count': len(player_cards),
+        }
+    current_player.settings = settings
+    flag_modified(current_player, 'settings')
+
     db.commit()
 
     net_result = win_amount - request.bet_amount if game_over else 0
@@ -527,33 +580,43 @@ async def blackjack_action(
             detail="You must be docked at a SpaceDock to gamble"
         )
 
-    # Reconstruct game state
-    deck = create_deck(request.deck_seed)
-    player_cards = request.player_cards.copy()
-    dealer_cards = request.dealer_cards.copy()
+    # Lock the player + load the authoritative active game. No active game means
+    # no real un-settled deal — reject (closes the "/action without /deal" and
+    # replay-a-settled-hand credit faucets).
+    current_player = db.query(Player).filter(
+        Player.id == current_player.id
+    ).populate_existing().with_for_update().first()
+    game = (current_player.settings or {}).get('blackjack_game')
+    if not game:
+        raise HTTPException(status_code=400, detail="No active blackjack hand — deal first.")
 
-    # Calculate how many cards have been dealt
-    cards_dealt = len(player_cards) + len(dealer_cards)
+    # Rebuild the deck + hands from the SERVER-stored seed and player-card count.
+    # Client-sent cards / seed / bet are IGNORED (anti-fabrication / anti-inflation):
+    # cards_dealt is the next free deck index from the deterministic deal order.
+    deck = create_deck(int(game['deck_seed']))
+    bet_amount = int(game['bet_amount'])
+    player_cards, dealer_cards, cards_dealt = reconstruct_blackjack_hands(
+        deck, int(game['player_card_count'])
+    )
 
     game_over = False
     result = None
     win_amount = 0
-    bet_amount = request.bet_amount
 
     if request.action == "double":
         # Double down: double bet, take one card, then stand
         if len(player_cards) != 2:
             raise HTTPException(status_code=400, detail="Can only double on first two cards")
 
-        if current_player.credits < request.bet_amount:
+        if current_player.credits < bet_amount:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient credits to double. Need {request.bet_amount}, have {current_player.credits}"
+                detail=f"Insufficient credits to double. Need {bet_amount}, have {current_player.credits}"
             )
 
-        # Deduct additional bet
-        current_player.credits -= request.bet_amount
-        bet_amount = request.bet_amount * 2
+        # Deduct additional bet (the stored stake, never a client-sent amount)
+        current_player.credits -= bet_amount
+        bet_amount = bet_amount * 2
 
         # Deal one card to player
         new_card = deck[cards_dealt]
@@ -598,8 +661,13 @@ async def blackjack_action(
             cards_dealt += 1
             dealer_total, _ = calculate_hand_total(dealer_cards, count_hidden=True)
 
-        # Determine winner
-        if dealer_total > 21:
+        # Determine winner. A busted player ALWAYS loses — this covers the
+        # double-into-bust path, which forces a stand without re-entering the
+        # hit-bust check (a busted hand must never out-rank the dealer).
+        if player_total > 21:
+            result = "bust"
+            win_amount = 0
+        elif dealer_total > 21:
             result = "win"
             win_amount = bet_amount * 2
         elif dealer_total > player_total:
@@ -613,6 +681,20 @@ async def blackjack_action(
             win_amount = bet_amount  # Return original bet
 
         current_player.credits += win_amount
+
+    # Persist or clear the authoritative game state: clear on game over, else
+    # remember the new player-card count so the next action rebuilds correctly.
+    settings = dict(current_player.settings or {})
+    if game_over:
+        settings.pop('blackjack_game', None)
+    else:
+        settings['blackjack_game'] = {
+            'deck_seed': int(game['deck_seed']),
+            'bet_amount': int(game['bet_amount']),
+            'player_card_count': len(player_cards),
+        }
+    current_player.settings = settings
+    flag_modified(current_player, 'settings')
 
     # Calculate final totals
     player_total, player_soft = calculate_hand_total(player_cards)
@@ -636,6 +718,6 @@ async def blackjack_action(
         win_amount=win_amount,
         net_result=net_result,
         new_credits=current_player.credits,
-        deck_seed=request.deck_seed,
+        deck_seed=int(game['deck_seed']),
         can_double=not game_over and len(player_cards) == 2
     )
