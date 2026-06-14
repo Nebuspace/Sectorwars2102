@@ -85,6 +85,14 @@ def _execute_planet_assault(db: Session, player: Player, planet_id: UUID) -> dic
     if not planet:
         raise HTTPException(status_code=404, detail="Planet not found")
 
+    # Formation-window protection (genesis-devices.md): a forming planet cannot
+    # be attacked. Checked before the no-defenses guard so a freshly-formed
+    # (still-defenseless) planet returns the canon "still forming" reason rather
+    # than "no defenses to assault". attack_planet enforces the same guard for
+    # the direct service path.
+    if planet.formation_status == 'forming':
+        raise HTTPException(status_code=400, detail="This planet is still forming and cannot be attacked")
+
     # Planet must have defenses worth assaulting — without this guard a
     # defenseless planet would be a free capture
     if (planet.defense_level or 0) <= 0 and (planet.shields or 0) <= 0:

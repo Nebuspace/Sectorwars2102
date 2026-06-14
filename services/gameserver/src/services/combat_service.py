@@ -754,7 +754,13 @@ class CombatService:
         planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
         if not planet:
             return {"success": False, "message": "Planet not found"}
-        
+
+        # Formation-window protection (genesis-devices.md §Formation-window
+        # protection): a planet still forming cannot be attacked. The landing
+        # path already guards this; the attack path must too.
+        if planet.formation_status == 'forming':
+            return {"success": False, "message": "This planet is still forming and cannot be attacked"}
+
         # Check if player is in the planet's sector
         if attacker.current_sector_id != planet.sector_id:
             return {"success": False, "message": "You must be in the planet's sector to attack it"}
