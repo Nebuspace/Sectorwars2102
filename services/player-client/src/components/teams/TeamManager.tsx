@@ -13,6 +13,8 @@ import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
 import LoadingState from '../common/LoadingState';
+import { ResourceSharing } from './ResourceSharing';
+import { TeamChat } from './TeamChat';
 import './team-manager.css';
 
 /* CREW MANIFEST console shell (Law 3) — module-level so the monitor frame
@@ -145,7 +147,7 @@ export const TeamManager: React.FC = () => {
   const [permissions, setPermissions] = useState<TeamPermissions | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'treasury' | 'settings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'members' | 'treasury' | 'chat' | 'settings'>('overview');
   const [editingInfo, setEditingInfo] = useState(false);
   const [teamInfo, setTeamInfo] = useState<{ description: string; recruitmentStatus: Team['recruitmentStatus'] }>({
     description: '',
@@ -521,6 +523,12 @@ export const TeamManager: React.FC = () => {
             Treasury
           </button>
           <button
+            className={activeTab === 'chat' ? 'active' : ''}
+            onClick={() => setActiveTab('chat')}
+          >
+            Chat
+          </button>
+          <button
             className={activeTab === 'settings' ? 'active' : ''}
             onClick={() => setActiveTab('settings')}
           >
@@ -629,16 +637,25 @@ export const TeamManager: React.FC = () => {
         )}
 
         {activeTab === 'treasury' && (
-          <div className="team-treasury">
-            <h3>Team Treasury</h3>
+          <ResourceSharing
+            teamId={team.id}
+            playerId={playerState.id}
+            members={members}
+            playerCredits={playerState.credits}
+            canManageTreasury={permissions?.canManageTreasury ?? false}
+            onChanged={() => {
+              void loadTeamData(team.id);
+              void refreshPlayerState();
+            }}
+          />
+        )}
 
-            <div className="treasury-balance">
-              <div className="resource-item">
-                <label>Credits</label>
-                <value>{team.treasury.credits.toLocaleString()}</value>
-              </div>
-            </div>
-          </div>
+        {activeTab === 'chat' && (
+          <TeamChat
+            teamId={team.id}
+            playerId={playerState.id}
+            members={members}
+          />
         )}
 
         {activeTab === 'settings' && (

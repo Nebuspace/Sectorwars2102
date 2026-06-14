@@ -190,29 +190,40 @@ export const teamAPI = {
     return apiRequest(`/api/v1/teams/${teamId}/messages?${params}`);
   },
 
-  sendMessage: (teamId: string, content: string) =>
+  // Backend SendMessageRequest (teams.py) requires `subject` (str) alongside
+  // content; priority defaults to "normal". Chat has no subject concept, so a
+  // short slice of the content stands in as the subject.
+  sendMessage: (teamId: string, content: string, priority: string = 'normal') =>
     apiRequest(`/api/v1/teams/${teamId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content })
+      body: JSON.stringify({ subject: (content.length > 80 ? content.slice(0, 77) + '…' : content) || 'Team message', content, priority })
     }),
 
-  // Resource management
-  depositToTreasury: (teamId: string, resources: any) =>
+  // Treasury — the backend ops are per-resource-type ({resource_type, amount}),
+  // not a multi-resource object (team_service deposit/withdraw/transfer_to_player).
+  // Only `credits` and `quantum_crystals` are player-transferable
+  // (PLAYER_TRANSFERABLE_RESOURCES whitelist); other columns are server-fed only.
+  getTreasuryBalance: (teamId: string) =>
+    apiRequest(`/api/v1/teams/${teamId}/treasury`),
+
+  depositToTreasury: (teamId: string, resourceType: string, amount: number) =>
     apiRequest(`/api/v1/teams/${teamId}/treasury/deposit`, {
       method: 'POST',
-      body: JSON.stringify(resources)
+      body: JSON.stringify({ resource_type: resourceType, amount })
     }),
 
-  withdrawFromTreasury: (teamId: string, resources: any) =>
+  withdrawFromTreasury: (teamId: string, resourceType: string, amount: number) =>
     apiRequest(`/api/v1/teams/${teamId}/treasury/withdraw`, {
       method: 'POST',
-      body: JSON.stringify(resources)
+      body: JSON.stringify({ resource_type: resourceType, amount })
     }),
 
-  transferResources: (teamId: string, transfer: any) =>
-    apiRequest(`/api/v1/teams/${teamId}/transfer`, {
+  // Treasury -> member transfer. Backend TransferRequest resolves recipient by
+  // nickname; correct path is /treasury/transfer (was /transfer — 404'd).
+  transferTreasury: (teamId: string, recipientNickname: string, resourceType: string, amount: number) =>
+    apiRequest(`/api/v1/teams/${teamId}/treasury/transfer`, {
       method: 'POST',
-      body: JSON.stringify(transfer)
+      body: JSON.stringify({ recipient_nickname: recipientNickname, resource_type: resourceType, amount })
     }),
 
   // Mission management

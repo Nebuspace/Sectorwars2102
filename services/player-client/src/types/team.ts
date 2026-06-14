@@ -129,6 +129,37 @@ export interface TeamMessage {
   readBy: string[]; // Array of player IDs who have read the message
 }
 
+// Backend wire shapes (teams.py response models), received snake_case.
+export interface TeamMessageApiResponse {
+  id: string;
+  sender_id: string;
+  sender_name: string;
+  subject: string;
+  content: string;
+  sent_at: string;
+  read_at: string | null;
+  priority: string;
+  is_read: boolean;
+}
+
+// TreasuryBalanceResponse — all 12 columns. Only `credits` and
+// `quantum_crystals` are player deposit/withdraw/transfer-able; the rest are
+// server-fed (loot, etc.) and shown read-only when non-zero.
+export interface TreasuryBalanceApiResponse {
+  credits: number;
+  fuel: number;
+  organics: number;
+  equipment: number;
+  technology: number;
+  luxury_items: number;
+  precious_metals: number;
+  raw_materials: number;
+  plasma: number;
+  bio_samples: number;
+  dark_matter: number;
+  quantum_crystals: number;
+}
+
 export interface ResourceTransfer {
   id: string;
   teamId: string;
