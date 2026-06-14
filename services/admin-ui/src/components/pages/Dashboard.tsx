@@ -46,11 +46,31 @@ interface DashboardData {
   last_updated: string;
 }
 
+interface AuditLogEntry {
+  id: string;
+  timestamp: string | null;
+  method: string;
+  path: string;
+  status_code: number | null;
+  user_id: string | null;
+  user_type: string | null;
+  client_ip: string;
+  action: string | null;
+  resource_type: string | null;
+  resource_id: string | null;
+}
+
+type AuditFeedState =
+  | { status: 'loading' }
+  | { status: 'ok'; entries: AuditLogEntry[] }
+  | { status: 'error'; message: string };
+
 const Dashboard: React.FC = () => {
   const { token } = useAuth();
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [auditFeed, setAuditFeed] = useState<AuditFeedState>({ status: 'loading' });
 
   // Get API URL helper
   const getApiUrl = () => {
@@ -66,12 +86,32 @@ const Dashboard: React.FC = () => {
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
       // Fetch all dashboard data concurrently - use allSettled so partial failures don't blank everything
-      const [dbHealthRes, aiHealthRes, gameServerRes, adminStatsRes] = await Promise.allSettled([
+      const [dbHealthRes, aiHealthRes, gameServerRes, adminStatsRes, auditRes] = await Promise.allSettled([
         axios.get('/api/v1/status/database', { headers, timeout: 10000 }),
         axios.get('/api/v1/status/ai/providers', { headers, timeout: 15000 }),
         axios.get('/api/v1/status/', { headers, timeout: 10000 }),
-        axios.get('/api/v1/admin/stats', { headers, timeout: 10000 })
+        axios.get('/api/v1/admin/stats', { headers, timeout: 10000 }),
+        axios.get('/api/v1/admin/audit/logs', { headers, timeout: 10000, params: { limit: 8 } })
       ]);
+
+      // Process recent audit events with honest empty/error state (no mock data)
+      if (auditRes.status === 'fulfilled') {
+        const logs = auditRes.value.data?.logs;
+        setAuditFeed({ status: 'ok', entries: Array.isArray(logs) ? (logs as AuditLogEntry[]) : [] });
+      } else {
+        const reason = auditRes.reason;
+        let message = 'Unable to load recent audit events.';
+        if (axios.isAxiosError(reason)) {
+          if (reason.response) {
+            message = `Audit log request failed (${reason.response.status}).`;
+          } else if (reason.code === 'ECONNABORTED') {
+            message = 'Audit log request timed out.';
+          } else {
+            message = 'Audit log request failed: network error.';
+          }
+        }
+        setAuditFeed({ status: 'error', message });
+      }
 
       // Process system health data with graceful degradation
       const systemHealth: SystemHealth = {
@@ -127,6 +167,7 @@ const Dashboard: React.FC = () => {
         universe_stats: { total_sectors: 0, total_planets: 0, total_ports: 0, total_ships: 0, total_warp_tunnels: 0 },
         last_updated: new Date().toISOString()
       });
+      setAuditFeed({ status: 'error', message: 'Unable to load recent audit events.' });
     } finally {
       setIsLoading(false);
     }
@@ -148,6 +189,46 @@ const Dashboard: React.FC = () => {
       case 'unavailable': return '#e74c3c';
       default: return '#7f8c8d';
     }
+  };
+
+  const formatRelativeTime = (timestamp: string | null): string => {
+    if (!timestamp) return 'unknown time';
+    const then = new Date(timestamp);
+    if (Number.isNaN(then.getTime())) return 'unknown time';
+    const diffMs = Date.now() - then.getTime();
+    const diffSec = Math.round(diffMs / 1000);
+    if (diffSec < 0) return then.toLocaleString();
+    if (diffSec < 60) return `${diffSec}s ago`;
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h ago`;
+    const diffDay = Math.floor(diffHr / 24);
+    if (diffDay < 7) return `${diffDay}d ago`;
+    return then.toLocaleDateString();
+  };
+
+  const formatAuditAction = (entry: AuditLogEntry): string => {
+    if (entry.action) {
+      return entry.action.replace(/_/g, ' ');
+    }
+    return `${entry.method} ${entry.path}`;
+  };
+
+  const formatAuditActor = (entry: AuditLogEntry): string => {
+    const type = entry.user_type || 'anonymous';
+    if (entry.user_id) {
+      return `${type} (${entry.user_id.slice(0, 8)})`;
+    }
+    return type;
+  };
+
+  const formatAuditTarget = (entry: AuditLogEntry): string | null => {
+    if (!entry.resource_type && !entry.resource_id) return null;
+    if (entry.resource_type && entry.resource_id) {
+      return `${entry.resource_type}:${entry.resource_id.slice(0, 8)}`;
+    }
+    return entry.resource_type || (entry.resource_id ? entry.resource_id.slice(0, 8) : null);
   };
 
   const getStatusIcon = (status: string) => {
@@ -391,6 +472,66 @@ const Dashboard: React.FC = () => {
                   <div className="text-xs text-tertiary">Weekly Growth</div>
                 </div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Recent Audit Events */}
+        <section className="section">
+          <div className="section-header">
+            <div>
+              <h3 className="section-title">Recent Audit Events</h3>
+              <p className="section-subtitle">Latest administrative and security activity</p>
+            </div>
+            <div className="section-actions">
+              <Link to="/security" className="text-sm text-tertiary hover:opacity-80 transition-opacity">
+                View all →
+              </Link>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-body">
+              {auditFeed.status === 'loading' && (
+                <p className="text-sm text-tertiary" style={{ margin: 0 }}>Loading recent audit events…</p>
+              )}
+              {auditFeed.status === 'error' && (
+                <p className="text-sm" style={{ margin: 0, color: 'var(--status-error, var(--color-red-500, #e74c3c))' }}>
+                  {auditFeed.message}
+                </p>
+              )}
+              {auditFeed.status === 'ok' && auditFeed.entries.length === 0 && (
+                <p className="text-sm text-tertiary" style={{ margin: 0 }}>No recent audit events.</p>
+              )}
+              {auditFeed.status === 'ok' && auditFeed.entries.length > 0 && (
+                <div className="flex flex-col">
+                  {auditFeed.entries.map((entry, index) => {
+                    const target = formatAuditTarget(entry);
+                    return (
+                      <div
+                        key={entry.id}
+                        className="flex items-center justify-between gap-4"
+                        style={{
+                          padding: '0.75rem 0',
+                          borderTop: index === 0 ? 'none' : '1px solid var(--border-light, var(--color-gray-700, #374151))'
+                        }}
+                      >
+                        <div className="flex flex-col gap-1" style={{ minWidth: 0 }}>
+                          <span className="text-sm font-medium text-primary" style={{ textTransform: 'capitalize' }}>
+                            {formatAuditAction(entry)}
+                          </span>
+                          <span className="text-xs text-tertiary" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {formatAuditActor(entry)}
+                            {target ? ` → ${target}` : ''}
+                          </span>
+                        </div>
+                        <span className="text-xs text-tertiary" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
+                          {formatRelativeTime(entry.timestamp)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </section>
