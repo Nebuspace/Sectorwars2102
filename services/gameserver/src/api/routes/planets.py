@@ -11,7 +11,8 @@ from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel, Field
 
@@ -417,9 +418,21 @@ async def transfer_colonists(
             detail="Invalid planet ID format"
         )
 
+    # Fail fast under row-lock contention instead of blocking until the gateway
+    # times out: a 504'd transfer whose FOR UPDATE is wedged can leak its lock
+    # and stall every later transfer on this planet (the disembark-hang bug).
+    # lock_timeout is LOCAL — it covers the player lock below in the same txn too.
     # Locked: owner AND teammates may transfer concurrently — without the
-    # planet lock two embarks can both read N and write N-q (duplication)
-    planet = db.query(Planet).filter(Planet.id == planet_uuid).with_for_update().first()
+    # planet lock two embarks can both read N and write N-q (duplication).
+    try:
+        db.execute(text("SET LOCAL lock_timeout = '5s'"))
+        planet = db.query(Planet).filter(Planet.id == planet_uuid).with_for_update().first()
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This planet is busy with another colonist transfer — try again in a moment."
+        )
     if not planet:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -449,8 +462,16 @@ async def transfer_colonists(
             )
 
     # Lock the player row to serialize concurrent transfers on the same
-    # ship/planet pair (mirrors trading.py's with_for_update pattern)
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    # ship/planet pair (mirrors trading.py's with_for_update pattern).
+    # Same lock_timeout (set LOCAL above) applies — fail fast, don't hang.
+    try:
+        player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Your ship is busy with another transfer — try again in a moment."
+        )
 
     ship = db.query(Ship).filter(
         Ship.id == player.current_ship_id,
