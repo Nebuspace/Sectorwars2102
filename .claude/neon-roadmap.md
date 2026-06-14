@@ -191,7 +191,7 @@ All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Tra
 - ✅ **/player/move surfaces entry encounters + tunnel events** (`478ec80`): MovementService generated them + MoveResponse declared the fields, but the route never copied them → response_model stripped them (encounters hidden, ARIA autopilot pause blinded, ADR-0072). One-line forward. Proven live (move into NEBULA 1319 → sector_hazard encounter in response).
 
 ### Fresh discovery queue (2026-06-14 full scan — BUILDABLE, in-lane, provable, NOT Max-gated)
-- 🟢 **/drones/sector/{id} unauthenticated** (drones.py:416) — SECURITY: no get_current_player dep; unauth caller enumerates drones in any sector. Fix: add the auth dependency. eff1.
+- ✅ **/drones/sector/{id} auth FIXED (2026-06-14, `f558e98`)** — was unauthenticated (anonymous drone-presence enumeration); now requires get_current_player. Proven: unauth→401, auth→200.
 - 🟢 **ColonySpecialization UI lies about bonuses** (ColonySpecialization.tsx:58) — benefits prose claims effects (ship-upgrade discounts, colonist growth, food consumption, drone bonuses) the backend never applies (real = productionBonuses + defenseBonuses only). Fix: align the benefits copy to what's applied. eff1. PlanetManager→Specialize.
 - 🟢 **AI market predicted_price fallback = last×1.05** (ai_trading_service) — on predict_prices() failure, /ai/market-analysis returns a fabricated guess as a prediction. eff1.
 - 🟢 **/combat/engage port returns 200 'error'** (player_combat.py:197) — disabled-feature path returns HTTP 200 with an error body; should be 403/501 so the client can distinguish. eff1.

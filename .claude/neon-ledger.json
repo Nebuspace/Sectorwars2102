@@ -1520,6 +1520,36 @@
     "Max-gated: drone costs, faction-mission completion, faction pricing stacking, pirate hulls"
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-j",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "478ec80",
+   "deployed_sha_end": "f558e98",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "drones-sector-auth",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/drones.py"
+     ],
+     "commit": "f558e98",
+     "proof": "GET /drones/sector/{uuid}: unauthenticated -> 401 (was 200, anonymous enumeration); authenticated -> 200 with drone array. Client never calls it -> zero impact.",
+     "note": "From the 2026-06-14 full-scan queue. Lone drone read endpoint missing get_current_player."
+    }
+   ],
+   "gate": "lead self-review (one-line auth dependency matching sibling endpoints; py_compile clean; live 401/200 proof)",
+   "parking_lot": [
+    "ColonySpecialization UI lies (buildable, next)",
+    "AI market predicted_price 1.05 fallback (buildable)",
+    "/combat/engage port 200->403 (buildable)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: drone costs, faction-mission completion, faction pricing stacking, pirate hulls; GOLD purge"
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"
