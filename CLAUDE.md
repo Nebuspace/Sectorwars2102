@@ -747,3 +747,17 @@ The percentages are rough by design — the point is the shape (how much of the 
 **Notes**:
 - Never name components with the word "enhanced" or "improved" without first asking Max
 - The user's name is Max
+
+## 📐 SCROLL LAW — UI Design Principle
+
+A view's **primary action must be visible without scrolling** at 1440×900 (the
+reference cockpit resolution). When you dock at a station you should *see* the
+buy/sell desk; when you land you should *see* the colony controls — not scroll
+to find them. Design default views to fit: collapse low-value chrome, minimize
+non-essential panels (e.g. the docked station-bay windshield auto-minimizes to
+hand the band to the console), tile rather than stack, and present secondary
+destinations as tabs/cards rather than buried toggles. Reserve scrolling for
+genuinely long, secondary lists (logs, inboxes, hail history) — never for the
+primary controls a screen exists to provide. If a default view needs scrolling
+to reach its core action, the layout is wrong; fix the layout, don't accept the
+scroll.
