@@ -117,6 +117,14 @@ Adversarial review PASS (no CRITICAL/HIGH/MED). Verdict STEADY (§A proven, §B 
 ### Admin-UI NEON run 11 — 2026-06-14 (frontend-only; tsc gate, #7)
 **Shipped (`34f3fe2`):** wired the typecheck gate AND burned the admin-ui tsc count **28 → 0** (the "~76" estimate was stale). `package.json` `build` is now `tsc --noEmit && vite build` (the admin-ui Dockerfile production stage runs `npm run build`, so a type error now fails the production image build / CI); kept `build:novcheck` as an escape hatch. All 28 fixes were behavior-preserving (see commit body): WebSocketEvents missing ai:*/system:* keys (14), PlayerModel.current_region_id (4), websocket token/replace (3), 3× nullable `new Date(last_login)` guards, d3 axis cast (2), LanguageSwitcher direction default, SectorEditModal region_name nullability. Verified by `tsc --noEmit` = 0 + green vite build; no live-proof needed (compile-time/type changes; the only runtime delta is null last_login now shows '—' instead of "Invalid Date"). Roadmap #7 now ✅ DONE.
 
+### Admin-UI NEON run 12 — 2026-06-14 (frontend-only; dead-handler honest-disable)
+**Shipped (`d4d428b`):** two operator-facing dead controls honest-disabled.
+- **PlayerBehaviorAnalytics** (under AI Trading → Behavior Analytics tab): `fetchPlayerProfiles` hardcodes `setProfiles([])` ("Simplified for demo") while wiring segments+trends from the real `/admin/ai/behavior-analytics` endpoint — so the per-player profiles table is always empty and its Behavior/Activity filter selects do nothing. Disabled both selects + added an honest note (segments/trends above are real). **PROVEN live**: Behavior Analytics tab shows real Player Segments + Recent Insights, the two filters disabled, and the honest note above the empty profiles table.
+- **RegionalGovernorDashboard**: per-treaty "View Details" button had no onClick → disabled + honest title. Build/tsc-verified; live-proof is data-dependent (needs a treaty row in the Diplomacy tab).
+tsc 0 (gate held), gated build green.
+
+**Lane status (honest):** after runs 6–12 + the fresh audit, the self-selectable admin-UI frontend work is essentially exhausted. Remaining items are either Max-gated (RBAC #9, Economy #8, LoginForm auth harness, governance region-keying — all need decisions/backend) or low-value scraps (AdvancedAnalytics Download/Share dead buttons that only render with backendless reports; RouteOptimizationDisplay placeholder map; unused exports in live files; PlayerAssetManager camelCase ownerId; admin-ui.md doc-table drift in sw2102-docs). Recommend handing back to the player/gameserver lane or taking a Max decision on #8/#9.
+
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
 ### Gameplay-meaty
