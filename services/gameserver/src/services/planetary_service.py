@@ -9,7 +9,8 @@ from typing import Dict, Any, Optional, List
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_, func, text
+from sqlalchemy.exc import OperationalError
 import logging
 
 from src.core.game_time import canonical_hours_since
@@ -139,6 +140,16 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found or not owned by player")
 
+        # This is a hot read endpoint that now WRITES (lazy growth + production
+        # accrual commit on every read). Fail fast under row-lock contention so a
+        # leaked FOR UPDATE lock elsewhere can never hang all planet reads into a
+        # 504 cascade — on timeout we serve the data without persisting accrual
+        # (the un-advanced anchor makes the next read catch up).
+        try:
+            self.db.execute(text("SET LOCAL lock_timeout = '3s'"))
+        except OperationalError:
+            self.db.rollback()
+
         # Lazily apply colonist growth + commodity production accrued since the last read
         changed = self.apply_population_growth(planet)
         changed = self.apply_resource_production(planet) or changed
@@ -157,7 +168,20 @@ class PlanetaryService:
         if planet.under_siege:
             changed = self.advance_siege(planet) or changed
         if changed:
-            self.db.commit()
+            try:
+                self.db.commit()
+            except OperationalError:
+                # Row-lock timeout (a leaked/long lock held the planet row):
+                # abandon this read's accrual rather than 504. Re-fetch the
+                # planet so formatting reflects committed DB state.
+                self.db.rollback()
+                planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
+                if not planet:
+                    raise ValueError("Planet not found or not owned by player")
+                logger.warning(
+                    f"get_planet_details: lock timeout on planet {planet_id}; "
+                    f"served without persisting lazy accrual"
+                )
 
         return self._format_planet_data(planet)
 
