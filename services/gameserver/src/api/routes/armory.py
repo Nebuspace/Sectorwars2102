@@ -95,6 +95,14 @@ async def get_armory_catalog(
                 "price": entry["price"],
                 "description": entry["description"],
                 "service": entry["service"],
+                # Mines are not yet deployable (nothing reads player.mines), so
+                # they are shown but flagged unavailable rather than sold as a
+                # no-op. Drones are fully functional.
+                "available": key not in ("limpet_mine", "armored_mine"),
+                "reason": (
+                    "Mine deployment is not yet available"
+                    if key in ("limpet_mine", "armored_mine") else None
+                ),
             }
             for key, entry in ARMORY_CATALOG.items()
         ]
@@ -116,6 +124,16 @@ async def purchase_armory_item(
     single transaction.
     """
     entry = ARMORY_CATALOG[request.item]
+
+    # Mines are sold-but-inert: nothing in the game reads player.mines (no
+    # deploy / detonate / tracking path exists), so a purchase only burns
+    # credits for a no-op. Reject it honestly until mine deployment ships
+    # rather than sell a non-functional item.
+    if request.item in ("limpet_mine", "armored_mine"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mine deployment is not yet available — mines cannot be purchased yet.",
+        )
 
     # Lock the player row to prevent concurrent purchases double-spending
     # credits or overshooting loadout caps
