@@ -75,7 +75,9 @@ class GenesisDeployRequest(BaseModel):
     """Genesis device deployment request (legacy - use /genesis/deploy instead)."""
     sectorId: str
     planetName: str = Field(..., min_length=3, max_length=50)
-    planetType: str = Field(..., pattern="^(terran|oceanic|mountainous|desert|frozen)$")
+    # Biome is rolled server-side from the device tier (ADR-0014); kept optional
+    # only so older clients that still send a type don't 422.
+    planetType: str | None = None
 
 
 class SpecializationRequest(BaseModel):
@@ -1103,6 +1105,7 @@ async def deploy_genesis_device_legacy(
             player_id=player.id,
             sector_id=sector_num,
             tier="basic",
+            name=request.planetName,  # honor the player's chosen colony name
         )
         # Translate the service's snake_case result into the camelCase keys
         # the client reads (genesisDevicesRemaining / deploymentTime / planetId);

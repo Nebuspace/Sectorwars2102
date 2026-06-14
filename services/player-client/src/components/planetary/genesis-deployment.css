@@ -491,3 +491,16 @@
 .planet-type-card.selected {
   animation: genesisGlow 2s ease-in-out infinite;
 }
+/* Honest biome note — the genesis device determines the world type (server-rolled) */
+.genesis-biome-note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: rgba(124, 110, 255, 0.08);
+  border: 1px solid rgba(124, 110, 255, 0.3);
+  border-radius: 6px;
+}
+.genesis-biome-note .biome-icon { font-size: 1.3rem; line-height: 1; }
+.genesis-biome-note p { margin: 0; font-size: 0.82rem; line-height: 1.4; color: var(--text-secondary, #aab); }

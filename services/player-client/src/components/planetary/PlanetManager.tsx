@@ -347,10 +347,10 @@ export const PlanetManager: React.FC = () => {
             <button
               onClick={() => setShowGenesisDeployment(true)}
               className="genesis-mini-button"
-              title="Deploy Genesis Device"
+              title="Deploy a Genesis Device to seed a new colony in an empty sector"
               aria-label="Deploy Genesis Device"
             >
-              🌌
+              🌌 Deploy Genesis
             </button>
             <button
               onClick={handleRefresh}

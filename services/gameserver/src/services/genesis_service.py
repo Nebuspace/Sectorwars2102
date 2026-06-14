@@ -108,6 +108,7 @@ class GenesisService:
         player_id: UUID,
         sector_id: int,
         tier: str,
+        name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Deploy a genesis device to create a new planet.
@@ -222,8 +223,9 @@ class GenesisService:
         size_min, size_max = tier_config["size_range"]
         planet_size = random.randint(size_min, size_max)
 
-        # --- Generate planet name ---
-        planet_name = self._generate_planet_name(sector_id, planet_type)
+        # --- Planet name: honor the player's chosen name, else generate one ---
+        chosen = (name or "").strip()
+        planet_name = chosen if chosen else self._generate_planet_name(sector_id, planet_type)
 
         # --- Calculate formation timestamps ---
         now = datetime.now(timezone.utc)

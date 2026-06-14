@@ -1081,15 +1081,17 @@
 }
 
 .genesis-mini-button {
-  padding: var(--space-xs);
-  background: transparent;
-  border: 1px solid var(--border-secondary);
+  padding: var(--space-xs) var(--space-sm);
+  background: rgba(124, 110, 255, 0.12);
+  border: 1px solid var(--accent-primary, rgba(124, 110, 255, 0.6));
   border-radius: var(--radius-sm);
-  color: var(--text-secondary);
+  color: var(--accent-primary, #b9afff);
   cursor: pointer;
   transition: all 0.2s;
-  font-size: 1.2rem;
-  line-height: 1;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .genesis-mini-button:hover {

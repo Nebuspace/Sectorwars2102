@@ -100,37 +100,23 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   onSuccess,
   onClose 
 }) => {
-  const { currentShip, updateShipGenesis } = useGame();
-  const [selectedType, setSelectedType] = useState<PlanetType>('terran');
+  const { currentShip, currentSector, updateShipGenesis } = useGame();
   const [planetName, setPlanetName] = useState('');
-  const [selectedSectorId, setSelectedSectorId] = useState('');
+  // Default the target to the player's current sector — you deploy where your
+  // ship is. The deploy API validates that the sector is empty/eligible. The
+  // player can still override with another sector id.
+  const currentSectorId = currentSector?.sector_id != null ? String(currentSector.sector_id) : '';
+  const [selectedSectorId, setSelectedSectorId] = useState(currentSectorId);
   const [deploying, setDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [loadingSectors, setLoadingSectors] = useState(true);
-  const [availableSectors, setAvailableSectors] = useState<Array<{id: string, name: string}>>([]);
 
   const genesisDevices = currentShip?.genesis_devices ?? 0;
 
   useEffect(() => {
-    loadAvailableSectors();
-  }, []);
-
-  const loadAvailableSectors = async () => {
-    setLoadingSectors(true);
-    try {
-      // No dedicated endpoint exists for sectors available for genesis deployment.
-      // The deploy API itself validates the target sector, so we let the player
-      // enter a sector ID manually. A future API endpoint could provide filtered sectors.
-      setAvailableSectors([]);
-    } catch {
-      setAvailableSectors([]);
-    } finally {
-      setLoadingSectors(false);
-    }
-  };
-
-  const selectedPlanetInfo = PLANET_TYPES.find(p => p.type === selectedType)!;
+    // Keep the default in sync if the player moves while the panel is open.
+    if (currentSectorId) setSelectedSectorId(prev => prev || currentSectorId);
+  }, [currentSectorId]);
 
   const validatePlanetName = (name: string): boolean => {
     // Basic validation
@@ -167,16 +153,9 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       setError(null);
       setSuccessMessage(null);
 
-      const deployment: GenesisDeploymentType = {
-        sectorId: selectedSectorId,
-        planetName: planetName.trim(),
-        planetType: selectedType
-      };
-
       const response = await gameAPI.planetary.deployGenesis(
-        deployment.sectorId,
-        deployment.planetName,
-        deployment.planetType
+        selectedSectorId.trim(),
+        planetName.trim()
       );
 
       if (response.success) {
@@ -273,79 +252,25 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
 
               <div className="form-section">
                 <label htmlFor="sector-select">Target Sector</label>
-                {loadingSectors ? (
-                  <p className="input-hint">Loading available sectors...</p>
-                ) : availableSectors.length === 0 ? (
-                  <>
-                    <input
-                      id="sector-select"
-                      type="text"
-                      value={selectedSectorId}
-                      onChange={(e) => setSelectedSectorId(e.target.value)}
-                      placeholder="Enter sector ID..."
-                      className={error && error.includes('sector') ? 'error' : ''}
-                    />
-                    <span className="input-hint">Enter the ID of a sector with available planet slots. Navigate to a sector first to find valid targets.</span>
-                  </>
-                ) : (
-                  <>
-                    <select
-                      id="sector-select"
-                      value={selectedSectorId}
-                      onChange={(e) => setSelectedSectorId(e.target.value)}
-                      className={error && error.includes('sector') ? 'error' : ''}
-                    >
-                      <option value="">Select a sector...</option>
-                      {availableSectors.map(sector => (
-                        <option key={sector.id} value={sector.id}>
-                          {sector.name}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="input-hint">Choose a sector with available planet slots</span>
-                  </>
-                )}
+                <input
+                  id="sector-select"
+                  type="text"
+                  value={selectedSectorId}
+                  onChange={(e) => setSelectedSectorId(e.target.value)}
+                  placeholder="Enter sector number..."
+                  className={error && error.includes('sector') ? 'error' : ''}
+                />
+                <span className="input-hint">
+                  {currentSectorId
+                    ? `Defaults to your current sector (${currentSectorId}). The target must be empty — undock and fly to an empty sector to seed a world.`
+                    : 'Enter the number of an empty sector. Navigate to an empty sector first.'}
+                </span>
               </div>
             </div>
 
-            <div className="planet-types">
-              <h4>Select Planet Type</h4>
-              <div className="type-grid">
-                {PLANET_TYPES.map(planetType => (
-                  <div
-                    key={planetType.type}
-                    className={`planet-type-card ${selectedType === planetType.type ? 'selected' : ''}`}
-                    onClick={() => setSelectedType(planetType.type)}
-                  >
-                    <div className="type-header">
-                      <span className="type-icon">{planetType.icon}</span>
-                      <h5>{planetType.name}</h5>
-                    </div>
-                    <p className="type-description">{planetType.description}</p>
-                    
-                    <div className="type-stats">
-                      <div className="stat">
-                        <span className="stat-label">Max Population:</span>
-                        <span className="stat-value">{planetType.maxColonists.toLocaleString()}</span>
-                      </div>
-                      <div className="production-bonuses">
-                        <span className="bonus-label">Production:</span>
-                        <div className="bonus-values">
-                          <span className="bonus fuel">⛽ {(planetType.productionBonuses.fuel * 100).toFixed(0)}%</span>
-                          <span className="bonus organics">🌿 {(planetType.productionBonuses.organics * 100).toFixed(0)}%</span>
-                          <span className="bonus equipment">⚙️ {(planetType.productionBonuses.equipment * 100).toFixed(0)}%</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <ul className="characteristics">
-                      {planetType.characteristics.map((char, index) => (
-                        <li key={index}>{char}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
+            <div className="genesis-biome-note">
+              <span className="biome-icon">🌍</span>
+              <p>The genesis process forms the world over ~48 hours; its <strong>biome is determined by the device</strong> (higher tiers bias toward richer worlds). The planet is invulnerable while it forms, then appears in your Colonial Registry.</p>
             </div>
 
             <div className="deployment-summary">
@@ -356,20 +281,18 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                   <span className="summary-value">{planetName || 'Not set'}</span>
                 </div>
                 <div className="summary-item">
-                  <span className="summary-label">Planet Type:</span>
-                  <span className="summary-value">
-                    {selectedPlanetInfo.icon} {selectedPlanetInfo.name}
-                  </span>
+                  <span className="summary-label">Biome:</span>
+                  <span className="summary-value">Determined by the genesis device</span>
                 </div>
                 <div className="summary-item">
                   <span className="summary-label">Target Sector:</span>
                   <span className="summary-value">
-                    {selectedSectorId ? (availableSectors.find(s => s.id === selectedSectorId)?.name || `Sector ${selectedSectorId}`) : 'Not selected'}
+                    {selectedSectorId ? `Sector ${selectedSectorId}` : 'Not selected'}
                   </span>
                 </div>
                 <div className="summary-item">
-                  <span className="summary-label">Max Colonists:</span>
-                  <span className="summary-value">{selectedPlanetInfo.maxColonists.toLocaleString()}</span>
+                  <span className="summary-label">Formation:</span>
+                  <span className="summary-value">~48 hours (invulnerable)</span>
                 </div>
               </div>
             </div>
