@@ -59,6 +59,15 @@ Living-NPC + viewport session. This file is the living tracker — update at eve
 
 **Parked:** ColonyOverview status is now always 'active' after the owned filter (active/total redundant, abandoned/developing/troubled filter options unreachable) — derive status from the real `planet.status` field next time; ColonyOverview `morale` derived from `habitability_score` (0–1) treated as 0–100 (pre-existing unit bug); Colonization page heading/tabs still indigo (separate chrome); DashboardSummary `critical_alerts`/`top_trading_ports` interface fields unused/inaccurately-typed (trim).
 
+### Admin-UI NEON run 5 — 2026-06-14 (frontend-only)
+**Shipped + PROVEN live (`2665231` → `89a2505`):** three brand-new admin pages surfacing previously-unsurfaced subsystems (the P0.4 async breakage that killed factions/messages is fixed upstream):
+- **Faction Management** (`/admin/factions`, #3.5/ZONE-C-03) — faction list + active missions + stats. Proven (Terran Federation, Courier Run mission).
+- **Message Moderation** (`/admin/messages`, #3.5/ZONE-C-04) — flagged queue + stats + guarded moderate (clear-flag/delete). Proven (8 total / 0 flagged, 2 senders).
+- **Translation Management** (`/i18n/admin`, #3.3/ZONE-C-05) — language coverage overview + per-language progress. Proven (12 languages, English 100%).
+All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Translations→Security & Admin). Review fixed 2 MEDs (undefined `--status-danger`→`--status-error`; over-promising "Flag Reason"→"Status"). Deferred my dev-deploy + proofs around the other instance's gameserver DEPLOY WINDOW (blackjack-faucet round) per protocol.
+
+**Parked:** Faction/Message/Translation pages are read-mostly v1 — faction create/edit/delete + translation key-editing endpoints exist but weren't wired (guarded-mutation follow-up); Message Moderation "Most Active Senders" shows raw player UUIDs (backend returns no nickname); the destructive red Delete button is unprovable-in-browser until a flagged message exists.
+
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
 ### Gameplay-meaty
