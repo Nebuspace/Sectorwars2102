@@ -27,8 +27,14 @@ async function apiRequest(
   } catch (error) {
     if (isAxiosError(error) && error.response) {
       const data: any = error.response.data;
-      const detail = data && typeof data === 'object' ? data.detail : undefined;
-      throw new Error(detail || `API Error: ${error.response.status}`);
+      // Surface the server's human message. Native FastAPI HTTPExceptions use
+      // `detail` (a string; 422 validation makes it an array — skip those), but
+      // this gameserver's global error handler wraps errors as `{message}`.
+      // Prefer a string `detail`, fall back to `message`, then a generic code.
+      const msg = data && typeof data === 'object'
+        ? (typeof data.detail === 'string' ? data.detail : undefined) || data.message
+        : undefined;
+      throw new Error(msg || `API Error: ${error.response.status}`);
     }
     // Network-level failure (no response) – rethrow like fetch would.
     throw error;
