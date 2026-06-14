@@ -89,6 +89,23 @@ All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Tra
 - **player-asset-manager.css global-CSS pollution (bigger fish)** — beyond `.section-header`, this file still has ~30 other UNSCOPED top-level selectors bundled into the Players chunk that collide with globals: `.btn`, `.btn-primary/danger/secondary/outline`, `.btn:disabled`, `.tab`, `.manager-header`, `.section-actions`, `.asset-list`, `.empty-state`, `.close-btn`, etc. The generic ones could leak onto other pages like `.section-header` did. Follow-up: scope the WHOLE file under `.player-asset-manager` (deferred — needs careful verification that all PAM markup is under its root; it is, but a 30-selector edit warrants its own pass). **This is a systemic pattern** — many component CSS files (~25 define their own `.btn`/`.btn-primary`) are unscoped; a broader CSS-isolation sweep (or CSS modules) is the real fix.
 - Players saturated blue/orange stat cards (`data-variant="primary"`/`warning`) — intentional design-system variants, left as-is (not a bug).
 
+### Admin-UI fresh audit + NEON run 8 — 2026-06-14 (frontend-only)
+Ran a 4-agent fresh audit (dead code / mock data / orphan APIs / spec-deviation). Headlines:
+**0 orphan components, 0 mock-data-presented-as-real** (dashboards are honesty-first; Math.random metrics confirmed gone). Real issues are RBAC/spec drift + a few live orphan/crash bugs. Then shipped 2 honesty sections:
+- **§A planet editing honest-disabled** (`PlanetDetail.tsx`, `PlanetDetailModal.tsx`, `1bc49f8`) — both fired `PATCH/PUT /api/v1/admin/planets/{id}` (no such endpoint) → 404 behind a misleading "Failed to update/save". No backend to wire, so planets are now **view-only**: inline fields read-only, modal ignores edit mode + "Edit Planet (unavailable)" disabled, save paths neutered. **PROVEN live:** clicking the planet edit ✏️ opens the modal in **view mode** (read-only fields/badges), footer button disabled w/ honest title, no 404.
+- **§B colonization dead-button honest notes** (`ColonyOverview/PlanetaryManagement/GenesisDeviceTracking.tsx`, `1ca3337`) — the detail-modal "Actions" rows were no-op buttons (no onClick); replaced each with an honest "not yet available" note. **Built + tsc/build/adversarial-review verified; NOT browser-proven this run** — colonization data was empty (0 colonies/planets in those tabs at prove time), so the detail modals couldn't be opened to screenshot. Re-prove when colonization has data.
+Adversarial review PASS (no CRITICAL/HIGH/MED). Verdict STEADY (§A proven, §B verified-not-live-proven).
+
+**Parked — audit findings NOT yet actioned (for Max / future runs):**
+- 🔴 **RBAC: 19-scope `AdminScopeGrant` model (ADR-0058) is absent** — admin-ui is still flat `is_admin` (~19 gates in AdminContext); no `/admin/scopes` grant UI (PermissionsDashboard is an unrelated design-only *roles* concept), no `/admin/review-queue` (the accountability control), no dedicated `/admin/audit` route, no scope-aware 403. This is roadmap #9 (needs Max + backend). Biggest gap.
+- 🟠 **CombatFeed.tsx latent crash** — interface declares flat fields but JSX reads nested (`event.result.*`, `event.attacker.name`) → `undefined.toUpperCase()` when combat events exist. Needs interface/render reconciliation with the real payload (and the backend combat-event shape).
+- 🟠 **LoginForm debug/direct-login harness in prod** ("Test Direct API" button + `testDirectLogin` writing tokens to localStorage) — AUTH code → NEON out-of-bounds; left for Max to remove/gate.
+- 🟠 **Governance writes hit global `/regions/my-region/*`, not the selected region id** — contradicts the blessed admin-by-region-id canon; real fix needs the admin-by-region-id endpoints (open DECISIONS lineage).
+- 🟡 Dead handlers still live: AdvancedAnalytics per-report Download/Share, RegionalGovernor treaty "View Details", PlayerBehaviorAnalytics `setProfiles([])` demo-stub, RouteOptimizationDisplay unused mapRef.
+- 🟡 Backendless-but-honest `reports/*` trio (CustomReportBuilder/AdvancedAnalytics); dead `addSectors` in AdminContext; ~500-line unused `types/admin.ts`; 4 unused barrel `index.ts`; 3 orphan CSS; `PlayerAssetManager` ships filter uses camelCase `ownerId` backend likely ignores.
+- 🟡 Doc drift: admin-ui.md page table lists ~6 pages that don't exist + omits 4 that do (BangGalaxy/Factions/Messages/Translations) — fixable in sw2102-docs.
+- Culture/Diplomacy tabs aren't "honestly disabled" per spec (Diplomacy loads a real `/treaties` table) — but the endpoint exists, so the spec note may be stale; needs a Max call.
+
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
 ### Gameplay-meaty
