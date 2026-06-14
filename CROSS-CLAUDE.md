@@ -610,3 +610,15 @@ Commodity production now accrues (lazy advance-on-read in planetary_service.appl
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev 124e104). Commodity production now accrues lazily on read (proven: 653-allocation planet, 1h backdated anchor -> +285 fuel; carry banked in active_events JSONB). Hardened: get_planet_details now sets lock_timeout=3s + serves un-accrued data on contention (proven: GET under a held FOR UPDATE lock returned 200 in 3.2s, no 504). NB: cleared 2 leaked idle-in-transaction locks (17min old) during testing — a pre-existing client-disconnect-on-FOR-UPDATE issue worth a broader look. NO migration.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Citadel safe now stores commodities (cr-equivalent cap; values in active_events JSONB, NO migration) + 2 new routes (deposit/withdraw-commodity). Restarting gameserver; CLOSED to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev affbf50). Citadel safe commodity storage live + proven (deposit/withdraw/cap-reject all via API+DB). ADR-0082 records the base-price valuation. NO migration. Fixture reverted.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Armored mine deploy+detonation (movement_service hook + /armory/deploy), spacedock armory venue fix, player.mines in state. gameserver restart (movement + armory + player routes). CLOSED to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev 165e683). Armored mine deploy+detonation PROVEN: deploy laid 3 (sector+counter), hostile entry hull 500->300 (-200) + mine consumed, same-team entry no damage (friendly guard). Spacedock armory venue fix + MINE HUD counter + player.mines in state. Limpet stays disabled (tracking=design). Fixtures reverted.

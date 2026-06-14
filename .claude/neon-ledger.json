@@ -1947,6 +1947,52 @@
     "Pre-existing infra: client-disconnect on FOR UPDATE routes leaks idle-in-transaction locks (cleared 2 this run)."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-x",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "User batch Sections 2+3: citadel safe commodities + armored mine deploy/detonation + spacedock drone fix",
+   "sections": [
+    {
+     "key": "citadel-safe-commodities",
+     "state": "shipped-proven",
+     "commit": "affbf50",
+     "adr": "ADR-0082",
+     "proof": "Safe stores fuel_ore/organics/equipment at base prices (15/18/35) vs single cr-equivalent cap. API+DB: deposit 1000 fuel_ore -> value 15,100, cap reject 'Room for 2,425 more equipment', withdraw, psql safe_commodities."
+    },
+    {
+     "key": "armored-mine-deploy-detonation",
+     "state": "shipped-proven",
+     "commit": "165e683",
+     "adr": "ADR-0083 (Proposed, damage pending bless)",
+     "proof": "Deploy {3} -> sector mines=3, carried 5->2; hostile entry hull 500->300 (-200) + mine 2->1; same-team entry no damage/no consume. Limpet stays disabled (tracking=design)."
+    },
+    {
+     "key": "spacedock-armory-venue-fix",
+     "state": "shipped",
+     "commit": "165e683",
+     "proof": "Armory venue gate omitted is_spacedock -> hidden at spacedocks lacking explicit drone_shop; fixed (matches server). This was why drones couldn't be bought at the spacedock. Client-only logic fix; user self-verifies UI."
+    },
+    {
+     "key": "mines-hud-and-state",
+     "state": "shipped",
+     "commit": "165e683",
+     "proof": "player.mines added to player API + PlayerState; MINE counter in cockpit header; Lay Minefield control on Threat MFD."
+    }
+   ],
+   "pending_bless": [
+    "ADR-0083 mine damage value (recommend 200 hull/mine, floor-at-1, one-per-entry) \u2014 one-constant change if Max wants different."
+   ],
+   "deferred": [
+    "Limpet mine tracking mechanic (design-only; needs per-type mine inventory).",
+    "Lethal mines / destruction-on-zero-hull (v1 floors at 1)."
+   ],
+   "blockers_carried": [
+    "Live UI proofs still need a warm logged-in stage tab; this run used server-prove + user-self-verify per Max's choice."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
