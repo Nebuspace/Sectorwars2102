@@ -1,551 +1,145 @@
-/* Insurance Manager Styles */
+/* Hull Insurance — canon insurance desk (ADR-0081). Dark CRT idiom to match
+   the SpaceDock venue it mounts in. */
+
 .insurance-manager {
-  background: var(--card-bg, #1a1a2e);
-  border: 1px solid var(--border-color, #333);
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid var(--primary-green, #00ff9d);
   border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  padding: 20px;
+  color: var(--text-primary, #e0e0e0);
+  min-width: 520px;
+  max-width: 720px;
 }
 
-/* Manager Header */
-.insurance-manager .manager-header {
+.ins-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 1rem;
-  background: linear-gradient(135deg, #2a2a3e 0%, #1a1a2e 100%);
-  border-bottom: 1px solid var(--border-color, #333);
-}
-
-.insurance-manager .manager-header h3 {
-  margin: 0;
-  color: var(--primary-color, #4a9eff);
-  font-size: 1.25rem;
-}
-
-.insurance-manager .ship-info {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.25rem;
-}
-
-.insurance-manager .ship-name {
-  color: var(--text-primary, #fff);
-  font-weight: 500;
-}
-
-.insurance-manager .ship-value {
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-}
-
-/* Current Policy */
-.insurance-manager .current-policy {
-  margin: 1rem;
-  padding: 1rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-}
-
-.insurance-manager .policy-header {
-  display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
+  margin-bottom: 14px;
 }
 
-.insurance-manager .policy-header h4 {
+.ins-header h3 {
   margin: 0;
-  color: var(--text-primary, #fff);
-  font-size: 1.1rem;
+  color: var(--primary-green, #00ff9d);
+  font-size: 18px;
 }
 
-.insurance-manager .policy-tier {
-  padding: 0.25rem 0.75rem;
+.ins-close {
+  background: transparent;
+  border: 1px solid rgba(0, 255, 157, 0.4);
+  color: var(--primary-green, #00ff9d);
   border-radius: 4px;
-  color: #000;
-  font-size: 0.75rem;
-  font-weight: bold;
-}
-
-.insurance-manager .policy-details {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-}
-
-.insurance-manager .detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.insurance-manager .detail-item label {
-  color: var(--text-secondary, #999);
-  font-size: 0.75rem;
-}
-
-.insurance-manager .detail-item span {
-  color: var(--text-primary, #fff);
-  font-weight: 500;
-}
-
-.insurance-manager .policy-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.insurance-manager .file-claim-btn {
-  flex: 1;
-  padding: 0.5rem;
-  background: var(--primary-color, #4a9eff);
-  color: white;
-  border: none;
-  border-radius: 4px;
+  width: 30px;
+  height: 30px;
   cursor: pointer;
-  font-size: 0.875rem;
-  transition: all 0.3s ease;
+  font-size: 14px;
 }
+.ins-close:hover { background: rgba(0, 255, 157, 0.12); }
 
-.insurance-manager .file-claim-btn:hover {
-  background: var(--primary-hover, #357abd);
-}
-
-.insurance-manager .cancel-policy-btn {
-  padding: 0.5rem 1rem;
-  background: rgba(255, 68, 68, 0.2);
-  border: 1px solid #ff4444;
-  color: #ff4444;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  transition: all 0.3s ease;
-}
-
-.insurance-manager .cancel-policy-btn:hover {
-  background: rgba(255, 68, 68, 0.3);
-}
-
-/* Available Policies */
-.insurance-manager .available-policies {
-  padding: 1rem;
-}
-
-.insurance-manager .available-policies h4 {
-  margin: 0 0 1rem 0;
-  color: var(--text-primary, #fff);
-  font-size: 1.1rem;
-}
-
-.insurance-manager .policies-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1rem;
-}
-
-.insurance-manager .policy-card {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  padding: 1rem;
-  transition: all 0.3s ease;
-  position: relative;
-}
-
-.insurance-manager .policy-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
-}
-
-.insurance-manager .policy-card.basic {
-  border-top: 3px solid #888888;
-}
-
-.insurance-manager .policy-card.standard {
-  border-top: 3px solid #4a9eff;
-}
-
-.insurance-manager .policy-card.premium {
-  border-top: 3px solid #ff44ff;
-}
-
-.insurance-manager .policy-card.elite {
-  border-top: 3px solid #ffaa44;
-  background: rgba(255, 170, 68, 0.05);
-}
-
-.insurance-manager .policy-card.current {
-  border-color: var(--primary-color, #4a9eff);
-  background: rgba(74, 158, 255, 0.1);
-}
-
-.insurance-manager .policy-card.unaffordable {
-  opacity: 0.6;
-}
-
-.insurance-manager .policy-card-header {
+.ins-current {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 15px;
+}
+.ins-current strong { color: var(--primary-green, #00ff9d); font-size: 16px; }
+.ins-payout { color: var(--text-secondary, #9aa); font-size: 13px; }
+
+.ins-note {
+  color: var(--text-secondary, #9aa);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 6px 0 14px;
 }
 
-.insurance-manager .policy-card-header h5 {
-  margin: 0;
-  color: var(--text-primary, #fff);
-  font-size: 1rem;
+.ins-ok, .ins-error {
+  padding: 10px 12px;
+  border-radius: 4px;
+  margin: 10px 0;
+  font-size: 14px;
+}
+.ins-ok {
+  background: rgba(0, 255, 157, 0.12);
+  border: 1px solid var(--primary-green, #00ff9d);
+  color: var(--primary-green, #00ff9d);
+}
+.ins-error {
+  background: rgba(255, 60, 60, 0.12);
+  border: 1px solid rgba(255, 80, 80, 0.6);
+  color: #ff7b7b;
 }
 
-.insurance-manager .tier-badge {
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  color: #000;
-  font-size: 0.625rem;
-  font-weight: bold;
-}
-
-.insurance-manager .policy-stats {
+.ins-tiers {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 0.5rem;
-  margin-bottom: 1rem;
+  gap: 12px;
+}
+
+.ins-tier-card {
+  background: rgba(0, 255, 157, 0.04);
+  border: 1px solid rgba(0, 255, 157, 0.25);
+  border-radius: 6px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   text-align: center;
 }
-
-.insurance-manager .policy-stats .stat {
-  padding: 0.5rem;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
+.ins-tier-card.current {
+  border-color: var(--primary-green, #00ff9d);
+  background: rgba(0, 255, 157, 0.1);
 }
 
-.insurance-manager .stat-value {
-  display: block;
-  font-size: 1.25rem;
+.ins-tier-name {
   font-weight: bold;
-  color: var(--primary-color, #4a9eff);
+  font-size: 15px;
+  color: var(--text-primary, #e0e0e0);
 }
 
-.insurance-manager .stat-label {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--text-secondary, #999);
-  margin-top: 0.25rem;
+.ins-tier-stat {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--text-secondary, #9aa);
 }
+.ins-tier-stat strong { color: var(--primary-green, #00ff9d); font-size: 15px; }
+.ins-tier-stat em { font-style: normal; font-size: 11px; opacity: 0.7; }
 
-.insurance-manager .policy-benefits,
-.insurance-manager .policy-restrictions {
-  margin-bottom: 1rem;
-}
-
-.insurance-manager .policy-benefits h6,
-.insurance-manager .policy-restrictions h6 {
-  margin: 0 0 0.5rem 0;
-  color: var(--text-primary, #fff);
-  font-size: 0.875rem;
-}
-
-.insurance-manager .policy-benefits ul,
-.insurance-manager .policy-restrictions ul {
-  margin: 0;
-  padding-left: 1.25rem;
-  font-size: 0.75rem;
-  line-height: 1.6;
-}
-
-.insurance-manager .policy-benefits ul {
-  color: #88ff88;
-}
-
-.insurance-manager .policy-restrictions ul {
-  color: #ffaa44;
-}
-
-.insurance-manager .purchase-btn {
-  width: 100%;
-  padding: 0.75rem;
-  background: var(--primary-color, #4a9eff);
-  color: white;
+.ins-buy {
+  margin-top: auto;
+  background: var(--primary-green, #00ff9d);
+  color: #04130c;
   border: none;
   border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  font-weight: 500;
-  transition: all 0.3s ease;
-}
-
-.insurance-manager .purchase-btn:hover:not(:disabled) {
-  background: var(--primary-hover, #357abd);
-}
-
-.insurance-manager .purchase-btn:disabled {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-secondary, #999);
-  cursor: not-allowed;
-}
-
-.insurance-manager .current-indicator {
-  text-align: center;
-  padding: 0.75rem;
-  color: var(--primary-color, #4a9eff);
-  font-weight: 500;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  margin-top: 1rem;
-}
-
-/* Claim History */
-.insurance-manager .claim-history {
-  padding: 1rem;
-  background: rgba(255, 255, 255, 0.02);
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.insurance-manager .claim-history h4 {
-  margin: 0 0 1rem 0;
-  color: var(--text-primary, #fff);
-  font-size: 1.1rem;
-}
-
-.insurance-manager .claim-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-
-.insurance-manager .claim-stats .stat-card {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  padding: 1rem;
-  text-align: center;
-}
-
-.insurance-manager .claims-list {
-  display: grid;
-  gap: 0.75rem;
-}
-
-.insurance-manager .claim-item {
-  display: grid;
-  grid-template-columns: 100px 1fr auto auto;
-  gap: 1rem;
-  align-items: center;
-  padding: 0.75rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-}
-
-.insurance-manager .claim-date {
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-}
-
-.insurance-manager .claim-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.insurance-manager .claim-type {
-  color: var(--primary-color, #4a9eff);
-  font-weight: 500;
-  text-transform: capitalize;
-}
-
-.insurance-manager .claim-description {
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.insurance-manager .claim-amounts {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.875rem;
-}
-
-.insurance-manager .damage-amount {
-  color: #ff4444;
-}
-
-.insurance-manager .claim-amount {
-  color: #44ff44;
-}
-
-.insurance-manager .claim-status {
+  padding: 9px 8px;
   font-weight: bold;
-  font-size: 0.875rem;
+  cursor: pointer;
+  font-size: 13px;
 }
+.ins-buy:hover:not(:disabled) { filter: brightness(1.1); }
+.ins-buy:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* Claim Form Overlay */
-.insurance-manager .claim-form-overlay {
+.ins-current-badge { margin-top: auto; color: var(--primary-green, #00ff9d); font-weight: bold; font-size: 13px; }
+.ins-owned-badge { margin-top: auto; color: var(--text-secondary, #9aa); font-size: 13px; }
+
+/* Modal overlay when opened from the SpaceDock services grid */
+.insurance-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.8);
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
-  padding: 1rem;
+  padding: 20px;
 }
-
-.insurance-manager .claim-form {
-  background: var(--card-bg, #1a1a2e);
-  border: 1px solid var(--border-color, #333);
-  border-radius: 8px;
-  padding: 2rem;
-  max-width: 500px;
-  width: 100%;
+.insurance-overlay-panel {
   max-height: 90vh;
   overflow-y: auto;
 }
 
-.insurance-manager .claim-form h4 {
-  margin: 0 0 1.5rem 0;
-  color: var(--primary-color, #4a9eff);
-  font-size: 1.25rem;
-}
-
-.insurance-manager .form-group {
-  margin-bottom: 1rem;
-}
-
-.insurance-manager .form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-}
-
-.insurance-manager .form-group select,
-.insurance-manager .form-group input,
-.insurance-manager .form-group textarea {
-  width: 100%;
-  padding: 0.5rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 4px;
-  color: var(--text-primary, #fff);
-  font-size: 0.875rem;
-}
-
-.insurance-manager .form-group textarea {
-  resize: vertical;
-  min-height: 80px;
-}
-
-.insurance-manager .claim-calculation {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  padding: 1rem;
-  margin-bottom: 1rem;
-}
-
-.insurance-manager .calc-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 0.25rem 0;
-  font-size: 0.875rem;
-}
-
-.insurance-manager .calc-row span:first-child {
-  color: var(--text-secondary, #999);
-}
-
-.insurance-manager .calc-row span:last-child {
-  color: var(--text-primary, #fff);
-}
-
-.insurance-manager .calc-row.total {
-  border-top: 1px solid rgba(255, 255, 255, 0.2);
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
-  font-weight: bold;
-}
-
-.insurance-manager .calc-row.total span:last-child {
-  color: var(--primary-color, #4a9eff);
-}
-
-.insurance-manager .form-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.insurance-manager .submit-claim-btn {
-  flex: 1;
-  padding: 0.75rem;
-  background: var(--primary-color, #4a9eff);
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  font-weight: 500;
-  transition: all 0.3s ease;
-}
-
-.insurance-manager .submit-claim-btn:hover:not(:disabled) {
-  background: var(--primary-hover, #357abd);
-}
-
-.insurance-manager .submit-claim-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.insurance-manager .cancel-btn {
-  padding: 0.75rem 1rem;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: var(--text-primary, #fff);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  transition: all 0.3s ease;
-}
-
-.insurance-manager .cancel-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
-}
-
-/* Mobile Responsiveness */
-@media (max-width: 768px) {
-  .insurance-manager .manager-header {
-    flex-direction: column;
-    gap: 0.5rem;
-    align-items: flex-start;
-  }
-  
-  .insurance-manager .policy-details {
-    grid-template-columns: 1fr;
-  }
-  
-  .insurance-manager .policies-grid {
-    grid-template-columns: 1fr;
-  }
-  
-  .insurance-manager .claim-stats {
-    grid-template-columns: 1fr 1fr;
-  }
-  
-  .insurance-manager .claim-item {
-    grid-template-columns: 1fr;
-    gap: 0.5rem;
-  }
-  
-  .insurance-manager .claim-form {
-    padding: 1rem;
-  }
+@media (max-width: 640px) {
+  .insurance-manager { min-width: 0; width: 100%; }
+  .ins-tiers { grid-template-columns: 1fr; }
 }

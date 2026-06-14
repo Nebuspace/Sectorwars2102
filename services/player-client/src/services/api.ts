@@ -429,16 +429,12 @@ export const shipAPI = {
   getInsurance: (shipId: string) =>
     apiRequest(`/api/v1/ships/${shipId}/insurance`),
 
-  purchaseInsurance: (shipId: string, coverage: string) =>
+  // Backend expects {tier}: BASIC | STANDARD | PREMIUM (ADR-0081). Premium is
+  // paid upfront; upgrades cost the difference. No claims/cancellation (canon).
+  purchaseInsurance: (shipId: string, tier: string) =>
     apiRequest(`/api/v1/ships/${shipId}/insurance`, {
       method: 'POST',
-      body: JSON.stringify({ coverage })
-    }),
-
-  fileInsuranceClaim: (shipId: string, details: any) =>
-    apiRequest(`/api/v1/ships/${shipId}/insurance/claim`, {
-      method: 'POST',
-      body: JSON.stringify(details)
+      body: JSON.stringify({ tier })
     }),
 
   getUpgrades: (shipId: string) =>

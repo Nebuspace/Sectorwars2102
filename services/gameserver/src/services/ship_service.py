@@ -173,8 +173,11 @@ class ShipService:
         # Apply insurance if available. Skipped entirely for the warp-gate
         # anchor: no underwriter writes a policy on a hull whose canonical
         # use is its own destruction (ADR-0029).
-        if not is_planned_dismantle and player.insurance:
-            compensation = self._calculate_insurance_payout(ship, player.insurance)
+        # Coverage attaches to the HULL (ship-insurance.md), so the policy lives
+        # on ship.insurance; the payout credits player == ship.owner (the
+        # registered owner, never the current pilot — handles stolen hulls).
+        if not is_planned_dismantle and ship.insurance:
+            compensation = self._calculate_insurance_payout(ship, ship.insurance)
             if compensation > 0:
                 player.credits += compensation
                 logger.info(f"Applied insurance payout of {compensation} credits to player {player.id}")
@@ -350,17 +353,15 @@ class ShipService:
         logger.info(f"Transferred emergency cargo to Escape Pod: {transferred}")
     
     def _calculate_insurance_payout(self, ship: Ship, insurance: Dict[str, Any]) -> int:
-        """Calculate insurance payout for destroyed ship"""
+        """Calculate insurance payout for a destroyed ship.
+
+        Canon (ADR-0061 S-D3): payout = (coverage% - deductible%) x purchase_value.
+        Net payout per tier = BASIC 50-5=45%, STANDARD 75-10=65%, PREMIUM 90-15=75%
+        (the deductible was previously not applied — fixed here).
+        """
         insurance_type = insurance.get("type", "NONE")
-        
-        if insurance_type == "PREMIUM":
-            return int(ship.purchase_value * 0.9)  # 90% payout
-        elif insurance_type == "STANDARD":
-            return int(ship.purchase_value * 0.75)  # 75% payout
-        elif insurance_type == "BASIC":
-            return int(ship.purchase_value * 0.5)  # 50% payout
-        else:
-            return 0
+        net_payout = {"BASIC": 0.45, "STANDARD": 0.65, "PREMIUM": 0.75}.get(insurance_type, 0.0)
+        return int(ship.purchase_value * net_payout)
     
     def is_ship_indestructible(self, ship: Ship) -> bool:
         """Check if a ship is indestructible (like Escape Pod)"""

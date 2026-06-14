@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
@@ -41,6 +42,20 @@ class ShipPurchaseRequest(BaseModel):
     name: Optional[str] = Field(None, max_length=100, description="Optional custom name for the new ship")
 
 
+class InsurancePurchaseRequest(BaseModel):
+    tier: str = Field(..., description="Insurance tier to buy/upgrade to: BASIC, STANDARD, or PREMIUM")
+
+
+# Ship insurance (ADR-0081 premium pricing, ADR-0061 payout formula).
+# Premium = % of purchase_value paid upfront; net payout on destruction =
+# (coverage - deductible)% of purchase_value.
+INSURANCE_PREMIUM_PCT = {"BASIC": 0.10, "STANDARD": 0.17, "PREMIUM": 0.22}
+INSURANCE_NET_PAYOUT_PCT = {"BASIC": 0.45, "STANDARD": 0.65, "PREMIUM": 0.75}
+INSURANCE_TIER_ORDER = ["NONE", "BASIC", "STANDARD", "PREMIUM"]
+# Non-insurable hulls: no policy is ever written (ADR-0029).
+NON_INSURABLE_TYPES = {ShipType.WARP_JUMPER, ShipType.ESCAPE_POD}
+
+
 # Helpers
 
 def _station_offers_shipyard(station: Station) -> bool:
@@ -53,6 +68,57 @@ def _station_offers_shipyard(station: Station) -> bool:
         or bool(services.get("shipyard"))
         or bool(services.get("ship_dealer"))
     )
+
+
+def _station_offers_insurance(station: Station) -> bool:
+    """A station sells insurance if it advertises the service (SpaceDocks and
+    Tier-A/B TradeDocks per bang seeding).
+
+    NOTE: canon (ship-insurance.md) also requires the player to have >= NEUTRAL
+    reputation with the station's controlling faction ("friendly port"). That
+    refinement is a documented follow-up — no station-service path enforces
+    faction standing today and players default to NEUTRAL — so v1 gates on the
+    service being offered.
+    """
+    services = station.services or {}
+    return bool(services.get("insurance"))
+
+
+def _insurance_status(ship: Ship) -> dict:
+    """Build the insurance status payload for a ship (current tier + buyable tiers)."""
+    pv = ship.purchase_value or 0
+    current = (ship.insurance or {}).get("type", "NONE")
+    if current not in INSURANCE_TIER_ORDER:
+        current = "NONE"
+    current_idx = INSURANCE_TIER_ORDER.index(current)
+    current_premium = int(pv * INSURANCE_PREMIUM_PCT[current]) if current in INSURANCE_PREMIUM_PCT else 0
+    insurable = ship.type not in NON_INSURABLE_TYPES
+
+    tiers = []
+    for tier in ("BASIC", "STANDARD", "PREMIUM"):
+        tier_idx = INSURANCE_TIER_ORDER.index(tier)
+        purchasable = insurable and tier_idx > current_idx
+        upgrade_cost = int(pv * INSURANCE_PREMIUM_PCT[tier]) - current_premium if purchasable else None
+        tiers.append({
+            "tier": tier,
+            "premium_pct": INSURANCE_PREMIUM_PCT[tier],
+            "premium_full": int(pv * INSURANCE_PREMIUM_PCT[tier]),
+            "net_payout_pct": INSURANCE_NET_PAYOUT_PCT[tier],
+            "payout_amount": int(pv * INSURANCE_NET_PAYOUT_PCT[tier]),
+            "upgrade_cost": upgrade_cost,
+            "purchasable": purchasable,
+        })
+
+    return {
+        "ship_id": str(ship.id),
+        "ship_name": ship.name,
+        "ship_type": ship.type.value if ship.type else None,
+        "insurable": insurable,
+        "current_tier": current,
+        "purchase_value": pv,
+        "current_payout_amount": int(pv * INSURANCE_NET_PAYOUT_PCT.get(current, 0.0)),
+        "tiers": tiers,
+    }
 
 
 # Endpoints
@@ -274,6 +340,127 @@ async def set_active_ship(
     return {
         "message": f"{ship.name} is now your active ship",
         "current_ship_id": str(ship.id),
+    }
+
+
+def _resolve_owned_ship(ship_id: str, player: Player, db: Session, lock: bool = False) -> Ship:
+    import uuid as _uuid
+    try:
+        ship_uuid = _uuid.UUID(str(ship_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found")
+    q = db.query(Ship).filter(Ship.id == ship_uuid, Ship.owner_id == player.id)
+    if lock:
+        # Lock the hull row so a concurrent ownership transfer can't race the
+        # insurance write (TOCTOU on owner_id).
+        q = q.with_for_update()
+    ship = q.first()
+    if not ship:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ship not found")
+    return ship
+
+
+@router.get("/{ship_id}/insurance")
+async def get_ship_insurance(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Current insurance coverage for one of the player's ships plus the buyable
+    tiers (premium cost = upgrade difference; net payout per ADR-0061/0081)."""
+    ship = _resolve_owned_ship(ship_id, player, db)
+    return _insurance_status(ship)
+
+
+@router.post("/{ship_id}/insurance")
+async def purchase_ship_insurance(
+    ship_id: str,
+    request: InsurancePurchaseRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Buy or upgrade insurance on one of the player's ships at a friendly port.
+
+    Premium is paid upfront (ADR-0081); upgrades cost the difference between
+    tiers; coverage attaches to the hull for its lifetime. No downgrades, no
+    refunds, no claims (ship-insurance.md). Warp Jumpers / Escape Pods are
+    non-insurable (ADR-0029).
+    """
+    tier = request.tier.strip().upper()
+    if tier not in INSURANCE_PREMIUM_PCT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid insurance tier '{request.tier}'. Valid tiers: BASIC, STANDARD, PREMIUM",
+        )
+
+    # Lock the player row first (credits), then resolve + lock the ship row.
+    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    ship = _resolve_owned_ship(ship_id, locked_player, db, lock=True)
+
+    if ship.is_destroyed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{ship.name} is destroyed")
+    if ship.type in NON_INSURABLE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ship.type.value.replace('_', ' ').title()} hulls are non-insurable",
+        )
+    if not ship.purchase_value or ship.purchase_value <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ship.name} has no insurable value",
+        )
+
+    # Must be docked at a station that offers insurance (a friendly port).
+    if not locked_player.is_docked or not locked_player.current_port_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be docked at a station offering insurance",
+        )
+    station = db.query(Station).filter(Station.id == locked_player.current_port_id).first()
+    if not station or not _station_offers_insurance(station):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This station does not offer insurance services",
+        )
+
+    # No downgrades, no same-tier repurchase; upgrades pay the difference.
+    current = (ship.insurance or {}).get("type", "NONE")
+    if current not in INSURANCE_TIER_ORDER:
+        current = "NONE"
+    if INSURANCE_TIER_ORDER.index(tier) <= INSURANCE_TIER_ORDER.index(current):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Insurance cannot be downgraded or repurchased at the same tier (current: {current})",
+        )
+
+    pv = ship.purchase_value
+    current_premium = int(pv * INSURANCE_PREMIUM_PCT[current]) if current in INSURANCE_PREMIUM_PCT else 0
+    cost = int(pv * INSURANCE_PREMIUM_PCT[tier]) - current_premium
+
+    # Defense-in-depth: upgrades are always to a strictly higher tier (downgrades
+    # rejected above) and premiums are monotonic, so cost is always > 0. Guard
+    # anyway so no data anomaly can ever gift credits.
+    if cost <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid insurance premium")
+
+    if locked_player.credits < cost:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Insufficient credits: premium is {cost:,} cr, you have {locked_player.credits:,}",
+        )
+
+    locked_player.credits -= cost
+    ship.insurance = {"type": tier}
+    flag_modified(ship, "insurance")
+    db.commit()
+    db.refresh(ship)
+
+    status_payload = _insurance_status(ship)
+    return {
+        "message": f"{ship.name} insured at {tier} ({cost:,} cr)",
+        "premium_paid": cost,
+        "credits_remaining": locked_player.credits,
+        **status_payload,
     }
 
 

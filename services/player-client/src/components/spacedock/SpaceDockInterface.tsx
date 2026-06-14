@@ -4,6 +4,7 @@ import type { Station } from '../../contexts/GameContext';
 import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
+import { InsuranceManager } from '../ships';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -772,6 +773,8 @@ const SpaceDockInterface: React.FC = () => {
     cargo_capacity?: number;
     current_value?: number;
   } | null>(null);
+
+  const [showInsurance, setShowInsurance] = useState(false);
 
   const fetchShipData = useCallback(async () => {
     const token = getToken();
@@ -2488,18 +2491,51 @@ const SpaceDockInterface: React.FC = () => {
               </div>
             </div>
 
-            <div className="service-card unavailable">
-              <div className="service-icon">📜</div>
-              <h3>Cargo Insurance</h3>
-              <p>Cargo protection against piracy</p>
-              <div className="service-unavailable-note">
-                No underwriter currently operates at this station.
+            {stationServices.insurance ? (
+              <div className="service-card">
+                <div className="service-icon">📜</div>
+                <h3>Hull Insurance</h3>
+                <p>{shipData ? `Insure ${shipData.name} against destruction` : 'Insure your ship against destruction'}</p>
+                <div className="service-status">
+                  Pay a one-time premium; the registered owner is paid out if the hull is destroyed.
+                </div>
+                <div className="service-action">
+                  <button
+                    className="service-btn"
+                    onClick={() => setShowInsurance(true)}
+                    disabled={!shipData}
+                  >
+                    Manage Insurance
+                  </button>
+                </div>
               </div>
-              <div className="service-action">
-                <span className="service-unavailable-badge">NOT AVAILABLE</span>
+            ) : (
+              <div className="service-card unavailable">
+                <div className="service-icon">📜</div>
+                <h3>Hull Insurance</h3>
+                <p>Protection against ship destruction</p>
+                <div className="service-unavailable-note">
+                  No underwriter currently operates at this station.
+                </div>
+                <div className="service-action">
+                  <span className="service-unavailable-badge">NOT AVAILABLE</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {showInsurance && shipData && (
+            <div className="insurance-overlay" onClick={() => setShowInsurance(false)}>
+              <div className="insurance-overlay-panel" onClick={(e) => e.stopPropagation()}>
+                <InsuranceManager
+                  shipId={shipData.id}
+                  playerCredits={displayCredits}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                  onClose={() => setShowInsurance(false)}
+                />
               </div>
             </div>
-          </div>
+          )}
         </div>
         <BlackMarketButton />
       </div>
