@@ -437,13 +437,19 @@ async def move_to_sector(
             detail=result["message"]
         )
     
-    # Return the movement response with turn cost and remaining turns
+    # Return the movement response with turn cost and remaining turns.
+    # Forward the encounter/tunnel events the MovementService attached to its
+    # result — without these the response_model silently strips them, hiding
+    # entry encounters from the player and blinding the ARIA autopilot's
+    # encounter-pause (ADR-0072 Phase 1).
     return MoveResponse(
         success=True,
         message=result["message"],
         new_sector_id=sector_id,
         turn_cost=result.get("turn_cost", 0),
-        turns_remaining=result.get("turns_remaining", player.turns)
+        turns_remaining=result.get("turns_remaining", player.turns),
+        encounters=result.get("encounters", []),
+        tunnel_events=result.get("tunnel_events", []),
     )
 
 @router.get("/available-moves", response_model=AvailableMovesResponse)
