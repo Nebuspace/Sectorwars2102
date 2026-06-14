@@ -99,14 +99,25 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   const isPlanetUnclaimed =
     planet && !planet.owner_id && !planet.owner_name && !isPopulationHub;
 
-  // In-fiction confirmation dialog state (replaces native confirm())
-  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  // In-fiction confirmation dialog state (replaces native confirm()).
+  // `notice` renders a single-acknowledge dialog (no Cancel) for info-only cases.
+  const [pendingConfirm, setPendingConfirm] = useState<(PendingConfirm & { notice?: boolean }) | null>(null);
 
   const handlePlanetClick = () => {
     if (!planet || isLanded) return;
-    // Public hubs take no claim/land action from this card today (landing
-    // requires ownership server-side); the tag explains what the world is.
-    if (isPopulationHub && !planet.owner_id) return;
+    // Public hubs can't be claimed or landed on (landing requires ownership
+    // server-side). Give the player explicit feedback instead of a dead click —
+    // a silent return here reads as "clicking the planet does nothing".
+    if (isPopulationHub && !planet.owner_id) {
+      setPendingConfirm({
+        title: 'Population Hub',
+        message: `${planet.name} is a population hub (regional administration).\n\nYou can't claim or land here — dock at its station to access services.`,
+        confirmLabel: 'Understood',
+        onConfirm: () => {},
+        notice: true,
+      });
+      return;
+    }
     // Capture narrowed values for the deferred onConfirm closure
     const targetPlanet = planet;
 
@@ -239,7 +250,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
             setPendingConfirm(null);
             pendingConfirm.onConfirm();
           }}
-          onCancel={() => setPendingConfirm(null)}
+          {...(pendingConfirm.notice ? {} : { onCancel: () => setPendingConfirm(null) })}
         />
       )}
     </div>
