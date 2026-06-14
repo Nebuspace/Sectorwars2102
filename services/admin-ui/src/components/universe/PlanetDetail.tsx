@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { api } from '../../utils/auth';
 import './universe-detail.css';
 
 interface PlanetDetailProps {
@@ -18,29 +17,12 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
     setEditValues({ ...editValues, [field]: currentValue });
   };
 
-  const handleSave = async (field: string) => {
-    try {
-      setIsLoading(true);
-      const value = editValues[field];
-      
-      // Update planet via API
-      await api.patch(`/api/v1/admin/planets/${planet.id}`, {
-        [field]: value
-      });
-      
-      // Update local state
-      const updatedPlanet = { ...planet, [field]: value };
-      if (onUpdate) {
-        onUpdate(updatedPlanet);
-      }
-      
-      setEditingField(null);
-    } catch (error) {
-      console.error(`Failed to update ${field}:`, error);
-      alert(`Failed to update ${field}`);
-    } finally {
-      setIsLoading(false);
-    }
+  const handleSave = async (_field: string) => {
+    // There is no admin planet-edit endpoint (no PATCH/PUT /admin/planets/{id}).
+    // The inline-edit affordance below is disabled (fields render read-only), so
+    // this is unreachable; kept as a safe no-op rather than firing a 404 that
+    // reads to the operator as a transient "Failed to update" error.
+    setEditingField(null);
   };
 
   const handleCancel = () => {
@@ -105,11 +87,13 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
       );
     }
 
+    // Read-only: there is no admin planet-edit endpoint, so fields are not
+    // click-to-edit (previously this fired a PATCH that 404'd behind a
+    // misleading "Failed to update" alert).
     return (
-      <span 
-        className="editable-field clickable" 
-        onClick={() => handleEdit(field, value)}
-        title="Click to edit"
+      <span
+        className="editable-field"
+        title="Read-only — no admin planet-edit endpoint exists yet"
       >
         {value}
       </span>
