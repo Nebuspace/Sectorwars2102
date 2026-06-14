@@ -415,9 +415,16 @@ async def get_my_deployments(
 @router.get("/sector/{sector_id}", response_model=List[DroneResponse])
 async def get_sector_drones(
     sector_id: UUID,
+    current_player: Player = Depends(get_current_player),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Get all active drones in a sector."""
+    """Get all active drones in a sector.
+
+    Requires authentication: sector drone presence is tactical intelligence
+    (it reveals players' military deployments and positions) and must not be
+    enumerable by anonymous callers. Matches the auth posture of the sibling
+    drone read endpoints (combat/history, team/{id}).
+    """
     service = DroneService(db)
     drones = await service.get_sector_drones(sector_id)
     return drones
