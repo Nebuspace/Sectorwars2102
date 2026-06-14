@@ -1731,6 +1731,36 @@
     "TeamAnalytics still unmounted (no /analytics backend) \u2014 lone no-canon component."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-q",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Ship insurance \u2014 canon purchase desk + payout deductible fix (ADR-0081 authored)",
+   "sections": [
+    {
+     "key": "ship-insurance-purchase",
+     "state": "shipped-proven",
+     "commit": "395302e",
+     "proof": "Live as testpilot at SpaceDock Regulus: STANDARD on Light Freighter pv10000 -> premium 1700 (17%) debited 170470->168770, ship.insurance={type:STANDARD} per-hull (psql). Modal canon tiers 10/17/22% premium, 45/65/75% payout. CSS unstyled on stage (CF stale insurance-manager.css; correct in repo)."
+    },
+    {
+     "key": "ship-insurance-payout",
+     "state": "shipped-proven",
+     "commit": "395302e",
+     "proof": "Real deployed ship_service.destroy_ship vs insured hull: credits 168770->175270 (+6500 = 65%x10000 net, deductible applied per ADR-0061), reads ship.insurance, ejected to pod."
+    }
+   ],
+   "canon": [
+    "Authored ADR-0081 ship-insurance-premium-pricing (Accepted, Max-blessed 10/17/22%); de-proposed ship-insurance.md premium column."
+   ],
+   "parking_lot": [
+    "NEUTRAL-rep 'friendly port' gate is a follow-up (v1 gates on station-offers-insurance).",
+    "Stage CF cache served stale insurance-manager.css -> modal unstyled until purge; verify on origin :9082 post-purge.",
+    "ShipSpecification.insurable boolean (ADR-0029) not added; non-insurable gated by ship type {WARP_JUMPER,ESCAPE_POD}."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
