@@ -1815,6 +1815,38 @@
     "Max decisions surfaced by the audit: (a) confirm lazy-poll timer pattern for defense-building/shield builds; (b) L0->L1 instant intent as canon; (c) implement +50% partial-bonus now or keep design-only; (d) ADR-0080 siege vulnerability penalty magnitude (suggested 0.5-0.75x)."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-t",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Citadel backlog batch \u2014 +5% production bonus, population gate, upgrade cancel/refund",
+   "sections": [
+    {
+     "key": "citadel-production-bonus",
+     "state": "shipped-proven",
+     "commit": "00029d2",
+     "proof": "+5%/level in _calculate_production_rates. Real service: 1000(L0)->1050(L1,+5%)->1250(L5,+25%)."
+    },
+    {
+     "key": "citadel-population-gate",
+     "state": "shipped-proven",
+     "commit": "00029d2",
+     "proof": "start_upgrade enforces current pop >= current-level max. Blocked at 653/1000; allowed at 1000/1000 (started -50k)."
+    },
+    {
+     "key": "citadel-upgrade-cancel",
+     "state": "shipped-proven",
+     "commit": "00029d2",
+     "proof": "POST /citadel/cancel 50% refund + two-step Cancel button. Cancelled in-progress upgrade: credits 124945->149945 (+25000), state cleared."
+    }
+   ],
+   "parking_lot": [
+    "Remaining citadel backlog: defense-building UI section; vault fill bar; safe quick-fill presets; shield cost on button; pre-flight checklist; scroll-law 3-col; cockpit HUD build beacon (full chip).",
+    "Max-gated: defense-building + shield-generator construction TIMERS (confirm lazy-poll pattern); +50% partial bonus during build; prereq-by-actual-buildings (ADR-0059 N-D4, blocked on per-building operational-state schema); rail-gun/defense-grid buildings; ADR-0076 per-unit pricing; safe commodity storage; ADR-0080 siege vulnerability magnitude; L0->L1 instant intent."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
