@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
 import PageHeader from '../ui/PageHeader';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './pages.css';
 
 interface WarpTunnel {
@@ -24,6 +25,8 @@ interface WarpTunnel {
 }
 
 const WarpTunnelsManager: React.FC = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [warpTunnels, setWarpTunnels] = useState<WarpTunnel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -70,7 +73,11 @@ const WarpTunnelsManager: React.FC = () => {
   const handleMaintenanceToggle = async (tunnel: WarpTunnel) => {
     const newActive = !tunnel.is_active;
     const action = newActive ? 'reactivate' : 'put into maintenance mode';
-    if (!confirm(`Are you sure you want to ${action} tunnel "${tunnel.name}"?`)) {
+    if (!(await confirm({
+      title: 'Update Tunnel Status',
+      message: `Are you sure you want to ${action} tunnel "${tunnel.name}"?`,
+      confirmLabel: newActive ? 'Reactivate' : 'Set Maintenance',
+    }))) {
       return;
     }
 
@@ -84,12 +91,17 @@ const WarpTunnelsManager: React.FC = () => {
         t.id === tunnel.id ? { ...t, is_active: newActive, status: newActive ? 'ACTIVE' : 'MAINTENANCE' } : t
       ));
     } catch (err: any) {
-      alert(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
     }
   };
 
   const handleDeleteTunnel = async (tunnel: WarpTunnel) => {
-    if (!confirm(`Are you sure you want to delete tunnel "${tunnel.name}"? This action cannot be undone.`)) {
+    if (!(await confirm({
+      title: 'Delete Tunnel',
+      message: `Are you sure you want to delete tunnel "${tunnel.name}"? This action cannot be undone.`,
+      danger: true,
+      confirmLabel: 'Delete',
+    }))) {
       return;
     }
 
@@ -97,7 +109,7 @@ const WarpTunnelsManager: React.FC = () => {
       await api.delete(`/api/v1/admin/warp-tunnels/${tunnel.id}`);
       setWarpTunnels(warpTunnels.filter(t => t.id !== tunnel.id));
     } catch (err: any) {
-      alert(`Failed to delete tunnel: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Failed to delete tunnel: ${err.response?.data?.detail || err.message}`);
     }
   };
 
@@ -129,7 +141,7 @@ const WarpTunnelsManager: React.FC = () => {
       ));
       closeModal();
     } catch (err: any) {
-      alert(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
     } finally {
       setSaving(false);
     }

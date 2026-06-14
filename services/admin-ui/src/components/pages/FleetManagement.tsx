@@ -3,6 +3,7 @@ import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
 import FleetHealthReport from '../charts/FleetHealthReport';
 import FleetOperationsTab from '../fleet/FleetOperationsTab';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './fleet-management.css';
 
 interface Ship {
@@ -50,6 +51,8 @@ const SHIP_TYPES = [
 ];
 
 const FleetManagement: React.FC = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [ships, setShips] = useState<Ship[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
   const [stats, setStats] = useState<FleetStats | null>(null);
@@ -168,7 +171,7 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error creating ship:', error);
-      alert('Failed to create ship');
+      toast.error('Failed to create ship');
     }
   };
 
@@ -183,21 +186,26 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error updating ship:', error);
-      alert('Failed to update ship');
+      toast.error('Failed to update ship');
     }
   };
 
   const handleDeleteShip = async (shipId: string) => {
-    if (!confirm('Are you sure you want to delete this ship? This action cannot be undone.')) {
+    if (!(await confirm({
+      title: 'Delete Ship',
+      message: 'Are you sure you want to delete this ship? This action cannot be undone.',
+      danger: true,
+      confirmLabel: 'Delete',
+    }))) {
       return;
     }
-    
+
     try {
       await api.delete(`/api/v1/admin/ships/${shipId}`);
       fetchShips();
     } catch (error) {
       console.error('Error deleting ship:', error);
-      alert('Failed to delete ship');
+      toast.error('Failed to delete ship');
     }
   };
 
@@ -215,7 +223,7 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error teleporting ship:', error);
-      alert('Failed to teleport ship');
+      toast.error('Failed to teleport ship');
     }
   };
 

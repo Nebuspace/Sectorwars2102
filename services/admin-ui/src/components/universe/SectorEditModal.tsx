@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../utils/auth';
+import { useConfirm } from '../../contexts/ToastContext';
 import './sector-edit-modal.css';
 
 interface Sector {
@@ -59,6 +60,7 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
   onClose,
   onSave
 }) => {
+  const confirm = useConfirm();
   const [formData, setFormData] = useState<Partial<Sector>>({});
   const [activeTab, setActiveTab] = useState('basic');
   const [isSaving, setIsSaving] = useState(false);
@@ -226,9 +228,15 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
     }
   };
 
-  const handleCancel = () => {
+  const handleCancel = async () => {
     if (hasUnsavedChanges) {
-      if (window.confirm('You have unsaved changes. Are you sure you want to close?')) {
+      if (await confirm({
+        title: 'Unsaved Changes',
+        message: 'You have unsaved changes. Are you sure you want to close?',
+        danger: true,
+        confirmLabel: 'Discard',
+        cancelLabel: 'Keep Editing',
+      })) {
         onClose();
       }
     } else {
@@ -391,7 +399,12 @@ const SectorEditModal: React.FC<SectorEditModalProps> = ({
       ? `Delete tunnel "${tunnelName}"? This will remove travel in BOTH directions.`
       : `Delete tunnel "${tunnelName}"?`;
 
-    if (!window.confirm(confirmMessage)) {
+    if (!(await confirm({
+      title: 'Delete Warp Tunnel',
+      message: confirmMessage,
+      danger: true,
+      confirmLabel: 'Delete',
+    }))) {
       return;
     }
 

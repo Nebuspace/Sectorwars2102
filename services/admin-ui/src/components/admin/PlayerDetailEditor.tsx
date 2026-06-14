@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
 import { PlayerModel } from '../../types/playerManagement';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './player-detail-editor.css';
 
 interface PlayerDetailEditorProps {
@@ -22,6 +23,8 @@ interface PlayerEditData {
 }
 
 const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose, onSave }) => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [editData, setEditData] = useState<PlayerEditData>({
     username: player.username,
     email: player.email,
@@ -153,7 +156,12 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
   };
 
   const handleEmergencyAction = async (action: string) => {
-    if (!confirm(`Are you sure you want to ${action} this player?`)) {
+    if (!(await confirm({
+      title: 'Emergency Action',
+      message: `Are you sure you want to ${action} this player?`,
+      danger: true,
+      confirmLabel: 'Proceed',
+    }))) {
       return;
     }
 
@@ -171,7 +179,7 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
         handleFieldChange('turns', 1000); // Default turn reset
       }
 
-      alert(`${action} completed successfully`);
+      toast.success(`${action} completed successfully`);
     } catch (error: any) {
       console.error(`Failed to ${action}:`, error);
       const errorMessage = error.response?.data?.detail || `Failed to ${action}`;
@@ -442,19 +450,19 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
 
               <div className="aria-controls">
                 <button
-                  onClick={() => alert('ARIA data reset functionality will be implemented')}
+                  onClick={() => toast.info('ARIA data reset functionality will be implemented')}
                   className="aria-btn reset"
                 >
                   🔄 Reset ARIA Learning
                 </button>
                 <button
-                  onClick={() => alert('ARIA retrain functionality will be implemented')}
+                  onClick={() => toast.info('ARIA retrain functionality will be implemented')}
                   className="aria-btn retrain"
                 >
                   🧠 Retrain Personal Model
                 </button>
                 <button
-                  onClick={() => alert('ARIA export functionality will be implemented')}
+                  onClick={() => toast.info('ARIA export functionality will be implemented')}
                   className="aria-btn export"
                 >
                   📊 Export ARIA Data

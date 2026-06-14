@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { useToast } from '../../contexts/ToastContext';
 
 interface SectorDetailProps {
   sector: any;
@@ -10,6 +11,7 @@ interface SectorDetailProps {
 }
 
 const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick, onPlanetClick, onUpdate }) => {
+  const toast = useToast();
   const [portData, setPortData] = useState<any>(null);
   const [planetData, setPlanetData] = useState<any>(null);
   const [shipsInSector, setShipsInSector] = useState<any[]>([]);
@@ -93,7 +95,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       setEditingField(null);
     } catch (error) {
       console.error(`Failed to update ${field}:`, error);
-      alert(`Failed to update ${field}`);
+      toast.error(`Failed to update ${field}`);
     } finally {
       setIsUpdating(false);
     }
@@ -127,7 +129,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       await loadSectorDetails(); // Reload to get the new port data
     } catch (error) {
       console.error('Failed to create port:', error);
-      alert('Failed to create port');
+      toast.error('Failed to create port');
     } finally {
       setIsUpdating(false);
     }
@@ -148,7 +150,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       await loadSectorDetails(); // Reload to get the new planet data
     } catch (error) {
       console.error('Failed to create planet:', error);
-      alert('Failed to create planet');
+      toast.error('Failed to create planet');
     } finally {
       setIsUpdating(false);
     }
