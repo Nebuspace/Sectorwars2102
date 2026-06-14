@@ -1350,6 +1350,35 @@
     "mines never read (effort 5, design-only canon)."
    ],
    "last_updated": "2026-06-13"
+  },
+  {
+   "id": "neon-2026-06-13-c",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "1b8b5ca",
+   "deployed_sha_end": "31a6cb1",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "aria-market-fabrication-demock",
+     "state": "proven",
+     "effort": 3,
+     "files_owned": [
+      "services/gameserver/src/services/ai_trading_service.py"
+     ],
+     "commit": "31a6cb1",
+     "proof": "ARIA trading recommendation engine de-mocked to real data. /ai/recommendations: profit 1500/sector-1305/random-UUID -> real exotic_technology route 1302(150)->1314(275) profit 12500, DB-confirmed executable. /ai/market-analysis organics: 0.0/unknown -> current 8.0/falling/vol 0.44. ARIA chat shows 12500. Methods wired: _get_price_history->enhanced_market_transactions, _get_current_market_price->market_prices, _find_best_simple_route->real arbitrage, _get_nearby_sectors->sector_warps BFS, _get_active_predictions->ai_market_predictions.",
+     "note": "Adversarial review (HIGH) caught inverted buy/sell price direction (would inflate non-executable profit) -> fixed pre-deploy. Canon divergence (global vs explored-sectors personal intelligence) -> DECISIONS aria-trade-routes-global-vs-explored."
+    }
+   ],
+   "gate": "2 adversarial reviewers; reviewer A HIGH inverted-price-direction (fixed), MED predictions UUID-vs-name comment, LOW index-friendly compare (fixed); reviewer B HIGH canon-divergence (DECISIONS filed), MED wash-trade comment reworded, LOW _identify_price_factors/_assess_sector_risk still stubbed (parked).",
+   "parking_lot": [
+    "_identify_price_factors static list + _assess_sector_risk 0.3 (fabricated flavor next to real data)",
+    "predictions path commodity_id is UUID but _get_current_market_price expects name (latent; ai_market_predictions empty)",
+    "expire_on_commit=False on AsyncSessionLocal as systemic greenlet fix (needs review)",
+    "full canon: gate routes by ARIAExplorationMap + personal observations"
+   ],
+   "last_updated": "2026-06-13"
   }
  ],
  "last_updated": "2026-06-12"
