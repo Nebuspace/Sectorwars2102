@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
 import PageHeader from '../ui/PageHeader';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './pages.css';
 
 interface Station {
@@ -22,7 +23,18 @@ interface Station {
   commodities: string[];
 }
 
+// Extracts a human-readable message from an Axios-style error without using `any`.
+const getErrorMessage = (err: unknown): string => {
+  if (typeof err === 'object' && err !== null) {
+    const maybeAxios = err as { response?: { data?: { detail?: string } }; message?: string };
+    return maybeAxios.response?.data?.detail || maybeAxios.message || 'An unexpected error occurred';
+  }
+  return 'An unexpected error occurred';
+};
+
 const StationsManager: React.FC = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [ports, setPorts] = useState<Station[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,8 +60,8 @@ const StationsManager: React.FC = () => {
       setPorts(response.data.stations || []);
       setTotal(response.data.total ?? (response.data.stations || []).length);
       setError(null);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to fetch stations');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -74,16 +86,22 @@ const StationsManager: React.FC = () => {
   };
 
   const handleDeletePort = async (port: Station) => {
-    if (!confirm(`Are you sure you want to delete station "${port.name}"? This action cannot be undone.`)) {
+    const confirmed = await confirm({
+      title: 'Delete station',
+      message: `Are you sure you want to delete station "${port.name}"? This action cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) {
       return;
     }
 
     try {
       await api.delete(`/api/v1/admin/ports/${port.id}`);
       setPorts(ports.filter(p => p.id !== port.id));
-      alert('Station deleted successfully');
-    } catch (err: any) {
-      alert(`Failed to delete station: ${err.response?.data?.detail || err.message}`);
+      toast.success('Station deleted successfully');
+    } catch (err: unknown) {
+      toast.error(`Failed to delete station: ${getErrorMessage(err)}`);
     }
   };
 
@@ -318,6 +336,7 @@ interface PortModalProps {
 }
 
 const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) => {
+  const toast = useToast();
   // Only include fields that the backend PATCH actually writes.
   // Excluded: station_type (column is `type`), max_capacity (no column),
   // security_level (stored in defenses JSONB), docking_fee (computed),
@@ -349,7 +368,7 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
           
           // Players are already filtered as active by the API
           setPlayers(playersData);
-        } catch (err: any) {
+        } catch (err: unknown) {
           console.error('Failed to fetch players:', err);
         } finally {
           setLoadingPlayers(false);
@@ -381,8 +400,8 @@ const PortModal: React.FC<PortModalProps> = ({ port, mode, onClose, onSave }) =>
       }
       await api.patch(`/api/v1/admin/ports/${port.id}`, payload);
       onSave({ ...port, name: formData.name, trade_volume: formData.trade_volume, owner_id: formData.owner_id || null });
-    } catch (err: any) {
-      alert(`Failed to update port: ${err.response?.data?.detail || err.message}`);
+    } catch (err: unknown) {
+      toast.error(`Failed to update port: ${getErrorMessage(err)}`);
     } finally {
       setSaving(false);
     }
@@ -554,6 +573,7 @@ interface Player {
 }
 
 const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
+  const toast = useToast();
   const [formData, setFormData] = useState({
     name: '',
     sector_id: '',
@@ -580,11 +600,11 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
         const sectorsData = sectorsResponse.data.sectors || [];
         
         // Filter out sectors that already have ports
-        const availableSectors = sectorsData.filter((sector: any) => !sector.has_port);
+        const availableSectors = sectorsData.filter((sector: Sector) => !sector.has_port);
         setSectors(availableSectors);
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error('Failed to fetch sectors:', err);
-        alert('Failed to load sectors. Please try again.');
+        toast.error('Failed to load sectors. Please try again.');
       } finally {
         setLoadingSectors(false);
       }
@@ -597,9 +617,9 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
         
         // Players are already filtered as active by the API
         setPlayers(playersData);
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error('Failed to fetch players:', err);
-        alert('Failed to load players. Please try again.');
+        toast.error('Failed to load players. Please try again.');
       } finally {
         setLoadingPlayers(false);
       }
@@ -613,16 +633,16 @@ const AddPortModal: React.FC<AddPortModalProps> = ({ onClose, onSave }) => {
     
     // Validate sector selection
     if (!formData.sector_id) {
-      alert('Please select a sector for the new port.');
+      toast.warning('Please select a sector for the new port.');
       return;
     }
-    
+
     try {
       setSaving(true);
       const response = await api.post('/api/v1/admin/ports', formData);
       onSave(response.data);
-    } catch (err: any) {
-      alert(`Failed to create port: ${err.response?.data?.detail || err.message}`);
+    } catch (err: unknown) {
+      toast.error(`Failed to create port: ${getErrorMessage(err)}`);
     } finally {
       setSaving(false);
     }
