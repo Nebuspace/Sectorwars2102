@@ -29,7 +29,7 @@ const LanguageSwitcher: React.FC = () => {
       code,
       name: info.name,
       nativeName: info.nativeName,
-      direction: info.direction,
+      direction: (info as { direction?: string }).direction ?? 'ltr',
       isActive: code === 'en' || ['es', 'fr', 'zh', 'pt'].includes(code),
       completionPercentage: code === 'en' ? 100 : 0
     }));

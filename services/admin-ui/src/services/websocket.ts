@@ -39,7 +39,21 @@ export interface WebSocketEvents {
   'system:maintenance': (data: any) => void;
   'system:announcement': (data: any) => void;
   'system:alert': (data: any) => void;
-  
+  'system:performance': (data: any) => void;
+  'system:security-event': (data: any) => void;
+
+  // AI / ARIA events
+  'ai:model-update': (data: any) => void;
+  'ai:prediction-made': (data: any) => void;
+  'ai:recommendation-sent': (data: any) => void;
+  'ai:profile-updated': (data: any) => void;
+  'ai:training-complete': (data: any) => void;
+  'ai:accuracy-update': (data: any) => void;
+  'ai:route-update': (data: any) => void;
+  'ai:route-stats-update': (data: any) => void;
+  'ai:segment-update': (data: any) => void;
+  'ai:trend-update': (data: any) => void;
+
   // Connection events
   'connection:established': (data: any) => void;
   'connection:lost': (data: any) => void;
@@ -119,8 +133,8 @@ class AdminWebSocketService {
 
     return new Promise((resolve, reject) => {
       try {
-        const wsUrl = `${this.getWebSocketUrl()}?token=${encodeURIComponent(this.token)}`;
-        console.log('Admin WebSocket: Connecting to', wsUrl.replace(this.token, '[TOKEN]'));
+        const wsUrl = `${this.getWebSocketUrl()}?token=${encodeURIComponent(token)}`;
+        console.log('Admin WebSocket: Connecting to', wsUrl.replace(token, '[TOKEN]'));
         
         this.ws = new WebSocket(wsUrl);
         
@@ -197,7 +211,9 @@ class AdminWebSocketService {
   private handleMessage(message: WebSocketMessage): void {
     // Convert message type to event format if needed
     // e.g., "combat_new_event" -> "combat:new-event"
-    const eventType = message.type.replace(/_/g, ':').replace(/:/g, '-', 1).replace(/-/g, ':');
+    // (the trailing count arg on String.replace is invalid and was ignored at
+    // runtime — removed; the chain still normalises separators to ':')
+    const eventType = message.type.replace(/_/g, ':').replace(/:/g, '-').replace(/-/g, ':');
     
     // Emit to specific event handlers
     this.emit(eventType, message);

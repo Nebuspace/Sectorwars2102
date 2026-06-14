@@ -10,7 +10,7 @@ interface Sector {
   name: string;
   type: string;
   cluster_id: string;
-  region_name: string;
+  region_name?: string | null;
   x_coord: number;
   y_coord: number;
   z_coord: number;

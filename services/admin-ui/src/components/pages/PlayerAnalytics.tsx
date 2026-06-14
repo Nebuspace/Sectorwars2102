@@ -555,7 +555,7 @@ const PlayerAnalytics: React.FC = () => {
                               </td>
                             )}
                             {visibleColumns.lastLogin && (
-                              <td className="text-sm">{new Date(player.activity.last_login).toLocaleDateString()}</td>
+                              <td className="text-sm">{player.activity.last_login ? new Date(player.activity.last_login).toLocaleDateString() : '—'}</td>
                             )}
                             {visibleColumns.turns && (
                               <td>
@@ -743,7 +743,7 @@ const PlayerAnalytics: React.FC = () => {
                       </div>
                       <div>
                         <div className="text-sm text-muted">Last Login</div>
-                        <div>{new Date(state.selectedPlayer.activity.last_login).toLocaleString()}</div>
+                        <div>{state.selectedPlayer.activity.last_login ? new Date(state.selectedPlayer.activity.last_login).toLocaleString() : '—'}</div>
                       </div>
                     </div>
                   </div>

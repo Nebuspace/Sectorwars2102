@@ -248,7 +248,7 @@ const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({
             <div className="status-item">
               <span className="label">Last Login:</span>
               <span className="value">
-                {new Date(player.activity.last_login).toLocaleString()}
+                {player.activity.last_login ? new Date(player.activity.last_login).toLocaleString() : '—'}
               </span>
             </div>
           </div>

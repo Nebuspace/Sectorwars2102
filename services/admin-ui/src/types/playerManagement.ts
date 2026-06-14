@@ -30,6 +30,7 @@ export interface PlayerModel {
   credits: number;
   turns: number;
   current_sector_id: number | null;
+  current_region_id: string | null;
   current_ship_id: string | null;
   team_id: string | null;
   is_active: boolean;
