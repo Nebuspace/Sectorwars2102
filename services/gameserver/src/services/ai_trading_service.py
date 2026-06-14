@@ -26,8 +26,9 @@ from src.models.ai_trading import (
     AITrainingData
 )
 from src.models.player import Player
-from src.models.sector import Sector
-from src.models.market_transaction import MarketTransaction
+from src.models.sector import Sector, sector_warps
+from src.models.station import Station
+from src.models.market_transaction import MarketTransaction, MarketPrice
 from src.services.market_prediction_engine import MarketPredictionEngine
 from src.services.route_optimizer import RouteOptimizer, RouteObjective
 
@@ -526,9 +527,20 @@ class AITradingService:
     # Simplified helper methods (real implementation would be more sophisticated)
     
     async def _get_price_history(self, db: AsyncSession, commodity_id: str, sector_id: Optional[str]) -> List[Dict]:
-        """Get price history for a commodity"""
-        # Simplified - real implementation would query actual market data
-        return []
+        """Real recent price points for a commodity, from executed market transactions
+        (enhanced_market_transactions — player + NPC trades). Oldest→newest so the
+        caller's prices[-1] is the latest. Commodity is matched case-insensitively."""
+        try:
+            # Commodity is stored lowercase (model note); compare to a lowercased
+            # input so the ix_market_transactions_commodity btree index is usable.
+            stmt = select(MarketTransaction.unit_price).where(
+                MarketTransaction.commodity == str(commodity_id).lower()
+            ).order_by(MarketTransaction.timestamp.asc()).limit(60)
+            rows = (await db.execute(stmt)).all()
+            return [{"price": float(r[0])} for r in rows if r[0] is not None]
+        except Exception as e:
+            logger.error(f"Error fetching price history for {commodity_id}: {e}")
+            return []
     
     async def _predict_future_price(self, db: AsyncSession, commodity_id: str, sector_id: Optional[str], history: List) -> float:
         """Predict future price using Prophet ML model"""
@@ -623,31 +635,173 @@ class AITradingService:
     
     # Additional simplified helper methods
     async def _get_active_predictions(self, db: AsyncSession, sector_id: int) -> List[AIMarketPrediction]:
-        """Get active market predictions for a sector"""
-        # Simplified implementation
-        return []
-    
+        """Active (unexpired) market predictions for a sector. Resolves the
+        human-readable int sector_id to the sectors.id UUID first. Returns []
+        honestly when no live predictions exist (rather than faking some)."""
+        try:
+            sector_uuid = (await db.execute(
+                select(Sector.id).where(Sector.sector_id == int(sector_id))
+            )).scalar_one_or_none()
+            if sector_uuid is None:
+                return []
+            stmt = select(AIMarketPrediction).where(
+                and_(
+                    AIMarketPrediction.sector_id == sector_uuid,
+                    AIMarketPrediction.expires_at > datetime.utcnow(),
+                )
+            ).order_by(desc(AIMarketPrediction.created_at))
+            return list((await db.execute(stmt)).scalars().all())
+        except Exception as e:
+            logger.error(f"Error fetching active predictions for sector {sector_id}: {e}")
+            return []
+
     async def _get_current_market_price(self, db: AsyncSession, commodity_id: str, sector_id: str) -> Optional[float]:
-        """Get current market price for a commodity in a sector"""
-        # Simplified implementation
-        return 100.0  # Placeholder
+        """Current live market sell price for a commodity, from market_prices —
+        sector-specific average when a sector is given, else market-wide average.
+
+        NB: commodity_id here is the lowercase commodity NAME (e.g. 'organics')
+        on the analysis path. The predictions path (_generate_market_opportunities)
+        passes AIMarketPrediction.commodity_id, which is a UUID — that lookup will
+        not match a name and falls through to None until predictions carry/resolve
+        the commodity name. Harmless today (ai_market_predictions is empty)."""
+        try:
+            base = select(func.avg(MarketPrice.sell_price)).where(
+                MarketPrice.commodity == str(commodity_id).lower()
+            )
+            if sector_id is not None:
+                try:
+                    stmt = base.select_from(MarketPrice).join(
+                        Station, Station.id == MarketPrice.station_id
+                    ).where(Station.sector_id == int(sector_id))
+                    val = (await db.execute(stmt)).scalar()
+                    if val is not None:
+                        return float(val)
+                except (ValueError, TypeError):
+                    pass
+            val = (await db.execute(base)).scalar()
+            return float(val) if val is not None else None
+        except Exception as e:
+            logger.error(f"Error fetching current price for {commodity_id}: {e}")
+            return None
     
     async def _get_nearby_sectors(self, db: AsyncSession, sector_id: int, max_distance: int) -> List[str]:
-        """Get nearby sectors within max distance"""
-        # Simplified implementation
-        return [str(sector_id + i) for i in range(1, max_distance + 1)]
-    
+        """Warp-reachable sectors within max_distance hops — real BFS over the
+        sector_warps graph (bidirectional-aware). Resolves int↔UUID via sectors."""
+        try:
+            origin_uuid = (await db.execute(
+                select(Sector.id).where(Sector.sector_id == int(sector_id))
+            )).scalar_one_or_none()
+            if origin_uuid is None:
+                return []
+            visited = {origin_uuid}
+            frontier = {origin_uuid}
+            for _ in range(max(1, max_distance)):
+                if not frontier:
+                    break
+                stmt = select(
+                    sector_warps.c.source_sector_id,
+                    sector_warps.c.destination_sector_id,
+                    sector_warps.c.is_bidirectional,
+                ).where(
+                    or_(
+                        sector_warps.c.source_sector_id.in_(frontier),
+                        and_(
+                            sector_warps.c.is_bidirectional == True,  # noqa: E712
+                            sector_warps.c.destination_sector_id.in_(frontier),
+                        ),
+                    )
+                )
+                rows = (await db.execute(stmt)).all()
+                nxt = set()
+                for src, dst, bidir in rows:
+                    if src in frontier and dst not in visited:
+                        nxt.add(dst)
+                    if bidir and dst in frontier and src not in visited:
+                        nxt.add(src)
+                nxt -= visited
+                visited |= nxt
+                frontier = nxt
+            neighbor_uuids = [u for u in visited if u != origin_uuid]
+            if not neighbor_uuids:
+                return []
+            rows = (await db.execute(
+                select(Sector.sector_id).where(Sector.id.in_(neighbor_uuids))
+            )).all()
+            return [str(r[0]) for r in rows]
+        except Exception as e:
+            logger.error(f"Error computing nearby sectors for {sector_id}: {e}")
+            return []
+
     async def _find_best_simple_route(self, db: AsyncSession, sectors: List[str]) -> Optional[Dict]:
-        """Find best simple trading route"""
-        # Simplified implementation
-        if len(sectors) >= 2:
-            return {
-                'to_sector': sectors[1],
-                'profit': 1500,
-                'description': f"Trade route to sector {sectors[1]}",
-                'commodity_id': str(uuid.uuid4())
-            }
-        return None
+        """Best executable buy-low / sell-high route across the given sectors,
+        from live market_prices.
+
+        Price semantics (market_transaction.py): a station's `sell_price` is what
+        it CHARGES a player (the player's BUY cost); its `buy_price` is what it
+        PAYS a player (the player's SELL revenue). So a real round-trip profit is
+        (best price a station will PAY for it) − (cheapest price to BUY it):
+        max(buy_price) − min(sell_price), cross-sector only. Profit is over a
+        nominal 100-unit haul (per-unit prices shown in the description). Routes
+        below a minimum viable spread are dropped."""
+        UNITS = 100  # nominal haul for the profit estimate (per-unit prices shown in description)
+        MIN_PROFIT = 100  # minimum viable aggregate profit; the caller gates harder (>1000)
+        try:
+            sector_ints = []
+            for s in sectors:
+                try:
+                    sector_ints.append(int(s))
+                except (ValueError, TypeError):
+                    continue
+            if not sector_ints:
+                return None
+            stmt = select(
+                MarketPrice.commodity,
+                Station.sector_id,
+                func.min(MarketPrice.sell_price),  # cheapest price a PLAYER can BUY at, this sector
+                func.max(MarketPrice.buy_price),   # best price a PLAYER can SELL at, this sector
+            ).select_from(MarketPrice).join(
+                Station, Station.id == MarketPrice.station_id
+            ).where(
+                Station.sector_id.in_(sector_ints)
+            ).group_by(MarketPrice.commodity, Station.sector_id)
+            rows = (await db.execute(stmt)).all()
+
+            # Per commodity: cheapest place to BUY (min sell_price) and best place
+            # to SELL (max buy_price) across the candidate sectors.
+            best_buy: Dict[str, Tuple[int, int]] = {}   # commodity -> (player_buy_cost, sector)
+            best_sell: Dict[str, Tuple[int, int]] = {}  # commodity -> (player_sell_revenue, sector)
+            for commodity, sec, min_sell, max_buy in rows:
+                if min_sell is not None and (commodity not in best_buy or min_sell < best_buy[commodity][0]):
+                    best_buy[commodity] = (int(min_sell), int(sec))
+                if max_buy is not None and (commodity not in best_sell or max_buy > best_sell[commodity][0]):
+                    best_sell[commodity] = (int(max_buy), int(sec))
+
+            best_route = None
+            for commodity in best_buy:
+                if commodity not in best_sell:
+                    continue
+                buy_cost, buy_sec = best_buy[commodity]     # what the player pays to acquire
+                sell_rev, sell_sec = best_sell[commodity]   # what the player receives selling
+                if buy_sec == sell_sec:
+                    continue  # need a real A→B route, not a single station's internal spread
+                profit = int((sell_rev - buy_cost) * UNITS)
+                if profit < MIN_PROFIT:
+                    continue  # not a worthwhile (or not a real) arbitrage
+                if best_route is None or profit > best_route["profit"]:
+                    best_route = {
+                        "to_sector": str(sell_sec),
+                        "from_sector": str(buy_sec),
+                        "profit": profit,
+                        "description": (
+                            f"Buy {commodity} in sector {buy_sec} (~{buy_cost} cr/unit), "
+                            f"sell in sector {sell_sec} (~{sell_rev} cr/unit)"
+                        ),
+                        "commodity_id": commodity,
+                    }
+            return best_route
+        except Exception as e:
+            logger.error(f"Error finding best route: {e}")
+            return None
     
     async def _assess_sector_risk(self, db: AsyncSession, sector_id: int) -> float:
         """Assess risk level of a sector"""
