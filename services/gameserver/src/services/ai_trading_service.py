@@ -605,9 +605,49 @@ class AITradingService:
         return min(1.0, base_confidence + data_confidence + volatility_confidence)
     
     async def _identify_price_factors(self, db: AsyncSession, commodity_id: str, sector_id: Optional[str]) -> List[str]:
-        """Identify factors affecting commodity prices"""
-        # Simplified - real implementation would analyze various game factors
-        return ["Market demand", "Supply levels", "Player activity"]
+        """Real factors affecting a commodity's price, derived from live market
+        state (market_prices demand/supply + price spread, recent transaction
+        volume) — not a static placeholder."""
+        try:
+            commodity = str(commodity_id).lower()
+            row = (await db.execute(
+                select(
+                    func.avg(MarketPrice.demand_level),
+                    func.avg(MarketPrice.supply_level),
+                    func.min(MarketPrice.sell_price),
+                    func.max(MarketPrice.sell_price),
+                    func.count(),
+                ).where(MarketPrice.commodity == commodity)
+            )).first()
+            if not row or not row[4]:
+                return ["No live market data for this commodity"]
+            avg_demand = float(row[0] or 1.0)
+            avg_supply = float(row[1] or 1.0)
+            min_sell, max_sell, n_markets = row[2], row[3], int(row[4])
+
+            factors: List[str] = []
+            if avg_demand > avg_supply * 1.05:
+                factors.append("Demand outpacing supply")
+            elif avg_supply > avg_demand * 1.05:
+                factors.append("Supply exceeds demand")
+            else:
+                factors.append("Supply and demand roughly balanced")
+
+            if min_sell and max_sell and max_sell > min_sell * 1.3:
+                factors.append(f"Wide price spread across markets ({int(min_sell)}-{int(max_sell)} cr)")
+
+            recent = (await db.execute(
+                select(func.count()).select_from(MarketTransaction).where(
+                    MarketTransaction.commodity == commodity,
+                    MarketTransaction.timestamp > datetime.utcnow() - timedelta(days=7),
+                )
+            )).scalar() or 0
+            factors.append(f"{recent} trades in the last 7 days" if recent else "Thin recent trading")
+            factors.append(f"Priced at {n_markets} markets")
+            return factors
+        except Exception as e:
+            logger.error(f"Error identifying price factors for {commodity_id}: {e}")
+            return ["Market data temporarily unavailable"]
     
     def _assess_risk_level(self, player_risk_tolerance: float, prediction: AIMarketPrediction) -> RiskLevel:
         """Assess risk level for a recommendation"""
@@ -804,9 +844,26 @@ class AITradingService:
             return None
     
     async def _assess_sector_risk(self, db: AsyncSession, sector_id: int) -> float:
-        """Assess risk level of a sector"""
-        # Simplified - real implementation would consider piracy, market volatility, etc.
-        return 0.3  # Low risk placeholder
+        """Real sector risk (0-1) from hostile-NPC (raider) presence currently
+        in the sector. 0.1 when clear; rises with each active raider so a sector
+        with 2+ raiders crosses the 0.7 warning threshold its caller uses."""
+        try:
+            from src.models.npc_character import NPCCharacter, NPCArchetype, NPCStatus
+            # A raider is a live in-sector threat unless it's dead/gone.
+            DOWN = [NPCStatus.KIA, NPCStatus.RESPAWNING, NPCStatus.RETIRED, NPCStatus.REASSIGNED]
+            hostiles = (await db.execute(
+                select(func.count()).select_from(NPCCharacter).where(
+                    NPCCharacter.current_sector_id == int(sector_id),
+                    NPCCharacter.archetype == NPCArchetype.HOSTILE_RAIDER,
+                    NPCCharacter.status.notin_(DOWN),
+                )
+            )).scalar() or 0
+            if hostiles <= 0:
+                return 0.1
+            return min(1.0, 0.4 + 0.2 * hostiles)
+        except Exception as e:
+            logger.error(f"Error assessing sector risk for {sector_id}: {e}")
+            return 0.3
     
     def _extract_trading_patterns(self, trade_data: Dict[str, Any]) -> Dict[str, Any]:
         """Extract patterns from trade data"""
