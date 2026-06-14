@@ -8,9 +8,10 @@
  * cargo dict omits it. Genesis bay slot visual is ported from the sidebar,
  * restyled with .mfd-page-* classes (text glyphs, no emoji).
  */
-import React from 'react';
+import React, { useState } from 'react';
 import { useGame } from '../../../contexts/GameContext';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty } from '../atoms';
+import { GenesisDeployment } from '../../planetary/GenesisDeployment';
 import './pages-ship.css';
 
 const ACCENT = '#9EC5FF';
@@ -28,6 +29,7 @@ const formatCommodity = (key: string): string =>
 
 const CargoPage: React.FC = () => {
   const { currentShip } = useGame();
+  const [showGenesis, setShowGenesis] = useState(false);
 
   if (!currentShip) {
     return (
@@ -110,14 +112,27 @@ const CargoPage: React.FC = () => {
               </span>
             </div>
             {loadedGenesis > 0 && (
-              <div className="mfd-page-genesis-ready">
+              <button
+                type="button"
+                className="mfd-page-genesis-ready mfd-page-genesis-deploy-btn"
+                onClick={() => setShowGenesis(true)}
+                title="Deploy a Genesis Device — seed a new colony in an empty sector"
+              >
                 <span className="mfd-page-genesis-ready-dot" />
-                TERRAFORM READY
-              </div>
+                TERRAFORM READY — DEPLOY
+              </button>
             )}
           </div>
         )}
       </MFDPageBody>
+
+      {showGenesis && (
+        <div className="genesis-modal-overlay" onClick={() => setShowGenesis(false)}>
+          <div className="genesis-modal-content" onClick={(e) => e.stopPropagation()}>
+            <GenesisDeployment onClose={() => setShowGenesis(false)} onSuccess={() => setShowGenesis(false)} />
+          </div>
+        </div>
+      )}
     </>
   );
 };
