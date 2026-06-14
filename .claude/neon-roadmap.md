@@ -68,6 +68,17 @@ All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Tra
 
 **Parked:** Faction/Message/Translation pages are read-mostly v1 — faction create/edit/delete + translation key-editing endpoints exist but weren't wired (guarded-mutation follow-up); Message Moderation "Most Active Senders" shows raw player UUIDs (backend returns no nickname); the destructive red Delete button is unprovable-in-browser until a flagged message exists.
 
+### Admin-UI NEON run 6 — 2026-06-14 (frontend-only; self-selectable set)
+**Shipped + PROVEN live on dev (`d66f954`, `f2d8dee`):** 2 sections; discovery dropped 2 stale candidates (orphan-handler honest-disable + Players dark-pin were already done) and 1 over-claimed candidate (Bang Galaxy "light-islands" render dark in-browser → GOLD token-hygiene, not a visible NEON win).
+- **Security console honesty** (`SecurityDashboard.tsx`, #4) — the Threat Detection rule toggles, the IP-blocklist add form, and the Security-Policies Edit buttons were fully interactive but wired to nothing (no handlers, no endpoints). Disabled them all + added honest amber `role="note"` banners (matching the EmergencyOperationsPanel idiom). Wired Overview/Alerts/Audit surfaces + the real Enable-MFA button untouched. **Proven:** amber notes render; Suspicious-Pattern toggle stays OFF on click (disabled); IP input+button + both policy Edit buttons disabled; zero console errors.
+- **ColonyOverview data correctness** (`ColonyOverview.tsx`) — `habitability_score` is stored **0–100** (DB: Aquarius 52 / Gamma 25 / Pollux 28) but the Habitability tile did `*100` then capped, so every colony showed **100%**; per-card status was always 'active' while the summary counted "troubled" (morale<50). Dropped the `*100`; derived status from morale. **Proven:** Aquarius tile 100%→**52%** (DB-matched); badges now Aquarius ACTIVE / Gamma+Pollux TROUBLED; summary fixed from the impossible TOTAL 3 / ACTIVE 3 / TROUBLED 2 → ACTIVE 1 / TROUBLED 2. `resource_richness` (genuinely 0–1) correctly kept its `*100`. Adversarial review (2 reviewers) PASS, no CRITICAL/HIGH.
+
+**Parked (run 6 finds):**
+- **Players page white banner (P4.3)** — STRONG next-run candidate: the `.section-header` "📊 Player Metrics" region renders as a **white island** (title white-on-white, only the subtitle visible) + 2 saturated solid-blue/orange stat cards among 4 dark ones. Root cause is in **shared** `styles/layouts.css` `.section`/`.section-header` (global blast radius) — needs careful page-scoped pinning, not a tail-of-run rush. (The code-only scanner wrongly called this page "compliant"; the browser disproved it.)
+- **`.btn:disabled` not visually dimmed** — disabled `.btn-primary` (e.g. IP-blocklist Add) still looks blue/clickable (functionally inert + title, weak affordance); a global `.btn:disabled { opacity }` would improve every honest-disabled primary button. LOW.
+- **Bang Galaxy CSS** uses hardcoded hex fallbacks instead of design-system tokens (renders dark, no visible defect) → GOLD token-hygiene pass.
+- **ColonyOverview** `|| 0` (water) vs `|| 50` (morale/status) fallback skew for a genuine 0 score; redundant `Math.min` in status ternary — LOW polish.
+
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
 ### Gameplay-meaty
