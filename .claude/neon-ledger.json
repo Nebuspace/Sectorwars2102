@@ -1489,6 +1489,37 @@
     "Max-gated: AI-dialogue content depth, defense/route canon decisions, faction-mission completion"
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-i",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "9a91895",
+   "deployed_sha_end": "478ec80",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "move-surfaces-encounters",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/player.py"
+     ],
+     "commit": "478ec80",
+     "proof": "move 1303->1319 (NEBULA) -> response encounters=[{type:sector_hazard,hazard:NEBULA,threat_level:medium}] (was stripped by response_model). Restores encounter visibility + ARIA autopilot pause (ADR-0072).",
+     "note": "Comprehensive 3-zone scan refilled the buildable queue (5+ items) \u2014 well was NOT dry; targeted scans had missed the drones/movement/specialization surfaces."
+    }
+   ],
+   "gate": "lead self-review (1-line forward of already-generated data into already-declared response fields; py_compile clean; live proof)",
+   "parking_lot": [
+    "/drones/sector no-auth (SECURITY, buildable next)",
+    "ColonySpecialization UI lies (buildable)",
+    "AI market predicted_price 1.05 fallback (buildable)",
+    "/combat/engage port 200->403 (buildable)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: drone costs, faction-mission completion, faction pricing stacking, pirate hulls"
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"

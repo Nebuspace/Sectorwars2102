@@ -187,5 +187,17 @@ All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Tra
 ### NEON 2026-06-14-h (gameserver) — ✅ gambling concurrency locks (`9a91895`)
 - ✅ **Gambling credit settlement concurrency-safe** (`9a91895`): audit follow-up to the blackjack faucet — slots/dice/lottery were server-authoritative (no fabrication) but didn't row-lock the player, so concurrent gambling could lost-update credits. All three now use the same populate_existing()+with_for_update() lock as blackjack. **Proven live**: 10 concurrent slot spins → DB credits = before + Σ(net) exactly (no lost update). Gambling surface fully hardened.
 
+### NEON 2026-06-14-i (gameserver) — ✅ move encounters surfaced (`478ec80`)
+- ✅ **/player/move surfaces entry encounters + tunnel events** (`478ec80`): MovementService generated them + MoveResponse declared the fields, but the route never copied them → response_model stripped them (encounters hidden, ARIA autopilot pause blinded, ADR-0072). One-line forward. Proven live (move into NEBULA 1319 → sector_hazard encounter in response).
+
+### Fresh discovery queue (2026-06-14 full scan — BUILDABLE, in-lane, provable, NOT Max-gated)
+- 🟢 **/drones/sector/{id} unauthenticated** (drones.py:416) — SECURITY: no get_current_player dep; unauth caller enumerates drones in any sector. Fix: add the auth dependency. eff1.
+- 🟢 **ColonySpecialization UI lies about bonuses** (ColonySpecialization.tsx:58) — benefits prose claims effects (ship-upgrade discounts, colonist growth, food consumption, drone bonuses) the backend never applies (real = productionBonuses + defenseBonuses only). Fix: align the benefits copy to what's applied. eff1. PlanetManager→Specialize.
+- 🟢 **AI market predicted_price fallback = last×1.05** (ai_trading_service) — on predict_prices() failure, /ai/market-analysis returns a fabricated guess as a prediction. eff1.
+- 🟢 **/combat/engage port returns 200 'error'** (player_combat.py:197) — disabled-feature path returns HTTP 200 with an error body; should be 403/501 so the client can distinguish. eff1.
+- 🟢 **First-login ShipSelection JSON.stringify dump** (ShipSelection.tsx:108) — raw JSON shown to new players on ship-list fetch error. eff1.
+- 🟢 **/drones/deploy random deploymentId** (drones.py:508) — returned id not tied to a DB row → recall 404s (note: DroneManager UI unmounted, so API-only).
+- ⛔ Max-gated/large: drone create/upgrade/repair costs (no canon + UI unmounted), faction-mission completion, faction pricing-modifier stacking order, pirate hull stats, enhanced-WS trading stubs (client never connects), GOLD purge of dead components.
+
 ## How to use
 Say `neon` and the run self-selects from this file + fresh discovery. Say `neon <batch name>` to direct a run at a specific row. Rows needing Max decisions are marked — they cannot self-select.
