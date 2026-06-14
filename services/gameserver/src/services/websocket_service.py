@@ -675,25 +675,16 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
 
         async with AsyncSessionLocal() as adb:
             ai_service = EnhancedAIService(adb)
-            # Continue an existing thread when the client supplies a valid id;
-            # otherwise the service mints a fresh conversation context.
-            conversation_context = None
-            if conversation_id:
-                try:
-                    conversation_context = ConversationContext(
-                        session_id=conversation_id,
-                        conversation_type=context_type,
-                        player_id=str(player_id),
-                        assistant_id="",  # populated by the service
-                        security_level=SecurityLevel.STANDARD,
-                    )
-                except ValueError:
-                    conversation_context = None
-
+            # Let the service build the ConversationContext: only it has the
+            # authenticated assistant id, and ConversationContext validation
+            # rejects an empty assistant_id (the old pre-built context with
+            # assistant_id="" raised "Validation failed for id" on every
+            # threaded follow-up query). Pass the client's conversation_id so
+            # the service can continue the thread when it is a valid id.
             result = await ai_service.process_natural_language_query(
                 player_id=_uuid.UUID(str(player_id)),
                 user_input=content,
-                conversation_context=conversation_context,
+                conversation_id=conversation_id,
             )
             await adb.commit()
 

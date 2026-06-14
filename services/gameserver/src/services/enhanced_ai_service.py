@@ -779,7 +779,8 @@ class EnhancedAIService:
     # =============================================================================
 
     async def process_natural_language_query(self, player_id: uuid.UUID, user_input: str,
-                                           conversation_context: ConversationContext = None) -> Dict[str, Any]:
+                                           conversation_context: ConversationContext = None,
+                                           conversation_id: str = None) -> Dict[str, Any]:
         """
         Process natural language queries with comprehensive AI intelligence
         Extends ARIA's chat interface to all game systems
@@ -792,10 +793,19 @@ class EnhancedAIService:
             raise ValueError("Empty or invalid input")
         
         try:
-            # Create conversation context if not provided
+            # Create conversation context if not provided. Built HERE (not by the
+            # caller) because only this method has the authenticated assistant id
+            # — ConversationContext validation rejects an empty assistant_id.
+            # Reuse the client's conversation_id only when it is a valid UUID
+            # (session_id is later parsed with uuid.UUID in _log_conversation);
+            # otherwise mint a fresh thread id.
             if not conversation_context:
+                try:
+                    session_id = str(uuid.UUID(conversation_id)) if conversation_id else str(uuid.uuid4())
+                except (ValueError, TypeError, AttributeError):
+                    session_id = str(uuid.uuid4())
                 conversation_context = ConversationContext(
-                    session_id=str(uuid.uuid4()),
+                    session_id=session_id,
                     conversation_type="query",
                     player_id=str(player_id),
                     assistant_id=str(assistant.id),
