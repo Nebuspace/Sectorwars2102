@@ -1406,6 +1406,33 @@
     "CommsCrewPage could also show member_count (TeamResponse has it)"
    ],
    "last_updated": "2026-06-13"
+  },
+  {
+   "id": "neon-2026-06-13-f",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "7277d76",
+   "deployed_sha_end": "a28a734",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "armory-mines-honest-disable",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/armory.py"
+     ],
+     "commit": "a28a734",
+     "proof": "catalog mines available=false+reason; POST purchase limpet_mine -> 400; credits unchanged 159555, mines 0 (no deduction). Client already renders available=false disabled.",
+     "note": "Real mine deployment (read player.mines in combat/movement) is a future feature, effort 5+."
+    }
+   ],
+   "gate": "lead self-review (read-only catalog flag + early-reject guard; py_compile clean; low risk)",
+   "parking_lot": [
+    "build real mine deploy/detonation/tracking (effort 5+, then re-enable purchase)",
+    "GOLD purge of dead player-client mock components (still pending Max/GOLD)"
+   ],
+   "last_updated": "2026-06-13"
   }
  ],
  "last_updated": "2026-06-12"
