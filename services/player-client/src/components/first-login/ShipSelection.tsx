@@ -103,9 +103,8 @@ Guard: "Hold it right there! This area is restricted to registered pilots only. 
               <p>Loading available ships...</p>
             ) : (
               <div>
-                <p>No ships available at this time.</p>
-                <p>Session: {session ? 'Loaded' : 'Not loaded'}</p>
-                <p>Available ships data: {JSON.stringify(availableShips)}</p>
+                <p>No ships are available right now.</p>
+                <p>This is usually temporary — please refresh to try again.</p>
               </div>
             )}
           </div>
