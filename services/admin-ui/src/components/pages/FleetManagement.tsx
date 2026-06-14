@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
 import FleetHealthReport from '../charts/FleetHealthReport';
+import FleetOperationsTab from '../fleet/FleetOperationsTab';
 import './fleet-management.css';
 
 interface Ship {
@@ -508,6 +509,15 @@ const FleetManagement: React.FC = () => {
               <FleetHealthReport />
             </div>
           </div>
+        </section>
+
+        {/* Fleet Operations (admin fleet/battle endpoints: /admin/fleets/*) */}
+        <section className="section">
+          <div className="section-header">
+            <h3 className="section-title">⚔️ Fleet Operations</h3>
+            <p className="section-subtitle">Active fleets, recent battles, and live admin battle interventions</p>
+          </div>
+          <FleetOperationsTab />
         </section>
       </div>
 
