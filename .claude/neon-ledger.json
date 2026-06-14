@@ -1607,6 +1607,34 @@
     "Max-gated: specialization defense/research (DECISIONS), drone costs, faction-mission completion; GOLD purge"
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-m",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "ce77c8c",
+   "deployed_sha_end": "fa05b38",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "combat-engage-port-501",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/player_combat.py"
+     ],
+     "commit": "fa05b38",
+     "proof": "POST /combat/engage {targetType:port} -> 501 + 'Port assault operations are not yet authorized' (was HTTP 200 status=error). Error definitively surfaced via apiRequest throw.",
+     "note": "UI already disables port targets -> API-semantics hardening. Surfaced a NEW finding: client apiRequest reads data.detail but server envelope uses data.message -> generic 'API Error' messages (queued)."
+    }
+   ],
+   "gate": "lead self-review (status-code change; verified client handles non-2xx via apiRequest throw + inline error; py_compile clean; live 501 proof)",
+   "parking_lot": [
+    "client apiRequest data.detail||data.message (NEW, buildable next)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: specialization defense/research, drone costs, faction-mission completion; GOLD purge"
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"
