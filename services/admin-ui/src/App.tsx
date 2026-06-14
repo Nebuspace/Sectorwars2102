@@ -48,6 +48,9 @@ const CentralNexusManager = lazy(() => import('./components/pages/CentralNexusMa
 const RegionalGovernorDashboard = lazy(() => import('./components/pages/RegionalGovernorDashboard'));
 const FirstLoginConversations = lazy(() => import('./components/pages/FirstLoginConversations'));
 const BangGalaxyPage = lazy(() => import('./components/pages/BangGalaxyPage'));
+const FactionManagement = lazy(() => import('./components/pages/FactionManagement'));
+const MessageModeration = lazy(() => import('./components/pages/MessageModeration'));
+const TranslationManagement = lazy(() => import('./components/pages/TranslationManagement'));
 
 // Helper component for protected lazy routes.
 // The ErrorBoundary is keyed by pathname so a crash on one page resets
@@ -113,6 +116,11 @@ function App() {
 
                 {/* First Login Conversations */}
                 <Route path="first-login-conversations" element={<ProtectedLazyRoute element={<FirstLoginConversations />} />} />
+
+                {/* Surfaced admin subsystems (run 5) */}
+                <Route path="factions" element={<ProtectedLazyRoute element={<FactionManagement />} />} />
+                <Route path="messages" element={<ProtectedLazyRoute element={<MessageModeration />} />} />
+                <Route path="translations" element={<ProtectedLazyRoute element={<TranslationManagement />} />} />
 
                 {/* Redirect root to dashboard */}
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
