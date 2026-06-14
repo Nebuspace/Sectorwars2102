@@ -24,6 +24,42 @@ interface EconomicMetrics {
   economic_health_score: number;
 }
 
+/** Response shape of GET /api/v1/admin/economy/dashboard-summary */
+interface DashboardSummary {
+  timestamp: string;
+  health_score: number;
+  daily_summary: {
+    total_transactions: number;
+    total_volume: number;
+    total_value: number;
+    unique_traders: number;
+  };
+  key_metrics: {
+    gdp: number;
+    money_supply: number;
+    market_velocity: number;
+    gini_coefficient: number;
+  };
+  alert_summary: {
+    total_alerts: number;
+    by_severity: {
+      critical: number;
+      high: number;
+      medium: number;
+      low: number;
+    };
+    critical_alerts: Array<{ severity: string; message: string }>;
+  };
+  top_trading_ports: Array<{
+    station_id: string;
+    station_name: string;
+    sector_id: string | null;
+    transaction_count: number;
+    total_volume: number;
+    total_value: number;
+  }>;
+}
+
 /** Price Trends chart - shows buy/sell prices by commodity using D3 grouped bar chart */
 const PriceTrendsChart: React.FC<{ marketData: MarketData[] }> = ({ marketData }) => {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -242,6 +278,7 @@ const TradeVolumeChart: React.FC<{ marketData: MarketData[] }> = ({ marketData }
 const EconomyDashboard: React.FC = () => {
   const [marketData, setMarketData] = useState<MarketData[]>([]);
   const [metrics, setMetrics] = useState<EconomicMetrics | null>(null);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [selectedCommodity, setSelectedCommodity] = useState<string>('all');
   const [priceAlerts, setPriceAlerts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -296,7 +333,7 @@ const EconomyDashboard: React.FC = () => {
     setError(null);
 
     // Fetch all economy data concurrently - use allSettled so partial failures don't blank everything
-    const [marketRes, metricsRes, alertsRes] = await Promise.allSettled([
+    const [marketRes, metricsRes, alertsRes, summaryRes] = await Promise.allSettled([
       api.get('/api/v1/admin/economy/market-data', {
         params: {
           commodity_filter: selectedCommodity !== 'all' ? selectedCommodity : undefined,
@@ -306,7 +343,8 @@ const EconomyDashboard: React.FC = () => {
       api.get('/api/v1/admin/economy/metrics', {
         params: { time_period: '24h' }
       }),
-      api.get('/api/v1/admin/economy/price-alerts')
+      api.get('/api/v1/admin/economy/price-alerts'),
+      api.get('/api/v1/admin/economy/dashboard-summary')
     ]);
 
     // Track errors for display
@@ -333,6 +371,13 @@ const EconomyDashboard: React.FC = () => {
       setPriceAlerts(Array.isArray(alertsRes.value.data) ? alertsRes.value.data : []);
     } else {
       setPriceAlerts([]);
+    }
+
+    // Process economic health summary (non-blocking - its own honest empty state)
+    if (summaryRes.status === 'fulfilled') {
+      setSummary(summaryRes.value.data as DashboardSummary);
+    } else {
+      setSummary(null);
     }
 
     // Show combined error if all endpoints failed
@@ -424,6 +469,72 @@ const EconomyDashboard: React.FC = () => {
                   <span className="metric-label">Overall Score</span>
                 </div>
               </>
+            )}
+          </div>
+
+          {/* Economic Health (from dashboard-summary) */}
+          <div className="health-section">
+            <h3>Economic Health Snapshot</h3>
+            {summary ? (
+              <>
+                <div className="metrics-grid">
+                  <div className="metric-card">
+                    <h3>Health Score</h3>
+                    <span className={`metric-value ${summary.health_score >= 70 ? 'healthy' : 'warning'}`}>
+                      {summary.health_score.toFixed(0)}
+                    </span>
+                    <span className="metric-label">Overall Index (0-100)</span>
+                  </div>
+                  <div className="metric-card">
+                    <h3>Gini Coefficient</h3>
+                    <span className={`metric-value ${summary.key_metrics.gini_coefficient <= 0.4 ? 'healthy' : 'warning'}`}>
+                      {summary.key_metrics.gini_coefficient.toFixed(3)}
+                    </span>
+                    <span className="metric-label">Wealth Inequality (0-1)</span>
+                  </div>
+                  <div className="metric-card">
+                    <h3>Market Velocity</h3>
+                    <span className="metric-value">{summary.key_metrics.market_velocity.toFixed(2)}</span>
+                    <span className="metric-label">Turnover Rate</span>
+                  </div>
+                  <div className="metric-card">
+                    <h3>Money Supply (M2)</h3>
+                    <span className="metric-value">{summary.key_metrics.money_supply.toLocaleString()}</span>
+                    <span className="metric-label">Total in circulation</span>
+                  </div>
+                  <div className="metric-card">
+                    <h3>GDP</h3>
+                    <span className="metric-value">{summary.key_metrics.gdp.toLocaleString()}</span>
+                    <span className="metric-label">Gross Domestic Product</span>
+                  </div>
+                  <div className="metric-card">
+                    <h3>Unique Traders</h3>
+                    <span className="metric-value">{summary.daily_summary.unique_traders.toLocaleString()}</span>
+                    <span className="metric-label">Active (24h)</span>
+                  </div>
+                  <div className="metric-card">
+                    <h3>Transactions</h3>
+                    <span className="metric-value">{summary.daily_summary.total_transactions.toLocaleString()}</span>
+                    <span className="metric-label">Volume (24h)</span>
+                  </div>
+                  <div className="metric-card">
+                    <h3>Active Alerts</h3>
+                    <span className={`metric-value ${summary.alert_summary.by_severity.critical > 0 ? 'warning' : 'healthy'}`}>
+                      {summary.alert_summary.total_alerts.toLocaleString()}
+                    </span>
+                    <span className="metric-label">
+                      {summary.alert_summary.by_severity.critical} critical / {summary.alert_summary.by_severity.high} high
+                    </span>
+                  </div>
+                </div>
+                <div className="health-meta">
+                  Snapshot as of {new Date(summary.timestamp).toLocaleString()}
+                </div>
+              </>
+            ) : (
+              <div className="health-empty">
+                Economic health summary is unavailable.
+              </div>
             )}
           </div>
 
