@@ -200,5 +200,12 @@ All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Tra
 - 🟢 **/drones/deploy random deploymentId** (drones.py:508) — returned id not tied to a DB row → recall 404s (note: DroneManager UI unmounted, so API-only).
 - ⛔ Max-gated/large: drone create/upgrade/repair costs (no canon + UI unmounted), faction-mission completion, faction pricing-modifier stacking order, pirate hull stats, enhanced-WS trading stubs (client never connects), GOLD purge of dead components.
 
+### GOLD purge — ABORTED 2026-06-14 (canon check: these are PLANNED scaffolding, NOT dead code)
+Max chose the purge but added "be sure it is not a planned feature in sw2102-docs." Canon check result: the "dead/unmounted mock components" are almost all **scaffolding for designed-but-unbuilt features** — DO NOT DELETE:
+- **InsuranceManager** → ships.md + ship-insurance.md (planned). **MaintenanceManager** → ships.md "Maintenance system" 🚧 Partial. **FleetCoordination** → fleet-tactics.md (formations ✅ shipped; coordination bonuses). **TeamChat** → messaging.md (team broadcasts / team channel). **AllianceManager + DiplomacyInterface** → factions-and-teams.md "Alliances (design only)". **ResourceSharing** → factions-and-teams.md Treasury (transfer between members). **ShipDetails / TacticalPlanner / MissionPlanner** → ships/fleet-tactics adjacent (ambiguous → keep).
+- The mock data inside these is an "if-mounted" trap, not abandoned junk. Correct disposition: **build mock→real when each feature is scheduled** (most are the Max-gated items above), not delete.
+- **TeamAnalytics** is the ONLY candidate with no canon backing (no team-analytics/heatmap/perf-metric doc). Borderline — confirm with Max whether to document-as-planned or delete; not deleted unilaterally.
+- Nothing was deleted. The earlier "GOLD purge candidate" framing was wrong — these are unbuilt-feature scaffolding.
+
 ## How to use
 Say `neon` and the run self-selects from this file + fresh discovery. Say `neon <batch name>` to direct a run at a specific row. Rows needing Max decisions are marked — they cannot self-select.
