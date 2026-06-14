@@ -559,6 +559,17 @@ const GameDashboard: React.FC = () => {
     return () => window.clearTimeout(t);
   }, [playerState?.is_docked, playerState?.current_port_id]);
 
+  // Same pattern for the planet-surface scene: a few seconds after landing the
+  // low-value surface vista collapses to a thin strip, handing the band to the
+  // planetary console (parity with the docked station bay). Resets on liftoff.
+  const [landedChromeMin, setLandedChromeMin] = useState(false);
+  useEffect(() => {
+    if (!playerState?.is_landed) { setLandedChromeMin(false); return; }
+    setLandedChromeMin(false); // start expanded so the surface "lands" visibly
+    const t = window.setTimeout(() => setLandedChromeMin(true), 3500);
+    return () => window.clearTimeout(t);
+  }, [playerState?.is_landed, playerState?.current_planet_id]);
+
   // NAV monitor mode: Warp Jumpers get a second mode — the Quantum Drive
   // console — behind a two-position switch in the NAV header. Every other
   // ship type sees exactly the classic warp graph, no switch.
@@ -1298,7 +1309,7 @@ const GameDashboard: React.FC = () => {
 
   return (
     <GameLayout>
-      <div className={`game-dashboard cockpit-mode${dockedChromeMin && playerState?.is_docked ? ' docked-min' : ''}`}>
+      <div className={`game-dashboard cockpit-mode${dockedChromeMin && playerState?.is_docked ? ' docked-min' : ''}${landedChromeMin && playerState?.is_landed ? ' landed-min' : ''}`}>
         {/* System Alerts - Float over cockpit */}
         {error && (
           <div className="cockpit-alert error">
@@ -1462,6 +1473,33 @@ const GameDashboard: React.FC = () => {
                   <div className="hud-bar-fill" style={{ width: `${landedPlanet ? habitability : 0}%` }}></div>
                 </div>
               </HudChip>
+
+              {/* Manual minimize — collapse the surface vista to give the
+                  planetary console the band (parity with the docked bay). */}
+              <button
+                type="button"
+                className="bay-minimize-btn"
+                onClick={() => setLandedChromeMin(true)}
+                title="Minimize the surface view — expand the planetary console"
+              >
+                ▴ MINIMIZE SURFACE
+              </button>
+
+              {/* Collapsed strip (shown only when minimized via CSS): planet
+                  identity + expand affordance. */}
+              <div className="landed-min-bar">
+                <span className="landed-min-name">
+                  🪐 LANDED — {(landedPlanet?.name || 'Planet').toUpperCase()}
+                </span>
+                <button
+                  type="button"
+                  className="landed-min-expand"
+                  onClick={() => setLandedChromeMin(false)}
+                  title="Expand the surface view"
+                >
+                  ⤢ EXPAND SURFACE
+                </button>
+              </div>
             </>
             );
           })()}

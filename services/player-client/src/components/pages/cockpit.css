@@ -120,6 +120,59 @@
 /* While minimized the manual button is irrelevant (whole bay hidden) */
 .cockpit-mode.docked-min .bay-minimize-btn { display: none; }
 
+/* LANDED-MINIMIZE: parity with docked-minimize for the planet-surface scene —
+   a few seconds after landing the surface vista collapses to a thin identity
+   strip, handing the band to the planetary console. Toggleable by the player.
+   Green/surface accent vs the cyan station treatment. */
+.cockpit-mode.landed-min .cockpit-windshield {
+  flex-basis: 34px;
+}
+.cockpit-mode.landed-min .cockpit-windshield > *:not(.landed-min-bar) {
+  display: none !important;
+}
+.landed-min-bar { display: none; }
+.cockpit-mode.landed-min .landed-min-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  height: 34px;
+  padding: 0 14px;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(0, 40, 22, 0.95), rgba(0, 18, 10, 0.95));
+  border-bottom: 1px solid rgba(0, 255, 127, 0.3);
+  font-family: 'Courier New', monospace;
+}
+.landed-min-name {
+  color: #00ff7f;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 0 8px rgba(0, 255, 127, 0.5);
+}
+.landed-min-expand {
+  flex-shrink: 0;
+  background: rgba(0, 255, 127, 0.1);
+  color: #00ff7f;
+  border: 1px solid rgba(0, 255, 127, 0.45);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.landed-min-expand:hover {
+  background: rgba(0, 255, 127, 0.22);
+  box-shadow: 0 0 8px rgba(0, 255, 127, 0.4);
+}
+.cockpit-mode.landed-min .bay-minimize-btn { display: none; }
+
 /* STATION VENUE TABS — the places you can visit while docked, in the console
    header. Buy/sell (TRADE) is the default tab. */
 .screen-hud-header.station-venue-header {
