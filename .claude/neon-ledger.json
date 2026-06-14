@@ -1579,6 +1579,34 @@
     "Max-gated: specialization defense/research (DECISIONS), drone costs, faction-mission completion; GOLD purge"
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-l",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "945668d",
+   "deployed_sha_end": "ce77c8c",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "market-prediction-fallback-honest",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/services/ai_trading_service.py"
+     ],
+     "commit": "ce77c8c",
+     "proof": "diag: engine forced None + forced raise -> _predict_future_price returns flat last price 120.0 (not 120*1.05=126.0). live: /ai/market-analysis/organics unaffected (real prediction 20.77, 200).",
+     "note": "Failure-path fix; proven via in-container monkeypatch diag since the engine rarely fails naturally."
+    }
+   ],
+   "gate": "lead self-review (2-line failure-path correctness fix; py_compile clean; diag proof + live no-regression)",
+   "parking_lot": [
+    "/combat/engage port 200->403 (buildable, next)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: specialization defense/research (DECISIONS), drone costs, faction-mission completion; GOLD purge"
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"
