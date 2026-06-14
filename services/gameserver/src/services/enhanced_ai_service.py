@@ -480,11 +480,19 @@ class EnhancedAIService:
         Get trading recommendations using existing ARIA foundation
         Converts ARIA recommendations to enhanced format
         """
+        # Capture assistant fields BEFORE the trading-service call: that call
+        # commits internally (profile creation / _save_recommendations_to_db),
+        # and with expire_on_commit=True the commit expires this ORM object —
+        # a later attribute access (security_level below) would then trigger a
+        # sync lazy-reload on the async session and raise greenlet_spawn.
+        security_level = assistant.security_level
+        player_id_str = str(assistant.player_id)
+
         # Leverage existing ARIA trading intelligence
         aria_recommendations = await self.trading_service.get_trading_recommendations(
-            self.db, str(assistant.player_id), max_count
+            self.db, player_id_str, max_count
         )
-        
+
         enhanced_recommendations = []
         for rec in aria_recommendations:
             # Convert ARIA TradingRecommendation to CrossSystemRecommendation
@@ -510,7 +518,7 @@ class EnhancedAIService:
                 },
                 confidence=float(rec.confidence),
                 expires_at=rec.expires_at,
-                security_clearance_required=assistant.security_level
+                security_clearance_required=security_level
             )
             enhanced_recommendations.append(enhanced_rec)
         
@@ -787,6 +795,11 @@ class EnhancedAIService:
         """
         # Security validation and input sanitization
         assistant = await self._validate_and_authenticate(player_id)
+        # Capture the assistant id up front: _generate_ai_response's trading
+        # path commits mid-request, expiring this ORM object — a later
+        # assistant.id access (conversation/security logging) would then trigger
+        # a sync lazy-reload on the async session and raise greenlet_spawn.
+        assistant_id = assistant.id
         sanitized_input = self._sanitize_user_input(user_input)
         
         if not sanitized_input:
@@ -808,7 +821,7 @@ class EnhancedAIService:
                     session_id=session_id,
                     conversation_type="query",
                     player_id=str(player_id),
-                    assistant_id=str(assistant.id),
+                    assistant_id=str(assistant_id),
                     security_level=assistant.security_level
                 )
             
@@ -822,7 +835,7 @@ class EnhancedAIService:
             response = self._sanitize_response(response)
             
             # Log conversation for learning and audit
-            await self._log_conversation(assistant, sanitized_input, response, conversation_context)
+            await self._log_conversation(assistant_id, sanitized_input, response, conversation_context)
             
             return {
                 "response": response,
@@ -835,7 +848,7 @@ class EnhancedAIService:
             await self._log_security_event(
                 "data_access", "error",
                 f"Failed to process natural language query: {str(e)}",
-                assistant_id=assistant.id, player_id=player_id
+                assistant_id=assistant_id, player_id=player_id
             )
             logger.error(f"Error processing natural language query: {e}")
             
@@ -1169,15 +1182,18 @@ What would you like help with today?"""
         """
         return "I'm here to help with your space trading strategy! You can ask me about trading opportunities, market analysis, strategic planning, or say 'help' to see what I can do."
 
-    async def _log_conversation(self, assistant: AIComprehensiveAssistant, user_input: str,
+    async def _log_conversation(self, assistant_id: uuid.UUID, user_input: str,
                                ai_response: str, context: ConversationContext):
         """
         Log conversation for audit and learning purposes
         GDPR-compliant with automatic expiration
+
+        Takes assistant_id (not the ORM object) so it never touches an
+        attribute that may have been expired by a mid-request commit.
         """
         try:
             conversation_log = AIConversationLog(
-                assistant_id=assistant.id,
+                assistant_id=assistant_id,
                 session_id=uuid.UUID(context.session_id),
                 conversation_type=context.conversation_type,
                 interaction_sequence=len(context.conversation_history) + 1,
@@ -1188,7 +1204,9 @@ What would you like help with today?"""
                 response_time_ms=100,  # Placeholder
                 conversation_context={
                     "topic": context.current_topic,
-                    "security_level": context.security_level.value
+                    # security_level may be a SecurityLevel enum or already a raw
+                    # string depending on the entry point — handle both.
+                    "security_level": getattr(context.security_level, "value", context.security_level)
                 },
                 privacy_level="standard",
                 data_retention_days=365  # 1 year retention
