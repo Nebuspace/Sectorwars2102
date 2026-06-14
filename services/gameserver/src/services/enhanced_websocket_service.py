@@ -735,6 +735,8 @@ class EnhancedWebSocketService:
             await self.send_message(player_id, {
                 "type": "aria_response",
                 "conversation_id": conversation_id,
+                # (send_message stamps a top-level "timestamp" on every outbound
+                # frame, so this path already satisfies ARIAResponseMessage.)
                 "data": {
                     "message": response.get("response", ""),
                     "confidence": response.get("confidence", 0.95),

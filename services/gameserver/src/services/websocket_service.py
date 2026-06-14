@@ -700,6 +700,7 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
         await connection_manager.send_personal_message(user_id, {
             "type": "aria_response",
             "conversation_id": result.get("conversation_id"),
+            "timestamp": datetime.now(UTC).isoformat(),
             "data": {
                 "message": result.get("response", ""),
                 "confidence": 0.95,
@@ -714,6 +715,7 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
         await connection_manager.send_personal_message(user_id, {
             "type": "aria_response",
             "conversation_id": conversation_id,
+            "timestamp": datetime.now(UTC).isoformat(),
             "data": {
                 "message": "ARIA is temporarily unavailable. Please try again.",
                 "confidence": 0,

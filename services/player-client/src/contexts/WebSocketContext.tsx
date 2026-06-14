@@ -283,7 +283,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
         id: `ai-${Date.now()}`,
         type: 'ai' as const,
         content: message.data.message,
-        timestamp: message.timestamp,
+        // The plain-WS aria_response frame omits a top-level timestamp; without
+        // a fallback this stays undefined and any consumer that sorts the feed
+        // by timestamp (AriaTerminalPage) throws on .localeCompare → MFD fault.
+        timestamp: message.timestamp ?? new Date().toISOString(),
         conversationId: message.conversation_id,
         confidence: message.data.confidence,
         actions: message.data.actions,
@@ -378,7 +381,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           
         default:
           // Only log truly unhandled message types, not ones handled by specific handlers
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification'].includes(message.type)) {
+          // (aria_response is consumed by the dedicated ariaHandler above; the
+          // generalHandler still sees it, so exclude it from the noise warning.)
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }

@@ -34,6 +34,21 @@ const ACCENT = '#7B2FFF';
 /** Action payload on an inbound ARIA message (loose upstream shape). */
 type AriaAction = { type: string; [key: string]: unknown };
 
+/**
+ * Render an ARIA action's payload as a readable one-line summary — never a raw
+ * JSON.stringify dump (that leaked braces/quotes into the flagship terminal).
+ * Only primitive fields are surfaced; the type is shown separately as a label.
+ */
+const formatActionDetail = (action: AriaAction): string =>
+  Object.entries(action)
+    .filter(
+      ([k, v]) =>
+        k !== 'type' &&
+        (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
+    )
+    .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`)
+    .join(' · ');
+
 /** A feed entry — either a WS ariaMessages item or a local NavMessage. */
 interface LogEntry {
   id: string;
@@ -356,7 +371,9 @@ const AriaTerminalPage: React.FC = () => {
   // ── Merged feed: ariaMessages + navMessages, ordered by timestamp ───
   const mergedMessages = useMemo<LogEntry[]>(() => {
     const all: LogEntry[] = [...ariaMessages, ...navMessages];
-    all.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    // Defensive: a malformed inbound frame (e.g. an aria_response without a
+    // timestamp) must never crash the terminal — coalesce to '' before compare.
+    all.sort((a, b) => (a.timestamp ?? '').localeCompare(b.timestamp ?? ''));
     return all;
   }, [ariaMessages, navMessages]);
 
@@ -421,12 +438,17 @@ const AriaTerminalPage: React.FC = () => {
               )}
               {message.type === 'ai' && message.actions && message.actions.length > 0 && (
                 <div className="mfd-page-aria-actions">
-                  {message.actions.map((action, idx) => (
-                    <div key={idx} className="mfd-page-aria-action">
-                      <span className="mfd-page-aria-action-type">{action.type}:</span>{' '}
-                      {JSON.stringify(action)}
-                    </div>
-                  ))}
+                  {message.actions.map((action, idx) => {
+                    const detail = formatActionDetail(action);
+                    return (
+                      <div key={idx} className="mfd-page-aria-action">
+                        <span className="mfd-page-aria-action-type">{action.type}</span>
+                        {detail && (
+                          <span className="mfd-page-aria-action-detail">{' '}{detail}</span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

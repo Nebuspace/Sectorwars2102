@@ -204,6 +204,10 @@
   letter-spacing: 0.08em;
 }
 
+.mfd-page-aria-action-detail {
+  color: rgba(180, 220, 240, 0.55);
+}
+
 /* Suggestion chips (welcome + inline under AI replies) */
 .mfd-page-aria-chips {
   display: flex;
