@@ -12,8 +12,8 @@ Living-NPC + viewport session. This file is the living tracker — update at eve
 | 2 | **Users & Teams admin work** | real users CRUD, team admin actions | ✅ DONE — run 5 (users rewire) + run 6 (teams honest-disable; implement-for-real still open, see backlog) |
 | 3 | **Honest lists** | station hardcodes → real fields, pagination, sector locations | ✅ DONE — run 6 section A (`5147620`, `d6ee03e`) |
 | 4 | **Security console** | P0.8/P0.9/P3.4 + remaining auth gaps: real security overview page | ⬜ NOT RUN |
-| 5 | **Fleet & drone command** | surface working fleet/drone admin | 🚧 PARTIAL — FleetHealthReport rescued (run 6); **Fleet Operations tab added (2026-06-13, `2b7d455`)** surfacing `/admin/fleets/*` (live fleets/stats/battles + guarded intervene), proven live; **drone command UI still unbuilt** (`/admin/drones/*` endpoints confirmed live, no UI yet) |
-| 6 | **Governor retheme + presentation pass** | P4.1–4.6 display-sensibility batch | 🚧 PARTIAL — **P4.1 Governor retheme DONE (2026-06-13, `2b7d455`)**: white light-island → dark design tokens, proven at 1440×900 + 1920×1080; also honest-disabled the unwired Diplomacy + Culture write controls. **P4.2–4.6 (Event/Players/Combat/Colonization presentation) still open** |
+| 5 | **Fleet & drone command** | surface working fleet/drone admin | ✅ DONE — Fleet Operations tab (`2b7d455`) + **Drone Operations section in CombatOverview (run 2, `bc8a1e4`)** surfacing `/admin/drones/*` (stats + active/destroyed lists + force-recall/restore), proven live |
+| 6 | **Governor retheme + presentation pass** | P4.1–4.6 display-sensibility batch | 🚧 PARTIAL — P4.1 Governor retheme DONE (`2b7d455`); **P4.2 Event Management de-purpled (run 2, `007c3ff`)**; **P4.7 native-dialog sweep started (run 2): toast/typed-confirm system (`7218b5b`) + StationsManager & EventManagement retrofits.** P4.3–4.6 (Players/Combat/Colonization) + remaining P4.7 offenders (WarpTunnels/FleetManagement/PlayerDetailEditor/SectorDetail…) still open |
 | 7 | **Dead code purge + typecheck gate** | P5.* purge + tsc gate in CI | 🚧 PARTIAL — purge done (runs 6 + 12, ~8,500 lines); **tsc gate not wired** (vite builds don't typecheck; ~78 pre-existing tsc errors ship silently) |
 | 8 | **Economy levers** (own run) | P2.2 admin economy control panel | ⬜ NOT RUN — needs Max design decisions first |
 | 9 | **Scopes** (own run) | P2.1 AdminScopeGrant per ADR-0058 | ⬜ NOT RUN — needs Max decisions first |
@@ -31,6 +31,15 @@ Living-NPC + viewport session. This file is the living tracker — update at eve
 - **Drone command UI** (#5 remainder) — `/admin/drones/*` live, no UI.
 - **P4.2–4.6** presentation pass (Event/Players/Combat/Colonization) — not run.
 - **P4.8 deep-link bounce to /dashboard** — reproduced live (direct `/admin/<route>` load bounces); auth-init race, not fixed this run.
+
+### Admin-UI NEON run 2 — 2026-06-13 (frontend-only)
+**Shipped + PROVEN live (`7218b5b` → `bc8a1e4`):**
+- **Toast + typed-confirm system** (`contexts/ToastContext.tsx`, `useToast`/`useConfirm`, dark-token, light-mode-safe) — retires the native `alert()/confirm()` freeze-trap class. Proven: StationsManager delete → in-shell danger ConfirmDialog, Cancel blocks the delete.
+- **Event Management** de-purpled (P4.2) + toast retrofit. Proven on `:9081` (stage host serves stale Cloudflare CSS until purge).
+- **Drone Operations** section in CombatOverview (#5 done) — live `/admin/drones/*`, honest empty states.
+- Adversarial review caught + fixed a HIGH (toast light-mode unreadability) and a MED (concurrent-confirm promise leak) pre-deploy.
+
+**Parked:** remaining P4.7 native-dialog offenders (WarpTunnels 5, FleetManagement 5, PlayerDetailEditor 5, SectorDetail 3, …); drone status-badge color variants (returning/damaged default green); event-management dead CSS blocks; **Cloudflare stale-CSS** on the stage host (purge or wait for expiry to see the de-purple there).
 
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
