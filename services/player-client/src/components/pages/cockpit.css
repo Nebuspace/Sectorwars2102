@@ -173,6 +173,84 @@
 }
 .cockpit-mode.landed-min .bay-minimize-btn { display: none; }
 
+/* Build-progress beacon in the minimized-surface strip (amber construction). */
+.landed-min-build {
+  flex-shrink: 0;
+  color: #ffaa44;
+  font-family: 'Courier New', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 8px rgba(255, 170, 68, 0.5);
+  white-space: nowrap;
+}
+
+/* CITADEL CONSTRUCTION INDICATOR — live time-based build readout in the landed
+   console (the server timer already runs; this surfaces it). Amber CRT idiom. */
+.citadel-construction {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 170, 68, 0.45);
+  border-radius: 4px;
+  background:
+    repeating-linear-gradient(transparent 0, transparent 3px, rgba(0, 0, 0, 0.18) 3px, rgba(0, 0, 0, 0.18) 4px),
+    linear-gradient(180deg, rgba(40, 26, 0, 0.6), rgba(20, 12, 0, 0.6));
+  font-family: 'Courier New', monospace;
+}
+.citadel-construction .cc-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.citadel-construction .cc-title {
+  color: #ffaa44;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 8px rgba(255, 170, 68, 0.5);
+  animation: cc-breathe 2s ease-in-out infinite;
+}
+.citadel-construction .cc-target {
+  color: rgba(255, 200, 130, 0.9);
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+}
+.citadel-construction .cc-bar {
+  height: 10px;
+  background: rgba(255, 170, 68, 0.12);
+  border: 1px solid rgba(255, 170, 68, 0.3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.citadel-construction .cc-fill {
+  height: 100%;
+  background-color: #ffaa44;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(0, 0, 0, 0.22) 0, rgba(0, 0, 0, 0.22) 6px,
+    transparent 6px, transparent 12px);
+  background-size: 24px 24px;
+  animation: cc-march 0.8s linear infinite;
+  transition: width 0.6s linear;
+  box-shadow: 0 0 8px rgba(255, 170, 68, 0.55);
+}
+.citadel-construction .cc-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 0.68rem;
+  color: rgba(255, 200, 140, 0.85);
+  font-variant-numeric: tabular-nums;
+}
+.citadel-construction .cc-pct { font-weight: 700; color: #ffaa44; }
+.citadel-construction .cc-eta { opacity: 0.75; }
+@keyframes cc-march { from { background-position: 0 0; } to { background-position: 24px 0; } }
+@keyframes cc-breathe { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+
 /* STATION VENUE TABS — the places you can visit while docked, in the console
    header. Buy/sell (TRADE) is the default tab. */
 .screen-hud-header.station-venue-header {

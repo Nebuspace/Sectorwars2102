@@ -845,6 +845,38 @@ const GameDashboard: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [landedPlanet?.id, isLandedPlanetMine, opsRefresh]);
 
+  // Live construction clock: while a citadel upgrade is in progress, tick every
+  // second so the landed-console indicator counts down in real time, and bump
+  // opsRefresh once the timer elapses so the finished level appears on its own.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!citadelInfo?.is_upgrading) return;
+    const completeMs = citadelInfo?.upgrade_complete_at
+      ? new Date(citadelInfo.upgrade_complete_at).getTime()
+      : null;
+    const id = window.setInterval(() => {
+      const t = Date.now();
+      setNowMs(t);
+      if (completeMs && t >= completeMs) {
+        window.clearInterval(id);
+        setOpsRefresh(n => n + 1);
+      }
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [citadelInfo?.is_upgrading, citadelInfo?.upgrade_complete_at]);
+
+  // Short "2d 4h" / "3h 12m" / "47s" countdown for the construction indicator.
+  const fmtBuildCountdown = (ms: number): string => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s % 60}s`;
+    return `${s}s`;
+  };
+
   // Planetary-ops notice (upgrade/safe outcomes), auto-dismissed like the
   // colonist transfer notice
   const [opsNotice, setOpsNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -1520,6 +1552,14 @@ const GameDashboard: React.FC = () => {
                 <span className="landed-min-name">
                   🪐 LANDED — {(landedPlanet?.name || 'Planet').toUpperCase()}
                 </span>
+                {citadelInfo?.is_upgrading && (() => {
+                  const startMs = citadelInfo.upgrade_started_at ? new Date(citadelInfo.upgrade_started_at).getTime() : null;
+                  const endMs = citadelInfo.upgrade_complete_at ? new Date(citadelInfo.upgrade_complete_at).getTime() : null;
+                  const pct = (startMs && endMs && endMs > startMs)
+                    ? Math.min(100, Math.max(0, ((nowMs - startMs) / (endMs - startMs)) * 100)) : 0;
+                  const remainMs = endMs ? Math.max(0, endMs - nowMs) : 0;
+                  return <span className="landed-min-build" title="Citadel construction in progress">🏗️ {Math.round(pct)}% · {fmtBuildCountdown(remainMs)}</span>;
+                })()}
                 <button
                   type="button"
                   className="landed-min-expand"
@@ -2066,11 +2106,34 @@ const GameDashboard: React.FC = () => {
                                   </span>
                                 )}
                               </div>
-                              {citadelInfo?.is_upgrading && (
-                                <div className="transfer-notice success" role="status">
-                                  ⏳ Citadel upgrade in progress — ~{Math.max(1, Math.ceil((citadelInfo.upgrade_remaining_seconds || 0) / 3600))}h remaining
-                                </div>
-                              )}
+                              {citadelInfo?.is_upgrading && (() => {
+                                const startMs = citadelInfo.upgrade_started_at ? new Date(citadelInfo.upgrade_started_at).getTime() : null;
+                                const endMs = citadelInfo.upgrade_complete_at ? new Date(citadelInfo.upgrade_complete_at).getTime() : null;
+                                const remainMs = endMs ? Math.max(0, endMs - nowMs) : (citadelInfo.upgrade_remaining_seconds || 0) * 1000;
+                                const pct = (startMs && endMs && endMs > startMs)
+                                  ? Math.min(100, Math.max(0, ((nowMs - startMs) / (endMs - startMs)) * 100))
+                                  : 0;
+                                const targetName = citadelInfo.next_level?.citadel_name
+                                  || citadelInfo.next_level?.name
+                                  || `Level ${(citadelInfo.citadel_level || 0) + 1}`;
+                                return (
+                                  <div className="citadel-construction" role="status"
+                                       aria-label={`Citadel construction ${Math.round(pct)} percent complete`}>
+                                    <div className="cc-head">
+                                      <span className="cc-title">🏗️ CONSTRUCTION ACTIVE</span>
+                                      <span className="cc-target">→ {targetName}</span>
+                                    </div>
+                                    <div className="cc-bar"><div className="cc-fill" style={{ width: `${pct}%` }} /></div>
+                                    <div className="cc-meta">
+                                      <span className="cc-pct">{Math.round(pct)}%</span>
+                                      <span className="cc-remain">{fmtBuildCountdown(remainMs)} remaining</span>
+                                      {endMs && (
+                                        <span className="cc-eta">ETA {new Date(endMs).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                               <div className="defense-grid">
                                 <div className="defense-item">
                                   <span>🛡️</span>
