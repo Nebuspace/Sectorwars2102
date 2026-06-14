@@ -510,25 +510,39 @@ async def deploy_drones_contract(
             detail=f"Not enough available drones. Have {len(undeployed_drones)}, requested {request.droneCount}"
         )
     
-    # Deploy the requested number of drones
+    # Deploy the requested number of drones, collecting the REAL deployment-row
+    # ids. The previous version returned a random uuid4 unrelated to any row, so
+    # DELETE /{deploymentId}/recall (which does db.get(DroneDeployment, id))
+    # always 404'd. Each deploy_drone creates one DroneDeployment; return its id.
     deployed_count = 0
-    deployment_id = str(uuid4())  # Create a single deployment ID for this batch
-    
+    deployment_ids: list[str] = []
+
     for i in range(min(request.droneCount, len(undeployed_drones))):
         drone = undeployed_drones[i]
         try:
-            await service.deploy_drone(
+            deployment = await service.deploy_drone(
                 drone_id=drone.id,
                 sector_id=sector_id,
                 deployment_type="defense"
             )
             deployed_count += 1
+            if deployment is not None:
+                deployment_ids.append(str(deployment.id))
         except Exception as e:
             # Continue deploying others even if one fails
             logger.warning(f"Failed to deploy drone {drone.id}: {e}")
-    
+
+    if deployed_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No drones could be deployed",
+        )
+
     return {
-        "deploymentId": deployment_id,
+        # First real deployment id for the single-id contract; deploymentIds
+        # lists every row created so the caller can recall each.
+        "deploymentId": deployment_ids[0] if deployment_ids else None,
+        "deploymentIds": deployment_ids,
         "dronesDeployed": deployed_count
     }
 
