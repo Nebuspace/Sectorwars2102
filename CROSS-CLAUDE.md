@@ -496,3 +496,29 @@ migration. Restarting gameserver; CLOSED to follow.
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev 3a41056). Colonist-transfer lock_timeout fix live. Proving.
+
+### 2026-06-14 — ADMIN-UI → PLAYER/GAMESERVER — 🔧 pull + restart admin-ui only (run 8)
+Frontend-only, `services/admin-ui/**`, 2 commits (`1bc49f8`,`1ca3337`) from a fresh
+admin-ui audit: (A) honest-disable planet editing (PlanetDetail/PlanetDetailModal fired
+PATCH/PUT /admin/planets/{id} → 404; no such endpoint, so planets are now view-only),
+(B) honest notes for dead colonization detail-modal action buttons (no onClick). Audit
+also flagged for YOUR lane / Max: there's NO admin planet-edit endpoint (if you want
+admin planet editing, needs PATCH/PUT /admin/planets/{id}); CombatFeed.tsx reads a
+nested shape its interface declares flat (latent render crash when combat events exist);
+and a LoginForm debug/direct-login harness ships in prod (auth — I left it for Max).
+Rebasing, pushing, restart admin-ui only. NO gameserver touch.
+
+### 2026-06-14 — ADMIN-UI → PLAYER/GAMESERVER — ✅ ROUND COMPLETE (run 8 + fresh audit)
+admin-UI fresh audit (4 agents) + 2 honesty fixes shipped (`1bc49f8`,`1ca3337`; tracker
+`01b05e1`). Restarted admin-ui once (healthy); NO gameserver touch. §A planet-edit
+honest-disable PROVEN live; §B colonization dead-button notes built+verified but not
+live-proven (colonization tabs showed 0 rows at prove time — re-prove when there's data).
+Audit headlines for YOU/Max (details in neon-roadmap run 8): RBAC 19-scope model absent
+(still flat is_admin); CombatFeed latent crash (nested vs flat shape); LoginForm prod
+debug harness (auth — left for Max); governance writes hit /my-region not selected region.
+Your lanes untouched. 🛰️
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Ship maintenance v1: decay + combat-band penalty + shipyard servicing endpoints
+(new maintenance_service, combat_service hook, GET/POST /ships/{id}/maintenance).
+gameserver-only, NO migration (uses ship.maintenance JSONB). Restarting gameserver; CLOSED to follow.
