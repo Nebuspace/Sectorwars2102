@@ -1788,6 +1788,33 @@
     "Stage CF cache serves stale maintenance-manager.css -> modal unstyled until purge (same as insurance); CSS correct in repo."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-s",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Citadel pass \u2014 3-subagent end-to-end audit (20-item backlog), live time-based construction indicator, docs improvement",
+   "sections": [
+    {
+     "key": "citadel-construction-indicator",
+     "state": "shipped-proven",
+     "commit": "2653597",
+     "proof": "Citadel upgrades already time-based server-side; landed console showed only static '~Nh' text. Added live panel (marching-stripe progress bar + per-second countdown + ETA + target level) + minimized-surface beacon. Proven (Gamma Prime L1->L2, 12/48h): '\ud83c\udfd7\ufe0f CONSTRUCTION ACTIVE -> Settlement 25% 1d11h ETA Jun16 02:44', fill 25.03%, beacon '\ud83c\udfd7\ufe0f 25% \u00b7 1d 11h'. Display-only."
+    },
+    {
+     "key": "citadel-docs",
+     "state": "shipped",
+     "commit": "8c27e6f",
+     "proof": "citadels.md: build-time+indicator section, accurate shipped-vs-design markers, drift flags (orbital cost, TERRAN/TERRA). FINDINGS row."
+    }
+   ],
+   "audit": "3 sonnet subagents (systems / UI-UX / canon-docs) worked citadels end-to-end -> synthesized 20-item improvement backlog (see roadmap).",
+   "parking_lot": [
+    "Backlog (19 remaining): cockpit HUD build beacon; vault fill bar; defense-building + shield-generator construction TIMERS (instant today); +5%/level production bonus (unapplied); population gate before upgrade (unenforced); upgrade cancel+refund + citadel.upgrade_cancelled (ADR-0059 N-F3); prereq-by-actual-buildings (ADR-0059 N-D4); +50% partial bonus during build; rail-gun battery + defense grid; ADR-0076 per-unit pricing; safe commodity storage; defense-buildings UI section; pre-flight checklist; shield cost on button; safe quick-fill presets; scroll-law 3-col; per-building operational state schema; doc JSONB-shape; orbital-platform cost + TERRAN/TERRA reconcile.",
+    "Max decisions surfaced by the audit: (a) confirm lazy-poll timer pattern for defense-building/shield builds; (b) L0->L1 instant intent as canon; (c) implement +50% partial-bonus now or keep design-only; (d) ADR-0080 siege vulnerability penalty magnitude (suggested 0.5-0.75x)."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
