@@ -1847,6 +1847,38 @@
     "Max-gated: defense-building + shield-generator construction TIMERS (confirm lazy-poll pattern); +50% partial bonus during build; prereq-by-actual-buildings (ADR-0059 N-D4, blocked on per-building operational-state schema); rail-gun/defense-grid buildings; ADR-0076 per-unit pricing; safe commodity storage; ADR-0080 siege vulnerability magnitude; L0->L1 instant intent."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-u",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Citadel client-polish batch \u2014 defense-buildings UI + build action, vault fill bar, shield cost on button",
+   "sections": [
+    {
+     "key": "defense-buildings-ui",
+     "state": "shipped-proven",
+     "commit": "9b7aa55",
+     "proof": "New Defense Buildings section (GET /buildings/available) + Build (POST /buildings/construct), affordability-gated. Proven L5: 3 buildings listed; Scanner built -> 1/2, credits 149945->74945, active_events {scanner_array:1}. Server supported it with zero UI before."
+    },
+    {
+     "key": "vault-fill-bar",
+     "state": "shipped-proven",
+     "commit": "9b7aa55",
+     "proof": "Safe vault fill bar 40% at 20M/50M."
+    },
+    {
+     "key": "shield-cost-sublabel",
+     "state": "shipped-proven",
+     "commit": "9b7aa55",
+     "proof": "Shield upgrade button shows '-> L1 \u00b7 50,000 cr' sublabel."
+    }
+   ],
+   "parking_lot": [
+    "Remaining citadel UI: safe 25/50/75/Max presets; pre-flight prereq/affordability checklist in upgrade confirm; scroll-law 3-col layout; full cockpit HUD build-beacon chip.",
+    "Max-gated (gameplay/canon): defense-building + shield-generator construction TIMERS (build instantly today; confirm lazy-poll pattern); +50% partial bonus during build; prereq-by-actual-buildings (ADR-0059 N-D4, needs per-building state schema); rail-gun/defense-grid buildings; ADR-0076 per-unit pricing; safe commodity storage; ADR-0080 siege vulnerability magnitude; L0->L1 instant intent."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
