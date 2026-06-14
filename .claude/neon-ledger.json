@@ -1879,6 +1879,43 @@
     "Max-gated (gameplay/canon): defense-building + shield-generator construction TIMERS (build instantly today; confirm lazy-poll pattern); +50% partial bonus during build; prereq-by-actual-buildings (ADR-0059 N-D4, needs per-building state schema); rail-gun/defense-grid buildings; ADR-0076 per-unit pricing; safe commodity storage; ADR-0080 siege vulnerability magnitude; L0->L1 instant intent."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-v",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Time-based defense-building construction (blessed timer pattern) + citadel UI polish (pre-flight checklist, safe presets)",
+   "sections": [
+    {
+     "key": "defense-building-timer",
+     "state": "shipped-proven",
+     "commit": "667ceb2",
+     "proof": "Defense buildings construct over time (canon 48/72/168h) via JSONB defense_build_queue + lazy settle, no migration. API: scanner queued, -75k cr, count 0, complete_at +48h; can_build false (slot reserved). DB: queue entry then settled to {scanner_array:1}. UI: '0/1 +1\ud83c\udfd7\ufe0f', '1d 23h' countdown + progress bar."
+    },
+    {
+     "key": "upgrade-preflight-checklist",
+     "state": "shipped-proven",
+     "commit": "667ceb2",
+     "proof": "Upgrade confirm shows credit+population gates \u2713/\u2717. Proven: '\u2717 Credits 425,000/500,000', '\u2717 Population 653/15,000'."
+    },
+    {
+     "key": "safe-deposit-presets",
+     "state": "shipped-proven",
+     "commit": "667ceb2",
+     "proof": "25/50/75% quick-fill presets; 50% -> 212,500 (half of 425k)."
+    }
+   ],
+   "deferred_max_gated": [
+    "shield-generator construction timer: blessed pattern, but build-time numbers are not canon -> filed DECISIONS Pending 'shield-generator-build-hours' (recommend level\u00d76h). Build is one ~3-file no-migration batch once blessed.",
+    "+50% partial defense bonus during build (ADR-0059 step 5); rail-gun/defense-grid buildings; ADR-0076 per-unit pricing; prereq-by-actual-buildings (ADR-0059 N-D4)."
+   ],
+   "next_batch_requested": [
+    "Citadel safe commodity storage (produced items go to safe + total cap) \u2014 currently credits-only (\ud83d\udcd0).",
+    "Real-time production allocation counter (tick resource totals live on screen).",
+    "Stardock: buy drones + mines; track mines carried (no mine slot/UI today)."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"

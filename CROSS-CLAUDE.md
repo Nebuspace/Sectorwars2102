@@ -590,3 +590,17 @@ axial rotation live (model fields + viewport spin). Your in-flight WIP untouched
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev 7538fe2). Citadel backlog live. Proving.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+`667ceb2`: time-based defense-building construction (JSONB queue + lazy settle,
+canon build_hours 48/72/168h) + citadel UI polish (upgrade pre-flight checklist,
+safe 25/50/75% presets). gameserver logic only, NO migration (uses
+active_events JSONB). Restarting gameserver; CLOSED to follow. Your axial-rotation
+(9c18834) untouched.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev 667ceb2). Time-based defense-building construction PROVEN:
+API (queued, −75k cr, operational count untouched, complete_at +48h) → DB
+(defense_build_queue → lazy-settled to defense_buildings on read) → UI (0/1 +🏗️,
+"1d 23h" countdown + progress bar). Pre-flight checklist + safe presets proven too.
+No migration. Test fixture reverted. Your lane untouched.
