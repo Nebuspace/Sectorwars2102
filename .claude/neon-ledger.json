@@ -1993,6 +1993,31 @@
     "Live UI proofs still need a warm logged-in stage tab; this run used server-prove + user-self-verify per Max's choice."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-y",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "STEADY",
+   "theme": "Bless ADR-0083 (mine damage 200) + next roadmap item: /drones/deploy real ids",
+   "sections": [
+    {
+     "key": "adr-0083-accepted",
+     "state": "docs",
+     "proof": "Max blessed mine damage 200 hull; ADR-0083 flipped Proposed->Accepted."
+    },
+    {
+     "key": "drones-deploy-real-id",
+     "state": "shipped-by-inspection",
+     "commit": "d7a2cf6",
+     "proof": "deploy_drones_contract returns real DroneDeployment ids (was random uuid4 -> recall 404). Correct by inspection (deploy_drone refreshes, .id safe). Full-flow proof BLOCKED by 2 pre-existing subsystem bugs: (1) DroneStatus has no idle state (created drones default deployed); (2) deploy_drone greenlet async/sync error -> 500. Both unmounted/Max-gated -> flagged for a dedicated drone-subsystem repair pass, not expanded."
+    }
+   ],
+   "discovered_blockers": [
+    "DroneStatus enum missing an idle/available state \u2014 created/recalled drones can't return to a deployable pool.",
+    "DroneService.deploy_drone: greenlet_spawn await_only (ASYNC-SYNC) -> /drones/deploy 500."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"

@@ -622,3 +622,9 @@ Armored mine deploy+detonation (movement_service hook + /armory/deploy), spacedo
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev 165e683). Armored mine deploy+detonation PROVEN: deploy laid 3 (sector+counter), hostile entry hull 500->300 (-200) + mine consumed, same-team entry no damage (friendly guard). Spacedock armory venue fix + MINE HUD counter + player.mines in state. Limpet stays disabled (tracking=design). Fixtures reverted.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Fix: /drones/deploy contract returned a random deploymentId (recall 404d) -> now returns real DroneDeployment ids. gameserver restart. CLOSED to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev d7a2cf6). /drones/deploy now returns real DroneDeployment ids (was random uuid4 -> recall 404). Fix is correct by inspection but the full create->deploy->recall flow is NOT provable: the drone subsystem is broken deeper (DroneStatus has no idle/available state so created drones default to deployed; deploy_drone raises a DB error). That subsystem is unmounted + Max-gated; not expanding. Test drones cleaned up.
