@@ -293,15 +293,15 @@ const FleetOperationsTab: React.FC = () => {
         </div>
       )}
 
-      {/* Active fleets list */}
+      {/* Fleets list (all statuses; the table's Status column differentiates) */}
       <div className="fleet-ops-panel">
         <div className="fleet-ops-panel-header">
-          <h4>🛰️ Active Fleets</h4>
+          <h4>🛰️ Fleets</h4>
           <span className="fleet-ops-count">{fleets.length}</span>
         </div>
 
         {fleets.length === 0 ? (
-          <div className="fleet-ops-empty">No active fleets.</div>
+          <div className="fleet-ops-empty">No fleets.</div>
         ) : (
           <div className="fleet-ops-table-container">
             <table className="fleet-ops-table">
