@@ -265,18 +265,38 @@ def _make_body(root_seed: int, slot: int, total: int, orbit_au: float) -> Dict[s
     ]
     moons = rng.weighted_choice(moon_weights)
 
+    hue = rng.randint(0, 359)
+    sat = rng.randint(40, 90)
+    phase_deg = rng.randint(0, 359)
+
+    # Axial rotation (cosmetic flavor): the world's own spin on its axis — its
+    # local "day" + obliquity — distinct from its orbital revolution. Gas giants
+    # spin fast; large rocky/ice worlds spin slowly; ~5% are tidally locked (a
+    # very long day). Deterministic from this body's sub-seed.
+    if rng.random() < 0.05:
+        rotation_period_hours = round(rng.uniform(180.0, 600.0), 1)  # ~tidally locked
+    elif kind == "GAS_GIANT":
+        rotation_period_hours = round(rng.uniform(6.0, 14.0), 1)
+    elif size_class >= 4:
+        rotation_period_hours = round(rng.uniform(28.0, 48.0), 1)
+    else:
+        rotation_period_hours = round(rng.uniform(12.0, 30.0), 1)
+    axial_tilt_deg = round(rng.uniform(0.0, 45.0), 1)
+
     return {
         "slot": slot,
         "orbit_au": round(orbit_au, 4),
         "kind": kind,
         "size_class": size_class,
         "palette": {
-            "hue": rng.randint(0, 359),
-            "sat": rng.randint(40, 90),
+            "hue": hue,
+            "sat": sat,
         },
         "rings": rings,
         "moons": moons,
-        "phase_deg": rng.randint(0, 359),
+        "phase_deg": phase_deg,
+        "rotation_period_hours": rotation_period_hours,
+        "axial_tilt_deg": axial_tilt_deg,
         "real": False,
     }
 

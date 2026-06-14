@@ -69,6 +69,12 @@ interface SystemBody {
   rings: boolean;
   moons: number;
   phase_deg: number;
+  /** Axial rotation (cosmetic): the world's local "day" length + obliquity,
+   *  distinct from orbital revolution. From the SectorCelestial model; optional
+   *  so older persisted skeletons (pre-rotation) fall back to a seed-derived
+   *  value client-side. */
+  rotation_period_hours?: number;
+  axial_tilt_deg?: number;
   real: boolean;
   planet_id?: string;
   name?: string;
@@ -264,6 +270,7 @@ const SQUASH = 0.35;
 const ORBIT_SCALE = 0.85;  // planets + stations orbiting the star (perceptible)
 const MOON_SCALE = 0.4;    // moons spinning around their planet (gentle)
 const SHIP_SCALE = 0.6;    // ship transit / drift between objects
+const SPIN_SCALE = 0.5;    // planets rotating on their own axis (calm, per-planet rate)
 // Back-compat alias for the belt/debris churn (kept calm).
 const MOTION_SCALE = MOON_SCALE;
 
@@ -468,7 +475,8 @@ function drawPlanetSurface(
   r: number,
   starX: number,
   starY: number,
-  seed: number
+  seed: number,
+  t: number
 ): void {
   const rng = splitmix32(seed);
   const hue = body.palette.hue;
@@ -479,6 +487,19 @@ function drawPlanetSurface(
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.clip();
+
+  // --- Axial rotation: spin the surface beneath the (fixed) day/night
+  // lighting so the world visibly turns on its own tilted axis. The rate is
+  // per-planet (from rotation_period_hours — gas giants fast, big worlds slow),
+  // so no two worlds spin in lockstep; axial_tilt_deg skews the spin axis. Falls
+  // back to a seed-derived value for older skeletons that predate the fields.
+  const rotH = body.rotation_period_hours ?? (12 + (seed % 36));
+  const tiltRad = ((body.axial_tilt_deg ?? (seed % 46)) * Math.PI) / 180;
+  const spin = (t * SPIN_SCALE * Math.PI * 2) / Math.max(1, rotH * 4);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(tiltRad + spin);
+  ctx.translate(-x, -y);
 
   switch (treatment) {
     case 'GAS_GIANT': {
@@ -658,6 +679,8 @@ function drawPlanetSurface(
       break;
     }
   }
+
+  ctx.restore(); // end axial-spin transform — terminator + rim light stay star-fixed
 
   // --- Day/night terminator: dark gradient on the side away from the star ---
   const angToStar = Math.atan2(starY - y, starX - x);
@@ -1054,7 +1077,7 @@ function drawOrbitCloseup(
   ctx.fill();
 
   if (body.rings) drawRingHalf(ctx, cx, cy, r, body.palette.hue, ringTilt, 'back');
-  drawPlanetSurface(ctx, body, cx, cy, r, lightX, lightY, seed);
+  drawPlanetSurface(ctx, body, cx, cy, r, lightX, lightY, seed, t);
   if (body.rings) drawRingHalf(ctx, cx, cy, r, body.palette.hue, ringTilt, 'front');
 
   // A couple of moons sweeping the closeup for scale + motion — all on the
@@ -1367,7 +1390,7 @@ function drawScene(
       draw: () => {
         const ringTilt = -0.32 + ((seed % 100) / 100 - 0.5) * 0.3;
         if (body.rings) drawRingHalf(ctx, x, y, r, body.palette.hue, ringTilt, 'back');
-        drawPlanetSurface(ctx, body, x, y, r, starX, starY, seed);
+        drawPlanetSurface(ctx, body, x, y, r, starX, starY, seed, t);
         if (body.rings) drawRingHalf(ctx, x, y, r, body.palette.hue, ringTilt, 'front');
 
         // Moons — tiny dots, all on this planet's SINGLE shared orbital plane
