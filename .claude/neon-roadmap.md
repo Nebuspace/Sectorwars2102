@@ -125,6 +125,9 @@ tsc 0 (gate held), gated build green.
 
 **Lane status (honest):** after runs 6–12 + the fresh audit, the self-selectable admin-UI frontend work is essentially exhausted. Remaining items are either Max-gated (RBAC #9, Economy #8, LoginForm auth harness, governance region-keying — all need decisions/backend) or low-value scraps (AdvancedAnalytics Download/Share dead buttons that only render with backendless reports; RouteOptimizationDisplay placeholder map; unused exports in live files; PlayerAssetManager camelCase ownerId; admin-ui.md doc-table drift in sw2102-docs). Recommend handing back to the player/gameserver lane or taking a Max decision on #8/#9.
 
+### Admin-UI fix — 2026-06-14 (PlanetDetail type labels)
+**Shipped (`dec857d`):** `PlanetDetail.tsx` `getPlanetTypeInfo` was keyed on a legacy taxonomy (TERRA/M_CLASS/L_CLASS/…) that never matched the stored `planet_type` (the canonical 12-value PlanetType enum TERRAN/DESERT/…), so every lookup missed and fell back to "Terra" — the inline planet detail labelled EVERY world Earth-like. Rekeyed on the 12 canonical types (uppercased lookup) + a neutral "Unknown" fallback. tsc 0 (gate held), build green, deployed. Live-proof not automated: PlanetDetail only renders on a galaxy-map planet click (Three.js canvas) — code/build verified. (Surfaced during the sw2102-docs star-systems documentation pass.)
+
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
 ### Gameplay-meaty
