@@ -194,10 +194,12 @@ async def engage_combat(
         result = _execute_planet_assault(db, player, target_id)
     else:
         # Port assault transfers station ownership — economically sensitive,
-        # deliberately disabled this pass
-        return CombatEngageResponse(
-            status="error",
-            message="Port assault operations are not yet authorized"
+        # deliberately disabled this pass. Return 501 Not Implemented (not a
+        # 200 "error" body) so the client treats it as a permanently-unavailable
+        # feature, not a transient/game-logic failure worth retrying.
+        raise HTTPException(
+            status_code=501,
+            detail="Port assault operations are not yet authorized."
         )
 
     if not result.get("success"):
