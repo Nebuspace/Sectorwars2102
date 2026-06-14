@@ -957,7 +957,7 @@ const RegionalGovernorDashboard: React.FC = () => {
                           </span>
                         </td>
                         <td>
-                          <button className="action-button small">View Details</button>
+                          <button className="action-button small" disabled title="Treaty detail view is not yet available">View Details</button>
                         </td>
                       </tr>
                     ))}
