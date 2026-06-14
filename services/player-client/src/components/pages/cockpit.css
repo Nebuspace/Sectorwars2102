@@ -307,9 +307,42 @@
 .defense-buildings .db-build:hover:not(:disabled) { background: rgba(255, 170, 68, 0.26); box-shadow: 0 0 8px rgba(255, 170, 68, 0.4); }
 .defense-buildings .db-build:disabled { opacity: 0.45; cursor: not-allowed; }
 .defense-buildings .db-max { color: var(--text-secondary, #9aa); font-size: 0.62rem; letter-spacing: 0.05em; }
+.defense-buildings .db-row-wrap { padding: 1px 0; }
+.defense-buildings .db-queued { color: #ffce6a; font-style: normal; font-size: 0.62rem; }
+.defense-buildings .db-building {
+  color: #ffce6a;
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.defense-buildings .db-bar {
+  height: 3px;
+  margin: 1px 0 3px;
+  background: rgba(255, 170, 68, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.defense-buildings .db-bar-fill {
+  height: 100%;
+  background: repeating-linear-gradient(90deg, rgba(255, 170, 68, 0.85) 0 6px, rgba(255, 206, 106, 0.5) 6px 12px);
+  background-size: 12px 100%;
+  animation: cc-march 0.9s linear infinite;
+  transition: width 1s linear;
+}
 
 /* Cost sub-label inside an action button (e.g. shield upgrade). */
 .btn-sublabel { display: block; font-size: 0.6rem; opacity: 0.8; margin-top: 1px; font-weight: 400; }
+
+/* Pre-flight requirement checklist on the citadel upgrade confirm. */
+.preflight { list-style: none; margin: 5px 0 2px; padding: 0; font-family: 'Courier New', monospace; font-size: 0.66rem; }
+.preflight li { padding: 1px 0; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.preflight li.ok { color: #66dd99; }
+.preflight li.no { color: #ff7a6b; }
+
+/* 25/50/75 quick-fill presets in the citadel safe deposit/withdraw form. */
+.safe-presets { display: inline-flex; gap: 4px; }
+.safe-btn.preset { padding: 2px 7px; font-size: 0.62rem; }
 
 /* Citadel safe vault fill bar. */
 .vault-bar {

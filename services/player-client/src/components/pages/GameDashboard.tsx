@@ -859,21 +859,31 @@ const GameDashboard: React.FC = () => {
   // second so the landed-console indicator counts down in real time, and bump
   // opsRefresh once the timer elapses so the finished level appears on its own.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  // Any defense building still under construction this tick.
+  const defenseBuildActive = defenseBuildings.some((b: any) => (b.queued_count ?? 0) > 0);
   useEffect(() => {
-    if (!citadelInfo?.is_upgrading) return;
-    const completeMs = citadelInfo?.upgrade_complete_at
-      ? new Date(citadelInfo.upgrade_complete_at).getTime()
-      : null;
+    if (!citadelInfo?.is_upgrading && !defenseBuildActive) return;
+    // Soonest completion across the citadel upgrade AND every queued defense build.
+    const times: number[] = [];
+    if (citadelInfo?.is_upgrading && citadelInfo?.upgrade_complete_at) {
+      times.push(new Date(citadelInfo.upgrade_complete_at).getTime());
+    }
+    defenseBuildings.forEach((b: any) =>
+      (b.in_progress || []).forEach((p: any) => {
+        if (p?.complete_at) times.push(new Date(p.complete_at).getTime());
+      })
+    );
+    const soonest = times.length ? Math.min(...times) : null;
     const id = window.setInterval(() => {
       const t = Date.now();
       setNowMs(t);
-      if (completeMs && t >= completeMs) {
+      if (soonest && t >= soonest) {
         window.clearInterval(id);
-        setOpsRefresh(n => n + 1);
+        setOpsRefresh(n => n + 1); // re-fetch → server settles the finished build
       }
     }, 1000);
     return () => window.clearInterval(id);
-  }, [citadelInfo?.is_upgrading, citadelInfo?.upgrade_complete_at]);
+  }, [citadelInfo?.is_upgrading, citadelInfo?.upgrade_complete_at, defenseBuildActive, defenseBuildings]);
 
   // Short "2d 4h" / "3h 12m" / "47s" countdown for the construction indicator.
   const fmtBuildCountdown = (ms: number): string => {
@@ -2291,6 +2301,24 @@ const GameDashboard: React.FC = () => {
                                       ? Takes {citadelInfo.next_level.upgrade_hours}h.
                                     </>
                                   )}
+                                  {citadelInfo.citadel_level !== 0 && (() => {
+                                    const upCost = Number(citadelInfo.next_level.upgrade_cost || 0);
+                                    const haveCredits = (playerState?.credits ?? 0) >= upCost;
+                                    const reqPop = Number(citadelInfo.max_population || 0);
+                                    const havePop = population >= reqPop;
+                                    return (
+                                      <ul className="preflight">
+                                        <li className={haveCredits ? 'ok' : 'no'}>
+                                          {haveCredits ? '✓' : '✗'} Credits {(playerState?.credits ?? 0).toLocaleString()} / {upCost.toLocaleString()}
+                                        </li>
+                                        {reqPop > 0 && (
+                                          <li className={havePop ? 'ok' : 'no'}>
+                                            {havePop ? '✓' : '✗'} Population {Math.floor(population).toLocaleString()} / {reqPop.toLocaleString()}
+                                          </li>
+                                        )}
+                                      </ul>
+                                    );
+                                  })()}
                                   <div className="section-actions" style={{ marginTop: '4px' }}>
                                     <button className="section-btn upgrade" onClick={handleUpgradeCitadel} disabled={upgradeBusy}>
                                       {upgradeBusy ? 'WORKING…' : '✓ Confirm'}
@@ -2306,22 +2334,40 @@ const GameDashboard: React.FC = () => {
                                   <div className="db-head">🏗️ Defense Buildings</div>
                                   {defenseBuildings.map((b: any) => {
                                     const affordable = (playerState?.credits ?? 0) >= Number(b.cost || 0);
+                                    const queued = Number(b.queued_count || 0);
+                                    const soonest = (b.in_progress || [])[0];
+                                    const endMs = soonest?.complete_at ? new Date(soonest.complete_at).getTime() : 0;
+                                    const remainMs = endMs ? Math.max(0, endMs - nowMs) : 0;
+                                    const totalMs = Number(b.build_hours || 0) * 3600 * 1000;
+                                    const pct = totalMs > 0 && endMs
+                                      ? Math.min(100, Math.max(0, ((totalMs - remainMs) / totalMs) * 100))
+                                      : 0;
                                     return (
-                                      <div className="db-row" key={b.type}>
-                                        <span className="db-name" title={b.effects}>{b.name}</span>
-                                        <span className="db-count">{b.current_count}/{b.max_count}</span>
-                                        <span className="db-cost">{Number(b.cost).toLocaleString()} cr</span>
-                                        {b.can_build ? (
-                                          <button
-                                            className="db-build"
-                                            disabled={buildingBusy === b.type || !affordable}
-                                            title={affordable ? `Build ${b.name}` : 'Insufficient credits'}
-                                            onClick={() => handleBuildBuilding(b.type)}
-                                          >
-                                            {buildingBusy === b.type ? '…' : 'Build'}
-                                          </button>
-                                        ) : (
-                                          <span className="db-max">Max</span>
+                                      <div className="db-row-wrap" key={b.type}>
+                                        <div className="db-row">
+                                          <span className="db-name" title={b.effects}>{b.name}</span>
+                                          <span className="db-count">
+                                            {b.current_count}/{b.max_count}
+                                            {queued > 0 && <em className="db-queued" title={`${queued} under construction`}> +{queued}🏗️</em>}
+                                          </span>
+                                          <span className="db-cost">{Number(b.cost).toLocaleString()} cr</span>
+                                          {b.can_build ? (
+                                            <button
+                                              className="db-build"
+                                              disabled={buildingBusy === b.type || !affordable}
+                                              title={affordable ? `Build ${b.name} · ${b.build_hours}h` : 'Insufficient credits'}
+                                              onClick={() => handleBuildBuilding(b.type)}
+                                            >
+                                              {buildingBusy === b.type ? '…' : 'Build'}
+                                            </button>
+                                          ) : queued > 0 ? (
+                                            <span className="db-building" title="Under construction">{fmtBuildCountdown(remainMs)}</span>
+                                          ) : (
+                                            <span className="db-max">Max</span>
+                                          )}
+                                        </div>
+                                        {queued > 0 && (
+                                          <div className="db-bar"><div className="db-bar-fill" style={{ width: `${pct}%` }} /></div>
                                         )}
                                       </div>
                                     );
@@ -2508,6 +2554,19 @@ const GameDashboard: React.FC = () => {
                                   style={{ width: '120px' }}
                                   disabled={safeBusy}
                                 />
+                                <div className="safe-presets">
+                                  {[25, 50, 75].map((pct) => (
+                                    <button
+                                      key={pct}
+                                      className="safe-btn preset"
+                                      onClick={() => setSafeAmount(Math.max(1, Math.min(safeMax, Math.floor((safeMax * pct) / 100))))}
+                                      disabled={safeBusy || safeMax < 1}
+                                      title={`${pct}% of ${safeMax.toLocaleString()}`}
+                                    >
+                                      {pct}%
+                                    </button>
+                                  ))}
+                                </div>
                                 <button
                                   className="safe-btn"
                                   onClick={() => setSafeAmount(Math.max(1, safeMax))}

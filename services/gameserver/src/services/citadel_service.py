@@ -539,6 +539,67 @@ class CitadelService:
         events["defense_buildings"] = buildings
         planet.active_events = events
 
+    def _get_build_queue(self, planet: Planet) -> List[Dict[str, Any]]:
+        """Extract the in-progress defense-building construction queue from active_events.
+
+        Each queue entry is {type, started_at(iso), complete_at(iso)} — a building under
+        construction that has NOT yet joined the operational defense_buildings counts.
+        """
+        events = planet.active_events
+        if isinstance(events, dict):
+            queue = events.get("defense_build_queue", [])
+            return [dict(e) for e in queue] if isinstance(queue, list) else []
+        return []
+
+    def _set_build_queue(self, planet: Planet, queue: List[Dict[str, Any]]) -> None:
+        """Persist the defense-building construction queue into active_events JSONB."""
+        events = planet.active_events
+        if not isinstance(events, dict):
+            events = {"legacy_events": events} if events else {}
+        events = dict(events)
+        events["defense_build_queue"] = queue
+        planet.active_events = events
+
+    def _settle_build_queue(self, planet: Planet, now: datetime) -> bool:
+        """Complete any defense buildings whose construction timer has elapsed.
+
+        Lazy advance-on-read (mirrors citadel check_upgrade_completion): finished queue
+        entries move into the operational defense_buildings counts. Returns True if
+        anything changed, so callers can persist.
+        """
+        events = planet.active_events
+        if not isinstance(events, dict):
+            return False
+        queue = events.get("defense_build_queue", [])
+        if not isinstance(queue, list) or not queue:
+            return False
+        buildings = dict(events.get("defense_buildings", {}))
+        remaining: List[Dict[str, Any]] = []
+        changed = False
+        for entry in queue:
+            complete_at = entry.get("complete_at")
+            done = False
+            if complete_at:
+                try:
+                    done = now >= datetime.fromisoformat(complete_at)
+                except (ValueError, TypeError):
+                    done = True  # malformed timestamp: settle rather than strand the build
+            if done:
+                btype = entry.get("type")
+                if btype:
+                    buildings[btype] = buildings.get(btype, 0) + 1
+                changed = True
+            else:
+                remaining.append(entry)
+        if not changed:
+            return False
+        new_events = dict(events)
+        new_events["defense_buildings"] = buildings
+        new_events["defense_build_queue"] = remaining
+        planet.active_events = new_events
+        self.db.flush()
+        return True
+
     def get_available_buildings(self, planet_id: uuid.UUID) -> Dict[str, Any]:
         """Return which defense buildings can be built based on the planet's current citadel level.
 
@@ -559,7 +620,13 @@ class CitadelService:
                 "buildings": [],
             }
 
+        # Lazy advance-on-read: complete any builds whose timer elapsed, then persist.
+        now = datetime.now(UTC)
+        if self._settle_build_queue(planet, now):
+            self.db.commit()
+
         existing = self._get_defense_buildings(planet)
+        queue = self._get_build_queue(planet)
         buildings: List[Dict[str, Any]] = []
 
         for building_type, spec in DEFENSE_BUILDINGS.items():
@@ -573,6 +640,27 @@ class CitadelService:
                     max_at_level = spec["max_count"][lvl]
             current_count = existing.get(building_type, 0)
 
+            # In-progress builds of this type, soonest completion first
+            in_progress: List[Dict[str, Any]] = []
+            for entry in queue:
+                if entry.get("type") != building_type:
+                    continue
+                complete_at = entry.get("complete_at")
+                remaining_seconds = 0
+                if complete_at:
+                    try:
+                        remaining_seconds = max(
+                            0, int((datetime.fromisoformat(complete_at) - now).total_seconds())
+                        )
+                    except (ValueError, TypeError):
+                        remaining_seconds = 0
+                in_progress.append({
+                    "complete_at": complete_at,
+                    "remaining_seconds": remaining_seconds,
+                })
+            in_progress.sort(key=lambda e: e["remaining_seconds"])
+            queued_count = len(in_progress)
+
             buildings.append({
                 "type": building_type,
                 "name": spec["name"],
@@ -580,8 +668,11 @@ class CitadelService:
                 "build_hours": spec["build_hours"],
                 "effects": spec["effects"],
                 "current_count": current_count,
+                "queued_count": queued_count,
+                "in_progress": in_progress,
                 "max_count": max_at_level,
-                "can_build": current_count < max_at_level,
+                # A pending build reserves a slot, so capacity counts operational + queued.
+                "can_build": (current_count + queued_count) < max_at_level,
             })
 
         return {
@@ -621,6 +712,10 @@ class CitadelService:
         if planet.owner_id != player_id:
             return {"success": False, "message": "You do not own this planet"}
 
+        # Lazy advance-on-read: complete any finished builds before re-checking capacity.
+        now = datetime.now(UTC)
+        self._settle_build_queue(planet, now)
+
         # --- Citadel level check ---
         current_level = getattr(planet, "citadel_level", 0) or 0
         if current_level < spec["min_citadel_level"]:
@@ -632,7 +727,7 @@ class CitadelService:
                 ),
             }
 
-        # --- Max count check ---
+        # --- Max count check (operational + in-progress reserve the slots) ---
         max_at_level = 0
         for lvl in sorted(spec["max_count"]):
             if current_level >= lvl:
@@ -640,13 +735,16 @@ class CitadelService:
 
         existing = self._get_defense_buildings(planet)
         current_count = existing.get(building_type, 0)
+        queue = self._get_build_queue(planet)
+        queued_count = sum(1 for q in queue if q.get("type") == building_type)
 
-        if current_count >= max_at_level:
+        if current_count + queued_count >= max_at_level:
+            in_progress_note = f" ({queued_count} already under construction)" if queued_count else ""
             return {
                 "success": False,
                 "message": (
                     f"Maximum {spec['name']} capacity reached ({max_at_level}) "
-                    f"at citadel level {current_level}."
+                    f"at citadel level {current_level}{in_progress_note}."
                 ),
             }
 
@@ -663,28 +761,37 @@ class CitadelService:
                 ),
             }
 
-        # --- Execute construction ---
+        # --- Execute construction: deduct credits and enqueue a timed build ---
         player.credits -= spec["cost"]
 
-        existing[building_type] = current_count + 1
-        self._set_defense_buildings(planet, existing)
+        complete_at = now + timedelta(hours=spec["build_hours"])
+        queue.append({
+            "type": building_type,
+            "started_at": now.isoformat(),
+            "complete_at": complete_at.isoformat(),
+        })
+        self._set_build_queue(planet, queue)
 
         self.db.flush()
 
         logger.info(
-            f"Player {player_id} built {spec['name']} on planet {planet_id} "
-            f"(count: {current_count + 1}/{max_at_level})"
+            f"Player {player_id} started building {spec['name']} on planet {planet_id} "
+            f"(completes {complete_at.isoformat()}, "
+            f"operational: {current_count}/{max_at_level}, queued: {queued_count + 1})"
         )
 
         return {
             "success": True,
+            "complete_at": complete_at.isoformat(),
+            "remaining_seconds": int(spec["build_hours"] * 3600),
+            "queued_count": queued_count + 1,
             "message": (
                 f"{spec['name']} construction started! "
                 f"Estimated completion: {spec['build_hours']} hours."
             ),
             "building_type": building_type,
             "building_name": spec["name"],
-            "count": current_count + 1,
+            "count": current_count,
             "max_count": max_at_level,
             "credits_deducted": spec["cost"],
             "player_credits": player.credits,
