@@ -556,18 +556,19 @@ class AITradingService:
                     return prediction.predicted_price
                 return prediction.get('predicted_price', 0.0)
             
-            # Fallback to simple prediction if Prophet fails
+            # No model output: fall back to the last known price (flat — predict
+            # no change) rather than fabricating a fixed +5% rise the prediction
+            # engine never produced.
             if history:
-                prices = [h['price'] for h in history]
-                return prices[-1] * 1.05  # Simple 5% increase prediction
+                return float(history[-1]['price'])
             return 0.0
-            
+
         except Exception as e:
             logger.error(f"Error predicting future price: {e}")
-            # Fallback
+            # On engine error, fall back to the last known price (flat), not a
+            # fabricated +5% rise.
             if history:
-                prices = [h['price'] for h in history]
-                return prices[-1] * 1.05
+                return float(history[-1]['price'])
             return 0.0
     
     def _calculate_price_trend(self, prices: List[float]) -> str:
