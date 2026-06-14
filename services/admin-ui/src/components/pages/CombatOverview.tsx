@@ -4,6 +4,7 @@ import { CombatActivityChart } from '../charts/CombatActivityChart';
 import { CombatFeed } from '../combat/CombatFeed';
 import { DisputePanel } from '../combat/DisputePanel';
 import DroneOperationsTab from '../combat/DroneOperationsTab';
+import BalanceAnalytics from '../combat/BalanceAnalytics';
 import { api } from '../../utils/auth';
 import { useCombatUpdates } from '../../contexts/WebSocketContext';
 import './combat-overview.css';
@@ -285,6 +286,9 @@ export const CombatOverview: React.FC = () => {
 
   const activeBattles = combatStats?.active_combats?.total ?? 0;
   const needingIntervention = combatStats?.active_combats?.needing_intervention ?? 0;
+  // Red alarm is for "needs attention" ONLY. A quiet battlefield (0 active
+  // battles) or live battles with nothing needing intervention render neutral.
+  const activeBattlesAlarm = activeBattles > 0 && needingIntervention > 0;
 
   return (
     <div className="combat-overview">
@@ -318,7 +322,7 @@ export const CombatOverview: React.FC = () => {
       <div className="combat-stats-grid">
         {/* Alarm styling only when there are live battles needing intervention;
             a quiet battlefield is neutral, not red. */}
-        <div className={`combat-stat-card${activeBattles > 0 && needingIntervention > 0 ? ' alarm' : ''}`}>
+        <div className={`combat-stat-card${activeBattlesAlarm ? ' alarm' : ''}`}>
           <h3>Active Battles</h3>
           <div className="combat-stat-value">{activeBattles.toLocaleString()}</div>
           <div className="combat-stat-change">{needingIntervention.toLocaleString()} need intervention</div>
@@ -493,6 +497,12 @@ export const CombatOverview: React.FC = () => {
       <section className="drone-operations-section">
         <h2 className="drone-operations-section-title">Drone Operations</h2>
         <DroneOperationsTab />
+      </section>
+
+      {/* Combat Balance Analytics */}
+      <section className="drone-operations-section">
+        <h2 className="drone-operations-section-title">Balance Analytics</h2>
+        <BalanceAnalytics />
       </section>
     </div>
   );
