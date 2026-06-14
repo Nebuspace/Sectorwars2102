@@ -193,6 +193,10 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               <span className="header-stat-label">DRONE</span>
               <span className="data-readout">{playerState?.defense_drones || '0'}</span>
             </div>
+            <div className="header-stat">
+              <span className="header-stat-label">MINE</span>
+              <span className="data-readout">{playerState?.mines || '0'}</span>
+            </div>
           </div>
           <div className="game-header-right">
             <UserProfile />

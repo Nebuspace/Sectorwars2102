@@ -213,6 +213,7 @@ export interface PlayerState {
   current_planet_id?: string;
   defense_drones: number;
   attack_drones: number;
+  mines: number;
   current_ship_id?: string;
   team_id?: string;
 
@@ -297,6 +298,7 @@ interface GameContextType {
   withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
   depositCommodityToSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
   withdrawCommodityFromSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
+  deployMines: (quantity: number) => Promise<any>;
   // Planetary defenses — shield generator status/upgrade
   getPlanetDefenseInfo: (planetId: string) => Promise<any>;
   upgradeShields: (planetId: string) => Promise<any>;
@@ -1214,6 +1216,19 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Lay armored mines in the current sector (open space). POST /armory/deploy.
+  const deployMines = async (quantity: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/armory/deploy`, { quantity });
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error deploying mines:', error);
+      throw error;
+    }
+  };
+
   // Defense telemetry — GET /planets/{id}/defenses (no ownership required;
   // useful for scouting). Returns {shieldGenerator: {level, maxLevel, name,
   // strength, currentShields, regenPerHour, nextUpgrade: {level, name,
@@ -1648,6 +1663,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     withdrawFromSafe,
     depositCommodityToSafe,
     withdrawCommodityFromSafe,
+    deployMines,
     getPlanetDefenseInfo,
     upgradeShields,
 

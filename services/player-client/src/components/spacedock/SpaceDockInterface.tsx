@@ -329,7 +329,10 @@ const SpaceDockInterface: React.FC = () => {
       name: 'Armory',
       icon: '⚔️',
       description: 'Combat drones, defense systems, and tactical equipment',
-      available: Boolean(stationServices.drone_shop) || Boolean(stationServices.mine_dealer),
+      // SpaceDocks carry every armory service automatically (matches the server's
+      // _station_offers_service); without this the Armory tab was hidden at a
+      // SpaceDock that didn't explicitly list drone_shop/mine_dealer.
+      available: Boolean(stationServices.drone_shop) || Boolean(stationServices.mine_dealer) || Boolean(currentStation?.is_spacedock),
       services: ['Attack Drones', 'Defense Drones', 'Mines', 'Tactical Systems']
     },
     {

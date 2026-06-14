@@ -565,6 +565,55 @@ class MovementService:
         # No turn cost can be less than 1
         return max(1, base_cost)
     
+    # Hull damage one armored mine deals to a hostile ship entering the sector.
+    # Proposed in ADR-0083 (pending Max bless); deterrent-scale, non-lethal
+    # (hull is floored at 1.0 so a minefield cripples but does not destroy —
+    # lethal mines / destruction-on-zero is a documented future refinement).
+    MINE_DETONATION_DAMAGE = 200.0
+
+    def _detonate_sector_mines(self, player: Player, sector: Sector) -> None:
+        """Detonate one hostile armored mine in `sector` against the entering ship.
+
+        Mines live in sector.defenses {mines, mine_owner_id, mine_team_id}. Same
+        non-null team is friendly (no detonation); the owner is never mined by
+        their own field. One mine is consumed per hostile entry.
+        """
+        defenses = sector.defenses or {}
+        mine_count = int(defenses.get("mines", 0) or 0)
+        owner_id = defenses.get("mine_owner_id")
+        if mine_count <= 0 or not owner_id or str(owner_id) == str(player.id):
+            return
+
+        owner_team = defenses.get("mine_team_id")
+        entrant_team = str(player.team_id) if player.team_id else None
+        if owner_team and entrant_team and owner_team == entrant_team:
+            return  # friendly minefield — same team
+
+        if not player.current_ship:
+            return
+
+        from src.services.combat_service import CombatService
+        combat = CombatService(self.db)._ensure_combat_state(player.current_ship)
+        hull = float(combat.get("hull", 0) or 0)
+        # Floor at 1.0: a mine cripples, it does not destroy (v1; see ADR-0083).
+        combat["hull"] = max(1.0, round(hull - self.MINE_DETONATION_DAMAGE, 1))
+        flag_modified(player.current_ship, "combat")
+
+        new_def = dict(defenses)
+        remaining = mine_count - 1
+        new_def["mines"] = remaining
+        if remaining <= 0:
+            new_def["mines"] = 0
+            new_def["mine_owner_id"] = None
+            new_def["mine_team_id"] = None
+        sector.defenses = new_def
+        flag_modified(sector, "defenses")
+
+        logger.info(
+            f"Mine detonated on player {player.id} entering sector {sector.sector_id}: "
+            f"-{self.MINE_DETONATION_DAMAGE} hull (now {combat['hull']}), {remaining} mine(s) remain"
+        )
+
     def _execute_movement(self, player: Player, destination_sector_id: int, turn_cost: int) -> Dict[str, Any]:
         """Execute a player's movement to a destination sector."""
         old_sector_id = player.current_sector_id
@@ -595,7 +644,16 @@ class MovementService:
         # Update ship position
         if player.current_ship:
             player.current_ship.sector_id = destination_sector_id
-        
+
+        # Mine detonation: hostile armored mines in the destination detonate
+        # against the entering ship (combat.md "mines damage hostile entrants";
+        # ADR-0083 damage model). Best-effort — a hook failure must never strand
+        # the move; it rides the move's own commit below.
+        try:
+            self._detonate_sector_mines(player, destination_sector)
+        except Exception as e:
+            logger.error("Mine detonation hook failed: %s", e)
+
         # Consume turns
         spend_turns(player, turn_cost)
 

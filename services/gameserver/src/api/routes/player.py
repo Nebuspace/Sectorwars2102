@@ -33,6 +33,7 @@ class PlayerStateResponse(BaseModel):
     current_planet_id: str | None = None
     defense_drones: int
     attack_drones: int
+    mines: int = 0
     # Optional: a player has no ship until first-login completes
     current_ship_id: str | None = None
     # Optional: set when the player belongs to a team
@@ -149,6 +150,7 @@ async def get_player_state(
         current_planet_id=str(player.current_planet_id) if player.current_planet_id else None,
         defense_drones=player.defense_drones,
         attack_drones=player.attack_drones,
+        mines=player.mines,
         current_ship_id=str(player.current_ship_id) if player.current_ship_id else None,
         team_id=str(player.team_id) if player.team_id else None,
         personal_reputation=player.personal_reputation,

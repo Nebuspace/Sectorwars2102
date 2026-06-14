@@ -95,13 +95,14 @@ async def get_armory_catalog(
                 "price": entry["price"],
                 "description": entry["description"],
                 "service": entry["service"],
-                # Mines are not yet deployable (nothing reads player.mines), so
-                # they are shown but flagged unavailable rather than sold as a
-                # no-op. Drones are fully functional.
-                "available": key not in ("limpet_mine", "armored_mine"),
+                # Armored mines are deployable (proximity detonation on hostile
+                # sector entry — POST /armory/deploy). Limpet mines need a
+                # tracking/surveillance mechanic that isn't built yet, so they
+                # stay flagged unavailable rather than sold as a no-op.
+                "available": key != "limpet_mine",
                 "reason": (
-                    "Mine deployment is not yet available"
-                    if key in ("limpet_mine", "armored_mine") else None
+                    "Limpet tracking mechanic is in design"
+                    if key == "limpet_mine" else None
                 ),
             }
             for key, entry in ARMORY_CATALOG.items()
@@ -125,14 +126,12 @@ async def purchase_armory_item(
     """
     entry = ARMORY_CATALOG[request.item]
 
-    # Mines are sold-but-inert: nothing in the game reads player.mines (no
-    # deploy / detonate / tracking path exists), so a purchase only burns
-    # credits for a no-op. Reject it honestly until mine deployment ships
-    # rather than sell a non-functional item.
-    if request.item in ("limpet_mine", "armored_mine"):
+    # Armored mines are now deployable (POST /armory/deploy). Limpet mines still
+    # have no tracking mechanic, so selling one would burn credits for a no-op.
+    if request.item == "limpet_mine":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Mine deployment is not yet available — mines cannot be purchased yet.",
+            detail="Limpet mines aren't deployable yet — their tracking mechanic is still in design.",
         )
 
     # Lock the player row to prevent concurrent purchases double-spending
@@ -241,4 +240,78 @@ async def purchase_armory_item(
             "mines": player.mines,
             "caps": caps,
         },
+    }
+
+
+class MineDeployRequest(BaseModel):
+    quantity: int = Field(..., ge=1, le=MINES_CAP, description="Number of armored mines to lay in the current sector")
+
+
+@router.post("/deploy")
+async def deploy_mines(
+    request: MineDeployRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Lay armored mines in the player's current sector (open space only).
+
+    Deployed mines detonate against the next hostile ship to enter the sector
+    (MovementService._detonate_sector_mines). A sector holds one commander's
+    minefield at a time; a player can reinforce their own field but not stack on
+    a rival's.
+    """
+    from src.models.sector import Sector
+
+    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+
+    if player.is_docked or player.is_landed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mines are laid in open space — undock / lift off first.",
+        )
+    if not player.current_sector_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You are not in a sector")
+    if player.mines < request.quantity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You carry {player.mines} mines, cannot deploy {request.quantity}.",
+        )
+
+    sector = (
+        db.query(Sector)
+        .filter(Sector.sector_id == player.current_sector_id)
+        .with_for_update()
+        .first()
+    )
+    if not sector:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sector not found")
+
+    defenses = dict(sector.defenses or {})
+    existing = int(defenses.get("mines", 0) or 0)
+    existing_owner = defenses.get("mine_owner_id")
+    if existing > 0 and existing_owner and str(existing_owner) != str(player.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This sector already holds another commander's minefield.",
+        )
+
+    from sqlalchemy.orm.attributes import flag_modified
+    defenses["mines"] = existing + request.quantity
+    defenses["mine_owner_id"] = str(player.id)
+    defenses["mine_team_id"] = str(player.team_id) if player.team_id else None
+    sector.defenses = defenses
+    flag_modified(sector, "defenses")
+    player.mines -= request.quantity
+    db.commit()
+
+    logger.info(
+        f"Player {player.id} deployed {request.quantity} mines in sector {player.current_sector_id} "
+        f"(field now {defenses['mines']})"
+    )
+    return {
+        "success": True,
+        "message": f"Laid {request.quantity} armored mine(s). Sector field: {defenses['mines']}.",
+        "sector_id": player.current_sector_id,
+        "sector_mines": defenses["mines"],
+        "mines_remaining": player.mines,
     }
