@@ -118,7 +118,7 @@
   border-right: none;
 }
 
-.section-header {
+.player-asset-manager .section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -128,7 +128,7 @@
   min-height: 60px;
 }
 
-.section-header h4 {
+.player-asset-manager .section-header h4 {
   margin: 0;
   color: #2c3e50;
   font-size: 1.1rem;
@@ -357,7 +357,7 @@
     grid-template-rows: 1fr 1fr;
   }
   
-  .section-header {
+  .player-asset-manager .section-header {
     padding: 12px 16px;
   }
   
