@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './event-management.css';
 
 interface GameEvent {
@@ -44,6 +45,8 @@ interface EventStats {
 }
 
 const EventManagement: React.FC = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [events, setEvents] = useState<GameEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<GameEvent | null>(null);
   const [eventStats, setEventStats] = useState<EventStats | null>(null);
@@ -136,17 +139,23 @@ const EventManagement: React.FC = () => {
           affected_regions: [],
           effects: []
         });
+        toast.success('Event created successfully');
       } else {
-        alert('Failed to create event');
+        toast.error('Failed to create event');
       }
     } catch (error) {
       console.error('Error creating event:', error);
-      alert('Error creating event');
+      toast.error('Error creating event');
     }
   };
 
   const handleCancelEvent = async (eventId: string) => {
-    if (!confirm('Are you sure you want to cancel this event?')) {
+    const ok = await confirm({
+      title: 'Cancel event',
+      message: 'Are you sure you want to cancel this event?',
+      danger: true
+    });
+    if (!ok) {
       return;
     }
 
@@ -155,12 +164,13 @@ const EventManagement: React.FC = () => {
 
       if (response.status === 200) {
         await fetchEventData();
+        toast.success('Event cancelled successfully');
       } else {
-        alert('Failed to cancel event');
+        toast.error('Failed to cancel event');
       }
     } catch (error) {
       console.error('Error cancelling event:', error);
-      alert('Error cancelling event');
+      toast.error('Error cancelling event');
     }
   };
 
@@ -170,12 +180,13 @@ const EventManagement: React.FC = () => {
 
       if (response.status === 200) {
         await fetchEventData();
+        toast.success('Event activated successfully');
       } else {
-        alert('Failed to activate event');
+        toast.error('Failed to activate event');
       }
     } catch (error) {
       console.error('Error activating event:', error);
-      alert('Error activating event');
+      toast.error('Error activating event');
     }
   };
 
