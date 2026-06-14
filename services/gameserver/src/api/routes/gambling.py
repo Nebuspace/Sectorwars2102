@@ -245,6 +245,19 @@ async def spin_slots(
             detail="You must be docked at a SpaceDock to gamble"
         )
 
+    # Lock the player row so the bet deduction + payout are atomic against a
+    # concurrent gambling request (no lost-update / concurrent double-spend).
+    # populate_existing refreshes the locked row's credits rather than reusing a
+    # stale identity-map snapshot (the trading.py-documented trap).
+    current_player = db.query(Player).filter(
+        Player.id == current_player.id
+    ).populate_existing().with_for_update().first()
+    if current_player.credits < request.bet_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
+        )
+
     # Deduct bet amount
     current_player.credits -= request.bet_amount
 
@@ -312,6 +325,19 @@ async def roll_dice(
         raise HTTPException(
             status_code=400,
             detail="You must be docked at a SpaceDock to gamble"
+        )
+
+    # Lock the player row so the bet deduction + payout are atomic against a
+    # concurrent gambling request (no lost-update / concurrent double-spend).
+    # populate_existing refreshes the locked row's credits rather than reusing a
+    # stale identity-map snapshot (the trading.py-documented trap).
+    current_player = db.query(Player).filter(
+        Player.id == current_player.id
+    ).populate_existing().with_for_update().first()
+    if current_player.credits < request.bet_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
         )
 
     # Deduct bet amount
@@ -413,6 +439,19 @@ async def buy_lottery_ticket(
         raise HTTPException(
             status_code=400,
             detail="You must be docked at a SpaceDock to gamble"
+        )
+
+    # Lock the player row so the bet deduction + payout are atomic against a
+    # concurrent gambling request (no lost-update / concurrent double-spend).
+    # populate_existing refreshes the locked row's credits rather than reusing a
+    # stale identity-map snapshot (the trading.py-documented trap).
+    current_player = db.query(Player).filter(
+        Player.id == current_player.id
+    ).populate_existing().with_for_update().first()
+    if current_player.credits < request.bet_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
         )
 
     # Deduct bet amount
