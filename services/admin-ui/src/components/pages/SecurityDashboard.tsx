@@ -304,12 +304,24 @@ export const SecurityDashboard: React.FC = () => {
         <div className="security-threats">
           <div className="threat-detection-panel">
             <h3>Threat Detection Rules</h3>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 16px 0', padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+              }}
+            >
+              Threat-detection rule configuration is unavailable: no backend endpoint
+              exists to persist rule changes. The rules below reflect server-side
+              defaults and are read-only.
+            </div>
             <div className="detection-rules">
               <div className="rule-item active">
                 <div className="rule-header">
                   <span className="rule-name">Brute Force Detection</span>
                   <label className="toggle">
-                    <input type="checkbox" defaultChecked />
+                    <input type="checkbox" defaultChecked disabled />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
@@ -321,7 +333,7 @@ export const SecurityDashboard: React.FC = () => {
                 <div className="rule-header">
                   <span className="rule-name">API Rate Limiting</span>
                   <label className="toggle">
-                    <input type="checkbox" defaultChecked />
+                    <input type="checkbox" defaultChecked disabled />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
@@ -333,7 +345,7 @@ export const SecurityDashboard: React.FC = () => {
                 <div className="rule-header">
                   <span className="rule-name">Suspicious Pattern Detection</span>
                   <label className="toggle">
-                    <input type="checkbox" />
+                    <input type="checkbox" disabled />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
@@ -346,10 +358,21 @@ export const SecurityDashboard: React.FC = () => {
 
           <div className="blocked-ips-panel">
             <h3>IP Blocklist Management</h3>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 16px 0', padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+              }}
+            >
+              IP blocklist management is unavailable: no backend endpoint exists to
+              add or remove blocked IPs. This list is read-only.
+            </div>
             <div className="ip-blocklist">
               <div className="add-ip-form">
-                <input type="text" placeholder="Enter IP address to block" />
-                <button className="btn btn-primary">
+                <input type="text" placeholder="Enter IP address to block" disabled />
+                <button className="btn btn-primary" disabled title="Disabled — no IP blocklist backend endpoint">
                   <i className="fas fa-plus"></i>
                   Add to Blocklist
                 </button>
@@ -390,11 +413,23 @@ export const SecurityDashboard: React.FC = () => {
 
           <div className="settings-section">
             <h3>Security Policies</h3>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 16px 0', padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+              }}
+            >
+              Security-policy editing is unavailable: no backend endpoint exists to
+              persist policy changes. The values below reflect server-side defaults
+              and are read-only.
+            </div>
             <div className="policy-list">
               <div className="policy-item">
                 <div className="policy-header">
                   <h4>Password Requirements</h4>
-                  <button className="btn btn-secondary">
+                  <button className="btn btn-secondary" disabled title="Disabled — no policy-config backend endpoint">
                     <i className="fas fa-edit"></i>
                     Edit
                   </button>
@@ -409,7 +444,7 @@ export const SecurityDashboard: React.FC = () => {
               <div className="policy-item">
                 <div className="policy-header">
                   <h4>Session Management</h4>
-                  <button className="btn btn-secondary">
+                  <button className="btn btn-secondary" disabled title="Disabled — no policy-config backend endpoint">
                     <i className="fas fa-edit"></i>
                     Edit
                   </button>
