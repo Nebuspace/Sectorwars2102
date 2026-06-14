@@ -1292,6 +1292,64 @@
     "quantum sector.is_discovered on jump",
     "port assault 400"
    ]
+  },
+  {
+   "id": "neon-2026-06-13-b",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "2b7d455",
+   "deployed_sha_end": "2e930dd",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "aria-terminal-crash",
+     "state": "proven",
+     "effort": 2,
+     "files_owned": [
+      "services/player-client/src/contexts/WebSocketContext.tsx",
+      "services/player-client/src/components/mfd/pages/AriaTerminalPage.tsx",
+      "services/player-client/src/components/mfd/pages/pages-ops.css",
+      "services/gameserver/src/services/websocket_service.py",
+      "services/gameserver/src/services/enhanced_websocket_service.py"
+     ],
+     "commit": "6419fe6",
+     "proof": "ARIA MFD no longer page-faults on a query; terminal renders YOU>/ARIA> round-trip; console clean (no localeCompare TypeError, no aria_response Unhandled warn). Root cause: plain-WS aria_response frame omitted top-level timestamp -> undefined.localeCompare in feed sort.",
+     "note": "Crash fixed + surfaced a SEPARATE ARIA-backend cluster (greenlet_spawn in _generate_ai_response/_log_conversation + '400 Validation failed for id') that prevents ARIA from actually answering. PARKED \u2014 next ARIA section."
+    },
+    {
+     "key": "free-planet-defenses",
+     "state": "proven",
+     "effort": 2,
+     "files_owned": [
+      "services/gameserver/src/services/planetary_service.py",
+      "services/player-client/src/components/planetary/DefenseConfiguration.tsx"
+     ],
+     "commit": "0060a8e",
+     "proof": "+20 turrets via UI -> cost 10,000 -> credits 169,555->159,555 (psql exact), defense_turrets 0->20, DEFENSE POWER 30->50; negative gate (1000 turrets=490k) disabled Apply. Server now charges added-units only, player+planet row-locked.",
+     "note": "Per-unit prices (500/1000/2000) are NO-CANON (client de-facto contract) -> DECISIONS Pending planetary-defense-unit-pricing."
+    },
+    {
+     "key": "forming-planet-attack-guard",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/services/combat_service.py",
+      "services/gameserver/src/api/routes/player_combat.py"
+     ],
+     "commit": "2e930dd",
+     "proof": "Authenticated assault on forming planet -> 400 'still forming'; control (non-forming defenseless) -> 'no defenses to assault'; planet undamaged, attacker turns unchanged (1509); WPN target list omits forming planets. Closes genesis-devices.md bug marker."
+    }
+   ],
+   "gate": "2 adversarial reviewers/section (6 total); 0 CRITICAL/0 HIGH; 4 MED + LOWs all hand-fixed pre-deploy (planet row-lock for overcharge race, per-row cost abs->max(0), client credits refresh, redundant enhanced-ws timestamp removed, forming guard added to _execute_planet_assault, action JSON.stringify->readable, CSS rule).",
+   "parking_lot": [
+    "ARIA backend cluster: greenlet_spawn (async/sync) in enhanced_ai_service _generate_ai_response + _log_conversation, + '400 Validation failed for id' in the audit/log path -> ARIA cannot answer any query (renders gracefully now, but errors). NEXT ARIA section.",
+    "ai-market-fabrication (ai_trading_service _get_price_history->[], price->100, profit->1500, sectors->id+1/2/3) \u2014 real but NOT player-visible (aiTradingService output never rendered).",
+    "ship Insurance/Maintenance + Tactical Planner \u2014 dead components, never mounted.",
+    "ShipDetails mock modifications + '3D Preview Coming Soon' (player-visible MOCK/STUB).",
+    "combat loot report overstates cargo when hold full (NO-CANON, hard to prove).",
+    "mines never read (effort 5, design-only canon)."
+   ],
+   "last_updated": "2026-06-13"
   }
  ],
  "last_updated": "2026-06-12"
