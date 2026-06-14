@@ -184,5 +184,8 @@ All routed + sidebar-wired (Factions→Game Operations; Message Moderation + Tra
 ### NEON 2026-06-14-g (gameserver, RED) — ✅ Blackjack credit faucet closed (`b0b988d`)
 - ✅ **Stellar Blackjack credit faucet CLOSED** (`b0b988d`): /blackjack/action trusted client cards + was stateless (fabricate a win / no-deal / replay → mint credits). Now server-authoritative — active game in Player.settings, hands rebuilt from the server seed, payout from the stored bet, cleared on settle. **Proven live** (no-deal→400, fabricated cards/bet ignored, replay→400, DB reconciles). Adversarial review caught 2 CRITICALs pre-deploy (locks needed populate_existing; double-into-bust paid double). Closes the discovery-scan RED candidate.
 
+### NEON 2026-06-14-h (gameserver) — ✅ gambling concurrency locks (`9a91895`)
+- ✅ **Gambling credit settlement concurrency-safe** (`9a91895`): audit follow-up to the blackjack faucet — slots/dice/lottery were server-authoritative (no fabrication) but didn't row-lock the player, so concurrent gambling could lost-update credits. All three now use the same populate_existing()+with_for_update() lock as blackjack. **Proven live**: 10 concurrent slot spins → DB credits = before + Σ(net) exactly (no lost update). Gambling surface fully hardened.
+
 ## How to use
 Say `neon` and the run self-selects from this file + fresh discovery. Say `neon <batch name>` to direct a run at a specific row. Rows needing Max decisions are marked — they cannot self-select.

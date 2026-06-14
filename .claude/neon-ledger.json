@@ -1461,6 +1461,34 @@
     "deck index could overflow 52 on an implausibly long hit streak (pre-existing, no modulo on deck[cards_dealt])"
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-h",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "b0b988d",
+   "deployed_sha_end": "9a91895",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "gambling-concurrency-locks",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/gambling.py"
+     ],
+     "commit": "9a91895",
+     "proof": "10 concurrent /slots/spin -> DB credits = before + sum(all 10 net results) exactly (160555-85=160470), no lost update. slots/dice/lottery now populate_existing+with_for_update like blackjack (5 locks total).",
+     "note": "Outcomes already server-authoritative (weighted_random_symbol/randint/sample); this closes the concurrency lost-update vector. Applies the exact pattern the blackjack review validated -> self-review sufficient."
+    }
+   ],
+   "gate": "lead self-review (applies the already-review-validated blackjack lock pattern; py_compile clean; live concurrency proof)",
+   "parking_lot": [
+    "GOLD purge of dead player-client mock components (still Max/GOLD)",
+    "real mine deployment (effort 5+)",
+    "Max-gated: AI-dialogue content depth, defense/route canon decisions, faction-mission completion"
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-12"
