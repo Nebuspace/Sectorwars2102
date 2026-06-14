@@ -99,30 +99,16 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
   const isPlanetUnclaimed =
     planet && !planet.owner_id && !planet.owner_name && !isPopulationHub;
 
-  // In-fiction confirmation dialog state (replaces native confirm()).
-  // `notice` renders a single-acknowledge dialog (no Cancel) for info-only cases.
-  const [pendingConfirm, setPendingConfirm] = useState<(PendingConfirm & { notice?: boolean }) | null>(null);
+  // In-fiction confirmation dialog state (replaces native confirm())
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
 
   const handlePlanetClick = () => {
     if (!planet || isLanded) return;
-    // Public hubs can't be claimed or landed on (landing requires ownership
-    // server-side). Give the player explicit feedback instead of a dead click —
-    // a silent return here reads as "clicking the planet does nothing".
-    if (isPopulationHub && !planet.owner_id) {
-      setPendingConfirm({
-        title: 'Population Hub',
-        message: `${planet.name} is a population hub (regional administration).\n\nYou can't claim or land here — dock at its station to access services.`,
-        confirmLabel: 'Understood',
-        onConfirm: () => {},
-        notice: true,
-      });
-      return;
-    }
     // Capture narrowed values for the deferred onConfirm closure
     const targetPlanet = planet;
 
     if (isPlanetUnclaimed) {
-      // Planet is unclaimed - need to claim it first
+      // Unclaimed, claimable planet — claim it (claiming auto-lands).
       if (!onClaimPlanet) return;
       const claimPlanet = onClaimPlanet;
       setPendingConfirm({
@@ -132,7 +118,10 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
         onConfirm: () => claimPlanet(targetPlanet.id)
       });
     } else {
-      // Planet is owned - just land
+      // Owned planet OR a public population hub (e.g. New Earth) — both are
+      // landable (you land on a hub to recruit colonists); hubs simply can't be
+      // claimed. Route straight to the Land confirm, same as the helm-rail
+      // LAND button (onLandOnPlanet -> handleLand -> landOnPlanet).
       setPendingConfirm({
         title: 'Landing Request',
         message: `Land on ${targetPlanet.name}?`,
@@ -250,7 +239,7 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
             setPendingConfirm(null);
             pendingConfirm.onConfirm();
           }}
-          {...(pendingConfirm.notice ? {} : { onCancel: () => setPendingConfirm(null) })}
+          onCancel={() => setPendingConfirm(null)}
         />
       )}
     </div>
