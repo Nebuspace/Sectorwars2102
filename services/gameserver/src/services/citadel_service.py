@@ -218,6 +218,20 @@ class CitadelService:
                 "citadel_name": level_1_info["name"],
             }
 
+        # Population gate: the current level must be filled before advancing
+        # (citadels.md upgrade workflow step 1 — "current pop must hit max for
+        # current level"). Prevents rushing straight to L5 on a near-empty colony.
+        current_info = CITADEL_LEVELS[current_level]
+        required_pop = current_info.get("max_population", 0) or 0
+        if (planet.colonists or 0) < required_pop:
+            return {
+                "success": False,
+                "message": (
+                    f"Population must reach {required_pop:,} ({current_info['name']} capacity) "
+                    f"before upgrading. Current colonists: {(planet.colonists or 0):,}."
+                ),
+            }
+
         # For levels 1+: lock player row to prevent concurrent credit races
         player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
         if not player:
@@ -273,6 +287,47 @@ class CitadelService:
             "upgrade_hours": upgrade_hours,
             "credits_deducted": upgrade_cost,
             "resources_deducted": resource_cost,
+        }
+
+    def cancel_upgrade(self, planet_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:
+        """Cancel an in-progress citadel upgrade. Player-initiated cancel refunds
+        50% of the credits paid (resources are not returned — they covered
+        irreversible setup work), per citadels.md / ADR-0059 N-F3."""
+        planet = self.db.query(Planet).filter(Planet.id == planet_id).with_for_update().first()
+        if not planet:
+            return {"success": False, "message": "Planet not found"}
+        if planet.owner_id != player_id:
+            return {"success": False, "message": "You do not own this planet"}
+        if not getattr(planet, "citadel_upgrading", False):
+            return {"success": False, "message": "No citadel upgrade is in progress"}
+
+        current_level = getattr(planet, "citadel_level", 0) or 0
+        target_level = current_level + 1
+        target_info = CITADEL_LEVELS.get(target_level, {})
+        refund = int((target_info.get("upgrade_cost", 0) or 0) * 0.5)
+
+        if refund > 0:
+            player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+            if player:
+                player.credits += refund
+
+        planet.citadel_upgrading = False
+        planet.citadel_upgrade_started_at = None
+        planet.citadel_upgrade_complete_at = None
+        self.db.flush()
+
+        logger.info(
+            f"Planet {planet_id} citadel upgrade to level {target_level} cancelled "
+            f"by player {player_id}; refunded {refund} credits (50%)"
+        )
+        return {
+            "success": True,
+            "message": (
+                f"Upgrade to {target_info.get('name', f'level {target_level}')} cancelled — "
+                f"{refund:,} cr (50%) refunded. Resources spent are not returned."
+            ),
+            "credits_refunded": refund,
+            "citadel_level": current_level,
         }
 
     def check_upgrade_completion(self, planet_id: uuid.UUID) -> Dict[str, Any]:

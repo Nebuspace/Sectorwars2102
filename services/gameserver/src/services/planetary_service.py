@@ -1228,6 +1228,15 @@ class PlanetaryService:
             equipment_rate *= production_bonus.get("equipment", 1.0)
             colonist_rate *= production_bonus.get("colonists", 1.0)
 
+        # Citadel passive production bonus: +5% per citadel level (citadels.md
+        # "Per-level passive bonuses"). Applies to commodity output, not growth.
+        citadel_level = planet.citadel_level or 0
+        if citadel_level > 0:
+            citadel_multiplier = 1 + 0.05 * citadel_level
+            fuel_rate *= citadel_multiplier
+            organics_rate *= citadel_multiplier
+            equipment_rate *= citadel_multiplier
+
         # Apply siege effects
         if planet.under_siege:
             # Production output reduced by 25%

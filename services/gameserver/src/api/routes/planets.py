@@ -1218,6 +1218,27 @@ async def upgrade_citadel(
     return result
 
 
+@router.post("/{planetId}/citadel/cancel")
+async def cancel_citadel_upgrade(
+    planetId: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Cancel an in-progress citadel upgrade (50% credit refund)."""
+    try:
+        planet_id = UUID(planetId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    from src.services.citadel_service import CitadelService
+    service = CitadelService(db)
+    result = service.cancel_upgrade(planet_id, player.id)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Citadel upgrade cancel failed"))
+    db.commit()
+    return result
+
+
 @router.post("/{planetId}/citadel/deposit")
 async def citadel_deposit(
     planetId: str,

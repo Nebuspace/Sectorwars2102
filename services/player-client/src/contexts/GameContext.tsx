@@ -290,6 +290,7 @@ interface GameContextType {
   // commodity storage in the citadel safe.
   getCitadelInfo: (planetId: string) => Promise<any>;
   upgradeCitadel: (planetId: string) => Promise<any>;
+  cancelCitadelUpgrade: (planetId: string) => Promise<any>;
   depositToSafe: (planetId: string, amount: number) => Promise<any>;
   withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
   // Planetary defenses — shield generator status/upgrade
@@ -1109,6 +1110,20 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Cancel an in-progress citadel upgrade — POST /planets/{id}/citadel/cancel.
+  // Refunds 50% of the credits paid (CitadelService.cancel_upgrade).
+  const cancelCitadelUpgrade = async (planetId: string) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/cancel`);
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error cancelling citadel upgrade:', error);
+      throw error;
+    }
+  };
+
   // Deposit credits into the citadel safe — POST /planets/{id}/citadel/deposit
   // {amount}. Server gating (CitadelService.deposit_to_safe): planet must be
   // owned, citadel_level >= 1, player must hold the credits, and the safe
@@ -1571,6 +1586,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     cancelMigrationContract,
     getCitadelInfo,
     upgradeCitadel,
+    cancelCitadelUpgrade,
     depositToSafe,
     withdrawFromSafe,
     getPlanetDefenseInfo,

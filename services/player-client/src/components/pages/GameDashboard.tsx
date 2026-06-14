@@ -462,6 +462,7 @@ const GameDashboard: React.FC = () => {
     updatePlanetAllocation,
     getCitadelInfo,
     upgradeCitadel,
+    cancelCitadelUpgrade,
     depositToSafe,
     withdrawFromSafe,
     getPlanetDefenseInfo,
@@ -889,6 +890,9 @@ const GameDashboard: React.FC = () => {
   // Inline (non-native) confirm step for the two upgrade actions
   const [confirmUpgrade, setConfirmUpgrade] = useState<'shields' | 'citadel' | null>(null);
   const [upgradeBusy, setUpgradeBusy] = useState(false);
+  // Two-step inline cancel for an in-progress citadel upgrade (no native dialog)
+  const [cancelArmed, setCancelArmed] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   // Inline planet rename (lives in the planetary-ops console; the old
   // native prompt() is gone — native dialogs freeze browser automation)
@@ -938,6 +942,21 @@ const GameDashboard: React.FC = () => {
     } finally {
       setConfirmUpgrade(null);
       setUpgradeBusy(false);
+    }
+  };
+
+  const handleCancelCitadel = async () => {
+    if (!landedPlanet || cancelBusy) return;
+    setCancelBusy(true);
+    try {
+      const result = await cancelCitadelUpgrade(landedPlanet.id);
+      setOpsNotice({ type: 'success', message: result?.message || 'Citadel upgrade cancelled.' });
+      setOpsRefresh(n => n + 1);
+    } catch (error: any) {
+      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Cancel failed' });
+    } finally {
+      setCancelArmed(false);
+      setCancelBusy(false);
     }
   };
 
@@ -2122,6 +2141,18 @@ const GameDashboard: React.FC = () => {
                                     <div className="cc-head">
                                       <span className="cc-title">🏗️ CONSTRUCTION ACTIVE</span>
                                       <span className="cc-target">→ {targetName}</span>
+                                      <button
+                                        type="button"
+                                        className="cc-cancel"
+                                        disabled={cancelBusy}
+                                        title="Cancel the upgrade (50% credit refund; resources are not returned)"
+                                        onClick={() => {
+                                          if (cancelArmed) { void handleCancelCitadel(); }
+                                          else { setCancelArmed(true); window.setTimeout(() => setCancelArmed(false), 4000); }
+                                        }}
+                                      >
+                                        {cancelBusy ? '…' : cancelArmed ? 'Confirm? · 50% refund' : '✕ Cancel'}
+                                      </button>
                                     </div>
                                     <div className="cc-bar"><div className="cc-fill" style={{ width: `${pct}%` }} /></div>
                                     <div className="cc-meta">
