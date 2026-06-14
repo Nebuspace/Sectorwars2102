@@ -4,7 +4,7 @@ import type { Station } from '../../contexts/GameContext';
 import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
-import { InsuranceManager } from '../ships';
+import { InsuranceManager, MaintenanceManager } from '../ships';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -775,6 +775,7 @@ const SpaceDockInterface: React.FC = () => {
   } | null>(null);
 
   const [showInsurance, setShowInsurance] = useState(false);
+  const [showMaintenance, setShowMaintenance] = useState(false);
 
   const fetchShipData = useCallback(async () => {
     const token = getToken();
@@ -2461,6 +2462,20 @@ const SpaceDockInterface: React.FC = () => {
             </div>
 
             <div className="service-card">
+              <div className="service-icon">🛠️</div>
+              <h3>Maintenance</h3>
+              <p>{shipData ? `${shipData.name}'s hull condition & servicing` : 'Hull condition & servicing'}</p>
+              <div className="service-status">
+                Ships degrade over time; low condition saps combat effectiveness. Service to restore it.
+              </div>
+              <div className="service-action">
+                <button className="service-btn" onClick={() => setShowMaintenance(true)} disabled={!shipData}>
+                  Manage Maintenance
+                </button>
+              </div>
+            </div>
+
+            <div className="service-card">
               <div className="service-icon">📦</div>
               <h3>Cargo Hold</h3>
               <p>Current hold loading for {shipData?.name ?? 'your ship'}</p>
@@ -2532,6 +2547,19 @@ const SpaceDockInterface: React.FC = () => {
                   playerCredits={displayCredits}
                   onChanged={() => { refreshPlayerState(); fetchShipData(); }}
                   onClose={() => setShowInsurance(false)}
+                />
+              </div>
+            </div>
+          )}
+
+          {showMaintenance && shipData && (
+            <div className="maintenance-overlay" onClick={() => setShowMaintenance(false)}>
+              <div className="maintenance-overlay-panel" onClick={(e) => e.stopPropagation()}>
+                <MaintenanceManager
+                  shipId={shipData.id}
+                  playerCredits={displayCredits}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                  onClose={() => setShowMaintenance(false)}
                 />
               </div>
             </div>

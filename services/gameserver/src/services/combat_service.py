@@ -2496,9 +2496,12 @@ class CombatService:
         
         # Each drone contributes to attack power
         drone_attack = drones * 2
-        
-        return base_attack + attack_bonus + drone_attack
-    
+
+        # Maintenance condition scales overall combat effectiveness
+        # (ships.md performance bands: Worn -5%, Degraded -20%, Critical -75%).
+        from src.services.maintenance_service import combat_multiplier
+        return (base_attack + attack_bonus + drone_attack) * combat_multiplier(ship)
+
     def _calculate_defense_power(self, ship: Ship, drones: int) -> float:
         """Calculate the defense power of a ship and its drones."""
         if not ship:
@@ -2526,8 +2529,10 @@ class CombatService:
         
         # Each drone contributes to defense
         drone_defense = drones * 1.5
-        
-        return base_defense + shield_bonus + hull_bonus + evasion + drone_defense
+
+        # Maintenance condition scales overall combat effectiveness (ships.md bands).
+        from src.services.maintenance_service import combat_multiplier
+        return (base_defense + shield_bonus + hull_bonus + evasion + drone_defense) * combat_multiplier(ship)
     
     def _handle_ship_destruction(self, player: Player, destroyer: Optional[Player], cause: str) -> None:
         """Handle a player's ship being destroyed."""

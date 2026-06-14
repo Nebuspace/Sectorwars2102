@@ -1,548 +1,122 @@
-/* Maintenance Manager Styles */
+/* Ship Maintenance — canon maintenance desk (ships.md). Dark CRT idiom to match
+   the SpaceDock venue it mounts in. */
+
 .maintenance-manager {
-  background: var(--card-bg, #1a1a2e);
-  border: 1px solid var(--border-color, #333);
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid var(--primary-green, #00ff9d);
   border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  padding: 20px;
+  color: var(--text-primary, #e0e0e0);
+  min-width: 520px;
+  max-width: 720px;
 }
 
-/* Manager Header */
-.maintenance-manager .manager-header {
+.mnt-header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
-  padding: 1rem;
-  background: linear-gradient(135deg, #2a2a3e 0%, #1a1a2e 100%);
-  border-bottom: 1px solid var(--border-color, #333);
+  margin-bottom: 14px;
 }
+.mnt-header h3 { margin: 0; color: var(--primary-green, #00ff9d); font-size: 18px; }
 
-.maintenance-manager .manager-header h3 {
-  margin: 0;
-  color: var(--primary-color, #4a9eff);
-  font-size: 1.25rem;
+.mnt-close {
+  background: transparent;
+  border: 1px solid rgba(0, 255, 157, 0.4);
+  color: var(--primary-green, #00ff9d);
+  border-radius: 4px;
+  width: 30px; height: 30px; cursor: pointer; font-size: 14px;
 }
+.mnt-close:hover { background: rgba(0, 255, 157, 0.12); }
 
-.maintenance-manager .ship-status {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+.mnt-note { color: var(--text-secondary, #9aa); font-size: 13px; line-height: 1.5; margin: 6px 0; }
+.mnt-error { color: #ff7b7b; }
+
+.mnt-condition { margin-bottom: 16px; }
+.mnt-cond-top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.mnt-cond-top strong { font-size: 22px; color: var(--primary-green, #00ff9d); }
+.mnt-tier {
+  font-size: 12px; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid currentColor;
 }
+.mnt-tier.good { color: #00ff9d; }
+.mnt-tier.worn { color: #ffd166; }
+.mnt-tier.degraded { color: #ff9f43; }
+.mnt-tier.critical { color: #ff6b6b; }
 
-.maintenance-manager .ship-name {
-  color: var(--text-primary, #fff);
-  font-weight: 500;
-}
+.mnt-bar-track { height: 10px; background: rgba(255,255,255,0.08); border-radius: 5px; overflow: hidden; }
+.mnt-bar-fill { height: 100%; transition: width 0.3s; }
+.mnt-bar-fill.good { background: #00ff9d; }
+.mnt-bar-fill.worn { background: #ffd166; }
+.mnt-bar-fill.degraded { background: #ff9f43; }
+.mnt-bar-fill.critical { background: #ff6b6b; }
 
-.maintenance-manager .ship-type {
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-}
-
-/* Maintenance Overview */
-.maintenance-manager .maintenance-overview {
+.mnt-effects {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
-  padding: 1rem;
-  background: rgba(255, 255, 255, 0.02);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 14px 0;
+}
+.mnt-effect {
+  display: flex; flex-direction: column;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(0, 255, 157, 0.15);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-secondary, #9aa);
+}
+.mnt-effect strong { font-size: 15px; color: var(--text-primary, #e0e0e0); }
+.mnt-effect em { font-style: normal; font-size: 11px; opacity: 0.6; }
+.mnt-effect.active { border-color: var(--primary-green, #00ff9d); }
+.mnt-effect.active strong { color: var(--primary-green, #00ff9d); }
+.mnt-effect.active em { color: var(--primary-green, #00ff9d); opacity: 0.85; }
+
+.mnt-ok, .mnt-error {
+  padding: 10px 12px; border-radius: 4px; margin: 10px 0; font-size: 14px;
+}
+.mnt-ok {
+  background: rgba(0, 255, 157, 0.12);
+  border: 1px solid var(--primary-green, #00ff9d);
+  color: var(--primary-green, #00ff9d);
+}
+.mnt-error {
+  background: rgba(255, 60, 60, 0.12);
+  border: 1px solid rgba(255, 80, 80, 0.6);
+  color: #ff7b7b;
 }
 
-.maintenance-manager .overview-card {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+.mnt-repair h4 { margin: 14px 0 8px; font-size: 14px; color: var(--text-primary, #e0e0e0); }
+.mnt-tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.mnt-tier-card {
+  background: rgba(0, 255, 157, 0.04);
+  border: 1px solid rgba(0, 255, 157, 0.25);
   border-radius: 6px;
-  padding: 1rem;
-  text-align: center;
-}
-
-.maintenance-manager .overview-card h4 {
-  margin: 0 0 0.75rem 0;
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-  font-weight: normal;
-}
-
-.maintenance-manager .condition-meter {
-  height: 24px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  overflow: hidden;
-  position: relative;
-}
-
-.maintenance-manager .condition-fill {
-  height: 100%;
-  transition: width 0.5s ease;
-}
-
-.maintenance-manager .condition-value {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  color: var(--text-primary, #fff);
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-
-.maintenance-manager .maintenance-count,
-.maintenance-manager .cost-estimate {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.maintenance-manager .count-value,
-.maintenance-manager .cost-value {
-  font-size: 2rem;
-  font-weight: bold;
-  color: var(--primary-color, #4a9eff);
-}
-
-.maintenance-manager .count-label,
-.maintenance-manager .cost-label {
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-}
-
-/* Maintenance Items */
-.maintenance-manager .maintenance-items {
-  padding: 1rem;
-}
-
-.maintenance-manager .items-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
-}
-
-.maintenance-manager .items-header h4 {
-  margin: 0;
-  color: var(--text-primary, #fff);
-  font-size: 1.1rem;
-}
-
-.maintenance-manager .select-critical-btn {
-  padding: 0.5rem 1rem;
-  background: rgba(255, 68, 68, 0.2);
-  border: 1px solid #ff4444;
-  color: #ff4444;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  transition: all 0.3s ease;
-}
-
-.maintenance-manager .select-critical-btn:hover {
-  background: rgba(255, 68, 68, 0.3);
-}
-
-.maintenance-manager .items-list {
-  display: grid;
-  gap: 0.75rem;
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-.maintenance-manager .maintenance-item {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 1rem;
-  padding: 1rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.maintenance-manager .maintenance-item:hover {
-  background: rgba(255, 255, 255, 0.08);
-  transform: translateX(2px);
-}
-
-.maintenance-manager .maintenance-item.selected {
-  background: rgba(74, 158, 255, 0.1);
-  border-color: var(--primary-color, #4a9eff);
-}
-
-.maintenance-manager .item-checkbox {
-  display: flex;
-  align-items: center;
-}
-
-.maintenance-manager .item-checkbox input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
-  cursor: pointer;
-}
-
-.maintenance-manager .item-info {
-  flex: 1;
-}
-
-.maintenance-manager .item-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.5rem;
-}
-
-.maintenance-manager .item-header h5 {
-  margin: 0;
-  color: var(--text-primary, #fff);
-  font-size: 1rem;
-}
-
-.maintenance-manager .item-priority {
-  font-size: 0.75rem;
-  font-weight: bold;
-  padding: 0.25rem 0.5rem;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.maintenance-manager .item-description {
-  margin: 0 0 0.5rem 0;
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-  line-height: 1.4;
-}
-
-.maintenance-manager .item-stats {
-  display: flex;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-.maintenance-manager .stat-item {
-  display: flex;
-  gap: 0.25rem;
-  font-size: 0.875rem;
-}
-
-.maintenance-manager .stat-label {
-  color: var(--text-secondary, #999);
-}
-
-.maintenance-manager .stat-value {
-  color: var(--text-primary, #fff);
-  font-weight: 500;
-}
-
-.maintenance-manager .item-condition {
-  display: flex;
-  align-items: center;
-}
-
-.maintenance-manager .condition-bar {
-  width: 40px;
-  height: 80px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  overflow: hidden;
-  position: relative;
-  display: flex;
-  align-items: flex-end;
-}
-
-.maintenance-manager .condition-bar-fill {
-  width: 100%;
-  transition: height 0.3s ease;
-}
-
-/* Repair Summary */
-.maintenance-manager .repair-summary {
-  margin: 1rem;
-  padding: 1rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-}
-
-.maintenance-manager .repair-summary h4 {
-  margin: 0 0 1rem 0;
-  color: var(--text-primary, #fff);
-  font-size: 1rem;
-}
-
-.maintenance-manager .summary-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.maintenance-manager .summary-item {
-  text-align: center;
-}
-
-.maintenance-manager .summary-label {
-  display: block;
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-  margin-bottom: 0.25rem;
-}
-
-.maintenance-manager .summary-value {
-  color: var(--primary-color, #4a9eff);
-  font-size: 1.25rem;
-  font-weight: bold;
-}
-
-.maintenance-manager .repair-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.maintenance-manager .repair-btn {
-  flex: 1;
-  padding: 0.75rem;
-  background: var(--success-color, #44ff44);
-  color: #000;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  font-weight: 500;
-  transition: all 0.3s ease;
-}
-
-.maintenance-manager .repair-btn:hover:not(:disabled) {
-  background: var(--success-hover, #33dd33);
-}
-
-.maintenance-manager .repair-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.maintenance-manager .clear-btn {
-  padding: 0.75rem 1rem;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: var(--text-primary, #fff);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  transition: all 0.3s ease;
-}
-
-.maintenance-manager .clear-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
-}
-
-.maintenance-manager .insufficient-funds {
-  margin-top: 0.75rem;
-  padding: 0.5rem;
-  background: rgba(255, 68, 68, 0.1);
-  border: 1px solid #ff4444;
-  border-radius: 4px;
-  color: #ff4444;
-  font-size: 0.875rem;
-  text-align: center;
-}
-
-/* Maintenance Options */
-.maintenance-manager .maintenance-options {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0 1rem 1rem;
-}
-
-.maintenance-manager .schedule-btn,
-.maintenance-manager .emergency-btn {
-  flex: 1;
-  padding: 0.75rem;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  transition: all 0.3s ease;
-}
-
-.maintenance-manager .schedule-btn {
-  background: var(--primary-color, #4a9eff);
-  color: white;
-}
-
-.maintenance-manager .schedule-btn:hover {
-  background: var(--primary-hover, #357abd);
-}
-
-.maintenance-manager .emergency-btn {
-  background: rgba(255, 68, 68, 0.2);
-  border: 1px solid #ff4444;
-  color: #ff4444;
-}
-
-.maintenance-manager .emergency-btn:hover {
-  background: rgba(255, 68, 68, 0.3);
-}
-
-/* Maintenance Scheduler */
-.maintenance-manager .maintenance-scheduler {
-  margin: 0 1rem 1rem;
-  padding: 1rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-}
-
-.maintenance-manager .maintenance-scheduler h4 {
-  margin: 0 0 0.5rem 0;
-  color: var(--text-primary, #fff);
-  font-size: 1rem;
-}
-
-.maintenance-manager .maintenance-scheduler p {
-  margin: 0 0 1rem 0;
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-}
-
-.maintenance-manager .scheduler-options label {
-  display: block;
-  margin-bottom: 0.5rem;
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-}
-
-.maintenance-manager .interval-selector {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.maintenance-manager .interval-selector input[type="range"] {
-  flex: 1;
-  height: 8px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  outline: none;
-  -webkit-appearance: none;
-}
-
-.maintenance-manager .interval-selector input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 20px;
-  height: 20px;
-  background: var(--primary-color, #4a9eff);
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.maintenance-manager .interval-value {
-  color: var(--primary-color, #4a9eff);
-  font-weight: 500;
-  min-width: 60px;
-}
-
-.maintenance-manager .schedule-cost {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 1rem;
-  padding: 0.75rem;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
-}
-
-.maintenance-manager .schedule-cost .cost-label {
-  color: var(--text-secondary, #999);
-}
-
-.maintenance-manager .schedule-cost .cost-value {
-  color: var(--primary-color, #4a9eff);
-  font-weight: bold;
-}
-
-.maintenance-manager .schedule-benefits {
-  margin-bottom: 1rem;
-}
-
-.maintenance-manager .schedule-benefits h5 {
-  margin: 0 0 0.5rem 0;
-  color: var(--text-primary, #fff);
-  font-size: 0.875rem;
-}
-
-.maintenance-manager .schedule-benefits ul {
-  margin: 0;
-  padding-left: 1.5rem;
-  color: var(--text-secondary, #999);
-  font-size: 0.875rem;
-}
-
-.maintenance-manager .schedule-benefits li {
-  margin-bottom: 0.25rem;
-}
-
-.maintenance-manager .confirm-schedule-btn {
-  width: 100%;
-  padding: 0.75rem;
-  background: var(--primary-color, #4a9eff);
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  font-weight: 500;
-  transition: all 0.3s ease;
-}
-
-.maintenance-manager .confirm-schedule-btn:hover:not(:disabled) {
-  background: var(--primary-hover, #357abd);
-}
-
-.maintenance-manager .confirm-schedule-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Scrollbar Styling */
-.maintenance-manager .items-list::-webkit-scrollbar {
-  width: 8px;
-}
-
-.maintenance-manager .items-list::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
-}
-
-.maintenance-manager .items-list::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 4px;
-}
-
-.maintenance-manager .items-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
-
-/* Mobile Responsiveness */
-@media (max-width: 768px) {
-  .maintenance-manager .manager-header {
-    flex-direction: column;
-    gap: 0.5rem;
-    align-items: flex-start;
-  }
-  
-  .maintenance-manager .maintenance-overview {
-    grid-template-columns: 1fr;
-  }
-  
-  .maintenance-manager .summary-stats {
-    grid-template-columns: 1fr;
-  }
-  
-  .maintenance-manager .repair-actions {
-    flex-direction: column;
-  }
-  
-  .maintenance-manager .maintenance-options {
-    flex-direction: column;
-  }
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 8px; text-align: center;
+}
+.mnt-tier-card.unavailable { opacity: 0.55; }
+.mnt-tier-name { font-weight: bold; font-size: 15px; }
+.mnt-tier-note { font-size: 11px; color: var(--text-secondary, #9aa); min-height: 28px; }
+.mnt-tier-cost { font-size: 15px; color: var(--primary-green, #00ff9d); font-weight: bold; }
+.mnt-buy {
+  margin-top: auto;
+  background: var(--primary-green, #00ff9d);
+  color: #04130c; border: none; border-radius: 4px;
+  padding: 9px 8px; font-weight: bold; cursor: pointer; font-size: 13px;
+}
+.mnt-buy:hover:not(:disabled) { filter: brightness(1.1); }
+.mnt-buy:disabled { opacity: 0.45; cursor: not-allowed; }
+.mnt-unavail { margin-top: auto; font-size: 12px; color: var(--text-secondary, #9aa); }
+
+.maintenance-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000; padding: 20px;
+}
+.maintenance-overlay-panel { max-height: 90vh; overflow-y: auto; }
+
+@media (max-width: 640px) {
+  .maintenance-manager { min-width: 0; width: 100%; }
+  .mnt-tiers, .mnt-effects { grid-template-columns: 1fr; }
 }

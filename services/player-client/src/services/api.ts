@@ -416,14 +416,15 @@ export const shipAPI = {
       body: JSON.stringify(updates)
     }),
 
-  // These may need different endpoints
+  // Condition + performance band + repair quotes (ships.md maintenance).
   getMaintenanceStatus: (shipId: string) =>
     apiRequest(`/api/v1/ships/${shipId}/maintenance`),
 
-  scheduleMaintenance: (shipId: string, components: any[]) =>
-    apiRequest(`/api/v1/ships/${shipId}/maintenance`, {
+  // Service the hull back to 100% condition at a shipyard. tier: basic|emergency|premium.
+  repairMaintenance: (shipId: string, tier: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/maintenance/repair`, {
       method: 'POST',
-      body: JSON.stringify({ components })
+      body: JSON.stringify({ tier })
     }),
 
   getInsurance: (shipId: string) =>

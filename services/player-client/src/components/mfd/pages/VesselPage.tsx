@@ -49,7 +49,9 @@ const VesselPage: React.FC = () => {
 
   const combat = asRecord(currentShip.combat as unknown);
   const maintenance = asRecord(currentShip.maintenance as unknown);
-  const conditionRating = num(maintenance?.['current_rating']);
+  // The server stores the maintenance rating as `condition` (0-100); keep
+  // `current_rating` as a fallback for older payloads.
+  const conditionRating = num(maintenance?.['condition']) ?? num(maintenance?.['current_rating']);
   const failureStatus = maintenance?.['failure_status'];
   const failureText =
     typeof failureStatus === 'string' && failureStatus !== '' && failureStatus !== 'NONE'

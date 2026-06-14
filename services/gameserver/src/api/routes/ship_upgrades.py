@@ -19,6 +19,7 @@ from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType, Upgra
 from src.models.station import Station, StationType
 from src.services.ship_service import ShipService
 from src.services.ship_upgrade_service import ShipUpgradeService
+from src.services import maintenance_service
 
 logger = logging.getLogger(__name__)
 
@@ -545,3 +546,156 @@ async def uninstall_ship_equipment(
         )
     db.commit()
     return result
+
+
+# --- Ship maintenance (ships.md; decay + performance bands + shipyard repair) ---
+
+class MaintenanceRepairRequest(BaseModel):
+    tier: str = Field(..., description="Repair tier: basic, emergency, or premium")
+
+
+# Canon repair cost = tier% of ship value per +10% rating restored (ships.md:84-87).
+MAINTENANCE_REPAIR_TIER_PCT = {"basic": 0.05, "emergency": 0.10, "premium": 0.15}
+
+
+def _station_offers_repair(station: Station) -> bool:
+    services = station.services or {}
+    return bool(station.is_spacedock) or bool(services.get("ship_repair")) or bool(services.get("ship_maintenance"))
+
+
+def _maintenance_status(ship: Ship, condition: float, station: Station = None) -> dict:
+    band = maintenance_service.maintenance_band(condition)
+    value = ship.current_value or 0
+    # premium needs a Class-I / Military yard (approximated by a SpaceDock here)
+    premium_here = bool(station and station.is_spacedock)
+    options = []
+    for tier, pct in MAINTENANCE_REPAIR_TIER_PCT.items():
+        cost = round((max(0.0, 100.0 - condition) / 10.0) * pct * value)
+        options.append({
+            "tier": tier,
+            "cost_pct_per_10": pct,
+            "cost_to_full": cost,
+            "available": True if tier != "premium" else premium_here,
+        })
+    return {
+        "ship_id": str(ship.id),
+        "ship_name": ship.name,
+        "condition": round(condition, 1),
+        "decay_pct_per_day": maintenance_service.DECAY_PCT_PER_DAY.get(ship.type, 0.0),
+        "band": {
+            "tier": band["tier"],
+            "speed_pct": round(band["speed"] * 100),
+            "combat_pct": round(band["combat"] * 100),
+            "fuel_pct": round(band["fuel"] * 100),
+            "failure_pct": round(band["failure"] * 100),
+            "failure_tier": band["failure_tier"],
+        },
+        # Honesty: v1 applies only the combat-effectiveness band; the speed/fuel
+        # modifiers and the per-jump failure roll are canon but not yet wired.
+        "applied_effects": ["combat"],
+        "repair_options": options,
+    }
+
+
+@router.get("/{ship_id}/maintenance")
+async def get_ship_maintenance(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Current maintenance condition + performance band + repair quotes for one
+    of the player's ships. Decay is computed live (pure) for display."""
+    ship = _resolve_owned_ship(ship_id, player, db)
+    condition = maintenance_service.effective_condition(ship)
+    station = None
+    if player.is_docked and player.current_port_id:
+        station = db.query(Station).filter(Station.id == player.current_port_id).first()
+    return _maintenance_status(ship, condition, station)
+
+
+@router.post("/{ship_id}/maintenance/repair")
+async def repair_ship_maintenance(
+    ship_id: str,
+    request: MaintenanceRepairRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Restore a ship's maintenance condition to 100% at a shipyard. Cost is the
+    canon tier rate (basic 5% / emergency 10% / premium 15% of ship value per
+    +10% restored). Premium needs a SpaceDock (Class-I/Military). Instant in v1
+    (repair timers are a documented follow-up)."""
+    tier = request.tier.strip().lower()
+    if tier not in MAINTENANCE_REPAIR_TIER_PCT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid repair tier '{request.tier}'. Valid: basic, emergency, premium",
+        )
+
+    locked_player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    ship = _resolve_owned_ship(ship_id, locked_player, db, lock=True)
+    if ship.is_destroyed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{ship.name} is destroyed")
+    if ship.type == ShipType.ESCAPE_POD:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Escape Pods need no maintenance")
+
+    if not locked_player.is_docked or not locked_player.current_port_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be docked at a shipyard to service your ship",
+        )
+    station = db.query(Station).filter(Station.id == locked_player.current_port_id).first()
+    if not station or not _station_offers_repair(station):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This station does not offer ship maintenance",
+        )
+    if tier == "premium" and not station.is_spacedock:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Premium servicing is only available at a SpaceDock (Class-I/Military) yard",
+        )
+
+    # Persist decay to now, then price the restore from the current condition.
+    condition = maintenance_service.apply_maintenance_decay(ship)
+    if condition >= 99.95:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ship.name} is already in pristine condition",
+        )
+
+    value = ship.current_value or 0
+    pct = MAINTENANCE_REPAIR_TIER_PCT[tier]
+    cost = round((max(0.0, 100.0 - condition) / 10.0) * pct * value)
+    # Never restore for free: a near-pristine or zero-value hull whose cost rounds
+    # to <=0 would otherwise get a free full-condition reset.
+    if cost <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ship.name} is in good enough condition that servicing isn't worthwhile",
+        )
+    if locked_player.credits < cost:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Insufficient credits: servicing costs {cost:,} cr, you have {locked_player.credits:,}",
+        )
+
+    locked_player.credits -= cost
+    from datetime import datetime, timezone
+    m = dict(ship.maintenance or {})
+    m["condition"] = 100.0
+    m["last_maintenance"] = datetime.now(timezone.utc).isoformat()
+    m["repair_needed"] = False
+    m["failure_status"] = "NONE"
+    ship.maintenance = m
+    flag_modified(ship, "maintenance")
+    db.commit()
+    db.refresh(ship)
+    db.refresh(locked_player)
+
+    status_payload = _maintenance_status(ship, 100.0, station)
+    return {
+        "message": f"{ship.name} serviced to pristine condition ({cost:,} cr)",
+        "cost": cost,
+        "credits_remaining": locked_player.credits,
+        **status_payload,
+    }
