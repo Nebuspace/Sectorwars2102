@@ -291,6 +291,8 @@ interface GameContextType {
   getCitadelInfo: (planetId: string) => Promise<any>;
   upgradeCitadel: (planetId: string) => Promise<any>;
   cancelCitadelUpgrade: (planetId: string) => Promise<any>;
+  getDefenseBuildings: (planetId: string) => Promise<any>;
+  buildDefenseBuilding: (planetId: string, buildingType: string) => Promise<any>;
   depositToSafe: (planetId: string, amount: number) => Promise<any>;
   withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
   // Planetary defenses — shield generator status/upgrade
@@ -1124,6 +1126,31 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Defense buildings a planet's citadel level unlocks — GET
+  // /planets/{id}/buildings/available (CitadelService.get_available_buildings).
+  const getDefenseBuildings = async (planetId: string) => {
+    try {
+      const response = await api.get(`/api/v1/planets/${planetId}/buildings/available`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting defense buildings:', error);
+      return null;
+    }
+  };
+
+  // Construct a defense building — POST /planets/{id}/buildings/construct.
+  const buildDefenseBuilding = async (planetId: string, buildingType: string) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/buildings/construct`, { buildingType });
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error constructing defense building:', error);
+      throw error;
+    }
+  };
+
   // Deposit credits into the citadel safe — POST /planets/{id}/citadel/deposit
   // {amount}. Server gating (CitadelService.deposit_to_safe): planet must be
   // owned, citadel_level >= 1, player must hold the credits, and the safe
@@ -1587,6 +1614,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     getCitadelInfo,
     upgradeCitadel,
     cancelCitadelUpgrade,
+    getDefenseBuildings,
+    buildDefenseBuilding,
     depositToSafe,
     withdrawFromSafe,
     getPlanetDefenseInfo,

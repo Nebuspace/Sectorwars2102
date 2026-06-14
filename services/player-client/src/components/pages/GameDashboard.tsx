@@ -463,6 +463,8 @@ const GameDashboard: React.FC = () => {
     getCitadelInfo,
     upgradeCitadel,
     cancelCitadelUpgrade,
+    getDefenseBuildings,
+    buildDefenseBuilding,
     depositToSafe,
     withdrawFromSafe,
     getPlanetDefenseInfo,
@@ -823,6 +825,8 @@ const GameDashboard: React.FC = () => {
   // opsRefresh bumps re-fetch both after upgrades change them server-side.
   const [citadelInfo, setCitadelInfo] = useState<any>(null);
   const [defenseInfo, setDefenseInfo] = useState<any>(null);
+  const [defenseBuildings, setDefenseBuildings] = useState<any[]>([]);
+  const [buildingBusy, setBuildingBusy] = useState<string | null>(null);
   const [opsRefresh, setOpsRefresh] = useState(0);
 
   useEffect(() => {
@@ -830,6 +834,7 @@ const GameDashboard: React.FC = () => {
     if (!landedPlanet) {
       setCitadelInfo(null);
       setDefenseInfo(null);
+      setDefenseBuildings([]);
       return;
     }
     getPlanetDefenseInfo(landedPlanet.id)
@@ -839,8 +844,12 @@ const GameDashboard: React.FC = () => {
       getCitadelInfo(landedPlanet.id)
         .then((info: any) => { if (!cancelled) setCitadelInfo(info); })
         .catch(() => { if (!cancelled) setCitadelInfo(null); });
+      getDefenseBuildings(landedPlanet.id)
+        .then((res: any) => { if (!cancelled) setDefenseBuildings(Array.isArray(res?.buildings) ? res.buildings : []); })
+        .catch(() => { if (!cancelled) setDefenseBuildings([]); });
     } else {
       setCitadelInfo(null);
+      setDefenseBuildings([]);
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -957,6 +966,20 @@ const GameDashboard: React.FC = () => {
     } finally {
       setCancelArmed(false);
       setCancelBusy(false);
+    }
+  };
+
+  const handleBuildBuilding = async (buildingType: string) => {
+    if (!landedPlanet || buildingBusy) return;
+    setBuildingBusy(buildingType);
+    try {
+      const result = await buildDefenseBuilding(landedPlanet.id, buildingType);
+      setOpsNotice({ type: 'success', message: result?.message || 'Defense building constructed.' });
+      setOpsRefresh(n => n + 1);
+    } catch (error: any) {
+      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Construction failed' });
+    } finally {
+      setBuildingBusy(null);
     }
   };
 
@@ -2205,6 +2228,9 @@ const GameDashboard: React.FC = () => {
                                   onClick={() => setConfirmUpgrade('shields')}
                                 >
                                   🛡️ Upgrade Shields
+                                  {shieldGen?.nextUpgrade && (
+                                    <span className="btn-sublabel">→ L{shieldGen.nextUpgrade.level} · {Number(shieldGen.nextUpgrade.cost).toLocaleString()} cr</span>
+                                  )}
                                 </button>
                                 {/* No "Deploy Drones" control: the only candidate endpoint
                                     (PUT /planets/{id}/defenses → update_defenses) overwrites
@@ -2273,6 +2299,33 @@ const GameDashboard: React.FC = () => {
                                       ✕ Cancel
                                     </button>
                                   </div>
+                                </div>
+                              )}
+                              {isLandedPlanetMine && defenseBuildings.length > 0 && (
+                                <div className="defense-buildings">
+                                  <div className="db-head">🏗️ Defense Buildings</div>
+                                  {defenseBuildings.map((b: any) => {
+                                    const affordable = (playerState?.credits ?? 0) >= Number(b.cost || 0);
+                                    return (
+                                      <div className="db-row" key={b.type}>
+                                        <span className="db-name" title={b.effects}>{b.name}</span>
+                                        <span className="db-count">{b.current_count}/{b.max_count}</span>
+                                        <span className="db-cost">{Number(b.cost).toLocaleString()} cr</span>
+                                        {b.can_build ? (
+                                          <button
+                                            className="db-build"
+                                            disabled={buildingBusy === b.type || !affordable}
+                                            title={affordable ? `Build ${b.name}` : 'Insufficient credits'}
+                                            onClick={() => handleBuildBuilding(b.type)}
+                                          >
+                                            {buildingBusy === b.type ? '…' : 'Build'}
+                                          </button>
+                                        ) : (
+                                          <span className="db-max">Max</span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               )}
                             </div>
@@ -2397,6 +2450,9 @@ const GameDashboard: React.FC = () => {
                                     <span className="credits-text">credits</span>
                                   </div>
                                   <span className="safe-cap">capacity {safeCapacity.toLocaleString()} credits</span>
+                                  <div className="vault-bar" title={`${safeCredits.toLocaleString()} / ${safeCapacity.toLocaleString()} credits`}>
+                                    <div className="vault-bar-fill" style={{ width: `${safeCapacity > 0 ? Math.min(100, (safeCredits / safeCapacity) * 100) : 0}%` }} />
+                                  </div>
                                   <div className="safe-header-actions">
                                     <button
                                       className="safe-btn deposit"
