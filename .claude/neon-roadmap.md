@@ -12,11 +12,25 @@ Living-NPC + viewport session. This file is the living tracker — update at eve
 | 2 | **Users & Teams admin work** | real users CRUD, team admin actions | ✅ DONE — run 5 (users rewire) + run 6 (teams honest-disable; implement-for-real still open, see backlog) |
 | 3 | **Honest lists** | station hardcodes → real fields, pagination, sector locations | ✅ DONE — run 6 section A (`5147620`, `d6ee03e`) |
 | 4 | **Security console** | P0.8/P0.9/P3.4 + remaining auth gaps: real security overview page | ⬜ NOT RUN |
-| 5 | **Fleet & drone command** | surface working fleet/drone admin | 🚧 PARTIAL — FleetHealthReport rescued (run 6); drone command + fleet admin surface still unbuilt |
-| 6 | **Governor retheme + presentation pass** | P4.1–4.6 display-sensibility batch | ⬜ NOT RUN |
+| 5 | **Fleet & drone command** | surface working fleet/drone admin | 🚧 PARTIAL — FleetHealthReport rescued (run 6); **Fleet Operations tab added (2026-06-13, `2b7d455`)** surfacing `/admin/fleets/*` (live fleets/stats/battles + guarded intervene), proven live; **drone command UI still unbuilt** (`/admin/drones/*` endpoints confirmed live, no UI yet) |
+| 6 | **Governor retheme + presentation pass** | P4.1–4.6 display-sensibility batch | 🚧 PARTIAL — **P4.1 Governor retheme DONE (2026-06-13, `2b7d455`)**: white light-island → dark design tokens, proven at 1440×900 + 1920×1080; also honest-disabled the unwired Diplomacy + Culture write controls. **P4.2–4.6 (Event/Players/Combat/Colonization presentation) still open** |
 | 7 | **Dead code purge + typecheck gate** | P5.* purge + tsc gate in CI | 🚧 PARTIAL — purge done (runs 6 + 12, ~8,500 lines); **tsc gate not wired** (vite builds don't typecheck; ~78 pre-existing tsc errors ship silently) |
 | 8 | **Economy levers** (own run) | P2.2 admin economy control panel | ⬜ NOT RUN — needs Max design decisions first |
 | 9 | **Scopes** (own run) | P2.1 AdminScopeGrant per ADR-0058 | ⬜ NOT RUN — needs Max decisions first |
+
+### Admin-UI NEON run — 2026-06-13 (frontend-only; parallel to the player/gameserver instance)
+**Shipped + PROVEN live (`b50992d`, `cef2e82`, `2b7d455` on `feat/living-npc-system`):**
+- **Governor retheme** (P4.1) — dark-token retheme, both viewports; honest-disabled Diplomacy (no endpoint) + Culture (owner-scoped, no region owners). Filed `regional-governor-admin-write-scope` → sw2102-docs DECISIONS.
+- **Fleet Operations tab** (#5) — surfaced `/admin/fleets/*` (live, honest empty states).
+- **Orphan-API kills** — SectorDetail PATCH→PUT (proven, DB delta + old PATCH 405); StationsManager delete `/admin/stations`→`/admin/ports` (deployed, endpoint-confirmed); RoleManagement create/save honest-disabled (no dead writes).
+
+**Parked (this run's parking lot):**
+- **StationsManager live-delete proof deferred** — path fix deployed + `DELETE /admin/ports` confirmed 200, but deleting a real station is destructive; prove via a created/disposable station next time.
+- **RoleManagement mount GETs** still 404 (`/admin/roles`, `/admin/permissions`) — graceful, cosmetic console noise; drop the GETs or gate behind a flag.
+- **Fleet "Active Fleets" label** renders all fleets (no status filter) — relabel or pass a filter (cosmetic; harmless while 0 fleets).
+- **Drone command UI** (#5 remainder) — `/admin/drones/*` live, no UI.
+- **P4.2–4.6** presentation pass (Event/Players/Combat/Colonization) — not run.
+- **P4.8 deep-link bounce to /dashboard** — reproduced live (direct `/admin/<route>` load bounces); auth-init race, not fixed this run.
 
 ## Accumulated backlog (parking lots, runs 6–12) — candidates for future runs
 
