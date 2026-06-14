@@ -295,6 +295,8 @@ interface GameContextType {
   buildDefenseBuilding: (planetId: string, buildingType: string) => Promise<any>;
   depositToSafe: (planetId: string, amount: number) => Promise<any>;
   withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
+  depositCommodityToSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
+  withdrawCommodityFromSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
   // Planetary defenses — shield generator status/upgrade
   getPlanetDefenseInfo: (planetId: string) => Promise<any>;
   upgradeShields: (planetId: string) => Promise<any>;
@@ -1186,6 +1188,32 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Move a commodity planet-stockpile -> protected citadel safe.
+  // POST /planets/{id}/citadel/deposit-commodity {commodity, amount}.
+  const depositCommodityToSafe = async (planetId: string, commodity: string, amount: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/deposit-commodity`, { commodity, amount });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error depositing commodity to citadel safe:', error);
+      throw error;
+    }
+  };
+
+  // Move a commodity safe -> planet stockpile.
+  // POST /planets/{id}/citadel/withdraw-commodity {commodity, amount}.
+  const withdrawCommodityFromSafe = async (planetId: string, commodity: string, amount: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/withdraw-commodity`, { commodity, amount });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error withdrawing commodity from citadel safe:', error);
+      throw error;
+    }
+  };
+
   // Defense telemetry — GET /planets/{id}/defenses (no ownership required;
   // useful for scouting). Returns {shieldGenerator: {level, maxLevel, name,
   // strength, currentShields, regenPerHour, nextUpgrade: {level, name,
@@ -1618,6 +1646,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     buildDefenseBuilding,
     depositToSafe,
     withdrawFromSafe,
+    depositCommodityToSafe,
+    withdrawCommodityFromSafe,
     getPlanetDefenseInfo,
     upgradeShields,
 

@@ -103,6 +103,17 @@ CITADEL_LEVELS = {
     },
 }
 
+# Credit-equivalent valuation for commodities stored in the citadel safe.
+# Canon (citadels.md "Safe") caps the safe by a single cr-equivalent total; the
+# safe_storage figures above are that cap. These per-unit values (the economy's
+# base trade prices — see ADR-0082) convert stored commodities into that
+# cr-equivalent so credits and goods share one capacity pool.
+COMMODITY_CREDIT_VALUE = {
+    "fuel_ore": 15,
+    "organics": 18,
+    "equipment": 35,
+}
+
 
 class CitadelService:
     def __init__(self, db: Session):
@@ -135,6 +146,10 @@ class CitadelService:
             "max_population": current_info["max_population"],
             "safe_storage": current_info["safe_storage"],
             "safe_credits": getattr(planet, "citadel_safe_credits", 0) or 0,
+            # Commodity safe holdings + the shared cr-equivalent accounting.
+            "safe_commodities": self._get_safe_commodities(planet),
+            "safe_total_value": self._safe_total_value(planet),
+            "commodity_values": COMMODITY_CREDIT_VALUE,
             "drone_capacity": current_info["drone_capacity"],
             "is_upgrading": getattr(planet, "citadel_upgrading", False) or False,
         }
@@ -513,6 +528,153 @@ class CitadelService:
             "credits_withdrawn": amount,
             "safe_balance": safe_current - amount,
             "player_credits": player.credits,
+        }
+
+    # --- Commodity safe storage -------------------------------------------------
+
+    def _get_safe_commodities(self, planet: Planet) -> Dict[str, int]:
+        """Extract the safe's commodity holdings from planet.active_events JSONB."""
+        events = planet.active_events
+        if isinstance(events, dict):
+            sc = events.get("safe_commodities", {})
+            if isinstance(sc, dict):
+                return {k: int(v) for k, v in sc.items()}
+        return {}
+
+    def _set_safe_commodities(self, planet: Planet, commodities: Dict[str, int]) -> None:
+        """Persist the safe's commodity holdings into planet.active_events JSONB."""
+        events = planet.active_events
+        if not isinstance(events, dict):
+            events = {"legacy_events": events} if events else {}
+        events = dict(events)
+        # Drop zero entries to keep the JSONB tidy.
+        events["safe_commodities"] = {k: v for k, v in commodities.items() if v > 0}
+        planet.active_events = events
+
+    def _safe_total_value(self, planet: Planet) -> int:
+        """Credit-equivalent value of everything in the safe (credits + commodities)."""
+        total = int(getattr(planet, "citadel_safe_credits", 0) or 0)
+        for commodity, qty in self._get_safe_commodities(planet).items():
+            total += int(qty) * COMMODITY_CREDIT_VALUE.get(commodity, 0)
+        return total
+
+    def deposit_commodity_to_safe(
+        self, planet_id: uuid.UUID, player_id: uuid.UUID, commodity: str, amount: int
+    ) -> Dict[str, Any]:
+        """Move a commodity from the planet stockpile into the protected citadel safe.
+
+        Goods in the safe are protected from raiders (citadels.md "Safe"). The
+        safe is bounded by a single cr-equivalent capacity shared with stored
+        credits; each commodity unit counts toward it at COMMODITY_CREDIT_VALUE.
+        """
+        if commodity not in COMMODITY_CREDIT_VALUE:
+            valid = ", ".join(COMMODITY_CREDIT_VALUE.keys())
+            return {"success": False, "message": f"Unknown commodity '{commodity}'. Valid: {valid}"}
+        if amount <= 0:
+            return {"success": False, "message": "Deposit amount must be positive"}
+
+        planet = (
+            self.db.query(Planet)
+            .filter(Planet.id == planet_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not planet:
+            return {"success": False, "message": "Planet not found"}
+        if planet.owner_id != player_id:
+            return {"success": False, "message": "You do not own this planet"}
+        if (getattr(planet, "citadel_level", 0) or 0) < 1:
+            return {"success": False, "message": "Planet does not have a citadel"}
+
+        on_hand = int(getattr(planet, commodity, 0) or 0)
+        if on_hand < amount:
+            return {
+                "success": False,
+                "message": f"Not enough {commodity.replace('_', ' ')} on the planet. Have {on_hand:,}, need {amount:,}.",
+            }
+
+        capacity = CITADEL_LEVELS[planet.citadel_level]["safe_storage"]
+        unit_value = COMMODITY_CREDIT_VALUE[commodity]
+        added_value = amount * unit_value
+        if self._safe_total_value(planet) + added_value > capacity:
+            room = max(0, capacity - self._safe_total_value(planet))
+            return {
+                "success": False,
+                "message": (
+                    f"Safe capacity is {capacity:,} cr-equivalent. "
+                    f"Room for {room // unit_value:,} more {commodity.replace('_', ' ')}."
+                ),
+            }
+
+        commodities = self._get_safe_commodities(planet)
+        commodities[commodity] = commodities.get(commodity, 0) + amount
+        setattr(planet, commodity, on_hand - amount)
+        self._set_safe_commodities(planet, commodities)
+        self.db.flush()
+
+        logger.info(
+            f"Player {player_id} deposited {amount:,} {commodity} into citadel safe on planet {planet_id}"
+        )
+        return {
+            "success": True,
+            "message": f"Stored {amount:,} {commodity.replace('_', ' ')} in the citadel safe.",
+            "commodity": commodity,
+            "amount_deposited": amount,
+            "safe_commodities": commodities,
+            "planet_stockpile": on_hand - amount,
+            "safe_total_value": self._safe_total_value(planet),
+            "safe_capacity": capacity,
+        }
+
+    def withdraw_commodity_from_safe(
+        self, planet_id: uuid.UUID, player_id: uuid.UUID, commodity: str, amount: int
+    ) -> Dict[str, Any]:
+        """Move a commodity from the citadel safe back onto the planet stockpile."""
+        if commodity not in COMMODITY_CREDIT_VALUE:
+            valid = ", ".join(COMMODITY_CREDIT_VALUE.keys())
+            return {"success": False, "message": f"Unknown commodity '{commodity}'. Valid: {valid}"}
+        if amount <= 0:
+            return {"success": False, "message": "Withdrawal amount must be positive"}
+
+        planet = (
+            self.db.query(Planet)
+            .filter(Planet.id == planet_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not planet:
+            return {"success": False, "message": "Planet not found"}
+        if planet.owner_id != player_id:
+            return {"success": False, "message": "You do not own this planet"}
+        if (getattr(planet, "citadel_level", 0) or 0) < 1:
+            return {"success": False, "message": "Planet does not have a citadel"}
+
+        commodities = self._get_safe_commodities(planet)
+        in_safe = int(commodities.get(commodity, 0))
+        if in_safe < amount:
+            return {
+                "success": False,
+                "message": f"Not enough {commodity.replace('_', ' ')} in the safe. Have {in_safe:,}, requested {amount:,}.",
+            }
+
+        commodities[commodity] = in_safe - amount
+        setattr(planet, commodity, int(getattr(planet, commodity, 0) or 0) + amount)
+        self._set_safe_commodities(planet, commodities)
+        self.db.flush()
+
+        logger.info(
+            f"Player {player_id} withdrew {amount:,} {commodity} from citadel safe on planet {planet_id}"
+        )
+        return {
+            "success": True,
+            "message": f"Withdrew {amount:,} {commodity.replace('_', ' ')} from the citadel safe.",
+            "commodity": commodity,
+            "amount_withdrawn": amount,
+            "safe_commodities": {k: v for k, v in commodities.items() if v > 0},
+            "planet_stockpile": int(getattr(planet, commodity, 0) or 0),
+            "safe_total_value": self._safe_total_value(planet),
         }
 
     def _get_defense_buildings(self, planet: Planet) -> Dict[str, int]:

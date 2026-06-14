@@ -2815,6 +2815,34 @@
   white-space: nowrap;
 }
 
+/* Citadel safe — protected commodity storage rows */
+.safe-commodities {
+  width: 100%;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(59, 130, 246, 0.18);
+}
+.safe-commodities .sc-head {
+  font-size: 0.66rem;
+  color: rgba(125, 211, 252, 0.9);
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+.safe-commodities .sc-hint { color: var(--text-secondary, #9aa); font-size: 0.58rem; }
+.safe-commodities .sc-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.68rem;
+}
+.safe-commodities .sc-name { color: var(--text-primary, #e0e0e0); }
+.safe-commodities .sc-qty { color: #7dd3fc; font-variant-numeric: tabular-nums; text-align: right; }
+.safe-commodities .sc-qty em { color: var(--text-secondary, #9aa); font-style: normal; }
+.safe-commodities .sc-btn { padding: 2px 8px; font-size: 0.62rem; }
+
 /* Safe Grid - Expanded for all commodities */
 .planet-section.storage {
   border-color: rgba(59, 130, 246, 0.3);

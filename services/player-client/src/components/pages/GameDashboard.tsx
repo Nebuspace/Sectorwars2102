@@ -1019,6 +1019,8 @@ const GameDashboard: React.FC = () => {
 
   const safeCredits: number = Number(citadelInfo?.safe_credits ?? 0);
   const safeCapacity: number = Number(citadelInfo?.safe_storage ?? 0);
+  // Total cr-equivalent value in the safe (credits + commodities) for the cap bar.
+  const safeTotalValue: number = Number(citadelInfo?.safe_total_value ?? safeCredits);
   // Deposit is capped by both wallet and remaining vault headroom
   // (CitadelService.deposit_to_safe rejects beyond-capacity deposits)
   const safeMax = safeAction === 'deposit'
@@ -1055,6 +1057,38 @@ const GameDashboard: React.FC = () => {
       });
     } finally {
       setSafeBusy(false);
+    }
+  };
+
+  // --- Commodity safe storage (move planet stockpile <-> protected safe) ---
+  const [commodityBusy, setCommodityBusy] = useState<string | null>(null);
+  // Planet stockpile keys (fuel/organics/equipment) -> safe commodity keys.
+  const SAFE_COMMODITIES: { stock: 'fuel' | 'organics' | 'equipment'; safe: string; icon: string; name: string }[] = [
+    { stock: 'fuel', safe: 'fuel_ore', icon: '⛽', name: 'Fuel Ore' },
+    { stock: 'organics', safe: 'organics', icon: '🌿', name: 'Organics' },
+    { stock: 'equipment', safe: 'equipment', icon: '⚙️', name: 'Equipment' },
+  ];
+
+  const moveCommoditySafe = async (dir: 'store' | 'take', safeKey: string, amount: number) => {
+    if (!landedPlanet || commodityBusy || amount < 1) return;
+    setCommodityBusy(safeKey);
+    try {
+      const result = dir === 'store'
+        ? await depositCommodityToSafe(landedPlanet.id, safeKey, amount)
+        : await withdrawCommodityFromSafe(landedPlanet.id, safeKey, amount);
+      // Response is authoritative for the safe side; bump opsRefresh for the stockpile.
+      setCitadelInfo((prev: any) => prev ? {
+        ...prev,
+        safe_commodities: result?.safe_commodities ?? prev.safe_commodities,
+        safe_total_value: typeof result?.safe_total_value === 'number' ? result.safe_total_value : prev.safe_total_value,
+      } : prev);
+      const detail = await getPlanetDetails(landedPlanet.id).catch(() => null);
+      if (detail) setLandedPlanetDetail(detail);
+      setOpsNotice({ type: 'success', message: result?.message || 'Vault transaction complete.' });
+    } catch (error: any) {
+      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Vault transaction failed' });
+    } finally {
+      setCommodityBusy(null);
     }
   };
 
@@ -2517,9 +2551,9 @@ const GameDashboard: React.FC = () => {
                                     <span className="credits-value">{safeCredits.toLocaleString()}</span>
                                     <span className="credits-text">credits</span>
                                   </div>
-                                  <span className="safe-cap">capacity {safeCapacity.toLocaleString()} credits</span>
-                                  <div className="vault-bar" title={`${safeCredits.toLocaleString()} / ${safeCapacity.toLocaleString()} credits`}>
-                                    <div className="vault-bar-fill" style={{ width: `${safeCapacity > 0 ? Math.min(100, (safeCredits / safeCapacity) * 100) : 0}%` }} />
+                                  <span className="safe-cap">{safeTotalValue.toLocaleString()} / {safeCapacity.toLocaleString()} cr-equiv</span>
+                                  <div className="vault-bar" title={`${safeTotalValue.toLocaleString()} / ${safeCapacity.toLocaleString()} cr-equivalent (credits + stored goods)`}>
+                                    <div className="vault-bar-fill" style={{ width: `${safeCapacity > 0 ? Math.min(100, (safeTotalValue / safeCapacity) * 100) : 0}%` }} />
                                   </div>
                                   <div className="safe-header-actions">
                                     <button
@@ -2544,6 +2578,40 @@ const GameDashboard: React.FC = () => {
                                     >
                                       📤 Withdraw
                                     </button>
+                                  </div>
+                                  {/* Protected commodity storage: move planet stockpile <-> safe */}
+                                  <div className="safe-commodities">
+                                    <div className="sc-head">📦 Stored Goods <span className="sc-hint">(protected from raiders)</span></div>
+                                    {SAFE_COMMODITIES.map(({ stock, safe, icon, name }) => {
+                                      const inSafe = Number(citadelInfo?.safe_commodities?.[safe] ?? 0);
+                                      const onPlanet = Math.floor(projectedStock(stock));
+                                      const unitVal = Number(citadelInfo?.commodity_values?.[safe] ?? 0);
+                                      const room = Math.max(0, safeCapacity - safeTotalValue);
+                                      const canStore = unitVal > 0 ? Math.min(onPlanet, Math.floor(room / unitVal)) : 0;
+                                      const busy = commodityBusy === safe;
+                                      return (
+                                        <div className="sc-row" key={safe}>
+                                          <span className="sc-name">{icon} {name}</span>
+                                          <span className="sc-qty" title="In safe / on planet">{inSafe.toLocaleString()} <em>/ {onPlanet.toLocaleString()}</em></span>
+                                          <button
+                                            className="safe-btn sc-btn"
+                                            disabled={busy || canStore < 1}
+                                            title={canStore < 1 ? 'Nothing to store, or safe full' : `Store ${canStore.toLocaleString()} (${unitVal} cr/unit)`}
+                                            onClick={() => moveCommoditySafe('store', safe, canStore)}
+                                          >
+                                            {busy ? '…' : '▲ Store'}
+                                          </button>
+                                          <button
+                                            className="safe-btn sc-btn"
+                                            disabled={busy || inSafe < 1}
+                                            title={inSafe < 1 ? 'None in safe' : `Take all ${inSafe.toLocaleString()}`}
+                                            onClick={() => moveCommoditySafe('take', safe, inSafe)}
+                                          >
+                                            {busy ? '…' : '▼ Take'}
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
                                   </div>
                                 </>
                               ) : (

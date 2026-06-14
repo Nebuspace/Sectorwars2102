@@ -1177,6 +1177,11 @@ class CitadelWithdrawRequest(BaseModel):
     amount: int = Field(..., gt=0)
 
 
+class CitadelCommodityRequest(BaseModel):
+    commodity: str = Field(..., pattern="^(fuel_ore|organics|equipment)$")
+    amount: int = Field(..., gt=0)
+
+
 @router.get("/{planetId}/citadel")
 async def get_citadel_info(
     planetId: str,
@@ -1277,6 +1282,50 @@ async def citadel_withdraw(
     from src.services.citadel_service import CitadelService
     service = CitadelService(db)
     result = service.withdraw_from_safe(planet_id, player.id, request.amount)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Withdrawal failed"))
+    db.commit()
+    return result
+
+
+@router.post("/{planetId}/citadel/deposit-commodity")
+async def citadel_deposit_commodity(
+    planetId: str,
+    request: CitadelCommodityRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Move a commodity from the planet stockpile into the protected citadel safe."""
+    try:
+        planet_id = UUID(planetId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    from src.services.citadel_service import CitadelService
+    service = CitadelService(db)
+    result = service.deposit_commodity_to_safe(planet_id, player.id, request.commodity, request.amount)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Deposit failed"))
+    db.commit()
+    return result
+
+
+@router.post("/{planetId}/citadel/withdraw-commodity")
+async def citadel_withdraw_commodity(
+    planetId: str,
+    request: CitadelCommodityRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Move a commodity from the citadel safe back onto the planet stockpile."""
+    try:
+        planet_id = UUID(planetId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    from src.services.citadel_service import CitadelService
+    service = CitadelService(db)
+    result = service.withdraw_commodity_from_safe(planet_id, player.id, request.commodity, request.amount)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("message", "Withdrawal failed"))
     db.commit()
