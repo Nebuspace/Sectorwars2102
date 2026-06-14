@@ -804,6 +804,18 @@ const GameDashboard: React.FC = () => {
       ? landedPlanetDetail.colonists
       : landedPlanet?.population || 0;
 
+  // Production allocation budget = the citadel WORKFORCE cap, never the raw
+  // colonist headcount. Only `maxColonists` colonists can actually be assigned
+  // to production; when colonists exceed that cap the surplus is idle, so the
+  // sliders must not let you allocate past the workforce ("/ N" capacity shown).
+  // Falls back to the colonist count when the cap is unknown.
+  const allocBudget: number = (() => {
+    const cap = Number(landedPlanetDetail?.maxColonists);
+    return Number.isFinite(cap) && cap > 0
+      ? Math.min(landedPlanetColonists, cap)
+      : landedPlanetColonists;
+  })();
+
   // --- Citadel + defense telemetry for the landed console ---
   // GET /planets/{id}/citadel answers only for the owner (400 otherwise);
   // GET /planets/{id}/defenses answers for anyone (scouting is allowed).
@@ -1051,11 +1063,27 @@ const GameDashboard: React.FC = () => {
   // Seed from the authoritative planet detail (GET /planets/{id} returns
   // allocations {fuel, organics, equipment, unused} + productionRates)
   useEffect(() => {
-    const seeded = {
+    let seeded = {
       fuel: Number(landedPlanetDetail?.allocations?.fuel ?? 0),
       organics: Number(landedPlanetDetail?.allocations?.organics ?? 0),
       equipment: Number(landedPlanetDetail?.allocations?.equipment ?? 0)
     };
+    // A planet over-allocated under the old (raw-colonist) budget would seed a
+    // total above the workforce cap; scale it back proportionally so the sliders
+    // show a valid state (the next persist writes the corrected values).
+    const cap = Number(landedPlanetDetail?.maxColonists);
+    const budget = Number.isFinite(cap) && cap > 0
+      ? Math.min(Number(landedPlanetDetail?.colonists ?? cap), cap)
+      : Number(landedPlanetDetail?.colonists ?? Infinity);
+    const sum = seeded.fuel + seeded.organics + seeded.equipment;
+    if (Number.isFinite(budget) && sum > budget && sum > 0) {
+      const k = budget / sum;
+      seeded = {
+        fuel: Math.floor(seeded.fuel * k),
+        organics: Math.floor(seeded.organics * k),
+        equipment: Math.floor(seeded.equipment * k)
+      };
+    }
     setAllocations(seeded);
     confirmedAllocations.current = seeded;
     setAllocRates(landedPlanetDetail?.productionRates ?? null);
@@ -1095,11 +1123,12 @@ const GameDashboard: React.FC = () => {
 
   const handleAllocationChange = (resource: 'fuel' | 'organics' | 'equipment', newValue: number) => {
     if (!landedPlanet || !isLandedPlanetMine) return;
-    // Clamp so the three allocations never exceed the colonist workforce
+    // Clamp so the three allocations never exceed the citadel workforce cap
+    // (allocBudget), not the raw colonist headcount — surplus colonists can't work.
     const othersTotal = (['fuel', 'organics', 'equipment'] as const)
       .filter(r => r !== resource)
       .reduce((sum, r) => sum + allocations[r], 0);
-    const clamped = Math.max(0, Math.min(newValue, Math.max(0, landedPlanetColonists - othersTotal)));
+    const clamped = Math.max(0, Math.min(newValue, Math.max(0, allocBudget - othersTotal)));
     const next = { ...allocations, [resource]: clamped };
     setAllocations(next);
     persistAllocations(landedPlanet.id, next);
@@ -2233,11 +2262,11 @@ const GameDashboard: React.FC = () => {
                                           <input
                                             type="range"
                                             min="0"
-                                            max={Math.max(0, landedPlanetColonists)}
+                                            max={Math.max(0, allocBudget)}
                                             value={allocations[key]}
                                             onChange={(e) => handleAllocationChange(key, parseInt(e.target.value) || 0)}
                                             className={`alloc-slider ${key}`}
-                                            disabled={landedPlanetColonists === 0}
+                                            disabled={allocBudget === 0}
                                             title={`Colonists assigned to ${name.toLowerCase()} production`}
                                           />
                                           <span className="alloc-pct">{allocations[key].toLocaleString()}</span>
@@ -2246,7 +2275,7 @@ const GameDashboard: React.FC = () => {
                                       ))}
                                     </div>
                                     <div className="allocation-header" style={{ opacity: 0.8 }}>
-                                      Unassigned: {Math.max(0, landedPlanetColonists - allocations.fuel - allocations.organics - allocations.equipment).toLocaleString()} colonists
+                                      Unassigned: {Math.max(0, allocBudget - allocations.fuel - allocations.organics - allocations.equipment).toLocaleString()} of {allocBudget.toLocaleString()} workforce
                                     </div>
                                     {allocError && (
                                       <div className="transfer-notice error" role="alert">{allocError}</div>
