@@ -3,6 +3,7 @@ import PageHeader from '../ui/PageHeader';
 import { CombatActivityChart } from '../charts/CombatActivityChart';
 import { CombatFeed } from '../combat/CombatFeed';
 import { DisputePanel } from '../combat/DisputePanel';
+import DroneOperationsTab from '../combat/DroneOperationsTab';
 import { api } from '../../utils/auth';
 import { useCombatUpdates } from '../../contexts/WebSocketContext';
 import './combat-overview.css';
@@ -487,6 +488,12 @@ export const CombatOverview: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Drone Operations command center */}
+      <section className="drone-operations-section">
+        <h2 className="drone-operations-section-title">Drone Operations</h2>
+        <DroneOperationsTab />
+      </section>
     </div>
   );
 };
