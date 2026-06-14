@@ -2043,6 +2043,22 @@
     "Genesis tier vocab unification + device counts + fake buy-card stats \u2014 blocked on genesis-device-tiering-model decision."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-aa",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis deploy entry-point from the Cargo bay (Max's UX idea)",
+   "sections": [
+    {
+     "key": "genesis-deploy-from-cargo",
+     "state": "shipped",
+     "commit": "4b5759e",
+     "proof": "The Cargo MFD (CRGO) Genesis Bay 'TERRAFORM READY' indicator is now a flashing 'TERRAFORM READY \u2014 DEPLOY' button that opens the Genesis deploy modal (defaults to current sector). Client-only, vite hot-reload. User self-verifies UI."
+    }
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
