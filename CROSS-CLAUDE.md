@@ -646,3 +646,9 @@ Genesis advanced tier (Colony Ship sacrifice -> instant Settlement colony via sh
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev c6f7ac1). Genesis ADVANCED tier PROVEN: deploy advanced -> instant Settlement colony (status COLONIZED, citadel L2, 5000 colonists, 4 turrets, shield 1), Colony Ship destroyed, player ejected to ESCAPE_POD, -250k cr, device consumed. ship_service.destroy_ship handles the pod (genesis_sacrifice = all-cargo, no insurance). All 3 tiers now offered at deploy. Fixtures reverted.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Planet serializer gains formationStatus/started/complete for the terraforming countdown. gameserver restart. CLOSED to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev e33e725). Planet serializer now ships formationStatus/started/complete; Colonial Registry shows a live 🌱 TERRAFORMING bar + "Nd Nh left" countdown for forming planets. PROVEN: /owned returns the fields (48h apart); lazy-complete flips forming->complete on read. Fixtures reverted.

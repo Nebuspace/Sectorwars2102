@@ -2103,6 +2103,22 @@
    "decision_resolved": "genesis-device-tiering-model -> option (a) untiered count; all 3 tiers ship; no migration. Remaining: buy-side vocab alignment (buildable, not a decision).",
    "canon_grounding": "genesis-devices.md Advanced tier + ADR-0013 + ADR-0015; ship_service.destroy_ship escape-pod path reused (not invented).",
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-ad",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis terraforming progress readout (forming status + countdown)",
+   "sections": [
+    {
+     "key": "genesis-formation-readout",
+     "state": "shipped-proven",
+     "commit": "e33e725",
+     "proof": "_format_planet_data ships formationStatus/started/complete; Colonial Registry shows \ud83c\udf31 TERRAFORMING badge + progress bar + 'Nd Nh left' countdown (auto-refetch on elapse). PROVEN: /owned returns fields (48h apart); lazy-complete flips forming->complete; rate-limit (3/week) also confirmed firing."
+    }
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"
