@@ -175,6 +175,37 @@ export const PlanetManager: React.FC = () => {
   const [scanTimedOut, setScanTimedOut] = useState(false);
   const [scanAttempt, setScanAttempt] = useState(0);
 
+  // Live clock for genesis terraforming countdowns (ticks only while a planet
+  // is still forming; bumps a refresh once a timer elapses so the colony flips
+  // to usable on its own).
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const anyForming = planets.some((p: any) => p?.formationStatus === 'forming');
+  useEffect(() => {
+    if (!anyForming) return;
+    const id = window.setInterval(() => {
+      const t = Date.now();
+      setNowMs(t);
+      const soonest = planets
+        .filter((p: any) => p?.formationStatus === 'forming' && p?.formationCompleteAt)
+        .map((p: any) => new Date(p.formationCompleteAt).getTime());
+      if (soonest.length && t >= Math.min(...soonest)) {
+        window.clearInterval(id);
+        loadPlanets(); // a formation finished — re-fetch (server lazily completes it)
+      }
+    }, 1000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyForming, planets]);
+
+  const fmtFormationLeft = (ms: number): string => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s % 60}s`;
+    return `${s}s`;
+  };
+
   useEffect(() => {
     loadPlanets();
   }, []);
@@ -365,49 +396,76 @@ export const PlanetManager: React.FC = () => {
         </div>
         
         <div className="planet-items">
-          {planets.map(planet => (
+          {planets.map(planet => {
+            const forming = (planet as any).formationStatus === 'forming';
+            const startMs = (planet as any).formationStartedAt ? new Date((planet as any).formationStartedAt).getTime() : null;
+            const endMs = (planet as any).formationCompleteAt ? new Date((planet as any).formationCompleteAt).getTime() : null;
+            const remainMs = endMs ? Math.max(0, endMs - nowMs) : 0;
+            const pct = (forming && startMs && endMs && endMs > startMs)
+              ? Math.min(100, Math.max(0, ((nowMs - startMs) / (endMs - startMs)) * 100))
+              : 0;
+            return (
             <div
               key={planet.id}
-              className={`planet-item ${selectedPlanet?.id === planet.id ? 'selected' : ''} ${planet.underSiege ? 'under-siege' : ''}`}
+              className={`planet-item ${selectedPlanet?.id === planet.id ? 'selected' : ''} ${planet.underSiege ? 'under-siege' : ''} ${forming ? 'forming' : ''}`}
               data-planet-type={normalizePlanetType(planet.planetType)}
               onClick={() => handlePlanetSelect(planet)}
             >
               <div className="planet-item-header">
                 <span className="planet-icon planet-icon-badge">
-                  {getPlanetTypeIcon(planet.planetType)}
+                  {forming ? '🌱' : getPlanetTypeIcon(planet.planetType)}
                 </span>
                 <span className="planet-name">{planet.name}</span>
+                {forming && <span className="forming-indicator" title="Genesis terraforming in progress">🌱</span>}
                 {planet.underSiege && <span className="siege-indicator">🚨</span>}
               </div>
-              
-              <div className="planet-item-info">
-                <div className="info-row">
-                  <span className="label">Sector:</span>
-                  <span className="value">{planet.sectorName}</span>
-                </div>
-                <div className="info-row">
-                  <span className="label">Colonists:</span>
-                  <span className="value">
-                    {planet.colonists.toLocaleString()} / {planet.maxColonists.toLocaleString()}
-                  </span>
-                </div>
-                <div className="info-row">
-                  <span className="label">Specialization:</span>
-                  <span className="value">
-                    {getSpecializationIcon(planet.specialization)} {planet.specialization || 'None'}
-                  </span>
-                </div>
-              </div>
 
-              <div className="planet-item-production">
-                <div className="production-mini">
-                  <span title="Fuel">⛽ {planet.productionRates.fuel}</span>
-                  <span title="Organics">🌿 {planet.productionRates.organics}</span>
-                  <span title="Equipment">⚙️ {planet.productionRates.equipment}</span>
+              {forming ? (
+                <div className="planet-forming">
+                  <div className="forming-head">
+                    <span className="forming-label">TERRAFORMING</span>
+                    <span className="forming-remain">{endMs ? `${fmtFormationLeft(remainMs)} left` : 'forming…'}</span>
+                  </div>
+                  <div className="forming-bar"><div className="forming-bar-fill" style={{ width: `${pct}%` }} /></div>
+                  <div className="info-row">
+                    <span className="label">Sector:</span>
+                    <span className="value">{planet.sectorName}</span>
+                  </div>
+                  <div className="forming-note">Invulnerable while forming · usable when complete</div>
                 </div>
-              </div>
+              ) : (
+                <>
+                  <div className="planet-item-info">
+                    <div className="info-row">
+                      <span className="label">Sector:</span>
+                      <span className="value">{planet.sectorName}</span>
+                    </div>
+                    <div className="info-row">
+                      <span className="label">Colonists:</span>
+                      <span className="value">
+                        {planet.colonists.toLocaleString()} / {planet.maxColonists.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="info-row">
+                      <span className="label">Specialization:</span>
+                      <span className="value">
+                        {getSpecializationIcon(planet.specialization)} {planet.specialization || 'None'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="planet-item-production">
+                    <div className="production-mini">
+                      <span title="Fuel">⛽ {planet.productionRates.fuel}</span>
+                      <span title="Organics">🌿 {planet.productionRates.organics}</span>
+                      <span title="Equipment">⚙️ {planet.productionRates.equipment}</span>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

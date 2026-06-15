@@ -1188,3 +1188,27 @@
     animation-duration: 0.01s;
   }
 }
+/* Genesis terraforming-in-progress indicator (Colonial Registry list) */
+.planet-item.forming { border-color: rgba(124, 110, 255, 0.45); }
+.planet-item .forming-indicator { margin-left: auto; font-size: 0.9rem; animation: pm-forming-pulse 1.8s ease-in-out infinite; }
+.planet-forming { padding: 4px 0 2px; }
+.planet-forming .forming-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+.planet-forming .forming-label { font-size: 0.66rem; font-weight: 700; letter-spacing: 0.12em; color: #b9afff; }
+.planet-forming .forming-remain { font-size: 0.68rem; color: #d8d2ff; font-variant-numeric: tabular-nums; }
+.planet-forming .forming-bar {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  background: rgba(124, 110, 255, 0.15); margin-bottom: 5px;
+}
+.planet-forming .forming-bar-fill {
+  height: 100%;
+  background: repeating-linear-gradient(90deg, rgba(124,110,255,0.9) 0 7px, rgba(80,200,160,0.7) 7px 14px);
+  background-size: 14px 100%;
+  animation: pm-forming-march 0.9s linear infinite;
+  transition: width 1s linear;
+}
+.planet-forming .forming-note { font-size: 0.6rem; color: var(--text-secondary, #99a); margin-top: 3px; }
+@keyframes pm-forming-march { from { background-position: 0 0; } to { background-position: 28px 0; } }
+@keyframes pm-forming-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .planet-item .forming-indicator, .planet-forming .forming-bar-fill { animation: none; }
+}

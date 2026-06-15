@@ -15,6 +15,10 @@ export interface Planet {
   underSiege: boolean;
   siegeDetails?: SiegeDetails;
   specialization?: ColonySpecialization;
+  // Genesis formation state (forming planets are still terraforming).
+  formationStatus?: string | null;
+  formationStartedAt?: string | null;
+  formationCompleteAt?: string | null;
 }
 
 export type PlanetType = 'terran' | 'oceanic' | 'mountainous' | 'desert' | 'frozen';

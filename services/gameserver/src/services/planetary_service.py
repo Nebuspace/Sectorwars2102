@@ -1305,11 +1305,16 @@ class PlanetaryService:
                 "damageReduction": f"{int(damage_reduction * 100)}%"
             },
             "terraforming": terraforming_details,
+            # Genesis formation state so the Colonial Registry can show a live
+            # "forming — Nh remaining" readout (genesis-devices.md formation UI).
+            "formationStatus": getattr(planet, "formation_status", None),
+            "formationStartedAt": planet.formation_started_at.isoformat() if getattr(planet, "formation_started_at", None) else None,
+            "formationCompleteAt": planet.formation_complete_at.isoformat() if getattr(planet, "formation_complete_at", None) else None,
             "underSiege": planet.under_siege,
             "siegeDetails": siege_details,
             "isVulnerable": planet.morale <= 0
         }
-        
+
     def _calculate_production_rates(self, planet: Planet) -> Dict[str, float]:
         """Calculate production rates based on allocations, buildings, habitability, and siege state."""
         base_rate = 10  # Base production per colonist per day
