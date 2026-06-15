@@ -75,6 +75,9 @@ class GenesisDeployRequest(BaseModel):
     """Genesis device deployment request (legacy - use /genesis/deploy instead)."""
     sectorId: str
     planetName: str = Field(..., min_length=3, max_length=50)
+    # basic = 1 device, enhanced = 3 devices (canon). Advanced (Colony Ship
+    # sacrifice + typed device) is Max-gated and not offered on this route.
+    tier: str = Field(default="basic", pattern="^(basic|enhanced)$")
     # Biome is rolled server-side from the device tier (ADR-0014); kept optional
     # only so older clients that still send a type don't 422.
     planetType: str | None = None
@@ -1104,7 +1107,7 @@ async def deploy_genesis_device_legacy(
         result = genesis_service.deploy_genesis_device(
             player_id=player.id,
             sector_id=sector_num,
-            tier="basic",
+            tier=request.tier,  # basic (1 device) or enhanced (3 devices)
             name=request.planetName,  # honor the player's chosen colony name
         )
         # Translate the service's snake_case result into the camelCase keys

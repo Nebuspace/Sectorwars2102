@@ -504,3 +504,106 @@
 }
 .genesis-biome-note .biome-icon { font-size: 1.3rem; line-height: 1; }
 .genesis-biome-note p { margin: 0; font-size: 0.82rem; line-height: 1.4; color: var(--text-secondary, #aab); }
+
+/* ============ Genesis tier selector ============ */
+.genesis-tier-select { display: flex; gap: 10px; }
+.genesis-tier-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  background: rgba(124, 110, 255, 0.06);
+  border: 1px solid rgba(124, 110, 255, 0.3);
+  border-radius: 6px;
+  color: var(--text-secondary, #aab);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+.genesis-tier-card:hover:not(:disabled) { border-color: rgba(124, 110, 255, 0.7); background: rgba(124, 110, 255, 0.12); }
+.genesis-tier-card.selected {
+  border-color: #7c6eff;
+  background: rgba(124, 110, 255, 0.18);
+  box-shadow: 0 0 10px rgba(124, 110, 255, 0.35);
+  color: #fff;
+}
+.genesis-tier-card:disabled { opacity: 0.4; cursor: not-allowed; }
+.genesis-tier-card .tier-name { font-weight: 700; font-size: 0.9rem; }
+.genesis-tier-card .tier-devices { font-size: 0.78rem; color: #b9afff; }
+.genesis-tier-card .tier-meta { font-size: 0.68rem; opacity: 0.8; }
+
+/* ============ Genesis deployment animation ============ */
+.genesis-anim-stage {
+  position: relative;
+  height: 170px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 50%, #0a0e24 0%, #03040c 70%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.genesis-anim-core {
+  position: absolute;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #d8f5ff;
+  box-shadow: 0 0 18px 6px rgba(150, 220, 255, 0.9);
+  animation: genesis-core 2.8s ease-out forwards;
+}
+.genesis-anim-shock {
+  position: absolute;
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid rgba(150, 220, 255, 0.85);
+  animation: genesis-shock 1.4s ease-out forwards;
+}
+.genesis-anim-shock-2 { animation-delay: 0.45s; border-color: rgba(124, 110, 255, 0.7); }
+.genesis-anim-planet {
+  position: absolute;
+  width: 96px; height: 96px; border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 30%, rgba(255,255,255,0.55), rgba(255,255,255,0) 45%),
+    conic-gradient(from 0deg, #2a7fb8, #3fae8e, #2a6fb8, #5566c9, #2a7fb8);
+  box-shadow: 0 0 26px 6px rgba(80, 180, 200, 0.45), inset -10px -8px 22px rgba(0,0,0,0.55);
+  opacity: 0;
+  transform: scale(0.1);
+  animation: genesis-planet 2.8s ease-out forwards, genesis-spin 9s linear infinite;
+}
+.genesis-anim-label {
+  position: absolute;
+  bottom: 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  opacity: 0;
+  animation: genesis-label 2.8s ease-out forwards;
+}
+.genesis-anim-name { color: #d8f5ff; font-weight: 700; font-size: 1rem; letter-spacing: 0.04em; }
+.genesis-anim-status { color: #7c6eff; font-size: 0.62rem; letter-spacing: 0.18em; }
+
+@keyframes genesis-core {
+  0% { transform: scale(0); opacity: 0; }
+  12% { transform: scale(1.8); opacity: 1; }
+  40% { transform: scale(1); opacity: 0.9; }
+  70% { opacity: 0.2; }
+  100% { transform: scale(0.4); opacity: 0; }
+}
+@keyframes genesis-shock {
+  0% { transform: scale(0.2); opacity: 0.9; }
+  100% { transform: scale(7); opacity: 0; }
+}
+@keyframes genesis-planet {
+  0%, 38% { opacity: 0; transform: scale(0.1); }
+  62% { opacity: 1; transform: scale(1.12); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes genesis-spin { from { filter: hue-rotate(0deg); } to { filter: hue-rotate(360deg); } }
+@keyframes genesis-label {
+  0%, 55% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .genesis-anim-core, .genesis-anim-shock, .genesis-anim-planet, .genesis-anim-label { animation-duration: 0.01s; animation-iteration-count: 1; }
+  .genesis-anim-planet { opacity: 1; transform: scale(1); }
+  .genesis-anim-label { opacity: 1; }
+}

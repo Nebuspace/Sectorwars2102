@@ -110,8 +110,24 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   const [deploying, setDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  // Tier: basic fuses 1 device, enhanced fuses 3 into a richer world (canon).
+  const [tier, setTier] = useState<'basic' | 'enhanced'>('basic');
+  // Holds the new colony's name while the deploy animation plays.
+  const [deployAnim, setDeployAnim] = useState<string | null>(null);
 
   const genesisDevices = currentShip?.genesis_devices ?? 0;
+
+  // Canon tiers (genesis-devices.md): basic fuses 1 device, enhanced fuses 3.
+  const TIERS = [
+    { id: 'basic' as const, label: 'Basic', devices: 1, cost: 25000, hab: '40–60', blurb: 'One device · a starter world' },
+    { id: 'enhanced' as const, label: 'Enhanced', devices: 3, cost: 75000, hab: '55–75', blurb: 'Three devices fused · a richer world' },
+  ];
+  const tierInfo = TIERS.find(t => t.id === tier)!;
+
+  // If the player can't afford the current tier's device count, fall back to basic.
+  useEffect(() => {
+    if (tier === 'enhanced' && genesisDevices < 3) setTier('basic');
+  }, [tier, genesisDevices]);
 
   useEffect(() => {
     // Keep the default in sync if the player moves while the panel is open.
@@ -143,8 +159,8 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       return;
     }
 
-    if (genesisDevices <= 0) {
-      setError('No Genesis Devices available');
+    if (genesisDevices < tierInfo.devices) {
+      setError(`The ${tierInfo.label} sequence needs ${tierInfo.devices} device${tierInfo.devices !== 1 ? 's' : ''} — you have ${genesisDevices}.`);
       return;
     }
 
@@ -153,28 +169,35 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       setError(null);
       setSuccessMessage(null);
 
+      const deployedName = planetName.trim();
       const response = await gameAPI.planetary.deployGenesis(
         selectedSectorId.trim(),
-        planetName.trim()
+        deployedName,
+        tier
       );
 
       if (response.success) {
         updateShipGenesis(response.genesisDevicesRemaining);
-        setSuccessMessage(`Genesis Device deployed! ${planetName} will be ready in ${Math.floor(response.deploymentTime / 60)} minutes.`);
-        
+        // Play the genesis formation animation, then surface the success line.
+        setDeployAnim(deployedName);
+        setTimeout(() => {
+          setSuccessMessage(`Genesis sequence initiated — ${deployedName} is forming (~48h). It will appear in your Colonial Registry when ready.`);
+          setDeployAnim(null);
+        }, 2800);
+
         // Clear form
         setPlanetName('');
         setSelectedSectorId('');
-        
+
         // Notify parent
         if (onSuccess) {
           onSuccess(response.planetId);
         }
 
-        // Close after success message
+        // Close after the animation + success message
         setTimeout(() => {
           if (onClose) onClose();
-        }, 3000);
+        }, 5200);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to deploy Genesis Device');
@@ -201,6 +224,19 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       </div>
 
       <div className="deployment-content">
+        {deployAnim && (
+          <div className="genesis-anim-stage" role="img" aria-label={`Genesis sequence forming ${deployAnim}`}>
+            <span className="genesis-anim-shock" />
+            <span className="genesis-anim-shock genesis-anim-shock-2" />
+            <span className="genesis-anim-core" />
+            <span className="genesis-anim-planet" />
+            <div className="genesis-anim-label">
+              <span className="genesis-anim-name">{deployAnim}</span>
+              <span className="genesis-anim-status">GENESIS SEQUENCE INITIATED</span>
+            </div>
+          </div>
+        )}
+
         <div className="device-status">
           <div className="status-item">
             <span className="status-label">Genesis Devices Available:</span>
@@ -209,8 +245,8 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
             </span>
           </div>
           <div className="status-item">
-            <span className="status-label">Deployment Time:</span>
-            <span className="status-value">5 minutes</span>
+            <span className="status-label">Formation Time:</span>
+            <span className="status-value">~48 hours</span>
           </div>
         </div>
 
@@ -251,6 +287,30 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
               </div>
 
               <div className="form-section">
+                <label>Genesis Sequence</label>
+                <div className="genesis-tier-select">
+                  {TIERS.map(t => {
+                    const affordable = genesisDevices >= t.devices;
+                    return (
+                      <button
+                        type="button"
+                        key={t.id}
+                        className={`genesis-tier-card ${tier === t.id ? 'selected' : ''}`}
+                        disabled={!affordable}
+                        title={affordable ? t.blurb : `Requires ${t.devices} devices (you have ${genesisDevices})`}
+                        onClick={() => setTier(t.id)}
+                      >
+                        <span className="tier-name">{t.label}</span>
+                        <span className="tier-devices">{t.devices} device{t.devices !== 1 ? 's' : ''}</span>
+                        <span className="tier-meta">{t.cost.toLocaleString()} cr · hab {t.hab}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="input-hint">Fuse more devices for a richer world. You have {genesisDevices} loaded.</span>
+              </div>
+
+              <div className="form-section">
                 <label htmlFor="sector-select">Target Sector</label>
                 <input
                   id="sector-select"
@@ -281,6 +341,10 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                   <span className="summary-value">{planetName || 'Not set'}</span>
                 </div>
                 <div className="summary-item">
+                  <span className="summary-label">Sequence:</span>
+                  <span className="summary-value">{tierInfo.label} — {tierInfo.devices} device{tierInfo.devices !== 1 ? 's' : ''} · {tierInfo.cost.toLocaleString()} cr</span>
+                </div>
+                <div className="summary-item">
                   <span className="summary-label">Biome:</span>
                   <span className="summary-value">Determined by the genesis device</span>
                 </div>
@@ -308,9 +372,9 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
               <button
                 className="button primary"
                 onClick={handleDeploy}
-                disabled={deploying || !planetName || !selectedSectorId}
+                disabled={deploying || !!deployAnim || !planetName || !selectedSectorId || genesisDevices < tierInfo.devices}
               >
-                {deploying ? 'Deploying...' : 'Deploy Genesis Device'}
+                {deploying ? 'Deploying...' : `Deploy ${tierInfo.label} (${tierInfo.devices} device${tierInfo.devices !== 1 ? 's' : ''})`}
               </button>
             </div>
           </>

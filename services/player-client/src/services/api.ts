@@ -101,11 +101,11 @@ export const planetaryAPI = {
     }),
 
   // planetType is rolled server-side from the device tier (ADR-0014); it is
-  // accepted but ignored, so the client no longer needs to send one.
-  deployGenesis: (sectorId: string, planetName: string) =>
+  // accepted but ignored. tier: 'basic' (1 device) or 'enhanced' (3 devices).
+  deployGenesis: (sectorId: string, planetName: string, tier: 'basic' | 'enhanced' = 'basic') =>
     apiRequest('/api/v1/planets/genesis/deploy', {
       method: 'POST',
-      body: JSON.stringify({ sectorId, planetName })
+      body: JSON.stringify({ sectorId, planetName, tier })
     }),
 
   specializePlanet: (planetId: string, specialization: string) =>

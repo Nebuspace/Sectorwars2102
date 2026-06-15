@@ -85,6 +85,15 @@ GENESIS_CAPACITY_BY_SHIP = {
     ShipType.WARP_JUMPER: 1,
 }
 
+# Canon device consumption per tier (genesis-devices.md "Formation process" /
+# tier matrix): basic spends 1 device, enhanced fuses 3, advanced spends 1
+# (plus the sacrificed Colony Ship).
+GENESIS_DEVICE_COST = {
+    "basic": 1,
+    "enhanced": 3,
+    "advanced": 1,
+}
+
 # Maximum genesis device purchases per week per player
 MAX_PURCHASES_PER_WEEK = 3
 
@@ -193,10 +202,12 @@ class GenesisService:
         # decremented the count, so a single device could found unlimited
         # planets.
         current_devices_on_ship = ship.genesis_devices or 0
-        if not tier_config.get("requires_ship_sacrifice") and current_devices_on_ship <= 0:
+        device_cost = GENESIS_DEVICE_COST.get(tier, 1)
+        if not tier_config.get("requires_ship_sacrifice") and current_devices_on_ship < device_cost:
             raise ValueError(
-                "You have no genesis devices loaded. Purchase one from a "
-                "genesis dealer (SpaceDock) before deploying."
+                f"The {tier} genesis sequence needs {device_cost} device"
+                f"{'s' if device_cost != 1 else ''}; you have {current_devices_on_ship} loaded. "
+                f"Buy more at a genesis dealer (SpaceDock) or choose a lower tier."
             )
 
         # --- Advanced tier: require colony ship sacrifice ---
@@ -266,9 +277,11 @@ class GenesisService:
         # --- Deduct credits ---
         player.credits -= cost
 
-        # --- Consume one loaded genesis device (non-sacrifice tiers) ---
+        # --- Consume the tier's loaded genesis devices (non-sacrifice tiers) ---
+        # basic = 1, enhanced = 3 (canon). Advanced consumes its device via the
+        # sacrifice path (typed-device handling is Max-gated; see DECISIONS).
         if not tier_config.get("requires_ship_sacrifice"):
-            ship.genesis_devices = max(0, current_devices_on_ship - 1)
+            ship.genesis_devices = max(0, current_devices_on_ship - device_cost)
 
         # --- Record the purchase in player settings for rate limiting ---
         self._record_genesis_purchase(player, tier)
