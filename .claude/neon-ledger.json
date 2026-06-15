@@ -2085,6 +2085,24 @@
     "Advanced tier (typed advanced device + Colony Ship sacrifice + escape pod); buy-side tier vocab + fake success-rate cards \u2014 DECISIONS genesis-device-tiering-model (narrowed)."
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-ac",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis advanced tier at deploy (all 3 tiers offered) \u2014 Colony Ship sacrifice -> instant Settlement colony",
+   "sections": [
+    {
+     "key": "genesis-advanced-tier",
+     "state": "shipped-proven",
+     "commit": "c6f7ac1",
+     "proof": "Advanced (250k + 1 device) sacrifices Colony Ship -> instant Settlement colony. genesis_service uses ship_service.destroy_ship (escape pod, all-cargo, no insurance double-dip) + _complete_formation + 4 turrets/shield 1. PROVEN: 'Capitalia' COLONIZED/complete, citadel 2, 5000 colonists, 4 turrets, shield 1; ship destroyed; player in ESCAPE_POD; -250k cr. Two-step confirm + Colony-Ship gating on the client."
+    }
+   ],
+   "decision_resolved": "genesis-device-tiering-model -> option (a) untiered count; all 3 tiers ship; no migration. Remaining: buy-side vocab alignment (buildable, not a decision).",
+   "canon_grounding": "genesis-devices.md Advanced tier + ADR-0013 + ADR-0015; ship_service.destroy_ship escape-pod path reused (not invented).",
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"

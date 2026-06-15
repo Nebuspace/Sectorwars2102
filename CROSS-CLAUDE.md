@@ -640,3 +640,9 @@ Genesis tiered deploy: enhanced consumes 3 devices (basic 1), tier param on lega
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev b59ab42). Genesis tiered deploy PROVEN: enhanced consumes 3 devices -> 1 planet (hab 75, -75k), basic consumes 1 (3->2), enhanced rejected with 2 devices. Formation animation + tier selector (client). Advanced still gated. Test planets + fixtures reverted.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Genesis advanced tier (Colony Ship sacrifice -> instant Settlement colony via ship_service.destroy_ship). gameserver restart (genesis_service + ship_service + planets). CLOSED to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev c6f7ac1). Genesis ADVANCED tier PROVEN: deploy advanced -> instant Settlement colony (status COLONIZED, citadel L2, 5000 colonists, 4 turrets, shield 1), Colony Ship destroyed, player ejected to ESCAPE_POD, -250k cr, device consumed. ship_service.destroy_ship handles the pod (genesis_sacrifice = all-cargo, no insurance). All 3 tiers now offered at deploy. Fixtures reverted.
