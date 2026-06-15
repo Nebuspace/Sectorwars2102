@@ -277,11 +277,9 @@ class GenesisService:
         # --- Deduct credits ---
         player.credits -= cost
 
-        # --- Consume the tier's loaded genesis devices (non-sacrifice tiers) ---
-        # basic = 1, enhanced = 3 (canon). Advanced consumes its device via the
-        # sacrifice path (typed-device handling is Max-gated; see DECISIONS).
-        if not tier_config.get("requires_ship_sacrifice"):
-            ship.genesis_devices = max(0, current_devices_on_ship - device_cost)
+        # --- Consume the tier's loaded genesis devices ---
+        # basic = 1, enhanced = 3, advanced = 1 (canon GENESIS_DEVICE_COST).
+        ship.genesis_devices = max(0, current_devices_on_ship - device_cost)
 
         # --- Record the purchase in player settings for rate limiting ---
         self._record_genesis_purchase(player, tier)
@@ -293,17 +291,22 @@ class GenesisService:
                 "ship_name": ship.name,
                 "ship_type": ship.type.value,
             }
-            # Destroy the ship
-            ship.is_destroyed = True
-            ship.is_active = False
-            ship.status = "DESTROYED"
-            # Give player the escape pod
-            player.current_ship_id = None
-            # The escape pod assignment would be handled by the ship service
-            # but we mark the ship as gone
+            # Eject the pilot into an escape pod via the canon destruction path
+            # (creates/relocates the pod, transfers cargo, no insurance payout on
+            # a voluntary sacrifice). Replaces the old stub that left the player
+            # with current_ship_id = None and no pod.
+            from src.services.ship_service import ShipService
+            ShipService(self.db).destroy_ship(ship, cause="genesis_sacrifice")
+            # Advanced planets form INSTANTLY at Settlement (citadel L2, 5,000
+            # colonists, +10% production via the L2 citadel bonus, 4 automated
+            # turrets, basic shield generator) — genesis-devices.md "Advanced tier".
+            self._complete_formation(planet)
+            planet.formation_complete_at = now
+            planet.defense_turrets = 4
+            planet.defense_shields = 1
             logger.info(
-                f"Colony ship '{ship.name}' sacrificed for advanced genesis deployment "
-                f"by player {player_id}"
+                f"Advanced genesis: Colony Ship '{sacrifice_info['ship_name']}' sacrificed; "
+                f"instant Settlement colony on planet {planet.id} by player {player_id}"
             )
 
         # --- Add planet ownership ---
@@ -334,14 +337,16 @@ class GenesisService:
             "habitability_score": habitability,
             "resource_richness": resource_richness,
             "size": planet_size,
-            "formation_status": "forming",
+            # Advanced completes instantly; basic/enhanced form over 48h.
+            "formation_status": planet.formation_status,
             "formation_started_at": now.isoformat(),
             "formation_complete_at": formation_complete_at.isoformat(),
-            "formation_hours_remaining": self.formation_hours,
+            "formation_hours_remaining": 0 if planet.formation_status == "complete" else self.formation_hours,
             # The legacy route maps these to the camelCase keys the client
-            # reads (genesisDevicesRemaining / deploymentTime).
-            "genesis_devices_remaining": ship.genesis_devices or 0,
-            "deployment_seconds": int(self.formation_hours * 3600),
+            # reads (genesisDevicesRemaining / deploymentTime). After a sacrifice
+            # the player is in a fresh escape pod with no devices.
+            "genesis_devices_remaining": 0 if sacrifice_info else (ship.genesis_devices or 0),
+            "deployment_seconds": 0 if planet.formation_status == "complete" else int(self.formation_hours * 3600),
             "credits_spent": cost,
             "credits_remaining": player.credits,
             "genesis_purchases_this_week": purchases_this_week + 1,

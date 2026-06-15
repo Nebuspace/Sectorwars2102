@@ -75,9 +75,9 @@ class GenesisDeployRequest(BaseModel):
     """Genesis device deployment request (legacy - use /genesis/deploy instead)."""
     sectorId: str
     planetName: str = Field(..., min_length=3, max_length=50)
-    # basic = 1 device, enhanced = 3 devices (canon). Advanced (Colony Ship
-    # sacrifice + typed device) is Max-gated and not offered on this route.
-    tier: str = Field(default="basic", pattern="^(basic|enhanced)$")
+    # basic = 1 device, enhanced = 3 devices, advanced = 1 device + the Colony
+    # Ship is sacrificed for an instant Settlement-level colony.
+    tier: str = Field(default="basic", pattern="^(basic|enhanced|advanced)$")
     # Biome is rolled server-side from the device tier (ADR-0014); kept optional
     # only so older clients that still send a type don't 422.
     planetType: str | None = None

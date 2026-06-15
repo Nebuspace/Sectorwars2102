@@ -132,6 +132,11 @@ class ShipService:
             return ship  # Return the same ship (indestructible)
 
         is_planned_dismantle = cause == "warp_gate_anchor"
+        # A voluntary genesis sacrifice (advanced tier) behaves like the planned
+        # dismantle for property handling: ALL non-bound cargo transfers to the
+        # pod and NO insurance pays out — you chose to consume the hull for a
+        # planet, so double-dipping an insurance payout would be an exploit.
+        is_voluntary_consume = is_planned_dismantle or cause == "genesis_sacrifice"
 
         # Is the owner actually piloting THIS hull? Only the piloted hull's
         # destruction ejects the pilot into the escape pod. Consuming an
@@ -158,8 +163,8 @@ class ShipService:
             # reseating them.
             escape_pod = self._pod_for_unpiloted_hull(player, ship.sector_id)
 
-        if is_planned_dismantle:
-            # ADR-0029: planned dismantle — all non-bound cargo transfers
+        if is_voluntary_consume:
+            # Planned dismantle / genesis sacrifice — all non-bound cargo transfers
             self._transfer_all_cargo(ship, escape_pod)
         else:
             # Transfer emergency cargo to escape pod (10% of original cargo)
@@ -176,7 +181,7 @@ class ShipService:
         # Coverage attaches to the HULL (ship-insurance.md), so the policy lives
         # on ship.insurance; the payout credits player == ship.owner (the
         # registered owner, never the current pilot — handles stolen hulls).
-        if not is_planned_dismantle and ship.insurance:
+        if not is_voluntary_consume and ship.insurance:
             compensation = self._calculate_insurance_payout(ship, ship.insurance)
             if compensation > 0:
                 player.credits += compensation

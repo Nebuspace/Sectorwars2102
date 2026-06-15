@@ -607,3 +607,23 @@
   .genesis-anim-planet { opacity: 1; transform: scale(1); }
   .genesis-anim-label { opacity: 1; }
 }
+
+/* Advanced (Colony Ship sacrifice) tier — destructive accent */
+.genesis-tier-card.sacrifice { border-color: rgba(255, 170, 68, 0.4); background: rgba(255, 140, 40, 0.06); }
+.genesis-tier-card.sacrifice.selected {
+  border-color: #ff9a3c;
+  background: rgba(255, 140, 40, 0.16);
+  box-shadow: 0 0 10px rgba(255, 140, 40, 0.4);
+}
+.genesis-tier-card.sacrifice .tier-devices { color: #ffb066; }
+.genesis-sacrifice-warn { color: #ffb066 !important; font-weight: 600; }
+.action-buttons .button.primary.danger {
+  background: #b3382b;
+  border-color: #ff6b5b;
+  color: #fff;
+  animation: genesis-danger-pulse 1.2s ease-in-out infinite;
+}
+@keyframes genesis-danger-pulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(255, 80, 60, 0.4); }
+  50% { box-shadow: 0 0 12px rgba(255, 80, 60, 0.8); }
+}

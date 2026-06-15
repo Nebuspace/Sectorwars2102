@@ -110,24 +110,34 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   const [deploying, setDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  // Tier: basic fuses 1 device, enhanced fuses 3 into a richer world (canon).
-  const [tier, setTier] = useState<'basic' | 'enhanced'>('basic');
+  // Tier: basic fuses 1 device, enhanced fuses 3, advanced sacrifices the
+  // Colony Ship for an instant Settlement colony (canon).
+  const [tier, setTier] = useState<'basic' | 'enhanced' | 'advanced'>('basic');
   // Holds the new colony's name while the deploy animation plays.
   const [deployAnim, setDeployAnim] = useState<string | null>(null);
+  // Two-step confirm guard for the destructive advanced (ship-sacrifice) tier.
+  const [advancedArmed, setAdvancedArmed] = useState(false);
 
   const genesisDevices = currentShip?.genesis_devices ?? 0;
 
-  // Canon tiers (genesis-devices.md): basic fuses 1 device, enhanced fuses 3.
+  const isColonyShip = (currentShip?.type || '').toUpperCase() === 'COLONY_SHIP';
+
+  // Canon tiers (genesis-devices.md): basic fuses 1 device, enhanced fuses 3,
+  // advanced spends 1 device + sacrifices the Colony Ship for an instant colony.
   const TIERS = [
-    { id: 'basic' as const, label: 'Basic', devices: 1, cost: 25000, hab: '40–60', blurb: 'One device · a starter world' },
-    { id: 'enhanced' as const, label: 'Enhanced', devices: 3, cost: 75000, hab: '55–75', blurb: 'Three devices fused · a richer world' },
+    { id: 'basic' as const, label: 'Basic', devices: 1, cost: 25000, hab: '40–60', blurb: 'One device · a starter world (forms ~48h)', sacrifice: false },
+    { id: 'enhanced' as const, label: 'Enhanced', devices: 3, cost: 75000, hab: '55–75', blurb: 'Three devices fused · a richer world (forms ~48h)', sacrifice: false },
+    { id: 'advanced' as const, label: 'Advanced', devices: 1, cost: 250000, hab: '70–90', blurb: 'Sacrifices your Colony Ship · INSTANT Settlement colony (5,000 colonists, L2 citadel, 4 turrets)', sacrifice: true },
   ];
   const tierInfo = TIERS.find(t => t.id === tier)!;
+  const tierEligible = (t: typeof TIERS[number]) =>
+    genesisDevices >= t.devices && (!t.sacrifice || isColonyShip);
 
-  // If the player can't afford the current tier's device count, fall back to basic.
+  // Fall back to basic if the selected tier becomes ineligible.
   useEffect(() => {
-    if (tier === 'enhanced' && genesisDevices < 3) setTier('basic');
-  }, [tier, genesisDevices]);
+    if (!tierEligible(tierInfo)) { setTier('basic'); setAdvancedArmed(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tier, genesisDevices, isColonyShip]);
 
   useEffect(() => {
     // Keep the default in sync if the player moves while the panel is open.
@@ -164,12 +174,24 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       return;
     }
 
+    if (tierInfo.sacrifice && !isColonyShip) {
+      setError('Advanced genesis requires a Colony Ship to sacrifice.');
+      return;
+    }
+
+    // Two-step confirm for the destructive advanced (ship-sacrifice) tier.
+    if (tierInfo.sacrifice && !advancedArmed) {
+      setAdvancedArmed(true);
+      return;
+    }
+
     try {
       setDeploying(true);
       setError(null);
       setSuccessMessage(null);
 
       const deployedName = planetName.trim();
+      const wasSacrifice = tierInfo.sacrifice;
       const response = await gameAPI.planetary.deployGenesis(
         selectedSectorId.trim(),
         deployedName,
@@ -178,10 +200,15 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
 
       if (response.success) {
         updateShipGenesis(response.genesisDevicesRemaining);
+        setAdvancedArmed(false);
         // Play the genesis formation animation, then surface the success line.
         setDeployAnim(deployedName);
         setTimeout(() => {
-          setSuccessMessage(`Genesis sequence initiated — ${deployedName} is forming (~48h). It will appear in your Colonial Registry when ready.`);
+          setSuccessMessage(
+            wasSacrifice
+              ? `Colony Ship sacrificed — ${deployedName} is established instantly at Settlement level. You've ejected to an escape pod.`
+              : `Genesis sequence initiated — ${deployedName} is forming (~48h). It will appear in your Colonial Registry when ready.`
+          );
           setDeployAnim(null);
         }, 2800);
 
@@ -290,24 +317,31 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                 <label>Genesis Sequence</label>
                 <div className="genesis-tier-select">
                   {TIERS.map(t => {
-                    const affordable = genesisDevices >= t.devices;
+                    const eligible = tierEligible(t);
+                    const reason = genesisDevices < t.devices
+                      ? `Needs ${t.devices} device${t.devices !== 1 ? 's' : ''} (you have ${genesisDevices})`
+                      : (t.sacrifice && !isColonyShip ? 'Requires a Colony Ship to sacrifice' : t.blurb);
                     return (
                       <button
                         type="button"
                         key={t.id}
-                        className={`genesis-tier-card ${tier === t.id ? 'selected' : ''}`}
-                        disabled={!affordable}
-                        title={affordable ? t.blurb : `Requires ${t.devices} devices (you have ${genesisDevices})`}
-                        onClick={() => setTier(t.id)}
+                        className={`genesis-tier-card ${tier === t.id ? 'selected' : ''} ${t.sacrifice ? 'sacrifice' : ''}`}
+                        disabled={!eligible}
+                        title={reason}
+                        onClick={() => { setTier(t.id); setAdvancedArmed(false); }}
                       >
                         <span className="tier-name">{t.label}</span>
-                        <span className="tier-devices">{t.devices} device{t.devices !== 1 ? 's' : ''}</span>
+                        <span className="tier-devices">{t.sacrifice ? '1 device + ship' : `${t.devices} device${t.devices !== 1 ? 's' : ''}`}</span>
                         <span className="tier-meta">{t.cost.toLocaleString()} cr · hab {t.hab}</span>
                       </button>
                     );
                   })}
                 </div>
-                <span className="input-hint">Fuse more devices for a richer world. You have {genesisDevices} loaded.</span>
+                {tierInfo.sacrifice ? (
+                  <span className="input-hint genesis-sacrifice-warn">⚠️ Advanced SACRIFICES your Colony Ship ({currentShip?.name || 'current hull'}) — you eject to an escape pod. In exchange the colony is built instantly at Settlement level (no 48h wait).</span>
+                ) : (
+                  <span className="input-hint">Fuse more devices for a richer world. You have {genesisDevices} loaded{isColonyShip ? '; Advanced sacrifices this Colony Ship for an instant colony' : ''}.</span>
+                )}
               </div>
 
               <div className="form-section">
@@ -356,7 +390,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                 </div>
                 <div className="summary-item">
                   <span className="summary-label">Formation:</span>
-                  <span className="summary-value">~48 hours (invulnerable)</span>
+                  <span className="summary-value">{tierInfo.sacrifice ? 'Instant — Settlement level' : '~48 hours (invulnerable)'}</span>
                 </div>
               </div>
             </div>
@@ -364,17 +398,21 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
             <div className="action-buttons">
               <button
                 className="button secondary"
-                onClick={onClose}
+                onClick={() => { if (advancedArmed) { setAdvancedArmed(false); } else { onClose && onClose(); } }}
                 disabled={deploying}
               >
-                Cancel
+                {advancedArmed ? 'Back' : 'Cancel'}
               </button>
               <button
-                className="button primary"
+                className={`button primary ${tierInfo.sacrifice && advancedArmed ? 'danger' : ''}`}
                 onClick={handleDeploy}
-                disabled={deploying || !!deployAnim || !planetName || !selectedSectorId || genesisDevices < tierInfo.devices}
+                disabled={deploying || !!deployAnim || !planetName || !selectedSectorId || !tierEligible(tierInfo)}
               >
-                {deploying ? 'Deploying...' : `Deploy ${tierInfo.label} (${tierInfo.devices} device${tierInfo.devices !== 1 ? 's' : ''})`}
+                {deploying
+                  ? 'Deploying...'
+                  : tierInfo.sacrifice
+                    ? (advancedArmed ? `⚠️ Confirm — sacrifice ${currentShip?.name || 'Colony Ship'}` : 'Deploy Advanced (sacrifices ship)')
+                    : `Deploy ${tierInfo.label} (${tierInfo.devices} device${tierInfo.devices !== 1 ? 's' : ''})`}
               </button>
             </div>
           </>

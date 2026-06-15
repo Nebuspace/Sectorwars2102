@@ -101,8 +101,9 @@ export const planetaryAPI = {
     }),
 
   // planetType is rolled server-side from the device tier (ADR-0014); it is
-  // accepted but ignored. tier: 'basic' (1 device) or 'enhanced' (3 devices).
-  deployGenesis: (sectorId: string, planetName: string, tier: 'basic' | 'enhanced' = 'basic') =>
+  // accepted but ignored. tier: basic (1 device), enhanced (3 devices), or
+  // advanced (1 device + the Colony Ship is sacrificed for an instant colony).
+  deployGenesis: (sectorId: string, planetName: string, tier: 'basic' | 'enhanced' | 'advanced' = 'basic') =>
     apiRequest('/api/v1/planets/genesis/deploy', {
       method: 'POST',
       body: JSON.stringify({ sectorId, planetName, tier })
