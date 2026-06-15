@@ -2059,6 +2059,32 @@
     }
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-ab",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "NEON genesis: tiered deploy (use 3 at once) + formation animation (canon-grounded)",
+   "sections": [
+    {
+     "key": "genesis-tier-deploy",
+     "state": "shipped-proven",
+     "commit": "b59ab42",
+     "proof": "Canon basic=1/enhanced=3 device deploy (was always 1). GENESIS_DEVICE_COST + pre-flight + tier param + client tier selector. PROVEN: enhanced consumed 3 -> hab-75 oceanic planet, -75k; basic consumed 1 (3->2); enhanced rejected with 2 devices. Fixes 'deploys one at a time'."
+    },
+    {
+     "key": "genesis-formation-animation",
+     "state": "shipped",
+     "commit": "b59ab42",
+     "proof": "Canon 'progressive planet-formation visuals' \u2014 deploy-moment animation (core ignite -> shockwaves -> coalescing spinning planet + name). Also fixed fictional '5 minutes' -> ~48h. Client-only; user self-verifies UI."
+    }
+   ],
+   "canon_grounding": "Read full genesis-devices.md + genesis-deploy.md; confirmed basic/enhanced device counts + 'progressive formation visuals' are canon (not invented).",
+   "still_max_gated": [
+    "Advanced tier (typed advanced device + Colony Ship sacrifice + escape pod); buy-side tier vocab + fake success-rate cards \u2014 DECISIONS genesis-device-tiering-model (narrowed)."
+   ],
+   "last_updated": "2026-06-14"
   }
  ],
  "last_updated": "2026-06-14"

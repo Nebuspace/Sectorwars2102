@@ -634,3 +634,9 @@ Genesis buildable fixes: honor planet name (legacy deploy endpoint + service) + 
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev a61022b). Genesis buildable fixes proven: deploy now honors the player chosen name (PROVEN: deploy Maxhaven Prime -> planet named Maxhaven Prime, oceanic, forming, device 1->0; was auto-named before), planetType optional (server rolls biome). Client: labeled Deploy Genesis button + current-sector default + honest biome note. Tier/device-count/buy-cards untouched (Max-gated DECISIONS). Test planet + fixtures reverted.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Genesis tiered deploy: enhanced consumes 3 devices (basic 1), tier param on legacy route + GENESIS_DEVICE_COST. gameserver restart. CLOSED to follow.
+
+### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev b59ab42). Genesis tiered deploy PROVEN: enhanced consumes 3 devices -> 1 planet (hab 75, -75k), basic consumes 1 (3->2), enhanced rejected with 2 devices. Formation animation + tier selector (client). Advanced still gated. Test planets + fixtures reverted.
