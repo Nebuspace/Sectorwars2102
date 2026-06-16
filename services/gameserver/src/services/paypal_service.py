@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, Field
 from enum import Enum
 
-from src.core.database import get_async_session
+from src.core.database import AsyncSessionLocal
 from src.core.config import get_config
 from src.models.region import Region
 from src.models.player import Player
@@ -344,7 +344,10 @@ class PayPalService:
             
             logger.info(f"Processing PayPal webhook: {event_type} for subscription {subscription_id}")
 
-            async with get_async_session() as session:
+            # NB: use AsyncSessionLocal() directly — get_async_session is a FastAPI
+            # dependency generator (async def ... yield), not an async context
+            # manager, so `async with get_async_session()` raises.
+            async with AsyncSessionLocal() as session:
                 # Idempotency: record this event id first, in the SAME transaction
                 # as the mutation below. A duplicate delivery (PayPal retries
                 # aggressively) collides on the unique primary key, so we skip it
@@ -580,8 +583,8 @@ class PayPalService:
     async def get_user_subscriptions(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all active subscriptions for a user"""
         subscriptions = []
-        
-        async with get_async_session() as session:
+
+        async with AsyncSessionLocal() as session:
             # Check for galactic citizenship
             result = await session.execute(
                 select(Player).options(selectinload(Player.user))
