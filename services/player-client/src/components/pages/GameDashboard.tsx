@@ -946,9 +946,12 @@ const GameDashboard: React.FC = () => {
     try {
       const result = await upgradeShields(landedPlanet.id);
       const gen = result?.shieldGenerator;
+      // ADR-0086: the upgrade is now time-based — credits are charged now, the
+      // level advances when the build timer (target level x 6h) elapses.
+      const hrs = Number(result?.buildHours || 0);
       setOpsNotice({
         type: 'success',
-        message: `Shield generator upgraded to L${gen?.level ?? '?'}${gen?.name ? ` (${gen.name})` : ''} — ${Number(result?.creditsCost || 0).toLocaleString()} credits spent.`
+        message: `Shield generator upgrade to L${gen?.toLevel ?? '?'}${gen?.name ? ` (${gen.name})` : ''} started — ${Number(result?.creditsCost || 0).toLocaleString()} credits spent, ready in ${hrs}h.`
       });
       setOpsRefresh(n => n + 1);
     } catch (error: any) {
@@ -2044,6 +2047,16 @@ const GameDashboard: React.FC = () => {
                     // fill that role (see PlanetaryService.update_defenses note)
                     const droneCount: number | null = typeof defenseInfo?.fighters === 'number' ? defenseInfo.fighters : null;
                     const turretCount: number | null = typeof defenseInfo?.turrets === 'number' ? defenseInfo.turrets : null;
+                    // ADR-0086: shield upgrades are time-based (target level x 6h).
+                    const fmtRemain = (secs: number) => {
+                      const s = Math.max(0, Math.floor(secs || 0));
+                      const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+                      if (d > 0) return `${d}d ${h}h`;
+                      if (h > 0) return `${h}h ${m}m`;
+                      return `${m}m`;
+                    };
+                    const shieldUpgrading: boolean = !!shieldGen?.isUpgrading;
+                    const shieldRemain: string = shieldGen?.upgrade ? fmtRemain(shieldGen.upgrade.remainingSeconds ?? 0) : '';
 
                     const planetIcon = getPlanetIcon(currentPlanet?.type);
 
@@ -2259,7 +2272,11 @@ const GameDashboard: React.FC = () => {
                                       ? `${Number(shieldGen.currentShields ?? 0).toLocaleString()} / ${Number(shieldGen.strength ?? 0).toLocaleString()}`
                                       : '—'}
                                   </span>
-                                  <span className="sublabel">Shields L{shieldGen?.level ?? '—'}</span>
+                                  <span className="sublabel">
+                                    {shieldUpgrading
+                                      ? `L${shieldGen?.upgrade?.fromLevel ?? shieldGen?.level} → L${shieldGen?.upgrade?.toLevel} · ${shieldRemain} left`
+                                      : `Shields L${shieldGen?.level ?? '—'}`}
+                                  </span>
                                 </div>
                                 <div className="defense-item">
                                   <span>🤖</span>
@@ -2278,21 +2295,25 @@ const GameDashboard: React.FC = () => {
                               <div className="section-actions">
                                 <button
                                   className="section-btn"
-                                  disabled={!isLandedPlanetMine || !shieldGen?.nextUpgrade || upgradeBusy}
+                                  disabled={!isLandedPlanetMine || shieldUpgrading || !shieldGen?.nextUpgrade || upgradeBusy}
                                   title={
                                     !isLandedPlanetMine
                                       ? 'Shield upgrades require planetary ownership'
                                       : !shieldGen
                                         ? 'Defense telemetry unavailable'
-                                        : !shieldGen.nextUpgrade
-                                          ? `Shield generator at maximum level (${shieldGen.maxLevel})`
-                                          : `Upgrade to L${shieldGen.nextUpgrade.level} ${shieldGen.nextUpgrade.name} — ${Number(shieldGen.nextUpgrade.cost).toLocaleString()} credits`
+                                        : shieldUpgrading
+                                          ? `Shield generator upgrading to L${shieldGen.upgrade?.toLevel} — ${shieldRemain} remaining`
+                                          : !shieldGen.nextUpgrade
+                                            ? `Shield generator at maximum level (${shieldGen.maxLevel})`
+                                            : `Upgrade to L${shieldGen.nextUpgrade.level} ${shieldGen.nextUpgrade.name} — ${Number(shieldGen.nextUpgrade.cost).toLocaleString()} credits, ${shieldGen.nextUpgrade.buildHours}h`
                                   }
                                   onClick={() => setConfirmUpgrade('shields')}
                                 >
-                                  🛡️ Upgrade Shields
-                                  {shieldGen?.nextUpgrade && (
-                                    <span className="btn-sublabel">→ L{shieldGen.nextUpgrade.level} · {Number(shieldGen.nextUpgrade.cost).toLocaleString()} cr</span>
+                                  {shieldUpgrading ? '🛡️ Upgrading Shields…' : '🛡️ Upgrade Shields'}
+                                  {shieldUpgrading ? (
+                                    <span className="btn-sublabel">→ L{shieldGen?.upgrade?.toLevel} · {shieldRemain} left</span>
+                                  ) : shieldGen?.nextUpgrade && (
+                                    <span className="btn-sublabel">→ L{shieldGen.nextUpgrade.level} · {Number(shieldGen.nextUpgrade.cost).toLocaleString()} cr · {shieldGen.nextUpgrade.buildHours}h</span>
                                   )}
                                 </button>
                                 {/* No "Deploy Drones" control: the only candidate endpoint
@@ -2325,7 +2346,7 @@ const GameDashboard: React.FC = () => {
                               {confirmUpgrade === 'shields' && shieldGen?.nextUpgrade && (
                                 <div className="transfer-notice" role="alertdialog" aria-label="Confirm shield upgrade">
                                   Upgrade shields to L{shieldGen.nextUpgrade.level} {shieldGen.nextUpgrade.name} for{' '}
-                                  {Number(shieldGen.nextUpgrade.cost).toLocaleString()} credits?
+                                  {Number(shieldGen.nextUpgrade.cost).toLocaleString()} credits? Build time {shieldGen.nextUpgrade.buildHours}h — credits charged now, shields strengthen on completion.
                                   <div className="section-actions" style={{ marginTop: '4px' }}>
                                     <button className="section-btn upgrade" onClick={handleUpgradeShields} disabled={upgradeBusy}>
                                       {upgradeBusy ? 'UPGRADING…' : '✓ Confirm'}
