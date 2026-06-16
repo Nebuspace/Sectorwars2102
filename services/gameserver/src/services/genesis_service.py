@@ -77,7 +77,7 @@ GENESIS_TIERS = {
 
 # Genesis device capacity by ship type
 GENESIS_CAPACITY_BY_SHIP = {
-    ShipType.LIGHT_FREIGHTER: 1,
+    ShipType.LIGHT_FREIGHTER: 0,  # ADR/DECISIONS 2026-06-16: aligned to doc + seeder (0); genesis needs a larger hull
     ShipType.CARGO_HAULER: 2,
     ShipType.COLONY_SHIP: 3,
     ShipType.DEFENDER: 3,
