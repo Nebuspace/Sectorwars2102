@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import apiClient from '../../services/apiClient';
 import { useAuth } from '../../contexts/AuthContext';
 
 const OAuthCallback: React.FC = () => {
@@ -18,14 +19,27 @@ const OAuthCallback: React.FC = () => {
         // Parse the URL search params
         const params = new URLSearchParams(location.search);
 
-        const accessToken = params.get('access_token');
-        const refreshToken = params.get('refresh_token');
-        const userId = params.get('user_id');
+        // ADR-0085: prefer the single-use authorization code — tokens are no
+        // longer placed in the redirect URL (they would leak to history /
+        // Referer / logs). Fall back to legacy URL tokens during the transition
+        // window so this stays compatible until the server flips to code-only.
+        let accessToken = params.get('access_token');
+        let refreshToken = params.get('refresh_token');
+        let userId = params.get('user_id');
         // Check for new user indicators either from query param or in session storage
-        const isNewUser = params.get('is_new_user') === 'true' || sessionStorage.getItem('oauth_register') === 'true';
+        let isNewUser = params.get('is_new_user') === 'true' || sessionStorage.getItem('oauth_register') === 'true';
+
+        const code = params.get('code');
+        if (code) {
+          const { data } = await apiClient.post('/api/v1/auth/exchange', { code });
+          accessToken = data.access_token;
+          refreshToken = data.refresh_token;
+          userId = data.user_id;
+          if (data.is_new_user) isNewUser = true;
+        }
 
         if (!accessToken || !refreshToken || !userId) {
-          throw new Error(`Invalid OAuth callback parameters: accessToken=${Boolean(accessToken)}, refreshToken=${Boolean(refreshToken)}, userId=${Boolean(userId)}`);
+          throw new Error(`Invalid OAuth callback parameters: code=${Boolean(code)}, accessToken=${Boolean(accessToken)}, refreshToken=${Boolean(refreshToken)}, userId=${Boolean(userId)}`);
         }
 
         // Store tokens in localStorage
