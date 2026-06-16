@@ -4,10 +4,11 @@ import asyncio
 import json
 import os
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -17,10 +18,41 @@ from src.core.config import get_config
 from src.models.region import Region
 from src.models.player import Player
 from src.models.user import User
+from src.models.processed_webhook_event import ProcessedWebhookEvent
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# Name of the env flag that disables PayPal webhook signature verification.
+# Intended for local/dev only — it must NEVER be active in production.
+WEBHOOK_BYPASS_ENV = "PAYPAL_SKIP_WEBHOOK_VALIDATION"
+
+
+class BypassFlagInProductionError(RuntimeError):
+    """Raised at import time if a webhook-validation bypass flag is enabled while
+    the service is running in production. PayPal webhook signature verification is
+    mandatory in production (ADR-0058 A-D3); allowing it to be silently bypassed
+    is a forgeable-payment vulnerability, so we fail closed at boot rather than
+    serve a single request with verification off.
+    """
+
+
+def _assert_no_webhook_bypass_in_production() -> None:
+    """Fail fast at import if the bypass flag is set in a production environment."""
+    env = os.environ.get("ENVIRONMENT", "development").strip().lower()
+    bypass = os.environ.get(WEBHOOK_BYPASS_ENV, "").strip().lower() == "true"
+    if env == "production" and bypass:
+        raise BypassFlagInProductionError(
+            f"{WEBHOOK_BYPASS_ENV} must never be enabled in production — "
+            "PayPal webhook signature verification is mandatory. Refusing to start."
+        )
+
+
+# Evaluated when this module is imported during app startup: a production server
+# configured with the bypass flag will refuse to boot.
+_assert_no_webhook_bypass_in_production()
 
 
 def _redact(value: Optional[str], keep: int = 4) -> str:
@@ -311,10 +343,29 @@ class PayPalService:
             subscription_id = resource.get("id")
             
             logger.info(f"Processing PayPal webhook: {event_type} for subscription {subscription_id}")
-            
+
             async with get_async_session() as session:
+                # Idempotency: record this event id first, in the SAME transaction
+                # as the mutation below. A duplicate delivery (PayPal retries
+                # aggressively) collides on the unique primary key, so we skip it
+                # instead of applying the effect twice. Insert-as-dedup means
+                # there's no SELECT-then-INSERT race window.
+                session.add(ProcessedWebhookEvent(
+                    event_id=webhook_event.id, event_type=event_type
+                ))
+                try:
+                    await session.flush()
+                except IntegrityError:
+                    await session.rollback()
+                    logger.info(
+                        "Duplicate PayPal webhook %s (%s) ignored", webhook_event.id, event_type
+                    )
+                    return True
+
                 if event_type == "BILLING.SUBSCRIPTION.ACTIVATED":
                     await self._handle_subscription_activated(session, resource)
+                elif event_type == "BILLING.SUBSCRIPTION.PAYMENT.SUCCEEDED":
+                    await self._handle_subscription_renewed(session, resource)
                 elif event_type == "BILLING.SUBSCRIPTION.CANCELLED":
                     await self._handle_subscription_cancelled(session, resource)
                 elif event_type == "BILLING.SUBSCRIPTION.SUSPENDED":
@@ -325,9 +376,9 @@ class PayPalService:
                     await self._handle_payment_completed(session, resource)
                 else:
                     logger.info(f"Unhandled webhook event type: {event_type}")
-                
+
                 await session.commit()
-            
+
             return True
             
         except Exception as e:
@@ -342,7 +393,7 @@ class PayPalService:
         # Parse custom_id to determine subscription type and user
         if custom_id.startswith("galactic_citizen_"):
             user_id = custom_id.replace("galactic_citizen_", "")
-            await self._activate_galactic_citizenship(session, user_id, subscription_id)
+            await self._activate_galactic_citizenship(session, user_id, subscription_id, resource)
         elif custom_id.startswith("regional_owner_"):
             parts = custom_id.replace("regional_owner_", "").split("_")
             user_id = parts[0]
@@ -426,19 +477,72 @@ class PayPalService:
             region.status = "active"
             logger.info(f"Reactivated region {region.name} after successful payment")
     
-    async def _activate_galactic_citizenship(self, session: AsyncSession, user_id: str, subscription_id: str):
+    @staticmethod
+    def _next_expiry(resource: Dict[str, Any]) -> datetime:
+        """Compute the new subscription expiry from a PayPal subscription resource.
+
+        Prefers the provider's authoritative ``billing_info.next_billing_time``;
+        falls back to ~one billing month from now when absent. Always returns a
+        timezone-aware UTC datetime so per-request expiry comparisons are sound.
+        """
+        next_billing = (resource.get("billing_info") or {}).get("next_billing_time")
+        if next_billing:
+            try:
+                return datetime.fromisoformat(str(next_billing).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                logger.warning("Unparseable next_billing_time on PayPal resource; using fallback")
+        return datetime.now(timezone.utc) + timedelta(days=31)
+
+    async def _activate_galactic_citizenship(self, session: AsyncSession, user_id: str, subscription_id: str, resource: Dict[str, Any]):
         """Activate galactic citizenship for user"""
         result = await session.execute(
             select(Player).options(selectinload(Player.user))
             .where(Player.user_id == user_id)
         )
         player = result.scalar_one_or_none()
-        
+
         if player:
             player.is_galactic_citizen = True
-            if hasattr(player.user, 'paypal_subscription_id'):
-                player.user.paypal_subscription_id = subscription_id
+            if player.user is not None:
+                user = player.user
+                user.paypal_subscription_id = subscription_id
+                user.subscription_tier = SubscriptionTier.GALACTIC_CITIZEN.value
+                user.subscription_status = "active"
+                if user.subscription_started_at is None:
+                    user.subscription_started_at = datetime.now(timezone.utc)
+                user.subscription_expires_at = self._next_expiry(resource)
             logger.info(f"Activated galactic citizenship for player {player.id}")
+
+    async def _handle_subscription_renewed(self, session: AsyncSession, resource: Dict[str, Any]):
+        """Handle a successful recurring subscription payment (renewal).
+
+        ``BILLING.SUBSCRIPTION.PAYMENT.SUCCEEDED`` is the canonical renewal event
+        (ARCHITECTURE/async-workers.md): it extends ``subscription_expires_at`` and
+        re-affirms citizenship so a lapse-and-recover cycle restores access.
+        """
+        subscription_id = resource.get("id") or resource.get("billing_agreement_id")
+        if not subscription_id:
+            logger.warning("Renewal webhook missing subscription id; skipping")
+            return
+
+        result = await session.execute(
+            select(Player).options(selectinload(Player.user))
+            .join(User).where(User.paypal_subscription_id == subscription_id)
+        )
+        player = result.scalar_one_or_none()
+        if player is None:
+            logger.info(
+                "Renewal for subscription %s matched no citizen (may be a region sub)",
+                _redact(subscription_id),
+            )
+            return
+
+        player.is_galactic_citizen = True
+        if player.user is not None:
+            user = player.user
+            user.subscription_status = "active"
+            user.subscription_expires_at = self._next_expiry(resource)
+        logger.info("Renewed galactic citizenship for player %s", player.id)
     
     async def _activate_regional_ownership(
         self, 
@@ -536,9 +640,21 @@ class PayPalService:
                 logger.error("Missing required PayPal webhook headers")
                 return False
             
-            # Allow bypass only with explicit opt-in environment variable
-            if os.environ.get("PAYPAL_SKIP_WEBHOOK_VALIDATION", "").lower() == "true":
-                logger.warning("PayPal webhook signature validation bypassed - PAYPAL_SKIP_WEBHOOK_VALIDATION is set")
+            # Allow bypass only with explicit opt-in env var, and only outside
+            # production. The import-time guard already refuses to boot a prod
+            # server with the flag set; this is defence-in-depth in case the
+            # environment flips at runtime.
+            if os.environ.get(WEBHOOK_BYPASS_ENV, "").strip().lower() == "true":
+                if str(self.config.ENVIRONMENT).strip().lower() == "production":
+                    logger.error(
+                        "%s is set in production — refusing to bypass webhook validation",
+                        WEBHOOK_BYPASS_ENV,
+                    )
+                    return False
+                logger.warning(
+                    "PayPal webhook signature validation bypassed — %s is set (non-production)",
+                    WEBHOOK_BYPASS_ENV,
+                )
                 return True
             
             # For production, implement proper signature validation

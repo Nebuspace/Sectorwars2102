@@ -61,3 +61,4 @@ from src.models.construction import ConstructionReservation
 from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCampaign
 from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus, WarpGateBeaconStatus
 from src.models.sector_celestial import SectorCelestial, SectorFeatureDiscovery
+from src.models.processed_webhook_event import ProcessedWebhookEvent

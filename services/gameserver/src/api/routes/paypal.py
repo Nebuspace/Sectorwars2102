@@ -5,7 +5,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Dict, List, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+from datetime import datetime, timezone
 import json
 
 from src.auth.dependencies import get_current_user, get_current_player
@@ -268,11 +269,32 @@ async def handle_paypal_webhook(
         if not await paypal_service.validate_webhook_signature(headers, body.decode()):
             raise HTTPException(status_code=401, detail="Invalid webhook signature")
         
-        # Parse webhook event
+        # Parse webhook event. A malformed/incomplete payload is a 400, never a
+        # 500 — a 5xx tells PayPal to retry a payload that will never validate.
         event_data = json.loads(body.decode())
-        webhook_event = PayPalWebhookEvent(**event_data)
-        
-        # Process webhook in background
+        try:
+            webhook_event = PayPalWebhookEvent(**event_data)
+        except (ValidationError, TypeError) as exc:
+            logger.warning("Malformed PayPal webhook payload rejected: %s", exc)
+            raise HTTPException(status_code=400, detail="Malformed webhook payload")
+
+        # Replay-attack window: reject events whose create_time is more than 5
+        # minutes from now (ADR-0058). A malformed timestamp is a 400, never a
+        # 500 — a 5xx tells PayPal to retry, which would amplify a replay.
+        try:
+            event_time = datetime.fromisoformat(
+                str(webhook_event.create_time).replace("Z", "+00:00")
+            )
+            if event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid webhook timestamp")
+        if abs((datetime.now(timezone.utc) - event_time).total_seconds()) > 300:
+            logger.warning("Rejected PayPal webhook outside 5-minute window: %s", webhook_event.id)
+            raise HTTPException(status_code=400, detail="Webhook timestamp outside acceptable window")
+
+        # Process webhook in background (idempotency enforced inside the handler,
+        # in the same transaction as the subscription mutation).
         background_tasks.add_task(
             paypal_service.handle_subscription_webhook,
             webhook_event
@@ -286,6 +308,10 @@ async def handle_paypal_webhook(
     
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    except HTTPException:
+        # Deliberate 4xx (bad timestamp / replay window) — must not be downgraded
+        # to a 500, which would tell PayPal to retry the rejected event.
+        raise
     except Exception as e:
         logger.error(f"Webhook processing error: {str(e)}")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
