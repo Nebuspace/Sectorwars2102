@@ -100,7 +100,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   onSuccess,
   onClose 
 }) => {
-  const { currentShip, currentSector, updateShipGenesis } = useGame();
+  const { currentShip, currentSector, updateShipGenesis, playerState } = useGame();
   const [planetName, setPlanetName] = useState('');
   // Default the target to the player's current sector — you deploy where your
   // ship is. The deploy API validates that the sector is empty/eligible. The
@@ -113,6 +113,9 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   // Tier: basic fuses 1 device, enhanced fuses 3, advanced sacrifices the
   // Colony Ship for an instant Settlement colony (canon).
   const [tier, setTier] = useState<'basic' | 'enhanced' | 'advanced'>('basic');
+  // Registration controls the new world's registry visibility + Fed legal status.
+  // Default 'registered' (on the charts in your name, no Fed protection).
+  const [registration, setRegistration] = useState<'clandestine' | 'registered' | 'chartered'>('registered');
   // Holds the new colony's name while the deploy animation plays.
   const [deployAnim, setDeployAnim] = useState<string | null>(null);
   // Two-step confirm guard for the destructive advanced (ship-sacrifice) tier.
@@ -132,6 +135,39 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   const tierInfo = TIERS.find(t => t.id === tier)!;
   const tierEligible = (t: typeof TIERS[number]) =>
     genesisDevices >= t.devices && (!t.sacrifice || isColonyShip);
+
+  // Registration fees (the server is authoritative; these mirror the fee contract
+  // so the player sees the cost before committing).
+  //   Registered  = 10,000
+  //   Clandestine = 60,000
+  //   Chartered   = 10,000 + 40,000 * (1 - clamp(rep/1000, 0, 1) * 0.75)
+  // Chartered scales DOWN with reputation: high standing earns a cheaper charter.
+  const personalReputation = playerState?.personal_reputation ?? 0;
+  const charteredFee = Math.round(
+    10000 + 40000 * (1 - Math.max(0, Math.min(1, personalReputation / 1000)) * 0.75)
+  );
+  const REGISTRATIONS = [
+    {
+      id: 'clandestine' as const,
+      label: 'Clandestine',
+      fee: 60000,
+      blurb: 'Off the registry — no Federation protection. Stays hidden from lookups.',
+    },
+    {
+      id: 'registered' as const,
+      label: 'Registered',
+      fee: 10000,
+      blurb: 'On the charts in your name — no Federation protection.',
+    },
+    {
+      id: 'chartered' as const,
+      label: 'Chartered',
+      fee: charteredFee,
+      blurb: 'Federation legal protection — fee scales down with your reputation.',
+    },
+  ];
+  const registrationInfo = REGISTRATIONS.find(r => r.id === registration)!;
+  const totalCost = tierInfo.cost + registrationInfo.fee;
 
   // Fall back to basic if the selected tier becomes ineligible.
   useEffect(() => {
@@ -195,7 +231,8 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       const response = await gameAPI.planetary.deployGenesis(
         selectedSectorId.trim(),
         deployedName,
-        tier
+        tier,
+        registration
       );
 
       if (response.success) {
@@ -344,6 +381,32 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                 )}
               </div>
 
+              <div className="form-section genesis-registration-section">
+                <label>Registration</label>
+                <div className="genesis-tier-select genesis-registration-select">
+                  {REGISTRATIONS.map(r => (
+                    <button
+                      type="button"
+                      key={r.id}
+                      className={`genesis-tier-card genesis-registration-card ${registration === r.id ? 'selected' : ''}`}
+                      title={r.blurb}
+                      onClick={() => setRegistration(r.id)}
+                    >
+                      <span className="tier-name">{r.label}</span>
+                      <span className="tier-meta">{r.fee.toLocaleString()} cr</span>
+                      <span className="registration-blurb">{r.blurb}</span>
+                    </button>
+                  ))}
+                </div>
+                <span className="input-hint">
+                  {registration === 'chartered'
+                    ? `Chartered fee scales with reputation (yours: ${personalReputation >= 0 ? '+' : ''}${personalReputation}). The final charge is confirmed by the Federation registry.`
+                    : registration === 'clandestine'
+                      ? 'A clandestine world stays off the public registry — no one can look it up, but the Federation will not protect it.'
+                      : 'A registered world appears on the charts under your name. The Federation does not protect registered worlds.'}
+                </span>
+              </div>
+
               <div className="form-section">
                 <label htmlFor="sector-select">Target Sector</label>
                 <input
@@ -379,6 +442,10 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                   <span className="summary-value">{tierInfo.label} — {tierInfo.devices} device{tierInfo.devices !== 1 ? 's' : ''} · {tierInfo.cost.toLocaleString()} cr</span>
                 </div>
                 <div className="summary-item">
+                  <span className="summary-label">Registration:</span>
+                  <span className="summary-value">{registrationInfo.label} · {registrationInfo.fee.toLocaleString()} cr</span>
+                </div>
+                <div className="summary-item">
                   <span className="summary-label">Biome:</span>
                   <span className="summary-value">Determined by the genesis device</span>
                 </div>
@@ -391,6 +458,10 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                 <div className="summary-item">
                   <span className="summary-label">Formation:</span>
                   <span className="summary-value">{tierInfo.sacrifice ? 'Instant — Settlement level' : '~48 hours (invulnerable)'}</span>
+                </div>
+                <div className="summary-item summary-total">
+                  <span className="summary-label">Total Cost:</span>
+                  <span className="summary-value">{totalCost.toLocaleString()} cr</span>
                 </div>
               </div>
             </div>

@@ -44,6 +44,7 @@ from src.api.routes.gambling import router as gambling_router
 from src.api.routes.genesis import router as genesis_router
 from src.api.routes.ship_upgrades import router as ship_upgrades_router
 from src.api.routes.armory import router as armory_router
+from src.api.routes.registry import router as registry_router
 from src.api.routes.bang_galaxy import router as bang_galaxy_router
 from src.api.routes.construction import router as construction_router
 from src.api.routes.port_ownership import router as port_ownership_router
@@ -108,6 +109,8 @@ api_router.include_router(gambling_router, tags=["gambling"])
 api_router.include_router(genesis_router, tags=["genesis"])
 api_router.include_router(ship_upgrades_router, tags=["ship-upgrades"])
 api_router.include_router(armory_router, tags=["armory"])
+# Black-market planet registry lookup (router carries its own /registry prefix)
+api_router.include_router(registry_router, tags=["registry"])
 # TradeDock ship construction (router carries its own /construction prefix)
 api_router.include_router(construction_router, tags=["construction"])
 # Port ownership: listings/auctions, owner powers, economic takeover

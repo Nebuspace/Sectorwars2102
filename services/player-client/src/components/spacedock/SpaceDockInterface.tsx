@@ -231,6 +231,14 @@ const SpaceDockInterface: React.FC = () => {
   // Black market state
   const [showBlackMarket, setShowBlackMarket] = useState(false);
 
+  // Planetary registry lookup (shadow-broker widget inside the black market modal)
+  const [registryQueryName, setRegistryQueryName] = useState('');
+  const [registryLoading, setRegistryLoading] = useState(false);
+  const [registryError, setRegistryError] = useState<string | null>(null);
+  const [registryResults, setRegistryResults] = useState<
+    { name: string; sectorId: number | string; planetType: string; registrationStatus: string }[] | null
+  >(null);
+
   // Error state
   const [gamblingError, setGamblingError] = useState<string | null>(null);
   const [genesisError, setGenesisError] = useState<string | null>(null);
@@ -246,7 +254,7 @@ const SpaceDockInterface: React.FC = () => {
 
   // Prefetch the weekly acquisition allowance when the genesis venue opens so the
   // "N of 3 left" readout is present before the first purchase.
-  useEffect(() => {
+  React.useEffect(() => {
     if (activeVenue !== 'genesis') return;
     const token = getToken();
     if (!token) return;
@@ -1119,6 +1127,49 @@ const SpaceDockInterface: React.FC = () => {
     );
   };
 
+  // Shadow-broker registry lookup: pays 50,000 cr to reveal another player's
+  // non-clandestine holdings. Raw fetch (like the genesis/gambling calls) so the
+  // auth token rides along. The server is authoritative on whether/when it
+  // charges (404 unknown name = no charge; empty list = no charge).
+  const handleRegistryLookup = async () => {
+    const name = registryQueryName.trim();
+    if (!name) {
+      setRegistryError('Enter a player name to query.');
+      return;
+    }
+    const token = getToken();
+    try {
+      setRegistryLoading(true);
+      setRegistryError(null);
+      setRegistryResults(null);
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/registry/lookup`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ playerName: name })
+      });
+      if (!response.ok) {
+        let detail = `Lookup failed (${response.status})`;
+        try {
+          const errBody = await response.json();
+          if (errBody && (typeof errBody.detail === 'string' || errBody.message)) {
+            detail = errBody.detail || errBody.message;
+          }
+        } catch { /* non-JSON error body — keep the generic message */ }
+        if (response.status === 404) detail = `No pilot named "${name}" on record.`;
+        throw new Error(detail);
+      }
+      const data = await response.json();
+      setRegistryResults(Array.isArray(data?.planets) ? data.planets : []);
+    } catch (err) {
+      setRegistryError(err instanceof Error ? err.message : 'Lookup failed.');
+    } finally {
+      setRegistryLoading(false);
+    }
+  };
+
   // Black Market Modal
   const renderBlackMarketModal = () => {
     if (!showBlackMarket) return null;
@@ -1191,6 +1242,60 @@ const SpaceDockInterface: React.FC = () => {
                 </div>
               </div>
             ))}
+          </div>
+
+          <div className="bm-registry">
+            <h4 className="bm-registry-title">🔍 Planetary Registry Lookup</h4>
+            <p className="bm-registry-desc">
+              "I know a clerk who'll pull a pilot's filed holdings... for a price."
+            </p>
+            <div className="bm-registry-query">
+              <input
+                type="text"
+                className="bm-registry-input"
+                placeholder="Pilot name..."
+                value={registryQueryName}
+                onChange={e => { setRegistryQueryName(e.target.value); if (registryError) setRegistryError(null); }}
+                onKeyDown={e => { if (e.key === 'Enter' && !registryLoading) handleRegistryLookup(); }}
+                disabled={registryLoading}
+              />
+              <button
+                className="bm-buy-btn"
+                onClick={handleRegistryLookup}
+                disabled={registryLoading || !registryQueryName.trim()}
+              >
+                {registryLoading ? 'Querying...' : 'Pay 50,000 cr — Query'}
+              </button>
+            </div>
+            <div className="bm-registry-meta">
+              <span className="bm-price">50,000 cr</span>
+              <span className="bm-registry-caveat">Clandestine worlds never appear.</span>
+            </div>
+
+            {registryError && (
+              <div className="bm-registry-error">{registryError}</div>
+            )}
+
+            {registryResults && (
+              registryResults.length === 0 ? (
+                <div className="bm-registry-empty">No registered holdings on file.</div>
+              ) : (
+                <div className="bm-registry-results">
+                  {registryResults.map((planet, idx) => (
+                    <div key={idx} className="bm-item">
+                      <div className="bm-item-info">
+                        <h4>{planet.name}</h4>
+                        <div className="bm-item-stats">
+                          <span className="bm-stat">sector: {planet.sectorId}</span>
+                          <span className="bm-stat">type: {planet.planetType}</span>
+                          <span className="bm-stat">status: {planet.registrationStatus}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
           </div>
 
           <div className="bm-footer">

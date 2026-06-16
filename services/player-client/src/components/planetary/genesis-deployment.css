@@ -608,6 +608,30 @@
   .genesis-anim-label { opacity: 1; }
 }
 
+/* ============ Genesis registration selector ============ */
+/* Mirrors the .genesis-tier-select look; cards add a one-line blurb under the
+   fee so each registration's trade-off (visibility / Fed protection) is clear. */
+.genesis-registration-section { grid-column: 1 / -1; }
+.genesis-registration-select .genesis-registration-card { gap: 4px; }
+.genesis-registration-card .registration-blurb {
+  font-size: 0.66rem;
+  line-height: 1.3;
+  opacity: 0.8;
+}
+.genesis-registration-card.selected .registration-blurb { opacity: 0.95; }
+
+/* Total-cost row in the deployment summary — emphasized over the line items. */
+.deployment-summary .summary-item.summary-total {
+  grid-column: 1 / -1;
+  background: rgba(124, 110, 255, 0.14);
+  border: 1px solid rgba(124, 110, 255, 0.4);
+}
+.deployment-summary .summary-item.summary-total .summary-label,
+.deployment-summary .summary-item.summary-total .summary-value {
+  font-weight: 700;
+  color: #fff;
+}
+
 /* Advanced (Colony Ship sacrifice) tier — destructive accent */
 .genesis-tier-card.sacrifice { border-color: rgba(255, 170, 68, 0.4); background: rgba(255, 140, 40, 0.06); }
 .genesis-tier-card.sacrifice.selected {

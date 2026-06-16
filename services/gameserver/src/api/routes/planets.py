@@ -81,6 +81,11 @@ class GenesisDeployRequest(BaseModel):
     # Biome is rolled server-side from the device tier (ADR-0014); kept optional
     # only so older clients that still send a type don't 422.
     planetType: str | None = None
+    # Colonial Registry visibility (FROZEN registry contract): "registered"
+    # (default, visible), "clandestine" (hidden from registry lookup), or
+    # "chartered" (publicly protected, reputation-scaled fee). Older clients
+    # that omit it default to "registered".
+    registration: str = Field(default="registered", pattern="^(clandestine|registered|chartered)$")
 
 
 class SpecializationRequest(BaseModel):
@@ -1109,6 +1114,7 @@ async def deploy_genesis_device_legacy(
             sector_id=sector_num,
             tier=request.tier,  # basic (1 device) or enhanced (3 devices)
             name=request.planetName,  # honor the player's chosen colony name
+            registration=request.registration,  # Colonial Registry visibility
         )
         # Translate the service's snake_case result into the camelCase keys
         # the client reads (genesisDevicesRemaining / deploymentTime / planetId);
@@ -1121,6 +1127,9 @@ async def deploy_genesis_device_legacy(
             "genesisDevicesRemaining": result["genesis_devices_remaining"],
             "deploymentTime": result["deployment_seconds"],
             "formationStatus": result["formation_status"],
+            # Colonial Registry outcome (FROZEN registry contract)
+            "registrationStatus": result["registration_status"],
+            "registrationFee": result["registration_fee"],
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -3002,3 +3002,69 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Black-market Planetary Registry lookup widget ───────────────────────── */
+.bm-registry {
+  margin: 12px 16px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(139, 0, 0, 0.3);
+  border-radius: 8px;
+}
+.bm-registry-title {
+  font-size: 0.9em;
+  font-weight: bold;
+  color: rgba(220, 170, 170, 0.9);
+  margin-bottom: 4px;
+}
+.bm-registry-desc,
+.bm-registry-caveat {
+  font-size: 0.72em;
+  color: rgba(200, 150, 150, 0.6);
+  font-style: italic;
+  line-height: 1.35;
+  margin-bottom: 8px;
+}
+.bm-registry-caveat { margin: 6px 0 0; }
+.bm-registry-query {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.bm-registry-input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(139, 0, 0, 0.4);
+  border-radius: 4px;
+  color: #e8d8d8;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 0.85em;
+}
+.bm-registry-input:focus {
+  outline: none;
+  border-color: rgba(200, 60, 60, 0.7);
+  box-shadow: 0 0 8px rgba(139, 0, 0, 0.4);
+}
+.bm-registry-meta {
+  font-size: 0.7em;
+  color: rgba(200, 150, 150, 0.55);
+  margin-top: 6px;
+}
+.bm-registry-error {
+  margin-top: 8px;
+  font-size: 0.78em;
+  color: #ff5a5a;
+}
+.bm-registry-empty {
+  margin-top: 8px;
+  font-size: 0.78em;
+  color: rgba(200, 150, 150, 0.7);
+  font-style: italic;
+}
+.bm-registry-results {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

@@ -832,13 +832,34 @@ class CombatService:
         
         # Update last_attacked timestamp for planet
         planet.last_attacked = datetime.now()
-        
+
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
-        
+
+        # Chartered-planet protection: assaulting a publicly-chartered planet is
+        # a reputation offense. Apply the -50 personal-reputation penalty once
+        # per attack, here — attack_planet is the single definitive entry point
+        # for a planet attack (resolution happens inside _resolve_planet_combat,
+        # not a per-round loop), so this fires exactly once and only after the
+        # attack has passed every guard and definitively proceeded (rejected
+        # attacks return earlier and never reach this line). The penalty is
+        # charged for the act of assaulting a chartered planet regardless of
+        # outcome/capture. active_events is a JSONB column that defaults to [] —
+        # only a dict with an explicit 'chartered' registration_status triggers
+        # the penalty. Best-effort: never break combat resolution.
+        events = planet.active_events
+        if isinstance(events, dict) and events.get("registration_status") == "chartered":
+            try:
+                from src.services.personal_reputation_service import PersonalReputationService
+                PersonalReputationService(self.db).adjust_reputation(
+                    attacker.id, -50, "attacked_chartered_planet"
+                )
+            except Exception as e:
+                logger.error("Failed chartered-planet reputation hook: %s", e)
+
         # Commit changes
         self.db.commit()
-        
+
         return {
             "success": True,
             "message": combat_result["message"],

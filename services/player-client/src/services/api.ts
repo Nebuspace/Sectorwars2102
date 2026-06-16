@@ -103,10 +103,20 @@ export const planetaryAPI = {
   // planetType is rolled server-side from the device tier (ADR-0014); it is
   // accepted but ignored. tier: basic (1 device), enhanced (3 devices), or
   // advanced (1 device + the Colony Ship is sacrificed for an instant colony).
-  deployGenesis: (sectorId: string, planetName: string, tier: 'basic' | 'enhanced' | 'advanced' = 'basic') =>
+  // registration controls the new world's visibility on the public registry and
+  // its Federation legal status (server is authoritative on the fee charged):
+  //   registered (default) — on the charts in your name, no Fed protection
+  //   clandestine          — off the registry, no Fed protection
+  //   chartered            — Fed legal protection, fee scales down with reputation
+  deployGenesis: (
+    sectorId: string,
+    planetName: string,
+    tier: 'basic' | 'enhanced' | 'advanced' = 'basic',
+    registration: 'clandestine' | 'registered' | 'chartered' = 'registered'
+  ) =>
     apiRequest('/api/v1/planets/genesis/deploy', {
       method: 'POST',
-      body: JSON.stringify({ sectorId, planetName, tier })
+      body: JSON.stringify({ sectorId, planetName, tier, registration })
     }),
 
   specializePlanet: (planetId: string, specialization: string) =>
@@ -532,10 +542,24 @@ export const shipUpgradeAPI = {
     }),
 };
 
+// Planetary Registry APIs (shadow-broker lookup of another player's holdings).
+// 403 if the caller's personal_reputation >= 0 (only those off the books may
+// query); 404 (no charge) if the name is unknown; an empty planets list (no
+// charge) if the target has no non-clandestine worlds; otherwise the server
+// charges 50,000 cr. Clandestine worlds never appear in the result.
+export const registryAPI = {
+  lookup: (playerName: string) =>
+    apiRequest('/api/v1/registry/lookup', {
+      method: 'POST',
+      body: JSON.stringify({ playerName })
+    })
+};
+
 // Export all APIs
 export const gameAPI = {
   combat: combatAPI,
   planetary: planetaryAPI,
+  registry: registryAPI,
   team: teamAPI,
   fleet: fleetAPI,
   faction: factionAPI,

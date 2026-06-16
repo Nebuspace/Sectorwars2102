@@ -118,6 +118,7 @@ class GenesisService:
         sector_id: int,
         tier: str,
         name: Optional[str] = None,
+        registration: str = "registered",
     ) -> Dict[str, Any]:
         """
         Deploy a genesis device to create a new planet.
@@ -125,6 +126,13 @@ class GenesisService:
         Validates credits, rate limits, ship capacity, and sector limits.
         The planet enters a "forming" state for the configured formation period.
         For the advanced tier, the player's colony ship is sacrificed.
+
+        The `registration` argument controls the planet's Colonial Registry
+        visibility (FROZEN registry contract): "registered" (default, visible,
+        10,000 cr), "clandestine" (hidden from the registry lookup, 60,000 cr),
+        or "chartered" (publicly protected; fee scales with reputation and the
+        founding grants +25 personal reputation). The registration fee is
+        charged ON TOP of the device tier sequence cost.
 
         Returns deployment result with formation timing information.
         """
@@ -181,11 +189,35 @@ class GenesisService:
         # the count for the informational fields in the response.
         purchases_this_week = self._get_weekly_purchase_count(player)
 
-        # --- Check credits ---
-        cost = tier_config["cost"]
-        if player.credits < cost:
+        # --- Validate registration tier ---
+        registration = (registration or "registered").lower()
+        if registration not in ("clandestine", "registered", "chartered"):
             raise ValueError(
-                f"Insufficient credits. You have {player.credits:,} but need {cost:,}"
+                f"Invalid registration status: {registration}. "
+                "Must be one of: clandestine, registered, chartered"
+            )
+
+        # --- Check credits (device tier sequence cost + registration fee) ---
+        cost = tier_config["cost"]
+        # Registry fees (FROZEN contract): Registered 10,000; Clandestine 60,000;
+        # Chartered = 10,000 + 40,000 * (1 - clamp(rep/1000, 0, 1) * 0.75).
+        # The player row is already locked above, so personal_reputation is safe
+        # to read for the Chartered curve.
+        if registration == "clandestine":
+            registration_fee = 60000
+        elif registration == "chartered":
+            rep = player.personal_reputation or 0
+            rep_factor = max(0.0, min(1.0, rep / 1000.0))
+            registration_fee = int(10000 + 40000 * (1 - rep_factor * 0.75))
+        else:  # registered
+            registration_fee = 10000
+
+        total_cost = cost + registration_fee
+        if player.credits < total_cost:
+            raise ValueError(
+                f"Insufficient credits. You have {player.credits:,} but need "
+                f"{total_cost:,} ({cost:,} for the {tier} sequence + "
+                f"{registration_fee:,} {registration} registration fee)"
             )
 
         # --- Check ship genesis capacity ---
@@ -272,8 +304,29 @@ class GenesisService:
 
         self.db.add(planet)
 
-        # --- Deduct credits ---
-        player.credits -= cost
+        # --- Store the Colonial Registry status (FROZEN contract) ---
+        # JSONB dict-reassign pattern (mirrors citadel_service._set_defense_buildings):
+        # read active_events, shallow-copy if a dict, set the key, reassign so
+        # SQLAlchemy detects the mutation. A freshly-created planet has no
+        # active_events yet, so this initializes the dict.
+        events = planet.active_events
+        if not isinstance(events, dict):
+            events = {"legacy_events": events} if events else {}
+        events = dict(events)
+        events["registration_status"] = registration
+        planet.active_events = events
+
+        # --- Deduct credits (tier sequence cost + registration fee) ---
+        player.credits -= total_cost
+
+        # Chartering a planet is a public, lawful act: +25 personal reputation
+        # (FROZEN contract). adjust_reputation takes a player_id (UUID), not a
+        # Player object; the player row is already locked in this txn.
+        if registration == "chartered":
+            from src.services.personal_reputation_service import PersonalReputationService
+            PersonalReputationService(self.db).adjust_reputation(
+                player.id, 25, "planet_chartered"
+            )
 
         # --- Consume the tier's loaded genesis devices ---
         # basic = 1, enhanced = 3, advanced = 1 (canon GENESIS_DEVICE_COST).
@@ -345,8 +398,11 @@ class GenesisService:
             # the player is in a fresh escape pod with no devices.
             "genesis_devices_remaining": 0 if sacrifice_info else (ship.genesis_devices or 0),
             "deployment_seconds": 0 if planet.formation_status == "complete" else int(self.formation_hours * 3600),
-            "credits_spent": cost,
+            "credits_spent": total_cost,
             "credits_remaining": player.credits,
+            # Colonial Registry outcome (FROZEN registry contract)
+            "registration_status": registration,
+            "registration_fee": registration_fee,
             "genesis_purchases_this_week": purchases_this_week + 1,
             "genesis_purchases_remaining": MAX_PURCHASES_PER_WEEK - (purchases_this_week + 1),
         }
