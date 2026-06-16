@@ -1,3 +1,5 @@
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Query, status
@@ -11,6 +13,8 @@ from src.auth.jwt import decode_token
 from src.core.database import get_async_session, get_db
 from src.models.user import User
 from src.models.player import Player
+
+logger = logging.getLogger(__name__)
 
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login/direct")
@@ -127,7 +131,33 @@ async def get_current_player(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Player account not found"
         )
+
+    _enforce_subscription_expiry(db, current_user, player)
     return player
+
+
+def _enforce_subscription_expiry(db: Session, user: User, player: Player) -> None:
+    """Per-request galactic-citizenship lapse check (ARCHITECTURE/auth.md).
+
+    Citizenship is granted by a PayPal webhook but, without this, was never
+    revoked when ``subscription_expires_at`` passed. We drop it lazily on the
+    first request after expiry. This writes exactly once — on the expired→true
+    transition — because the flag is then ``False`` so the guard no longer holds;
+    a later renewal webhook restores both the flag and the expiry.
+    """
+    if not player.is_galactic_citizen or user.subscription_expires_at is None:
+        return
+
+    expires = user.subscription_expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires >= datetime.now(timezone.utc):
+        return
+
+    player.is_galactic_citizen = False
+    user.subscription_status = "expired"
+    db.commit()
+    logger.info("Dropped lapsed galactic citizenship for player %s", player.id)
 
 
 async def get_current_user_from_token(
