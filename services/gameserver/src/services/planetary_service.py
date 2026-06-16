@@ -66,6 +66,12 @@ SHIELD_GENERATOR_LEVELS = {
     10: {"name": "Impervious Shield", "strength": 75000, "regen_per_hour": 7500, "cost": 3000000},
 }
 
+# Shield-generator upgrades are time-based (ADR-0086): upgrading to level N takes
+# N x 6 hours (L1 = 6h ... L10 = 60h). Stored as a JSONB anchor on
+# planet.active_events['shield_upgrade'] = {from, to, started_at, complete_at}
+# (no migration) and settled lazily on read, mirroring the defense-building queue.
+SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL = 6
+
 # Canon daily colonist growth (FEATURES/planets/colonization.md "Population
 # growth"): colonist_rate = colonists × 0.01 × (habitability_score / 100),
 # i.e. base growth = 1% per day, scaled linearly by habitability.
@@ -950,19 +956,72 @@ class PlanetaryService:
             "nextUpgradeCost": DEFENSE_UPGRADE_COST * (new_level + 1) if new_level < DEFENSE_MAX_LEVEL else None
         }
 
+    def _get_shield_upgrade(self, planet: Planet) -> Optional[Dict[str, Any]]:
+        """Return the in-progress shield-upgrade anchor from active_events, or None."""
+        events = planet.active_events
+        if isinstance(events, dict):
+            su = events.get("shield_upgrade")
+            return dict(su) if isinstance(su, dict) else None
+        return None
+
+    def _set_shield_upgrade(self, planet: Planet, data: Optional[Dict[str, Any]]) -> None:
+        """Persist (data) or clear (None) the shield-upgrade anchor in active_events JSONB."""
+        events = planet.active_events
+        if not isinstance(events, dict):
+            events = {"legacy_events": events} if events else {}
+        events = dict(events)
+        if data is None:
+            events.pop("shield_upgrade", None)
+        else:
+            events["shield_upgrade"] = data
+        planet.active_events = events
+
+    def _settle_shield_upgrade(self, planet: Planet, now: datetime) -> bool:
+        """Apply a shield upgrade whose build timer has elapsed (lazy advance-on-read).
+
+        Mirrors the citadel/defense-building lazy-settle: when the timer is done the
+        generator level + shield strength advance to the target and the anchor clears.
+        Returns True if anything changed so the caller can persist.
+        """
+        su = self._get_shield_upgrade(planet)
+        if not su:
+            return False
+        complete_at = su.get("complete_at")
+        done = True
+        if complete_at:
+            try:
+                done = now >= datetime.fromisoformat(complete_at)
+            except (ValueError, TypeError):
+                done = True  # malformed timestamp: settle rather than strand the upgrade
+        if not done:
+            return False
+        to_level = max(0, min(SHIELD_GENERATOR_MAX_LEVEL, int(su.get("to", planet.defense_shields or 0))))
+        info = SHIELD_GENERATOR_LEVELS.get(to_level, SHIELD_GENERATOR_LEVELS[0])
+        planet.defense_shields = to_level
+        planet.shields = info["strength"]
+        self._set_shield_upgrade(planet, None)
+        self.db.flush()
+        logger.info(
+            "Shield generator upgrade completed to level %s (%s) on planet %s (id=%s)",
+            to_level, info["name"], planet.name, planet.id,
+        )
+        return True
+
     def upgrade_shield_generator(
         self,
         planet_id: UUID,
         player_id: UUID
     ) -> Dict[str, Any]:
         """
-        Upgrade a planet's shield generator by one level.
+        Begin a time-based shield-generator upgrade (ADR-0086).
 
         Shield generators provide planetary shields that absorb damage during
         attacks and sieges. Each level increases shield strength, regeneration
         rate, and cost. Uses planet.defense_shields to track the generator level
         and planet.shields for the current shield strength value.
 
+        Credits are charged up front; the level + strength advance only when the
+        build timer (target level x 6 hours) elapses, settled lazily on read.
         Levels 0-10, with costs ranging from 50,000 to 3,000,000 credits.
         """
         # Lock planet + verify ownership to prevent concurrent upgrade races
@@ -978,6 +1037,17 @@ class PlanetaryService:
 
         if not planet:
             raise ValueError("Planet not found or not owned by player")
+
+        # Settle any already-finished upgrade FIRST so a completed-but-unsettled
+        # build doesn't block the next one.
+        now = datetime.now(UTC)
+        self._settle_shield_upgrade(planet, now)
+
+        if self._get_shield_upgrade(planet):
+            su = self._get_shield_upgrade(planet)
+            raise ValueError(
+                f"Shield generator upgrade already in progress (to level {su.get('to')})"
+            )
 
         current_level = planet.defense_shields or 0
 
@@ -1000,37 +1070,42 @@ class PlanetaryService:
                 f"Insufficient credits. Need {upgrade_cost:,}, have {player.credits:,}"
             )
 
-        # Deduct credits and upgrade
+        # Charge credits now; the level/strength advance on completion (settle).
         player.credits -= upgrade_cost
-        planet.defense_shields = next_level
-        planet.shields = next_level_info["strength"]
+        build_hours = next_level * SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL
+        complete_at = now + timedelta(hours=build_hours)
+        self._set_shield_upgrade(planet, {
+            "from": current_level,
+            "to": next_level,
+            "started_at": now.isoformat(),
+            "complete_at": complete_at.isoformat(),
+        })
 
         self.db.commit()
-        self.db.refresh(planet)
         self.db.refresh(player)
 
-        # Determine next upgrade info (if not at max)
-        further_upgrade_cost = None
-        if next_level < SHIELD_GENERATOR_MAX_LEVEL:
-            further_upgrade_cost = SHIELD_GENERATOR_LEVELS[next_level + 1]["cost"]
-
         logger.info(
-            f"Shield generator upgraded to level {next_level} "
-            f"({next_level_info['name']}) on planet {planet.name} (id={planet.id})"
+            "Shield generator upgrade started: level %s -> %s (%s), %sh, on planet %s (id=%s)",
+            current_level, next_level, next_level_info["name"], build_hours, planet.name, planet.id,
         )
 
         return {
             "success": True,
+            "upgrading": True,
             "shieldGenerator": {
-                "level": next_level,
+                "fromLevel": current_level,
+                "toLevel": next_level,
                 "maxLevel": SHIELD_GENERATOR_MAX_LEVEL,
                 "name": next_level_info["name"],
                 "strength": next_level_info["strength"],
                 "regenPerHour": next_level_info["regen_per_hour"],
             },
+            "buildHours": build_hours,
+            "startedAt": now.isoformat(),
+            "completeAt": complete_at.isoformat(),
+            "remainingSeconds": build_hours * 3600,
             "creditsCost": upgrade_cost,
             "creditsRemaining": player.credits,
-            "nextUpgradeCost": further_upgrade_cost,
         }
 
     def get_defense_info(self, planet_id: UUID) -> Dict[str, Any]:
@@ -1045,11 +1120,40 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found")
 
+        # Lazy advance-on-read: apply a shield upgrade whose timer has elapsed.
+        now = datetime.now(UTC)
+        if self._settle_shield_upgrade(planet, now):
+            self.db.commit()
+
         # Shield generator info
         shield_level = planet.defense_shields or 0
         shield_info = SHIELD_GENERATOR_LEVELS.get(shield_level, SHIELD_GENERATOR_LEVELS[0])
 
-        # Next level upgrade cost
+        # In-progress timed upgrade (ADR-0086), if any
+        upgrade_block = None
+        su = self._get_shield_upgrade(planet)
+        if su:
+            complete_at = su.get("complete_at")
+            remaining_seconds = 0
+            if complete_at:
+                try:
+                    remaining_seconds = max(
+                        0, int((datetime.fromisoformat(complete_at) - now).total_seconds())
+                    )
+                except (ValueError, TypeError):
+                    remaining_seconds = 0
+            to_level = int(su.get("to", shield_level + 1))
+            to_info = SHIELD_GENERATOR_LEVELS.get(to_level, {})
+            upgrade_block = {
+                "fromLevel": int(su.get("from", shield_level)),
+                "toLevel": to_level,
+                "toName": to_info.get("name"),
+                "startedAt": su.get("started_at"),
+                "completeAt": complete_at,
+                "remainingSeconds": remaining_seconds,
+            }
+
+        # Next level upgrade cost (only meaningful when not already upgrading)
         next_upgrade_cost = None
         next_level_info = None
         if shield_level < SHIELD_GENERATOR_MAX_LEVEL:
@@ -1076,7 +1180,10 @@ class PlanetaryService:
                     "strength": next_level_info["strength"],
                     "regenPerHour": next_level_info["regen_per_hour"],
                     "cost": next_upgrade_cost,
+                    "buildHours": (shield_level + 1) * SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL,
                 } if next_level_info else None,
+                "isUpgrading": upgrade_block is not None,
+                "upgrade": upgrade_block,
             },
             "defenseLevel": defense_level,
             "maxDefenseLevel": DEFENSE_MAX_LEVEL,
