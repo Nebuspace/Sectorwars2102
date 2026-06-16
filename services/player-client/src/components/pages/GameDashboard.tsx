@@ -467,6 +467,8 @@ const GameDashboard: React.FC = () => {
     buildDefenseBuilding,
     depositToSafe,
     withdrawFromSafe,
+    depositCommodityToSafe,
+    withdrawCommodityFromSafe,
     getPlanetDefenseInfo,
     upgradeShields,
     exploreCurrentLocation,
