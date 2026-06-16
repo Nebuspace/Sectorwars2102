@@ -175,13 +175,11 @@ class GenesisService:
                 f"Sector {sector_id} already has the maximum number of planets ({MAX_PLANETS_PER_SECTOR})"
             )
 
-        # --- Check rate limit ---
+        # The weekly rate limit is enforced at ACQUISITION (POST /player/genesis/
+        # purchase), not here — deploying a device you already own is not a
+        # "purchase" (canon: "max 3 device purchases per week"). We still read
+        # the count for the informational fields in the response.
         purchases_this_week = self._get_weekly_purchase_count(player)
-        if purchases_this_week >= MAX_PURCHASES_PER_WEEK:
-            raise ValueError(
-                f"You have already purchased {MAX_PURCHASES_PER_WEEK} genesis devices this week. "
-                f"Please wait until the weekly limit resets."
-            )
 
         # --- Check credits ---
         cost = tier_config["cost"]
@@ -281,8 +279,8 @@ class GenesisService:
         # basic = 1, enhanced = 3, advanced = 1 (canon GENESIS_DEVICE_COST).
         ship.genesis_devices = max(0, current_devices_on_ship - device_cost)
 
-        # --- Record the purchase in player settings for rate limiting ---
-        self._record_genesis_purchase(player, tier)
+        # (Purchases are recorded at acquisition, not at deploy — see the rate-
+        # limit note above; deploying a held device is not a purchase.)
 
         # --- Handle ship sacrifice for advanced tier ---
         sacrifice_info = None

@@ -390,6 +390,9 @@ def _merge_real_planets(
         body["discovered_by"] = str(planet.discovered_by) if planet.discovered_by else None
         body["habitability"] = planet.habitability_score
         body["owned"] = planet.owner_id is not None
+        # Genesis terraforming state so the viewport can render a forming planet
+        # with its in-progress visual ("forming" | "complete" | None).
+        body["formation_status"] = getattr(planet, "formation_status", None)
         # Real gas giants keep the gas-giant size floor for visual sanity.
         if planet_type == "GAS_GIANT" and body["size_class"] < 3:
             body["size_class"] = 3

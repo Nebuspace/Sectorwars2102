@@ -236,10 +236,31 @@ const SpaceDockInterface: React.FC = () => {
   const [genesisError, setGenesisError] = useState<string | null>(null);
   const [genesisPurchasing, setGenesisPurchasing] = useState(false);
   const [genesisSuccess, setGenesisSuccess] = useState<string | null>(null);
+  // Weekly acquisition limit readout (canon: 3/week).
+  const [genesisWeeklyRemaining, setGenesisWeeklyRemaining] = useState<number | null>(null);
+  const [genesisWeeklyLimit, setGenesisWeeklyLimit] = useState<number>(3);
 
   // Local genesis tracking for immediate UI feedback
   const [localGenesisDevices, setLocalGenesisDevices] = useState<number | null>(null);
   const [localMaxGenesis, setLocalMaxGenesis] = useState<number | null>(null);
+
+  // Prefetch the weekly acquisition allowance when the genesis venue opens so the
+  // "N of 3 left" readout is present before the first purchase.
+  useEffect(() => {
+    if (activeVenue !== 'genesis') return;
+    const token = getToken();
+    if (!token) return;
+    fetch(`${getApiBaseUrl()}/api/v1/genesis/available`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data) return;
+        if (typeof data.purchases_remaining === 'number') setGenesisWeeklyRemaining(data.purchases_remaining);
+        if (typeof data.max_purchases_per_week === 'number') setGenesisWeeklyLimit(data.max_purchases_per_week);
+      })
+      .catch(() => {});
+  }, [activeVenue]);
 
   // Shipyard state
   const [shipCatalog, setShipCatalog] = useState<ShipCatalogEntry[] | null>(null);
@@ -322,7 +343,7 @@ const SpaceDockInterface: React.FC = () => {
       icon: '🌍',
       description: 'Acquire Genesis Devices - the key to creating new worlds',
       available: Boolean(stationServices.genesis_dealer),
-      services: ['Standard Devices', 'Advanced Devices', 'Experimental Devices']
+      services: ['Genesis Devices', 'World Creation', 'Terraforming Tech']
     },
     {
       id: 'armory',
@@ -707,13 +728,15 @@ const SpaceDockInterface: React.FC = () => {
   };
 
   // Genesis Device Purchase function
-  const purchaseGenesisDevice = useCallback(async (tier: 'standard' | 'advanced' | 'experimental') => {
+  // Genesis devices are a single fungible consumable; the tier + credit cost are
+  // chosen at deploy. Acquiring one costs a flat GENESIS_DEVICE_PRICE and is
+  // rate-limited to 3/week (server-enforced).
+  const GENESIS_DEVICE_PRICE = 25000;
+  const purchaseGenesisDevice = useCallback(async () => {
     const token = getToken();
     if (!token || genesisPurchasing) return;
 
-    const prices = { standard: 25000, advanced: 50000, experimental: 100000 };
-    const price = prices[tier];
-
+    const price = GENESIS_DEVICE_PRICE;
     if (displayCredits < price) {
       setGenesisError(`Insufficient credits. Need ${price.toLocaleString()}, have ${displayCredits.toLocaleString()}`);
       return;
@@ -733,7 +756,7 @@ const SpaceDockInterface: React.FC = () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ tier })
+        body: JSON.stringify({})
       });
 
       if (!response.ok) {
@@ -749,6 +772,8 @@ const SpaceDockInterface: React.FC = () => {
       setLocalCredits(result.new_credits);
       setLocalGenesisDevices(result.genesis_devices);
       setLocalMaxGenesis(result.max_genesis_devices);
+      if (typeof result.purchases_remaining === 'number') setGenesisWeeklyRemaining(result.purchases_remaining);
+      if (typeof result.weekly_limit === 'number') setGenesisWeeklyLimit(result.weekly_limit);
       updatePlayerCredits(result.new_credits);
       updateShipGenesis(result.genesis_devices);  // Update sidebar immediately
       setGenesisSuccess(result.message);
@@ -2070,92 +2095,44 @@ const SpaceDockInterface: React.FC = () => {
             </div>
           )}
 
-          <div className="genesis-devices-grid">
-            <div className="genesis-device-card standard">
+          <div className="genesis-devices-grid single">
+            <div className="genesis-device-card device">
               <div className="device-header">
-                <span className="device-tier">Standard</span>
-                <div className="device-icon">🌑</div>
+                <span className="device-tier">Genesis Device</span>
+                <div className="device-icon">🌍</div>
               </div>
               <div className="device-details">
-                <h3>Standard Genesis Device</h3>
+                <h3>Genesis Device</h3>
                 <ul className="device-specs">
-                  <li>🎯 85% Success Rate</li>
-                  <li>⏱️ 48 Hour Process</li>
-                  <li>🪐 Basic Planet Types</li>
-                  <li>📊 Higher chance of barren worlds</li>
+                  <li>🔩 Stored on your ship; fuse 1 (Basic), 3 (Enhanced), or 1 + your Colony Ship (Advanced)</li>
+                  <li>🪐 Tier &amp; biome are chosen when you deploy — not now</li>
+                  <li>💳 Sequence cost (25k / 75k / 250k) is paid at deploy</li>
+                  <li>📅 {genesisWeeklyRemaining !== null ? `${genesisWeeklyRemaining} of ${genesisWeeklyLimit} acquisitions left this week` : `Limited to ${genesisWeeklyLimit} per week`}</li>
                 </ul>
               </div>
               <div className="device-footer">
-                <div className="device-price">25,000 cr</div>
+                <div className="device-price">{GENESIS_DEVICE_PRICE.toLocaleString()} cr</div>
                 <button
                   className="purchase-device-btn"
-                  onClick={() => purchaseGenesisDevice('standard')}
-                  disabled={genesisPurchasing || displayCredits < 25000 || !canHoldGenesis || !hasCapacity}
+                  onClick={() => purchaseGenesisDevice()}
+                  disabled={genesisPurchasing || displayCredits < GENESIS_DEVICE_PRICE || !canHoldGenesis || !hasCapacity || genesisWeeklyRemaining === 0}
                 >
-                  {genesisPurchasing ? 'Purchasing...' : !canHoldGenesis ? 'Ship Incompatible' : !hasCapacity ? 'At Capacity' : 'Purchase'}
-                </button>
-              </div>
-            </div>
-
-            <div className="genesis-device-card advanced">
-              <div className="device-header">
-                <span className="device-tier">Advanced</span>
-                <div className="device-icon">🌎</div>
-              </div>
-              <div className="device-details">
-                <h3>Advanced Genesis Device</h3>
-                <ul className="device-specs">
-                  <li>🎯 92% Success Rate</li>
-                  <li>⏱️ 36 Hour Process</li>
-                  <li>🪐 Improved Planet Types</li>
-                  <li>📊 Better resource distribution</li>
-                </ul>
-              </div>
-              <div className="device-footer">
-                <div className="device-price">50,000 cr</div>
-                <button
-                  className="purchase-device-btn"
-                  onClick={() => purchaseGenesisDevice('advanced')}
-                  disabled={genesisPurchasing || displayCredits < 50000 || !canHoldGenesis || !hasCapacity}
-                >
-                  {genesisPurchasing ? 'Purchasing...' : !canHoldGenesis ? 'Ship Incompatible' : !hasCapacity ? 'At Capacity' : 'Purchase'}
-                </button>
-              </div>
-            </div>
-
-            <div className="genesis-device-card experimental">
-              <div className="device-header">
-                <span className="device-tier">Experimental</span>
-                <div className="device-icon">🌏</div>
-              </div>
-              <div className="device-details">
-                <h3>Experimental Genesis Device</h3>
-                <ul className="device-specs">
-                  <li>🎯 95% Success Rate</li>
-                  <li>⏱️ 24 Hour Process</li>
-                  <li>🪐 Premium Planet Types</li>
-                  <li>📊 Chance for unique features</li>
-                </ul>
-              </div>
-              <div className="device-footer">
-                <div className="device-price">100,000 cr</div>
-                <button
-                  className="purchase-device-btn"
-                  onClick={() => purchaseGenesisDevice('experimental')}
-                  disabled={genesisPurchasing || displayCredits < 100000 || !canHoldGenesis || !hasCapacity}
-                >
-                  {genesisPurchasing ? 'Purchasing...' : !canHoldGenesis ? 'Ship Incompatible' : !hasCapacity ? 'At Capacity' : 'Purchase'}
+                  {genesisPurchasing ? 'Acquiring…'
+                    : !canHoldGenesis ? 'Ship Incompatible'
+                    : !hasCapacity ? 'Ship At Capacity'
+                    : genesisWeeklyRemaining === 0 ? 'Weekly Limit Reached'
+                    : 'Acquire Device'}
                 </button>
               </div>
             </div>
           </div>
 
           <div className="genesis-info">
-            <h4>📋 Requirements</h4>
+            <h4>📋 How it works</h4>
             <ul>
-              <li>Ship with Genesis Device capacity (Cargo Hauler, Colony Ship, Carrier, Defender, or Warp Jumper)</li>
-              <li>Empty, non-protected sector for deployment</li>
-              <li>Minimum Federation reputation level</li>
+              <li>Acquire devices here (max {genesisWeeklyLimit}/week), then fly to an <strong>empty sector</strong> to deploy.</li>
+              <li>Choose the tier at deploy: <strong>Basic</strong> (1 device), <strong>Enhanced</strong> (3 devices), or <strong>Advanced</strong> (1 device + sacrifice a Colony Ship for an instant colony).</li>
+              <li>Carry capacity depends on your hull (Cargo Hauler 2, Defender 3, Colony Ship / Carrier 5, Warp Jumper 1).</li>
             </ul>
           </div>
         </div>

@@ -82,6 +82,8 @@ interface SystemBody {
   owned?: boolean;
   /** ADR-0073: true when the viewer is this planet's discoverer (may rename). */
   can_rename?: boolean;
+  /** "forming" while genesis terraforming is in progress; "complete"/absent when done. */
+  formation_status?: string;
 }
 
 interface SystemStation {
@@ -703,6 +705,79 @@ function drawPlanetSurface(
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
   ctx.lineWidth = 1;
   ctx.stroke();
+}
+
+/** Genesis terraforming overlay for a still-forming planet: an accretion halo,
+ *  dust motes spiralling inward, and a pulsing dashed containment ring + label.
+ *  All motion derives from the shared `t` (seconds) like every other treatment. */
+function drawFormingEffect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  hue: number,
+  t: number,
+  seed: number,
+): void {
+  const rng = splitmix32((seed ^ 0x6e617363) >>> 0);
+  const pulseA = 0.5 + 0.5 * Math.sin(t * 2.1);
+  const pulseB = 0.5 + 0.5 * Math.sin(t * 1.7 + 1.2);
+
+  ctx.save();
+  // Accretion halo (additive glow around the nascent world).
+  ctx.globalCompositeOperation = 'lighter';
+  const halo = ctx.createRadialGradient(x, y, r * 0.8, x, y, r * 1.9);
+  halo.addColorStop(0, `hsla(${hue}, 80%, 70%, ${0.18 * pulseA})`);
+  halo.addColorStop(0.5, `hsla(${hue + 30}, 60%, 55%, ${0.10 * pulseB})`);
+  halo.addColorStop(1, `hsla(${hue}, 70%, 50%, 0)`);
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(x, y, r * 1.9, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Dust motes spiralling inward (each on its own infall phase).
+  const PARTICLES = 22;
+  for (let i = 0; i < PARTICLES; i++) {
+    const base = rng() * Math.PI * 2;
+    const speed = 0.3 + rng() * 0.5;
+    const phase = (t * 0.09 + rng()) % 1;
+    const ang = base + t * speed;
+    const dist = r * (2.0 - 0.95 * phase);
+    const px = x + Math.cos(ang) * dist;
+    const py = y + Math.sin(ang) * dist * SQUASH;
+    ctx.globalAlpha = phase * 0.85;
+    ctx.fillStyle = `hsl(${hue + rng() * 40 - 20}, 90%, 75%)`;
+    ctx.beginPath();
+    ctx.arc(px, py, 0.8 + rng() * 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Pulsing dashed containment ring.
+  ctx.save();
+  ctx.globalAlpha = 0.55 + 0.45 * pulseA;
+  ctx.strokeStyle = `hsl(${hue}, 85%, 72%)`;
+  ctx.lineWidth = 1.6;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.arc(x, y, r + 4 + pulseB * 3, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  // "GENESIS FORMING…" label below the world.
+  ctx.save();
+  ctx.font = FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const label = 'GENESIS FORMING…';
+  const ly = y + r + 6;
+  const lw = ctx.measureText(label).width;
+  ctx.fillStyle = 'rgba(4, 8, 16, 0.7)';
+  ctx.fillRect(x - lw / 2 - 3, ly - 1, lw + 6, 13);
+  ctx.globalAlpha = 0.6 + 0.4 * pulseB;
+  ctx.fillStyle = `hsl(${hue}, 85%, 72%)`;
+  ctx.fillText(label, x, ly);
+  ctx.restore();
 }
 
 /** Tilted ring ellipse — half=back draws behind the planet, half=front over it. */
@@ -1361,7 +1436,9 @@ function drawScene(
         name: body.name || 'UNKNOWN',
         lines: [
           (body.name || 'UNKNOWN').toUpperCase(),
-          `${body.kind.replace(/_/g, ' ').toUpperCase()}${hab}${body.owned ? ' — CLAIMED' : ''}`
+          body.formation_status === 'forming'
+            ? 'GENESIS TERRAFORMING IN PROGRESS'
+            : `${body.kind.replace(/_/g, ' ').toUpperCase()}${hab}${body.owned ? ' — CLAIMED' : ''}`
         ],
         meta: {
           kind: 'planet',
@@ -1388,9 +1465,19 @@ function drawScene(
     drawables.push({
       y,
       draw: () => {
+        const forming = body.formation_status === 'forming';
         const ringTilt = -0.32 + ((seed % 100) / 100 - 0.5) * 0.3;
         if (body.rings) drawRingHalf(ctx, x, y, r, body.palette.hue, ringTilt, 'back');
-        drawPlanetSurface(ctx, body, x, y, r, starX, starY, seed, t);
+        if (forming) {
+          // The nascent world shows through faintly while it coalesces.
+          ctx.save();
+          ctx.globalAlpha = 0.35 + 0.15 * Math.sin(t * 1.2);
+          drawPlanetSurface(ctx, body, x, y, r, starX, starY, seed, t);
+          ctx.restore();
+          drawFormingEffect(ctx, x, y, r, body.palette.hue, t, seed);
+        } else {
+          drawPlanetSurface(ctx, body, x, y, r, starX, starY, seed, t);
+        }
         if (body.rings) drawRingHalf(ctx, x, y, r, body.palette.hue, ringTilt, 'front');
 
         // Moons — tiny dots, all on this planet's SINGLE shared orbital plane

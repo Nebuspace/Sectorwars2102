@@ -509,8 +509,14 @@ async def get_available_moves(
 
 
 # Genesis Device Purchase
+#
+# Genesis devices are a single FUNGIBLE consumable (untiered count on the ship —
+# DECISIONS genesis-device-tiering-model). The TIER (basic/enhanced/advanced) and
+# its credit cost are chosen and charged at DEPLOY (genesis-deploy.md), not here.
+# Acquiring a device is the rate-limited action (canon: max 3 purchases/week).
+# `tier` is accepted for backward compatibility but ignored.
 class GenesisPurchaseRequest(BaseModel):
-    tier: str  # "standard", "advanced", "experimental"
+    tier: str | None = None  # ignored — devices are fungible; tier is a deploy choice
 
 class GenesisPurchaseResponse(BaseModel):
     success: bool
@@ -518,29 +524,12 @@ class GenesisPurchaseResponse(BaseModel):
     genesis_devices: int
     max_genesis_devices: int
     new_credits: int
-    tier_purchased: str
+    purchases_remaining: int
+    weekly_limit: int
 
-# Genesis device tiers with pricing
-GENESIS_TIERS = {
-    "standard": {
-        "price": 25000,
-        "name": "Standard Genesis Device",
-        "success_rate": 0.85,
-        "process_hours": 48
-    },
-    "advanced": {
-        "price": 50000,
-        "name": "Advanced Genesis Device",
-        "success_rate": 0.92,
-        "process_hours": 36
-    },
-    "experimental": {
-        "price": 100000,
-        "name": "Experimental Genesis Device",
-        "success_rate": 0.95,
-        "process_hours": 24
-    }
-}
+# Flat acquisition price for one Genesis Device. The per-tier sequence cost
+# (25k/75k/250k) is charged separately at deploy.
+GENESIS_DEVICE_PRICE = 25000
 
 @router.post("/genesis/purchase", response_model=GenesisPurchaseResponse)
 async def purchase_genesis_device(
@@ -548,18 +537,14 @@ async def purchase_genesis_device(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
-    """Purchase a Genesis Device and add it to the player's ship"""
+    """Acquire one (fungible) Genesis Device for the player's ship.
 
-    # Validate tier
-    tier = request.tier.lower()
-    if tier not in GENESIS_TIERS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid genesis tier. Must be one of: {', '.join(GENESIS_TIERS.keys())}"
-        )
+    Rate-limited to MAX_PURCHASES_PER_WEEK per account (canon). The deploy step
+    chooses the tier and charges the sequence cost.
+    """
+    from src.services.genesis_service import GenesisService, MAX_PURCHASES_PER_WEEK
 
-    tier_info = GENESIS_TIERS[tier]
-    price = tier_info["price"]
+    price = GENESIS_DEVICE_PRICE
 
     # Lock the player row so the credit charge is race-safe (mirrors
     # repair_player_ship above; populate_existing() refreshes the loaded
@@ -633,17 +618,28 @@ async def purchase_genesis_device(
             detail=f"Your ship is at maximum Genesis Device capacity ({ship.max_genesis_devices})"
         )
 
-    # Process purchase
+    # Canon rate limit: max MAX_PURCHASES_PER_WEEK acquisitions per rolling week.
+    genesis_service = GenesisService(db)
+    purchases_this_week = genesis_service._get_weekly_purchase_count(player)
+    if purchases_this_week >= MAX_PURCHASES_PER_WEEK:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Weekly Genesis acquisition limit reached ({MAX_PURCHASES_PER_WEEK}/week)."
+        )
+
+    # Process purchase + record it for the rolling weekly limit.
     player.credits -= price
     ship.genesis_devices = current_devices + 1
+    genesis_service._record_genesis_purchase(player, "device")
 
     db.commit()
 
     return GenesisPurchaseResponse(
         success=True,
-        message=f"Successfully purchased {tier_info['name']}!",
+        message="Genesis Device acquired. Choose its tier when you deploy.",
         genesis_devices=ship.genesis_devices,
         max_genesis_devices=ship.max_genesis_devices,
         new_credits=player.credits,
-        tier_purchased=tier
+        purchases_remaining=MAX_PURCHASES_PER_WEEK - (purchases_this_week + 1),
+        weekly_limit=MAX_PURCHASES_PER_WEEK,
     )
