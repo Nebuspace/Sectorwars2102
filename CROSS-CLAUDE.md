@@ -652,3 +652,9 @@ Planet serializer gains formationStatus/started/complete for the terraforming co
 
 ### 2026-06-14 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev e33e725). Planet serializer now ships formationStatus/started/complete; Colonial Registry shows a live 🌱 TERRAFORMING bar + "Nd Nh left" countdown for forming planets. PROVEN: /owned returns the fields (48h apart); lazy-complete flips forming->complete on read. Fixtures reverted.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Genesis elevation: fungible buy-side + 3/week limit moved to acquisition (player.py + genesis_service), formation_status in system snapshot (celestial_service). gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev 438373c). Genesis elevation PROVEN: buy-side now a single fungible 25k device with the 3/week limit enforced at acquisition (PROVEN: -25k each, remaining 2/1/0, weekly limit binds at capacity>limit); deploy no longer double-counts. Forming planets carry formation_status in the system snapshot (PROVEN) -> viewport renders a genesis-forming visual. Fixtures reverted.

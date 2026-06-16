@@ -2119,7 +2119,31 @@
     }
    ],
    "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-16-a",
+   "date": "2026-06-16",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis second pass \u2014 elevate the whole arc: honest fungible buy-side + forming-planet visual in the sector viewport",
+   "sections": [
+    {
+     "key": "genesis-buyside-canon",
+     "state": "shipped-proven",
+     "commit": "438373c",
+     "proof": "Store sells one fungible 25k device (was 3 fake tiers + fake success-rate); 3/week limit enforced at acquisition (moved off deploy, no double-count) + remaining readout + ship capacity. PROVEN: 3 buys -25k each remaining 2/1/0; weekly limit binds."
+    },
+    {
+     "key": "genesis-forming-viewport-visual",
+     "state": "shipped-proven",
+     "commit": "438373c",
+     "proof": "celestial_service emits formation_status in /system snapshot; SolarSystemViewscreen draws forming planets with accretion halo + spiralling dust + containment ring + 'GENESIS FORMING\u2026' label + tooltip. PROVEN: /system body formation_status='forming'. Canvas visual build-verified; user self-verifies."
+    }
+   ],
+   "decision_flagged": "genesis credit double-charge (25k acquire + tier cost at deploy) -> DECISIONS genesis-device-tiering-model (Max-gated economy).",
+   "canon_grounding": "genesis-devices.md acquisition + 'progressive planet-formation visuals' affordances; genesis-deploy.md cost-at-deploy. 2 sonnet discovery agents mapped buy-side + viewport.",
+   "last_updated": "2026-06-16"
   }
  ],
- "last_updated": "2026-06-14"
+ "last_updated": "2026-06-16"
 }
