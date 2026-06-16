@@ -485,16 +485,19 @@ class PayPalService:
         """Compute the new subscription expiry from a PayPal subscription resource.
 
         Prefers the provider's authoritative ``billing_info.next_billing_time``;
-        falls back to ~one billing month from now when absent. Always returns a
-        timezone-aware UTC datetime so per-request expiry comparisons are sound.
+        falls back to ~one billing month from now when absent. Returns a NAIVE UTC
+        datetime: the ``subscription_expires_at`` column is TIMESTAMP WITHOUT TIME
+        ZONE, and the auth-layer expiry check treats stored values as UTC, so we
+        normalise to naive-UTC here to keep the whole path tz-consistent.
         """
         next_billing = (resource.get("billing_info") or {}).get("next_billing_time")
         if next_billing:
             try:
-                return datetime.fromisoformat(str(next_billing).replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(str(next_billing).replace("Z", "+00:00"))
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
             except (ValueError, TypeError):
                 logger.warning("Unparseable next_billing_time on PayPal resource; using fallback")
-        return datetime.now(timezone.utc) + timedelta(days=31)
+        return (datetime.now(timezone.utc) + timedelta(days=31)).replace(tzinfo=None)
 
     async def _activate_galactic_citizenship(self, session: AsyncSession, user_id: str, subscription_id: str, resource: Dict[str, Any]):
         """Activate galactic citizenship for user"""
@@ -512,7 +515,7 @@ class PayPalService:
                 user.subscription_tier = SubscriptionTier.GALACTIC_CITIZEN.value
                 user.subscription_status = "active"
                 if user.subscription_started_at is None:
-                    user.subscription_started_at = datetime.now(timezone.utc)
+                    user.subscription_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 user.subscription_expires_at = self._next_expiry(resource)
             logger.info(f"Activated galactic citizenship for player {player.id}")
 
