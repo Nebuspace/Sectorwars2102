@@ -14,7 +14,10 @@ from src.auth.jwt import create_tokens, decode_token
 from src.auth.dependencies import get_current_user
 from src.models.user import User
 from src.models.admin_credentials import AdminCredentials
-from src.auth.oauth import GitHubOAuth, GoogleOAuth, SteamAuth, get_oauth_user, create_oauth_user, _validate_oauth_state
+from src.auth.oauth import (
+    GitHubOAuth, GoogleOAuth, SteamAuth, get_oauth_user, create_oauth_user,
+    _validate_oauth_state, store_auth_code, consume_auth_code,
+)
 from src.core.database import get_db
 from src.core.config import settings
 from src.models.refresh_token import RefreshToken
@@ -23,6 +26,23 @@ from src.services.user_service import authenticate_admin, authenticate_player, u
 from src.services.mfa_service import MFAService
 
 router = APIRouter()
+
+
+@router.post("/exchange")
+async def exchange_oauth_code(code: str = Body(..., embed=True)):
+    """Exchange a single-use OAuth authorization code for tokens (ADR-0085).
+
+    The OAuth callback redirects with a short-lived ``code`` (not the tokens);
+    the SPA POSTs it here exactly once to receive the JWTs in the response body,
+    keeping tokens out of the URL / browser history / referrer / logs.
+    """
+    payload = consume_auth_code(code)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired authorization code",
+        )
+    return payload
 
 
 # Allowlist of valid authorization-URL prefixes per OAuth provider. The OAuth

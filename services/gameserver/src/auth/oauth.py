@@ -41,6 +41,51 @@ def _validate_oauth_state(state: Optional[str]) -> bool:
     # Consume the state (one-time use)
     del _oauth_states[state]
     return True
+
+
+# ---------------------------------------------------------------------------
+# OAuth authorization-code exchange (ADR-0085)
+#
+# The OAuth callback no longer puts JWTs in the redirect URL (they would land in
+# browser history, Referer headers, and URL-capturing logs). Instead it stores
+# the freshly-minted tokens here under a short-lived, single-use code and
+# redirects with only that code; the SPA POSTs the code to /auth/exchange to
+# retrieve the tokens once, over the response body. Codes are single-use and
+# expire fast, so a leaked URL is worthless.
+#
+# In-memory (single-instance) — same caveat as _oauth_states above: replace with
+# Redis for multi-instance production.
+# ---------------------------------------------------------------------------
+_auth_codes: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_AUTH_CODE_TTL = 60  # seconds — the SPA exchanges immediately
+
+
+def store_auth_code(payload: Dict[str, Any]) -> str:
+    """Store token payload under a fresh single-use code; return the code."""
+    now = time.monotonic()
+    expired = [c for c, (t, _) in _auth_codes.items() if now - t > _AUTH_CODE_TTL]
+    for c in expired:
+        del _auth_codes[c]
+
+    code = str(uuid.uuid4())
+    _auth_codes[code] = (now, payload)
+    return code
+
+
+def consume_auth_code(code: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Validate, consume (one-time), and return the token payload for a code.
+
+    Returns None if the code is missing, unknown, already used, or expired.
+    """
+    if not code or code not in _auth_codes:
+        return None
+    issued_at, payload = _auth_codes.pop(code)  # consume regardless of freshness
+    if time.monotonic() - issued_at > _AUTH_CODE_TTL:
+        logger.warning("Auth code exchange attempted after TTL: %s", code[:8])
+        return None
+    return payload
+
+
 from src.models.user import User
 from src.models.oauth_account import OAuthAccount
 from src.models.player import Player
