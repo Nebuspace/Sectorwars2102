@@ -2143,6 +2143,41 @@
    "decision_flagged": "genesis credit double-charge (25k acquire + tier cost at deploy) -> DECISIONS genesis-device-tiering-model (Max-gated economy).",
    "canon_grounding": "genesis-devices.md acquisition + 'progressive planet-formation visuals' affordances; genesis-deploy.md cost-at-deploy. 2 sonnet discovery agents mapped buy-side + viewport.",
    "last_updated": "2026-06-16"
+  },
+  {
+   "run": "neon-2026-06-16-b",
+   "date": "2026-06-16",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "ADR-0084 planetary registration tiers + black-market registry lookup \u2014 PARALLEL subagent build wave (4 zone workers + 2 reviewers)",
+   "orchestration": "Workflow tool: 4 disjoint-ownership build workers (deploy/registry/combat/client) against frozen contracts -> 2 adversarial reviewers (correctness-security + contract-fidelity, both PASS) -> lead gate/fix/deploy/prove.",
+   "sections": [
+    {
+     "key": "registration-tiers-deploy",
+     "state": "shipped-proven",
+     "commit": "3d887a2",
+     "proof": "Clandestine 60k / Registered 10k / Chartered 10k+40k(1-repFactor). PROVEN: fees 10k/44k(rep200)/60k, credits 1M->811k exact, charter +25 rep, status in active_events."
+    },
+    {
+     "key": "black-market-registry-lookup",
+     "state": "shipped-proven",
+     "commit": "3d887a2",
+     "proof": "POST /registry/lookup, neg-rep gated, 50k. PROVEN: returns registered+chartered, excludes clandestine, 403 on rep>=0, 404 no-charge on bad name."
+    },
+    {
+     "key": "charter-combat-protection",
+     "state": "shipped-proven",
+     "commit": "3d887a2",
+     "proof": "Assaulting a chartered planet -> attacker -50 rep. PROVEN: verifpilot -50->-100 on assaulting Crown Charter."
+    }
+   ],
+   "lead_fixes": [
+    "isinstance-safe active_events read in registry.py (legacy non-empty-list guard)",
+    "added bm-registry-* CSS (R2 MED)",
+    "fixed pre-existing bare useEffect in SpaceDockInterface (would ReferenceError on genesis venue open)"
+   ],
+   "decision_resolved": "genesis-device-tiering-model -> ADR-0084 Accepted; removed from DECISIONS.",
+   "last_updated": "2026-06-16"
   }
  ],
  "last_updated": "2026-06-16"

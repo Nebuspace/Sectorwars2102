@@ -658,3 +658,9 @@ Genesis elevation: fungible buy-side + 3/week limit moved to acquisition (player
 
 ### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev 438373c). Genesis elevation PROVEN: buy-side now a single fungible 25k device with the 3/week limit enforced at acquisition (PROVEN: -25k each, remaining 2/1/0, weekly limit binds at capacity>limit); deploy no longer double-counts. Forming planets carry formation_status in the system snapshot (PROVEN) -> viewport renders a genesis-forming visual. Fixtures reverted.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+ADR-0084 planetary registration tiers + black-market registry lookup (new /registry route, genesis_service + combat_service + planets). gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+gameserver healthy (dev 3d887a2). ADR-0084 planetary registration tiers + black-market registry lookup PROVEN: deploy fees 10k/44k(rep-scaled)/60k + charter rep nudge +25 + status in active_events; lookup excludes clandestine, 403 on rep>=0, 404 no-charge on bad name, 50k charge on hit; assaulting a chartered planet -> attacker rep -50. Built by parallel zone workers + adversarial review. Fixtures reverted.
