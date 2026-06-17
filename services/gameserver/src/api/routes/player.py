@@ -542,7 +542,9 @@ async def purchase_genesis_device(
     Rate-limited to MAX_PURCHASES_PER_WEEK per account (canon). The deploy step
     chooses the tier and charges the sequence cost.
     """
-    from src.services.genesis_service import GenesisService, MAX_PURCHASES_PER_WEEK
+    from src.services.genesis_service import (
+        GenesisService, MAX_PURCHASES_PER_WEEK, GENESIS_MIN_REPUTATION,
+    )
 
     price = GENESIS_DEVICE_PRICE
 
@@ -558,6 +560,18 @@ async def purchase_genesis_device(
     )
     if player is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+
+    # Genesis acquire gate (ADR-0088): Federation reputation tier 7 (Heroic,
+    # >= GENESIS_MIN_REPUTATION). Same bar as deploy — you must already be a
+    # trusted Federation citizen to obtain the technology.
+    if (player.personal_reputation or 0) < GENESIS_MIN_REPUTATION:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Genesis devices require Federation reputation tier 7 (Heroic, "
+                f">= {GENESIS_MIN_REPUTATION}); your standing is {player.personal_reputation or 0}."
+            ),
+        )
 
     # Check if player is docked (required to purchase)
     if not player.is_docked or not player.current_port_id:

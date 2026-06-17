@@ -11,15 +11,38 @@ import logging
 from typing import Dict, Any, List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta, timezone
+from collections import deque
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, select
 
 from src.models.player import Player
 from src.models.planet import Planet, PlanetType, PlanetStatus, player_planets
 from src.models.ship import Ship, ShipType
-from src.models.sector import Sector
+from src.models.sector import Sector, sector_warps
+from src.models.region import Region
 
 logger = logging.getLogger(__name__)
+
+# --- Genesis deploy restrictions (ADR-0088, ratified 2026-06-16) ------------
+# Federation reputation gate. ADR-0088 said "level >= 8"; Max set the bar at the
+# Heroic tier (personal_reputation >= 250) so it is reachable through normal play
+# rather than the near-unreachable top tier (Legendary >= 500). personal_reputation
+# is THE Federation-standing scalar (ADR-0084); the per-faction ReputationLevel
+# enum (EXALTED) was rejected as a dead/unreachable gate. NOTE: the peaceful rep
+# triggers (complete_trade, destroy_pirate_drones) are defined-but-unwired, so
+# this bar only becomes comfortably reachable once they are wired (Phase 1).
+GENESIS_MIN_REPUTATION = 250
+# Deploy must be >= 5 jumps from Federation Space, i.e. NO Federation-Zone sector
+# within (5 - 1) = 4 warp jumps of the target sector.
+GENESIS_MIN_JUMPS_FROM_FEDERATION = 5
+# Deploy must be >= 2 sectors from any other planet, i.e. no planet in the target
+# sector or any sector within (2 - 1) = 1 warp jump.
+GENESIS_MIN_SECTORS_FROM_PLANET = 2
+# A single player may own at most ~25% of a region's planets (the first planet a
+# player places in a region is always allowed; see _enforce_deploy_restrictions).
+GENESIS_MAX_REGION_OWNERSHIP_FRACTION = 0.25
+# Safety cap on BFS exploration so a deploy can never walk the whole galaxy.
+_GENESIS_BFS_NODE_CAP = 4000
 
 # Default formation time in hours. Env-configurable so dev can accelerate it
 # (the deployment formation timer is wall-clock, NOT GAME_TIME_SCALE-driven).
@@ -112,6 +135,165 @@ class GenesisService:
     #  Public API methods
     # ------------------------------------------------------------------ #
 
+    def _bfs_distances(self, start_uuid: UUID, max_jumps: int) -> Dict[UUID, int]:
+        """Map each sector UUID within ``max_jumps`` warp-jumps of ``start_uuid``
+        to its jump distance, over the bidirectional ``sector_warps`` graph.
+
+        Level-batched BFS (one pair of queries per depth, not per node) and capped
+        at ``_GENESIS_BFS_NODE_CAP`` so a deploy can never traverse the whole galaxy.
+        Edge model mirrors movement_service: forward source->dest edges plus
+        reverse dest->source edges for bidirectional warps.
+        """
+        distances: Dict[UUID, int] = {start_uuid: 0}
+        frontier: List[UUID] = [start_uuid]
+        for depth in range(1, max_jumps + 1):
+            if not frontier or len(distances) >= _GENESIS_BFS_NODE_CAP:
+                break
+            fwd = self.db.execute(
+                select(sector_warps.c.destination_sector_id)
+                .where(sector_warps.c.source_sector_id.in_(frontier))
+            ).scalars().all()
+            rev = self.db.execute(
+                select(sector_warps.c.source_sector_id)
+                .where(and_(
+                    sector_warps.c.destination_sector_id.in_(frontier),
+                    sector_warps.c.is_bidirectional.is_(True),
+                ))
+            ).scalars().all()
+            nxt: List[UUID] = []
+            for nbr in list(fwd) + list(rev):
+                if nbr not in distances:
+                    distances[nbr] = depth
+                    nxt.append(nbr)
+            frontier = nxt
+        return distances
+
+    def _federation_sectors_among(self, sector_uuids) -> set:
+        """Return the subset of ``sector_uuids`` that are Federation Space.
+
+        Federation Space (police-forces.md, mirrors npc_engagement_service.
+        jurisdiction_of): an entire Terran-Space region, or the first
+        FEDERATION_ZONE_FRACTION (33%) of a player region's sectors by region-local
+        ``sector_id``. Central Nexus is Sentinel jurisdiction, NOT Federation.
+        Batched (a few region-grouped queries) rather than per-sector.
+        """
+        from src.services.npc_engagement_service import FEDERATION_ZONE_FRACTION
+
+        uuids = list(sector_uuids)
+        if not uuids:
+            return set()
+        rows = self.db.execute(
+            select(Sector.id, Sector.sector_id, Sector.region_id).where(Sector.id.in_(uuids))
+        ).all()
+        region_ids = {r.region_id for r in rows if r.region_id is not None}
+        if not region_ids:
+            return set()
+        regions = {
+            reg.id: reg for reg in self.db.execute(
+                select(Region).where(Region.id.in_(region_ids))
+            ).scalars().all()
+        }
+        # Per-region (min sector_id, count) for the player-region 33% threshold.
+        bounds = {
+            rid: (mn, cnt)
+            for rid, mn, cnt in self.db.execute(
+                select(Sector.region_id, func.min(Sector.sector_id), func.count(Sector.id))
+                .where(Sector.region_id.in_(region_ids))
+                .group_by(Sector.region_id)
+            ).all()
+        }
+        fed = set()
+        for r in rows:
+            region = regions.get(r.region_id)
+            if region is None:
+                continue
+            if getattr(region, "is_terran_space", False):
+                fed.add(r.id)
+                continue
+            if getattr(region, "is_central_nexus", False):
+                continue  # Sentinel jurisdiction, not Federation
+            mn, cnt = bounds.get(r.region_id, (None, 0))
+            if mn is not None and cnt and r.sector_id is not None:
+                local_position = r.sector_id - mn + 1
+                if local_position <= int(FEDERATION_ZONE_FRACTION * cnt):
+                    fed.add(r.id)
+        return fed
+
+    def _enforce_deploy_restrictions(self, player: Player, sector: Sector) -> None:
+        """Enforce the ratified genesis deploy gates (ADR-0088). Raises ValueError
+        with a ``genesis_blocked_*`` reason on the first failed gate."""
+        # Gate 1 — Federation reputation tier 8 (Legendary, >= 500).
+        rep = player.personal_reputation or 0
+        if rep < GENESIS_MIN_REPUTATION:
+            raise ValueError(
+                "genesis_blocked_reputation: Genesis deployment requires Federation "
+                f"reputation tier 7 (Heroic, >= {GENESIS_MIN_REPUTATION}); your "
+                f"standing is {rep}."
+            )
+
+        # One bounded BFS serves both spatial gates.
+        max_jumps = max(
+            GENESIS_MIN_JUMPS_FROM_FEDERATION - 1,
+            GENESIS_MIN_SECTORS_FROM_PLANET - 1,
+        )
+        distances = self._bfs_distances(sector.id, max_jumps)
+
+        # Gate 2 — >= 5 jumps from Federation Space (no Federation sector within <=4).
+        fed_uuids = self._federation_sectors_among(distances.keys())
+        fed_dist = [distances[u] for u in fed_uuids if distances[u] < GENESIS_MIN_JUMPS_FROM_FEDERATION]
+        if fed_dist:
+            raise ValueError(
+                "genesis_blocked_proximity: Genesis deployment must be at least "
+                f"{GENESIS_MIN_JUMPS_FROM_FEDERATION} jumps from Federation Space "
+                f"(nearest Federation sector is {min(fed_dist)} jump(s) away)."
+            )
+
+        # Gate 3 — >= 2 sectors from any other planet (no planet within <=1 jump,
+        # including the target sector itself).
+        spacing_radius = GENESIS_MIN_SECTORS_FROM_PLANET - 1
+        near_uuids = [u for u, d in distances.items() if d <= spacing_radius]
+        if near_uuids:
+            nearby_planets = self.db.execute(
+                select(func.count(Planet.id)).where(Planet.sector_uuid.in_(near_uuids))
+            ).scalar() or 0
+            if nearby_planets > 0:
+                raise ValueError(
+                    "genesis_blocked_proximity: Genesis deployment must be at least "
+                    f"{GENESIS_MIN_SECTORS_FROM_PLANET} sectors from any other planet."
+                )
+
+        # Gate 4 — anti-monopoly: <= ~25% of a region's planets per player. The
+        # first planet a player places in a region is always allowed (max_allowed
+        # floors at 1), so early colonisation is never blocked.
+        if sector.region_id is not None:
+            # Resolve a planet's region through its sector (Planet.region_id is
+            # unreliable — genesis/colonized planets historically left it NULL),
+            # so the count is robust regardless of that column.
+            total = self.db.execute(
+                select(func.count(Planet.id))
+                .select_from(Planet)
+                .join(Sector, Planet.sector_uuid == Sector.id)
+                .where(Sector.region_id == sector.region_id)
+            ).scalar() or 0
+            owned = self.db.execute(
+                select(func.count(Planet.id))
+                .select_from(Planet)
+                .join(Sector, Planet.sector_uuid == Sector.id)
+                .join(player_planets, Planet.id == player_planets.c.planet_id)
+                .where(and_(
+                    Sector.region_id == sector.region_id,
+                    player_planets.c.player_id == player.id,
+                ))
+            ).scalar() or 0
+            total_after = total + 1
+            max_allowed = max(1, int(GENESIS_MAX_REGION_OWNERSHIP_FRACTION * total_after))
+            if owned + 1 > max_allowed:
+                pct = int(GENESIS_MAX_REGION_OWNERSHIP_FRACTION * 100)
+                raise ValueError(
+                    f"genesis_blocked_monopoly: You already own {owned} of {total} planets in "
+                    f"this region; a single player may hold at most ~{pct}% of a region's planets."
+                )
+
     def deploy_genesis_device(
         self,
         player_id: UUID,
@@ -173,6 +355,10 @@ class GenesisService:
         sector = self.db.query(Sector).filter(Sector.sector_id == sector_id).first()
         if not sector:
             raise ValueError(f"Sector {sector_id} not found")
+
+        # --- Genesis deploy restrictions (ADR-0088): reputation tier, distance
+        # from Federation Space, planet spacing, and per-region anti-monopoly. ---
+        self._enforce_deploy_restrictions(player, sector)
 
         # --- Check sector planet limit ---
         existing_planet_count = self.db.query(func.count(Planet.id)).filter(
@@ -278,6 +464,7 @@ class GenesisService:
             auto_name=planet_name,  # ADR-0073: generated default; discoverer may override
             sector_id=sector_id,
             sector_uuid=sector.id,
+            region_id=sector.region_id,  # ADR-0088: anti-monopoly counts planets per region
             type=planet_type,
             planet_type=planet_type.value.lower(),
             status=PlanetStatus.TERRAFORMING,
