@@ -939,6 +939,13 @@ class BangImportService:
                 )
                 await session.commit()
 
+                # ADR-0069 Phase 12.5c — seed NPCs for the freshly-added
+                # region after its content commits. The add-region snapshot is
+                # tracked under bang_snapshot.additional_regions WITHOUT a
+                # universe blob, so it carries no bang rosters; bootstrap still
+                # seeds the topology-derived trader roster for the new region.
+                await self._bootstrap_regions_post_commit([region_id])
+
                 if emit_event is not None:
                     await emit_event(
                         "galaxy.region_added",
@@ -1230,6 +1237,16 @@ class BangImportService:
                 )
                 await session.commit()
 
+                # ADR-0069 Phase 12.5c — re-seed initial NPCs from the
+                # re-materialized rosters after the regen transaction commits.
+                # wipe_region_content does NOT delete NPCRoster/NPCCharacter
+                # rows (content-only), so the idempotent bootstrap reconciles:
+                # surviving rosters no-op, any new ones from the fresh snapshot
+                # are seeded.
+                await self._bootstrap_regions_post_commit(
+                    self._imported_region_ids(plan)
+                )
+
                 if emit_event is not None:
                     await emit_event(
                         "galaxy.regenerated",
@@ -1515,6 +1532,13 @@ class BangImportService:
                 )
                 await session.commit()
 
+                # ADR-0069 Phase 12.5c — seed initial NPCs from the rosters
+                # bang materialized, now that the import has committed and the
+                # sectors are visible to a fresh session. Best-effort.
+                await self._bootstrap_regions_post_commit(
+                    self._imported_region_ids(plan)
+                )
+
                 if emit_event is not None:
                     await emit_event(
                         "galaxy.imported",
@@ -1538,6 +1562,78 @@ class BangImportService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _imported_region_ids(plan: InsertPlan) -> List[uuid.UUID]:
+        """Resolve the region UUIDs an :class:`InsertPlan` writes to.
+
+        Mirrors :meth:`apply`'s resolution: the orchestrator stashes each
+        pre-created Region UUID in
+        ``plan.bang_snapshot['regions'][region_type]['region_id']``. Returns
+        them de-duplicated, in plan order, skipping any region that lacks a
+        resolvable id (defensive — ``apply`` would already have raised).
+        """
+        seen: set = set()
+        ordered: List[uuid.UUID] = []
+        snapshot_regions = (plan.bang_snapshot or {}).get("regions", {})
+        for rt in plan.regions:
+            region_snapshot = snapshot_regions.get(rt)
+            rid = (
+                region_snapshot.get("region_id")
+                if isinstance(region_snapshot, dict)
+                else None
+            )
+            if rid is None:
+                continue
+            rid_uuid = rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid))
+            if rid_uuid not in seen:
+                seen.add(rid_uuid)
+                ordered.append(rid_uuid)
+        return ordered
+
+    @staticmethod
+    async def _bootstrap_regions_post_commit(
+        region_ids: List[uuid.UUID],
+    ) -> None:
+        """ADR-0069 Phase 12.5c: seed initial NPCs from the rosters that were
+        just materialized, AFTER the import transaction has committed.
+
+        Runs ``npc_scheduler_service.bootstrap_region_sync`` once per imported
+        region. It must run post-commit (not inside ``apply``'s transaction)
+        for two reasons:
+
+        * The bootstrap reads from the live ``sectors`` table to derive each
+          roster's global host-sector offset (``_region_offset_map``); those
+          rows are only visible to a fresh session after the import commits.
+        * A roster-spawn failure must not roll back a successful region import
+          — the rosters are persisted, so the next scheduler boot (or a manual
+          re-run) re-attempts the spawn idempotently.
+
+        Best-effort: every step it calls is idempotent by ``bang_roster_ref``,
+        and a failure here is logged, never raised — the import is already
+        durable. Bootstrapping one region of a galaxy bootstraps the whole
+        galaxy (the underlying steps are galaxy-scoped + idempotent), so for
+        a full 3-region generation only the FIRST distinct region needs a
+        call; the rest no-op. We still iterate so the regen/add-region paths
+        (which may target a subset) are covered uniformly.
+        """
+        # Lazy import: the scheduler service imports heavy NPC machinery and
+        # is only needed on the post-import path, not for translate-only tests.
+        from src.services.npc_scheduler_service import bootstrap_region_sync
+
+        for region_id in region_ids:
+            try:
+                stats = await asyncio.to_thread(bootstrap_region_sync, region_id)
+                logger.info(
+                    "post-import NPC bootstrap for region %s: %s",
+                    region_id, stats,
+                )
+            except Exception:  # pragma: no cover - best-effort, non-fatal
+                logger.exception(
+                    "post-import NPC bootstrap failed for region %s "
+                    "(rosters persisted; scheduler boot will retry)",
+                    region_id,
+                )
 
     def _build_bang_args(
         self, config: BangConfig, *, validate_only: bool = False

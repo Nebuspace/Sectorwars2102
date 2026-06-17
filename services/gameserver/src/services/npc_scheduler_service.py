@@ -49,6 +49,7 @@ canon's separate patrol-route registry is Design-only):
 import asyncio
 import logging
 import random
+import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, List, Optional
 
@@ -1534,6 +1535,53 @@ def _seed_trader_rosters_sync() -> int:
         stats = seed_trader_rosters(db, galaxy)
         db.commit()  # releases the xact lock
         return stats.get("trader_rosters_created", 0)
+    finally:
+        db.close()
+
+
+def bootstrap_region_sync(region_id: uuid.UUID) -> Dict[str, Any]:
+    """ADR-0069 Phase 12.5c post-commit hook: seed initial NPCs + rosters
+    for a freshly-imported region from its materialized BANG snapshot.
+
+    Called by the bang-import path (``BangImportService.run_generation_job``
+    & friends) AFTER the import transaction commits — the sectors and the
+    snapshot's ``region_id`` slot must already be visible for
+    ``_region_offset_map`` to derive host-sector offsets. Runs in a worker
+    thread with its own ``SessionLocal`` and commits its own transaction.
+
+    Wraps :func:`npc_spawn_service.bootstrap_region`, which is the single
+    idempotent entry point that materializes NPCs from the snapshot, seeds
+    BANG-derived NPCRoster rows (``seed_rosters_from_bang``, keyed on the
+    unique ``bang_roster_ref``), seeds topology-derived merchant_captain
+    rosters (``seed_trader_rosters``, disjoint ``…:trader:…`` ref
+    namespace), and backfills schedules. Because every underlying step is
+    idempotent by ``bang_roster_ref``, this reconciles cleanly with the
+    scheduler-boot ``_seed_trader_rosters_sync`` — whichever runs first
+    creates the trader rosters; the other no-ops on the existing refs.
+
+    Serialized against the scheduler's tick bodies via the same xact-level
+    advisory lock. Unlike the boot repairs, this acquires the lock
+    *blockingly* (``pg_advisory_xact_lock``) rather than skip-on-contention:
+    a post-import bootstrap MUST run, so it waits for a concurrent tick to
+    finish rather than silently dropping the seed.
+    """
+    from src.core.database import SessionLocal
+    from src.services import npc_spawn_service
+
+    db = SessionLocal()
+    try:
+        # Blocking acquire — the import just committed; we must seed, so we
+        # wait for any in-flight tick rather than skip. Released on commit.
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        )
+        stats = npc_spawn_service.bootstrap_region(db, region_id)
+        db.commit()  # releases the xact lock
+        return stats
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
