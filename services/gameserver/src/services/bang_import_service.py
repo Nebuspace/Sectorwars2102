@@ -59,6 +59,7 @@ from src.models.bang_generation_job import (
 from src.models.cluster import Cluster, ClusterType
 from src.models.galaxy import Galaxy, GalaxyImportState
 from src.models.planet import Planet, PlanetStatus, PlanetType
+from src.models.region import Region
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.special_formation import SpecialFormation, SpecialFormationType
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
@@ -932,6 +933,301 @@ class BangImportService:
                     )
             except Exception as exc:
                 logger.error("run_add_region_job failed: %s", exc, exc_info=True)
+                await self._mark_job_failed(session, job_id, str(exc))
+                await session.commit()
+            finally:
+                await session.execute(
+                    text("SELECT pg_advisory_unlock(:k)"),
+                    {"k": GALAXY_GEN_LOCK_KEY},
+                )
+                await session.commit()
+
+    # ----- content-scoped wipe + regeneration ----------------------------
+    #
+    # Per ADR-0005, a region's *identity* is stable across regenerations: a
+    # `force` regen wipes only CONTENT (clusters, sectors, warps, stations,
+    # market_prices, planets, special_formations) and re-imports into the
+    # SAME Region row, preserving the Region UUID and every operator/
+    # customer-bound field (owner_id, paypal_subscription_id,
+    # subscription_status, governance_type, tax_rate, name/display_name,
+    # cultural identity, treasury, …). Destroying and re-creating the Region
+    # row — the legacy behaviour — would orphan paid subscriptions and
+    # governance state, so the regen path NEVER deletes the regions row.
+
+    #: Region columns that are operator/customer-bound *identity* and must
+    #: survive a content-only regeneration untouched. Documented here as the
+    #: single source of truth for the regen contract (ADR-0005). `total_sectors`
+    #: is intentionally NOT in this set: it is a content-derived count and is
+    #: refreshed to match the freshly imported region.
+    REGION_IDENTITY_COLUMNS: Tuple[str, ...] = (
+        "id",
+        "name",
+        "display_name",
+        "region_type",
+        "owner_id",
+        "subscription_tier",
+        "paypal_subscription_id",
+        "subscription_status",
+        "subscription_started_at",
+        "subscription_expires_at",
+        "last_payment_at",
+        "next_billing_at",
+        "status",
+        "created_at",
+        "governance_type",
+        "voting_threshold",
+        "election_frequency_days",
+        "constitutional_text",
+        "tax_rate",
+        "trade_bonuses",
+        "economic_specialization",
+        "starting_credits",
+        "starting_ship",
+        "language_pack",
+        "aesthetic_theme",
+        "traditions",
+        "social_hierarchy",
+        "treasury_balance",
+    )
+
+    async def wipe_region_content(
+        self, session: AsyncSession, region_id: uuid.UUID
+    ) -> None:
+        """Delete every CONTENT row owned by ``region_id`` — keep the Region.
+
+        Tears down clusters / sectors / warps / stations / market_prices /
+        planets / special_formations for a single region while leaving the
+        ``regions`` row (and its operator/customer-bound identity columns)
+        completely untouched.
+
+        Ordering mirrors the hard-delete galaxy path's FK dance, but scoped
+        to one region and stopping short of the Region row:
+
+        1. ``special_formations`` first — ``anchor_sector_id`` is
+           ``ON DELETE RESTRICT`` against ``sectors``, so they must go before
+           their anchor sectors.
+        2. ``sectors`` next — ``ON DELETE CASCADE`` on ``sectors.id`` reaches
+           ``sector_warps`` (both endpoints), ``warp_tunnels`` (both
+           endpoints), ``stations`` (→ ``market_prices`` / ``price_history`` /
+           ``price_alerts`` via their own CASCADE), and ``planets``.
+        3. ``clusters`` last — sectors are already gone, so the cluster→sector
+           CASCADE is a no-op; we delete them explicitly because the regen
+           keeps the parent Region (cluster rows would otherwise survive and
+           accumulate on every regeneration).
+
+        Idempotent: deleting from an already-empty region is a no-op, so a
+        retried / partial regen is safe to re-run.
+        """
+        await session.execute(
+            text("DELETE FROM special_formations WHERE region_id = :rid"),
+            {"rid": region_id},
+        )
+        await session.execute(
+            text("DELETE FROM sectors WHERE region_id = :rid"),
+            {"rid": region_id},
+        )
+        await session.execute(
+            text("DELETE FROM clusters WHERE region_id = :rid"),
+            {"rid": region_id},
+        )
+
+    async def apply_regeneration(
+        self,
+        galaxy_id: uuid.UUID,
+        plan: InsertPlan,
+        existing_region_ids: Dict[RegionType, uuid.UUID],
+        session: AsyncSession,
+    ) -> Galaxy:
+        """Re-import a freshly translated :class:`InsertPlan` into an EXISTING
+        galaxy + EXISTING regions, preserving region identity.
+
+        Companion to :meth:`apply` (which always creates fresh Galaxy/Region
+        identities). The regen path instead:
+
+        * Reuses the existing :class:`Galaxy` row (refreshing its bang_*
+          provenance + snapshot in place — no new Galaxy id).
+        * Wipes each target region's CONTENT via :meth:`wipe_region_content`.
+        * Re-writes content into the SAME region ids; the ``regions`` rows
+          (and their identity columns) are never deleted.
+        * Refreshes each region's ``total_sectors`` to match the new content
+          (a content-derived count, not identity).
+
+        The caller owns the transaction (see :meth:`run_regeneration_job`).
+        """
+        galaxy = await session.get(Galaxy, galaxy_id)
+        if galaxy is None:
+            raise ValueError(f"apply_regeneration: galaxy {galaxy_id} not found")
+
+        galaxy.import_state = GalaxyImportState.GENERATING  # type: ignore[assignment]
+        await session.flush()
+
+        # Wipe content for every region we are about to re-import. Wipe ALL
+        # first, THEN re-import — bang re-emits the same global sector_id
+        # space (offsets are recomputed deterministically by translate()),
+        # so a region's new sectors can collide with another region's old
+        # sectors if we interleave wipe/import per-region.
+        for region_type in plan.regions:
+            region_id = existing_region_ids.get(region_type)
+            if region_id is None:
+                raise ValueError(
+                    f"apply_regeneration: missing existing region_id for "
+                    f"{region_type}; cannot preserve region identity"
+                )
+            await self.wipe_region_content(session, region_id)
+        await session.flush()
+
+        gate_sector_by_region: Dict[RegionType, uuid.UUID] = {}
+        for region_type, region_plan in plan.regions.items():
+            region_id = existing_region_ids[region_type]
+            gate_sector_by_region[region_type] = await self._apply_region(
+                session, region_plan, region_id
+            )
+            # total_sectors is content-derived; refresh it to match the new
+            # import. Constrained by valid_region_type_sector_count, which
+            # the bang config already honours for each region type.
+            region_row = await session.get(Region, region_id)
+            if region_row is not None:
+                region_row.total_sectors = region_plan.total_sectors  # type: ignore[assignment]
+
+        # Re-wire inter-region NATURAL warp gates (the old ones cascaded away
+        # with the wiped sectors). Mirrors apply()'s hub-and-spoke pattern.
+        nexus_gate = gate_sector_by_region.get("central_nexus")
+        if nexus_gate is not None:
+            for spoke_rt in ("player_owned", "terran_space"):
+                spoke_gate = gate_sector_by_region.get(spoke_rt)
+                if spoke_gate is None:
+                    continue
+                session.add(WarpTunnel(
+                    name=f"{spoke_rt.replace('_', ' ').title()} ↔ Central Nexus",
+                    origin_sector_id=spoke_gate,
+                    destination_sector_id=nexus_gate,
+                    type=WarpTunnelType.NATURAL,
+                    is_bidirectional=True,
+                    description=f"Auto-generated gate linking {spoke_rt} to central_nexus.",
+                ))
+
+        # Refresh galaxy provenance in place — same Galaxy id, new snapshot.
+        galaxy.bang_version = plan.bang_version  # type: ignore[assignment]
+        galaxy.bang_seed = plan.bang_seed  # type: ignore[assignment]
+        galaxy.bang_config_hash = plan.bang_config_hash  # type: ignore[assignment]
+        galaxy.bang_snapshot = plan.bang_snapshot  # type: ignore[assignment]
+        galaxy.generation_warnings = plan.generation_warnings  # type: ignore[assignment]
+        if plan.galaxy_name:
+            galaxy.name = plan.galaxy_name  # type: ignore[assignment]
+        galaxy.import_state = GalaxyImportState.READY  # type: ignore[assignment]
+        await session.flush()
+        return galaxy
+
+    async def run_regeneration_job(
+        self,
+        job_id: uuid.UUID,
+        galaxy_id: uuid.UUID,
+        params: BangConfig,
+        existing_region_ids: Dict[RegionType, uuid.UUID],
+        *,
+        session_factory: Optional[Callable[[], Any]] = None,
+        region_metadata: Optional[Dict[str, Any]] = None,
+        emit_event: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    ) -> None:
+        """End-to-end content-only regeneration of an EXISTING galaxy.
+
+        Mirrors :meth:`run_generation_job` but targets pre-existing
+        Galaxy + Region rows: bang × 3 → translate (re-using the existing
+        region ids so the snapshot points back at them) → wipe content +
+        re-import via :meth:`apply_regeneration`. Region identity is
+        preserved throughout.
+
+        ``existing_region_ids`` maps each region_type to the UUID of the
+        already-persisted Region row to re-import into; the route handler
+        resolves these from the galaxy's ``bang_snapshot`` before dispatch.
+        """
+        if session_factory is None:
+            from src.core.database import AsyncSessionLocal as _Session  # type: ignore[import-not-found]
+            session_factory = _Session
+
+        region_metadata = dict(region_metadata or {})
+        region_metadata.setdefault("master_seed", params.seed)
+        # Thread the EXISTING region ids into translate()'s snapshot so the
+        # re-import wires content back to the same Region rows.
+        region_metadata.setdefault(
+            "regions",
+            {rt: {"region_id": str(rid)} for rt, rid in existing_region_ids.items()},
+        )
+
+        start_ts = time.monotonic()
+
+        async with session_factory() as session:
+            locked = (
+                await session.execute(
+                    text("SELECT pg_try_advisory_lock(:k)"),
+                    {"k": GALAXY_GEN_LOCK_KEY},
+                )
+            ).scalar()
+            if not locked:
+                await self._mark_job_failed(
+                    session, job_id,
+                    "another galaxy-generation job is already running",
+                )
+                await session.commit()
+                return
+
+            try:
+                await self._set_job_status(session, job_id, BangGenerationJobStatus.RUNNING)
+                await session.commit()
+
+                universes: Dict[RegionType, ParsedUniverse] = {}
+                region_types: Tuple[RegionType, ...] = (
+                    "player_owned",
+                    "terran_space",
+                    "central_nexus",
+                )
+                # Only regenerate the region types we actually have an
+                # existing Region row for (defensive: a galaxy might pre-date
+                # one of the three region types).
+                region_types = tuple(
+                    rt for rt in region_types if rt in existing_region_ids
+                )
+                for offset, region_type in enumerate(region_types):
+                    sub_config = BangConfig(
+                        seed=params.seed + offset,
+                        sectors=(
+                            params.sectors if region_type == "player_owned"
+                            else (_EXPECTED_SECTOR_COUNT[region_type] or params.sectors)
+                        ),
+                        region_type=region_type,
+                    )
+                    parsed = await asyncio.to_thread(self.invoke_bang, sub_config, 300)
+                    universes[region_type] = parsed
+                    await self._append_log(
+                        session, job_id,
+                        f"[regen {region_type}] parsed {parsed.total_sectors} sectors\n",
+                    )
+                    await session.commit()
+
+                plan = self.translate(universes, region_metadata)
+
+                async with session.begin():
+                    galaxy = await self.apply_regeneration(
+                        galaxy_id, plan, existing_region_ids, session
+                    )
+
+                duration_ms = int((time.monotonic() - start_ts) * 1000)
+                await self._mark_job_complete(
+                    session, job_id, duration_ms, plan.generation_warnings
+                )
+                await session.commit()
+
+                if emit_event is not None:
+                    await emit_event(
+                        "galaxy.regenerated",
+                        {"galaxy_id": str(galaxy.id), "job_id": str(job_id)},
+                    )
+            except Exception as exc:  # pragma: no cover - integration path
+                logger.exception("run_regeneration_job failed: %s", exc)
+                try:
+                    await session.rollback()
+                except Exception:  # noqa: S110, BLE001 - best-effort rollback
+                    logger.debug("rollback after failure also failed", exc_info=True)
                 await self._mark_job_failed(session, job_id, str(exc))
                 await session.commit()
             finally:
