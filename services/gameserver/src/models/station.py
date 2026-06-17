@@ -142,7 +142,12 @@ class Station(Base):
         "quirks": []
     })
     
-    price_modifiers = Column(JSONB, nullable=False, default={})  # Owner-set price adjustments
+    # Owner-set price adjustments. Also carries the ADR-0062 E-D3 station
+    # MARKETING lever under the "price_adjustment_lever" key (+/-10%), applied
+    # last in the canonical price stack and SKIPPED for same-owner/team buyers
+    # (E-F1). Stored in this existing JSONB — no migration (stranded alembic
+    # head). See trading_service.compute_station_lever_multiplier.
+    price_modifiers = Column(JSONB, nullable=False, default={})
     
     # Services - comprehensive service offerings
     services = Column(JSONB, nullable=False, default={
@@ -228,6 +233,14 @@ class Station(Base):
     def __repr__(self):
         return f"<Station {self.name} (Class {self.station_class.value}, {self.type.name}) - Sector: {self.sector_id}, Status: {self.status.name}>"
     
+    @property
+    def price_adjustment_lever(self) -> float:
+        """ADR-0062 E-D3 station marketing lever (+/-10%), stored in the
+        price_modifiers JSONB. 0.0 (neutral) by default. Bounds + the E-F1
+        same-owner/team skip are enforced in trading_service; this accessor
+        returns the raw stored value."""
+        return float((self.price_modifiers or {}).get("price_adjustment_lever", 0.0) or 0.0)
+
     def get_trading_pattern(self):
         """Get what this station buys/sells based on its class.
 

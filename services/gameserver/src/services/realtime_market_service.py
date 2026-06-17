@@ -554,22 +554,71 @@ class RealTimeMarketService:
         """Publish market update to Redis pub/sub for broadcasting"""
         if not self.redis:
             return
-        
+
         try:
             # Use pub/sub service for better management
             from src.services.redis_pubsub_service import get_pubsub_service
             pubsub_service = await get_pubsub_service()
-            
+
             # Publish through the service
             subscribers = await pubsub_service.publish_market_update(
                 commodity=commodity,
                 market_data=snapshot.to_dict()
             )
-            
+
             logger.debug(f"Published {commodity} update to {subscribers} subscribers")
-            
+
         except Exception as e:
             logger.error(f"Error publishing market update: {e}")
+
+    # ~1s batching window per (station, commodity), keyed in-process so the
+    # synchronous trade path can fire updates without flooding pub/sub when a
+    # commodity is hammered. Mirrors the cache_ttl real-time cadence.
+    _last_trade_publish: Dict[str, float] = {}
+
+    async def publish_trade_tick(
+        self,
+        station_id: str,
+        commodity: str,
+        buy_price: int,
+        sell_price: int,
+        quantity: int,
+    ) -> None:
+        """Publish a post-trade market tick for a single station/commodity.
+
+        Built for the SYNCHRONOUS buy/sell route (no AsyncSession needed): the
+        caller already holds fresh prices after the trade, so we publish them
+        directly instead of re-querying. Respects a ~1s batching window per
+        (station, commodity) so a hot commodity does not flood subscribers.
+
+        Fully defensive — a publish hiccup must never affect the trade. The
+        route awaits this AFTER its own commit, so failure here is cosmetic."""
+        if not self.redis:
+            return
+        try:
+            key = f"{station_id}:{commodity}"
+            now = asyncio.get_event_loop().time()
+            last = self._last_trade_publish.get(key, 0.0)
+            if now - last < self.market_update_interval:
+                return  # within the batching window — skip this tick
+            self._last_trade_publish[key] = now
+
+            from src.services.redis_pubsub_service import get_pubsub_service
+            pubsub_service = await get_pubsub_service()
+            await pubsub_service.publish_market_update(
+                commodity=commodity,
+                market_data={
+                    "commodity": commodity,
+                    "station_id": str(station_id),
+                    "buy_price": buy_price,
+                    "sell_price": sell_price,
+                    "quantity": quantity,
+                    "current_price": (buy_price + sell_price) // 2,
+                    "last_transaction": datetime.now(UTC).isoformat(),
+                },
+            )
+        except Exception as e:
+            logger.error(f"Error publishing trade tick for {commodity}: {e}")
 
 
 # Singleton instance

@@ -98,6 +98,12 @@ class Region(Base):
     
     # Economic Configuration
     tax_rate = Column(DECIMAL(5,4), nullable=False, default=0.10)
+    # trade_bonuses also carries the ADR-0062 E-D3/E-F2 region COMMERCE tariff
+    # under the "tariff_rate" key (a per-trade price modifier, distinct from
+    # tax). Stored here rather than a new column because the alembic head is
+    # branched and the dev pointer is stranded — no migration. The tariff is
+    # capped by the E-F2 sliding cap (station count: <3->5%, 3-5->15%, >=6->25%)
+    # on both the set path and clamp-on-read (see trading_service helpers).
     trade_bonuses = Column(JSONB, nullable=False, default=dict)
     economic_specialization = Column(String(50), nullable=True)
     starting_credits = Column(Integer, nullable=False, default=1000)
@@ -180,6 +186,14 @@ class Region(Base):
     def get_trade_bonus(self, resource_type: str) -> float:
         """Get trade bonus for specific resource type"""
         return self.trade_bonuses.get(resource_type, 1.0)
+
+    @property
+    def tariff_rate(self) -> float:
+        """ADR-0062 E-D3 region commerce tariff (per-trade price modifier),
+        stored in the trade_bonuses JSONB. 0.0 (neutral) by default. The
+        E-F2 sliding cap is enforced at set/read time in trading_service;
+        this accessor returns the raw stored value."""
+        return float((self.trade_bonuses or {}).get("tariff_rate", 0.0) or 0.0)
     
     def update_cultural_identity(self, language_pack: Dict[str, str], aesthetic_theme: Dict[str, Any], traditions: List[Dict[str, Any]]):
         """Update regional cultural identity"""

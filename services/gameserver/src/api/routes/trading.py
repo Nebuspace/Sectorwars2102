@@ -15,7 +15,12 @@ from src.models.sector import Sector
 from src.models.ship import Ship, ShipStatus
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
 from src.models.market_transaction import MarketTransaction, MarketPrice, TransactionType
-from src.services.trading_service import TradingService, compute_player_price_multiplier
+from src.services.trading_service import (
+    TradingService,
+    compute_player_price_multiplier,
+    compute_region_tariff_multiplier,
+    compute_station_lever_multiplier,
+)
 from src.services.ranking_service import RankingService
 from src.services.medal_service import MedalService
 from src.services import docking_service
@@ -90,6 +95,53 @@ def _ensure_market_prices(db: Session, station: Station) -> None:
         db.commit()
     elif TradingService(db).lazy_market_tick(station):
         db.commit()
+
+
+def _reprice_after_trade(
+    db: Session, station: Station, market_price: MarketPrice, commodity: str
+) -> bool:
+    """Recompute a single commodity's MarketPrice from the post-trade supply,
+    capturing previous prices for trend/alert tracking, then auto-fire a
+    PriceAlert if the price crossed its configured threshold (ADR-0062
+    market-data hardening).
+
+    Fully defensive: a pricing/alert hiccup must never break a trade, so any
+    error here is swallowed (the trade's core mutations already happened).
+    Returns True iff a PriceAlert row was created."""
+    try:
+        ts = TradingService(db)
+        new_sell = ts.calculate_dynamic_price(station, commodity, "sell")
+        new_buy = ts.calculate_dynamic_price(station, commodity, "buy")
+        if new_buy >= new_sell:
+            new_buy = max(1, new_sell - 1)
+        # Preserve prior prices as the alert/trend baseline before overwriting.
+        market_price.previous_buy_price = market_price.buy_price
+        market_price.previous_sell_price = market_price.sell_price
+        market_price.buy_price = new_buy
+        market_price.sell_price = new_sell
+        return ts.maybe_fire_price_alert(market_price, station_name=station.name or "")
+    except Exception:
+        logger.warning("post-trade reprice/alert failed (non-fatal)", exc_info=True)
+        return False
+
+
+async def _publish_trade_tick(
+    station_id: str, commodity: str, market_price: MarketPrice
+) -> None:
+    """Fire a real-time market update after a committed trade (respects the
+    service's ~1s per-(station,commodity) batching). Defensive — purely
+    cosmetic, never affects the trade outcome."""
+    try:
+        from src.services.realtime_market_service import get_market_service
+        await get_market_service().publish_trade_tick(
+            station_id=str(station_id),
+            commodity=commodity,
+            buy_price=market_price.buy_price,
+            sell_price=market_price.sell_price,
+            quantity=market_price.quantity,
+        )
+    except Exception:
+        logger.debug("real-time trade tick publish skipped", exc_info=True)
 
 
 @router.post("/buy")
@@ -178,6 +230,13 @@ async def buy_resource(
     # lookup failure, so it can never block a trade.
     price_multiplier = compute_player_price_multiplier(db, current_player, station)
     discounted_price *= price_multiplier
+    # ADR-0062 E-D3 canonical tail factors, in order: region tariff then the
+    # station marketing lever (E-F1 skips the lever for same-owner/team
+    # buyers). Both are "player-pays" multipliers applied directly on a BUY.
+    # Both degrade to neutral (1.0) on any failure — never block a trade.
+    tariff_mult, tariff_rate_eff = compute_region_tariff_multiplier(db, station)
+    lever_mult, lever_eff = compute_station_lever_multiplier(db, current_player, station)
+    discounted_price *= tariff_mult * lever_mult
     effective_buy_price = max(1, int(discounted_price))  # Floor at 1 credit
 
     # Calculate total cost
@@ -214,10 +273,24 @@ async def buy_resource(
 
     # Execute the trade
     try:
-        # Update player credits (goods + tax); the tax accrues to the
-        # station treasury under the station lock taken above
+        # Update player credits (goods + tax); the tax is realized to the
+        # station under the station lock taken above. ADR-0062 / port-ownership:
+        # the trade tax is NOT 100% owner revenue — realize_port_revenue splits
+        # it 40% defense / 30% owner / 30% operating (treasury_balance +
+        # ownership JSONB buckets). Imported lazily and DEFENSIVE: any error
+        # falls back to the old whole-tax-to-treasury behavior so a revenue
+        # split hiccup can never fail the trade.
         current_player.credits -= total_with_tax
-        station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+        if tax_amount > 0:
+            try:
+                from src.services import port_ownership_service
+                port_ownership_service.realize_port_revenue(db, station, tax_amount)
+            except Exception:
+                logger.warning(
+                    "realize_port_revenue failed (buy); falling back to treasury",
+                    exc_info=True,
+                )
+                station.treasury_balance = (station.treasury_balance or 0) + tax_amount
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -246,6 +319,13 @@ async def buy_resource(
                     min(2.0, max(0.0, score + trade_request.quantity / capacity)), 4
                 )
             flag_modified(station, 'commodities')
+
+        # Recompute this commodity's market price from the post-trade supply
+        # so the MarketPrice row reflects the trade's market impact. This sets
+        # previous_sell_price (the alert baseline) and is fully defensive.
+        alert_fired = _reprice_after_trade(
+            db, station, market_price, trade_request.resource_type
+        )
 
         # Create transaction record. The station_buy/sell_price snapshots
         # capture the station's prevailing prices at transaction time —
@@ -326,6 +406,9 @@ async def buy_resource(
 
         db.commit()
 
+        # Real-time market broadcast (post-commit, batched, defensive).
+        await _publish_trade_tick(station.id, trade_request.resource_type, market_price)
+
         response = {
             "message": f"Successfully bought {trade_request.quantity} units of {trade_request.resource_type}",
             "transaction": {
@@ -338,10 +421,15 @@ async def buy_resource(
                 "tax_rate": tax_rate,
                 "tax": tax_amount,
                 "total_with_tax": total_with_tax,
+                # ADR-0062 E-D3 price-stack breakdown (tail factors).
+                "tariff_rate": tariff_rate_eff,
+                "price_lever": lever_eff,
                 "remaining_credits": current_player.credits,
                 "remaining_cargo_space": current_ship.cargo.get('capacity', 50) - current_ship.cargo.get('used', 0)
             }
         }
+        if alert_fired:
+            response["price_alert"] = True
         if rank_awarded and rank_awarded.get("success") and rank_awarded.get("points_awarded", 0) > 0:
             response["rank_points_awarded"] = rank_awarded["points_awarded"]
             if rank_awarded.get("promoted"):
@@ -442,6 +530,15 @@ async def sell_resource(
     price_multiplier = compute_player_price_multiplier(db, current_player, station)
     if price_multiplier > 0:
         boosted_price /= price_multiplier
+    # ADR-0062 E-D3 tail factors. On a SELL the relationship flips (a worse
+    # "player-pays" multiplier means a LOWER payout), so divide — symmetric
+    # with the rep layers above. E-F1 still skips the lever for same-owner/team.
+    tariff_mult, tariff_rate_eff = compute_region_tariff_multiplier(db, station)
+    lever_mult, lever_eff = compute_station_lever_multiplier(db, current_player, station)
+    if tariff_mult > 0:
+        boosted_price /= tariff_mult
+    if lever_mult > 0:
+        boosted_price /= lever_mult
     effective_sell_price = max(1, int(boosted_price))
 
     # Calculate total earnings (gross, before station trade tax)
@@ -460,10 +557,22 @@ async def sell_resource(
 
     # Execute the trade
     try:
-        # Update player credits (net of tax); the withheld tax accrues to
-        # the station treasury under the station lock taken above
+        # Update player credits (net of tax); the withheld tax is realized to
+        # the station under the station lock taken above. ADR-0062 / port-
+        # ownership: split 40/30/30 via realize_port_revenue, NOT 100% to the
+        # owner treasury. DEFENSIVE — any error falls back to the old whole-tax
+        # behavior so a revenue split hiccup can never fail the trade.
         current_player.credits += net_earnings
-        station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+        if tax_amount > 0:
+            try:
+                from src.services import port_ownership_service
+                port_ownership_service.realize_port_revenue(db, station, tax_amount)
+            except Exception:
+                logger.warning(
+                    "realize_port_revenue failed (sell); falling back to treasury",
+                    exc_info=True,
+                )
+                station.treasury_balance = (station.treasury_balance or 0) + tax_amount
 
         # Update ship cargo (using proper structure)
         if not current_ship.cargo:
@@ -492,6 +601,12 @@ async def sell_resource(
                     min(2.0, max(0.0, score - trade_request.quantity / capacity)), 4
                 )
             flag_modified(station, 'commodities')
+
+        # Recompute price from post-trade supply (sets the alert baseline) and
+        # auto-fire a PriceAlert if the threshold was crossed. Defensive.
+        alert_fired = _reprice_after_trade(
+            db, station, market_price, trade_request.resource_type
+        )
 
         # Create transaction record. The station_buy/sell_price snapshots
         # capture the station's prevailing prices at transaction time —
@@ -572,6 +687,9 @@ async def sell_resource(
 
         db.commit()
 
+        # Real-time market broadcast (post-commit, batched, defensive).
+        await _publish_trade_tick(station.id, trade_request.resource_type, market_price)
+
         remaining = current_ship.cargo.get('contents', {}).get(trade_request.resource_type, 0)
         response = {
             "message": f"Successfully sold {trade_request.quantity} units of {trade_request.resource_type}",
@@ -585,10 +703,15 @@ async def sell_resource(
                 "tax_rate": tax_rate,
                 "tax": tax_amount,
                 "net_earnings": net_earnings,
+                # ADR-0062 E-D3 price-stack breakdown (tail factors).
+                "tariff_rate": tariff_rate_eff,
+                "price_lever": lever_eff,
                 "new_credits": current_player.credits,
                 "remaining_cargo": remaining
             }
         }
+        if alert_fired:
+            response["price_alert"] = True
         if rank_awarded and rank_awarded.get("success") and rank_awarded.get("points_awarded", 0) > 0:
             response["rank_points_awarded"] = rank_awarded["points_awarded"]
             if rank_awarded.get("promoted"):
