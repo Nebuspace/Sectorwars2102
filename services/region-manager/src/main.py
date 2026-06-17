@@ -53,6 +53,19 @@ monitor = RegionMonitor()
 # Global state
 active_regions: Dict[str, RegionStatus] = {}
 
+# Tracks consecutive low-utilization monitoring samples per region so that
+# scale-down only fires after a sustained cool-down window rather than on a
+# single transient dip. Keyed by region_name -> consecutive low-sample count.
+_scale_down_low_samples: Dict[str, int] = {}
+
+# Number of consecutive low-utilization samples required before scaling down.
+# At the 30s monitoring cadence this is a ~3 minute sustained-low window,
+# deliberately conservative so brief idle periods don't thrash container
+# resources. Scale-up, by contrast, reacts on a single sample.
+SCALE_DOWN_SUSTAINED_SAMPLES: int = int(
+    os.environ.get("SCALE_DOWN_SUSTAINED_SAMPLES", "6")
+)
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -380,12 +393,75 @@ async def check_auto_scaling(region_name: str, stats: Dict[str, any]):
             )
             
             await scale_region_task(region_name, scale_request)
-        
-        # Auto-scale down if CPU < 20% and Memory < 30% for sustained period
-        elif cpu_usage < 20 and memory_usage < 30:
-            # Implementation for scale-down logic
-            pass
-    
+            # Any upward pressure resets the sustained-low counter.
+            _scale_down_low_samples.pop(region_name, None)
+
+        # Auto-scale down if CPU < 20% and Memory < 30% for a sustained period.
+        # Symmetric to scale-up but gated on a cool-down window: a region must
+        # stay below both thresholds for SCALE_DOWN_SUSTAINED_SAMPLES consecutive
+        # monitoring samples before we reclaim resources, avoiding thrash.
+        elif (cpu_usage < settings.SCALE_DOWN_CPU_THRESHOLD
+              and memory_usage < settings.SCALE_DOWN_MEMORY_THRESHOLD):
+            low_samples = _scale_down_low_samples.get(region_name, 0) + 1
+            _scale_down_low_samples[region_name] = low_samples
+
+            if low_samples < SCALE_DOWN_SUSTAINED_SAMPLES:
+                logger.debug(
+                    f"Region {region_name} under scale-down thresholds "
+                    f"(CPU: {cpu_usage}%, Memory: {memory_usage}%) - "
+                    f"sustained sample {low_samples}/{SCALE_DOWN_SUSTAINED_SAMPLES}"
+                )
+                return
+
+            current_region = active_regions[region_name]
+            current_cpu = current_region.resource_usage.get(
+                "cpu_cores", settings.DEFAULT_CPU_CORES
+            )
+            current_memory = current_region.resource_usage.get(
+                "memory_gb", settings.DEFAULT_MEMORY_GB
+            )
+
+            # Symmetric inverse of the scale-up factors, floored at the region
+            # baseline minimums (CPU 1 core, memory 2 GB per ScalingRequest
+            # bounds) so a quiet region is never starved below a workable size.
+            target_cpu = max(round(current_cpu / 1.5, 1), 1.0)
+            target_memory = max(int(current_memory / 1.3), 2)
+
+            # Nothing to reclaim if we're already at the floor.
+            if target_cpu >= current_cpu and target_memory >= current_memory:
+                logger.debug(
+                    f"Region {region_name} already at minimum allocation - "
+                    f"skipping scale-down"
+                )
+                _scale_down_low_samples.pop(region_name, None)
+                return
+
+            logger.info(
+                f"Auto-scaling down region {region_name} after "
+                f"{low_samples} sustained low samples - "
+                f"CPU: {cpu_usage}%, Memory: {memory_usage}% "
+                f"({current_cpu}->{target_cpu} cores, "
+                f"{current_memory}->{target_memory} GB)"
+            )
+
+            scale_request = ScalingRequest(
+                cpu_cores=target_cpu,
+                memory_gb=target_memory,
+                disk_gb=current_region.resource_usage.get(
+                    "disk_gb", settings.DEFAULT_DISK_GB
+                )
+            )
+
+            await scale_region_task(region_name, scale_request)
+            # Reset after acting so the next scale-down also requires a fresh
+            # sustained window.
+            _scale_down_low_samples.pop(region_name, None)
+
+        else:
+            # Utilization is in the comfortable mid-band; clear any partial
+            # sustained-low streak.
+            _scale_down_low_samples.pop(region_name, None)
+
     except Exception as e:
         logger.error(f"Error in auto-scaling check for {region_name}: {e}")
 
