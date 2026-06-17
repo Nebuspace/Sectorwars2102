@@ -32,8 +32,44 @@ class RegionalGovernanceService:
         return result.scalar_one_or_none()
     
     @staticmethod
+    async def _expire_stale_treaties(db: AsyncSession, region_id: uuid.UUID) -> int:
+        """Lazily expire treaties whose expiry has passed (advance-on-read).
+
+        Treaties carry an explicit expires_at but there is no background sweep
+        that flips their status; instead we settle them on read (the same
+        lazy-settle pattern used for citadel/shield state). Any treaty still
+        marked 'active' but past its expires_at is flipped to 'expired' so that
+        all downstream reads (counts, listings, governance checks) see the
+        truthful status. Returns the number of treaties expired.
+        """
+        now = datetime.utcnow()
+        result = await db.execute(
+            update(RegionalTreaty)
+            .where(
+                and_(
+                    or_(
+                        RegionalTreaty.region_a_id == region_id,
+                        RegionalTreaty.region_b_id == region_id
+                    ),
+                    RegionalTreaty.status == 'active',
+                    RegionalTreaty.expires_at.isnot(None),
+                    RegionalTreaty.expires_at < now
+                )
+            )
+            .values(status='expired')
+        )
+        expired = result.rowcount or 0
+        if expired:
+            await db.commit()
+            logger.info(f"Lazily expired {expired} treaty(ies) for region {region_id}")
+        return expired
+
+    @staticmethod
     async def get_regional_stats(db: AsyncSession, region_id: uuid.UUID) -> Dict[str, Any]:
         """Get comprehensive statistics for a region"""
+        # Settle any treaties past their expiry before counting active ones.
+        await RegionalGovernanceService._expire_stale_treaties(db, region_id)
+
         # Get membership statistics
         membership_stats = await db.execute(
             select(
@@ -276,6 +312,9 @@ class RegionalGovernanceService:
         region_id: uuid.UUID
     ) -> List[Dict[str, Any]]:
         """Get treaties involving a region"""
+        # Settle any treaties past their expiry so listings show accurate status.
+        await RegionalGovernanceService._expire_stale_treaties(db, region_id)
+
         result = await db.execute(
             select(RegionalTreaty, Region.name.label('partner_name'))
             .join(
