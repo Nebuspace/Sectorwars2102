@@ -135,6 +135,14 @@ _WEEKLY_DECAY_STATE_KEY = "weekly_decay_last_week"
 # 15-minute pre-filter is far finer than a (canonical) week, so the week is
 # never missed, while idle wakes do nothing.
 WEEKLY_DECAY_CHECK_SECONDS = 15 * 60
+# Coarse pre-filter for the economy faucet (reputation stipend + citizen
+# perk).  Same rationale as WEEKLY_DECAY_CHECK_SECONDS: the durable
+# canonical-week anchor inside run_weekly_faucet_sync is what actually
+# guarantees once-per-week; this keeps us from acquiring the advisory lock +
+# querying Galaxy.state on every 60s tick.  Intentionally offset from the
+# decay pre-filter (15 min) by 5 minutes to avoid both hitting Postgres in
+# the same scheduler wake.
+FAUCET_CHECK_SECONDS = 20 * 60
 
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
@@ -1840,3 +1848,25 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: weekly decay crashed (loop continues)")
+
+        # Economy faucets — reputation stipend + galactic-citizen subscription
+        # perk.  Same coarse pre-filter / durable-anchor pattern as the weekly
+        # decay; intentionally on a separate cadence (20 min) to avoid
+        # colliding with the decay wake.  run_weekly_faucet_sync is fully
+        # synchronous and self-gated on the shared advisory lock.
+        if elapsed % FAUCET_CHECK_SECONDS == 0:
+            try:
+                from src.services.economy_faucet_service import run_weekly_faucet_sync
+                faucet = await asyncio.to_thread(run_weekly_faucet_sync)
+                if faucet.get("week", -1) >= 0:
+                    logger.info(
+                        "NPC scheduler: economy faucet fired (week %d) — "
+                        "stipend=%d player(s), citizen_perk=%d citizen(s), "
+                        "total=%d cr injected",
+                        faucet["week"], faucet["stipend_grants"],
+                        faucet["citizen_grants"], faucet["total_credits"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: economy faucet crashed (loop continues)")
