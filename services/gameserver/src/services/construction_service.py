@@ -44,8 +44,9 @@ the transaction and issues a single commit.
 """
 import logging
 import math
+import random as _random_module
 from datetime import datetime, UTC
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -126,6 +127,76 @@ RENT_MAX_PREPAY_DAYS = 30          # pay-rent pre-pays up to 30 canonical days
 CANCEL_REFUND_FRACTION = 0.50
 CANCEL_REFUND_FRACTION_AFTER_HULL = 0.70   # post-hull cancel = 70% sell-back
 CLAIM_FORFEIT_REFUND_FRACTION = 0.70       # missed claim: sell-back minus 30%
+
+# ---------------------------------------------------------------------------
+# Task B-1: Premium floor pricing
+# Canon: FEATURES/economy/tradedock-shipyard — TradeDock construction is a
+# major mid-to-late-game credit sink; the cheapest build (Scout, 40,000 cr)
+# is already above any plausible floor, but the constant guards against
+# SHIP_BUILD_SPECS drift. The floor is currently the Scout's total cost;
+# any entry below it is a spec violation and would be raised here.
+PREMIUM_FLOOR_COST = 40_000   # cr — no TradeDock quote/reservation below this
+
+# Task B-2: Guest-fee surcharge + reputation gates
+# Canon: FEATURES/economy/tradedock-shipyard §Reputation gate / §Guest fee.
+# To use a TradeDock without the guest fee, a player needs +200 rep with the
+# controlling NPC faction (numeric current_value, not rep tier level).
+# Players below the hard-deny threshold (RECOGNIZED = numeric +1, i.e.
+# current_value >= 1) are turned away entirely — paying the guest fee only
+# allows docking; they still cannot use the shipyard.
+TRADEDOCK_REP_THRESHOLD_FULL = 200   # ≥200 current_value → no guest fee
+TRADEDOCK_REP_THRESHOLD_GUEST = 1    # ≥1 → guest-fee access (construction OK)
+TRADEDOCK_GUEST_FEE_CR = 100_000     # flat, non-refundable, per-session
+
+# Task B-4: Construction-event RNG
+# Canon: FEATURES/economy/tradedock-shipyard §Construction events.
+EVENT_BASE_RATE = 0.05                   # 5% per project per canonical day
+EVENT_ENGINEER_MODIFIER = 0.10           # +10% per engineer (max 3)
+EVENT_MAX_PROBABILITY = 0.65             # hard cap per day
+# Roll table thresholds (0-indexed on 0..99 random int):
+#   0-39 → positive   (Quality Discovery, Innovation)
+#   40-79 → neutral   (Cosmetic Variation, Crew Morale)
+#   80-99 → negative  (Resource Shortage, Inspection Delay)
+EVENT_POSITIVE_THRESHOLD = 40
+EVENT_NEGATIVE_THRESHOLD = 80
+# Per-engineer biasing: each engineer applies a -5 shift to the roll,
+# biasing toward positive outcomes; at 3 engineers the shift is -15.
+EVENT_ENGINEER_ROLL_SHIFT = -5
+
+# Concrete event catalog (type → effect descriptor used by the payload).
+EVENT_CATALOG = {
+    "quality_discovery": {
+        "class": "positive",
+        "stat": None,       # set dynamically (hull/shields/cargo/speed)
+        "stat_bonus_pct": 5,
+        "description": "Engineer finds a structural improvement: +5% to a random stat.",
+    },
+    "innovation": {
+        "class": "positive",
+        "equipment_slot_bonus": 1,
+        "max_innovation_events": 2,   # cap per project
+        "description": "Novel technique applied: +1 equipment slot at completion.",
+    },
+    "cosmetic_variation": {
+        "class": "neutral",
+        "description": "Unique hull marking added; no mechanical change.",
+    },
+    "crew_morale": {
+        "class": "neutral",
+        "description": "Workplace-morale ledger entry; no mechanical change.",
+    },
+    "resource_shortage": {
+        "class": "negative",
+        "overrun_pct_min": 10,
+        "overrun_pct_max": 26,   # roll 2d8+10: [10, 25]; +1 for exclusive upper
+        "description": "Supply chain disrupted: cost overrun on next milestone OR deliver extra resource.",
+    },
+    "inspection_delay": {
+        "class": "negative",
+        "delay_days": 1,
+        "description": "Inspector slows progress: +1 elapsed day, no direct cost.",
+    },
+}
 
 # Slip pools by TradeDock tier: B = 12 standard; A = 8 standard + 4
 # specialized. Carrier and Warp Jumper require Tier-A; Warp Jumper consumes
@@ -223,6 +294,269 @@ def checkpoint_shortfall(
 
 def checkpoint_met(required: Dict[str, int], delivered: Dict[str, int], phase: str) -> bool:
     return not checkpoint_shortfall(required, delivered, phase)
+
+
+# ---------------------------------------------------------------------------
+# Premium floor enforcement (Task B-1)
+# ---------------------------------------------------------------------------
+
+def apply_premium_floor(total_cost: int) -> int:
+    """Enforce the TradeDock minimum construction cost floor.
+
+    A spec violation (SHIP_BUILD_SPECS entry below PREMIUM_FLOOR_COST) would
+    produce a floored cost higher than the spec value — that's intentional:
+    the floor exists to catch future drift, not mask existing valid entries.
+    All current entries are >= 40,000 cr so this is a no-op in practice.
+    """
+    return max(total_cost, PREMIUM_FLOOR_COST)
+
+
+# ---------------------------------------------------------------------------
+# Guest-fee surcharge + reputation gate helpers (Task B-2)
+# ---------------------------------------------------------------------------
+
+def _tradedock_player_rep(db: Session, player_id, station: Station) -> int:
+    """Numeric reputation current_value toward the station's controlling
+    faction; 0 when unaffiliated or no record.  Mirrors _faction_rep_tier
+    but returns current_value (an integer score) instead of the numeric tier.
+    """
+    if not station.faction_affiliation:
+        return 0
+    faction = db.query(Faction).filter(Faction.name == station.faction_affiliation).first()
+    if faction is None:
+        return 0
+    rep = db.query(Reputation).filter(
+        Reputation.player_id == player_id,
+        Reputation.faction_id == faction.id,
+    ).first()
+    return rep.current_value if rep is not None else 0
+
+
+def tradedock_access(
+    db: Session, player: Player, station: Station
+) -> Tuple[str, int]:
+    """Determine TradeDock access level for `player` at `station`.
+
+    Returns (access_level, rep_value):
+      'full'       — rep >= 200; no guest fee
+      'guest'      — rep 1..199; guest fee (TRADEDOCK_GUEST_FEE_CR) applies
+      'denied'     — rep <= 0; cannot dock at all (construction is blocked)
+
+    Canon: FEATURES/economy/tradedock-shipyard §Reputation gate and §Guest fee.
+    """
+    rep_value = _tradedock_player_rep(db, player.id, station)
+    if rep_value >= TRADEDOCK_REP_THRESHOLD_FULL:
+        return "full", rep_value
+    if rep_value >= TRADEDOCK_REP_THRESHOLD_GUEST:
+        return "guest", rep_value
+    return "denied", rep_value
+
+
+# ---------------------------------------------------------------------------
+# Construction-event RNG (Task B-4)
+# ---------------------------------------------------------------------------
+
+def event_fires_today(
+    engineer_count: int = 0,
+    rng: Optional[_random_module.Random] = None,
+) -> bool:
+    """Return True if a construction event fires for a given project-day.
+
+    Canon formula: P = min(0.65, 0.05 + 0.10 × engineer_count).
+    `rng` is injectable for deterministic tests; defaults to the module-level
+    random instance when None.
+    """
+    if rng is None:
+        rng = _random_module  # type: ignore[assignment]
+    prob = min(EVENT_MAX_PROBABILITY, EVENT_BASE_RATE + EVENT_ENGINEER_MODIFIER * engineer_count)
+    return rng.random() < prob
+
+
+def roll_construction_event(
+    reservation: Any,
+    engineer_count: int = 0,
+    rng: Optional[_random_module.Random] = None,
+) -> Optional[Dict[str, Any]]:
+    """Roll for a construction event on a single project-day.
+
+    Returns an event dict when an event fires, or None when the day is quiet.
+    Does NOT mutate the reservation (apply_construction_event handles that).
+
+    Caller is responsible for:
+      1. Checking that the reservation is in an active build phase.
+      2. Calling this once per project-day (the advance path is the right home).
+      3. Persisting the event to reservation.construction_events (a list column
+         — FLAG: ConstructionReservation needs a `construction_events` JSONB
+         column added by the other lane; see FIELD_NEEDED note below).
+
+    Canon: roll 0–99; per-engineer −5 shift biases toward positive outcomes.
+    """
+    if rng is None:
+        rng = _random_module  # type: ignore[assignment]
+
+    if not event_fires_today(engineer_count, rng=rng):
+        return None
+
+    # Apply per-engineer roll shift (negative = toward positive outcomes).
+    base_roll = rng.randint(0, 99)
+    roll = max(0, base_roll + engineer_count * EVENT_ENGINEER_ROLL_SHIFT)
+
+    if roll < EVENT_POSITIVE_THRESHOLD:
+        # Positive: Quality Discovery or Innovation (50/50 within the bucket).
+        if rng.random() < 0.5:
+            stat = rng.choice(["hull", "shields", "cargo", "speed"])
+            event = dict(EVENT_CATALOG["quality_discovery"])
+            event["stat"] = stat
+            event["type"] = "quality_discovery"
+        else:
+            # Cap Innovation events at 2 per project.
+            existing = getattr(reservation, "construction_events", None) or []
+            innovation_count = sum(
+                1 for e in existing if e.get("type") == "innovation"
+            )
+            if innovation_count >= EVENT_CATALOG["innovation"]["max_innovation_events"]:
+                # Fallback to Quality Discovery when Innovation is capped.
+                stat = rng.choice(["hull", "shields", "cargo", "speed"])
+                event = dict(EVENT_CATALOG["quality_discovery"])
+                event["stat"] = stat
+                event["type"] = "quality_discovery"
+            else:
+                event = dict(EVENT_CATALOG["innovation"])
+                event["type"] = "innovation"
+
+    elif roll < EVENT_NEGATIVE_THRESHOLD:
+        # Neutral: Cosmetic Variation or Crew Morale (50/50).
+        if rng.random() < 0.5:
+            event = dict(EVENT_CATALOG["cosmetic_variation"])
+            event["type"] = "cosmetic_variation"
+        else:
+            event = dict(EVENT_CATALOG["crew_morale"])
+            event["type"] = "crew_morale"
+
+    else:
+        # Negative: Resource Shortage or Inspection Delay (50/50).
+        if rng.random() < 0.5:
+            # Roll 2d8 + 10 for overrun percentage (range 12–26, canon says 10–25).
+            overrun_pct = rng.randint(1, 8) + rng.randint(1, 8) + 10
+            event = dict(EVENT_CATALOG["resource_shortage"])
+            event["type"] = "resource_shortage"
+            event["overrun_pct"] = overrun_pct
+        else:
+            event = dict(EVENT_CATALOG["inspection_delay"])
+            event["type"] = "inspection_delay"
+
+    event.setdefault("type", "unknown")
+    event["rolled_at"] = datetime.now(UTC).isoformat()
+    return event
+
+
+def apply_construction_event(
+    reservation: Any,
+    event: Dict[str, Any],
+    station: Station,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Apply the mechanical effect of a fired construction event to `reservation`.
+
+    Returns the event dict (possibly augmented with 'applied' metadata).
+    The caller must call flag_modified(reservation, 'construction_events')
+    and flush after this function.
+
+    FIELD_NEEDED: ConstructionReservation requires two new columns (flag for
+    the other lane — do NOT add them here):
+      * `construction_events` JSONB default=[] — event log (build history)
+      * `pending_events`      JSONB default=[] — events awaiting player decision
+    Until those fields exist, this function stores events in a defensive
+    `getattr(..., [], [])` pattern and logs a warning if they are missing.
+    """
+    now = now or datetime.now(UTC)
+    event_type = event.get("type", "unknown")
+
+    # Defensive: construction_events may not yet exist as a column.
+    events_log = list(getattr(reservation, "construction_events", None) or [])
+    pending = list(getattr(reservation, "pending_events", None) or [])
+
+    if event_type == "quality_discovery":
+        # Passive — no player decision needed. Stat bonus is applied at claim.
+        # Store on the log; the claim step reads construction_events for bonuses.
+        event["status"] = "applied"
+        events_log.append(event)
+
+    elif event_type == "innovation":
+        # Passive — no player decision needed.
+        event["status"] = "applied"
+        events_log.append(event)
+
+    elif event_type in ("cosmetic_variation", "crew_morale"):
+        # Passive neutral — log only.
+        event["status"] = "applied"
+        events_log.append(event)
+
+    elif event_type == "resource_shortage":
+        # Requires player decision: pay the overrun OR deliver extra resource.
+        # Surface as a pending event; the UI/API resolves it.
+        overrun_pct = event.get("overrun_pct", 15)
+        next_milestone_key = _next_unpaid_milestone(reservation)
+        if next_milestone_key:
+            amounts = milestone_amounts(reservation.total_cost)
+            overrun_amount = int(amounts.get(next_milestone_key, 0) * overrun_pct / 100)
+            event["overrun_amount"] = overrun_amount
+            event["next_milestone"] = next_milestone_key
+        event["status"] = "pending"
+        pending.append(event)
+        events_log.append(event)
+        logger.info(
+            "Construction event resource_shortage: reservation=%s overrun_pct=%d",
+            reservation.id, overrun_pct,
+        )
+
+    elif event_type == "inspection_delay":
+        # Mechanically: extend phase_deadline by 1 real-time day / GAME_TIME_SCALE.
+        # (game_time.scaled_deadline with 24h gives the wall-clock extension.)
+        if reservation.phase_deadline is not None:
+            delay_deadline = game_time.scaled_deadline(
+                24.0, start=reservation.phase_deadline.replace(tzinfo=UTC)
+                if reservation.phase_deadline.tzinfo is None
+                else reservation.phase_deadline,
+            )
+            reservation.phase_deadline = delay_deadline
+            reservation.updated_at = now
+        event["status"] = "applied"
+        events_log.append(event)
+        logger.info(
+            "Construction event inspection_delay: reservation=%s deadline extended",
+            reservation.id,
+        )
+
+    else:
+        logger.warning(
+            "apply_construction_event: unknown event type '%s' on reservation=%s",
+            event_type, reservation.id,
+        )
+        event["status"] = "unrecognised"
+        events_log.append(event)
+
+    # Write back if the columns exist (defensive).
+    if hasattr(reservation, "construction_events"):
+        reservation.construction_events = events_log
+    else:
+        logger.warning(
+            "ConstructionReservation missing 'construction_events' column; "
+            "event logged in memory only. FLAG: other lane must add the column."
+        )
+    if hasattr(reservation, "pending_events"):
+        reservation.pending_events = pending
+
+    return event
+
+
+def _next_unpaid_milestone(reservation: Any) -> Optional[str]:
+    """Return the name of the next unpaid milestone, or None if all are paid."""
+    milestones_paid = reservation.milestones or {}
+    for name in MILESTONE_ORDER:
+        if not milestones_paid.get(name):
+            return name
+    return None
 
 
 def phase_start_blockers(reservation: Any, phase: str) -> List[str]:
@@ -557,7 +891,8 @@ def quote(db: Session, station: Station, now: Optional[datetime] = None) -> Dict
 
     quotes = []
     for ship_type, spec in SHIP_BUILD_SPECS.items():
-        cost = spec["total_cost"]
+        # Task B-1: apply premium floor to the spec cost.
+        cost = apply_premium_floor(spec["total_cost"])
         days = spec["build_days"]
         requires_tier_a = ship_type in TIER_A_ONLY_TYPES
         available = not (requires_tier_a and tier != "A")
@@ -590,6 +925,10 @@ def quote(db: Session, station: Station, now: Optional[datetime] = None) -> Dict
         "hold_hours": HOLD_HOURS,
         "claim_window_hours": CLAIM_WINDOW_HOURS,
         "rent_rate_per_day": RENT_RATE_PER_DAY,
+        # Task B-2: expose guest-fee thresholds so the UI can warn before commit.
+        "rep_threshold_full_access": TRADEDOCK_REP_THRESHOLD_FULL,
+        "rep_threshold_guest_access": TRADEDOCK_REP_THRESHOLD_GUEST,
+        "guest_fee_cr": TRADEDOCK_GUEST_FEE_CR,
         "quotes": quotes,
     }
 
@@ -602,8 +941,17 @@ def create_reservation(
     ship_name: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> ConstructionReservation:
-    """Place a build order: validates tier gating, charges the 10% deposit,
-    and enters the queue (requested -> queued in one transaction)."""
+    """Place a build order: validates tier gating, checks reputation gate,
+    charges guest fee if applicable, charges the 10% deposit, and enters the
+    queue (requested -> queued in one transaction).
+
+    Task B-2: Guest-fee surcharge + reputation gate
+      'full'  (rep >= 200) → no surcharge
+      'guest' (rep 1..199) → TRADEDOCK_GUEST_FEE_CR charged before deposit
+      'denied' (rep <= 0)  → ConstructionError(403)
+
+    Task B-1: Premium floor is applied to total_cost before deposit calc.
+    """
     now = now or datetime.now(UTC)
 
     spec = SHIP_BUILD_SPECS.get(ship_type)
@@ -626,14 +974,46 @@ def create_reservation(
             f"{station.name} is Tier-{station.tradedock_tier}",
         )
 
+    # Task B-2: reputation gate — check before locking the player row.
+    access_level, rep_value = tradedock_access(db, player, station)
+    if access_level == "denied":
+        raise ConstructionError(
+            403,
+            f"TradeDock access denied: your reputation with this station's faction is "
+            f"{rep_value}. You need at least +{TRADEDOCK_REP_THRESHOLD_GUEST} (RECOGNIZED) "
+            f"to use the shipyard. Build your standing with the faction first.",
+        )
+
     player = _lock_player(db, player.id)
-    total_cost = spec["total_cost"]
+
+    # Task B-2: charge guest fee before the deposit (both go to treasury).
+    guest_fee_paid = 0
+    if access_level == "guest":
+        if player.credits < TRADEDOCK_GUEST_FEE_CR:
+            raise ConstructionError(
+                400,
+                f"Guest-fee required: {TRADEDOCK_GUEST_FEE_CR:,} credits (your reputation "
+                f"with this faction is {rep_value}; reach +{TRADEDOCK_REP_THRESHOLD_FULL} "
+                f"to waive the fee). You have {player.credits:,} credits.",
+            )
+        player.credits -= TRADEDOCK_GUEST_FEE_CR
+        station.treasury_balance = (station.treasury_balance or 0) + TRADEDOCK_GUEST_FEE_CR
+        guest_fee_paid = TRADEDOCK_GUEST_FEE_CR
+        logger.info(
+            "TradeDock guest fee charged: player=%s station=%s fee=%d rep=%d",
+            player.id, station.id, TRADEDOCK_GUEST_FEE_CR, rep_value,
+        )
+
+    # Task B-1: apply premium floor to the project cost.
+    total_cost = apply_premium_floor(spec["total_cost"])
     deposit = milestone_amounts(total_cost)["deposit"]
+    total_upfront = deposit + guest_fee_paid  # defensive: already charged above
     if player.credits < deposit:
         raise ConstructionError(
             400,
             f"Insufficient credits for the {deposit:,}-credit deposit "
-            f"(10% of {total_cost:,}). Have {player.credits:,}",
+            f"(10% of {total_cost:,}). Have {player.credits:,}"
+            + (f" (after {guest_fee_paid:,} guest fee)" if guest_fee_paid else ""),
         )
 
     # Charge the deposit; it banks into the station treasury immediately.
@@ -665,8 +1045,10 @@ def create_reservation(
     _advance_station(db, station, now)
 
     logger.info(
-        "Construction reservation created: %s %s at station %s for player %s",
+        "Construction reservation created: %s %s at station %s for player %s "
+        "(access=%s guest_fee=%d total_cost=%d)",
         reservation.id, ship_type, station.id, player.id,
+        access_level, guest_fee_paid, total_cost,
     )
     return reservation
 
@@ -994,6 +1376,164 @@ def cancel(
         "credits_paid": reservation.credits_paid,
         "credits_remaining": player.credits,
         "resources_refunded": 0,  # never (ADR-0039)
+    }
+
+
+# ---------------------------------------------------------------------------
+# Task B-3: Region-funded construction
+# Canon: FEATURES/economy/tradedock-shipyard §Region-funded construction
+#
+# A region owner with ≥ 500 sectors may fund construction of a new TradeDock
+# in their region for 50,000,000 cr over 90 real-time days. The payment is
+# pulled from the REGION TREASURY, not from the player's personal credits.
+#
+# FIELD_NEEDED (other lane — READ ONLY): Region model currently has no
+# treasury_balance column (it has total_trade_volume, which is a running
+# tally of trade volume, not a credit balance). The region-funded construction
+# branch requires:
+#   Region.treasury_balance  Integer  nullable=False  default=0
+# Until that column exists, create_region_funded_construction() raises
+# ConstructionError(501, ...) with a clear message rather than silently
+# reading the wrong field.
+#
+# The 90-day construction project is modelled as a ConstructionReservation
+# with a synthetic ship_type TRADEDOCK_CONSTRUCTION (which is NOT a ShipType
+# enum member) so the standard state machine drives it through the same lazy
+# engine. Its total_cost and build days differ from player ship builds.
+# ---------------------------------------------------------------------------
+
+# Canonical cost and resource bundle for region-funded TradeDock construction.
+# Canon: 50M cr, 90 real-time days, 500,000 ore + 300,000 tech + 200,000 equip
+REGION_TRADEDOCK_COST = 50_000_000
+REGION_TRADEDOCK_BUILD_DAYS = 90
+REGION_TRADEDOCK_RESOURCES = {"ore": 500_000, "equipment": 300_000, "organics": 200_000}
+# Canon: region owner gets 5% of shipyard fees as ongoing income.
+REGION_TRADEDOCK_FEE_SHARE = 0.05
+# Refund schedule: cancel mid-build → pro-rata × 75%.
+REGION_TRADEDOCK_CANCEL_FRACTION = 0.75
+
+
+def create_region_funded_construction(
+    db: Session,
+    station: Station,
+    initiating_player: Player,
+    region_id,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Initiate a region-funded TradeDock construction project.
+
+    Pulls REGION_TRADEDOCK_COST from the region treasury (Region.treasury_balance).
+    The initiating_player must be the region owner. Returns a status dict;
+    raises ConstructionError on any validation failure.
+
+    FIELD_NEEDED: Region.treasury_balance (Integer) must exist on the Region
+    model before this function can execute. If the field is absent, raises
+    ConstructionError(501) so the route can surface a clear 501 to the caller
+    rather than a raw AttributeError.
+
+    Does NOT commit; the calling route owns the transaction.
+    """
+    now = now or datetime.now(UTC)
+
+    from src.models.region import Region
+
+    # Lock station (slot/treasury serialization point per module contract).
+    station = _lock_station(db, station.id)
+    _require_tradedock(station)
+
+    # Region must be associated with this station.
+    if station.region_id is None or str(station.region_id) != str(region_id):
+        raise ConstructionError(
+            400,
+            "This station is not in the specified region. Region-funded construction "
+            "must be initiated against a TradeDock within the region.",
+        )
+
+    region = db.query(Region).filter(Region.id == region_id).with_for_update().first()
+    if region is None:
+        raise ConstructionError(404, "Region not found")
+
+    # Owner check: initiating player must own the region.
+    if str(getattr(region, "owner_id", None) or "") != str(initiating_player.id):
+        # owner_id on Region is a user.id, not player.id — check via player.user_id.
+        player_user_id = getattr(initiating_player, "user_id", None)
+        if str(getattr(region, "owner_id", None) or "") != str(player_user_id or ""):
+            raise ConstructionError(
+                403,
+                "Only the region owner can initiate region-funded TradeDock construction.",
+            )
+
+    # Sector count gate: ≥ 500 sectors required.
+    total_sectors = getattr(region, "total_sectors", 0) or 0
+    if total_sectors < 500:
+        raise ConstructionError(
+            400,
+            f"Region-funded TradeDock construction requires ≥ 500 sectors; "
+            f"this region has {total_sectors}.",
+        )
+
+    # FIELD_NEEDED guard: raise 501 if treasury_balance does not yet exist.
+    if not hasattr(region, "treasury_balance"):
+        raise ConstructionError(
+            501,
+            "Region treasury not yet available: Region.treasury_balance column "
+            "has not been added by the model lane. Initiate the migration first.",
+        )
+
+    region_treasury = getattr(region, "treasury_balance", 0) or 0
+    if region_treasury < REGION_TRADEDOCK_COST:
+        raise ConstructionError(
+            400,
+            f"Insufficient region treasury: need {REGION_TRADEDOCK_COST:,} cr, "
+            f"have {region_treasury:,} cr.",
+        )
+
+    # Deduct from region treasury; deposit into station treasury as escrow.
+    region.treasury_balance = region_treasury - REGION_TRADEDOCK_COST
+    station.treasury_balance = (station.treasury_balance or 0) + REGION_TRADEDOCK_COST
+    flag_modified(region, "treasury_balance")
+
+    # Use the synthetic 'TRADEDOCK_CONSTRUCTION' as the ship_type string.
+    # This is not a ShipType enum member — the service deliberately bypasses
+    # the ShipType check for region-funded builds.
+    reservation = ConstructionReservation(
+        station_id=station.id,
+        player_id=initiating_player.id,
+        ship_type="TRADEDOCK_CONSTRUCTION",
+        state="queued",
+        ship_name=f"Region TradeDock — {getattr(region, 'display_name', 'Unknown Region')}",
+        total_cost=REGION_TRADEDOCK_COST,
+        deposit_paid=REGION_TRADEDOCK_COST,   # full cost is the "deposit"
+        credits_paid=REGION_TRADEDOCK_COST,
+        milestones={"deposit": True, "keel_laid": False, "hull_complete": False, "final": False},
+        resources_required=dict(REGION_TRADEDOCK_RESOURCES),
+        resources_delivered={},
+        uses_specialized_slip=False,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(reservation)
+    db.flush()
+
+    logger.info(
+        "Region-funded TradeDock construction initiated: region=%s station=%s "
+        "initiator=%s cost=%d",
+        region_id, station.id, initiating_player.id, REGION_TRADEDOCK_COST,
+    )
+
+    return {
+        "reservation_id": str(reservation.id),
+        "station_id": str(station.id),
+        "region_id": str(region_id),
+        "total_cost": REGION_TRADEDOCK_COST,
+        "build_days": REGION_TRADEDOCK_BUILD_DAYS,
+        "resources_required": REGION_TRADEDOCK_RESOURCES,
+        "region_fee_share_pct": REGION_TRADEDOCK_FEE_SHARE * 100,
+        "state": reservation.state,
+        "cancel_refund_policy": (
+            f"Cancel before completion: pro-rata × {REGION_TRADEDOCK_CANCEL_FRACTION * 100:.0f}% "
+            f"of unbuilt portion refunded to region treasury."
+        ),
     }
 
 

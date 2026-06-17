@@ -43,8 +43,16 @@ class DockingSlipOccupancy(Base):
         index=True,
     )
     ship_id = Column(UUID(as_uuid=True), nullable=True)
-    # 'transient' is the only class enforced in v1; carried for canon's
-    # long-term slip pools.
+    # Slip class vocabulary (canon: FEATURES/economy/docking-slips):
+    #   'transient'       — routine docking; 5 min–24 h; FIFO availability
+    #   'long_term'       — multi-day mooring (1–30 days); optional pre-book;
+    #                       200 cr/day rental; for out-of-game players or
+    #                       stored ships between trade routes. Added in v2.
+    # Construction slip classes ('construction', 'specialized_construction')
+    # live on ConstructionReservation, not DockingSlipOccupancy.
+    SLIP_CLASS_TRANSIENT = "transient"
+    SLIP_CLASS_LONG_TERM = "long_term"
+
     slip_class = Column(String(20), nullable=False, default="transient", server_default="transient")
     docked_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     fee_paid = Column(Integer, nullable=False, default=0, server_default="0")

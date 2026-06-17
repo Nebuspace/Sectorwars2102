@@ -7,6 +7,22 @@ is full, players join a FIFO wait queue OR pay 5x the docking fee to bump the
 longest-tenured occupant with >= 4 canonical hours of tenure. Tenure is
 measured through src.core.game_time (GAME_TIME_SCALE compresses time on dev).
 
+REPUTATION GATE: Station.reputation_threshold is an integer representing the
+minimum faction reputation value (Reputation.current_value) a player must have
+with the station's controlling faction before they are allowed to dock.
+  - If the station has no faction_affiliation the gate is skipped.
+  - If the player has no reputation record they are treated as 0 (neutral).
+  - On failure, acquire() returns {'status': 'reputation_denied', ...} without
+    queuing or granting a slip. The route should translate this to HTTP 403.
+
+LONG-TERM MOORING: canon defines a second slip class, 'long_term', for
+multi-day stays (1–30 days, 200 cr/day). The slip count for long-term slips is
+a separate pool from transient slips (see long_term_capacity_for). The service
+tracks long-term occupancies using the same DockingSlipOccupancy table with
+slip_class='long_term'. The mooring functions acquire_long_term() and
+release_long_term() mirror the transient equivalents; they do NOT participate
+in the transient bump mechanism.
+
 Concurrency / lock-ordering contract (documented to avoid deadlocks):
   1. The STATION row is locked first (SELECT ... FOR UPDATE) by `acquire` and
      `bump`. This serializes all slip grants/bumps per station, so occupancy
@@ -24,7 +40,7 @@ players simply don't hold slips (acceptable), and `release` tolerates a
 missing row silently.
 """
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -35,6 +51,12 @@ from src.models.player import Player
 from src.models.station import Station
 
 logger = logging.getLogger(__name__)
+
+# Canon: long-term mooring rental (FEATURES/economy/docking-slips §Slip rental
+# fee structure). All long-term mooring costs the same regardless of station
+# class; the scarcity comes from the small pool, not the price tier.
+LONG_TERM_MOORING_RATE_PER_DAY = 200  # cr/day
+LONG_TERM_MOORING_MAX_DAYS = 30       # canonical upper limit per booking
 
 # Canon: bump costs 5x the docking fee; occupant must have >= 4 canonical
 # hours of tenure to be bumpable.
@@ -49,6 +71,80 @@ class BumpError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+class ReputationGateError(Exception):
+    """Raised when docking is denied because the player's faction reputation
+    is below the station's threshold. Carries an HTTP 403 hint."""
+
+    def __init__(self, detail: str, rep_value: int, threshold: int):
+        super().__init__(detail)
+        self.status_code = 403
+        self.detail = detail
+        self.rep_value = rep_value
+        self.threshold = threshold
+
+
+# ---------------------------------------------------------------------------
+# Reputation gate — FEATURES/economy/docking-slips §Reputation gate
+# ---------------------------------------------------------------------------
+
+def _player_faction_rep_for_station(db: Session, player: Player, station: Station) -> int:
+    """Return the player's current_value toward the station's controlling
+    faction, or 0 if the station is unaffiliated or no record exists.
+
+    Mirrors the pattern in construction_service._faction_rep_tier and
+    trading_service (all use Faction.name + Reputation.current_value).
+    """
+    faction_name = getattr(station, "faction_affiliation", None)
+    if not faction_name:
+        return 0
+    try:
+        from src.models.faction import Faction
+        from src.models.reputation import Reputation
+
+        faction = db.query(Faction).filter(Faction.name == faction_name).first()
+        if faction is None:
+            return 0
+        rep = (
+            db.query(Reputation)
+            .filter(
+                Reputation.player_id == player.id,
+                Reputation.faction_id == faction.id,
+            )
+            .first()
+        )
+        return rep.current_value if rep is not None else 0
+    except Exception:
+        logger.warning(
+            "reputation gate lookup failed for player=%s station=%s; defaulting to 0",
+            player.id,
+            station.id,
+            exc_info=True,
+        )
+        return 0
+
+
+def check_reputation_gate(
+    db: Session, station: Station, player: Player
+) -> Tuple[bool, int, int]:
+    """Check whether `player` meets `station`'s reputation_threshold.
+
+    Returns (allowed, player_rep_value, threshold).
+      allowed=True  — player may dock
+      allowed=False — player is denied; route should surface HTTP 403
+
+    Rationale: reputation_threshold lives on Station (nullable=False, default 0).
+    A threshold of 0 (the default) means anyone can dock — only stations that
+    have been explicitly configured with a positive threshold actually gate.
+    """
+    threshold = getattr(station, "reputation_threshold", 0) or 0
+    if threshold <= 0:
+        return True, 0, threshold
+
+    rep_value = _player_faction_rep_for_station(db, player, station)
+    allowed = rep_value >= threshold
+    return allowed, rep_value, threshold
 
 
 def slip_capacity_for(station: Station) -> int:
@@ -77,6 +173,35 @@ def slip_capacity_for(station: Station) -> int:
         return 24
     # station_class is non-nullable, so this is defensive only.
     return 12
+
+
+def long_term_capacity_for(station: Station) -> int:
+    """Long-term mooring slip count by station kind (canon table).
+
+    Canon: FEATURES/economy/docking-slips §Per-station-class slip counts.
+    Same precedence as slip_capacity_for: tradedock_tier > is_spacedock >
+    station_class.  Stations with no long-term slips return 0; acquiring a
+    long-term slip at such a station immediately returns 'unavailable'.
+    """
+    tier = getattr(station, "tradedock_tier", None)
+    if tier == "A":
+        return 8
+    if tier == "B":
+        return 8
+    if getattr(station, "is_spacedock", False):
+        return 10
+    cls = station.station_class.value if station.station_class is not None else None
+    if cls == 0:        # CLASS_0 capital (Central Nexus Starport Prime equiv)
+        return 50
+    if cls in (1, 2):
+        return 2
+    if cls is not None and 3 <= cls <= 6:
+        return 4
+    if cls is not None and 7 <= cls <= 10:
+        return 6
+    if cls == 11:
+        return 8
+    return 2
 
 
 def docking_fee_for(station: Station) -> int:
@@ -177,6 +302,21 @@ def acquire(db: Session, station: Station, player: Player, ship_id: Optional[UUI
     """
     # Lock the station row: serializes all slip grants/bumps for this station.
     station = db.query(Station).filter(Station.id == station.id).with_for_update().first()
+
+    # Reputation gate: check AFTER the station lock so the threshold we read
+    # is current. Only gates positive thresholds — threshold=0 (default) is
+    # always open. Does NOT queue the player; a denied player is turned away.
+    allowed, rep_value, threshold = check_reputation_gate(db, station, player)
+    if not allowed:
+        return {
+            "status": "reputation_denied",
+            "rep_value": rep_value,
+            "threshold": threshold,
+            "detail": (
+                f"Docking denied: your standing with this station's faction is {rep_value}; "
+                f"minimum required is {threshold}. Improve your reputation to dock here."
+            ),
+        }
 
     capacity = slip_capacity_for(station)
     occupancies = _transient_occupancies(db, station.id)
@@ -409,3 +549,130 @@ def bump(db: Session, station: Station, bumper: Player, occupant_player_id) -> D
         "capacity": capacity,
         "occupied": occupied,  # net unchanged: one out, one in
     }
+
+
+# ---------------------------------------------------------------------------
+# Long-term mooring — FEATURES/economy/docking-slips §Long-term mooring
+# ---------------------------------------------------------------------------
+
+def acquire_long_term(
+    db: Session,
+    station: Station,
+    player: Player,
+    days: int,
+    ship_id: Optional[UUID] = None,
+) -> Dict[str, Any]:
+    """Claim a long-term mooring slip for `player` at `station`.
+
+    Canon: long-term slips are separate from transient slips; they do NOT
+    participate in the bump mechanism. The player pays `days` * 200 cr upfront
+    (canon: 200 cr/day, optional pre-book). Reputation gate is applied.
+
+    Returns one of:
+      {'status': 'granted',             'occupancy', 'capacity', 'occupied',
+       'days', 'fee_paid'}
+      {'status': 'full',                'capacity', 'occupied'}
+      {'status': 'unavailable',         'detail'}   — station has 0 LT slips
+      {'status': 'reputation_denied',   'rep_value', 'threshold', 'detail'}
+      {'status': 'insufficient_credits', 'need', 'have'}
+
+    Does NOT commit; the calling route owns the transaction.
+    """
+    if days < 1 or days > LONG_TERM_MOORING_MAX_DAYS:
+        return {
+            "status": "invalid_days",
+            "detail": f"Long-term mooring requires 1–{LONG_TERM_MOORING_MAX_DAYS} days; got {days}",
+        }
+
+    # Lock the station row first (same ordering contract as acquire/bump).
+    station = db.query(Station).filter(Station.id == station.id).with_for_update().first()
+
+    # Reputation gate.
+    allowed, rep_value, threshold = check_reputation_gate(db, station, player)
+    if not allowed:
+        return {
+            "status": "reputation_denied",
+            "rep_value": rep_value,
+            "threshold": threshold,
+            "detail": (
+                f"Docking denied: your standing with this station's faction is {rep_value}; "
+                f"minimum required is {threshold}."
+            ),
+        }
+
+    capacity = long_term_capacity_for(station)
+    if capacity == 0:
+        return {
+            "status": "unavailable",
+            "detail": f"{station.name} has no long-term mooring slips",
+        }
+
+    occupied_rows = (
+        db.query(DockingSlipOccupancy)
+        .filter(
+            DockingSlipOccupancy.station_id == station.id,
+            DockingSlipOccupancy.slip_class == "long_term",
+        )
+        .count()
+    )
+    if occupied_rows >= capacity:
+        return {"status": "full", "capacity": capacity, "occupied": occupied_rows}
+
+    fee = days * LONG_TERM_MOORING_RATE_PER_DAY
+    # Lock the player row to safely deduct credits (no other player row
+    # involved here, so no ordering concern beyond station-first).
+    player_locked = (
+        db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    )
+    if player_locked is None:
+        return {"status": "error", "detail": "Player not found"}
+    if player_locked.credits < fee:
+        return {"status": "insufficient_credits", "need": fee, "have": player_locked.credits}
+
+    player_locked.credits -= fee
+    station.treasury_balance = (station.treasury_balance or 0) + fee
+
+    occupancy = DockingSlipOccupancy(
+        station_id=station.id,
+        player_id=player.id,
+        ship_id=ship_id,
+        slip_class="long_term",
+        fee_paid=fee,
+    )
+    db.add(occupancy)
+    db.flush()
+
+    logger.info(
+        "Long-term mooring granted: player=%s station=%s days=%d fee=%d",
+        player.id, station.id, days, fee,
+    )
+    return {
+        "status": "granted",
+        "occupancy": occupancy,
+        "capacity": capacity,
+        "occupied": occupied_rows + 1,
+        "days": days,
+        "fee_paid": fee,
+    }
+
+
+def release_long_term(db: Session, station: Optional[Station], player: Player) -> bool:
+    """Release a long-term mooring slip held by `player`. Tolerates a missing
+    row silently. Does NOT commit; the calling route owns the transaction.
+
+    Note: no fee refund is issued on release — canon is silent on refunds for
+    pre-paid long-term mooring; the fee is treated as consumed on grant.
+    """
+    occupancy = (
+        db.query(DockingSlipOccupancy)
+        .filter(
+            DockingSlipOccupancy.player_id == player.id,
+            DockingSlipOccupancy.slip_class == "long_term",
+        )
+        .first()
+    )
+    if occupancy is None:
+        return False
+    db.delete(occupancy)
+    logger.info("Long-term mooring released: player=%s", player.id)
+    return True
