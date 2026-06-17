@@ -2465,19 +2465,28 @@ class CombatService:
         shield_gen_level = getattr(planet, "defense_shields", 0) or 0
         shields = getattr(planet, "shields", 0) or 0
 
+        # Colony-specialization defense multiplier (ADR-0087): Military planets get
+        # +50% effective defense (×1.5); Research/Agricultural are softer (×0.8/0.9);
+        # Balanced ×1.1. Scales both the damage-reduction and the shield HP pool —
+        # the planet's whole defensive contribution.
+        from src.services.planetary_service import SPECIALIZATION_BONUSES
+        spec = getattr(planet, "specialization", None)
+        defense_mult = SPECIALIZATION_BONUSES.get(spec, {}).get("defense", 1.0) if spec else 1.0
+
         # Each defense_level reduces damage by 5%, capped at 50% (level 10)
         level_reduction = min(defense_level * 0.05, 0.50)
 
         # Shield generators add a flat shield HP pool (500 HP per generator level,
-        # plus any existing shield value on the planet).
-        shield_hp = (shield_gen_level * 500) + (shields * 100)
+        # plus any existing shield value on the planet), scaled by specialization.
+        shield_hp = int(((shield_gen_level * 500) + (shields * 100)) * defense_mult)
 
         # Total damage_reduction also includes a small bonus from shield generators
         # (each gen level adds 4% reduction, up to 40% at level 10)
         gen_reduction = min(shield_gen_level * 0.04, 0.40)
 
-        # Combined reduction capped at 0.9 so planets are never invincible
-        damage_reduction = min(level_reduction + gen_reduction, 0.90)
+        # Apply the specialization multiplier to the combined reduction, then cap
+        # at 0.9 so planets are never invincible.
+        damage_reduction = min((level_reduction + gen_reduction) * defense_mult, 0.90)
 
         parts = []
         if defense_level > 0:

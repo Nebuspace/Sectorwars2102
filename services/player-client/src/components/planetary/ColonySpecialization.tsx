@@ -29,12 +29,10 @@ interface SpecializationInfo {
   recommendedFor: string[];
 }
 
-// Benefits below reflect what the gameserver ACTUALLY applies — the production
-// multipliers in planetary_service._calculate_specialization_bonuses (organics/
-// fuel/equipment/colonist output). Specialization is a TRADE-OFF, so penalties
-// are shown, not hidden. The defense/research multipliers in that table are
-// computed but never applied anywhere, so they are NOT advertised here (see
-// DECISIONS: colony-specialization-defense-research-unapplied).
+// Benefits below reflect what the gameserver ACTUALLY applies (ADR-0087): the
+// production multipliers, the defense multiplier (combat damage-reduction +
+// shield HP), and the research-point yield. Specialization is a TRADE-OFF, so
+// penalties are shown, not hidden.
 const SPECIALIZATIONS: SpecializationInfo[] = [
   {
     type: 'agricultural',
@@ -80,12 +78,12 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'military',
     name: 'Military Outpost',
     icon: '⚔️',
-    description: 'Fortified colony. (Production trade-off below; the defensive bonus is not yet active.)',
+    description: 'Fortified colony: hardened planetary defenses at the cost of production and growth',
     benefits: [
+      '+50% planetary defense (damage reduction + shield HP in combat)',
       '+10% equipment production',
       '−10% fuel & organics output',
-      '−20% colonist growth',
-      'Defensive bonus: not yet active'
+      '−20% colonist growth'
     ],
     productionBonuses: {
       equipment: 10
@@ -100,9 +98,9 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'research',
     name: 'Research Station',
     icon: '🔬',
-    description: 'Scientific colony. (Research-output bonus is not yet active — currently a production trade-off only.)',
+    description: 'Scientific colony: maximises research-point output from its Research Labs',
     benefits: [
-      'Research-point bonus: not yet active',
+      '+50% research-point output from Research Labs (feeds upcoming tech systems)',
       '−20% fuel output',
       '−20% organics output',
       '−10% equipment output',
@@ -119,13 +117,13 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'balanced',
     name: 'Balanced Colony',
     icon: '⚖️',
-    description: 'No specialization trade-off: every output stays at baseline',
+    description: 'Generalist colony: a modest all-round bonus instead of a single specialty',
     benefits: [
-      'Baseline output — no bonuses or penalties',
+      '+10% to all production, defense, and research',
       'Lowest requirement (5,000 colonists)',
       'Re-specialize later as the colony grows'
     ],
-    productionBonuses: {},
+    productionBonuses: { fuel: 10, organics: 10, equipment: 10 },
     requirements: {
       minColonists: 5000,
       minBuildings: {}

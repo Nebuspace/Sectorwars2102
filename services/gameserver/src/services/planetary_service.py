@@ -72,6 +72,43 @@ SHIELD_GENERATOR_LEVELS = {
 # (no migration) and settled lazily on read, mirroring the defense-building queue.
 SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL = 6
 
+# Colony specialization multipliers (ADR-0087). Single source of truth, shared
+# with combat_service for the defense multiplier. "production" scales commodity
+# output (applied in _calculate_production_rates); "defense" scales the planet's
+# damage reduction + shield HP in combat (combat_service._calculate_planetary_
+# defense_reduction); "research" scales the research-point yield below. Balanced
+# is a +10% all-round generalist (no longer a no-op).
+SPECIALIZATION_BONUSES = {
+    "agricultural": {
+        "production": {"fuel": 0.8, "organics": 1.5, "equipment": 0.8, "colonists": 1.2},
+        "defense": 0.9, "research": 0.8,
+    },
+    "industrial": {
+        "production": {"fuel": 0.9, "organics": 0.8, "equipment": 1.5, "colonists": 0.9},
+        "defense": 1.0, "research": 0.9,
+    },
+    "military": {
+        "production": {"fuel": 0.9, "organics": 0.9, "equipment": 1.1, "colonists": 0.8},
+        "defense": 1.5, "research": 0.8,
+    },
+    "research": {
+        "production": {"fuel": 0.8, "organics": 0.8, "equipment": 0.9, "colonists": 0.9},
+        "defense": 0.8, "research": 1.5,
+    },
+    "balanced": {
+        "production": {"fuel": 1.1, "organics": 1.1, "equipment": 1.1, "colonists": 1.1},
+        "defense": 1.1, "research": 1.1,
+    },
+}
+
+# Research-point yield (ADR-0087): a research planet accrues research points per
+# day from its Research Lab level, scaled by the specialization research
+# multiplier (+ citadel bonus, − siege). Accrued lazily into
+# active_events['research_points'] (JSONB, no migration), mirroring commodity
+# production. NOTE: the SINK for research points (what they unlock) is an open
+# design decision — see DECISIONS colony-research-points-sink.
+RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
+
 # Canon daily colonist growth (FEATURES/planets/colonization.md "Population
 # growth"): colonist_rate = colonists × 0.01 × (habitability_score / 100),
 # i.e. base growth = 1% per day, scaled linearly by habitability.
@@ -325,10 +362,12 @@ class PlanetaryService:
         rates = self._calculate_production_rates(planet)
         # Map production-rate keys to stockpile columns.
         resource_cols = (("fuel", "fuel_ore"), ("organics", "organics"), ("equipment", "equipment"))
+        research_rate = rates.get("research", 0) or 0  # ADR-0087 research-point yield
 
-        if all((rates.get(key, 0) or 0) <= 0 for key, _ in resource_cols):
-            # Nothing allocated to production; keep the anchor current so a
-            # later allocation doesn't accrue retroactively.
+        if all((rates.get(key, 0) or 0) <= 0 for key, _ in resource_cols) and research_rate <= 0:
+            # Nothing producing (no commodity allocation AND no research lab);
+            # keep the anchor current so a later allocation doesn't accrue
+            # retroactively.
             planet.last_production = now
             return True
 
@@ -342,10 +381,15 @@ class PlanetaryService:
             gained = int(produced)
             gains[col] = (gained, produced - gained)
 
-        if sum(g for g, _ in gains.values()) <= 0:
-            # Not enough elapsed time for a whole unit of any resource yet;
-            # leave the anchor (and stored carry) untouched so fractions keep
-            # banking against the growing elapsed window.
+        # Research points accrue into a running active_events counter (no column);
+        # the fractional remainder shares the production_carry dict under 'research'.
+        research_produced = carry.get("research", 0.0) + research_rate * (elapsed_seconds / SECONDS_PER_DAY)
+        research_gained = int(research_produced)
+
+        if sum(g for g, _ in gains.values()) + research_gained <= 0:
+            # Not enough elapsed time for a whole unit of anything yet; leave the
+            # anchor (and stored carry) untouched so fractions keep banking
+            # against the growing elapsed window.
             return False
 
         for col, (gained, remainder) in gains.items():
@@ -353,14 +397,21 @@ class PlanetaryService:
                 setattr(planet, col, (getattr(planet, col) or 0) + gained)
             carry[col] = remainder
 
+        carry["research"] = research_produced - research_gained
+
         new_events = dict(events)
         new_events["production_carry"] = carry
+        # Only stamp research_points on planets that actually research (or already
+        # carry the key) — don't pollute every producing planet's JSONB with a 0.
+        if research_gained > 0 or "research_points" in events:
+            new_events["research_points"] = int(events.get("research_points", 0) or 0) + research_gained
         planet.active_events = new_events
         planet.last_production = now
 
         logger.debug(
             f"Lazy production on planet {planet.id}: "
             + ", ".join(f"+{g} {c}" for c, (g, _) in gains.items() if g > 0)
+            + (f", +{research_gained} research" if research_gained > 0 else "")
         )
         return True
 
@@ -1393,6 +1444,9 @@ class PlanetaryService:
                 "fuel": planet.fuel_ore or 0,
                 "organics": planet.organics or 0,
                 "equipment": planet.equipment or 0,
+                # ADR-0087 research-point yield (accrued in active_events; no column).
+                "research": int((planet.active_events or {}).get("research_points", 0))
+                if isinstance(planet.active_events, dict) else 0,
             },
             "lastProductionAt": planet.last_production.isoformat() if planet.last_production else None,
             "allocations": {
@@ -1441,7 +1495,11 @@ class PlanetaryService:
         habitability_multiplier = habitability / 100.0
         colonist_rate = planet.colonists * 0.01 * habitability_multiplier
 
+        # Research-point yield (ADR-0087): driven by the Research Lab level.
+        research_rate = (planet.research_level or 0) * RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY
+
         # Apply specialization bonuses
+        research_mult = 1.0
         if planet.specialization:
             bonuses = self._calculate_specialization_bonuses(planet.specialization)
             production_bonus = bonuses["production"]
@@ -1450,6 +1508,8 @@ class PlanetaryService:
             organics_rate *= production_bonus.get("organics", 1.0)
             equipment_rate *= production_bonus.get("equipment", 1.0)
             colonist_rate *= production_bonus.get("colonists", 1.0)
+            research_mult = bonuses.get("research", 1.0)
+            research_rate *= research_mult
 
         # Citadel passive production bonus: +5% per citadel level (citadels.md
         # "Per-level passive bonuses"). Applies to commodity output, not growth.
@@ -1459,6 +1519,7 @@ class PlanetaryService:
             fuel_rate *= citadel_multiplier
             organics_rate *= citadel_multiplier
             equipment_rate *= citadel_multiplier
+            research_rate *= citadel_multiplier
 
         # Apply siege effects
         if planet.under_siege:
@@ -1467,6 +1528,7 @@ class PlanetaryService:
             fuel_rate *= siege_multiplier
             organics_rate *= siege_multiplier
             equipment_rate *= siege_multiplier
+            research_rate *= siege_multiplier
             # Population growth halted during siege
             colonist_rate = 0.0
 
@@ -1474,7 +1536,8 @@ class PlanetaryService:
             "fuel": round(fuel_rate, 2),
             "organics": round(organics_rate, 2),
             "equipment": round(equipment_rate, 2),
-            "colonists": round(colonist_rate, 2)
+            "colonists": round(colonist_rate, 2),
+            "research": round(research_rate, 2),
         }
 
     def get_habitability_effects(self, planet: Planet) -> Dict[str, Any]:
@@ -1598,33 +1661,9 @@ class PlanetaryService:
         }
         
     def _calculate_specialization_bonuses(self, specialization: str) -> Dict[str, Any]:
-        """Calculate bonuses based on planet specialization."""
-        bonuses = {
-            "agricultural": {
-                "production": {"fuel": 0.8, "organics": 1.5, "equipment": 0.8, "colonists": 1.2},
-                "defense": 0.9,
-                "research": 0.8
-            },
-            "industrial": {
-                "production": {"fuel": 0.9, "organics": 0.8, "equipment": 1.5, "colonists": 0.9},
-                "defense": 1.0,
-                "research": 0.9
-            },
-            "military": {
-                "production": {"fuel": 0.9, "organics": 0.9, "equipment": 1.1, "colonists": 0.8},
-                "defense": 1.5,
-                "research": 0.8
-            },
-            "research": {
-                "production": {"fuel": 0.8, "organics": 0.8, "equipment": 0.9, "colonists": 0.9},
-                "defense": 0.8,
-                "research": 1.5
-            },
-            "balanced": {
-                "production": {"fuel": 1.0, "organics": 1.0, "equipment": 1.0, "colonists": 1.0},
-                "defense": 1.0,
-                "research": 1.0
-            }
-        }
-        
-        return bonuses.get(specialization, bonuses["balanced"])
+        """Return the multiplier set for a planet specialization (ADR-0087).
+
+        Single source of truth is the module-level SPECIALIZATION_BONUSES (also
+        read by combat_service for the defense multiplier).
+        """
+        return SPECIALIZATION_BONUSES.get(specialization, SPECIALIZATION_BONUSES["balanced"])
