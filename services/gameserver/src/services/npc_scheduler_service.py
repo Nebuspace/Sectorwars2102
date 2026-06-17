@@ -65,6 +65,7 @@ from src.models.npc_character import (
     NPCRoster,
     NPCStatus,
 )
+from src.models.player import Player
 from src.models.sector import Sector
 from src.models.ship import ShipSpecification
 from src.services import npc_movement_service
@@ -99,6 +100,41 @@ ENGAGEMENT_SWEEP_SECONDS = 60
 LOOP_A_SECONDS = 60
 LOOP_B_SECONDS = 10 * 60
 LOOP_C_SECONDS = 30 * 60
+# Genesis formation-completion sweep cadence. The 48h formation timer is
+# coarse, so a 5-minute sweep settles a finished planet promptly without
+# churning the DB. Process-relative is fine here: a missed boundary on restart
+# just defers completion to the next sweep (the formation_complete_at timestamp
+# stays authoritative — nothing is lost), unlike the weekly decay which needs a
+# durable anchor.
+GENESIS_COMPLETION_SECONDS = 5 * 60
+
+# Weekly maintenance (reputation/relationship decay). Unlike Loops A/B/C, a
+# weekly job CANNOT key off the process-relative ``elapsed_seconds`` clock —
+# that counter resets on every restart, so an ``elapsed % week == 0`` guard
+# would skip the week whenever the process bounced (and could double-fire if it
+# bounced twice in a week). Instead a CHEAP coarse elapsed pre-filter
+# (WEEKLY_DECAY_CHECK_SECONDS) decides when to even LOOK, and the real
+# once-per-week guarantee comes from a DURABLE anchor: the canonical-week index
+# of the last completed run, persisted in ``Galaxy.state`` (see
+# _run_weekly_decay_sync). The cadence is measured in CANONICAL weeks so it is
+# observable on dev (GAME_TIME_SCALE=144 → a canonical week elapses in ~70
+# wall-clock minutes) and self-consistent with the rest of the scheduler's
+# canonical clock. The whole job is FULLY SYNCHRONOUS (all three decays run on
+# one work session in one advisory-locked transaction with the anchor advance —
+# atomic) — no asyncio/AsyncSession, which would poison the shared async engine
+# pool. The decay MAGNITUDES are wall-clock-semantic (faction's 30-day window,
+# ARIA's per-day point) — that canonical-cadence / wall-clock-magnitude tension
+# is intentional for dev observability and flagged in the run report.
+CANONICAL_WEEK_DAYS = 7
+# Galaxy.state JSONB key holding the canonical-week index of the last completed
+# weekly-decay run (durable across restarts → no skipped/double weeks).
+_WEEKLY_DECAY_STATE_KEY = "weekly_decay_last_week"
+# Coarse CHEAP pre-filter cadence for the weekly-decay check. The durable
+# canonical-week anchor is what actually guarantees once-per-week; this only
+# keeps us from taking the advisory lock + querying Galaxy.state every 60s. A
+# 15-minute pre-filter is far finer than a (canonical) week, so the week is
+# never missed, while idle wakes do nothing.
+WEEKLY_DECAY_CHECK_SECONDS = 15 * 60
 
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
@@ -152,6 +188,14 @@ def canonical_weekday(now: Optional[datetime] = None) -> int:
     """Canonical weekday, Monday=0 (matches datetime.weekday() at scale
     1.0 — 1970-01-01 was a Thursday)."""
     return (canonical_day_number(now) + 3) % 7
+
+
+def canonical_week_number(now: Optional[datetime] = None) -> int:
+    """Monotonic canonical-week index since epoch — the durable cadence anchor
+    for the weekly decay job. Increments once per canonical week regardless of
+    process restarts, so persisting the last value gates the job exactly once
+    per week."""
+    return canonical_day_number(now) // CANONICAL_WEEK_DAYS
 
 
 def resolve_schedule_block(
@@ -1045,6 +1089,306 @@ def reconcile_presence(db: Session) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Weekly maintenance — reputation / relationship decay
+# ---------------------------------------------------------------------------
+
+def _select_decay_candidate_ids(db: Session) -> List[Any]:
+    """Player ids worth running decay for. Decay only ever moves values toward
+    a neutral baseline, so a player whose personal_reputation is already 0,
+    whose faction reps are all neutral, and whose ARIA relationship is at the
+    floor has nothing to decay — but the called services are individually cheap
+    and idempotent (each returns a no-op for a baseline player), so the simple,
+    robust choice is to run every real player. We exclude only soft-deactivated
+    accounts."""
+    rows = (
+        db.query(Player.id)
+        .filter(Player.is_active.is_(True))
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+def _canonical_days_inactive(player: Player, now: datetime) -> int:
+    """Canonical days since the player last logged in (>=0). A player who has
+    never logged in (last_game_login NULL) is treated as 0 days inactive — we
+    do not punish a brand-new account on its first scheduled week."""
+    if player.last_game_login is None:
+        return 0
+    hours = game_time.canonical_hours_since(player.last_game_login, now)
+    return max(0, int(hours // 24))
+
+
+# Faction inactivity-decay parameters — mirrored verbatim from
+# FactionService.apply_reputation_decay so the inline sync reimplementation
+# applies IDENTICAL decay (we cannot await the async method here without
+# poisoning the shared async connection pool — see _run_weekly_decay_sync).
+_FACTION_DECAY_INACTIVE_DAYS = 30   # only reps idle > 30 days decay
+_FACTION_DECAY_NEUTRAL_BAND = 100   # reps within [-100, +100] never decay
+_FACTION_DECAY_MAX_PER_CALL = 50    # absolute cap on decay applied per rep/call
+
+
+def _apply_personal_decay_sync(db: Session, player_ids: List[Any]) -> int:
+    """Personal-reputation weekly decay (SYNC service, sync session). Decays
+    each player's personal_reputation toward 0 by 5/week; counts the ones that
+    actually moved.
+
+    NOTE: this runs inside the caller's SINGLE atomic weekly transaction, so it
+    does NOT catch/rollback per player — a per-row rollback would discard the
+    other players' already-applied decays AND the week anchor. Any error
+    propagates to _run_weekly_decay_sync, which rolls the whole week back and
+    retries next wake (so the week is never silently half-applied or skipped)."""
+    from src.services.personal_reputation_service import PersonalReputationService
+
+    svc = PersonalReputationService(db)
+    decayed = 0
+    for pid in player_ids:
+        result = svc.apply_weekly_decay(pid)
+        if result.get("decayed"):
+            decayed += 1
+    db.flush()
+    return decayed
+
+
+def _apply_faction_decay_sync(db: Session, player_ids: List[Any]) -> int:
+    """Faction reputation inactivity-decay — SYNC reimplementation on the work
+    session.
+
+    FactionService.apply_reputation_decay is declared ``async def``; even though
+    its body is pure sync ORM, calling it would force an ``asyncio.run`` /
+    AsyncSession path through the shared async engine, whose connections, if
+    created inside a throwaway event loop, get returned to the global pool bound
+    to a dead loop and later raise "Event loop is closed" in unrelated request
+    handlers. So we replicate its decay logic here against the sync session and
+    reuse only its STATELESS recalc helpers (pure functions over an int — no DB,
+    no loop). The thresholds/cap are kept in sync via the constants above.
+
+    Counts the players that had >=1 faction reputation decayed. Per-player
+    failure is isolated; the work session is committed by the caller."""
+    from src.models.reputation import Reputation
+    from src.services.faction_service import FactionService
+
+    helpers = FactionService(db)  # used ONLY for its pure recalc helpers
+    now = datetime.utcnow()  # matches the async method's naive-UTC comparison
+    affected_players = 0
+
+    # Runs inside the caller's single atomic weekly transaction — no per-row
+    # rollback (that would corrupt the shared txn); errors propagate to
+    # _run_weekly_decay_sync, which rolls the whole week back and retries.
+    for pid in player_ids:
+        reputations = (
+            db.query(Reputation)
+            .filter(Reputation.player_id == pid)
+            .all()
+        )
+        player_changed = False
+        for rep in reputations:
+            if rep.decay_paused or rep.is_locked:
+                continue
+            if -_FACTION_DECAY_NEUTRAL_BAND <= rep.current_value <= _FACTION_DECAY_NEUTRAL_BAND:
+                continue
+            last = (
+                rep.last_updated.replace(tzinfo=None)
+                if rep.last_updated and rep.last_updated.tzinfo
+                else rep.last_updated
+            )
+            if last is None:
+                continue
+            inactive_days = (now - last).days
+            if inactive_days <= _FACTION_DECAY_INACTIVE_DAYS:
+                continue
+
+            decay_amount = min(
+                inactive_days - _FACTION_DECAY_INACTIVE_DAYS,
+                _FACTION_DECAY_MAX_PER_CALL,
+            )
+            old_value = rep.current_value
+            if rep.current_value > _FACTION_DECAY_NEUTRAL_BAND:
+                rep.current_value = max(
+                    _FACTION_DECAY_NEUTRAL_BAND, rep.current_value - decay_amount
+                )
+            elif rep.current_value < -_FACTION_DECAY_NEUTRAL_BAND:
+                rep.current_value = min(
+                    -_FACTION_DECAY_NEUTRAL_BAND, rep.current_value + decay_amount
+                )
+
+            if rep.current_value != old_value:
+                rep.current_level = helpers._calculate_reputation_level(rep.current_value)
+                rep.title = helpers._get_reputation_title(rep.current_level)
+                rep.trade_modifier = helpers._calculate_trade_modifier(rep.current_value)
+                rep.port_access_level = helpers._calculate_port_access_level(rep.current_value)
+                rep.combat_response = helpers._calculate_combat_response(rep.current_value)
+                rep.history = (rep.history or []) + [{
+                    "timestamp": now.isoformat(),
+                    "old_value": old_value,
+                    "new_value": rep.current_value,
+                    "change": rep.current_value - old_value,
+                    "reason": f"Inactivity decay ({inactive_days - _FACTION_DECAY_INACTIVE_DAYS} days idle)",
+                }]
+                player_changed = True
+        if player_changed:
+            affected_players += 1
+    db.flush()
+    return affected_players
+
+
+def _apply_aria_decay_sync(db: Session, player_ids: List[Any], now: datetime) -> int:
+    """ARIA relationship inactivity-decay — SYNC reimplementation on the work
+    session.
+
+    AriaPersonalIntelligenceService.apply_inactivity_decay is genuinely async
+    (it takes an AsyncSession), but the LOGIC is pure arithmetic:
+    ``aria_relationship_score`` loses 1 point per inactive day, floored at 0. We
+    reproduce that here on the sync session — no AsyncSession, no event loop —
+    so nothing can poison the shared async pool. ``days_inactive`` is canonical
+    days since last_game_login (a no-op at 0 or when the score is already 0).
+
+    Counts the players whose score actually moved. Runs inside the caller's
+    single atomic weekly transaction (no per-row rollback); errors propagate to
+    _run_weekly_decay_sync, which rolls the whole week back and retries."""
+    decayed = 0
+    for pid in player_ids:
+        player = db.query(Player).filter(Player.id == pid).first()
+        if player is None:
+            continue
+        days = _canonical_days_inactive(player, now)
+        if days <= 0:
+            continue
+        score = player.aria_relationship_score or 0
+        decay = min(days, score)
+        if decay <= 0:
+            continue
+        player.aria_relationship_score = max(0, score - decay)
+        decayed += 1
+    db.flush()
+    return decayed
+
+
+def _run_weekly_decay_sync() -> Dict[str, int]:
+    """Weekly reputation/relationship maintenance — FULLY SYNCHRONOUS, self-gated
+    on a DURABLE canonical-week anchor in ``Galaxy.state`` so restarts neither
+    skip nor double a week.
+
+    No asyncio / AsyncSession is used anywhere: all three decays (personal,
+    faction, ARIA) run synchronously on a SINGLE work session inside the
+    advisory-locked transaction, and the durable week anchor is advanced in that
+    SAME transaction. This guarantees atomicity — the week is marked done iff
+    every decay batch committed — and avoids the async-pool poisoning that an
+    ``asyncio.run`` bridge over the shared async engine would cause ("Event loop
+    is closed" in later, unrelated request handlers).
+
+    xact-advisory-lock-gated like the other scheduler work (one instance per
+    week). If any decay batch raises, the whole transaction rolls back, the
+    anchor is NOT advanced, and the job retries next wake (decay is
+    idempotent/convergent — at worst one extra 5-point personal step, clamped
+    toward zero).
+
+    Returns {personal, faction, aria, week} (all zero + week=-1 when the week is
+    not yet due / lock held elsewhere)."""
+    from src.core.database import SessionLocal
+    from src.models.galaxy import Galaxy
+
+    this_week = canonical_week_number()
+    not_due = {"personal": 0, "faction": 0, "aria": 0, "week": -1}
+
+    # Single locked transaction: lock + anchor read + all decays + anchor
+    # advance all commit together (or roll back together).
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return not_due
+
+        # Stable anchor row: the OLDEST galaxy (created_at.asc()). A dev
+        # re-bootstrap creates a NEWER galaxy; keying off the newest would reset
+        # the anchor and double-fire the global decay, so we pin to the oldest.
+        galaxy = (
+            db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+        )
+        if galaxy is None:
+            return not_due
+        state = dict(galaxy.state or {})
+        last_week = state.get(_WEEKLY_DECAY_STATE_KEY)
+        if last_week is not None and int(last_week) >= this_week:
+            return not_due
+
+        player_ids = _select_decay_candidate_ids(db)
+        now = datetime.now(UTC)
+
+        # All three decays on the SAME session — any raise propagates to the
+        # outer except, rolling back everything (including the anchor advance).
+        personal = _apply_personal_decay_sync(db, player_ids)
+        faction = _apply_faction_decay_sync(db, player_ids)
+        aria = _apply_aria_decay_sync(db, player_ids, now)
+
+        # Advance the durable anchor in the SAME transaction as the decays.
+        state = dict(galaxy.state or {})
+        state[_WEEKLY_DECAY_STATE_KEY] = this_week
+        galaxy.state = state
+        flag_modified(galaxy, "state")
+        db.commit()  # commits decays + anchor atomically AND releases the lock
+
+        result = {
+            "personal": personal,
+            "faction": faction,
+            "aria": aria,
+            "week": this_week,
+        }
+        logger.info(
+            "weekly-decay: canonical week %d — personal=%d faction=%d aria=%d "
+            "(over %d player(s))",
+            this_week, personal, faction, aria, len(player_ids),
+        )
+        return result
+    except Exception:
+        # Any failure: roll back EVERYTHING (decays + anchor) so the week is not
+        # silently skipped — it will be retried on the next due wake.
+        logger.exception("weekly-decay: batch failed — week not advanced")
+        db.rollback()
+        return not_due
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Genesis — scheduled formation completion
+# ---------------------------------------------------------------------------
+
+def _run_genesis_completion_sync() -> int:
+    """Complete forming genesis planets whose timer has elapsed.
+
+    Before this tick, formation completion settled ONLY lazily — GenesisService.
+    complete_due_formations runs on a player's owned-planets fetch and is scoped
+    to that one player. A colony whose owner never re-checks the Colonial
+    Registry (or an abandoned/unowned forming planet) would therefore stay
+    "forming" forever past its 48h timer. This periodic sweep makes the timer
+    authoritative for everyone. Cheap (an indexed forming/past-due filter that
+    returns nothing on a steady galaxy), idempotent, xact-advisory-lock-gated
+    so a second instance skips instead of double-completing."""
+    from src.core.database import SessionLocal
+    from src.services.genesis_service import GenesisService
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return 0
+        # GenesisService.complete_all_due_formations commits internally when it
+        # completes any planet; that commit also releases this xact lock.
+        completed = GenesisService(db).complete_all_due_formations()
+        if not completed:
+            db.commit()  # release the lock on the no-op path
+        return completed
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
 
@@ -1455,3 +1799,44 @@ async def npc_scheduler_loop() -> None:
             raise
         except Exception:
             logger.exception("NPC scheduler: tick crashed (loop continues)")
+
+        # Genesis formation completion sweep (every GENESIS_COMPLETION_SECONDS).
+        # Makes the 48h formation timer authoritative for all planets, not just
+        # those a player happens to read — runs in the worker thread, own
+        # session, own advisory lock.
+        if elapsed % GENESIS_COMPLETION_SECONDS == 0:
+            try:
+                completed = await asyncio.to_thread(_run_genesis_completion_sync)
+                if completed:
+                    logger.info(
+                        "NPC scheduler: completed %d due genesis formation(s)",
+                        completed,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: genesis completion sweep crashed (loop continues)"
+                )
+
+        # Weekly reputation/relationship decay (fully synchronous). Gated by a
+        # COARSE elapsed pre-filter (WEEKLY_DECAY_CHECK_SECONDS) so we don't take
+        # the advisory lock + query Galaxy.state every 60s; the durable
+        # canonical-week anchor inside _run_weekly_decay_sync is what actually
+        # guarantees the real work runs at most once per canonical week,
+        # restart-proof. The 15-min pre-filter is far finer than a week, so no
+        # week is ever missed.
+        if elapsed % WEEKLY_DECAY_CHECK_SECONDS == 0:
+            try:
+                decay = await asyncio.to_thread(_run_weekly_decay_sync)
+                if decay.get("week", -1) >= 0:
+                    logger.info(
+                        "NPC scheduler: weekly decay applied (week %d) — "
+                        "personal=%d faction=%d aria=%d",
+                        decay["week"], decay["personal"],
+                        decay["faction"], decay["aria"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: weekly decay crashed (loop continues)")

@@ -729,6 +729,37 @@ class GenesisService:
             self.db.commit()
         return len(due)
 
+    def complete_all_due_formations(self) -> int:
+        """Complete EVERY forming genesis planet whose formation timer has
+        elapsed, regardless of owner — the periodic (scheduler-driven)
+        counterpart to ``complete_due_formations`` (which is lazy and scoped to
+        one player's owned-planets fetch).
+
+        Without this, a colony whose owner never re-opens the Colonial Registry
+        — or a forming planet that has been abandoned/unowned — would stay
+        "forming" forever even after its 48h timer passed, because completion
+        only ever settled lazily on a per-player read. This sweep makes the
+        formation timer authoritative: a deployed device always finishes.
+
+        Idempotent (only ``forming`` rows past their timer are touched) and safe
+        to run repeatedly. Returns the number of planets completed."""
+        now = datetime.now(timezone.utc)
+        due = (
+            self.db.query(Planet)
+            .filter(
+                Planet.genesis_created == True,  # noqa: E712
+                Planet.formation_status == "forming",
+                Planet.formation_complete_at.isnot(None),
+                Planet.formation_complete_at <= now,
+            )
+            .all()
+        )
+        for planet in due:
+            self._complete_formation(planet)
+        if due:
+            self.db.commit()
+        return len(due)
+
     def get_available_purchases(self, player_id: UUID) -> Dict[str, Any]:
         """
         Get how many genesis devices the player can still buy this week,
