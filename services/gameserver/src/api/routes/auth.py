@@ -28,6 +28,48 @@ from src.services.mfa_service import MFAService
 router = APIRouter()
 
 
+async def _track_player_login(db: Session, user_id) -> None:
+    """Record a player-login activity event (best-effort).
+
+    Maps the authenticated User to its Player row (only players have game
+    activity; admins are skipped) and fires PlayerActivityService.track_login.
+    The activity service is Redis-backed and async; auth routes are async, so
+    we await it directly. Fully DEFENSIVE — any failure (no Redis, no Player,
+    service error) is swallowed so activity tracking can never break login.
+    """
+    try:
+        from src.models.player import Player
+        player = db.query(Player).filter(Player.user_id == user_id).first()
+        if player is None:
+            return  # admin or non-player user — nothing to track
+        from src.services.player_activity_service import get_player_activity_service
+        activity_service = await get_player_activity_service()
+        # Call without the optional db arg: the routes' Session is sync, and
+        # track_login only uses db to refresh last_game_login (optional). The
+        # Redis session/online-set tracking is the part we need here.
+        await activity_service.track_login(str(player.id))
+    except Exception:
+        logger.warning("player-login activity tracking failed (non-fatal)", exc_info=True)
+
+
+async def _track_player_logout(db: Session, user_id) -> None:
+    """Record a player-logout activity event (best-effort).
+
+    Mirror of _track_player_login: maps User -> Player and finalises the
+    activity session. Fully DEFENSIVE so it can never break logout.
+    """
+    try:
+        from src.models.player import Player
+        player = db.query(Player).filter(Player.user_id == user_id).first()
+        if player is None:
+            return
+        from src.services.player_activity_service import get_player_activity_service
+        activity_service = await get_player_activity_service()
+        await activity_service.track_logout(str(player.id))
+    except Exception:
+        logger.warning("player-logout activity tracking failed (non-fatal)", exc_info=True)
+
+
 @router.post("/exchange")
 async def exchange_oauth_code(code: str = Body(..., embed=True)):
     """Exchange a single-use OAuth authorization code for tokens (ADR-0085).
@@ -100,6 +142,9 @@ async def login(
     # Create new tokens
     access_token, refresh_token = create_tokens(user.id, db)
 
+    # Best-effort player-activity login tracking (no-op for admins)
+    await _track_player_login(db, user.id)
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -157,6 +202,9 @@ async def login_json(
 
     # Create new tokens
     access_token, refresh_token = create_tokens(user.id, db)
+
+    # Best-effort player-activity login tracking (no-op for admins)
+    await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
@@ -258,6 +306,9 @@ async def login_direct(
     # Authentication successful (with or without MFA)
     access_token, refresh_token = create_tokens(user.id, db)
 
+    # Best-effort player-activity login tracking (no-op for admins)
+    await _track_player_login(db, user.id)
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -293,6 +344,9 @@ async def player_login(
     # Create new tokens
     access_token, refresh_token = create_tokens(user.id, db)
 
+    # Best-effort player-activity login tracking
+    await _track_player_login(db, user.id)
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -325,6 +379,9 @@ async def player_login_json(
 
     # Create new tokens
     access_token, refresh_token = create_tokens(user.id, db)
+
+    # Best-effort player-activity login tracking
+    await _track_player_login(db, user.id)
 
     return {
         "access_token": access_token,
@@ -534,8 +591,11 @@ async def logout(
     ).first()
 
     if refresh:
+        revoked_user_id = refresh.user_id
         refresh.revoked = True
         db.commit()
+        # Best-effort player-activity logout tracking (finalises the session)
+        await _track_player_logout(db, revoked_user_id)
 
     return {"detail": "Successfully logged out"}
 
