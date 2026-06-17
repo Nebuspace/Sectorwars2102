@@ -143,6 +143,45 @@ CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
 MIN_TAX_RATE = 0.0
 MAX_TAX_RATE = 0.25
 
+# Campaign statuses considered "active" (a live takeover attempt). Hoisted here
+# so both the economic and military engines reference one source of truth.
+_ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
+
+# ---------------------------------------------------------------------------
+# Fee distribution (canon FEATURES/economy/port-ownership "Fee distribution",
+# sourced from station-protection.md): every credit of station revenue splits
+# 40% defense / 30% owner / 30% operating. Operating is IMMUTABLE at 30%;
+# defense and owner are owner-tunable within bounds (not exposed this pass —
+# defaults stand). The OWNER bucket accrues to station.treasury_balance (the
+# withdrawable column the owner sweeps). The DEFENSE and OPERATING buckets are
+# accrued into station.ownership JSONB sub-ledgers (defense_fund / operating_fund)
+# because the Station model has only the single treasury_balance column — see
+# the "FIELD NEEDED" note in the build report: dedicated defense_budget /
+# operating_budget columns would be cleaner than the JSONB sub-ledger.
+# ---------------------------------------------------------------------------
+DEFENSE_PCT = 0.40
+OWNER_PCT = 0.30
+OPERATING_PCT = 0.30
+
+# ---------------------------------------------------------------------------
+# Operating costs (canon "Operating costs" + "Treasury & cash flow"). v1 models
+# the MAINTENANCE line only (1% of acquisition cost / month, pro-rated daily
+# and anchored on the ORIGINAL acquisition cost). Wages / defense-upkeep /
+# upgrade-upkeep are 📐 Design-only in canon and out of v1 scope (they need a
+# services-offered wage table and an upgrade catalog that don't exist yet).
+# Deduction is LAZY-ON-READ: accrue_operating_costs() charges whole elapsed
+# canonical days against the operating_fund (then treasury_balance) on every
+# owner-facing read, mirroring the no-scheduler lazy-engine pattern used for
+# listings and takeover campaigns. A periodic scheduler may call the public
+# accrue_operating_costs()/tick_* entry points later (wiring is a follow-up;
+# this lane does NOT edit npc_scheduler_service.py).
+# ---------------------------------------------------------------------------
+MAINTENANCE_RATE_PER_MONTH = 0.01     # 1% of acquisition cost / canonical month
+DAYS_PER_MONTH = 30                   # canon scaled-month length
+INSOLVENCY_MONTHS = 3                 # consecutive shortfall months -> auto-sell
+DEPRECIATION_FACTOR = 0.50            # auto-sell to faction at 40-60% (midpoint)
+SECONDS_PER_DAY = 24 * 3600.0
+
 # Personal reputation tiers in ascending order
 # (personal_reputation_service.REPUTATION_TIERS). See the module docstring
 # for the 'Trusted' -> 'Heroic' mapping rationale.
@@ -151,6 +190,31 @@ TIER_ORDER = [
     "Neutral", "Lawful", "Heroic", "Legendary",
 ]
 MIN_BUYER_TIER = "Heroic"
+
+# ---------------------------------------------------------------------------
+# Military takeover (canon "Acquisition > Military takeover"). A combat-based
+# path that REUSES the existing TakeoverCampaign table — a military campaign is
+# tagged by a sentinel record {"campaign_type": "military"} written into the
+# economic-only monthly_history JSONB (the model has no campaign_type column;
+# see the "FIELD NEEDED" note in the build report — a dedicated campaign_type
+# column would be cleaner). The economic path is untouched: campaigns with no
+# sentinel are economic, exactly as before.
+#
+# Canon flow: declaration of intent (24-canonical-hour galaxy-wide notice) ->
+# siege (defeat the station's defenders: defense_drones + patrol_ships in the
+# Station.defenses JSONB) -> occupy. On capture: treasury is FORFEITED to the
+# controlling faction (war-tax, NOT transferred to the attacker), severe
+# reputation penalty, and a 7-day post-takeover protection window. Military
+# Contract (defenses.military_contract) confers immunity for its duration.
+# ---------------------------------------------------------------------------
+MILITARY_DECLARATION_HOURS = 24.0     # canon galaxy-wide notice before siege
+MILITARY_PROTECTION_HOURS = 7 * 24.0  # canon post-capture immunity window
+MILITARY_REPUTATION_PENALTY = -300    # canon "severe" penalty with prior faction
+# Per-attempt garrison hardening: each prior military attempt by the same
+# challenger on the same station within 90 days raises effective defender
+# strength by 25% (canon diminishing returns).
+MILITARY_REATTEMPT_HARDEN = 0.25
+MILITARY_REATTEMPT_WINDOW_DAYS = 90
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +352,36 @@ def self_cancelling_fraction(
         for c in set(buy_by_commodity) | set(sell_by_commodity)
     )
     return matched / total
+
+
+def split_revenue(gross: int) -> Tuple[int, int, int]:
+    """Canon 40/30/30 fee distribution. Returns (defense, owner, operating).
+    Integer floors on defense and operating; the OWNER bucket takes the
+    remainder so the three buckets always sum EXACTLY to `gross` (no credits
+    minted or lost to rounding). gross <= 0 -> all zeros."""
+    if gross <= 0:
+        return 0, 0, 0
+    defense = int(gross * DEFENSE_PCT)
+    operating = int(gross * OPERATING_PCT)
+    owner = gross - defense - operating
+    return defense, owner, operating
+
+
+def maintenance_for_days(acquisition_cost: int, days: int) -> int:
+    """Operating-cost maintenance line: 1% of acquisition cost per canonical
+    month (30 days), pro-rated to whole elapsed canonical `days`. Anchored on
+    the ORIGINAL acquisition cost (canon: no maintenance arbitrage by flipping
+    ownership)."""
+    if days <= 0 or acquisition_cost <= 0:
+        return 0
+    per_day = (acquisition_cost * MAINTENANCE_RATE_PER_MONTH) / DAYS_PER_MONTH
+    return int(per_day * days)
+
+
+def depreciated_value(acquisition_cost: int) -> int:
+    """Insolvency auto-sell price: depreciated value (canon 40-60% of
+    acquisition cost; v1 uses the 50% midpoint)."""
+    return int(max(0, acquisition_cost) * DEPRECIATION_FACTOR)
 
 
 def forced_sale_value(avg_monthly_revenue: float, acquisition_cost: int) -> int:
@@ -766,15 +860,306 @@ def revenue_summary(db: Session, station: Station, days: int = 30) -> Dict[str, 
         for t, count, volume in rows
     }
     gross = sum(v["volume"] for v in by_type.values())
+    estimated_tax = int(gross * (station.tax_rate or 0.0))
+    split_def, split_owner, split_op = split_revenue(estimated_tax)
     return {
         "station_id": str(station.id),
         "window_canonical_days": days,
         "by_type": by_type,
         "gross_volume": gross,
         "tax_rate": station.tax_rate,
-        "estimated_tax_collected": int(gross * (station.tax_rate or 0.0)),
+        "estimated_tax_collected": estimated_tax,
+        # Canon 40/30/30 fee distribution applied to the estimated tax take.
+        "fee_distribution": {
+            "defense_pct": DEFENSE_PCT,
+            "owner_pct": OWNER_PCT,
+            "operating_pct": OPERATING_PCT,
+            "estimated_defense": split_def,
+            "estimated_owner": split_owner,
+            "estimated_operating": split_op,
+        },
+        "defense_fund": _bucket(station, "defense_fund"),
+        "operating_fund": _bucket(station, "operating_fund"),
+        "insolvency_months": int((station.ownership or {}).get("insolvency_months", 0) or 0),
         "treasury_balance": station.treasury_balance or 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Revenue realization (40/30/30) and operating costs
+#
+# The Station model has a single treasury_balance column, so the defense and
+# operating buckets live in station.ownership JSONB sub-ledgers. The OWNER
+# bucket accrues to treasury_balance (the column the owner sweeps via
+# withdraw_treasury). FIELD NEEDED (flagged, not built): dedicated
+# defense_budget / operating_budget Integer columns on Station would be cleaner
+# than the JSONB sub-ledger and would let the defense-underfunding cascade read
+# a real column.
+# ---------------------------------------------------------------------------
+
+def _ledger(station: Station) -> Dict[str, Any]:
+    """Mutable handle on station.ownership (created if absent). Caller MUST
+    flag_modified(station, 'ownership') after mutating."""
+    if station.ownership is None:
+        station.ownership = {}
+    return station.ownership
+
+
+def _bucket(station: Station, key: str) -> int:
+    return int((station.ownership or {}).get(key, 0) or 0)
+
+
+def realize_port_revenue(
+    db: Session, station: Station, gross: int, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Distribute `gross` station revenue per the canon 40/30/30 split under
+    the station lock: defense -> ownership['defense_fund'], owner ->
+    treasury_balance (withdrawable), operating -> ownership['operating_fund'].
+
+    This is the REALIZATION HOOK for port trade revenue (tariff/tax, docking
+    fees, service charges). It is currently UNWIRED: trade tax is realized
+    inline in routes/trading.py as `station.treasury_balance += tax_amount`
+    (100% to the owner bucket). Re-pointing those realization sites at this
+    function is a FOLLOW-UP for the lane that owns trading.py / docking_service
+    (this lane must not edit them). Unowned stations have no owner cut — the
+    whole gross routes to the operating fund (a credit sink in practice).
+
+    No commit; caller owns the transaction."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    if gross <= 0:
+        return {
+            "station_id": str(station.id),
+            "gross": 0, "defense": 0, "owner": 0, "operating": 0,
+            "treasury_balance": station.treasury_balance or 0,
+        }
+    defense, owner, operating = split_revenue(int(gross))
+
+    ledger = _ledger(station)
+    if station.owner_id is None:
+        # No owner: the owner cut has nowhere to go — fold it into operating
+        # (canon treats unowned-station proceeds as a sink).
+        ledger["operating_fund"] = _bucket(station, "operating_fund") + operating + owner
+        ledger["defense_fund"] = _bucket(station, "defense_fund") + defense
+        owner = 0
+    else:
+        ledger["defense_fund"] = _bucket(station, "defense_fund") + defense
+        ledger["operating_fund"] = _bucket(station, "operating_fund") + operating
+        station.treasury_balance = (station.treasury_balance or 0) + owner
+    flag_modified(station, "ownership")
+    db.flush()
+    return {
+        "station_id": str(station.id),
+        "gross": int(gross),
+        "defense": defense,
+        "owner": owner,
+        "operating": operating,
+        "defense_fund": _bucket(station, "defense_fund"),
+        "operating_fund": _bucket(station, "operating_fund"),
+        "treasury_balance": station.treasury_balance or 0,
+    }
+
+
+def _accrual_anchor(station: Station, now: datetime) -> datetime:
+    """Wall-clock instant operating costs were last accrued through. Stored in
+    ownership['costs_accrued_at']; defaults to the acquisition time, falling
+    back to `now` for stations that predate this feature (so they never get a
+    retroactive backlog charge)."""
+    ledger = station.ownership or {}
+    raw = ledger.get("costs_accrued_at") or ledger.get("acquired_at")
+    if raw:
+        try:
+            return _aware(datetime.fromisoformat(raw))
+        except (ValueError, TypeError):
+            pass
+    return now
+
+
+def accrue_operating_costs(
+    db: Session, station: Station, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """LAZY operating-cost engine (no scheduler), idempotent. Charges whole
+    elapsed canonical days of maintenance (1% acquisition / month, pro-rated)
+    against the operating_fund, overflowing to treasury_balance when the fund
+    is short. Tracks consecutive shortfall MONTHS in
+    ownership['insolvency_months']; at INSOLVENCY_MONTHS the station auto-sells
+    to the controlling faction (auto_sell_insolvent).
+
+    Returns a settlement summary. Unowned stations accrue nothing. No commit;
+    caller owns the transaction. A periodic scheduler MAY call this as a public
+    tick entry point later (wiring is a follow-up; this lane does not edit
+    npc_scheduler_service.py)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    if station.owner_id is None:
+        return {"station_id": str(station.id), "charged": 0, "status": "unowned"}
+
+    anchor = _accrual_anchor(station, now)
+    elapsed_days = int(game_time.canonical_hours_since(anchor, now) // 24)
+    if elapsed_days <= 0:
+        return {
+            "station_id": str(station.id),
+            "charged": 0,
+            "status": "current",
+            "operating_fund": _bucket(station, "operating_fund"),
+        }
+
+    acquisition_cost = _acquisition_cost(station)
+    charge = maintenance_for_days(acquisition_cost, elapsed_days)
+
+    ledger = _ledger(station)
+    operating_fund = _bucket(station, "operating_fund")
+    shortfall_months = int(ledger.get("insolvency_months", 0) or 0)
+
+    if charge <= operating_fund:
+        ledger["operating_fund"] = operating_fund - charge
+        covered = True
+    else:
+        # Operating fund exhausted: draw the remainder from the treasury
+        # (owner cushion). True shortfall only when even the treasury can't
+        # cover the bill.
+        remainder = charge - operating_fund
+        ledger["operating_fund"] = 0
+        treasury = station.treasury_balance or 0
+        if remainder <= treasury:
+            station.treasury_balance = treasury - remainder
+            covered = True
+        else:
+            # Cannot cover even with the treasury: a shortfall month.
+            station.treasury_balance = 0
+            covered = False
+
+    # Advance the accrual anchor by the whole days charged (sub-day remainder
+    # stays pending — never lose a partial day).
+    ledger["costs_accrued_at"] = game_time.scaled_deadline(
+        elapsed_days * 24.0, start=anchor
+    ).isoformat()
+
+    months_elapsed = elapsed_days // DAYS_PER_MONTH
+    if not covered:
+        shortfall_months += max(1, months_elapsed)
+    elif months_elapsed >= 1:
+        # A covered month resets the consecutive-shortfall streak.
+        shortfall_months = 0
+    ledger["insolvency_months"] = shortfall_months
+    flag_modified(station, "ownership")
+    db.flush()
+
+    result = {
+        "station_id": str(station.id),
+        "charged": charge,
+        "days": elapsed_days,
+        "covered": covered,
+        "operating_fund": _bucket(station, "operating_fund"),
+        "treasury_balance": station.treasury_balance or 0,
+        "insolvency_months": shortfall_months,
+        "status": "current" if covered else "shortfall",
+    }
+    if shortfall_months >= INSOLVENCY_MONTHS:
+        result["insolvency"] = auto_sell_insolvent(db, station, now)
+    return result
+
+
+def auto_sell_insolvent(
+    db: Session, station: Station, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Insolvency resolution (canon "Insolvency"): clear ownership and LIST the
+    station for sale at depreciated value, reusing the existing listing/auction
+    path so rivals can bid (canon: rescue offers override the auto-sale).
+    Outstanding bucket debts are cleared by zeroing the sub-ledgers; the
+    treasury conveys with the station per the standard rule.
+
+    Canon names the controlling faction as the buyer of last resort; v1 has no
+    NPC-faction wallet, so the station re-enters the open market at the
+    depreciated price (a sealed-bid listing) instead — the same lazy auction
+    path that handles every other sale. The owner takes a reputation hit.
+    Caller holds the station lock. No commit."""
+    now = now or datetime.now(UTC)
+    if station.owner_id is None:
+        return {"status": "noop", "reason": "already unowned"}
+
+    prior_owner_id = station.owner_id
+    depreciated = depreciated_value(_acquisition_cost(station))
+
+    # Reputation penalty: a failed station is a failed local employer (canon
+    # "moderate penalty"). Mutate under a player lock; reuse the tier table.
+    _apply_reputation(db, prior_owner_id, -50, "port_insolvency")
+
+    # Release ownership so the station becomes listable again.
+    db.execute(
+        player_stations.delete().where(player_stations.c.station_id == station.id)
+    )
+    station.owner_id = None
+    ledger = _ledger(station)
+    ledger["defense_fund"] = 0
+    ledger["operating_fund"] = 0
+    ledger["insolvency_months"] = 0
+    ledger.pop("player_id", None)
+    ledger["insolvent_at"] = now.isoformat()
+    ledger["last_acquisition_cost"] = _acquisition_cost(station)
+    flag_modified(station, "ownership")
+
+    # Cancel any open campaigns against the now-unowned station (an economic or
+    # military takeover of an unowned station is meaningless).
+    open_campaigns = (
+        db.query(TakeoverCampaign)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.status.in_(_ACTIVE_CAMPAIGN_STATUSES),
+        )
+        .all()
+    )
+    for c in open_campaigns:
+        c.status = "failed"
+        c.dispute_reason = "station went insolvent and was auto-sold"
+        c.counter_expires_at = None
+
+    db.flush()
+
+    # Re-list via the existing path at the depreciated price (admin/system
+    # price — list_station's price arg is the dev/admin lever). Defensive: if
+    # the station class isn't listable, insolvency still resolves (the station
+    # simply reverts to unowned) rather than rolling back the whole accrual.
+    listing_id = None
+    if is_listable(station):
+        try:
+            listing = list_station(db, station, price=depreciated, now=now)
+            listing_id = str(listing.id)
+        except PortOwnershipError as exc:
+            logger.warning(
+                "Insolvent station %s could not be relisted: %s", station.id, exc.detail
+            )
+    logger.info(
+        "Station %s auto-sold (insolvent): prior owner %s, relisted at %s (listing=%s)",
+        station.id, prior_owner_id, depreciated, listing_id,
+    )
+    return {
+        "status": "auto_sold",
+        "prior_owner_id": str(prior_owner_id),
+        "depreciated_value": depreciated,
+        "listing_id": listing_id,
+    }
+
+
+def _apply_reputation(db: Session, player_id, amount: int, reason: str) -> None:
+    """Adjust a player's personal reputation under an ascending-id player lock
+    and re-derive the cached tier/color (reuses the reputation service's tier
+    table). Defensive: a missing player is a no-op."""
+    from src.services.personal_reputation_service import PersonalReputationService
+    locked = _lock_players_ascending(db, [player_id])
+    player = locked.get(player_id)
+    if player is None:
+        return
+    old = player.personal_reputation or 0
+    new = max(-1000, min(1000, old + amount))
+    player.personal_reputation = new
+    tier, color = PersonalReputationService._get_tier_for_score(new)
+    player.reputation_tier = tier
+    player.name_color = color
+    logger.info(
+        "Reputation %+d for %s (%s): %d -> %d (%s)",
+        amount, player_id, reason, old, new, tier,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -800,11 +1185,13 @@ def launch_campaign(
         .filter(
             TakeoverCampaign.station_id == station.id,
             TakeoverCampaign.challenger_id == challenger.id,
-            TakeoverCampaign.status.in_(["building", "eligible", "countered", "disputed"]),
+            TakeoverCampaign.status.in_(_ACTIVE_CAMPAIGN_STATUSES),
         )
-        .first()
+        .all()
     )
-    if active is not None:
+    # Only an existing ECONOMIC campaign blocks a new economic one; a military
+    # siege by the same challenger is a separate path and does not collide.
+    if any(not _is_military(c) for c in active):
         raise PortOwnershipError(400, "You already have an active campaign on this station")
 
     campaign = TakeoverCampaign(
@@ -939,6 +1326,11 @@ def evaluate_campaign(
     )
     if campaign is None:
         raise PortOwnershipError(404, "Campaign not found")
+
+    # Military campaigns are driven by the siege/occupy actions, NOT the
+    # economic monthly-volume engine — never month-evaluate them here.
+    if _is_military(campaign):
+        return campaign
 
     if campaign.status in ("building", "countered"):
         # A challenger who came to own the station mid-campaign has nothing
@@ -1205,6 +1597,338 @@ def expire_counter(
 
 
 # ---------------------------------------------------------------------------
+# Military takeover engine (combat-based path; REUSES TakeoverCampaign)
+#
+# A military campaign is an ordinary TakeoverCampaign row tagged with a
+# {"campaign_type": "military", ...} sentinel record in monthly_history (the
+# economic engine ignores any campaign carrying the sentinel and vice-versa, so
+# the two paths never interfere). Flow:
+#   declare_military_takeover  -> status 'building'  (24h declaration notice)
+#   siege_military_takeover    -> repeated combat rounds vs Station.defenses
+#                                 (after notice elapses); status 'eligible' when
+#                                 defenders reach 0
+#   occupy_military_takeover   -> ownership flips; treasury FORFEITED to faction
+#                                 (war-tax, NOT transferred); severe rep hit;
+#                                 7-day post-capture protection window
+# FIELD NEEDED (flagged): a dedicated campaign_type column on TakeoverCampaign
+# would beat the JSONB sentinel; defender strength / protection windows would
+# also benefit from real columns. Built on existing columns per the lane rules.
+# ---------------------------------------------------------------------------
+
+def _is_military(campaign: TakeoverCampaign) -> bool:
+    for record in campaign.monthly_history or []:
+        if record.get("campaign_type") == "military":
+            return True
+    return False
+
+
+def _military_record(campaign: TakeoverCampaign) -> Optional[Dict[str, Any]]:
+    """The mutable military sentinel record (the LAST one wins, so re-attempts
+    append a fresh sentinel)."""
+    for record in reversed(campaign.monthly_history or []):
+        if record.get("campaign_type") == "military":
+            return record
+    return None
+
+
+def _defender_strength(station: Station) -> int:
+    """Effective defender strength from the Station.defenses JSONB: drones +
+    patrol ships (weighted) + a shield-derived floor. A military_contract makes
+    the station immune (sentinel -1)."""
+    defenses = station.defenses or {}
+    if defenses.get("military_contract"):
+        return -1  # immune
+    drones = int(defenses.get("defense_drones", 0) or 0)
+    patrols = int(defenses.get("patrol_ships", 0) or 0)
+    shields = int(defenses.get("shield_strength", 0) or 0)
+    grid = 50 if defenses.get("defense_grid") else 0
+    return drones + patrols * 10 + shields + grid
+
+
+def _military_reattempt_multiplier(
+    db: Session, station_id, challenger_id, now: datetime
+) -> float:
+    """Canon diminishing returns: +25% defender strength per prior military
+    attempt by the same challenger on the same station within 90 canonical
+    days."""
+    cutoff = _wall_cutoff(MILITARY_REATTEMPT_WINDOW_DAYS, now)
+    prior = (
+        db.query(TakeoverCampaign)
+        .filter(
+            TakeoverCampaign.station_id == station_id,
+            TakeoverCampaign.challenger_id == challenger_id,
+            TakeoverCampaign.status.in_(["failed", "transferred"]),
+            TakeoverCampaign.started_at >= cutoff,
+        )
+        .all()
+    )
+    attempts = sum(1 for c in prior if _is_military(c))
+    return 1.0 + MILITARY_REATTEMPT_HARDEN * attempts
+
+
+def declare_military_takeover(
+    db: Session, station: Station, challenger: Player, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """File a declaration of intent against an OWNED station: opens a military
+    TakeoverCampaign and starts the 24-canonical-hour galaxy-wide notice before
+    the siege may begin. Owner cannot challenge themselves; one active military
+    campaign per challenger per station; military_contract stations are immune."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    if station.owner_id is None:
+        raise PortOwnershipError(
+            400, "Unowned stations are bought on the open market, not besieged"
+        )
+    if station.owner_id == challenger.id:
+        raise PortOwnershipError(400, "You cannot besiege your own station")
+    if _defender_strength(station) < 0:
+        raise PortOwnershipError(
+            400, "This station holds a Military Contract and is immune to military takeover"
+        )
+
+    active = (
+        db.query(TakeoverCampaign)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.challenger_id == challenger.id,
+            TakeoverCampaign.status.in_(_ACTIVE_CAMPAIGN_STATUSES),
+        )
+        .all()
+    )
+    if any(_is_military(c) for c in active):
+        raise PortOwnershipError(400, "You already have an active siege on this station")
+
+    harden = _military_reattempt_multiplier(db, station.id, challenger.id, now)
+    base_strength = _defender_strength(station)
+    effective_strength = int(base_strength * harden)
+
+    campaign = TakeoverCampaign(
+        station_id=station.id,
+        challenger_id=challenger.id,
+        started_at=now,
+        months_satisfied=0,
+        last_evaluated_month=0,
+        status="building",
+        monthly_history=[{
+            "campaign_type": "military",
+            "declared_at": now.isoformat(),
+            "siege_begins_at": game_time.scaled_deadline(
+                MILITARY_DECLARATION_HOURS, start=now
+            ).isoformat(),
+            "defender_strength": effective_strength,
+            "defenders_remaining": effective_strength,
+            "reattempt_multiplier": harden,
+            "owner_at_declaration": str(station.owner_id),
+        }],
+        dispute_reason=None,
+    )
+    db.add(campaign)
+    db.flush()
+    logger.info(
+        "Military takeover declared: %s vs station %s (defenders=%d, x%.2f)",
+        challenger.id, station.id, effective_strength, harden,
+    )
+    rec = _military_record(campaign)
+    return {
+        "campaign_id": str(campaign.id),
+        "station_id": str(station.id),
+        "campaign_type": "military",
+        "status": campaign.status,
+        "siege_begins_at": rec["siege_begins_at"],
+        "defenders_remaining": rec["defenders_remaining"],
+    }
+
+
+def siege_military_takeover(
+    db: Session, station: Station, challenger: Player, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Conduct one siege round: after the 24h declaration notice has elapsed,
+    the challenger's attack drones deplete the station defenders. When defenders
+    reach 0 the campaign flips to 'eligible' (ready to occupy). Drones consumed
+    are debited from the challenger's attack_drones; defender losses persist on
+    the campaign sentinel (Station.defenses is also drawn down so the siege is
+    visible on the station)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    campaign = (
+        db.query(TakeoverCampaign)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.challenger_id == challenger.id,
+            TakeoverCampaign.status.in_(["building", "eligible"]),
+        )
+        .order_by(TakeoverCampaign.started_at.desc())
+        .first()
+    )
+    if campaign is None or not _is_military(campaign):
+        raise PortOwnershipError(400, "No active siege on this station")
+    campaign = (
+        db.query(TakeoverCampaign)
+        .filter(TakeoverCampaign.id == campaign.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    rec = _military_record(campaign)
+    if now < _aware(datetime.fromisoformat(rec["siege_begins_at"])):
+        raise PortOwnershipError(
+            400, "The 24-hour declaration notice has not yet elapsed; the siege cannot begin"
+        )
+    if campaign.status == "eligible":
+        return {
+            "campaign_id": str(campaign.id),
+            "status": "eligible",
+            "defenders_remaining": 0,
+            "message": "Defenders already eliminated — ready to occupy",
+        }
+
+    locked = _lock_players_ascending(db, [challenger.id])
+    challenger = locked[challenger.id]
+    attack = int(challenger.attack_drones or 0)
+    if attack <= 0:
+        raise PortOwnershipError(400, "You have no attack drones to press the siege")
+
+    remaining = int(rec.get("defenders_remaining", 0))
+    # One round: attacker drones trade against defenders; canon siege is
+    # attrition. Defenders absorb up to `attack` strength; the attacker loses a
+    # proportional share of drones to defensive fire.
+    damage = min(attack, remaining)
+    remaining_after = remaining - damage
+    # Defensive fire: the attacker loses drones equal to a fraction of the
+    # defenders engaged this round (heavier defenders bite back harder).
+    attacker_losses = min(attack, int(damage * 0.5))
+    challenger.attack_drones = max(0, attack - attacker_losses)
+
+    rec["defenders_remaining"] = remaining_after
+    rec["last_siege_at"] = now.isoformat()
+    flag_modified(campaign, "monthly_history")
+
+    # Mirror the loss onto the station's visible defenses (drones first).
+    defenses = dict(station.defenses or {})
+    cur_drones = int(defenses.get("defense_drones", 0) or 0)
+    defenses["defense_drones"] = max(0, cur_drones - damage)
+    station.defenses = defenses
+    flag_modified(station, "defenses")
+
+    if remaining_after <= 0:
+        campaign.status = "eligible"
+        rec["defenders_eliminated_at"] = now.isoformat()
+        rec["owner_at_eligibility"] = str(station.owner_id)
+        flag_modified(campaign, "monthly_history")
+
+    db.flush()
+    logger.info(
+        "Siege round on station %s by %s: -%d defenders (%d left), -%d attacker drones",
+        station.id, challenger.id, damage, remaining_after, attacker_losses,
+    )
+    return {
+        "campaign_id": str(campaign.id),
+        "status": campaign.status,
+        "defenders_remaining": remaining_after,
+        "defenders_hit": damage,
+        "attacker_drones_lost": attacker_losses,
+        "attacker_drones_remaining": challenger.attack_drones,
+    }
+
+
+def occupy_military_takeover(
+    db: Session, station: Station, challenger: Player, now: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """Occupy a station whose defenders have been eliminated: ownership flips to
+    the challenger, the prior owner's TREASURY IS FORFEITED to the controlling
+    faction (war-tax — NOT transferred to the attacker, per canon), the attacker
+    takes a severe reputation penalty, and a 7-day post-capture protection
+    window opens (recorded on the ownership ledger for later counter-takeover
+    gating)."""
+    now = now or datetime.now(UTC)
+    station = _lock_station(db, station.id)
+    campaign = (
+        db.query(TakeoverCampaign)
+        .filter(
+            TakeoverCampaign.station_id == station.id,
+            TakeoverCampaign.challenger_id == challenger.id,
+            TakeoverCampaign.status == "eligible",
+        )
+        .order_by(TakeoverCampaign.started_at.desc())
+        .first()
+    )
+    if campaign is None or not _is_military(campaign):
+        raise PortOwnershipError(400, "No siege on this station is ready to occupy")
+    campaign = (
+        db.query(TakeoverCampaign)
+        .filter(TakeoverCampaign.id == campaign.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+
+    prior_owner_id = station.owner_id
+    if prior_owner_id is None:
+        campaign.status = "failed"
+        campaign.dispute_reason = "station lost its owner before occupation"
+        db.flush()
+        raise PortOwnershipError(400, "This station no longer has an owner to displace")
+    rec = _military_record(campaign)
+    if str(prior_owner_id) != rec.get("owner_at_eligibility"):
+        # Owner changed since the siege ended: the capture is void.
+        campaign.status = "failed"
+        campaign.dispute_reason = "owner changed after the siege ended"
+        db.flush()
+        raise PortOwnershipError(400, "The station changed hands after your siege — the capture is void")
+
+    # War-tax: forfeit the treasury + accrued buckets to the controlling faction
+    # (a credit sink in v1 — no NPC-faction wallet). The attacker gets NOTHING
+    # from the treasury (canon).
+    forfeited = (station.treasury_balance or 0)
+    forfeited += _bucket(station, "defense_fund") + _bucket(station, "operating_fund")
+    station.treasury_balance = 0
+
+    locked = _lock_players_ascending(db, [challenger.id])
+    challenger = locked[challenger.id]
+
+    # Transfer at zero price (military capture, not a purchase). _transfer_station
+    # resets ownership['acquisition_cost'] — re-anchor forward maintenance on the
+    # station's standing acquisition basis so a captor can't zero out their
+    # maintenance bill by capturing.
+    basis = _acquisition_cost(station)
+    _transfer_station(db, station, challenger, basis, now, method="military_takeover")
+
+    # Stabilization: 7-day post-capture protection + clear the war-spent buckets.
+    ledger = _ledger(station)
+    ledger["defense_fund"] = 0
+    ledger["operating_fund"] = 0
+    ledger["insolvency_months"] = 0
+    ledger["protected_until"] = game_time.scaled_deadline(
+        MILITARY_PROTECTION_HOURS, start=now
+    ).isoformat()
+    ledger["captured_at"] = now.isoformat()
+    flag_modified(station, "ownership")
+
+    campaign.status = "transferred"
+    rec["occupied_at"] = now.isoformat()
+    rec["treasury_forfeited"] = forfeited
+    flag_modified(campaign, "monthly_history")
+
+    # Severe reputation penalty with the prior owner's faction (canon).
+    _apply_reputation(db, challenger.id, MILITARY_REPUTATION_PENALTY, "military_takeover")
+
+    db.flush()
+    logger.info(
+        "Military takeover: station %s captured by %s; %d treasury forfeited (war-tax)",
+        station.id, challenger.id, forfeited,
+    )
+    return {
+        "campaign_id": str(campaign.id),
+        "status": "transferred",
+        "station_id": str(station.id),
+        "new_owner_id": str(challenger.id),
+        "prior_owner_id": str(prior_owner_id),
+        "treasury_forfeited": forfeited,
+        "protected_until": ledger["protected_until"],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Router adapter surface
 #
 # Every function here returns a plain JSON-safe dict — NEVER an ORM object.
@@ -1212,9 +1936,6 @@ def expire_counter(
 # a commit expires loaded ORM state, so payloads MUST be built from live
 # attributes BEFORE the router's commit. No function here commits.
 # ---------------------------------------------------------------------------
-
-_ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
-
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
     return _aware(dt).isoformat() if dt is not None else None
@@ -1413,7 +2134,11 @@ def counter_takeover(
     station's eligible campaign (lazily evaluated first)."""
     now = datetime.now(UTC)
     campaigns = _evaluated_active_campaigns(db, station, now)
-    campaign = next((c for c in campaigns if c.status == "eligible"), None)
+    # Economic counters only — a military siege is repelled in combat, not via
+    # accept/match/dispute.
+    campaign = next(
+        (c for c in campaigns if c.status == "eligible" and not _is_military(c)), None
+    )
     if campaign is None:
         raise PortOwnershipError(
             400, "No takeover campaign on this station is awaiting a counter"

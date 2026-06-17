@@ -69,6 +69,13 @@ class CounterRequest(BaseModel):
     action: Literal["accept", "match", "dispute"]
 
 
+class MilitaryActionRequest(BaseModel):
+    # Military takeover stage: declare (file intent + 24h notice), siege
+    # (one combat round vs station defenders), or occupy (capture once
+    # defenders are eliminated).
+    action: Literal["declare", "siege", "occupy"]
+
+
 def _get_station_or_404(db: Session, station_id: str) -> Station:
     """Fetch a station by id, turning malformed UUIDs into a 404 instead of
     a DataError that surfaces as a generic 'Database error occurred' 500."""
@@ -352,6 +359,67 @@ async def launch_takeover(
         "message": f"Takeover campaign launched against {station.name}",
         **result,
     }
+
+
+@router.post("/stations/{station_id}/accrue-costs")
+async def accrue_operating_costs(
+    station_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Settle pending operating costs (lazy maintenance accrual) for an owned
+    station and report whether it tipped into insolvency. Maintenance is 1% of
+    acquisition cost / canonical month, pro-rated to whole elapsed days, drawn
+    from the operating fund then the treasury. Three consecutive shortfall
+    months auto-list the station for sale at depreciated value (reusing the
+    listing path). Same lazy-on-read pattern as the listing/takeover engines;
+    a scheduler may call this entry point later (wiring is a follow-up)."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.accrue_operating_costs(db, station)
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return result
+
+
+@router.post("/stations/{station_id}/military")
+async def military_takeover(
+    station_id: str,
+    request: MilitaryActionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Military (combat) takeover path against an owned station:
+    'declare' files intent and starts a 24-canonical-hour galaxy-wide notice;
+    'siege' runs one combat round once the notice elapses, depleting the
+    station's defenders with the attacker's drones; 'occupy' captures the
+    station once defenders reach 0 — the prior owner's treasury is forfeited
+    to the controlling faction (war-tax), the attacker takes a severe
+    reputation penalty, and a 7-day post-capture protection window opens.
+    Stations holding a Military Contract are immune."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        if request.action == "declare":
+            result = port_ownership_service.declare_military_takeover(
+                db, station, current_player
+            )
+        elif request.action == "siege":
+            result = port_ownership_service.siege_military_takeover(
+                db, station, current_player
+            )
+        else:  # occupy
+            result = port_ownership_service.occupy_military_takeover(
+                db, station, current_player
+            )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return result
 
 
 @router.post("/stations/{station_id}/takeover/counter")
