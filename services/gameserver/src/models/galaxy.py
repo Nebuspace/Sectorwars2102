@@ -91,11 +91,12 @@ class Galaxy(Base):
     })
     
     # Configuration
-    expansion_enabled = Column(Boolean, nullable=False, default=True)
+    # NOTE (ADR-0006): expansion_enabled and warp_shifts_enabled dropped. The
+    # galaxy evolves only via region attachment to the Central Nexus; in-place
+    # mutation (warp shifts, edge expansion) is not part of the launch design.
     max_sectors = Column(Integer, nullable=False, default=500)
     resources_regenerate = Column(Boolean, nullable=False, default=True)
-    warp_shifts_enabled = Column(Boolean, nullable=False, default=True)
-    
+
     # Game Rules
     default_turns_per_day = Column(Integer, nullable=False, default=1000)
     combat_penalties = Column(JSONB, nullable=False, default={

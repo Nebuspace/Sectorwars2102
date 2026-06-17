@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 from typing import List, Dict, Optional, Any
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
@@ -95,6 +95,11 @@ class Cluster(Base):
     # Relationships
     region = relationship("Region", back_populates="clusters")
     sectors = relationship("Sector", back_populates="cluster", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        # ADR-0044: cluster names are unique within a region.
+        UniqueConstraint("region_id", "name", name="uq_clusters_region_name"),
+    )
 
     def __repr__(self):
         return f"<Cluster {self.name} ({self.type.name}) - {self.sector_count} sectors>"

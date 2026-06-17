@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Boolean, Column, DateTime, String, ForeignKey, Enum, Index, func
+from sqlalchemy import Boolean, Column, DateTime, String, ForeignKey, Enum, Index, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
@@ -43,6 +43,12 @@ class SpecialFormation(Base):
 
     region_id = Column(UUID(as_uuid=True), ForeignKey("regions.id", ondelete="CASCADE"), nullable=False, index=True)
     type = Column(Enum(SpecialFormationType, name="special_formation_type"), nullable=False)
+
+    # ADR-0044: the formation's discoverable identity (e.g. "Bubble of the Lost
+    # Star"). Previously lived in the properties JSONB; promoted to a first-class
+    # column with a per-region UNIQUE constraint. AI-generated at bang time,
+    # non-null after generation.
+    name = Column(String(100), nullable=True)
 
     # The topologically distinguished sector for the formation: gateway for
     # BUBBLE/DEAD_END_BUBBLE/GOLD_BUBBLE, mouth for TUNNEL, the terminal sector
@@ -88,6 +94,8 @@ class SpecialFormation(Base):
     __table_args__ = (
         Index("ix_special_formations_region_type", "region_id", "type"),
         Index("ix_special_formations_interior_sector_ids", "interior_sector_ids", postgresql_using="gin"),
+        # ADR-0044: formation names are unique within a region.
+        UniqueConstraint("region_id", "name", name="uq_special_formations_region_name"),
     )
 
     def __repr__(self):

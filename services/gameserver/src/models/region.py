@@ -116,7 +116,9 @@ class Region(Base):
     social_hierarchy = Column(JSONB, nullable=False, default=dict)
     
     # Infrastructure
-    nexus_warp_gate_sector = Column(Integer, nullable=True)
+    # ADR-0043: renamed from nexus_warp_gate_sector. The Region<->Nexus link is a
+    # natural (latent) warp in the Frontier outer reaches, not a constructed gate.
+    nexus_warp_sector = Column(Integer, nullable=True)
     total_sectors = Column(Integer, nullable=False, default=500)
     active_players_30d = Column(Integer, nullable=False, default=0)
     total_trade_volume = Column(DECIMAL(20,2), nullable=False, default=0.0)

@@ -715,8 +715,7 @@ class NexusGenerationService:
             WarpTunnelType.QUANTUM: 15,
             WarpTunnelType.ANCIENT: 10,
             WarpTunnelType.ARTIFICIAL: 8,
-            WarpTunnelType.UNSTABLE: 5,
-            WarpTunnelType.ONE_WAY: 2
+            WarpTunnelType.UNSTABLE: 7
         }
 
         choices = []
@@ -733,8 +732,7 @@ class NexusGenerationService:
             WarpTunnelType.STANDARD: random.uniform(0.9, 1.0),
             WarpTunnelType.QUANTUM: random.uniform(0.7, 0.9),
             WarpTunnelType.ANCIENT: random.uniform(0.5, 0.8),
-            WarpTunnelType.UNSTABLE: random.uniform(0.3, 0.6),
-            WarpTunnelType.ONE_WAY: random.uniform(0.7, 0.95)
+            WarpTunnelType.UNSTABLE: random.uniform(0.3, 0.6)
         }
         return stability_map.get(tunnel_type, 0.8)
 
@@ -750,8 +748,7 @@ class NexusGenerationService:
             WarpTunnelType.STANDARD: 1.0,
             WarpTunnelType.QUANTUM: 0.5,  # Faster
             WarpTunnelType.ANCIENT: 0.8,
-            WarpTunnelType.UNSTABLE: 1.5,  # Slower, riskier
-            WarpTunnelType.ONE_WAY: 0.9
+            WarpTunnelType.UNSTABLE: 1.5  # Slower, riskier
         }
 
         adjusted_cost = int(base_cost * multiplier_map.get(tunnel_type, 1.0))

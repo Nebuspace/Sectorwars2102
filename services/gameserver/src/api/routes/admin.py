@@ -989,10 +989,10 @@ async def get_galaxy_info(
             "exploration_percentage": (discovered_sectors / total_sectors * 100) if total_sectors > 0 else 0
         },
         "events": galaxy.events,
-        "expansion_enabled": galaxy.expansion_enabled,
+        # ADR-0006: expansion_enabled / warp_shifts_enabled dropped (galaxy
+        # evolves only via region attachment, not in-place mutation).
         "max_sectors": galaxy.max_sectors,
         "resources_regenerate": galaxy.resources_regenerate,
-        "warp_shifts_enabled": galaxy.warp_shifts_enabled,
         "default_turns_per_day": galaxy.default_turns_per_day,
         "combat_penalties": galaxy.combat_penalties,
         "economic_modifiers": galaxy.economic_modifiers,

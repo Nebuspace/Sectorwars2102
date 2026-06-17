@@ -16,6 +16,9 @@ sector_warps = Table(
     Column('source_sector_id', UUID(as_uuid=True), ForeignKey('sectors.id', ondelete="CASCADE"), primary_key=True),
     Column('destination_sector_id', UUID(as_uuid=True), ForeignKey('sectors.id', ondelete="CASCADE"), primary_key=True),
     Column('is_bidirectional', Boolean, default=True, nullable=False),
+    # ADR-0034: latent one-ways appear bidirectional until a Warp Jumper scan
+    # reveals them. Default false; worldgen flips ~20% of one-ways.
+    Column('is_latent', Boolean, default=False, nullable=False),
     Column('turn_cost', Integer, default=1, nullable=False),
     Column('warp_stability', Float, default=1.0, nullable=False),  # 0.0-1.0, affects reliability
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
