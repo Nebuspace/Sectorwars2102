@@ -44,6 +44,8 @@
     "lint": "eslint src --ext ts,tsx",
     "preview": "vite preview",
     "test:e2e": "node ./scripts/run-tests.js",
-    "test:e2e:ui": "playwright test -c playwright.config.ts --ui"
+    "test:e2e:ui": "playwright test -c playwright.config.ts --ui",
+    "validate-translations": "node ./scripts/validate-translations.js",
+    "extract-strings": "node ./scripts/extract-strings.js"
   }
 }
