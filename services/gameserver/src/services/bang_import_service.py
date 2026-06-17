@@ -230,7 +230,14 @@ class ValidationReport:
 
 @dataclass
 class SectorSpec:
-    sector_id: int
+    sector_id: int  # GLOBAL: shifted by _offset_region_sector_ids
+    # ADR-0005: region-LOCAL number, captured BEFORE the global offset is
+    # applied. _offset_region_sector_ids deliberately never touches this, so it
+    # stays 1..N per region and feeds the compound key + Sector.sector_number.
+    sector_number: int
+    # ADR-0005: marks this region's Capital Sector (welcome hub). True for the
+    # offset-anchor capital (region-local sector 1) unless bang says otherwise.
+    is_capital: bool
     name: str
     region_int_id: int  # bang's int → resolved to UUID via maps in `apply`
     cluster_int_id: int
@@ -328,6 +335,9 @@ class RegionInsertPlan:
     region_type: RegionType
     universe_seed: int
     total_sectors: int
+    # ADR-0005: region-LOCAL number of this region's Capital Sector. Read from
+    # bang's `capitalSector` (default 1 — the offset-anchor capital).
+    capital_sector_number: int
     clusters: List[ClusterSpec]
     sectors: List[SectorSpec]
     warps: List[WarpSpec]
@@ -651,6 +661,9 @@ class BangImportService:
         if offset <= 0:
             return
         for s in plan.sectors:
+            # ADR-0005: shift sector_id (global) ONLY. sector_number stays
+            # region-local and is_capital stays as marked — both must survive
+            # the offset untouched so the compound key remains region-scoped.
             s.sector_id += offset
         for w in plan.warps:
             w.from_sector_int += offset
@@ -1281,7 +1294,10 @@ class BangImportService:
             cluster_uuid = cluster_uuid_by_int[ss.cluster_int_id]
             sector = Sector(
                 sector_id=ss.sector_id,
-                sector_number=ss.sector_id,
+                # ADR-0005: region-LOCAL number (was erroneously the global
+                # sector_id). Drives uq_sectors_region_sector_number.
+                sector_number=ss.sector_number,
+                is_capital=ss.is_capital,
                 name=ss.name,
                 region_id=region_id,
                 cluster_id=cluster_uuid,
@@ -1381,6 +1397,16 @@ class BangImportService:
                 station.id, station.commodities
             ):
                 session.add(market_price)
+
+        # ADR-0005: stamp the region's Capital Sector number (region-local).
+        # Runs in every apply path (full gen, regen, additional region) because
+        # they all route through _apply_region. Default 1 (offset-anchor capital)
+        # when the plan lacks an explicit value.
+        region_row = await session.get(Region, region_id)
+        if region_row is not None:
+            region_row.capital_sector_number = (  # type: ignore[assignment]
+                region_plan.capital_sector_number
+            )
 
         # Gate sector = the lowest-numbered sector in this region's offset
         # range. apply() uses it as the inter-region warp tunnel endpoint.
@@ -1629,6 +1655,12 @@ class BangImportService:
         fedspace_sectors = [int(s) for s in raw.get("fedspaceSectors") or []]
         fedspace_set = set(fedspace_sectors)
 
+        # ADR-0005: region-local Capital Sector number. bang reports it via
+        # `capitalSector` (schema 1.3.4); default to 1 — the offset-anchor
+        # capital — when bang omits the key. This is region-LOCAL: it must be
+        # captured here, BEFORE _offset_region_sector_ids shifts sector_id.
+        capital_sector_number = int(raw.get("capitalSector", 1) or 1)
+
         # Sectors
         sector_specs: List[SectorSpec] = []
         station_specs: List[StationSpec] = []
@@ -1678,9 +1710,21 @@ class BangImportService:
             beacon = sector_payload.get("beacon")
             nav_beacons = [{"text": str(beacon)}] if beacon else []
 
+            # ADR-0005: `sid` here is region-LOCAL (offsetting happens later in
+            # _offset_region_sector_ids and only touches sector_id). Capture it
+            # as sector_number so the region-local number survives the offset.
+            # Capital marker: prefer bang's per-sector `isCapital` (schema
+            # 1.3.4); fall back to "local sector == capital_sector_number" so
+            # exactly the offset-anchor capital is flagged when bang omits it.
+            is_capital = bool(
+                sector_payload.get("isCapital", sid == capital_sector_number)
+            )
+
             sector_specs.append(
                 SectorSpec(
                     sector_id=sid,
+                    sector_number=sid,
+                    is_capital=is_capital,
                     name=sector_name,
                     region_int_id=0,  # filled at apply time via outer region_id
                     cluster_int_id=cluster_spec.cluster_int_id,
@@ -1759,6 +1803,7 @@ class BangImportService:
             region_type=region_type,
             universe_seed=universe.seed,
             total_sectors=universe.total_sectors,
+            capital_sector_number=capital_sector_number,
             clusters=cluster_specs,
             sectors=sector_specs,
             warps=warp_specs,
