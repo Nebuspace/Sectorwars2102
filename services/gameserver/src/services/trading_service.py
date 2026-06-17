@@ -17,6 +17,134 @@ from src.models.market_transaction import MarketPrice
 
 logger = logging.getLogger(__name__)
 
+# ----------------------------------------------------------------------
+# Player-facing price modifiers (ADR-0062 E-D3 canonical stack)
+# ----------------------------------------------------------------------
+# The ratified trade-price stack (sw2102-docs ADR-0062 E-D3 /
+# SYSTEMS/market-pricing.md) is multiplicative, general -> specific:
+#
+#   final_price = station_price
+#     x faction_reputation_multiplier   (0.85 .. 1.50 — Exalted to Public Enemy)
+#     x personal_reputation_multiplier  (0.90 .. 1.20 — Legendary to Villain)
+#     x (1 - rank.trading_bonus / 100)  (handled in the routes via RankingService)
+#     x (1 + region.tax_rate)           (the routes apply the station tax_rate)
+#     x (1 + region.tariff_rate)        (NO-CANON wiring point — see note below)
+#     x (1 + station.price_adjustment_lever)  (same-owner skip per E-F1)
+#
+# This helper covers the two player-relationship layers that were NOT yet
+# wired into the trade path — faction reputation and personal reputation —
+# plus the permanent +10% first-login negotiation bonus
+# (Player.settings.trade_bonus, set by first_login_service per ADR-0026 FL1:
+# "Applied at every port transaction for the lifetime of the character").
+#
+# Rank discount, station tax, tariff, and the station price lever remain the
+# routes' responsibility (rank + tax already live there). Direction: all of
+# these multipliers express "what the player PAYS" — > 1.0 means a worse
+# deal. On a BUY the player pays final_price (multiplier applied as-is); on a
+# SELL the relationship flips (a favoured trader earns MORE), so the route
+# divides the station's buy_price by the player-pays multiplier.
+
+# Faction-reputation TRADE_MODIFIERS mirror faction_service.TRADE_MODIFIERS
+# (kept inline so this sync path needs no async FactionService bridge). Each
+# entry is (min_reputation_value, player_pays_multiplier).
+_FACTION_TRADE_MODIFIERS = [
+    (700, 0.85),   # EXALTED   — 15% better
+    (500, 0.90),   # REVERED
+    (300, 0.95),   # HONORED
+    (100, 0.97),   # FRIENDLY
+    (-99, 1.00),   # NEUTRAL
+    (-299, 1.05),  # UNFRIENDLY
+    (-499, 1.15),  # HOSTILE
+    (-699, 1.30),  # HATED
+]
+_FACTION_TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # <= -700
+
+# Personal-reputation tier multipliers. ADR-0062 E-D3 fixes the endpoints
+# (0.90 Legendary .. 1.20 Villain) but not the per-tier steps; the 8 tiers in
+# personal_reputation_service.REPUTATION_TIERS are mapped linearly across that
+# band. This is the documented assumption (NO-CANON on the intermediate
+# steps); the endpoints match canon exactly.
+_PERSONAL_REP_TIER_MULTIPLIERS = {
+    "Legendary": 0.90,
+    "Heroic": 0.95,
+    "Lawful": 0.97,
+    "Neutral": 1.00,
+    "Suspicious": 1.05,
+    "Outlaw": 1.10,
+    "Criminal": 1.15,
+    "Villain": 1.20,
+}
+
+
+def compute_player_price_multiplier(db: Session, player, station) -> float:
+    """Return the canonical player-pays price multiplier for a trade.
+
+    Composes (multiplicatively) the faction-reputation modifier, the
+    personal-reputation modifier, and the permanent first-login trade bonus.
+    The result is "what the player pays" relative to the station price: a
+    value < 1.0 is a discount (good standing), > 1.0 a surcharge.
+
+    Buy path: effective_buy = station_sell_price * multiplier.
+    Sell path: effective_sell = station_buy_price / multiplier (the
+    relationship flips — a favoured trader is paid MORE).
+
+    Fully defensive: any lookup failure degrades to a 1.0 (neutral) factor so
+    a reputation hiccup never blocks or mis-prices a trade beyond neutral.
+    """
+    multiplier = 1.0
+
+    # --- Faction reputation (station's controlling faction) ---------------
+    try:
+        faction_name = getattr(station, "faction_affiliation", None)
+        if faction_name:
+            from src.models.faction import Faction
+            from src.models.reputation import Reputation
+            faction = (
+                db.query(Faction).filter(Faction.name == faction_name).first()
+            )
+            if faction is not None:
+                rep = (
+                    db.query(Reputation)
+                    .filter(
+                        Reputation.player_id == player.id,
+                        Reputation.faction_id == faction.id,
+                    )
+                    .first()
+                )
+                if rep is not None:
+                    value = rep.current_value
+                    faction_mult = _FACTION_TRADE_MODIFIER_PUBLIC_ENEMY
+                    for threshold, mod in _FACTION_TRADE_MODIFIERS:
+                        if value >= threshold:
+                            faction_mult = mod
+                            break
+                    multiplier *= faction_mult
+    except Exception:
+        logger.warning("faction-rep price modifier failed; using neutral", exc_info=True)
+
+    # --- Personal reputation (legality posture) ---------------------------
+    try:
+        tier = getattr(player, "reputation_tier", None) or "Neutral"
+        personal_mult = _PERSONAL_REP_TIER_MULTIPLIERS.get(tier, 1.0)
+        multiplier *= personal_mult
+    except Exception:
+        logger.warning("personal-rep price modifier failed; using neutral", exc_info=True)
+
+    # --- First-login negotiation bonus (permanent +10% trade bonus) -------
+    # Player.settings.trade_bonus = 0.1 when first-login negotiation was
+    # strong (ADR-0026 FL1). It is a player-favouring bonus, so it lowers the
+    # player-pays multiplier (and is divided back out on sells, raising the
+    # payout — symmetric with the rep layers).
+    try:
+        settings = getattr(player, "settings", None) or {}
+        trade_bonus = float(settings.get("trade_bonus", 0.0) or 0.0)
+        if trade_bonus > 0.0:
+            multiplier *= (1.0 - trade_bonus)
+    except Exception:
+        logger.warning("first-login trade bonus lookup failed; ignoring", exc_info=True)
+
+    return multiplier
+
 # Spec-defined price ranges per commodity (from Resources.aispec;
 # precious_metals per sw2102-docs ADR-0062 E-D1: 80-180 cr/unit, slotted
 # between equipment and exotic_technology)
@@ -151,6 +279,17 @@ class TradingService:
             and not commodity.get("buys")
         ):
             raw_price *= CLASS_9_SELL_PREMIUM
+        elif station_class == StationClass.CLASS_11:
+            # Class 11 "Premium Tech Specialist" charges +25% in BOTH directions
+            # on its two premium commodities (exotic_technology, luxury_goods).
+            # Its commodities carry BOTH trade flags, so use a NON-exclusive gate
+            # (the 8/9 exclusive gate would suppress it). Single source of truth:
+            # station_class_map.get_class_premium.
+            from src.core.station_class_map import get_class_premium
+            if transaction_type == "buy" and commodity.get("buys"):
+                raw_price *= get_class_premium(StationClass.CLASS_11, "buy")
+            elif transaction_type == "sell" and commodity.get("sells"):
+                raw_price *= get_class_premium(StationClass.CLASS_11, "sell")
 
         # Clamp to spec ranges
         price_range = COMMODITY_PRICE_RANGES.get(commodity_name)

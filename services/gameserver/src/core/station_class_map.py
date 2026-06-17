@@ -25,9 +25,18 @@ from src.models.station import StationClass
 
 #: What each station class buys/sells. Lifted verbatim from
 #: ``Station.get_trading_pattern``. Note that some entries reference
-#: commodities that are not on the 9-commodity wire (``special_goods``,
-#: ``advanced_components``); those are silently skipped by the flag pass,
-#: matching the legacy behaviour.
+#: commodities that are not on the 9-commodity wire (``special_goods``);
+#: those are silently skipped by the flag pass, matching the legacy
+#: behaviour.
+#:
+#: Class 11 (Premium Tech Specialist) per
+#: ``FEATURES/economy/trading.md#class-11-premium-tech-specialist``: it BUYS
+#: AND SELLS only ``exotic_technology`` and ``luxury_goods`` (premium prices
+#: both directions — the +25% multiplier itself lives in
+#: ``services/trading_service.py``). The legacy ``advanced_components``
+#: commodity is not in ``COMMODITY_PRICE_RANGES`` and is dropped from the
+#: catalog, so the previous ``sells: [advanced_components]`` was inert (a
+#: Class 11 station could buy exotic_technology but had nothing to sell).
 CLASS_TRADE_PATTERNS: Dict[StationClass, Dict[str, List[str]]] = {
     StationClass.CLASS_0: {"buys": ["special_goods"], "sells": ["special_goods", "colonists"]},
     StationClass.CLASS_1: {"buys": ["ore"], "sells": ["organics", "equipment"]},
@@ -40,8 +49,43 @@ CLASS_TRADE_PATTERNS: Dict[StationClass, Dict[str, List[str]]] = {
     StationClass.CLASS_8: {"buys": ["ore", "organics", "equipment", "fuel"], "sells": []},
     StationClass.CLASS_9: {"buys": [], "sells": ["ore", "organics", "equipment", "fuel"]},
     StationClass.CLASS_10: {"buys": ["gourmet_food"], "sells": ["luxury_goods", "exotic_technology"]},
-    StationClass.CLASS_11: {"buys": ["exotic_technology"], "sells": ["advanced_components"]},
+    StationClass.CLASS_11: {
+        "buys": ["exotic_technology", "luxury_goods"],
+        "sells": ["exotic_technology", "luxury_goods"],
+    },
 }
+
+#: Class-level transaction premium multipliers applied AFTER the supply/demand
+#: spread, before the canon price clamp (see
+#: ``services/trading_service.py:calculate_dynamic_price``). Source of truth
+#: for the canon design targets in ``FEATURES/economy/trading.md``:
+#:   - Class 8 (Black Hole): buys at +20% (pays players more)
+#:   - Class 9 (Nova): sells at +25% (charges players more)
+#:   - Class 11 (Premium Tech Specialist): buys AND sells at +25%, both
+#:     directions, on its two commodities (exotic_technology, luxury_goods).
+#: Keys are (station_class, transaction_type) where transaction_type is
+#: "buy" (station buys from player) or "sell" (station sells to player).
+CLASS_PREMIUM_MULTIPLIERS: Dict["tuple[StationClass, str]", float] = {
+    (StationClass.CLASS_8, "buy"): 1.20,
+    (StationClass.CLASS_9, "sell"): 1.25,
+    (StationClass.CLASS_11, "buy"): 1.25,
+    (StationClass.CLASS_11, "sell"): 1.25,
+}
+
+
+def get_class_premium(station_class: StationClass, transaction_type: str) -> float:
+    """Return the station-class price premium multiplier for a transaction.
+
+    ``transaction_type`` is ``"buy"`` (station buys from player) or
+    ``"sell"`` (station sells to player). Returns ``1.0`` (no premium) for
+    any class/direction not in :data:`CLASS_PREMIUM_MULTIPLIERS`.
+
+    Unlike the one-directional Class 8/9 patterns, Class 11 buys AND sells
+    the same two commodities, so callers must NOT gate the premium on an
+    EXCLUSIVE trade flag (``buys and not sells``) for Class 11 — gate on the
+    presence of the matching flag for the transaction direction instead.
+    """
+    return CLASS_PREMIUM_MULTIPLIERS.get((station_class, transaction_type), 1.0)
 
 
 def get_class_pattern(station_class: StationClass) -> Dict[str, List[str]]:

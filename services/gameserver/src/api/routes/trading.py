@@ -15,7 +15,7 @@ from src.models.sector import Sector
 from src.models.ship import Ship, ShipStatus
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
 from src.models.market_transaction import MarketTransaction, MarketPrice, TransactionType
-from src.services.trading_service import TradingService
+from src.services.trading_service import TradingService, compute_player_price_multiplier
 from src.services.ranking_service import RankingService
 from src.services.medal_service import MedalService
 from src.services import docking_service
@@ -171,6 +171,13 @@ async def buy_resource(
     bonuses = RankingService.get_rank_bonuses(current_player.military_rank)
     discount_pct = bonuses["trading_discount_percent"] / 100.0
     discounted_price = market_price.sell_price * (1 - discount_pct)
+    # ADR-0062 E-D3 player-relationship layers: faction reputation, personal
+    # reputation, and the permanent first-login +10% trade bonus. The helper
+    # returns a "player-pays" multiplier (< 1.0 = better deal); on a BUY the
+    # player pays it directly. Defensive — degrades to neutral (1.0) on any
+    # lookup failure, so it can never block a trade.
+    price_multiplier = compute_player_price_multiplier(db, current_player, station)
+    discounted_price *= price_multiplier
     effective_buy_price = max(1, int(discounted_price))  # Floor at 1 credit
 
     # Calculate total cost
@@ -428,6 +435,13 @@ async def sell_resource(
     bonuses = RankingService.get_rank_bonuses(current_player.military_rank)
     bonus_pct = bonuses["trading_discount_percent"] / 100.0
     boosted_price = market_price.buy_price * (1 + bonus_pct)
+    # ADR-0062 E-D3 player-relationship layers (see buy path). The helper's
+    # "player-pays" multiplier flips direction on a SELL: a favoured trader
+    # (multiplier < 1.0) is paid MORE, so we divide. Defensive — degrades to
+    # neutral (1.0) on any failure.
+    price_multiplier = compute_player_price_multiplier(db, current_player, station)
+    if price_multiplier > 0:
+        boosted_price /= price_multiplier
     effective_sell_price = max(1, int(boosted_price))
 
     # Calculate total earnings (gross, before station trade tax)

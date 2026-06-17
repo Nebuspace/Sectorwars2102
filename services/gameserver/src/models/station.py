@@ -36,7 +36,7 @@ class StationClass(enum.Enum):
     CLASS_8 = 8   # Black Hole (Premium Buyer)
     CLASS_9 = 9   # Nova (Premium Seller)
     CLASS_10 = 10 # Luxury Market
-    CLASS_11 = 11 # Advanced Tech Hub
+    CLASS_11 = 11 # Premium Tech Specialist (buys+sells exotic_technology & luxury_goods, +25% both directions)
 
 class StationType(enum.Enum):
     TRADING = "TRADING"          # Commercial hub, good prices
