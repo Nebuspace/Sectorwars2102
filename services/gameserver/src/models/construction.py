@@ -64,6 +64,10 @@ class ConstructionReservation(Base):
     # cumulative ATOMIC, IRREVERSIBLE deliveries against it (ADR-0039).
     resources_required = Column(JSONB, nullable=False, default=dict)
     resources_delivered = Column(JSONB, nullable=False, default=dict)
+    # Construction-event log + player-actionable pending events (ADR-0062 Phase 2
+    # construction-event RNG). Append-only history + a queue awaiting a decision.
+    construction_events = Column(JSONB, nullable=False, default=list)
+    pending_events = Column(JSONB, nullable=False, default=list)
 
     # Warp Jumper consumes a Tier-A SPECIALIZED slip; everything else uses
     # the standard construction pool.

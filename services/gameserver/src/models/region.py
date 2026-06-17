@@ -120,6 +120,10 @@ class Region(Base):
     total_sectors = Column(Integer, nullable=False, default=500)
     active_players_30d = Column(Integer, nullable=False, default=0)
     total_trade_volume = Column(DECIMAL(20,2), nullable=False, default=0.0)
+    # Region treasury (Phase 2): funds region-funded TradeDock construction and
+    # receives the region share of port revenue. Integer credits, matching
+    # Station.treasury_balance.
+    treasury_balance = Column(Integer, nullable=False, default=0, server_default="0")
     
     # Relationships
     owner = relationship("User", back_populates="owned_regions")
