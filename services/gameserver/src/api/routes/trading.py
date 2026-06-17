@@ -259,6 +259,15 @@ async def buy_resource(
         )
         db.add(transaction)
 
+        # Peaceful reputation gain (REPUTATION_TRIGGERS 'complete_trade', +1):
+        # legitimate trade nudges Federation standing. Defensive — a reputation
+        # hiccup must never fail the trade itself.
+        try:
+            from src.services.personal_reputation_service import PersonalReputationService
+            PersonalReputationService(db).adjust_reputation(current_player.id, 1, "complete_trade")
+        except Exception:
+            logger.warning("complete_trade reputation nudge failed (buy)", exc_info=True)
+
         # Award rank points for trading volume
         rank_awarded = None
         try:
@@ -488,6 +497,15 @@ async def sell_resource(
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
+
+        # Peaceful reputation gain (REPUTATION_TRIGGERS 'complete_trade', +1):
+        # legitimate trade nudges Federation standing. Defensive — a reputation
+        # hiccup must never fail the trade itself.
+        try:
+            from src.services.personal_reputation_service import PersonalReputationService
+            PersonalReputationService(db).adjust_reputation(current_player.id, 1, "complete_trade")
+        except Exception:
+            logger.warning("complete_trade reputation nudge failed (sell)", exc_info=True)
 
         # Award rank points for trading volume
         rank_awarded = None

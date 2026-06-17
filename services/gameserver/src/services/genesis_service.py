@@ -542,6 +542,16 @@ class GenesisService:
             planet.formation_complete_at = now
             planet.defense_turrets = 4
             planet.defense_shields = 1
+            # Register the 4 seeded turrets in the citadel defense-buildings store
+            # (Phase 1 / audit fix): previously they lived only in the flat
+            # defense_turrets column and never counted as a turret_network in
+            # citadel_service. Mirror the JSONB dict-reassign pattern.
+            ev = planet.active_events if isinstance(planet.active_events, dict) else {}
+            ev = dict(ev)
+            buildings = dict(ev.get("defense_buildings", {}))
+            buildings["turret_network"] = buildings.get("turret_network", 0) + 4
+            ev["defense_buildings"] = buildings
+            planet.active_events = ev
             logger.info(
                 f"Advanced genesis: Colony Ship '{sacrifice_info['ship_name']}' sacrificed; "
                 f"instant Settlement colony on planet {planet.id} by player {player_id}"
