@@ -14,7 +14,7 @@ from src.models.ship import Ship, ShipStatus, ShipType, ShipSpecification
 from src.models.sector import Sector
 from src.models.combat import CombatType, CombatResult
 from src.models.combat_log import CombatLog, CombatOutcome
-from src.models.drone import Drone, DroneDeployment
+from src.models.drone import Drone, DroneDeployment, DroneStatus
 from src.models.planet import Planet
 from src.models.region import RegionType
 from src.models.station import Station
@@ -620,52 +620,72 @@ class CombatService:
         return result_dict
 
     def attack_sector_drones(self, attacker_id: uuid.UUID, sector_id: int) -> Dict[str, Any]:
-        """Attack drones deployed in a sector."""
-        # Get attacker
-        attacker = self.db.query(Player).filter(Player.id == attacker_id).first()
+        """Attack the hostile drones deployed in the player's current sector.
+
+        A 2-turn PvE engagement: the player's ship fights the live Drone rows
+        deployed in the sector (Drone.sector_id == sector UUID, status DEPLOYED
+        or DAMAGED) that the attacker does NOT own. Each drone is resolved
+        against its real per-drone stats (health / attack_power / defense_power)
+        via Drone.take_damage. Clearing all hostile drones awards the canon
+        destroy_pirate_drones reputation bonus (+10).
+
+        The legacy aggregate-count drone path (sector.drones_present /
+        DroneDeployment.drone_count) referenced columns that do not exist on the
+        live schema, so this works directly against the real per-drone model.
+        """
+        # Lock the attacker row to prevent concurrent turn-deduction races
+        # (mirrors attack_player / attack_planet).
+        attacker = self.db.query(Player).filter(
+            Player.id == attacker_id
+        ).with_for_update().first()
         if not attacker:
             return {"success": False, "message": "Player not found"}
-        
+
         # Check if attacker has an active ship
         if not attacker.current_ship:
             return {"success": False, "message": "No active ship selected"}
-        
+
         # Check if player is in the target sector
         if attacker.current_sector_id != sector_id:
             return {"success": False, "message": "You must be in the sector to attack its drones"}
-        
-        # Get sector
-        sector = self.db.query(Sector).filter(Sector.sector_id == sector_id).first()
-        if not sector:
-            return {"success": False, "message": "Sector not found"}
-        
-        # Check if there are drones to attack
-        if sector.drones_present <= 0:
-            return {"success": False, "message": "No drones present in this sector"}
-        
-        # Check if attacker has enough turns
-        turn_cost = 2  # Base cost for drone combat
-        if attacker.turns < turn_cost:
-            return {"success": False, "message": "Not enough turns to attack sector drones"}
-        
+
         # Check if player is docked or landed
         if attacker.is_docked or attacker.is_landed:
             return {"success": False, "message": "Cannot attack while docked at a port or landed on a planet"}
-        
-        # Get drone deployments in this sector
-        deployments = self.db.query(DroneDeployment).filter(
-            DroneDeployment.sector_id == sector_id,
-            DroneDeployment.is_active == True
-        ).all()
-        
-        if not deployments:
-            return {"success": False, "message": "No active drone deployments found in this sector"}
-        
-        # Snapshot starting drone totals before combat mutates deployments
-        starting_sector_drones = sum(d.drone_count for d in deployments)
 
-        # Resolve combat against drones
-        combat_result = self._resolve_drone_combat(attacker, sector, deployments)
+        # Get sector (sector_id is the human-readable number; Drone.sector_id is
+        # the sector's UUID, so we resolve through the Sector row)
+        sector = self.db.query(Sector).filter(Sector.sector_id == sector_id).first()
+        if not sector:
+            return {"success": False, "message": "Sector not found"}
+
+        # Find the live hostile drones deployed in this sector. Exclude the
+        # attacker's own drones (you cannot attack your own deployment) and any
+        # already-destroyed/returning drones. Lock the rows so a concurrent
+        # attack or recall cannot double-resolve the same drones.
+        target_drones = self.db.query(Drone).filter(
+            Drone.sector_id == sector.id,
+            Drone.player_id != attacker_id,
+            Drone.status.in_([DroneStatus.DEPLOYED.value, DroneStatus.DAMAGED.value]),
+            Drone.health > 0,
+        ).with_for_update().all()
+
+        if not target_drones:
+            return {"success": False, "message": "No hostile drones present in this sector"}
+
+        # Check if attacker has enough turns (canon 2-turn drone engagement)
+        turn_cost = 2
+        if attacker.turns < turn_cost:
+            return {
+                "success": False,
+                "message": f"Not enough turns to attack sector drones (need {turn_cost})",
+            }
+
+        # Snapshot starting drone total before combat mutates the rows
+        starting_drone_count = len(target_drones)
+
+        # Resolve combat against the real drone rows
+        combat_result = self._resolve_sector_drone_combat(attacker, sector, target_drones)
 
         # Consume turns
         spend_turns(attacker, turn_cost)
@@ -681,58 +701,71 @@ class CombatService:
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
             attacker_ship_type=attacker_ship.type.value if attacker_ship else None,
-            defender_id=None,  # No specific defender for sector drones
+            defender_id=None,  # No single owning player for sector drones
             rounds=combat_result["rounds"],
             attacker_drones=attacker.defense_drones,
-            defender_drones=starting_sector_drones,
+            defender_drones=starting_drone_count,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
+            attacker_damage_dealt=combat_result["attacker_damage_dealt"],
+            defender_damage_dealt=combat_result["defender_damage_dealt"],
             combat_log=json.dumps(combat_result["combat_details"]),
             ended_at=datetime.now()
         )
-        
+
         self.db.add(combat_log)
-        
-        # Apply combat effects
+
+        # Apply combat effects to the attacker's ship
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "drone_combat")
-        
-        # Update drone counts
+
+        # Update attacker's carried drone count if any were lost
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
-        
-        # Update deployments and sector drone count
-        new_sector_drone_count = 0
-        for deployment_update in combat_result["deployment_updates"]:
-            deployment_id = deployment_update["deployment_id"]
-            drones_lost = deployment_update["drones_lost"]
-            
-            deployment = next((d for d in deployments if str(d.id) == deployment_id), None)
-            if deployment:
-                deployment.drones_lost += drones_lost
-                deployment.drone_count = max(0, deployment.drone_count - drones_lost)
-                deployment.last_combat = datetime.now()
-                
-                # If all drones are lost, deactivate the deployment
-                if deployment.drone_count <= 0:
-                    deployment.is_active = False
-                else:
-                    new_sector_drone_count += deployment.drone_count
-        
-        # Update sector drone count
-        sector.drones_present = new_sector_drone_count
+            attacker.defense_drones = max(
+                0, attacker.defense_drones - combat_result["attacker_drones_lost"]
+            )
+
+        # Deactivate the matching deployment records for fully-destroyed drones
+        # so the sector control bookkeeping stays consistent.
+        destroyed_drone_ids = combat_result["destroyed_drone_ids"]
+        drones_remaining = starting_drone_count - len(destroyed_drone_ids)
+        if destroyed_drone_ids:
+            self.db.query(DroneDeployment).filter(
+                DroneDeployment.drone_id.in_(destroyed_drone_ids),
+                DroneDeployment.is_active == True
+            ).update(
+                {
+                    DroneDeployment.is_active: False,
+                    DroneDeployment.recalled_at: datetime.utcnow(),
+                },
+                synchronize_session=False,
+            )
+
+        # Award the canon destroy_pirate_drones reputation bonus when the sector
+        # is cleared of hostile drones. Defensive: a reputation hiccup must
+        # never fail the combat resolution (mirrors the other rep hooks).
+        if combat_result["result"] == CombatResult.ATTACKER_VICTORY and destroyed_drone_ids:
+            try:
+                from src.services.personal_reputation_service import PersonalReputationService
+                PersonalReputationService(self.db).adjust_reputation(
+                    attacker.id, 10, "destroy_pirate_drones"
+                )
+            except Exception as e:
+                logger.error("Failed destroy_pirate_drones reputation hook: %s", e)
+
+        # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
-        
+
         # Commit changes
         self.db.commit()
-        
+
         return {
             "success": True,
             "message": combat_result["message"],
             "combat_result": combat_result["result"].name,
             "combat_details": combat_result["combat_details"],
             "drones_destroyed": combat_result["defender_drones_lost"],
-            "drones_remaining": new_sector_drone_count,
+            "drones_remaining": drones_remaining,
             "turns_consumed": turn_cost,
             "turns_remaining": attacker.turns,
             "combat_log_id": str(combat_log.id)
@@ -2025,7 +2058,190 @@ class CombatService:
             "deployment_updates": deployment_updates,
             "combat_details": combat_details
         }
-    
+
+    def _resolve_sector_drone_combat(
+        self, attacker: Player, sector: Sector, target_drones: List[Drone]
+    ) -> Dict[str, Any]:
+        """Resolve combat between a player's ship and the live hostile Drone
+        rows deployed in a sector.
+
+        Operates on the real per-drone model: each Drone carries its own
+        health / attack_power / defense_power, and Drone.take_damage tracks
+        damage and flips status to DESTROYED at 0 HP. The attacker's ship
+        attack power comes from the shared _calculate_attack_power helper; the
+        ship's hull is read/mutated through the same combat JSONB shape the
+        ship-vs-ship resolver uses.
+        """
+        attacker_ship = attacker.current_ship
+        attacker_carried_drones = attacker.defense_drones
+
+        # Attacker firepower per round (shared helper — ship type + bonuses +
+        # carried drones + maintenance multiplier)
+        attacker_attack = self._calculate_attack_power(attacker_ship, attacker_carried_drones)
+
+        # Seed/read the attacker ship's canonical combat state (shields,
+        # max_shields, hull, max_hull from its ShipSpecification) — the same
+        # path the ship-vs-ship resolver uses, so a ship without persisted
+        # hull/shields gets its real spec values rather than a flat default.
+        # _apply_weapon_damage mutates this dict in place; we flag_modified
+        # the Ship.combat JSONB after the battle.
+        attacker_combat = self._ensure_combat_state(attacker_ship)
+
+        # Drone return-fire is routed through the canonical damage stack
+        # (shields absorb first, residual bleeds to hull). Drones are not ships
+        # and have no SHIP_DEFAULT_WEAPONS entry, so they fire a neutral kinetic
+        # profile (laser: shields 0.8 / hull 1.0), mirroring the default ship
+        # weapon rather than inventing drone-specific weapon constants.
+        drone_weapon = self.WEAPON_TYPES["laser"]
+
+        round_number = 0
+        attacker_drones_lost = 0
+        defender_drones_lost = 0
+        attacker_damage_dealt = 0
+        defender_damage_dealt = 0
+        attacker_ship_destroyed = False
+        destroyed_drone_ids: List[uuid.UUID] = []
+        combat_details = []
+
+        # Live working set of drones still fighting
+        live_drones = list(target_drones)
+
+        combat_details.append({
+            "round": 0,
+            "action": "engagement_start",
+            "message": (
+                f"{attacker.username} engages {len(live_drones)} hostile drone(s) "
+                f"in Sector {sector.sector_id}"
+            ),
+        })
+
+        # Combat continues until one side is defeated or the round cap is hit
+        while not attacker_ship_destroyed and live_drones and round_number < 8:
+            round_number += 1
+
+            combat_details.append({
+                "round": round_number,
+                "message": f"Combat Round {round_number}",
+            })
+
+            # --- Attacker's turn: damage spread across one target drone ---
+            # The attacker focuses fire on the first live drone each round,
+            # applying ship attack power reduced by that drone's defense.
+            target = live_drones[0]
+            drone_defense = max(0, target.defense_power or 0)
+            damage = max(1, int(attacker_attack) - drone_defense)
+            attacker_damage_dealt += damage
+            destroyed = target.take_damage(damage)
+            if destroyed:
+                defender_drones_lost += 1
+                destroyed_drone_ids.append(target.id)
+                live_drones.remove(target)
+                combat_details.append({
+                    "round": round_number,
+                    "actor": "attacker",
+                    "action": "drone_destroyed",
+                    "message": (
+                        f"{attacker.username}'s ship destroyed a hostile drone "
+                        f"({target.drone_type}) for {damage} damage"
+                    ),
+                })
+            else:
+                combat_details.append({
+                    "round": round_number,
+                    "actor": "attacker",
+                    "action": "drone_attack",
+                    "message": (
+                        f"{attacker.username}'s ship hit a hostile drone "
+                        f"({target.drone_type}) for {damage} damage "
+                        f"({target.health}/{target.max_health} HP remaining)"
+                    ),
+                })
+
+            # Combat over if all drones cleared this round
+            if not live_drones:
+                break
+
+            # --- Defenders' turn: surviving drones return fire on the ship ---
+            # Aggregate raw drone damage this round (each drone's own
+            # attack_power, lightly randomised — no invented base numbers),
+            # then route it through the canonical shields-first damage stack so
+            # a shielded ship is protected exactly as in ship-vs-ship combat.
+            round_drone_damage = 0
+            for drone in live_drones:
+                base = max(1, drone.attack_power or 0)
+                hit = random.randint(max(1, base // 2), base)
+                round_drone_damage += hit
+
+            defender_damage_dealt += round_drone_damage
+            hit_result = self._apply_weapon_damage(
+                round_drone_damage, drone_weapon, attacker_combat
+            )
+
+            if hit_result["destroyed"]:
+                attacker_ship_destroyed = True
+                combat_details.append({
+                    "round": round_number,
+                    "actor": "defender",
+                    "action": "ship_destroyed",
+                    "message": (
+                        f"Hostile drones dealt {round_drone_damage} damage "
+                        f"({hit_result['shield_damage']} to shields, "
+                        f"{hit_result['hull_damage']} to hull) and destroyed "
+                        f"{attacker.username}'s ship, forcing ejection"
+                    ),
+                })
+            else:
+                combat_details.append({
+                    "round": round_number,
+                    "actor": "defender",
+                    "action": "ship_attack",
+                    "message": (
+                        f"Hostile drones hit {attacker.username}'s ship for "
+                        f"{round_drone_damage} damage "
+                        f"({hit_result['shields_remaining']} shields / "
+                        f"{hit_result['hull_remaining']} hull remaining)"
+                    ),
+                })
+
+        # Persist the shield/hull depletion back to the ship combat JSONB so
+        # damage carries between engagements (only when the ship survived —
+        # destruction is handled by the caller via _handle_ship_destruction).
+        # _apply_weapon_damage mutated attacker_combat (== attacker_ship.combat)
+        # in place; flag_modified ensures the JSONB write is persisted.
+        if attacker_ship and not attacker_ship_destroyed:
+            flag_modified(attacker_ship, "combat")
+
+        # Determine result
+        if attacker_ship_destroyed:
+            result = CombatResult.DEFENDER_VICTORY
+            message = f"Sector drones defeated {attacker.username}"
+        elif not live_drones:
+            result = CombatResult.ATTACKER_VICTORY
+            message = f"{attacker.username} destroyed all hostile drones in the sector"
+        else:
+            result = CombatResult.DRAW
+            message = "Combat ended in a stalemate — surviving drones remain"
+
+        combat_details.append({
+            "round": round_number,
+            "action": "combat_end",
+            "result": result.name,
+            "message": message,
+        })
+
+        return {
+            "result": result,
+            "message": message,
+            "rounds": round_number,
+            "attacker_drones_lost": attacker_drones_lost,
+            "defender_drones_lost": defender_drones_lost,
+            "attacker_damage_dealt": attacker_damage_dealt,
+            "defender_damage_dealt": defender_damage_dealt,
+            "attacker_ship_destroyed": attacker_ship_destroyed,
+            "destroyed_drone_ids": destroyed_drone_ids,
+            "combat_details": combat_details,
+        }
+
     def _resolve_planet_combat(self, attacker: Player, planet: Planet,
                               planet_owner: Optional[Player]) -> Dict[str, Any]:
         """Resolve combat between a ship and a planet."""

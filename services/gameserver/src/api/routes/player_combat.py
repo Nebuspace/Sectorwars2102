@@ -355,6 +355,61 @@ async def assault_planet(
     )
 
 
+# --- Sector Drone Combat (clear hostile drones) ---
+
+class SectorDroneAttackResponse(BaseModel):
+    """Response from a sector-drone engagement."""
+    success: bool
+    message: str
+    combatResult: Optional[str] = None
+    combatDetails: Optional[list] = None
+    dronesDestroyed: Optional[int] = None
+    dronesRemaining: Optional[int] = None
+    turnsConsumed: Optional[int] = None
+    turnsRemaining: Optional[int] = None
+    combatLogId: Optional[str] = None
+
+
+@router.post("/attack-sector-drones", response_model=SectorDroneAttackResponse)
+async def attack_sector_drones(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """
+    Attack the hostile drones deployed in your current sector.
+
+    A 2-turn PvE engagement: your ship fights every live drone deployed in the
+    sector that you do not own. Drones are destroyed per their own combat stats
+    and your ship takes hull damage in return. Requires an active ship, being
+    undocked and not landed, and at least one hostile drone in the sector.
+
+    Clearing the sector of hostile drones awards +10 personal reputation
+    (destroy_pirate_drones). Turn cost and combat resolution are charged inside
+    CombatService.attack_sector_drones, which locks the attacker row.
+    """
+    if player.current_sector_id is None:
+        raise HTTPException(status_code=400, detail="You are not in a sector")
+
+    result = CombatService(db).attack_sector_drones(
+        attacker_id=player.id, sector_id=player.current_sector_id
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Drone attack failed"))
+
+    return SectorDroneAttackResponse(
+        success=True,
+        message=result["message"],
+        combatResult=result.get("combat_result"),
+        combatDetails=result.get("combat_details"),
+        dronesDestroyed=result.get("drones_destroyed"),
+        dronesRemaining=result.get("drones_remaining"),
+        turnsConsumed=result.get("turns_consumed"),
+        turnsRemaining=result.get("turns_remaining"),
+        combatLogId=result.get("combat_log_id"),
+    )
+
+
 # --- Sector Retreat (flee current sector) ---
 
 class SectorRetreatResponse(BaseModel):
