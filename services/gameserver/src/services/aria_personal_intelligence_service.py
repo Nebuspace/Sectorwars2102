@@ -1501,7 +1501,85 @@ class ARIAPersonalIntelligenceService:
             "memory_counts": memory_counts,
         }
 
+    async def _resolve_player_language(
+        self, player_id: str, db: AsyncSession
+    ) -> str:
+        """
+        Resolve a player's preferred language code via an async lookup against
+        the user-language-preference table. Defensive: returns "en" on any
+        miss or error. Kept here (async) so we never mix ARIA's AsyncSession
+        with the sync TranslationService session.
+        """
+        try:
+            from src.models.player import Player
+            from src.models.translation import UserLanguagePreference, Language
+
+            stmt = (
+                select(Language.code)
+                .select_from(Player)
+                .join(UserLanguagePreference, UserLanguagePreference.user_id == Player.user_id)
+                .join(Language, Language.id == UserLanguagePreference.language_id)
+                .where(Player.id == player_id)
+            )
+            result = await db.execute(stmt)
+            code = result.scalar_one_or_none()
+            return code or "en"
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve language for player %s: %s", player_id, e
+            )
+            return "en"
+
+    async def _localize_recommendations(
+        self, player_id: str, recommendations: List[str], db: AsyncSession
+    ) -> List[str]:
+        """
+        Translate ARIA recommendation strings into the player's preferred
+        language. Fully defensive: any failure (or an English preference)
+        yields the original English recommendations unchanged.
+        """
+        if not recommendations:
+            return recommendations
+        try:
+            target_language = await self._resolve_player_language(player_id, db)
+            if not target_language or target_language.split("-")[0].lower() == "en":
+                return recommendations
+
+            from src.services.multilingual_ai_service import MultilingualAIService
+            from src.services.ai_dialogue_service import AIDialogueService
+            from src.services.translation_service import TranslationService
+
+            ai_service = AIDialogueService()
+            if not ai_service.is_available():
+                return recommendations
+
+            # translate_text() needs no DB; translation_service is only held as
+            # a collaborator and unused on this path, so a None session is safe.
+            multilingual = MultilingualAIService(None, ai_service, TranslationService(None))
+
+            localized: List[str] = []
+            for rec in recommendations:
+                localized.append(await multilingual.translate_text(rec, target_language))
+            return localized
+        except Exception as e:
+            logger.warning(
+                "Failed to localize ARIA recommendations for player %s: %s",
+                player_id, e,
+            )
+            return recommendations
+
     async def get_gameplay_recommendations(
+        self, player_id: str, db: AsyncSession
+    ) -> List[str]:
+        """
+        Public entry point: build rule-based gameplay recommendations and then
+        localize them into the player's preferred language (defensive — falls
+        back to English on any translation failure).
+        """
+        recommendations = await self._build_gameplay_recommendations(player_id, db)
+        return await self._localize_recommendations(player_id, recommendations, db)
+
+    async def _build_gameplay_recommendations(
         self, player_id: str, db: AsyncSession
     ) -> List[str]:
         """
@@ -1511,7 +1589,7 @@ class ARIAPersonalIntelligenceService:
         Lower levels produce generic tips.  Higher levels incorporate the
         player's own memory history to offer contextualised strategic advice.
 
-        Returns a list of 1-3 recommendation strings.
+        Returns a list of 1-3 recommendation strings (in English).
         """
         from src.models.player import Player
 

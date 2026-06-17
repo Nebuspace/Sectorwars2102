@@ -5,6 +5,7 @@ This service enhances the existing AI dialogue service with internationalization
 support, providing contextually appropriate responses in the user's preferred language.
 """
 
+import asyncio
 import logging
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
@@ -15,6 +16,23 @@ from src.models.user import User
 
 logger = logging.getLogger(__name__)
 
+# Human-readable language names for translation prompts, keyed by code
+LANGUAGE_DISPLAY_NAMES = {
+    'en': 'English',
+    'es': 'Spanish',
+    'zh-CN': 'Simplified Chinese',
+    'zh': 'Simplified Chinese',
+    'fr': 'French',
+    'pt': 'Portuguese',
+    'de': 'German',
+    'ja': 'Japanese',
+    'ru': 'Russian',
+    'ar': 'Arabic',
+    'ko': 'Korean',
+    'it': 'Italian',
+    'nl': 'Dutch',
+}
+
 
 class MultilingualAIService:
     """Enhanced AI service with language awareness and translation support"""
@@ -23,7 +41,135 @@ class MultilingualAIService:
         self.db = db
         self.ai_service = ai_service
         self.translation_service = translation_service
-    
+
+    async def translate_text(
+        self,
+        text: str,
+        target_language: str,
+        source_language: str = "en",
+    ) -> str:
+        """
+        Translate a free-text string (AI narration / ARIA advice) into the
+        target language using the configured AI dialogue provider.
+
+        This is intentionally defensive: ANY failure, an unavailable AI
+        provider, an English target, or empty text returns the ORIGINAL
+        text unchanged so dialogue is never broken by translation.
+        """
+        # Nothing to translate / no-op cases -> always return the original
+        if not text or not isinstance(text, str) or not text.strip():
+            return text
+
+        # Normalise target; English (or unknown) means leave as-is
+        target_language = (target_language or "en").strip()
+        base_target = target_language.split("-")[0].lower()
+        if base_target in ("", "en"):
+            return text
+
+        # If the AI provider isn't configured/available we cannot translate.
+        # Return the original text rather than failing the caller.
+        try:
+            if not self.ai_service.is_available():
+                logger.debug(
+                    "translate_text: AI provider unavailable, returning original text"
+                )
+                return text
+        except Exception as e:  # pragma: no cover - extreme defensive guard
+            logger.warning(f"translate_text: is_available() check failed: {e}")
+            return text
+
+        target_name = LANGUAGE_DISPLAY_NAMES.get(
+            target_language, LANGUAGE_DISPLAY_NAMES.get(base_target, target_language)
+        )
+        source_name = LANGUAGE_DISPLAY_NAMES.get(
+            source_language, LANGUAGE_DISPLAY_NAMES.get(
+                (source_language or "en").split("-")[0].lower(), "English"
+            )
+        )
+
+        system_prompt = (
+            "You are a professional game-localization translator for a space "
+            "trading game. Translate the user's message faithfully, preserving "
+            "tone, in-universe terminology, names, numbers, and any bracketed "
+            "tags (e.g. [AI-ANTHROPIC]) or markup exactly as-is. Respond with "
+            "ONLY the translated text and nothing else."
+        )
+        user_prompt = (
+            f"Translate the following from {source_name} to {target_name}:\n\n{text}"
+        )
+
+        try:
+            translated = await self._invoke_provider_translation(
+                system_prompt, user_prompt
+            )
+            if translated and translated.strip():
+                return translated.strip()
+            logger.debug("translate_text: empty provider result, returning original")
+            return text
+        except Exception as e:
+            logger.warning(
+                f"translate_text: translation failed ({e}); returning original text"
+            )
+            return text
+
+    async def _invoke_provider_translation(
+        self, system_prompt: str, user_prompt: str
+    ) -> Optional[str]:
+        """
+        Call the same AI provider the dialogue service uses to perform a raw
+        text completion. Mirrors AIDialogueService's provider dispatch so we
+        do not duplicate client configuration.
+        """
+        provider = getattr(self.ai_service, "model_provider", "anthropic")
+
+        if provider == "anthropic" and getattr(self.ai_service, "anthropic_client", None):
+            message = await asyncio.to_thread(
+                self.ai_service.anthropic_client.messages.create,
+                model=self.ai_service.model_name,
+                max_tokens=1500,
+                temperature=0.3,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            return message.content[0].text
+
+        if provider == "openai" and getattr(self.ai_service, "openai_client", None):
+            completion = await asyncio.to_thread(
+                self.ai_service.openai_client.chat.completions.create,
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=1500,
+            )
+            return completion.choices[0].message.content
+
+        # No usable client -> signal "no translation" to caller
+        return None
+
+    async def translate_text_for_user(
+        self, user_id, text: str, source_language: str = "en"
+    ) -> str:
+        """
+        Resolve the user's preferred language (via TranslationService) and
+        translate the given text into it. Fully defensive: if the preference
+        lookup fails or resolves to English, the original text is returned.
+        """
+        if not text:
+            return text
+        try:
+            target_language = await self.translation_service.get_user_language_preference(
+                user_id
+            )
+        except Exception as e:
+            logger.warning(
+                f"translate_text_for_user: language lookup failed for {user_id}: {e}"
+            )
+            return text
+        return await self.translate_text(text, target_language or "en", source_language)
+
     async def get_language_context(self, user_id: int) -> Dict[str, str]:
         """Get language context for AI responses"""
         try:

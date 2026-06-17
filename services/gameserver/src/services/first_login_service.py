@@ -186,6 +186,43 @@ class FirstLoginService:
         except Exception as e:
             logger.warning(f"Failed to initialize AI provider service: {e}. Using fallback only.")
             self.ai_provider_service = None
+
+        # Multilingual support: lazily constructed so a translation subsystem
+        # failure never blocks the first-login flow.
+        self._multilingual_service = None
+
+    def _get_multilingual_service(self):
+        """Lazily build the multilingual AI service (defensive: None on failure)."""
+        if self._multilingual_service is None:
+            try:
+                from src.services.multilingual_ai_service import MultilingualAIService
+                from src.services.translation_service import TranslationService
+                self._multilingual_service = MultilingualAIService(
+                    self.db, self.ai_service, TranslationService(self.db)
+                )
+            except Exception as e:
+                logger.warning(f"Multilingual service unavailable: {e}")
+                self._multilingual_service = False  # sentinel: tried and failed
+        return self._multilingual_service or None
+
+    async def _localize_for_player(self, player_id: uuid.UUID, text: str) -> str:
+        """
+        Translate player-facing narration into the player's preferred language.
+        Always returns usable text — falls back to the original on any failure.
+        """
+        if not text:
+            return text
+        try:
+            player = self.db.query(Player).filter_by(id=player_id).first()
+            if not player or not getattr(player, "user_id", None):
+                return text
+            multilingual = self._get_multilingual_service()
+            if not multilingual:
+                return text
+            return await multilingual.translate_text_for_user(player.user_id, text)
+        except Exception as e:
+            logger.warning(f"Failed to localize first-login text: {e}")
+            return text
     
     def initialize_ship_configs(self) -> None:
         """Initialize the default ship rarity configurations if they don't exist"""
@@ -337,6 +374,9 @@ class FirstLoginService:
             initial_prompt = INITIAL_GUARD_PROMPT
             session.fallback_to_rules = True
             logger.info(f"[FirstLogin:Scene] Using template fallback")
+
+        # Localize narration into the player's preferred language (defensive)
+        initial_prompt = await self._localize_for_player(session.player_id, initial_prompt)
 
         # Update the initial exchange with the generated prompt
         initial_exchange = self.db.query(DialogueExchange).filter_by(
@@ -739,6 +779,9 @@ Description: {ship_specs.get('description', 'N/A')}
             logger.error(f"No question generated for session {session_id}, using emergency fallback")
             question = "Hold on, let me verify your credentials. What's your pilot registration number?"
             topic = "identity_verification"
+
+        # Localize the guard question into the player's preferred language (defensive)
+        question = await self._localize_for_player(session.player_id, question)
 
         # Create a new dialogue exchange with AI metadata
         # Store suspicion level if available from AI-generated response
@@ -1287,6 +1330,9 @@ Description: {ship_specs.get('description', 'N/A')}
 
         logger.info(f"Escape pod auto-approved - granted immediately")
 
+        # Localize the guard response into the player's preferred language (defensive)
+        guard_response = await self._localize_for_player(session.player_id, guard_response)
+
         return {
             "outcome": {
                 "outcome": "SUCCESS",
@@ -1480,6 +1526,9 @@ Description: {ship_specs.get('description', 'N/A')}
         
         # Generate AI-powered personalized outcome message
         guard_response = await self._generate_guard_outcome_response_async(session)
+
+        # Localize the outcome message into the player's preferred language (defensive)
+        guard_response = await self._localize_for_player(session.player_id, guard_response)
 
         return {
             "outcome": outcome.name,
