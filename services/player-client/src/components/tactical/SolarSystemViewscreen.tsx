@@ -1914,6 +1914,317 @@ function starProfile(kind?: string): { corona: number; hot: number } {
   return { corona: 1.0, hot: 0.55 };
 }
 
+// ---------------------------------------------------------------------------
+// LANDED-SCENE CACHE — all DETERMINISTIC (seeded) geometry + static gradients
+// are built ONCE per (sector/type/citadel/hab-bucket/size/star) signature and
+// reused every frame. Only time-driven drift/twinkle/sway/pulse + the few
+// genuinely animated gradients are recomputed per frame. This collapses the
+// per-frame GC churn (≈6 PRNG re-seeds + dozens of array/gradient allocs) down
+// to the unavoidable 3 ridge paths + small particle/cloud/twinkle math.
+// ---------------------------------------------------------------------------
+
+type RidgeLayer = { base: number; amp: number; speed: number; pts: number[]; color: string };
+type StarSeed = { x: number; y: number; size: number; twPhase: number; twSpeed: number; baseAlpha: number };
+type FloraSeed = { x: number; height: number; swayPhase: number; wob: number; hasFronds: boolean };
+type CitadelStructure = {
+  x: number; bw: number; bh: number;
+  windows: { dx: number; dy: number; warm: number }[];
+  isOutpost: boolean; isSpire: boolean;
+};
+type CitadelLayout = { structures: CitadelStructure[]; beacon: boolean; cityX: number; maxH: number; struct: string; twinkleWindows: boolean };
+type HazeSeed = { baseX: number; yFrac: number; w: number; speed: number };
+// Atmospheric particle kinds → drive shape/colour/motion of the precomputed seeds.
+type ParticleKind = 'EMBER' | 'SNOW' | 'DUST' | 'FLOATER' | 'FAINT';
+type ParticleSeed = { x: number; y: number; size: number; phase: number; speed: number; drift: number; warm: number };
+type CloudSeed = { x: number; yFrac: number; w: number; hFrac: number; speed: number; alpha: number };
+type VolcFissure = { x: number; w: number; phase: number };
+
+interface LandedCache {
+  key: string;
+  ctx: CanvasRenderingContext2D;
+  horizonY: number;
+  // resolved axes
+  habN: number;
+  citadel: number;
+  prox: number;
+  sc: { r: number; g: number; b: number };
+  profile: { corona: number; hot: number };
+  flourish: LandedPalette['flourish'];
+  flora: number[]; // parsed "r,g,b"
+  haze: string;
+  // sun anchor
+  sunX: number; sunY: number; sunR: number; coronaR: number;
+  hasCompanion: boolean; c2x: number; c2y: number; c2r: number; c2: { r: number; g: number; b: number };
+  // ridge geometry (noise precomputed; drifted profile recomputed per frame)
+  layers: RidgeLayer[];
+  period: number;
+  ridgeColors: string[];
+  // STATIC gradients (coordinate + colour fixed for the session)
+  skyGrad: CanvasGradient;
+  washGrad: CanvasGradient | null;
+  coronaGrad: CanvasGradient;
+  discGrad: CanvasGradient;
+  companionCorona: CanvasGradient | null;
+  glowGrad: CanvasGradient;
+  starHueGlow: CanvasGradient;
+  waterBand: CanvasGradient | null;
+  // layouts
+  stars: StarSeed[];
+  flouraSeeds: FloraSeed[];
+  citadelLayout: CitadelLayout | null;
+  haze3: HazeSeed[];
+  hazeStrength: number;
+  particles: ParticleSeed[];
+  particleKind: ParticleKind;
+  clouds: CloudSeed[];
+  cloudTint: string; // "r, g, b"
+  volcFissures: VolcFissure[];
+  desertBands: boolean;
+  iceSheen: boolean;
+}
+
+let landedCache: LandedCache | null = null;
+
+/** Per-flourity atmospheric particle character. */
+function particleKindFor(flourish: LandedPalette['flourish'], habN: number): ParticleKind {
+  if (flourish === 'VOLCANIC') return 'EMBER';
+  if (flourish === 'ICE') return 'SNOW';
+  if (flourish === 'DESERT') return 'DUST';
+  // FLOATER (pollen/spores/fireflies) only for living-world flourishes — never
+  // on barren/gas ('NONE'), even when its neutral baseline hab (~55) trips the
+  // catch-all. NONE worlds fall through to FAINT (sparse dust).
+  if (flourish === 'TERRAN' || flourish === 'OCEANIC' ||
+      (flourish === 'MOUNTAINOUS' && habN > 0.4) ||
+      (habN > 0.55 && flourish !== 'NONE'))
+    return 'FLOATER';
+  return 'FAINT';
+}
+
+/** Build (or rebuild) the landed-scene cache. Pure deterministic precompute —
+ *  the only ctx use is creating static gradient objects (bound to this canvas
+ *  context but reusable across frames). */
+function buildLandedCache(
+  ctx: CanvasRenderingContext2D,
+  key: string,
+  w: number,
+  h: number,
+  sectorId: number,
+  pal: LandedPalette,
+  env?: LandedCtx
+): LandedCache {
+  const horizonY = h * 0.58;
+  const seed = (sectorId >>> 0) || 1;
+
+  const hab = env && typeof env.habitability === 'number'
+    ? Math.max(0, Math.min(100, env.habitability)) : 55;
+  const habN = hab / 100;
+  const citadel = env ? Math.max(0, Math.min(5, Math.round(env.citadelLevel || 0))) : 0;
+  const orbitAu = env && typeof env.orbitAu === 'number' && env.orbitAu > 0 ? env.orbitAu : 0.5;
+  const ORBIT_NEAR = 0.15, ORBIT_FAR = 1.0;
+  const prox = Math.max(0.05, 1 - Math.min(1, Math.max(0, (orbitAu - ORBIT_NEAR) / (ORBIT_FAR - ORBIT_NEAR))));
+  const sc = hexToRgb(env?.starColor || '#ffd27a');
+  const profile = starProfile(env?.starKind);
+
+  // --- Sky gradient (static) ---
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
+  skyGrad.addColorStop(0, pal.skyTop);
+  skyGrad.addColorStop(0.6, pal.skyMid);
+  skyGrad.addColorStop(1, pal.horizon);
+
+  // --- Star-tinted sky wash (static) ---
+  const washA = 0.05 + prox * profile.hot * 0.18;
+  let washGrad: CanvasGradient | null = null;
+  if (washA > 0.001) {
+    washGrad = ctx.createLinearGradient(0, horizonY * 0.4, 0, horizonY * 1.1);
+    washGrad.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+    washGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${washA.toFixed(3)})`);
+  }
+
+  // --- Sun anchor (seeded once) ---
+  const anchorRng = splitmix32(seed * 911 + 3);
+  const sunX = w * (0.18 + anchorRng() * 0.64);
+  const sunY = horizonY * (0.22 + anchorRng() * 0.34);
+  const sunR = Math.max(6, Math.min(Math.min(w, h) * 0.12, Math.min(w, h) * (0.018 + prox * 0.06) * profile.corona));
+  const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4) * profile.corona);
+
+  // corona (static gradient)
+  const coronaGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
+  coronaGrad.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.35 + prox * 0.35).toFixed(3)})`);
+  coronaGrad.addColorStop(0.35, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.12 + prox * 0.15).toFixed(3)})`);
+  coronaGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+
+  // bright core disc (static gradient)
+  const discGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+  const coreWhite = Math.round(160 + prox * 95);
+  discGrad.addColorStop(0, `rgba(${Math.min(255, sc.r + coreWhite * 0.4)}, ${Math.min(255, sc.g + coreWhite * 0.4)}, ${Math.min(255, sc.b + coreWhite * 0.4)}, 0.98)`);
+  discGrad.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.95)`);
+  discGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.5)`);
+
+  // companion sun (binary, static)
+  let hasCompanion = false, c2x = 0, c2y = 0, c2r = 0;
+  let c2 = { r: 0, g: 0, b: 0 };
+  let companionCorona: CanvasGradient | null = null;
+  if (env?.secondaryColor) {
+    hasCompanion = true;
+    c2 = hexToRgb(env.secondaryColor);
+    c2x = sunX + sunR * 4.5 * (anchorRng() > 0.5 ? 1 : -1);
+    c2y = sunY + sunR * 1.8;
+    c2r = sunR * 0.55;
+    companionCorona = ctx.createRadialGradient(c2x, c2y, 0, c2x, c2y, c2r * 4);
+    companionCorona.addColorStop(0, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0.4)`);
+    companionCorona.addColorStop(1, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0)`);
+  } else {
+    // consume the same RNG draw the companion branch would have so downstream
+    // seeded draws stay identical whether or not a companion exists.
+    anchorRng();
+  }
+
+  // --- Horizon glow (static) ---
+  const gx = w * (0.25 + anchorRng() * 0.5);
+  const glowGrad = ctx.createRadialGradient(gx, horizonY, 0, gx, horizonY, Math.max(w, h) * (0.4 + prox * 0.18));
+  glowGrad.addColorStop(0, pal.glow);
+  glowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  const starHueGlow = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35);
+  starHueGlow.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(prox * profile.hot * 0.22).toFixed(3)})`);
+  starHueGlow.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+
+  // --- OCEANIC water band (static gradient; glitter stays per-frame) ---
+  let waterBand: CanvasGradient | null = null;
+  if (pal.flourish === 'OCEANIC') {
+    waterBand = ctx.createLinearGradient(0, horizonY, 0, h);
+    waterBand.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.06 + prox * 0.1).toFixed(3)})`);
+    waterBand.addColorStop(0.5, 'rgba(40, 120, 150, 0.12)');
+    waterBand.addColorStop(1, 'rgba(10, 35, 55, 0.05)');
+  }
+
+  // --- STARFIELD layout (twinkle stays per frame) ---
+  const starCount = Math.round(10 + (1 - habN) * 90);
+  const sfRng = splitmix32(seed * 2654435761 + 17);
+  const stars: StarSeed[] = [];
+  for (let i = 0; i < starCount; i++) {
+    const x = sfRng() * w;
+    const y = sfRng() * (horizonY * 0.92);
+    const size = 0.3 + sfRng() * 0.9;
+    const twSpeed = 0.6 + sfRng() * 1.4;
+    const baseAlpha = (0.12 + sfRng() * 0.35) * (0.4 + (1 - habN) * 0.6);
+    stars.push({ x, y, size, twPhase: i, twSpeed, baseAlpha });
+  }
+
+  // --- RIDGE noise (the 3×48 pts) — drifted profile recomputed per frame ---
+  const ampBoost = pal.flourish === 'MOUNTAINOUS' ? 1.7 : 1.0;
+  const baseLift = pal.flourish === 'MOUNTAINOUS' ? -0.06 : 0;
+  const layerCfg = [
+    { base: 0.6 + baseLift, amp: 0.1 * ampBoost, speed: 1.2, seed: 5 },
+    { base: 0.7 + baseLift, amp: 0.13 * ampBoost, speed: 2.6, seed: 11 },
+    { base: 0.84, amp: 0.16 * ampBoost, speed: 4.6, seed: 23 }
+  ];
+  const period = Math.max(w * 2, 1200);
+  const layers: RidgeLayer[] = layerCfg.map((cfg) => {
+    const rng = splitmix32(seed * 131 + cfg.seed);
+    const pts: number[] = [];
+    for (let i = 0; i < 48; i++) pts.push(rng());
+    return { base: cfg.base, amp: cfg.amp, speed: cfg.speed, pts, color: '' };
+  });
+  const ridgeColors = [pal.ridges[0], pal.ridges[1], pal.ridges[2]];
+
+  // --- VOLCANIC fissures (seeded; pulse per frame) ---
+  const volcFissures: VolcFissure[] = [];
+  if (pal.flourish === 'VOLCANIC') {
+    const fRng = splitmix32(seed * 313 + 41);
+    const count = 2 + Math.floor(fRng() * 2);
+    for (let i = 0; i < count; i++) {
+      const x = w * (0.15 + fRng() * 0.7);
+      const fw = w * (0.04 + fRng() * 0.06);
+      volcFissures.push({ x, w: fw, phase: i * 2 });
+    }
+  }
+
+  // --- FLORA layout (sway per frame; baseY from live ridge per frame) ---
+  const flora = pal.flora.split(',').map((s) => parseInt(s.trim(), 10));
+  const floraEligible = pal.flourish === 'TERRAN' || pal.flourish === 'OCEANIC' ||
+    pal.flourish === 'MOUNTAINOUS' || pal.flourish === 'DESERT';
+  const flouraSeeds: FloraSeed[] = [];
+  if (floraEligible && habN > 0.15) {
+    const floraCount = Math.round(habN * (pal.flourish === 'DESERT' ? 14 : 34));
+    const flRng = splitmix32(seed * 619 + 71);
+    for (let i = 0; i < floraCount; i++) {
+      const x = flRng() * w;
+      const height = (6 + flRng() * 16) * (0.5 + habN * 0.9);
+      const wob = flRng() * 0.4 + 0.8;
+      flouraSeeds.push({ x, height, swayPhase: i, wob, hasFronds: habN > 0.5 });
+    }
+  }
+
+  // --- CITADEL skyline layout (windows/beacon/heights fixed; y per frame) ---
+  const citadelLayout = citadel > 0 ? buildCitadelLayout(w, h, seed, citadel, pal) : null;
+
+  // --- HAZE seeds ---
+  const hazeRng = splitmix32(seed * 53 + 7);
+  const haze3: HazeSeed[] = [];
+  for (let i = 0; i < 3; i++) {
+    haze3.push({
+      baseX: hazeRng() * w,
+      yFrac: 0.5 + i * 0.13,
+      w: w * (0.5 + hazeRng() * 0.3),
+      speed: 3 + i * 2
+    });
+  }
+  const hazeStrength = 0.04 + habN * 0.09;
+
+  // --- DRIFTING CLOUD bands (parallax across the sky) ---
+  const cloudRng = splitmix32(seed * 877 + 29);
+  const cloudCount = pal.flourish === 'VOLCANIC' || pal.flourish === 'NONE' ? 2 : 3;
+  const clouds: CloudSeed[] = [];
+  for (let i = 0; i < cloudCount; i++) {
+    clouds.push({
+      x: cloudRng() * w,
+      yFrac: 0.1 + cloudRng() * 0.24,
+      w: w * (0.35 + cloudRng() * 0.45),
+      hFrac: 0.05 + cloudRng() * 0.05,
+      speed: 4 + i * 5 + cloudRng() * 4, // slow parallax
+      alpha: 0.05 + cloudRng() * 0.05
+    });
+  }
+  // cloud tint derived from the haze palette (keeps it in-world)
+  const cloudTint = pal.haze;
+
+  // --- ATMOSPHERIC PARTICLES ---
+  const particleKind = particleKindFor(pal.flourish, habN);
+  // count scales a little with habitability; bounded for perf.
+  let pCount: number;
+  if (particleKind === 'FAINT') pCount = Math.round(10 + habN * 8);
+  else if (particleKind === 'EMBER') pCount = 30;
+  else if (particleKind === 'SNOW') pCount = 38;
+  else if (particleKind === 'DUST') pCount = 28;
+  else pCount = Math.round(20 + habN * 18); // FLOATER
+  const pRng = splitmix32(seed * 401 + 13);
+  const particles: ParticleSeed[] = [];
+  for (let i = 0; i < pCount; i++) {
+    particles.push({
+      x: pRng() * w,
+      y: pRng() * h,
+      size: 0.6 + pRng() * 1.4,
+      phase: pRng() * Math.PI * 2,
+      speed: 0.4 + pRng() * 1.2,
+      drift: (pRng() - 0.5) * 2,
+      warm: pRng()
+    });
+  }
+
+  return {
+    key, ctx, horizonY, habN, citadel, prox, sc, profile,
+    flourish: pal.flourish, flora, haze: pal.haze,
+    sunX, sunY, sunR, coronaR,
+    hasCompanion, c2x, c2y, c2r, c2,
+    layers, period, ridgeColors,
+    skyGrad, washGrad, coronaGrad, discGrad, companionCorona, glowGrad, starHueGlow, waterBand,
+    stars, flouraSeeds, citadelLayout, haze3, hazeStrength,
+    particles, particleKind, clouds, cloudTint, volcFissures,
+    desertBands: pal.flourish === 'DESERT',
+    iceSheen: pal.flourish === 'ICE'
+  };
+}
+
 function drawLandedScene(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -1923,108 +2234,100 @@ function drawLandedScene(
   pal: LandedPalette,
   env?: LandedCtx
 ): void {
-  const horizonY = h * 0.58;
-  const seed = (sectorId >>> 0) || 1;
+  // habitability is bucketed (rounded to 5%) so small live jitter doesn't
+  // thrash the cache; it still re-tiers count/density at the next bucket.
+  const habBucket = env && typeof env.habitability === 'number'
+    ? Math.round(Math.max(0, Math.min(100, env.habitability)) / 5) : 11;
+  const citKey = env ? Math.max(0, Math.min(5, Math.round(env.citadelLevel || 0))) : 0;
+  // Palette identity is part of the key: flourish 'NONE' maps to TWO distinct
+  // palettes (gray BARREN vs violet GAS/unknown default), so flourish alone is
+  // ambiguous — append the actual palette colours so a violet world never reuses
+  // a gray world's cached sky/ridge/haze/flora gradients.
+  const key = `${(sectorId >>> 0) || 1}|${pal.flourish}|${pal.skyTop}|${pal.ridges[0]}|${pal.haze}|${pal.flora}` +
+    `|${citKey}|${habBucket}|${w}|${h}` +
+    `|${env?.starKind || ''}|${env?.starColor || ''}|${env?.secondaryColor || ''}|${env?.orbitAu ?? ''}`;
 
-  // --- Resolve the five axes (graceful defaults if data not yet present) ---
-  const hab = env && typeof env.habitability === 'number'
-    ? Math.max(0, Math.min(100, env.habitability)) : 55;       // neutral baseline
-  const habN = hab / 100;
-  const citadel = env ? Math.max(0, Math.min(5, Math.round(env.citadelLevel || 0))) : 0;
-  const orbitAu = env && typeof env.orbitAu === 'number' && env.orbitAu > 0 ? env.orbitAu : 0.5;
-  // proximity: small orbit → ~1 (close/hot), large orbit → ~0 (far/cold).
-  // Linear sweep across the real display orbit domain (~0.15 inner → ~1.0 outer)
-  // so the FULL range is distinct — a 0.55/orbit reciprocal pegged the whole
-  // inner half to max and made the distance axis invisible. Keep a small floor
-  // so the most distant world still shows a faint sun + warmth.
-  const ORBIT_NEAR = 0.15, ORBIT_FAR = 1.0;
-  const prox = Math.max(0.05, 1 - Math.min(1, Math.max(0, (orbitAu - ORBIT_NEAR) / (ORBIT_FAR - ORBIT_NEAR))));
-  const starColor = env?.starColor || '#ffd27a';
-  const sc = hexToRgb(starColor);
-  const profile = starProfile(env?.starKind);
+  let cache = landedCache;
+  // Rebuild on key change OR when the canvas context identity changes — a remount
+  // yields a new ctx and the cached gradients are bound to the destroyed ctx.
+  if (!cache || cache.key !== key || cache.ctx !== ctx) {
+    cache = buildLandedCache(ctx, key, w, h, sectorId, pal, env);
+    landedCache = cache;
+  }
 
-  // 1) Sky gradient — top of atmosphere down to the horizon line, warmed toward
-  //    the star color and brightened by proximity (close sun = hotter wash).
-  const sky = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
-  sky.addColorStop(0, pal.skyTop);
-  sky.addColorStop(0.6, pal.skyMid);
-  sky.addColorStop(1, pal.horizon);
-  ctx.fillStyle = sky;
+  const { horizonY, habN, citadel, prox, sc, profile } = cache;
+
+  // 1) Sky gradient (cached) ---------------------------------------------------
+  ctx.fillStyle = cache.skyGrad;
   ctx.fillRect(0, 0, w, h);
 
-  // Star-tinted sky wash near the horizon: warms the whole vista toward the
-  // sun's hue. Strength scales with proximity × star hotness.
-  const washA = 0.05 + prox * profile.hot * 0.18;
-  const wash = ctx.createLinearGradient(0, horizonY * 0.4, 0, horizonY * 1.1);
-  wash.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
-  wash.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${washA.toFixed(3)})`);
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = wash;
-  ctx.fillRect(0, 0, w, horizonY * 1.15);
-  ctx.restore();
+  // Star-tinted sky wash (cached)
+  if (cache.washGrad) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = cache.washGrad;
+    ctx.fillRect(0, 0, w, horizonY * 1.15);
+    ctx.restore();
+  }
 
-  // 2) STARFIELD — thin atmosphere (low hab) reveals the void; lush worlds wash
-  //    it out. Star count scales inversely with habitability. Painted before the
-  //    sun & ridges so it sits behind everything in the sky.
-  const starCount = Math.round(10 + (1 - habN) * 90); // 10 (lush) → 100 (barren)
-  if (starCount > 0) {
-    const sfRng = splitmix32(seed * 2654435761 + 17);
+  // 2) STARFIELD — layout cached; twinkle per frame ---------------------------
+  if (cache.stars.length > 0) {
     ctx.save();
     ctx.fillStyle = '#dfe7f5';
-    for (let i = 0; i < starCount; i++) {
-      const sx = sfRng() * w;
-      const sy = sfRng() * (horizonY * 0.92);
-      const sz = 0.3 + sfRng() * 0.9;
-      const tw = 0.5 + 0.5 * Math.sin(t * (0.6 + sfRng() * 1.4) + i);
-      ctx.globalAlpha = (0.12 + sfRng() * 0.35) * tw * (0.4 + (1 - habN) * 0.6);
+    for (let i = 0; i < cache.stars.length; i++) {
+      const s = cache.stars[i];
+      const tw = t === 0 ? 0.75 : 0.5 + 0.5 * Math.sin(t * s.twSpeed + s.twPhase);
+      ctx.globalAlpha = s.baseAlpha * tw;
       ctx.beginPath();
-      ctx.arc(sx, sy, sz, 0, Math.PI * 2);
+      ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
   }
 
-  // 3) THE SUN DISC — a real star above the horizon. Position seeded but high
-  //    enough to sit in open sky; radius + brightness scale with proximity and
-  //    star kind; color from star.color; additive corona.
-  const anchorRng = splitmix32(seed * 911 + 3);
-  const sunX = w * (0.18 + anchorRng() * 0.64);
-  const sunY = horizonY * (0.22 + anchorRng() * 0.34); // open sky, above horizon
-  // Disc radius scales with proximity + star kind, but is capped so a close
-  // blue-giant can't swell into an absurd inner-orbit disc.
-  const sunR = Math.max(6, Math.min(Math.min(w, h) * 0.12, Math.min(w, h) * (0.018 + prox * 0.06) * profile.corona));
+  // 2b) DRIFTING CLOUD bands (behind the sun, slow parallax) ------------------
+  if (cache.clouds.length > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < cache.clouds.length; i++) {
+      const c = cache.clouds[i];
+      const span = w * 1.6;
+      const cx = (((c.x + t * c.speed) % span) + span) % span - w * 0.3;
+      const cw = c.w;
+      const chh = h * c.hFrac;
+      // yFrac is sky-relative; scale into the sky band, then clamp so the band's
+      // bottom edge stays in open sky above the horizon (never grazes the ridge).
+      const cy = Math.min(horizonY * c.yFrac * 2, horizonY - chh - 4);
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, cw);
+      g.addColorStop(0, `rgba(${cache.cloudTint}, ${c.alpha.toFixed(3)})`);
+      g.addColorStop(1, `rgba(${cache.cloudTint}, 0)`);
+      ctx.fillStyle = g;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(1, chh / cw);
+      ctx.translate(-cx, -cy);
+      ctx.fillRect(cx - cw, cy - cw, cw * 2, cw * 2);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // 3) THE SUN DISC (corona + disc gradients cached) --------------------------
+  const { sunX, sunY, sunR, coronaR } = cache;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  // wide corona — clamped to a fraction of the viewport diagonal so the additive
-  // wash never balloons past the screen and overpowers the overlaid HUD chips.
-  const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4) * profile.corona);
-  const corona = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
-  corona.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.35 + prox * 0.35).toFixed(3)})`);
-  corona.addColorStop(0.35, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.12 + prox * 0.15).toFixed(3)})`);
-  corona.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
-  ctx.fillStyle = corona;
+  // very subtle "breathing" of the corona via alpha (gradient stays cached)
+  ctx.globalAlpha = t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5);
+  ctx.fillStyle = cache.coronaGrad;
   ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
-  // bright core disc — white-hot center fading to the star hue
-  const disc = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
-  const coreWhite = Math.round(160 + prox * 95);
-  disc.addColorStop(0, `rgba(${Math.min(255, sc.r + coreWhite * 0.4)}, ${Math.min(255, sc.g + coreWhite * 0.4)}, ${Math.min(255, sc.b + coreWhite * 0.4)}, 0.98)`);
-  disc.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.95)`);
-  disc.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.5)`);
-  ctx.fillStyle = disc;
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = cache.discGrad;
   ctx.beginPath();
   ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
   ctx.fill();
-  // companion sun (binary) — a smaller second disc nearby
-  if (env?.secondaryColor) {
-    const c2 = hexToRgb(env.secondaryColor);
-    const c2x = sunX + sunR * 4.5 * (anchorRng() > 0.5 ? 1 : -1);
-    const c2y = sunY + sunR * 1.8;
-    const c2r = sunR * 0.55;
-    const cor2 = ctx.createRadialGradient(c2x, c2y, 0, c2x, c2y, c2r * 4);
-    cor2.addColorStop(0, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0.4)`);
-    cor2.addColorStop(1, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0)`);
-    ctx.fillStyle = cor2;
+  if (cache.hasCompanion && cache.companionCorona) {
+    const { c2, c2x, c2y, c2r } = cache;
+    ctx.fillStyle = cache.companionCorona;
     ctx.fillRect(c2x - c2r * 4, c2y - c2r * 4, c2r * 8, c2r * 8);
     ctx.beginPath();
     ctx.arc(c2x, c2y, c2r, 0, Math.PI * 2);
@@ -2033,67 +2336,40 @@ function drawLandedScene(
   }
   ctx.restore();
 
-  // 4) Low atmospheric glow near the horizon — warmed toward the star color and
-  //    brightened by proximity (preserves the legacy seeded horizon glow).
-  const gx = w * (0.25 + anchorRng() * 0.5);
-  const glow = ctx.createRadialGradient(gx, horizonY, 0, gx, horizonY, Math.max(w, h) * (0.4 + prox * 0.18));
-  glow.addColorStop(0, pal.glow);
-  glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  // 4) Horizon glow (cached gradients) ----------------------------------------
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = glow;
+  ctx.fillStyle = cache.glowGrad;
   ctx.fillRect(0, 0, w, h);
-  // a touch of the star hue layered into the horizon glow
-  const hg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35);
-  hg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(prox * profile.hot * 0.22).toFixed(3)})`);
-  hg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
-  ctx.fillStyle = hg;
+  ctx.fillStyle = cache.starHueGlow;
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
 
-  // 4b) OCEANIC reflective water band just below the horizon (type flourish) —
-  //     drawn before the ridges so the front ridge sits on its shoreline.
-  if (pal.flourish === 'OCEANIC') {
-    const wb = ctx.createLinearGradient(0, horizonY, 0, h);
-    wb.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.06 + prox * 0.1).toFixed(3)})`);
-    wb.addColorStop(0.5, 'rgba(40, 120, 150, 0.12)');
-    wb.addColorStop(1, 'rgba(10, 35, 55, 0.05)');
+  // 4b) OCEANIC water band (cached gradient; glitter per frame) ---------------
+  if (cache.waterBand) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = wb;
+    ctx.fillStyle = cache.waterBand;
     ctx.fillRect(0, horizonY, w, h - horizonY);
-    // sun glitter column on the water
     ctx.fillStyle = `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.18)`;
     for (let i = 0; i < 10; i++) {
       const gy = horizonY + i * ((h - horizonY) / 10);
-      const gwid = (w * 0.02) * (1 + i * 0.4) * (0.6 + 0.4 * Math.sin(t * 1.5 + i));
+      const gwid = (w * 0.02) * (1 + i * 0.4) * (t === 0 ? 0.8 : 0.6 + 0.4 * Math.sin(t * 1.5 + i));
       ctx.globalAlpha = 0.12 * (1 - i / 12);
       ctx.fillRect(sunX - gwid / 2, gy, gwid, 2);
     }
     ctx.restore();
   }
 
-  // 5) Parallax ridge layers (3, back → front) — deterministic jagged
-  //    silhouettes sampled from a wrapping noise strip; each layer drifts
-  //    at its own speed for depth. MOUNTAINOUS worlds push the crests higher.
-  const ampBoost = pal.flourish === 'MOUNTAINOUS' ? 1.7 : 1.0;
-  const baseLift = pal.flourish === 'MOUNTAINOUS' ? -0.06 : 0;
-  const layers = [
-    { base: 0.6 + baseLift, amp: 0.1 * ampBoost, speed: 1.2, seed: 5, color: pal.ridges[0] },
-    { base: 0.7 + baseLift, amp: 0.13 * ampBoost, speed: 2.6, seed: 11, color: pal.ridges[1] },
-    { base: 0.84, amp: 0.16 * ampBoost, speed: 4.6, seed: 23, color: pal.ridges[2] }
-  ];
-  // capture the front-ridge profile so flora / skyline / lava sit ON the ridge.
+  // 5) Parallax ridge layers — noise cached; drifted profile rebuilt per frame.
   let frontProfile: number[] | null = null;
-  for (let li = 0; li < layers.length; li++) {
-    const layer = layers[li];
-    const rng = splitmix32(seed * 131 + layer.seed);
-    const period = Math.max(w * 2, 1200);
-    const n = 48;
-    const pts: number[] = [];
-    for (let i = 0; i < n; i++) pts.push(rng());
+  for (let li = 0; li < cache.layers.length; li++) {
+    const layer = cache.layers[li];
     const off = t * layer.speed;
-    const profileXs: number[] = [];
+    const period = cache.period;
+    const n = layer.pts.length;
+    const isFront = li === cache.layers.length - 1;
+    const profileXs: number[] | null = isFront ? [] : null;
     ctx.beginPath();
     ctx.moveTo(0, h);
     for (let x = 0; x <= w; x += 8) {
@@ -2102,27 +2378,26 @@ function drawLandedScene(
       const i0 = Math.floor(fi) % n;
       const i1 = (i0 + 1) % n;
       const frac = fi - Math.floor(fi);
-      const s = frac * frac * (3 - 2 * frac); // smoothstep — soft crests
-      const v = pts[i0] * (1 - s) + pts[i1] * s;
+      const s = frac * frac * (3 - 2 * frac);
+      const v = layer.pts[i0] * (1 - s) + layer.pts[i1] * s;
       const yTop = h * layer.base - v * h * layer.amp;
       ctx.lineTo(x, yTop);
-      if (li === layers.length - 1) profileXs.push(yTop);
+      if (profileXs) profileXs.push(yTop);
     }
     ctx.lineTo(w, h);
     ctx.closePath();
-    ctx.fillStyle = layer.color;
+    ctx.fillStyle = cache.ridgeColors[li];
     ctx.fill();
-    if (li === layers.length - 1) frontProfile = profileXs;
+    if (profileXs) frontProfile = profileXs;
   }
-  // helper: front-ridge surface Y at an x position (samples the captured profile)
   const ridgeYAt = (x: number): number => {
     if (!frontProfile || frontProfile.length === 0) return h * 0.84;
     const idx = Math.max(0, Math.min(frontProfile.length - 1, Math.round(x / 8)));
     return frontProfile[idx];
   };
 
-  // 5b) ICE pale sheen across the front ridge (type flourish)
-  if (pal.flourish === 'ICE') {
+  // 5b) ICE pale sheen across the front ridge ---------------------------------
+  if (cache.iceSheen) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = 'rgba(210, 235, 255, 0.18)';
@@ -2136,74 +2411,61 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 5c) VOLCANIC lava fissure + ember glow on the front ridge (type flourish)
-  if (pal.flourish === 'VOLCANIC') {
-    const fRng = splitmix32(seed * 313 + 41);
+  // 5c) VOLCANIC lava fissures — seeds cached; pulse + animated gradient per frame
+  if (cache.volcFissures.length > 0) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const fissures = 2 + Math.floor(fRng() * 2);
-    for (let i = 0; i < fissures; i++) {
-      const fx = w * (0.15 + fRng() * 0.7);
-      const fy = ridgeYAt(fx) + 4;
-      const pulse = 0.5 + 0.5 * Math.sin(t * 1.8 + i * 2);
-      const fw = w * (0.04 + fRng() * 0.06);
-      const lg = ctx.createRadialGradient(fx, fy, 0, fx, fy, fw * 2.2);
+    for (let i = 0; i < cache.volcFissures.length; i++) {
+      const f = cache.volcFissures[i];
+      const fy = ridgeYAt(f.x) + 4;
+      const pulse = t === 0 ? 0.5 : 0.5 + 0.5 * Math.sin(t * 1.8 + f.phase);
+      const lg = ctx.createRadialGradient(f.x, fy, 0, f.x, fy, f.w * 2.2);
       lg.addColorStop(0, `rgba(255, 140, 40, ${(0.4 + pulse * 0.35).toFixed(3)})`);
       lg.addColorStop(0.5, 'rgba(255, 80, 20, 0.18)');
       lg.addColorStop(1, 'rgba(255, 60, 10, 0)');
       ctx.fillStyle = lg;
-      ctx.fillRect(fx - fw * 2.2, fy - fw, fw * 4.4, fw * 2.2);
-      // bright fissure line
+      ctx.fillRect(f.x - f.w * 2.2, fy - f.w, f.w * 4.4, f.w * 2.2);
       ctx.strokeStyle = `rgba(255, 200, 120, ${(0.5 + pulse * 0.4).toFixed(3)})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(fx - fw, fy);
-      ctx.lineTo(fx + fw, fy + 3);
+      ctx.moveTo(f.x - f.w, fy);
+      ctx.lineTo(f.x + f.w, fy + 3);
       ctx.stroke();
     }
     ctx.restore();
   }
 
-  // 5d) DESERT dune shimmer band above the front ridge (type flourish)
-  if (pal.flourish === 'DESERT') {
+  // 5d) DESERT dune shimmer band ----------------------------------------------
+  if (cache.desertBands) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     for (let i = 0; i < 3; i++) {
-      const dy = horizonY + 8 + i * 10 + Math.sin(t * 0.8 + i) * 2;
+      const dy = horizonY + 8 + i * 10 + (t === 0 ? 0 : Math.sin(t * 0.8 + i) * 2);
       ctx.fillStyle = `rgba(255, 200, 110, ${(0.05 - i * 0.012).toFixed(3)})`;
       ctx.fillRect(0, dy, w, 3);
     }
     ctx.restore();
   }
 
-  // 6) HABITABILITY FLORA — foreground vegetation tufts on the front ridge for
-  //    living worlds (TERRAN/OCEANIC/JUNGLE/TROPICAL & temperate types). Count
-  //    + size scale with habitability; barren worlds grow nothing.
-  const floraEligible = pal.flourish === 'TERRAN' || pal.flourish === 'OCEANIC' ||
-    pal.flourish === 'MOUNTAINOUS' || pal.flourish === 'DESERT';
-  if (floraEligible && habN > 0.15) {
-    const floraCount = Math.round(habN * (pal.flourish === 'DESERT' ? 14 : 34));
-    const fl = pal.flora.split(',').map((s) => parseInt(s.trim(), 10));
-    const flRng = splitmix32(seed * 619 + 71);
+  // 6) HABITABILITY FLORA — layout cached; sway + ridge-glue per frame ---------
+  if (cache.flouraSeeds.length > 0) {
+    const fl = cache.flora;
     ctx.save();
-    for (let i = 0; i < floraCount; i++) {
-      const fx = flRng() * w;
-      const baseY = ridgeYAt(fx);
-      const hgt = (6 + flRng() * 16) * (0.5 + habN * 0.9);
-      const sway = Math.sin(t * 0.9 + i) * (1.2 + habN * 1.5);
-      const wob = flRng() * 0.4 + 0.8;
+    for (let i = 0; i < cache.flouraSeeds.length; i++) {
+      const f = cache.flouraSeeds[i];
+      const baseY = ridgeYAt(f.x);
+      const sway = (t === 0 ? 0 : Math.sin(t * 0.9 + f.swayPhase)) * (1.2 + habN * 1.5);
+      const hgt = f.height;
       ctx.globalAlpha = 0.35 + habN * 0.45;
       ctx.strokeStyle = `rgb(${fl[0]}, ${fl[1]}, ${fl[2]})`;
-      ctx.lineWidth = 1.1 * wob;
-      // a stem with a slight curve toward the sway
+      ctx.lineWidth = 1.1 * f.wob;
       ctx.beginPath();
-      ctx.moveTo(fx, baseY);
-      ctx.quadraticCurveTo(fx + sway * 0.5, baseY - hgt * 0.6, fx + sway, baseY - hgt);
+      ctx.moveTo(f.x, baseY);
+      ctx.quadraticCurveTo(f.x + sway * 0.5, baseY - hgt * 0.6, f.x + sway, baseY - hgt);
       ctx.stroke();
-      // a couple of fronds for lush worlds
-      if (habN > 0.5) {
-        ctx.lineWidth = 0.8 * wob;
-        const tipX = fx + sway, tipY = baseY - hgt;
+      if (f.hasFronds) {
+        ctx.lineWidth = 0.8 * f.wob;
+        const tipX = f.x + sway, tipY = baseY - hgt;
         ctx.beginPath();
         ctx.moveTo(tipX, tipY);
         ctx.lineTo(tipX - 3 - habN * 2, tipY - 3);
@@ -2215,137 +2477,238 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 7) CITADEL SKYLINE — built structures on the front ridge scaling with the
-  //    citadel level (0 = wilderness/nothing → 5 = lit megastructure skyline).
-  if (citadel > 0) {
-    drawCitadelSkyline(ctx, w, h, seed, t, citadel, pal, ridgeYAt);
+  // 7) CITADEL SKYLINE — layout cached; baseline + lights per frame -----------
+  if (citadel > 0 && cache.citadelLayout) {
+    drawCitadelSkyline(ctx, h, t, cache.citadelLayout, ridgeYAt);
   }
 
-  // 8) Atmospheric haze — wide translucent bands drifting slowly. Lush worlds
-  //    carry denser, softer atmosphere; thin-air barren worlds barely any.
-  const hazeStrength = 0.04 + habN * 0.09; // 0.04 (barren) → 0.13 (lush)
+  // 8) ATMOSPHERIC PARTICLES — kind-specific living motion --------------------
+  if (cache.particles.length > 0 && t !== 0) {
+    drawLandedParticles(ctx, w, h, t, cache);
+  } else if (cache.particles.length > 0) {
+    // reduced-motion / calm static frame: draw particles at rest (no motion)
+    drawLandedParticles(ctx, w, h, 0, cache);
+  }
+
+  // 9) Atmospheric haze — seeds cached; drift + animated radial per frame -----
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  const hazeRng = splitmix32(seed * 53 + 7);
-  for (let i = 0; i < 3; i++) {
-    const hy = h * (0.5 + i * 0.13) + Math.sin(t * 0.05 + i * 2.1) * 4;
-    const hx = ((hazeRng() * w + t * (3 + i * 2)) % (w * 1.4)) - w * 0.2;
-    const hw = w * (0.5 + hazeRng() * 0.3);
-    const grad = ctx.createRadialGradient(hx, hy, 0, hx, hy, hw);
-    grad.addColorStop(0, `rgba(${pal.haze}, ${hazeStrength.toFixed(3)})`);
-    grad.addColorStop(1, `rgba(${pal.haze}, 0)`);
+  for (let i = 0; i < cache.haze3.length; i++) {
+    const hz = cache.haze3[i];
+    const hy = h * hz.yFrac + (t === 0 ? 0 : Math.sin(t * 0.05 + i * 2.1) * 4);
+    const hx = ((hz.baseX + t * hz.speed) % (w * 1.4)) - w * 0.2;
+    const grad = ctx.createRadialGradient(hx, hy, 0, hx, hy, hz.w);
+    grad.addColorStop(0, `rgba(${cache.haze}, ${cache.hazeStrength.toFixed(3)})`);
+    grad.addColorStop(1, `rgba(${cache.haze}, 0)`);
     ctx.fillStyle = grad;
-    // Squash the blob into a horizontal haze band
     ctx.save();
     ctx.translate(hx, hy);
     ctx.scale(1, 0.22);
     ctx.translate(-hx, -hy);
-    ctx.fillRect(hx - hw, hy - hw, hw * 2, hw * 2);
+    ctx.fillRect(hx - hz.w, hy - hz.w, hz.w * 2, hz.w * 2);
     ctx.restore();
   }
   ctx.restore();
 }
 
-/** Citadel skyline: deterministic silhouettes sitting on the front ridge whose
- *  density/height/lights scale with citadel level (1 Outpost → 5 Capital). */
-function drawCitadelSkyline(
+/** Atmospheric particles — planet-type-aware living motion. Positions animate
+ *  from the cached seeds by t (wrap-around); never allocates. t=0 → calm rest. */
+function drawLandedParticles(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
-  seed: number,
   t: number,
-  level: number,
-  pal: LandedPalette,
-  ridgeYAt: (x: number) => number
+  cache: LandedCache
 ): void {
-  // Lighten the front ridge color a touch for the structures.
+  const kind = cache.particleKind;
+  const horizonY = cache.horizonY;
+  ctx.save();
+  if (kind === 'EMBER') {
+    // embers/ash rising + flickering, warm — only over the surface band.
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < cache.particles.length; i++) {
+      const p = cache.particles[i];
+      // fold p.y into the rise so embers distribute up the band at t=0
+      // (reduced motion) instead of collapsing onto the bottom edge, and so
+      // they don't all rise in lockstep.
+      const rise = ((p.y % (h * 0.6)) + t * (12 + p.speed * 18)) % (h * 0.6);
+      const y = h - rise - 2;
+      const x = (((p.x + Math.sin(t * 0.8 + p.phase) * 8) % w) + w) % w;
+      const flick = 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + p.phase));
+      ctx.globalAlpha = 0.5 * flick * (1 - rise / (h * 0.6));
+      ctx.fillStyle = p.warm > 0.5 ? 'rgba(255, 170, 70, 1)' : 'rgba(255, 110, 40, 1)';
+      ctx.fillRect(x, y, p.size, p.size);
+    }
+  } else if (kind === 'SNOW') {
+    // snow falling — drift + sway, cool white.
+    ctx.fillStyle = 'rgba(225, 240, 255, 1)';
+    for (let i = 0; i < cache.particles.length; i++) {
+      const p = cache.particles[i];
+      const fall = (p.y + t * (10 + p.speed * 14)) % h;
+      const x = (((p.x + Math.sin(t * 0.6 + p.phase) * 12 + p.drift * t * 2) % w) + w) % w;
+      ctx.globalAlpha = 0.3 + p.warm * 0.4;
+      ctx.beginPath();
+      ctx.arc(x, fall, p.size * 0.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (kind === 'DUST') {
+    // dust/sand blowing horizontally near the ground.
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < cache.particles.length; i++) {
+      const p = cache.particles[i];
+      const x = (((p.x + t * (30 + p.speed * 40)) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
+      const y = horizonY + 6 + ((p.y + Math.sin(t * 0.7 + p.phase) * 4) % Math.max(1, h - horizonY - 6));
+      ctx.globalAlpha = 0.12 + p.warm * 0.12;
+      ctx.fillStyle = 'rgba(230, 190, 120, 1)';
+      ctx.fillRect(x, y, p.size * 1.6, p.size * 0.7);
+    }
+  } else if (kind === 'FLOATER') {
+    // gentle drifting pollen/spores/fireflies — slow floaters that brighten/dim.
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < cache.particles.length; i++) {
+      const p = cache.particles[i];
+      const x = (((p.x + Math.sin(t * 0.3 + p.phase) * 18 + t * (2 + p.speed * 3)) % w) + w) % w;
+      const y = (p.y + Math.sin(t * 0.4 + p.phase * 1.7) * 14) % h;
+      const pulse = 0.3 + 0.7 * Math.abs(Math.sin(t * 0.9 + p.phase));
+      ctx.globalAlpha = 0.35 * pulse;
+      // warm firefly vs cool spore split
+      ctx.fillStyle = p.warm > 0.5 ? 'rgba(190, 255, 170, 1)' : 'rgba(160, 220, 255, 1)';
+      ctx.beginPath();
+      ctx.arc(x, y, p.size * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else {
+    // FAINT — sparse faint dust drifting slowly.
+    for (let i = 0; i < cache.particles.length; i++) {
+      const p = cache.particles[i];
+      const x = (((p.x + t * (3 + p.speed * 4)) % w) + w) % w;
+      const y = (p.y + Math.sin(t * 0.3 + p.phase) * 6) % h;
+      ctx.globalAlpha = 0.05 + p.warm * 0.06;
+      ctx.fillStyle = '#cfd8e6';
+      ctx.fillRect(x, y, p.size, p.size);
+    }
+  }
+  ctx.restore();
+}
+
+/** Build the deterministic citadel-skyline layout ONCE (structures, windows,
+ *  beacon, colour). Per-frame draw recomputes only baseline Y (from the live
+ *  drifted ridge) + light twinkle/pulse. Density/height/lights scale with the
+ *  citadel level (1 Outpost → 5 Capital). */
+function buildCitadelLayout(
+  w: number,
+  h: number,
+  seed: number,
+  level: number,
+  pal: LandedPalette
+): CitadelLayout | null {
   const ridgeRgb = hexToRgb(pal.ridges[2]);
   const struct = `rgb(${Math.min(255, ridgeRgb.r + 34)}, ${Math.min(255, ridgeRgb.g + 38)}, ${Math.min(255, ridgeRgb.b + 46)})`;
   const rng = splitmix32(seed * 1009 + level * 17);
 
-  // per-level shape: structure count, max height fraction, window density
   const cfg = [
-    { n: 0, maxH: 0,    win: 0,    beacon: false }, // 0 (unused)
-    { n: 1, maxH: 0.05, win: 0,    beacon: false }, // 1 Outpost — one dome+antenna
-    { n: 3, maxH: 0.07, win: 0.1,  beacon: false }, // 2 Settlement
-    { n: 5, maxH: 0.11, win: 0.25, beacon: false }, // 3 Colony — cluster + tower
-    { n: 8, maxH: 0.14, win: 0.45, beacon: false }, // 4 Major Colony — dense
-    { n: 12, maxH: 0.2, win: 0.7,  beacon: true  }  // 5 Capital — megastructure + beacon
+    { n: 0, maxH: 0,    win: 0,    beacon: false },
+    { n: 1, maxH: 0.05, win: 0,    beacon: false },
+    { n: 3, maxH: 0.07, win: 0.1,  beacon: false },
+    { n: 5, maxH: 0.11, win: 0.25, beacon: false },
+    { n: 8, maxH: 0.14, win: 0.45, beacon: false },
+    { n: 12, maxH: 0.2, win: 0.7,  beacon: true  }
   ][level];
-  if (!cfg || cfg.n === 0) return;
+  if (!cfg || cfg.n === 0) return null;
 
-  // cluster the structures around a seeded city-center x for cohesion
   const cityX = w * (0.3 + rng() * 0.4);
   const spread = w * (0.12 + level * 0.05);
 
-  ctx.save();
-  const windows: { x: number; y: number; warm: number }[] = [];
+  const structures: CitadelStructure[] = [];
   for (let i = 0; i < cfg.n; i++) {
     const jitter = (rng() - 0.5) * 2 * spread;
     const sx = Math.max(8, Math.min(w - 8, cityX + jitter));
-    const groundY = ridgeYAt(sx);
     const bw = Math.max(4, w * (0.012 + rng() * 0.02));
     const bh = h * cfg.maxH * (0.35 + rng() * 0.65);
-    const topY = groundY - bh;
 
-    // tower body
-    ctx.fillStyle = struct;
-    ctx.fillRect(sx - bw / 2, topY, bw, bh);
-
-    // structure-type flourish by level
-    if (level === 1) {
-      // Outpost: small dome + antenna
-      ctx.beginPath();
-      ctx.arc(sx, groundY - bh * 0.5, bw * 0.7, Math.PI, 0);
-      ctx.fill();
-      ctx.strokeStyle = struct;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(sx, topY);
-      ctx.lineTo(sx, topY - bh * 0.6);
-      ctx.stroke();
-    } else if (i === 0 && level >= 3) {
-      // signature central tower with a tapered spire for Colony+
-      ctx.beginPath();
-      ctx.moveTo(sx - bw / 2, topY);
-      ctx.lineTo(sx, topY - bh * 0.5);
-      ctx.lineTo(sx + bw / 2, topY);
-      ctx.fill();
-    }
-
-    // collect window slots
+    const windows: { dx: number; dy: number; warm: number }[] = [];
     if (cfg.win > 0) {
       const rows = Math.max(1, Math.floor(bh / 7));
       for (let r = 0; r < rows; r++) {
         for (let c = -1; c <= 1; c++) {
           if (rng() > cfg.win) continue;
-          windows.push({
-            x: sx + c * (bw * 0.3),
-            y: topY + 4 + r * 7,
-            warm: rng()
-          });
+          // store window offsets relative to (sx, topY) so the per-frame draw
+          // can re-anchor them to the live baseline cheaply.
+          windows.push({ dx: c * (bw * 0.3), dy: 4 + r * 7, warm: rng() });
         }
       }
+    }
+
+    structures.push({
+      x: sx, bw, bh, windows,
+      isOutpost: level === 1,
+      isSpire: i === 0 && level >= 3
+    });
+  }
+
+  return { structures, beacon: cfg.beacon, cityX, maxH: cfg.maxH, struct, twinkleWindows: level >= 4 };
+}
+
+/** Per-frame citadel draw — re-anchors the cached layout to the live ridge and
+ *  applies window twinkle / beacon pulse. No allocations beyond the beacon gradient. */
+function drawCitadelSkyline(
+  ctx: CanvasRenderingContext2D,
+  h: number,
+  t: number,
+  layout: CitadelLayout,
+  ridgeYAt: (x: number) => number
+): void {
+  ctx.save();
+  // bodies + structural flourishes
+  let winIndex = 0;
+  for (let s = 0; s < layout.structures.length; s++) {
+    const st = layout.structures[s];
+    const groundY = ridgeYAt(st.x);
+    const topY = groundY - st.bh;
+    ctx.fillStyle = layout.struct;
+    ctx.fillRect(st.x - st.bw / 2, topY, st.bw, st.bh);
+    if (st.isOutpost) {
+      ctx.beginPath();
+      ctx.arc(st.x, groundY - st.bh * 0.5, st.bw * 0.7, Math.PI, 0);
+      ctx.fill();
+      ctx.strokeStyle = layout.struct;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(st.x, topY);
+      ctx.lineTo(st.x, topY - st.bh * 0.6);
+      ctx.stroke();
+    } else if (st.isSpire) {
+      ctx.beginPath();
+      ctx.moveTo(st.x - st.bw / 2, topY);
+      ctx.lineTo(st.x, topY - st.bh * 0.5);
+      ctx.lineTo(st.x + st.bw / 2, topY);
+      ctx.fill();
     }
   }
 
   // warm window lights — twinkle subtly at higher levels (additive)
-  if (windows.length > 0) {
-    ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < windows.length; i++) {
-      const win = windows[i];
-      const tw = level >= 4 ? (0.6 + 0.4 * Math.sin(t * 2 + i * 1.3)) : 0.85;
+  ctx.globalCompositeOperation = 'lighter';
+  for (let s = 0; s < layout.structures.length; s++) {
+    const st = layout.structures[s];
+    if (st.windows.length === 0) continue;
+    const topY = ridgeYAt(st.x) - st.bh;
+    for (let k = 0; k < st.windows.length; k++) {
+      const win = st.windows[k];
+      const tw = layout.twinkleWindows
+        ? (t === 0 ? 0.85 : 0.6 + 0.4 * Math.sin(t * 2 + winIndex * 1.3))
+        : 0.85;
+      winIndex++;
       ctx.fillStyle = `rgba(255, ${190 + Math.round(win.warm * 40)}, ${110 + Math.round(win.warm * 50)}, ${(0.55 * tw).toFixed(3)})`;
-      ctx.fillRect(win.x, win.y, 1.6, 1.6);
+      ctx.fillRect(st.x + win.dx, topY + win.dy, 1.6, 1.6);
     }
-    ctx.globalCompositeOperation = 'source-over';
   }
+  ctx.globalCompositeOperation = 'source-over';
 
   // Capital beacon — a pulsing aircraft-warning light atop the tallest tower
-  if (cfg.beacon) {
-    const bx = cityX;
-    const by = ridgeYAt(bx) - h * cfg.maxH - 4;
-    const pulse = 0.5 + 0.5 * Math.sin(t * 2.4);
+  if (layout.beacon) {
+    const bx = layout.cityX;
+    const by = ridgeYAt(bx) - h * layout.maxH - 4;
+    const pulse = t === 0 ? 0.5 : 0.5 + 0.5 * Math.sin(t * 2.4);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const bg = ctx.createRadialGradient(bx, by, 0, bx, by, 12);
@@ -2518,6 +2881,13 @@ function drawDockedScene(
 // ---------------------------------------------------------------------------
 
 const BASE_FRAME_MS = 1000 / 24; // drift cap; full 60fps only during hover transitions
+// Landed scene runs smooth: its per-frame work is now just the 3 ridge paths +
+// small particle/cloud/twinkle math (all static geometry + gradients are cached),
+// so it can afford a much higher cadence than the 24fps flight/docked drift cap.
+// 48fps (not a full 60) leaves headroom on weak hardware while reading visibly
+// smooth — the eye stops perceiving choppiness well below 60 once frame pacing
+// is even, and 48 halves the GPU fill cost of the additive layers vs 60.
+const LANDED_FRAME_MS = 1000 / 48;
 
 const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   sectorId,
@@ -2834,6 +3204,12 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     if (reducedMotionRef.current) drawNowRef.current();
   }, [selectedShipId]);
 
+  // ---- Drop the module-level landed-scene cache on unmount so a remount never
+  //      reuses CanvasGradient objects bound to the destroyed canvas context.
+  //      (drawLandedScene also guards via cache.ctx !== ctx; this is belt-and-
+  //      suspenders and frees the cached geometry/gradients promptly.) ----
+  useEffect(() => () => { landedCache = null; }, []);
+
   // ---- Live prefers-reduced-motion tracking (always mounted) ----
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -2885,7 +3261,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     const tick = (now: number) => {
       rafRef.current = requestAnimationFrame(tick);
       const boosted = now < hoverBoostUntilRef.current;
-      if (!boosted && now - lastDrawRef.current < BASE_FRAME_MS) return;
+      // The landed scene is now cheap enough to run at a smoother cadence; flight
+      // and docked keep the 24fps drift cap (their draw paths are untouched).
+      const frameMs = sceneRef.current.scene === 'landed' ? LANDED_FRAME_MS : BASE_FRAME_MS;
+      if (!boosted && now - lastDrawRef.current < frameMs) return;
       lastDrawRef.current = now;
       drawNowRef.current();
     };
