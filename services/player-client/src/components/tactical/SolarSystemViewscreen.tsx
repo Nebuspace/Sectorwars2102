@@ -2106,6 +2106,12 @@ interface LandedCache {
   moonProminence: number;
   // ocean wave lines (NEW; OCEANIC / water variants only)
   waves: WaveLine[];
+  // foreground SHORE (water variants only — replaces the 3 ridges on water worlds)
+  shoreY: number;            // base y of the near shore the player stands on
+  shoreColor: string;        // foreground landform fill
+  shoreFoamColor: string;    // foam lip where land meets water
+  shoreProfile: number[];    // precomputed undulation noise (0..1) for the shore edge
+  farIsland: { pts: number[]; color: string } | null; // distant island silhouette at the horizon
   hasCompanion: boolean; c2x: number; c2y: number; c2r: number; c2: { r: number; g: number; b: number };
   // ridge geometry (noise precomputed; drifted profile recomputed per frame)
   layers: RidgeLayer[];
@@ -2201,15 +2207,20 @@ function buildLandedCache(
   let waterTopY = horizonY;
   let landBaseFrac = 0;        // shift ridge base lower(+)/higher(-)
   let citadelOnWater = false;  // true → push city onto the small land mass
+  // Water worlds are OCEAN-DOMINANT: the sea fills the band from the horizon down
+  // to a LOW foreground shore. waterTopY sits at (or near) the horizon for every
+  // water variant so the sea is large; the foreground shore (shoreY, below) is the
+  // only land drawn — the 3 parallax ridges are skipped on water worlds.
+  let shoreY = h * 0.84;       // base y of the near shore the player stands on
   if (hasWater) {
     if (landform === 'OCEAN_CLIFF') {
-      // foreground cliff edge high, the sea sits far below it
-      waterTopY = h * 0.72; landBaseFrac = -0.05;
+      // standing high on a clifftop looking out/down to a big sea below.
+      waterTopY = h * 0.56; shoreY = h * 0.80; landBaseFrac = -0.05;
     } else if (landform === 'OCEAN_ISLAND') {
-      // ocean fills the horizon; a small land mass in the foreground only
-      waterTopY = horizonY; landBaseFrac = 0.18; citadelOnWater = true;
-    } else { // SHORELINE / ICE_FROZENSEA / TER_COAST — land meets water mid-scene
-      waterTopY = h * 0.66; landBaseFrac = 0.04;
+      // open sea to the horizon with a distant island; a near shore underfoot.
+      waterTopY = h * 0.56; shoreY = h * 0.86; landBaseFrac = 0.18; citadelOnWater = true;
+    } else { // SHORELINE / ICE_FROZENSEA / TER_COAST — beach in the foreground, sea above
+      waterTopY = h * 0.56; shoreY = h * 0.84; landBaseFrac = 0.04;
     }
   } else if (landform === 'VOLC_CALDERA' || landform === 'MTN_PEAKS' || landform === 'ICE_PEAKS') {
     landBaseFrac = -0.08; // dramatic high rim/peaks
@@ -2339,30 +2350,79 @@ function buildLandedCache(
   // layered wave crest-lines (precomputed; the crests ripple per frame).
   let waterBand: CanvasGradient | null = null;
   const waves: WaveLine[] = [];
+  // Shore + far-island artefacts (water variants only). Precomputed once — the
+  // shore edge undulation and the distant island silhouette are seeded here and
+  // never re-seeded per frame; only sine drift moves the waves/foam.
+  let shoreColor = '';
+  let shoreFoamColor = '';
+  const shoreProfile: number[] = [];
+  let farIsland: { pts: number[]; color: string } | null = null;
   if (hasWater) {
     const bandTop = waterTopY;
+    // The sea band now spans most of the lower scene (horizon → shore). Make the
+    // depth gradient OPAQUE blue-teal so it reads unmistakably as water, not a
+    // faint wash over the sky. Brighter near the waterline (sky reflection),
+    // deepening to a dark abyssal blue at the foreground.
     waterBand = ctx.createLinearGradient(0, bandTop, 0, h);
-    // brighter at the waterline (sky/sun reflection on far water), deepening down.
-    const surfTint = todBright > 0.3
-      ? `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.10 + prox * 0.10).toFixed(3)})`
-      : 'rgba(60, 90, 120, 0.16)';
-    waterBand.addColorStop(0, surfTint);
-    waterBand.addColorStop(0.45, 'rgba(20, 70, 100, 0.30)');
-    waterBand.addColorStop(1, 'rgba(6, 22, 40, 0.55)');
-    // wave crest-lines: finer/denser near the waterline, larger toward foreground.
+    const surf = todBright > 0.3
+      ? { r: Math.round(40 + sc.r * 0.18), g: Math.round(120 + sc.g * 0.18), b: Math.round(150 + sc.b * 0.15) }
+      : { r: 28, g: 70, b: 104 };
+    waterBand.addColorStop(0, `rgba(${surf.r}, ${surf.g}, ${surf.b}, 0.92)`);
+    waterBand.addColorStop(0.4, 'rgba(18, 78, 116, 0.95)');
+    waterBand.addColorStop(0.8, 'rgba(10, 46, 78, 0.97)');
+    waterBand.addColorStop(1, 'rgba(5, 24, 46, 0.98)');
+
+    // wave crest-lines: MANY lines, clearly visible, denser near the horizon and
+    // larger & farther apart toward the foreground (perspective). Each crest gets a
+    // bright top stroke + a darker trough stroke drawn just below for definition so
+    // the surface reads as moving water, not a flat tint.
     const wRng = splitmix32(worldSeed * 1597 + 91);
-    const lineCount = 14;
+    const lineCount = 24;
     for (let i = 0; i < lineCount; i++) {
-      const f = i / (lineCount - 1);            // 0 = waterline … 1 = foreground
+      // ease the fraction so lines bunch up near the horizon and spread near camera
+      const lin = i / (lineCount - 1);          // 0 = waterline … 1 = foreground
+      const f = lin * lin;                       // perspective spacing
       waves.push({
         yFrac: f,
-        amp: (1.0 + f * 6.0) + wRng() * 1.5,    // bigger swells toward the camera
-        wavelength: (28 + f * 120) * (0.8 + wRng() * 0.5),
-        speed: 0.4 + f * 0.9,
+        amp: (1.5 + f * 11.0) + wRng() * 2.0,   // bigger swells toward the camera
+        wavelength: (34 + f * 150) * (0.8 + wRng() * 0.5),
+        speed: 0.4 + f * 1.1,
         phase: wRng() * Math.PI * 2,
-        alpha: (0.05 + f * 0.14),
-        lineW: 0.6 + f * 1.4,
+        alpha: (0.18 + f * 0.34),               // far stronger than before
+        lineW: 0.8 + f * 2.4,
       });
+    }
+
+    // --- foreground SHORE colour + foam, per water variant ---
+    if (landform === 'ICE_FROZENSEA') {
+      shoreColor = 'rgb(214, 230, 240)';   // pale ice shelf
+      shoreFoamColor = 'rgba(240, 250, 255, 1)';
+    } else if (landform === 'TER_COAST') {
+      const fc = pal.flora.split(',').map((s) => parseInt(s.trim(), 10));
+      shoreColor = `rgb(${fc[0]}, ${fc[1]}, ${fc[2]})`; // green coastal land
+      shoreFoamColor = 'rgba(225, 245, 250, 1)';
+    } else if (landform === 'OCEAN_CLIFF') {
+      shoreColor = 'rgb(48, 44, 52)';      // dark sharp rock edge
+      shoreFoamColor = 'rgba(210, 235, 245, 1)';
+    } else { // OCEAN_ISLAND / OCEAN_SHORELINE — sandy/rocky beach
+      shoreColor = 'rgb(150, 132, 96)';
+      shoreFoamColor = 'rgba(235, 248, 250, 1)';
+    }
+
+    // shore edge undulation (precomputed noise; sampled across the width)
+    const shRng = splitmix32(worldSeed * 2089 + 53);
+    const shorePts = Math.ceil(w / 8) + 2;
+    for (let i = 0; i < shorePts; i++) shoreProfile.push(shRng());
+
+    // OCEAN_ISLAND: a distant thin island silhouette sitting right at the horizon.
+    if (landform === 'OCEAN_ISLAND') {
+      const isRng = splitmix32(worldSeed * 3371 + 97);
+      const pts: number[] = [];
+      const ipts = 18;
+      for (let i = 0; i < ipts; i++) pts.push(isRng());
+      // tint: a hazy dark land mass against the bright waterline
+      const ic = todBright > 0.3 ? 'rgba(40, 60, 78, 0.85)' : 'rgba(24, 36, 54, 0.9)';
+      farIsland = { pts, color: ic };
     }
   }
 
@@ -2425,15 +2485,22 @@ function buildLandedCache(
   const flouraSeeds: FloraSeed[] = [];
   if (floraEligible && habN > 0.15) {
     const baseCount = pal.flourish === 'DESERT' ? 12 : pal.flourish === 'ICE' ? 8 : 30;
-    const floraCount = Math.round(habN * baseCount);
+    // On WATER worlds the only land is the thin foreground shore — scatter a FEW
+    // plants there, never across the sea. Cap hard so they cluster on the beach.
+    const floraCount = hasWater
+      ? Math.min(6, Math.max(2, Math.round(habN * 6)))
+      : Math.round(habN * baseCount);
     const flRng = splitmix32(worldSeed * 619 + 71);
     // x-window the plants must fall within so they sit on LAND, not water.
     // For ocean ISLAND the land is the foreground centre; for SHORELINE/COAST the
     // land is one half of the scene; cliff-top plants run the full width (land is
     // the foreground plateau). Non-water worlds use the full width.
+    // On water worlds the shore spans the full width (the foreground band the
+    // player stands on), so plants may sit anywhere along it; their baseY comes
+    // from the shoreline profile (frontProfile) at draw time. On the island the
+    // near shore is centred. Non-water worlds use the full ridge width.
     let xMin = 0, xMax = w;
-    if (landform === 'OCEAN_ISLAND') { xMin = w * 0.30; xMax = w * 0.70; }
-    else if (landform === 'OCEAN_SHORELINE' || landform === 'TER_COAST') { xMin = 0; xMax = w * 0.55; }
+    if (landform === 'OCEAN_ISLAND') { xMin = w * 0.18; xMax = w * 0.82; }
     for (let i = 0; i < floraCount; i++) {
       const x = xMin + flRng() * (xMax - xMin);
       const wob = flRng() * 0.4 + 0.8;
@@ -2532,6 +2599,7 @@ function buildLandedCache(
     reflX, reflTint,
     sunX, sunY, sunR, coronaR,
     moons, moonProminence, waves,
+    shoreY, shoreColor, shoreFoamColor, shoreProfile, farIsland,
     hasCompanion, c2x, c2y, c2r, c2,
     layers, period, ridgeColors,
     skyGrad, washGrad, coronaGrad, discGrad, companionCorona, glowGrad, starHueGlow, waterBand,
@@ -2684,26 +2752,66 @@ function drawLandedScene(
     ctx.fillStyle = cache.waterBand;
     ctx.fillRect(0, wt, w, wh);
 
-    // 2) wave crest-lines — sine ripples; denser/finer near the waterline,
-    //    larger toward the foreground (parallax). Cheap per-frame math only.
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = `rgba(${reflWaveRGB(cache)}, 1)`;
+    // 1b) DISTANT ISLAND silhouette sitting at the horizon (OCEAN_ISLAND only) —
+    //     a thin dark land mass right at the waterline so the sea reads as
+    //     "surrounded by water". Drawn under the waves so ripples cross in front.
+    if (cache.farIsland) {
+      const fi = cache.farIsland;
+      const n = fi.pts.length;
+      const ix0 = w * 0.30, ix1 = w * 0.70;   // island spans the centre of the horizon
+      const peak = h * 0.05;                    // low, distant
+      ctx.save();
+      ctx.fillStyle = fi.color;
+      ctx.beginPath();
+      ctx.moveTo(ix0, wt + 1);
+      for (let s = 0; s <= n - 1; s++) {
+        const x = ix0 + (ix1 - ix0) * (s / (n - 1));
+        // bell-shaped mass: tallest in the middle, tapering to the waterline at ends
+        const bell = Math.sin((s / (n - 1)) * Math.PI);
+        const y = wt + 1 - bell * peak * (0.4 + fi.pts[s] * 0.6);
+        ctx.lineTo(x, y);
+      }
+      ctx.lineTo(ix1, wt + 1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 2) wave crest-lines — clearly visible sine ripples; denser near the waterline,
+    //    larger toward the foreground (parallax). Each line is drawn TWICE: a dark
+    //    trough stroke just below, then a bright crest stroke on top, so the surface
+    //    reads as moving water with depth, not a flat tint. Cheap per-frame math.
+    const crestRGB = reflWaveRGB(cache);
     for (let wi = 0; wi < cache.waves.length; wi++) {
       const wv = cache.waves[wi];
       const baseY = wt + wv.yFrac * wh;
-      ctx.globalAlpha = wv.alpha;
+      const drift = t === 0 ? 0 : t * wv.speed * 30;
+      // dark trough stroke (normal blend, just below the crest)
+      ctx.save();
+      ctx.globalAlpha = wv.alpha * 0.8;
+      ctx.strokeStyle = 'rgba(4, 20, 38, 1)';
       ctx.lineWidth = wv.lineW;
       ctx.beginPath();
-      const step = 10;
-      for (let x = 0; x <= w; x += step) {
-        const drift = t === 0 ? 0 : t * wv.speed * 30;
+      for (let x = 0; x <= w; x += 10) {
+        const y = baseY + 1.5 + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * wv.amp;
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+      // bright crest stroke (additive, on top)
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = wv.alpha;
+      ctx.strokeStyle = `rgba(${crestRGB}, 1)`;
+      ctx.lineWidth = wv.lineW;
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 10) {
         const y = baseY + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * wv.amp;
         if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
       ctx.stroke();
+      ctx.restore();
     }
-    ctx.restore();
 
     // 3) reflection glitter column under the sun (day) or brightest moon (night).
     //    A MOONLESS night has no light source — skip the column entirely so the
@@ -2750,8 +2858,56 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 5) Parallax ridge layers — noise cached; drifted profile rebuilt per frame.
+  // 5) FOREGROUND LAND.
+  //   WATER worlds: a single LOW foreground shore (the strand you stand on) — NOT
+  //   the 3 parallax mountain ridges, which would bury the ocean. The shore's
+  //   surface line becomes frontProfile so flora + citadel sit on the shore.
+  //   NON-water worlds: the existing 3-ridge mountain silhouettes, unchanged.
   let frontProfile: number[] | null = null;
+  if (cache.hasWater) {
+    // ONE shore landform across the bottom of the scene. shoreY is the base; the
+    // cached shoreProfile gives a gentle undulation. The clifftop is sharper/higher
+    // and darker; the beach is low and gentle. Foam line where it meets the water.
+    const sp = cache.shoreProfile;
+    const isCliff = cache.landform === 'OCEAN_CLIFF';
+    const amp = isCliff ? h * 0.06 : h * 0.025;   // sharper edge for cliffs
+    const cols: number[] = [];
+    ctx.beginPath();
+    ctx.moveTo(0, h);
+    for (let x = 0; x <= w; x += 8) {
+      const idx = Math.min(sp.length - 1, Math.round(x / 8));
+      // blend two neighbour samples for a smooth, deterministic edge
+      const a = sp[idx];
+      const b = sp[Math.min(sp.length - 1, idx + 1)];
+      const v = (a + b) * 0.5;
+      // cliffs get an extra hard step near one third of the width for drama
+      const stepBias = isCliff ? (Math.sin(x / w * Math.PI * 1.5) * 0.25) : 0;
+      const y = cache.shoreY - (v - 0.5 + stepBias) * amp;
+      ctx.lineTo(x, y);
+      cols.push(y);
+    }
+    ctx.lineTo(w, h);
+    ctx.closePath();
+    ctx.fillStyle = cache.shoreColor;
+    ctx.fill();
+    frontProfile = cols;
+
+    // foam line along the shore edge where the land meets the sea.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = cache.shoreFoamColor;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.5 + (t === 0 ? 0 : 0.12 * Math.sin(t * 1.6));
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 8) {
+      const idx = Math.min(cols.length - 1, Math.round(x / 8));
+      const drift = t === 0 ? 0 : Math.sin((x + t * 20) / 36 * Math.PI * 2) * 1.4;
+      const y = cols[idx] + drift;
+      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  } else {
   for (let li = 0; li < cache.layers.length; li++) {
     const layer = cache.layers[li];
     const off = t * layer.speed;
@@ -2778,6 +2934,7 @@ function drawLandedScene(
     ctx.fillStyle = cache.ridgeColors[li];
     ctx.fill();
     if (profileXs) frontProfile = profileXs;
+  }
   }
   const ridgeYAt = (x: number): number => {
     if (!frontProfile || frontProfile.length === 0) return h * 0.84;
