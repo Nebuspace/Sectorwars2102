@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import apiClient from '../../services/apiClient';
-import { useAuth } from '../../contexts/AuthContext';
 
 const OAuthCallback: React.FC = () => {
   const location = useLocation();
@@ -11,7 +10,6 @@ const OAuthCallback: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [userInfo, setUserInfo] = useState<any>(null);
   const [playerInfo, setPlayerInfo] = useState<any>(null);
-  const { refreshToken: authRefreshToken } = useAuth();
 
   useEffect(() => {
     const handleOAuthCallback = async () => {
@@ -63,29 +61,23 @@ const OAuthCallback: React.FC = () => {
         // The main app will fetch user/player info after redirect using proper authentication context
         setStatus(`Login successful! Launching game...`);
 
-        // Force a reload of authentication state in the AuthContext
-        try {
-          await authRefreshToken();
-        } catch {
-          // Continue anyway, as we'll do a full page reload
-        }
-        
+        // Do NOT refresh here: the tokens we just stored are freshly issued by
+        // the OAuth flow (or the code-exchange above). Refreshing immediately
+        // rotates — and therefore revokes — the brand-new refresh token, and
+        // burns one of the limited /auth/refresh calls. The AuthContext
+        // bootstraps from the stored tokens (via /auth/me) on the /game reload.
+
         // Set a sessionStorage flag to track the redirect
         sessionStorage.setItem('oauth_redirect_completed', 'true');
         
         // Create a function to directly navigate to the dashboard with the token
         const navigateWithToken = () => {
           try {
-            // Make sure the token is correctly set in localStorage
-            if (localStorage.getItem('accessToken') !== accessToken) {
-              localStorage.setItem('accessToken', accessToken);
-              localStorage.setItem('refreshToken', refreshToken);
-              localStorage.setItem('userId', userId);
-              
-              // Set axios defaults for current session
-              axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
-            }
-            
+            // Tokens are already in localStorage (stored above) and the axios
+            // default header is set. Do NOT re-write them from the captured
+            // vars here — if anything rotated the token in the meantime, that
+            // would clobber the live token with a stale/revoked one (the cause
+            // of the post-login refresh storm → 429 → bounce). Just navigate.
             window.location.href = '/game';
           } catch (err) {
             console.error('Error during navigation:', err);
@@ -103,7 +95,7 @@ const OAuthCallback: React.FC = () => {
     };
 
     handleOAuthCallback();
-  }, [location, navigate, authRefreshToken]);
+  }, [location, navigate]);
 
   return (
     <div className="oauth-callback-container">
