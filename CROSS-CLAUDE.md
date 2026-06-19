@@ -922,3 +922,10 @@ of the proven coordination_bonus: supply penalties (>50 none/25-50 −5%/<25 −
 Defender +10% absorption, flagship-destruction −30 morale, can't-initiate-at-0-supply, per-round
 supply<25 morale decay. Scout/Support deferred (NO-CANON). Adversarial-reviewed (PASS, canon exact).
 CLOSED below after live proof.
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 4 L8b)
+Deployed `4911f03`, gameserver healthy. Supply penalty PROVEN live on the real _calculate_formation_bonus
+(100/60→1.0, 50/25→0.95, 24/0→0.85; compounds: supply40+morale50→0.475, aggressive+supply20→.9775/.7225).
+Defender +10% / flagship −30 / initiate-block reviewer-confirmed canon-exact (0 fleets on dev → no battle
+harness). Baseline identical at supply 100. fleet-tactics markers flipped (Supply ✅ combat-math, Defender/
+Flagship ✅, Support/Scout still 📐). No migration.
