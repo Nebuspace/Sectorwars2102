@@ -761,3 +761,37 @@ genuinely long, secondary lists (logs, inboxes, hail history) — never for the
 primary controls a screen exists to provide. If a default view needs scrolling
 to reach its core action, the layout is wrong; fix the layout, don't accept the
 scroll.
+
+---
+
+## 🔗 INTER-INSTANCE COORDINATION — Two-Claude Protocol (added 2026-06-19)
+
+**You may be one of TWO Claude Code instances on this workspace.** The full protocol is the
+workspace-root spec at `/Users/mrathbone/github/Nebuspace/CLAUDE.md` (Claude Code loads every
+`CLAUDE.md` from cwd up the directory tree, so when this repo sits under `…/Nebuspace/` that
+spec is already in your context). **If it is NOT in your context (check `/memory`), read it
+now before touching shared state.**
+
+**Your identity here:** an instance rooted in THIS repo is an **IMPLEMENTER** — you own this
+repo's working tree, you build / prove / report, and you coordinate through
+`./CROSS-CLAUDE.md`. The **ORCHESTRATOR** runs from the parent dir (`…/Nebuspace/`), sees all
+repos, issues work orders, and verifies finished work. Both instances can spawn subagents.
+
+**On session start (bootstrap):** read `./CROSS-CLAUDE.md` (tail) + `../ROSTER.md`; announce
+yourself with a dated `🛰️ HEADS-UP` line in `./CROSS-CLAUDE.md`; then **arm the mailbox
+watcher** (run in the background; re-arm each time it wakes you):
+```bash
+/Users/mrathbone/github/Nebuspace/.claude/watch-coordination.sh \
+  /Users/mrathbone/github/Nebuspace/ROSTER.md ./CROSS-CLAUDE.md
+```
+
+**The 5 rules that prevent disasters (full detail in the root spec):**
+1. **Commit only explicit paths** — `git commit -- <your/owned/paths>`. **NEVER `git add -A` / `git add .`** in this shared working tree (it sweeps the other instance's in-flight files — this has already happened once). `git pull --rebase --autostash` before every push.
+2. **Bracket shared-runtime changes with a DEPLOY WINDOW** — before a gameserver restart or any DB migration, post `🔧 DEPLOY-WINDOW-OPEN`; post `✅ DEPLOY-WINDOW-CLOSED` when health is green. A frontend-only restart in your exclusive lane = a one-line `🛰️ HEADS-UP`, no window.
+3. **Stay in your lane; announce before crossing** — edit only your owned paths; to touch a shared file (`package.json`, `core/`, shared types) or the other lane, post intent and wait for `🤝 ACK`.
+4. **Read `./CROSS-CLAUDE.md` before any commit / push / deploy.**
+5. **`sw2102-docs` is PUBLIC** (auto-deploys to Cloudflare on push to `main`; `DECISIONS.md` is in the published nav). Never put coordination chatter, status, or **secrets** in any mailbox or doc — credentials live in `~/github/ServerSetup/`.
+
+> ⚠️ **This SUPERSEDES the Phase-6 `git add -A && git commit` instruction earlier in this
+> file.** In multi-instance mode that command is forbidden — always scope your commits with
+> `git commit -- <paths>`.
