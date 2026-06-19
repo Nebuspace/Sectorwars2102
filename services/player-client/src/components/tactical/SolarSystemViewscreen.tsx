@@ -2112,6 +2112,17 @@ interface LandedCache {
   shoreFoamColor: string;    // foam lip where land meets water
   shoreProfile: number[];    // precomputed undulation noise (0..1) for the shore edge
   farIsland: { pts: number[]; color: string } | null; // distant island silhouette at the horizon
+  // OCEAN_CLIFF only: a foreground SIDE headland (one seeded side is solid land
+  // rising to a clifftop plateau; the open side reveals the sea). null otherwise.
+  headland: {
+    side: 'left' | 'right';  // which side is land
+    landFrac: number;        // width of the land mass as a fraction of w (0.35..0.45)
+    topProfile: number[];    // clifftop surface noise (0..1) across the land x-window
+    topColor: string;        // clifftop plateau fill (lighter)
+    faceColor: string;       // vertical cliff face fill (darker)
+    edgeColor: string;       // highlight stroke along the clifftop edge
+    plateauY: number;        // base y of the clifftop plateau
+  } | null;
   hasCompanion: boolean; c2x: number; c2y: number; c2r: number; c2: { r: number; g: number; b: number };
   // ridge geometry (noise precomputed; drifted profile recomputed per frame)
   layers: RidgeLayer[];
@@ -2357,6 +2368,7 @@ function buildLandedCache(
   let shoreFoamColor = '';
   const shoreProfile: number[] = [];
   let farIsland: { pts: number[]; color: string } | null = null;
+  let headland: LandedCache['headland'] = null;
   if (hasWater) {
     const bandTop = waterTopY;
     // The sea band now spans most of the lower scene (horizon → shore). Make the
@@ -2423,6 +2435,41 @@ function buildLandedCache(
       // tint: a hazy dark land mass against the bright waterline
       const ic = todBright > 0.3 ? 'rgba(40, 60, 78, 0.85)' : 'rgba(24, 36, 54, 0.9)';
       farIsland = { pts, color: ic };
+    }
+
+    // OCEAN_CLIFF: a foreground SIDE HEADLAND. One seeded side is a solid land mass
+    // rising to a clifftop plateau; the open side reveals the dominant sea. The
+    // clifftop is the surface structures stand on (frontProfile is set over the
+    // headland x-window at draw time; flora/citadel are clamped to that side).
+    if (landform === 'OCEAN_CLIFF') {
+      const hRng = splitmix32(worldSeed * 4129 + 131);
+      const side: 'left' | 'right' = hRng() < 0.5 ? 'left' : 'right';
+      const landFrac = 0.35 + hRng() * 0.10;       // 35%..45% of the width
+      // clifftop plateau height: a touch of seeded variety in the h*0.45..0.60 band
+      const plateauY = h * (0.45 + hRng() * 0.15);
+      // clifftop surface noise across the land x-window
+      const topProfile: number[] = [];
+      const topPts = Math.max(8, Math.round(w * landFrac / 8) + 2);
+      for (let i = 0; i < topPts; i++) topProfile.push(hRng());
+      // tints from the palette ridge colours: plateau lighter, face darker.
+      const baseRidge = hexToRgb(pal.ridges[2] || pal.ridges[0] || '#5a5560');
+      const lighten = (c: { r: number; g: number; b: number }, k: number) => ({
+        r: Math.min(255, Math.round(c.r + (255 - c.r) * k)),
+        g: Math.min(255, Math.round(c.g + (255 - c.g) * k)),
+        b: Math.min(255, Math.round(c.b + (255 - c.b) * k)),
+      });
+      const darken = (c: { r: number; g: number; b: number }, k: number) => ({
+        r: Math.round(c.r * (1 - k)), g: Math.round(c.g * (1 - k)), b: Math.round(c.b * (1 - k)),
+      });
+      const top = lighten(baseRidge, 0.18 + todBright * 0.12);
+      const face = darken(baseRidge, 0.42);
+      const edge = lighten(baseRidge, 0.5 + todBright * 0.2);
+      headland = {
+        side, landFrac, topProfile, plateauY,
+        topColor: `rgb(${top.r}, ${top.g}, ${top.b})`,
+        faceColor: `rgb(${face.r}, ${face.g}, ${face.b})`,
+        edgeColor: `rgba(${edge.r}, ${edge.g}, ${edge.b}, 0.7)`,
+      };
     }
   }
 
@@ -2501,6 +2548,11 @@ function buildLandedCache(
     // near shore is centred. Non-water worlds use the full ridge width.
     let xMin = 0, xMax = w;
     if (landform === 'OCEAN_ISLAND') { xMin = w * 0.18; xMax = w * 0.82; }
+    else if (landform === 'OCEAN_CLIFF' && headland) {
+      // plants live on the clifftop plateau (the land side), inset from the edge.
+      if (headland.side === 'left') { xMin = w * 0.04; xMax = w * (headland.landFrac - 0.06); }
+      else { xMin = w * (1 - headland.landFrac + 0.06); xMax = w * 0.96; }
+    }
     for (let i = 0; i < floraCount; i++) {
       const x = xMin + flRng() * (xMax - xMin);
       const wob = flRng() * 0.4 + 0.8;
@@ -2533,9 +2585,15 @@ function buildLandedCache(
   }
 
   // --- CITADEL skyline layout (windows/beacon/heights fixed; y per frame) ---
-  // On an ocean island the city must stay on the foreground land mass (the same
-  // x-window the flora uses) so towers never stand over open water.
-  const citadelLandX = citadelOnWater ? { min: w * 0.30, max: w * 0.70 } : undefined;
+  // On an ocean island the city must stay on the foreground land mass; on an ocean
+  // CLIFF it must stay on the clifftop headland side — so towers never stand over
+  // open water. Both clamp the citadel x-window to the land x-window.
+  let citadelLandX = citadelOnWater ? { min: w * 0.30, max: w * 0.70 } : undefined;
+  if (landform === 'OCEAN_CLIFF' && headland) {
+    citadelLandX = headland.side === 'left'
+      ? { min: w * 0.05, max: w * (headland.landFrac - 0.06) }
+      : { min: w * (1 - headland.landFrac + 0.06), max: w * 0.95 };
+  }
   const citadelLayout = citadel > 0 ? buildCitadelLayout(w, h, worldSeed, citadel, pal, citadelLandX) : null;
 
   // --- HAZE seeds ---
@@ -2599,7 +2657,7 @@ function buildLandedCache(
     reflX, reflTint,
     sunX, sunY, sunR, coronaR,
     moons, moonProminence, waves,
-    shoreY, shoreColor, shoreFoamColor, shoreProfile, farIsland,
+    shoreY, shoreColor, shoreFoamColor, shoreProfile, farIsland, headland,
     hasCompanion, c2x, c2y, c2r, c2,
     layers, period, ridgeColors,
     skyGrad, washGrad, coronaGrad, discGrad, companionCorona, glowGrad, starHueGlow, waterBand,
@@ -2864,13 +2922,119 @@ function drawLandedScene(
   //   surface line becomes frontProfile so flora + citadel sit on the shore.
   //   NON-water worlds: the existing 3-ridge mountain silhouettes, unchanged.
   let frontProfile: number[] | null = null;
-  if (cache.hasWater) {
+  if (cache.hasWater && cache.headland) {
+    // OCEAN_CLIFF — a foreground SIDE headland. One side is a solid land mass rising
+    // to a clifftop plateau; the open side reveals the dominant sea. frontProfile is
+    // set ONLY over the headland x-window (open side has no land → structures stay
+    // off the water).
+    const hl = cache.headland;
+    const tp = hl.topProfile;
+    const isLeft = hl.side === 'left';
+    const landEdgeX = isLeft ? w * hl.landFrac : w * (1 - hl.landFrac); // the open-side cliff edge
+    // sample the clifftop surface at a given x (within the land), with deterministic
+    // undulation from the cached topProfile.
+    const topYAt = (x: number): number => {
+      // map x across the LAND width to a topProfile index
+      const f = isLeft ? (x / Math.max(1, landEdgeX)) : ((x - landEdgeX) / Math.max(1, w - landEdgeX));
+      const fi = Math.max(0, Math.min(1, f)) * (tp.length - 1);
+      const i0 = Math.floor(fi);
+      const i1 = Math.min(tp.length - 1, i0 + 1);
+      const fr = fi - i0;
+      const v = tp[i0] * (1 - fr) + tp[i1] * fr;
+      return hl.plateauY - (v - 0.5) * h * 0.05; // gentle plateau undulation
+    };
+
+    // 1) cliff FACE — a clean curved drop from the clifftop edge down to the sea on
+    //    the open side. Drawn darker; gives the headland body its mass.
+    ctx.save();
+    ctx.fillStyle = hl.faceColor;
+    ctx.beginPath();
+    if (isLeft) {
+      ctx.moveTo(0, h);
+      ctx.lineTo(0, topYAt(0));
+      for (let x = 0; x <= landEdgeX; x += 8) ctx.lineTo(x, topYAt(x));
+      // curved cliff edge dropping to the sea
+      const edgeTopY = topYAt(landEdgeX);
+      ctx.quadraticCurveTo(landEdgeX + w * 0.04, (edgeTopY + h) * 0.5, landEdgeX, h);
+      ctx.closePath();
+    } else {
+      ctx.moveTo(w, h);
+      ctx.lineTo(w, topYAt(w));
+      for (let x = w; x >= landEdgeX; x -= 8) ctx.lineTo(x, topYAt(x));
+      const edgeTopY = topYAt(landEdgeX);
+      ctx.quadraticCurveTo(landEdgeX - w * 0.04, (edgeTopY + h) * 0.5, landEdgeX, h);
+      ctx.closePath();
+    }
+    ctx.fill();
+    ctx.restore();
+
+    // 2) clifftop PLATEAU cap — a lighter band along the top surface so the player
+    //    reads a flat-ish standing surface above the dark face.
+    ctx.save();
+    ctx.fillStyle = hl.topColor;
+    ctx.beginPath();
+    const capDepth = h * 0.06;
+    if (isLeft) {
+      ctx.moveTo(0, topYAt(0) + capDepth);
+      ctx.lineTo(0, topYAt(0));
+      for (let x = 0; x <= landEdgeX; x += 8) ctx.lineTo(x, topYAt(x));
+      ctx.lineTo(landEdgeX, topYAt(landEdgeX) + capDepth);
+      ctx.closePath();
+    } else {
+      ctx.moveTo(w, topYAt(w) + capDepth);
+      ctx.lineTo(w, topYAt(w));
+      for (let x = w; x >= landEdgeX; x -= 8) ctx.lineTo(x, topYAt(x));
+      ctx.lineTo(landEdgeX, topYAt(landEdgeX) + capDepth);
+      ctx.closePath();
+    }
+    ctx.fill();
+    ctx.restore();
+
+    // 3) highlight stroke along the clifftop edge.
+    ctx.save();
+    ctx.strokeStyle = hl.edgeColor;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (isLeft) {
+      for (let x = 0; x <= landEdgeX; x += 8) { const y = topYAt(x); if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+    } else {
+      for (let x = w; x >= landEdgeX; x -= 8) { const y = topYAt(x); if (x === w) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // 4) foam where the waves meet the BASE of the cliff (the open-side waterline
+    //    against the headland). A bright lip running down the cliff edge.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = cache.shoreFoamColor;
+    ctx.lineWidth = 2.5;
+    ctx.globalAlpha = 0.5 + (t === 0 ? 0 : 0.14 * Math.sin(t * 1.6));
+    ctx.beginPath();
+    const foamX = landEdgeX + (isLeft ? 2 : -2);
+    const foamTop = topYAt(landEdgeX) + h * 0.04;
+    for (let y = foamTop; y <= h; y += 8) {
+      const drift = t === 0 ? 0 : Math.sin((y + t * 22) / 30 * Math.PI * 2) * 2.0;
+      const fx = foamX + drift * (isLeft ? 1 : -1);
+      if (y === foamTop) ctx.moveTo(fx, y); else ctx.lineTo(fx, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // frontProfile: clifftop surface over the land x-window; the open side reports a
+    // y BELOW the canvas so nothing (flora/citadel) ever lands on the open water.
+    const cols: number[] = [];
+    for (let x = 0; x <= w; x += 8) {
+      const onLand = isLeft ? x <= landEdgeX : x >= landEdgeX;
+      cols.push(onLand ? topYAt(x) : h + 9999);
+    }
+    frontProfile = cols;
+  } else if (cache.hasWater) {
     // ONE shore landform across the bottom of the scene. shoreY is the base; the
-    // cached shoreProfile gives a gentle undulation. The clifftop is sharper/higher
-    // and darker; the beach is low and gentle. Foam line where it meets the water.
+    // cached shoreProfile gives a gentle undulation. The beach is low and gentle.
+    // Foam line where it meets the water.
     const sp = cache.shoreProfile;
-    const isCliff = cache.landform === 'OCEAN_CLIFF';
-    const amp = isCliff ? h * 0.06 : h * 0.025;   // sharper edge for cliffs
+    const amp = h * 0.025;
     const cols: number[] = [];
     ctx.beginPath();
     ctx.moveTo(0, h);
@@ -2880,9 +3044,7 @@ function drawLandedScene(
       const a = sp[idx];
       const b = sp[Math.min(sp.length - 1, idx + 1)];
       const v = (a + b) * 0.5;
-      // cliffs get an extra hard step near one third of the width for drama
-      const stepBias = isCliff ? (Math.sin(x / w * Math.PI * 1.5) * 0.25) : 0;
-      const y = cache.shoreY - (v - 0.5 + stepBias) * amp;
+      const y = cache.shoreY - (v - 0.5) * amp;
       ctx.lineTo(x, y);
       cols.push(y);
     }
