@@ -2087,6 +2087,10 @@ type WaveLine = {
   swellPhase: number;   // per-crest swell phase offset
   crossAmp: number;     // amplitude of the slow cross-swell
   crossWavelength: number; // wavelength of the cross-swell (much longer)
+  // multi-scale detail (NEW): finer ripple layers ride between the big swells.
+  fine: boolean;        // true → a thin fast ripple line (no filled face/foam)
+  chopAmp: number;      // high-frequency chop amplitude base (scaled by weather)
+  chopWavelength: number; // short wavelength of the chop ripple
 };
 
 /** A sibling planet rendered as a distant disc high in the landed sky. Position,
@@ -2111,6 +2115,71 @@ type SeaCreature = {
   size: number;       // creature scale
   dir: number;        // +1 / -1 facing
 };
+
+// --- SEA-STATE WEATHER (water variants only) -------------------------------
+// Deterministic per (world, day): the same world reads calm one day, stormy the
+// next; two worlds on the same day differ. Drives a single factor set (wx) that
+// scales the SAME ocean code — waves, foam, spray, sky — so weather is uniform.
+type SeaWeather = 'CALM' | 'CHOPPY' | 'ROUGH' | 'STORM' | 'HURRICANE';
+
+type WeatherFx = {
+  state: SeaWeather;
+  waveAmpMul: number;       // swell height multiplier
+  waveCountMul: number;     // how many swell layers (× base)
+  choppiness: number;       // extra high-frequency ripple amplitude (px)
+  whitecapDensity: number;  // 0..1 fraction of swells that foam + fleck density
+  foamMul: number;          // waterline / shore foam strength
+  skyDarken: number;        // 0 (clear) … 1 (very dark) overlay on the sky
+  rain: number;             // 0 (none) … 1 (driving) rain density
+  rainAngle: number;        // radians from vertical (wind-blown)
+  spraySpeedMul: number;    // sea-spray velocity multiplier
+};
+
+/** Sample the curved organic shoreline y at x (px). Combines a diagonal tilt with
+ *  a couple of low-frequency sine arcs → a smooth bay / diagonal / cove edge.
+ *  Plus a small per-x noise nudge from shoreProfile for an organic sand line. */
+function shoreCurveYAt(
+  x: number, w: number, h: number,
+  curve: NonNullable<LandedCache['shoreCurve']>,
+  shoreProfile: number[]
+): number {
+  const u = x / Math.max(1, w);
+  let arc = 0;
+  for (const a of curve.arcs) arc += Math.sin((x / a.wl) * Math.PI * 2 + a.ph) * a.a;
+  const tilt = (u - 0.5) * curve.tilt;          // diagonal beach
+  const idx = Math.min(shoreProfile.length - 1, Math.round(x / 8));
+  const noise = (shoreProfile[idx] - 0.5) * 0.02; // tiny organic jitter
+  return h * (curve.baseFrac + tilt) - (arc + noise) * curve.amp;
+}
+
+/** Seed a sea-state for this world+day and resolve its effect factors. */
+function weatherFor(worldSeed: number, dayBucket: number): WeatherFx {
+  const r = splitmix32((worldSeed ^ (dayBucket >>> 0)) >>> 0 || 1)();
+  // weighted: most days are sailable; storms/hurricanes are the rare drama.
+  let state: SeaWeather;
+  if (r < 0.34) state = 'CALM';
+  else if (r < 0.64) state = 'CHOPPY';
+  else if (r < 0.84) state = 'ROUGH';
+  else if (r < 0.95) state = 'STORM';
+  else state = 'HURRICANE';
+  switch (state) {
+    case 'CALM':
+      return { state, waveAmpMul: 0.55, waveCountMul: 0.8, choppiness: 0, whitecapDensity: 0.05,
+        foamMul: 0.6, skyDarken: 0, rain: 0, rainAngle: 0, spraySpeedMul: 0.7 };
+    case 'CHOPPY':
+      return { state, waveAmpMul: 0.9, waveCountMul: 1.1, choppiness: 2.5, whitecapDensity: 0.3,
+        foamMul: 1.0, skyDarken: 0.05, rain: 0, rainAngle: 0, spraySpeedMul: 1.0 };
+    case 'ROUGH':
+      return { state, waveAmpMul: 1.35, waveCountMul: 1.3, choppiness: 5, whitecapDensity: 0.6,
+        foamMul: 1.5, skyDarken: 0.18, rain: 0, rainAngle: 0.15, spraySpeedMul: 1.3 };
+    case 'STORM':
+      return { state, waveAmpMul: 1.8, waveCountMul: 1.5, choppiness: 9, whitecapDensity: 0.85,
+        foamMul: 2.0, skyDarken: 0.42, rain: 0.6, rainAngle: 0.45, spraySpeedMul: 1.7 };
+    case 'HURRICANE':
+      return { state, waveAmpMul: 2.3, waveCountMul: 1.7, choppiness: 14, whitecapDensity: 1.0,
+        foamMul: 2.6, skyDarken: 0.6, rain: 1.0, rainAngle: 0.8, spraySpeedMul: 2.2 };
+  }
+}
 
 interface LandedCache {
   key: string;
@@ -2145,6 +2214,9 @@ interface LandedCache {
   skyPlanets: SkyPlanet[];
   // ocean wave lines (NEW; OCEANIC / water variants only)
   waves: WaveLine[];
+  // sea-state weather (water variants only) + per-frame rain streak seeds.
+  weather: WeatherFx | null;
+  rainSeeds: { x: number; len: number; speed: number; alpha: number }[];
   // aquatic life: seeded breach windows for a creature surfacing on the sea.
   creatures: SeaCreature[];
   // foreground SHORE (water variants only — replaces the 3 ridges on water worlds)
@@ -2152,7 +2224,11 @@ interface LandedCache {
   shoreColor: string;        // foreground landform fill
   shoreFoamColor: string;    // foam lip where land meets water
   shoreProfile: number[];    // precomputed undulation noise (0..1) for the shore edge
-  farIsland: { pts: number[]; color: string } | null; // distant island silhouette at the horizon
+  // CURVED organic shoreline shape: a seeded smooth curve (bay/diagonal/cove)
+  // sampled across the width. null for OCEAN_CLIFF (it uses the headland instead).
+  shoreCurve: { amp: number; baseFrac: number; tilt: number; arcs: { wl: number; a: number; ph: number }[] } | null;
+  // distant landmasses at the horizon: 0, 1, or 2 irregular off-centre silhouettes.
+  farLands: { cx: number; halfW: number; peak: number; pts: number[]; color: string }[];
   // OCEAN_CLIFF only: a foreground SIDE headland (one seeded side is solid land
   // rising to a clifftop plateau; the open side reveals the sea). null otherwise.
   headland: {
@@ -2227,6 +2303,8 @@ function buildLandedCache(
   // Per-world seed: fold the landed planet id into the sector seed so two worlds
   // in one sector get distinct time-of-day + landform (and distinct cached geom).
   const worldSeed = ((seed ^ hashStr(env?.landedPlanetId)) >>> 0) || seed || 1;
+  // UTC day index — sea-state weather is deterministic per (world, day).
+  const dayBucket = Math.floor(Date.now() / 86400000);
 
   const hab = env && typeof env.habitability === 'number'
     ? Math.max(0, Math.min(100, env.habitability)) : 55;
@@ -2408,10 +2486,17 @@ function buildLandedCache(
   let shoreColor = '';
   let shoreFoamColor = '';
   const shoreProfile: number[] = [];
-  let farIsland: { pts: number[]; color: string } | null = null;
+  let shoreCurve: LandedCache['shoreCurve'] = null;
+  const farLands: LandedCache['farLands'] = [];
   let headland: LandedCache['headland'] = null;
   const creatures: SeaCreature[] = [];
+  // Sea-state weather: deterministic per (world, day) — clear/calm one day, a
+  // hurricane the next. dayBucket is folded into the cache key so it rebuilds.
+  let weather: WeatherFx | null = null;
+  const rainSeeds: LandedCache['rainSeeds'] = [];
   if (hasWater) {
+    weather = weatherFor(worldSeed, dayBucket);
+    const wx = weather;
     const bandTop = waterTopY;
     // The sea band now spans most of the lower scene (horizon → shore). Make the
     // depth gradient OPAQUE blue-teal so it reads unmistakably as water, not a
@@ -2431,20 +2516,21 @@ function buildLandedCache(
     // bright top stroke + a darker trough stroke drawn just below for definition so
     // the surface reads as moving water, not a flat tint.
     const wRng = splitmix32(worldSeed * 1597 + 91);
-    // Fewer, larger, layered SWELLS (not a dense comb of identical stripes). Each
-    // becomes a filled undulating water layer that visibly rises & falls. Crests
-    // vary in size (amp/wavelength jitter) + carry a long cross-swell so no two
-    // look alike, and each gets its own vertical-bob rate so the surface heaves.
-    const lineCount = 11;
-    for (let i = 0; i < lineCount; i++) {
-      const lin = i / (lineCount - 1);          // 0 = waterline … 1 = foreground
+    // MULTI-SCALE sea: big filled SWELLS + finer/faster ripple lines woven between
+    // them. Swell height/count scale by the day's WEATHER (calm → small & few,
+    // hurricane → tall & many). Each swell varies in size + carries a long
+    // cross-swell + its own vertical-bob rate; weather adds high-freq chop.
+    const baseSwells = 11;
+    const swellCount = Math.max(6, Math.round(baseSwells * wx.waveCountMul));
+    for (let i = 0; i < swellCount; i++) {
+      const lin = i / (swellCount - 1);          // 0 = waterline … 1 = foreground
       const f = lin * lin;                       // perspective spacing
       const sizeJitter = 0.6 + wRng() * 0.9;     // each swell a different size
       waves.push({
         yFrac: f,
-        amp: (2 + f * 16) * sizeJitter,          // big, varied swell height
+        amp: (2 + f * 16) * sizeJitter * wx.waveAmpMul, // weather-scaled swell height
         wavelength: (90 + f * 320) * (0.6 + wRng() * 0.9), // long, varied crests
-        speed: (0.5 + f * 1.4) * (0.7 + wRng() * 0.7),
+        speed: (0.5 + f * 1.4) * (0.7 + wRng() * 0.7) * (0.85 + wx.waveAmpMul * 0.25),
         phase: wRng() * Math.PI * 2,
         alpha: (0.5 + f * 0.4),
         lineW: 1 + f * 2.6,
@@ -2453,7 +2539,45 @@ function buildLandedCache(
         swellPhase: wRng() * Math.PI * 2,
         crossAmp: (2 + f * 7) * (0.5 + wRng() * 0.9),
         crossWavelength: (160 + f * 360) * (0.7 + wRng() * 0.7),
+        fine: false,
+        chopAmp: (0.6 + f * 1.2) * wx.choppiness,
+        chopWavelength: (10 + f * 24) * (0.7 + wRng() * 0.6),
       });
+    }
+    // FINE ripple lines — thin, fast, between the swells; denser in rougher seas.
+    const fineCount = Math.round((10 + 8 * wx.waveAmpMul));
+    for (let i = 0; i < fineCount; i++) {
+      const f = wRng();                          // scattered across the band
+      waves.push({
+        yFrac: 0.1 + f * 0.88,
+        amp: (1 + f * 3) * (0.6 + wx.waveAmpMul * 0.4),
+        wavelength: (24 + f * 70) * (0.7 + wRng() * 0.6),
+        speed: (1.2 + f * 2.2) * (0.8 + wRng() * 0.6),
+        phase: wRng() * Math.PI * 2,
+        alpha: 0.10 + f * 0.16,
+        lineW: 0.6 + f * 0.8,
+        dir: wRng() < 0.7 ? 1 : -1,
+        swellRate: 0.4 + wRng() * 0.9,
+        swellPhase: wRng() * Math.PI * 2,
+        crossAmp: (1 + f * 2) * (0.5 + wRng() * 0.6),
+        crossWavelength: (80 + f * 180),
+        fine: true,
+        chopAmp: (0.4 + f * 0.8) * wx.choppiness,
+        chopWavelength: (8 + f * 16),
+      });
+    }
+    // RAIN streak seeds (drawn per frame; count + angle from weather).
+    if (wx.rain > 0) {
+      const rnRng = splitmix32(worldSeed * 7919 + 401);
+      const rainCount = Math.round(60 * wx.rain);
+      for (let i = 0; i < rainCount; i++) {
+        rainSeeds.push({
+          x: rnRng(),                            // 0..1 across an extended span
+          len: 10 + rnRng() * 18,
+          speed: 0.8 + rnRng() * 0.6,
+          alpha: 0.12 + rnRng() * 0.18,
+        });
+      }
     }
 
     // --- foreground SHORE colour + foam, per water variant ---
@@ -2477,15 +2601,44 @@ function buildLandedCache(
     const shorePts = Math.ceil(w / 8) + 2;
     for (let i = 0; i < shorePts; i++) shoreProfile.push(shRng());
 
-    // OCEAN_ISLAND: a distant thin island silhouette sitting right at the horizon.
-    if (landform === 'OCEAN_ISLAND') {
-      const isRng = splitmix32(worldSeed * 3371 + 97);
-      const pts: number[] = [];
-      const ipts = 18;
-      for (let i = 0; i < ipts; i++) pts.push(isRng());
-      // tint: a hazy dark land mass against the bright waterline
-      const ic = todBright > 0.3 ? 'rgba(40, 60, 78, 0.85)' : 'rgba(24, 36, 54, 0.9)';
-      farIsland = { pts, color: ic };
+    // CURVED ORGANIC SHORELINE (non-cliff water variants). The sand boundary is a
+    // smooth seeded curve — a bay, a diagonal beach, or a cove — built from a
+    // diagonal TILT plus a couple of low-frequency sine arcs (NOT a flat line).
+    if (landform !== 'OCEAN_CLIFF') {
+      const scRng = splitmix32(worldSeed * 9173 + 61);
+      const arcs = [
+        { wl: w * (0.7 + scRng() * 0.8), a: 0.10 + scRng() * 0.18, ph: scRng() * Math.PI * 2 },
+        { wl: w * (0.3 + scRng() * 0.4), a: 0.04 + scRng() * 0.10, ph: scRng() * Math.PI * 2 },
+      ];
+      shoreCurve = {
+        amp: h * (0.10 + scRng() * 0.10),       // how deep the bay/cove cuts
+        baseFrac: 0.80 + scRng() * 0.08,        // mean shore height (frac of h)
+        tilt: (scRng() - 0.5) * 0.22,           // diagonal beach: -0.11..+0.11 of h across w
+        arcs,
+      };
+    }
+
+    // DISTANT LANDMASSES — 0, 1, or 2 irregular, OFF-CENTRE silhouettes at the
+    // horizon (never a single centred bell). Seeded position/width/height/shape so
+    // they read as real far land, sometimes partly off-screen.
+    const landRoll = (landform === 'OCEAN_ISLAND')
+      ? (1 + (shRng() < 0.45 ? 1 : 0))          // island world: 1 or 2 landmasses
+      : (shRng() < 0.55 ? (shRng() < 0.35 ? 2 : 1) : 0); // others: 0/1/2
+    if (landRoll > 0) {
+      const lRng = splitmix32(worldSeed * 3371 + 97);
+      for (let li = 0; li < landRoll; li++) {
+        const cx = w * (lRng() * 1.2 - 0.1);    // -0.1..1.1 → can sit partly off-screen
+        const halfW = w * (0.06 + lRng() * 0.20);
+        const peak = h * (0.025 + lRng() * 0.07) * (li === 0 ? 1 : 0.7);
+        const ipts = 10 + Math.floor(lRng() * 12);
+        const pts: number[] = [];
+        for (let i = 0; i < ipts; i++) pts.push(lRng());
+        const dim = li === 0 ? 0.9 : 0.7;       // farther/secondary masses fainter
+        const ic = todBright > 0.3
+          ? `rgba(40, 60, 78, ${(0.85 * dim).toFixed(2)})`
+          : `rgba(24, 36, 54, ${(0.9 * dim).toFixed(2)})`;
+        farLands.push({ cx, halfW, peak, pts, color: ic });
+      }
     }
 
     // OCEAN_CLIFF: a foreground SIDE HEADLAND. One seeded side is a solid land mass
@@ -2795,8 +2948,8 @@ function buildLandedCache(
     tod, todBright, showSun, landform, hasWater, waterTopY, landBaseFrac, citadelOnWater,
     reflX, reflTint,
     sunX, sunY, sunR, coronaR,
-    moons, moonProminence, skyPlanets, waves, creatures,
-    shoreY, shoreColor, shoreFoamColor, shoreProfile, farIsland, headland,
+    moons, moonProminence, skyPlanets, waves, weather, rainSeeds, creatures,
+    shoreY, shoreColor, shoreFoamColor, shoreProfile, shoreCurve, farLands, headland,
     hasCompanion, c2x, c2y, c2r, c2,
     layers, period, ridgeColors,
     skyGrad, washGrad, coronaGrad, discGrad, companionCorona, glowGrad, starHueGlow, waterBand,
@@ -2832,7 +2985,9 @@ function drawLandedScene(
     // body's moon/phase/ring/size drive the sky moons — all must bust the cache.
     `|${env?.landedPlanetId || ''}|${env?.moons ?? ''}|${env?.phaseDeg ?? ''}|${env?.rings ? 1 : 0}|${env?.sizeClass ?? ''}` +
     // sibling bodies drive the distant sky planets — bust the cache when they change.
-    `|${(env?.siblings || []).map((s) => `${s.kind}:${s.sizeClass}:${s.hue}:${s.sat}:${s.rings ? 1 : 0}`).join(',')}`;
+    `|${(env?.siblings || []).map((s) => `${s.kind}:${s.sizeClass}:${s.hue}:${s.sat}:${s.rings ? 1 : 0}`).join(',')}` +
+    // day bucket: sea-state weather is deterministic per (world, day) → rebuild daily.
+    `|d${Math.floor(Date.now() / 86400000)}`;
 
   let cache = landedCache;
   // Rebuild on key change OR when the canvas context identity changes — a remount
@@ -2854,6 +3009,19 @@ function drawLandedScene(
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = cache.washGrad;
     ctx.fillRect(0, 0, w, horizonY * 1.15);
+    ctx.restore();
+  }
+
+  // 1b) WEATHER SKY DARKEN — storm/hurricane days drop a grey-blue overlay over
+  //     the sky (heaviest at the top), so the whole vista reads as overcast.
+  if (cache.weather && cache.weather.skyDarken > 0) {
+    const sd = cache.weather.skyDarken;
+    ctx.save();
+    const stormGrad = ctx.createLinearGradient(0, 0, 0, horizonY * 1.1);
+    stormGrad.addColorStop(0, `rgba(24, 30, 40, ${(sd * 0.85).toFixed(3)})`);
+    stormGrad.addColorStop(1, `rgba(40, 48, 60, ${(sd * 0.45).toFixed(3)})`);
+    ctx.fillStyle = stormGrad;
+    ctx.fillRect(0, 0, w, horizonY * 1.1);
     ctx.restore();
   }
 
@@ -2905,11 +3073,13 @@ function drawLandedScene(
   if (cache.showSun) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
+    // storm/hurricane days dim the sun (clouds in front of it).
+    const sunDim = cache.weather ? 1 - cache.weather.skyDarken * 0.8 : 1;
     // very subtle "breathing" of the corona via alpha (gradient stays cached)
-    ctx.globalAlpha = t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5);
+    ctx.globalAlpha = (t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5)) * sunDim;
     ctx.fillStyle = cache.coronaGrad;
     ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = sunDim;
     ctx.fillStyle = cache.discGrad;
     ctx.beginPath();
     ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
@@ -2958,23 +3128,27 @@ function drawLandedScene(
     ctx.fillStyle = cache.waterBand;
     ctx.fillRect(0, wt, w, wh);
 
-    // 1b) DISTANT ISLAND silhouette sitting at the horizon (OCEAN_ISLAND only) —
-    //     a thin dark land mass right at the waterline so the sea reads as
-    //     "surrounded by water". Drawn under the waves so ripples cross in front.
-    if (cache.farIsland) {
-      const fi = cache.farIsland;
-      const n = fi.pts.length;
-      const ix0 = w * 0.30, ix1 = w * 0.70;   // island spans the centre of the horizon
-      const peak = h * 0.05;                    // low, distant
+    // 1b) DISTANT LANDMASSES at the horizon — 0, 1, or 2 irregular, OFF-CENTRE
+    //     silhouettes (seeded position/width/shape), sometimes partly off-screen.
+    //     Drawn under the waves so ripples cross in front. Each is an asymmetric
+    //     profile (per-point noise + a skewed envelope), not a symmetric bell.
+    for (let li = 0; li < cache.farLands.length; li++) {
+      const fl = cache.farLands[li];
+      const n = fl.pts.length;
+      const ix0 = fl.cx - fl.halfW, ix1 = fl.cx + fl.halfW;
+      // skew the envelope peak off-centre so the silhouette is asymmetric
+      const peakAt = 0.3 + (fl.pts[0]) * 0.4;   // 0.3..0.7 along the mass
       ctx.save();
-      ctx.fillStyle = fi.color;
+      ctx.fillStyle = fl.color;
       ctx.beginPath();
       ctx.moveTo(ix0, wt + 1);
       for (let s = 0; s <= n - 1; s++) {
-        const x = ix0 + (ix1 - ix0) * (s / (n - 1));
-        // bell-shaped mass: tallest in the middle, tapering to the waterline at ends
-        const bell = Math.sin((s / (n - 1)) * Math.PI);
-        const y = wt + 1 - bell * peak * (0.4 + fi.pts[s] * 0.6);
+        const u = s / (n - 1);
+        const x = ix0 + (ix1 - ix0) * u;
+        // asymmetric envelope: rises to peakAt, falls after — plus per-point noise.
+        const env = u < peakAt ? (u / peakAt) : (1 - (u - peakAt) / (1 - peakAt));
+        const shaped = Math.pow(Math.max(0, env), 0.8);
+        const y = wt + 1 - shaped * fl.peak * (0.45 + fl.pts[s] * 0.55);
         ctx.lineTo(x, y);
       }
       ctx.lineTo(ix1, wt + 1);
@@ -2992,6 +3166,7 @@ function drawLandedScene(
     // size) so it never reads as a repeating comb of identical stripes. A bright
     // crest highlight + whitecap foam on the nearer swells complete the moving sea.
     const crestRGB = reflWaveRGB(cache);
+    const whitecapD = cache.weather ? cache.weather.whitecapDensity : 0.4;
     for (let wi = 0; wi < cache.waves.length; wi++) {
       const wv = cache.waves[wi];
       const f = wv.yFrac;
@@ -3001,12 +3176,30 @@ function drawLandedScene(
       const baseY = wt + f * wh + bob;
       const drift = t === 0 ? 0 : t * wv.speed * 24 * wv.dir;
       const crossDrift = t === 0 ? 0 : t * 5 * wv.dir;
+      const chopDrift = t === 0 ? 0 : t * (12 + f * 30) * wv.dir;
       const swell = t === 0 ? 1 : 1 + 0.4 * Math.sin(t * wv.swellRate + wv.swellPhase);
       const amp = wv.amp * swell;
       const yAt = (x: number): number =>
         baseY
         + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * amp
-        + Math.sin((x + crossDrift) / wv.crossWavelength * Math.PI * 2 + wv.swellPhase) * wv.crossAmp;
+        + Math.sin((x + crossDrift) / wv.crossWavelength * Math.PI * 2 + wv.swellPhase) * wv.crossAmp
+        // weather chop — high-frequency ripple riding on the swell (0 when calm).
+        + (wv.chopAmp > 0 ? Math.sin((x + chopDrift) / wv.chopWavelength * Math.PI * 2 + wv.phase * 2) * wv.chopAmp : 0);
+
+      // FINE ripple layer: a single thin fast stroke between the big swells — no
+      // filled face, no foam. Adds multi-scale richness cheaply.
+      if (wv.fine) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = wv.alpha;
+        ctx.strokeStyle = `rgba(${crestRGB}, 1)`;
+        ctx.lineWidth = wv.lineW;
+        ctx.beginPath();
+        for (let x = 0; x <= w; x += 12) { const y = yAt(x); if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+        ctx.stroke();
+        ctx.restore();
+        continue;
+      }
       // filled wave FACE: crest edge → down a perspective-scaled slab. A lit face
       // over the dark water body gives each swell real body (not a thin line).
       const slab = 6 + f * 30;
@@ -3032,17 +3225,21 @@ function drawLandedScene(
       for (let x = 0; x <= w; x += 8) { const y = yAt(x); if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
       ctx.stroke();
       ctx.restore();
-      // whitecap foam — bright flecks on the cresting tops of the nearer swells
-      if (f > 0.38) {
+      // whitecap foam — bright flecks on the cresting tops of the nearer swells.
+      // Weather drives how far inshore the caps reach + how densely they pop.
+      const capThresh = 0.5 - whitecapD * 0.35;   // rougher → caps appear farther out
+      if (f > capThresh && whitecapD > 0.02) {
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
         ctx.fillStyle = 'rgba(235, 248, 255, 1)';
-        const span = Math.max(70, wv.wavelength * 0.85);
+        // denser foam in rougher seas (shorter spacing between caps).
+        const span = Math.max(36, wv.wavelength * (0.95 - whitecapD * 0.5));
+        const popThresh = 0.75 - whitecapD * 0.35; // rougher → more caps light up
         for (let x = (wi * 53) % span; x <= w; x += span) {
           const tw = t === 0 ? 0.55 : 0.5 + 0.5 * Math.sin(t * 2.3 + x * 0.05 + wi);
-          if (tw > 0.6) {
+          if (tw > popThresh) {
             const y = yAt(x);
-            ctx.globalAlpha = (0.3 + f * 0.4) * tw;
+            ctx.globalAlpha = Math.min(0.9, (0.3 + f * 0.4) * tw * (0.6 + whitecapD * 0.8));
             ctx.fillRect(x - 2, y - 1, 5 + f * 4, 1.8);
           }
         }
@@ -3079,17 +3276,19 @@ function drawLandedScene(
     }
 
     // 4) foam at the waterline — a soft bright lip where water meets the horizon/land.
+    //    Heavier + thicker in rougher weather (foamMul).
+    const foamMul = cache.weather ? cache.weather.foamMul : 1;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = 'rgba(220, 240, 250, 1)';
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = 1.4 * Math.min(2.5, foamMul);
     ctx.beginPath();
     for (let x = 0; x <= w; x += 8) {
       const drift = t === 0 ? 0 : t * 18;
-      const fy = wt + 1 + Math.sin((x + drift) / 40 * Math.PI * 2) * 1.6;
+      const fy = wt + 1 + Math.sin((x + drift) / 40 * Math.PI * 2) * 1.6 * foamMul;
       if (x === 0) ctx.moveTo(x, fy); else ctx.lineTo(x, fy);
     }
-    ctx.globalAlpha = 0.22 + (t === 0 ? 0 : 0.06 * Math.sin(t * 2));
+    ctx.globalAlpha = Math.min(0.6, (0.22 + (t === 0 ? 0 : 0.06 * Math.sin(t * 2))) * foamMul);
     ctx.stroke();
     ctx.restore();
 
@@ -3276,21 +3475,19 @@ function drawLandedScene(
     }
     frontProfile = cols;
   } else if (cache.hasWater) {
-    // ONE shore landform across the bottom of the scene. shoreY is the base; the
-    // cached shoreProfile gives a gentle undulation. The beach is low and gentle.
-    // Foam line where it meets the water.
+    // CURVED ORGANIC SHORE — a seeded bay / diagonal beach / cove. The sand top is
+    // a smooth curve (shoreCurveYAt), filled down to the bottom; foam follows it.
+    // The curve becomes frontProfile so flora + citadel sit on the sand.
+    const curve = cache.shoreCurve;
     const sp = cache.shoreProfile;
-    const amp = h * 0.025;
     const cols: number[] = [];
+    const yAtShore = (x: number): number => curve
+      ? shoreCurveYAt(x, w, h, curve, sp)
+      : cache.shoreY; // graceful fallback (should not happen for non-cliff water)
     ctx.beginPath();
     ctx.moveTo(0, h);
     for (let x = 0; x <= w; x += 8) {
-      const idx = Math.min(sp.length - 1, Math.round(x / 8));
-      // blend two neighbour samples for a smooth, deterministic edge
-      const a = sp[idx];
-      const b = sp[Math.min(sp.length - 1, idx + 1)];
-      const v = (a + b) * 0.5;
-      const y = cache.shoreY - (v - 0.5) * amp;
+      const y = yAtShore(x);
       ctx.lineTo(x, y);
       cols.push(y);
     }
@@ -3300,16 +3497,17 @@ function drawLandedScene(
     ctx.fill();
     frontProfile = cols;
 
-    // foam line along the shore edge where the land meets the sea.
+    // foam line following the curved shore edge where the land meets the sea.
+    const foamMul = cache.weather ? cache.weather.foamMul : 1;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = cache.shoreFoamColor;
-    ctx.lineWidth = 2;
-    ctx.globalAlpha = 0.5 + (t === 0 ? 0 : 0.12 * Math.sin(t * 1.6));
+    ctx.lineWidth = 2 * Math.min(2.2, foamMul);
+    ctx.globalAlpha = Math.min(0.7, (0.5 + (t === 0 ? 0 : 0.12 * Math.sin(t * 1.6))) * (0.7 + foamMul * 0.3));
     ctx.beginPath();
     for (let x = 0; x <= w; x += 8) {
       const idx = Math.min(cols.length - 1, Math.round(x / 8));
-      const drift = t === 0 ? 0 : Math.sin((x + t * 20) / 36 * Math.PI * 2) * 1.4;
+      const drift = t === 0 ? 0 : Math.sin((x + t * 20) / 36 * Math.PI * 2) * 1.4 * foamMul;
       const y = cols[idx] + drift;
       if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
@@ -3449,6 +3647,34 @@ function drawLandedScene(
     ctx.restore();
   }
   ctx.restore();
+
+  // 10) WEATHER RAIN — diagonal wind-blown streaks across the whole scene during
+  //     storm/hurricane days. Reduced-motion (t=0): a few static streaks only so
+  //     the weather still reads without animation.
+  if (cache.weather && cache.rainSeeds.length > 0) {
+    const wx = cache.weather;
+    const ang = wx.rainAngle;                  // lean from vertical (wind)
+    const dx = Math.sin(ang), dy = Math.cos(ang);
+    const span = w * 1.4;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(200, 220, 240, 1)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < cache.rainSeeds.length; i++) {
+      const r = cache.rainSeeds[i];
+      // fall down + drift sideways with the wind; wrap across an extended span.
+      const fallY = t === 0 ? (r.x * h) : ((r.x * h + t * (260 + r.speed * 240)) % h);
+      const sideX = t === 0 ? (r.x * span) : (((r.x * span + t * (260 + r.speed * 240) * dx) % span) + span) % span;
+      const sx = sideX - w * 0.2;
+      const len = r.len * (0.8 + wx.rain * 0.6);
+      ctx.globalAlpha = r.alpha * (0.6 + wx.rain * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(sx, fallY);
+      ctx.lineTo(sx + dx * len, fallY + dy * len);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 }
 
 /** Wave-crest tint for the ocean — sun colour by day, pale moon tint at night. */
@@ -3752,10 +3978,13 @@ function drawLandedParticles(
     ctx.globalCompositeOperation = 'lighter';
     const waterTop = cache.waterTopY;
     const bandH = Math.max(8, h - waterTop);
+    // weather drives spray velocity + intensity (more, faster mist in rough seas).
+    const sprayMul = cache.weather ? cache.weather.spraySpeedMul : 1;
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
       // most particles are spray near the waterline; ~1 in 12 is a far seagull.
-      const isBird = (i % 12) === 0;
+      // gulls keep to the sky in fair weather only — they shelter in storms.
+      const isBird = (i % 12) === 0 && (!cache.weather || cache.weather.skyDarken < 0.3);
       if (isBird) {
         // glide across the sky on a gentle ARC (not a flat horizontal line): a slow
         // sine bob superimposed on the horizontal travel. Dark seagull "M" of two
@@ -3786,10 +4015,12 @@ function drawLandedParticles(
         continue;
       }
       // spray: confined to a thin band just below the waterline, low rise + fade.
-      const rise = ((p.y % (bandH * 0.4)) + t * (6 + p.speed * 8)) % (bandH * 0.4);
-      const y = waterTop + 2 + (bandH * 0.4) - rise;
-      const x = (((p.x + Math.sin(t * 0.5 + p.phase) * 10 + t * (3 + p.drift * 4)) % w) + w) % w;
-      ctx.globalAlpha = 0.10 * (1 - rise / (bandH * 0.4));
+      // Rougher weather → faster rise + taller spray + stronger alpha.
+      const riseBand = bandH * (0.4 + (sprayMul - 1) * 0.12);
+      const rise = ((p.y % riseBand) + t * (6 + p.speed * 8) * sprayMul) % riseBand;
+      const y = waterTop + 2 + riseBand - rise;
+      const x = (((p.x + Math.sin(t * 0.5 + p.phase) * 10 + t * (3 + p.drift * 4) * sprayMul) % w) + w) % w;
+      ctx.globalAlpha = (0.10 + (sprayMul - 1) * 0.04) * (1 - rise / riseBand);
       ctx.fillStyle = 'rgba(210, 235, 245, 1)';
       ctx.beginPath();
       ctx.arc(x, y, p.size * 0.9, 0, Math.PI * 2);
