@@ -330,6 +330,10 @@ class FleetService:
         if attacker.sector_id != defender.sector_id:
             raise ValueError("Fleets must be in the same sector")
 
+        # Supply (fleet-tactics.md): a fleet at 0 supply cannot initiate combat.
+        if (attacker.supply_level or 0) <= 0:
+            raise ValueError("Attacker fleet is out of supply and cannot initiate combat")
+
         # Create battle record
         battle = FleetBattle(
             attacker_fleet_id=attacker_fleet_id,
@@ -449,6 +453,15 @@ class FleetService:
         battle.attacker_damage_dealt = (battle.attacker_damage_dealt or 0) + round_results["attacker_damage"]
         battle.defender_damage_dealt = (battle.defender_damage_dealt or 0) + round_results["defender_damage"]
         battle.total_damage_dealt = (battle.attacker_damage_dealt or 0) + (battle.defender_damage_dealt or 0)
+
+        # Supply-driven morale decay (fleet-tactics.md Supply, marked 🚧 Partial):
+        # a fleet below 25 supply loses 1 morale. Canon places this on the 5-min
+        # GAME TICK; we apply it per battle round as a deliberate stand-in until a
+        # fleet-supply tick worker exists. NOTE: if/when that worker is added, this
+        # in-battle decay must be removed to avoid double-counting.
+        for fl in (attacker, defender):
+            if (fl.supply_level or 0) < 25:
+                fl.morale = max(0, (fl.morale or 100) - 1)
 
         # Append round to battle log (must reassign for JSONB change detection)
         updated_log = list(current_log)
@@ -610,6 +623,19 @@ class FleetService:
         formation_bonus["attack"] *= morale_modifier
         formation_bonus["defense"] *= morale_modifier
 
+        # Supply penalty (fleet-tactics.md Supply): above 50 no penalty, 25-50
+        # -5%, below 25 -15% — to BOTH attack and defense, compounded on top of
+        # formation × morale. supply_level defaults to 100 (full) if unset.
+        supply = fleet.supply_level if fleet.supply_level is not None else 100
+        if supply < 25:
+            supply_factor = 0.85
+        elif supply <= 50:
+            supply_factor = 0.95
+        else:
+            supply_factor = 1.0
+        formation_bonus["attack"] *= supply_factor
+        formation_bonus["defense"] *= supply_factor
+
         return formation_bonus
 
     def _calculate_ship_damage(
@@ -667,6 +693,10 @@ class FleetService:
             defense_bonus = self._calculate_formation_bonus(fleet)["defense"]
             # Higher defense = less damage taken
             damage = max(1, int(damage / defense_bonus))
+            # Defender role: +10% damage absorption when targeted
+            # (fleet-tactics.md role assignments).
+            if (member.role or "") == FleetRole.DEFENDER.value:
+                damage = max(1, int(damage * 0.9))
 
         current_shields = self._get_ship_combat_stat(ship, "shields", 0)
         current_hull = self._get_ship_combat_stat(ship, "hull", 0)
@@ -755,6 +785,13 @@ class FleetService:
                 battle.attacker_ships_retreated = (battle.attacker_ships_retreated or 0) + 1
             else:
                 battle.defender_ships_retreated = (battle.defender_ships_retreated or 0) + 1
+
+        # Flagship destruction: one-shot -30 fleet morale (fleet-tactics.md
+        # Morale). Applied BEFORE the member is removed below.
+        if destroyed and (member.role or "") == FleetRole.FLAGSHIP.value:
+            fleet = member.fleet
+            if fleet is not None:
+                fleet.morale = max(0, (fleet.morale or 100) - 30)
 
         # Remove ship from fleet if destroyed
         if destroyed:
