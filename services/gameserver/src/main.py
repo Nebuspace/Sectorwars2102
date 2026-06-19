@@ -121,6 +121,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning(f"Ship specifications seed skipped: {e}")
 
+    # Medal catalog seed (ADR-0028). The relational `medals` table is the
+    # canonical award catalog; without this seed an empty catalog makes every
+    # award no-op (unknown medal_id). Idempotent upsert, same pattern as ships.
+    try:
+        from src.core.database import SessionLocal
+        from src.services.medal_catalog import seed_medals
+
+        db = SessionLocal()
+        try:
+            seed_medals(db)
+            logger.info("Medal catalog seed completed")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Medal catalog seed skipped: {e}")
+
     # Start WebSocket heartbeat cleanup background task
     import asyncio
     async def _heartbeat_cleanup_loop():

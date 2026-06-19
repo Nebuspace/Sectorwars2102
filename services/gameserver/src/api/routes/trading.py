@@ -24,7 +24,7 @@ from src.services.trading_service import (
 from src.services.ranking_service import RankingService
 from src.services.medal_service import MedalService
 from src.services import docking_service
-from src.services.turn_service import spend_turns
+from src.services.turn_service import spend_turns, regenerate_turns
 
 import logging
 
@@ -817,10 +817,15 @@ async def dock_at_station(
     # (after the station lock — see lock-order note above)
     current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
 
+    # ADR-0004: continuous lazy regen — refill the pool for real elapsed time
+    # inside the row lock, BEFORE the affordability check, so docking is never
+    # rejected on a stale-low balance.
+    regenerate_turns(db, current_player)
+
     # Verify player is in the same sector as the station
     if current_player.current_sector_id != station.sector_id:
         raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
-    
+
     # Check if already docked
     if current_player.is_docked:
         raise HTTPException(status_code=400, detail="You are already docked at a station")
@@ -945,9 +950,12 @@ async def undock_from_port(
     # Lock player row to prevent concurrent turn deduction races
     current_player = db.query(Player).filter(Player.id == current_player.id).with_for_update().first()
 
+    # ADR-0004: continuous lazy regen before the affordability check.
+    regenerate_turns(db, current_player)
+
     if not current_player.is_docked:
         raise HTTPException(status_code=400, detail="You are not currently docked at a station")
-    
+
     # Check if player has enough turns
     if current_player.turns < UNDOCKING_TURN_COST:
         raise HTTPException(
@@ -1089,6 +1097,9 @@ async def bump_docking_slip(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
     try:
+        # ADR-0004: regen now that bump holds the player row lock, before the
+        # affordability re-check.
+        regenerate_turns(db, current_player)
         # Re-check turns now that the player row is locked (bump locked it),
         # then dock the bumper in the freed slip.
         if current_player.turns < DOCKING_TURN_COST:

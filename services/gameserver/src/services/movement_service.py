@@ -14,7 +14,7 @@ from src.models.combat_log import CombatLog
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.services import warp_gate_service
-from src.services.turn_service import spend_turns
+from src.services.turn_service import spend_turns, regenerate_turns
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,11 @@ class MovementService:
         player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
         if not player:
             return {"success": False, "message": "Player not found", "turn_cost": 0}
+
+        # ADR-0004 continuous regen: lazily refill the turn pool for real time
+        # elapsed BEFORE any affordability check, inside the row lock so a
+        # concurrent spend cannot double-credit.
+        regenerate_turns(self.db, player)
 
         # Block movement if player is docked at a port or landed on a planet
         if player.is_docked:

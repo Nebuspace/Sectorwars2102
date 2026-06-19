@@ -50,6 +50,11 @@ class RankInfoResponse(BaseModel):
     is_max_rank: bool
     effective_max_turns: int = 1000
     aria_multiplier: float = 1.0
+    # ADR-0004 journey win-state + law standing (produced by ranking_service)
+    is_game_complete: bool = False
+    rank_victory_at: Optional[str] = None
+    is_suspect: bool = False
+    is_wanted: bool = False
 
 
 class RankDefinitionResponse(BaseModel):
@@ -69,6 +74,9 @@ class LeaderboardEntry(BaseModel):
     military_rank: str
     rank_points: int
     rank_level: int
+    is_game_complete: bool = False
+    is_suspect: bool = False
+    is_wanted: bool = False
 
 
 class LeaderboardResponse(BaseModel):

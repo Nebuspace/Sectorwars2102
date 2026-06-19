@@ -25,6 +25,57 @@ from src.services.turn_service import spend_turns
 logger = logging.getLogger(__name__)
 
 
+def _regen_turns(db: Session, player: Player) -> None:
+    """Bring a player's turn balance current (lazy ADR-0004 regen) before an
+    affordability check / spend, via the turns-lane frozen hook
+    ``turn_service.regenerate_turns(db, player)``.
+
+    Defensive on every axis: the hook is built by the turns lane and may be
+    absent at runtime in some deployments, so it is resolved by ``getattr``
+    rather than imported at module load (a missing hook must never break the
+    combat import or a fight). A regen hiccup is logged and swallowed — at
+    worst the player attacks with a slightly stale (lower) balance, never a
+    crash. py_compile-safe: nothing here references a symbol that does not
+    yet exist at parse time."""
+    try:
+        import src.services.turn_service as _turn_service
+        hook = getattr(_turn_service, "regenerate_turns", None)
+        if callable(hook):
+            hook(db, player)
+    except Exception as e:  # never let regen break combat
+        logger.error("Turn regen hook failed (continuing with current balance): %s", e)
+
+
+def _dispatch_combat_medals(db: Session, killer: Player, context: Dict[str, Any]) -> None:
+    """Fire the medals-lane frozen hook
+    ``medal_service.check_and_award_combat_medals(db, killer_player, context)``
+    after a resolved kill (ADR-0028 medal storage).
+
+    ``context`` carries at least ``{victim_id, combat_log_id, kind}``. The
+    hook is idempotent on the medals-lane side; this dispatcher is defensive:
+    resolved by ``getattr`` (the hook may be absent in a deployment where the
+    medals lane hasn't landed), and any failure is logged and swallowed — a
+    medal hiccup must NEVER break combat resolution. py_compile-safe: no
+    parse-time reference to a not-yet-existing symbol.
+
+    The frozen signature is ``check_and_award_combat_medals(db, killer,
+    context)`` (medals lane). It is dispatched as a module-level function on
+    ``medal_service`` if present, otherwise as a ``MedalService`` instance
+    method with the same ``(db, killer, context)`` argument shape."""
+    try:
+        import src.services.medal_service as _medal_module
+        module_hook = getattr(_medal_module, "check_and_award_combat_medals", None)
+        if callable(module_hook):
+            module_hook(db, killer, context)
+            return
+        MedalService = getattr(_medal_module, "MedalService", None)
+        method_hook = getattr(MedalService, "check_and_award_combat_medals", None)
+        if MedalService is not None and callable(method_hook):
+            MedalService(db).check_and_award_combat_medals(db, killer, context)
+    except Exception as e:  # never let a medal hiccup break combat
+        logger.error("Combat medal dispatch hook failed: %s", e)
+
+
 # Map the engine's CombatResult enum onto the outcome strings the combat_logs
 # table actually stores (see CombatOutcome / migration c138b33baec4). The
 # outcome column only has 5 values, so fled results collapse to "escaped" and
@@ -154,9 +205,12 @@ class CombatService:
             ShipSpecification.type == defender.current_ship.type
         ).first()
         turn_cost = getattr(defender_spec, 'attack_turn_cost', None) or 2
+        # Bring the attacker's turn balance current before the affordability
+        # check so lazy ADR-0004 regen isn't lost by the upcoming spend.
+        _regen_turns(self.db, attacker)
         if attacker.turns < turn_cost:
             return {"success": False, "message": f"Not enough turns to initiate combat (need {turn_cost})"}
-        
+
         # Attacker cannot initiate combat while docked or landed (mirrors
         # the other combat entry points)
         if attacker.is_docked or attacker.is_landed:
@@ -271,23 +325,32 @@ class CombatService:
                     if winner.aria_total_interactions >= threshold and winner.aria_consciousness_level < level:
                         winner.aria_consciousness_level = level
                         winner.aria_bonus_multiplier = multiplier
-                # Check combat medals. NPC kills (defender_id NULL) are
-                # excluded so they can't be farmed for medals — the canon
-                # NPC-kill reward hooks (npc-scheduler.md KIA step 8) are
-                # deliberately deferred, not invented here.
-                from src.services.medal_service import MedalService
-                victory_count = self.db.query(CombatLog).filter(
-                    CombatLog.defender_id.isnot(None),
-                    ((CombatLog.attacker_id == winner.id) & (CombatLog.outcome == CombatOutcome.ATTACKER_WIN.value)) |
-                    ((CombatLog.defender_id == winner.id) & (CombatLog.outcome == CombatOutcome.DEFENDER_WIN.value))
-                ).count()
-                medal_service = MedalService(self.db)
-                medal_service.check_combat_medals(winner.id, victory_count)
+                # (Medal awards are handled by the single frozen dispatcher
+                # _dispatch_combat_medals below — the legacy inline
+                # check_combat_medals call was removed to fire the medal hook
+                # exactly once per kill.)
         except Exception as e:
-            logger.error("Failed ARIA/medal hooks after combat: %s", e)
+            logger.error("Failed ARIA hooks after combat: %s", e)
+
+        # Medal dispatch hook (ADR-0028 / medals lane). Fires on a resolved
+        # PvP KILL — attacker victory in which the defender's ship was
+        # destroyed. Best-effort via the defensive dispatcher (idempotent on
+        # the medals-lane side; a medal hiccup never breaks combat).
+        if (combat_result["result"] == CombatResult.ATTACKER_VICTORY
+                and combat_result["defender_ship_destroyed"]):
+            _dispatch_combat_medals(
+                self.db,
+                attacker,
+                {
+                    "victim_id": defender.id,
+                    "combat_log_id": combat_log.id,
+                    "kind": "pvp",
+                },
+            )
 
         # Personal reputation + bounty hooks
         attacked_innocent = False
+        killed_escape_pod = False
         try:
             from src.services.personal_reputation_service import PersonalReputationService
             from src.services.bounty_service import BountyService
@@ -308,11 +371,36 @@ class CombatService:
                 # defender.current_ship (which is now the post-kill pod).
                 if defender_pre_destruction_type == ShipType.ESCAPE_POD:
                     rep_service.adjust_reputation(attacker.id, -500, "kill_escape_pod")
+                    killed_escape_pod = True
             elif combat_result["result"] == CombatResult.DEFENDER_VICTORY:
                 # Defender successfully defended — reputation boost
                 rep_service.adjust_reputation(defender.id, 50, "defend_against_attacker")
         except Exception as e:
             logger.error("Failed reputation/bounty hooks after combat: %s", e)
+
+        # Suspect / Wanted lifecycle (police-forces.md + ranking.md). The
+        # ranking lane only DISPLAYS these flags; combat SETS them, keyed off
+        # the same personal-reputation signals fired just above:
+        #   - attack_innocent (attacker victory, no bounty on a lawful target)
+        #     → Suspect: an "attack on an innocent" is the canon Federation
+        #       Suspect trigger (police-forces.md:36).
+        #   - kill_escape_pod (egregious — gunning down a defenseless pod), OR
+        #     the attacker's reputation now sits at/below the canon Wanted
+        #     threshold (personal_reputation < −500, ranking.md / police-
+        #     forces.md:35) → Wanted.
+        # DEFERRED (canon conflict — see DECISIONS.md "combat-suspect-wanted-
+        # triggers"). Canon (ranking.md:177-211, ADR-0007) defines Suspect
+        # Status ONLY from early Cargo-Wreck salvage and Wanted Status ONLY
+        # from piloting a reported-stolen ship — NOT from attack-innocent /
+        # escape-pod / rep-threshold (those are police *engagement-spawn*
+        # triggers, a distinct concept). Setting the flags off combat signals
+        # would canonize an invented rule, so the SET is withheld pending Max's
+        # ruling + a column-name reconciliation (is_suspect/is_wanted vs canon
+        # suspect_status/suspect_until/wanted_status + auto-clear timer). The
+        # columns + the ranking-lane DISPLAY wiring remain in place so the rail
+        # is ready the moment canon is settled. Police engagement routing below
+        # is unaffected (it keys off the rep signals, which ARE canon).
+        _ = (attacked_innocent, killed_escape_pod)  # retained for the deferred trigger
 
         # Police engagement routing (ADR-0042 / police-forces.md). Two
         # in-jurisdiction triggers fire from PvP combat today: an active
@@ -395,6 +483,8 @@ class CombatService:
             ShipSpecification.type == npc_ship.type
         ).first()
         turn_cost = getattr(defender_spec, 'attack_turn_cost', None) or 2
+        # Lazy ADR-0004 regen before the affordability check / spend.
+        _regen_turns(self.db, attacker)
         if attacker.turns < turn_cost:
             return {"success": False, "message": f"Not enough turns to initiate combat (need {turn_cost})"}
 
@@ -459,6 +549,10 @@ class CombatService:
                         )
                     except Exception as e:
                         logger.error("Failed innocent-trader reputation hook: %s", e)
+                    # DEFERRED (canon conflict) — see the PvP-path note above and
+                    # DECISIONS.md "combat-suspect-wanted-triggers". The Suspect/
+                    # Wanted SET off combat signals is withheld pending Max's
+                    # ruling; the rep penalty above is canon and stays.
 
         # Create combat log — defender_id stays NULL (no Player behind the
         # ship); name/type snapshots preserve who was fought
@@ -543,16 +637,48 @@ class CombatService:
                             reason=f"Marshal kill ({dead_npc.display_name})",
                         )
                     elif dead_npc.faction_code == "galactic_concord":
-                        # TODO(canon gap): Sentinel kills crash Galactic
-                        # Concord standing (police-forces.md), but canon
-                        # gives NO numeric value and the CONCORD
-                        # FactionType is Design-only — deferred, not
-                        # invented.
+                        from src.models.faction import FactionType
+                        from src.services.faction_service import apply_faction_rep_delta
+                        # Sentinel kills crash Galactic Concord standing
+                        # (police-forces.md). The CONCORD FactionType enum
+                        # value now exists, so the hook is wired here.
+                        #
+                        # ⚠️ NO-CANON NUMBER — FLAG FOR MAX: canon states the
+                        # standing loss but gives NO numeric magnitude. We
+                        # mirror the Federation marshal-kill −250 scale as a
+                        # defensible placeholder. The Sentinels are the Nexus
+                        # hub-invariant enforcers (a stronger body than the
+                        # Federation Police), so the true value may warrant a
+                        # HARSHER penalty than −250 once Max sets canon.
+                        SENTINEL_KILL_CONCORD_PENALTY = -250  # NO-CANON, flagged
+                        apply_faction_rep_delta(
+                            self.db,
+                            attacker.id,
+                            FactionType.CONCORD,
+                            SENTINEL_KILL_CONCORD_PENALTY,
+                            reason=f"Sentinel kill ({dead_npc.display_name})",
+                        )
                         logger.info(
                             "Sentinel kill by player %s (%s) — Galactic Concord "
-                            "standing loss deferred (canon numeric gap)",
+                            "standing %+d applied (NO-CANON magnitude, mirrors "
+                            "Marshal −250; flagged for Max)",
                             attacker.id, dead_npc.display_name,
+                            SENTINEL_KILL_CONCORD_PENALTY,
                         )
+
+            # Medal dispatch hook (ADR-0028 / medals lane) for a resolved NPC
+            # kill. defender_id is NULL on NPC combat logs (no Player behind
+            # the ship), so kind="npc" lets the idempotent medals-lane hook
+            # decide whether NPC kills count — combat does not pre-judge.
+            _dispatch_combat_medals(
+                self.db,
+                attacker,
+                {
+                    "victim_id": None,
+                    "combat_log_id": combat_log.id,
+                    "kind": "npc",
+                },
+            )
 
         if combat_result["attacker_ship_destroyed"]:
             self._handle_ship_destruction(attacker, None, "combat")
@@ -675,6 +801,8 @@ class CombatService:
 
         # Check if attacker has enough turns (canon 2-turn drone engagement)
         turn_cost = 2
+        # Lazy ADR-0004 regen before the affordability check / spend.
+        _regen_turns(self.db, attacker)
         if attacker.turns < turn_cost:
             return {
                 "success": False,
@@ -809,6 +937,8 @@ class CombatService:
         
         # Check if attacker has enough turns
         turn_cost = 3  # Higher cost for attacking planets
+        # Lazy ADR-0004 regen before the affordability check / spend.
+        _regen_turns(self.db, attacker)
         if attacker.turns < turn_cost:
             return {"success": False, "message": "Not enough turns to attack planet"}
         
@@ -942,6 +1072,8 @@ class CombatService:
         
         # Check if attacker has enough turns
         turn_cost = 3  # Higher cost for attacking ports
+        # Lazy ADR-0004 regen before the affordability check / spend.
+        _regen_turns(self.db, attacker)
         if attacker.turns < turn_cost:
             return {"success": False, "message": "Not enough turns to attack port"}
         
@@ -1435,24 +1567,62 @@ class CombatService:
         return combat
 
     @staticmethod
+    def _resistance_fraction(rating: Any) -> float:
+        """Clamp a raw shield_resistance / armor_rating column value to a
+        safe damage-reduction fraction in [0.0, 0.9].
+
+        The Ship.shield_resistance / armor_rating columns store a *fraction*
+        of incoming damage absorbed before it lands (see ship.py:132-135).
+        Defensive bounds:
+          - None / non-numeric / negative  -> 0.0 (no reduction; never a
+            negative rating that would AMPLIFY damage).
+          - Capped at 0.9 so a misconfigured rating can never make a ship
+            fully invulnerable (no 100% absorb, no zero-divide downstream).
+        """
+        try:
+            frac = float(rating)
+        except (TypeError, ValueError):
+            return 0.0
+        if frac != frac:  # NaN guard
+            return 0.0
+        if frac <= 0.0:
+            return 0.0
+        return min(frac, 0.9)
+
+    @staticmethod
     def _apply_weapon_damage(
         damage: float,
         weapon: Dict[str, Any],
         target_combat: Dict[str, Any],
+        shield_resistance: float = 0.0,
+        armor_rating: float = 0.0,
     ) -> Dict[str, Any]:
         """Apply one weapon hit per the canon damage stack
         (combat-resolver.md "Damage stack — order of operations"):
 
             shield_hit = min(damage, shields) * weapon.shield_effectiveness
+                                              * (1 - shield_resistance)
             residual   = damage - min(damage, shields)
             hull_hit   = residual * weapon.hull_effectiveness
+                                  * (1 - armor_rating)
             critical   = (RNG < 0.05) ? hull_hit * 0.5 : 0
 
         Shields absorb first, the residual bleeds into hull, and a 5%
-        critical adds half the hull hit again. The canon stack's
-        shield_resistance / armor_rating terms are not part of the seeded
-        Ship.combat JSONB today, so they resolve to 0 here (flagged, not
-        invented). The canon defense-drones passive (-5% per 10 drones) is
+        critical adds half the hull hit again. The defender ship's
+        ``shield_resistance`` reduces the shield component of the hit and
+        ``armor_rating`` reduces the hull component — both are *fractions*
+        of damage absorbed (Ship.shield_resistance / armor_rating columns,
+        ship.py:132-135). The critical bonus is computed from the
+        armor-reduced hull hit so armor protects against crits too.
+
+        Both ratings are passed through ``_resistance_fraction`` by the
+        caller (clamped to [0.0, 0.9]) so a missing / negative / oversized
+        rating can never amplify damage, fully nullify a hit, or divide by
+        zero. With both ratings 0.0 (the seeded default), this reduces
+        exactly to the prior shields-first stack — existing behavior is
+        preserved.
+
+        The canon defense-drones passive (-5% per 10 drones) is
         structurally moot in this resolver: drones are a discrete screen
         layer that must be fully destroyed before any ship hit lands, so
         the defender's drone count is always 0 when this runs.
@@ -1463,10 +1633,15 @@ class CombatService:
         shields = max(0.0, float(target_combat.get("shields") or 0))
         hull = max(0.0, float(target_combat.get("hull") or 0))
 
+        # Defensive re-clamp (callers already clamp, but never trust a raw
+        # column value to be in range here either).
+        shield_resistance = CombatService._resistance_fraction(shield_resistance)
+        armor_rating = CombatService._resistance_fraction(armor_rating)
+
         absorbed = min(damage, shields)
-        shield_hit = absorbed * weapon["shield_effectiveness"]
+        shield_hit = absorbed * weapon["shield_effectiveness"] * (1.0 - shield_resistance)
         residual = damage - absorbed
-        hull_hit = residual * weapon["hull_effectiveness"]
+        hull_hit = residual * weapon["hull_effectiveness"] * (1.0 - armor_rating)
 
         critical = 0.0
         if hull_hit > 0 and random.random() < 0.05:
@@ -1608,7 +1783,15 @@ class CombatService:
                             base_damage * attacker_damage_mult * type_modifier
                             * atk_weapon["base_damage"] * attacker_drone_mult
                         )
-                        hit = self._apply_weapon_damage(damage, atk_weapon, defender_combat)
+                        hit = self._apply_weapon_damage(
+                            damage, atk_weapon, defender_combat,
+                            shield_resistance=self._resistance_fraction(
+                                getattr(defender_ship, "shield_resistance", 0.0)
+                            ),
+                            armor_rating=self._resistance_fraction(
+                                getattr(defender_ship, "armor_rating", 0.0)
+                            ),
+                        )
                         attacker_damage_dealt += hit["shield_damage"] + hit["hull_damage"]
 
                         if hit["destroyed"]:
@@ -1707,7 +1890,15 @@ class CombatService:
                             base_damage * defender_damage_mult * type_modifier
                             * def_weapon["base_damage"] * defender_drone_mult
                         )
-                        hit = self._apply_weapon_damage(damage, def_weapon, attacker_combat)
+                        hit = self._apply_weapon_damage(
+                            damage, def_weapon, attacker_combat,
+                            shield_resistance=self._resistance_fraction(
+                                getattr(attacker_ship, "shield_resistance", 0.0)
+                            ),
+                            armor_rating=self._resistance_fraction(
+                                getattr(attacker_ship, "armor_rating", 0.0)
+                            ),
+                        )
                         defender_damage_dealt += hit["shield_damage"] + hit["hull_damage"]
 
                         if hit["destroyed"]:
@@ -2174,7 +2365,13 @@ class CombatService:
 
             defender_damage_dealt += round_drone_damage
             hit_result = self._apply_weapon_damage(
-                round_drone_damage, drone_weapon, attacker_combat
+                round_drone_damage, drone_weapon, attacker_combat,
+                shield_resistance=self._resistance_fraction(
+                    getattr(attacker_ship, "shield_resistance", 0.0)
+                ),
+                armor_rating=self._resistance_fraction(
+                    getattr(attacker_ship, "armor_rating", 0.0)
+                ),
             )
 
             if hit_result["destroyed"]:
@@ -2798,7 +2995,32 @@ class CombatService:
         )
         
         logger.info(f"Player {player.id} ship destroyed, ejected to {escape_pod.name}")
-    
+
+    @staticmethod
+    def _set_suspect(player: Player) -> None:
+        """Idempotently raise a player's Suspect flag (police-forces.md /
+        ranking.md). SET-once: an already-suspect player (suspect_declared_at
+        present) is left untouched so a repeat offense never resets the
+        ranking/police lane's auto-clear timer. is_suspect is forced True
+        whenever a declared_at exists, healing a flag that was cleared in
+        isolation."""
+        if getattr(player, "suspect_declared_at", None) is None:
+            player.is_suspect = True
+            player.suspect_declared_at = datetime.now()
+        elif not player.is_suspect:
+            player.is_suspect = True
+
+    @staticmethod
+    def _set_wanted(player: Player) -> None:
+        """Idempotently raise a player's Wanted flag (police-forces.md /
+        ranking.md). SET-once on wanted_declared_at — see _set_suspect for the
+        idempotency rationale."""
+        if getattr(player, "wanted_declared_at", None) is None:
+            player.is_wanted = True
+            player.wanted_declared_at = datetime.now()
+        elif not player.is_wanted:
+            player.is_wanted = True
+
     def _transfer_cargo(self, source_ship: Ship, target_ship: Ship, cargo_to_transfer: Dict[str, int]) -> None:
         """Transfer cargo from one ship to another.
 

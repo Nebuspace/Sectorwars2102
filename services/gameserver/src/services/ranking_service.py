@@ -168,11 +168,14 @@ class RankingService:
     ) -> int:
         """Calculate the effective max turns for a player.
 
-        Combines the base turn allowance with the military-rank bonus and
-        the ARIA consciousness multiplier.
+        Per ADR-0004 the cap is the base allowance plus the military-rank
+        bonus ONLY. The ARIA ``aria_bonus_multiplier`` deliberately does NOT
+        scale the cap — it scales the continuous regeneration *rate* in
+        ``turn_service.regenerate_turns``. Applying it here too would
+        double-count consciousness (a stretched cap AND a faster fill).
 
         Formula:
-            max_turns = int((base_turns + rank_bonus) * aria_multiplier)
+            max_turns = base_turns + rank_bonus
 
         Parameters
         ----------
@@ -189,12 +192,7 @@ class RankingService:
         rank_bonuses = RankingService.get_rank_bonuses(player.military_rank)
         rank_bonus = rank_bonuses["max_turns_bonus"]
 
-        # aria_bonus_multiplier is stored on the player (1.0 to 1.5)
-        aria_multiplier = getattr(player, "aria_bonus_multiplier", 1.0) or 1.0
-        # Clamp to spec range just in case
-        aria_multiplier = max(1.0, min(1.5, aria_multiplier))
-
-        return int((base_turns + rank_bonus) * aria_multiplier)
+        return int(base_turns + rank_bonus)
 
     def refresh_daily_turns(
         self,
@@ -202,81 +200,56 @@ class RankingService:
         base_turns: int = 1000,
         force: bool = False,
     ) -> Dict[str, Any]:
-        """Reset a player's turns to their calculated max if a daily reset is due.
+        """DEPRECATED daily-reset shim — now delegates to continuous regen.
 
-        The reset happens at most once per calendar day (UTC). The
-        ``Player.turn_reset_at`` column tracks when turns were last
-        refreshed.  If the player's turns are already *above* the
-        calculated max (e.g. from an admin grant), we leave them alone
-        unless ``force`` is True.
+        ADR-0004 replaced the once-per-UTC-day reset with continuous lazy
+        regeneration (``turn_service.regenerate_turns``). This method is
+        retained ONLY as a backwards-compatible shim for existing callers
+        (e.g. the ``/player/state`` read endpoint) so the turn pool stays
+        up-to-date on read without a behavioural break. It no longer performs
+        a midnight reset; it advances the pool by real elapsed time.
 
-        Parameters
-        ----------
-        player : Player
-            A loaded Player ORM object (must be attached to the session).
-        base_turns : int, optional
-            The game-wide base turn allowance (default 1000).
-        force : bool, optional
-            If True, reset turns even if the daily window has not elapsed.
+        The ``force`` flag is preserved for callers that previously used it to
+        top a player up: when ``force`` is set and the pool is below cap, we
+        fill to cap and re-baseline the regen anchor.
 
-        Returns
-        -------
-        dict
-            Keys: refreshed (bool), old_turns, new_turns, max_turns,
-            rank_bonus, aria_multiplier.
+        Returns the same key shape it always did so callers don't break.
         """
+        from src.services.turn_service import regenerate_turns
+
         now = datetime.now(timezone.utc)
+        old_turns = player.turns or 0
         max_turns = self.calculate_max_turns(player, base_turns)
 
-        # Determine whether a refresh is due
-        needs_refresh = force
-        if not needs_refresh:
-            if player.turn_reset_at is None:
-                # Player has never had a turn reset — grant one now
-                needs_refresh = True
-            else:
-                # Ensure we compare tz-aware datetimes
-                last_reset = player.turn_reset_at
-                if last_reset.tzinfo is None:
-                    last_reset = last_reset.replace(tzinfo=timezone.utc)
-                # Reset is due if the last reset was before the start of the current UTC day
-                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                needs_refresh = last_reset < today_start
-
-        if not needs_refresh:
-            return {
-                "refreshed": False,
-                "old_turns": player.turns,
+        if force:
+            # Admin / explicit top-up path: fill to cap and re-anchor regen.
+            if player.turns < max_turns:
+                player.turns = max_turns
+            player.max_turns = max_turns
+            player.last_turn_regeneration = now
+            player.turn_reset_at = now  # keep legacy column coherent
+            self.db.flush()
+            result = {
+                "refreshed": player.turns != old_turns,
+                "old_turns": old_turns,
                 "new_turns": player.turns,
                 "max_turns": max_turns,
                 "rank_bonus": self.get_rank_bonuses(player.military_rank)["max_turns_bonus"],
                 "aria_multiplier": getattr(player, "aria_bonus_multiplier", 1.0) or 1.0,
             }
+            return result
 
-        old_turns = player.turns
-
-        # Only reset if the player's turns are below the max (don't punish admin grants)
-        if player.turns < max_turns or force:
-            player.turns = max_turns
-
-        player.turn_reset_at = now
+        # Normal path: lazy continuous regen (ADR-0004).
+        regen = regenerate_turns(self.db, player)
         self.db.flush()
 
-        rank_bonus = self.get_rank_bonuses(player.military_rank)["max_turns_bonus"]
-        aria_multiplier = getattr(player, "aria_bonus_multiplier", 1.0) or 1.0
-
-        logger.info(
-            "Turn refresh for player %s: %d -> %d (max=%d, rank_bonus=%d, aria=%.2f)",
-            player.id, old_turns, player.turns, max_turns, rank_bonus, aria_multiplier,
-        )
-
         return {
-            "refreshed": True,
-            "old_turns": old_turns,
-            "new_turns": player.turns,
-            "max_turns": max_turns,
-            "rank_bonus": rank_bonus,
-            "aria_multiplier": aria_multiplier,
+            "refreshed": regen.get("turns_added", 0) > 0,
+            "old_turns": regen.get("old_turns", old_turns),
+            "new_turns": regen.get("new_turns", player.turns),
+            "max_turns": regen.get("max_turns", max_turns),
+            "rank_bonus": self.get_rank_bonuses(player.military_rank)["max_turns_bonus"],
+            "aria_multiplier": getattr(player, "aria_bonus_multiplier", 1.0) or 1.0,
         }
 
     # ------------------------------------------------------------------
@@ -595,14 +568,47 @@ class RankingService:
                 earned_rank["name"],
                 player.rank_points,
             )
-            return {
+
+            result = {
                 "promoted": True,
                 "old_rank": old_rank,
                 "new_rank": earned_rank["name"],
                 "message": f"Promoted from {old_rank} to {earned_rank['name']}!",
             }
 
+            # Player-journey win condition: reaching the top military rank
+            # completes the campaign. Stamp it exactly once (idempotent — a
+            # later re-check at max rank must not overwrite the original time).
+            if self._is_top_rank(earned_rank["name"]) and not player.is_game_complete:
+                player.is_game_complete = True
+                player.rank_victory_at = datetime.now(timezone.utc)
+                logger.info(
+                    "Player %s achieved RANK VICTORY at %s (%s)",
+                    player.id, player.rank_victory_at, earned_rank["name"],
+                )
+                result["game_complete"] = True
+                result["rank_victory_at"] = player.rank_victory_at.isoformat()
+                result["message"] = (
+                    f"VICTORY! Promoted to {earned_rank['name']} — "
+                    f"the campaign is complete."
+                )
+
+            return result
+
         return {"promoted": False, "message": "No promotion earned yet"}
+
+    @staticmethod
+    def _is_top_rank(rank_name: str) -> bool:
+        """True if ``rank_name`` is the highest military rank (campaign win).
+
+        The top rank is the final entry in RANK_DEFINITIONS (highest level).
+        Legacy names are mapped first so an old top-rank record still counts.
+        """
+        if not RANK_DEFINITIONS:
+            return False
+        top_rank_name = RANK_DEFINITIONS[-1]["name"]
+        mapped = LEGACY_RANK_MAP.get(rank_name, rank_name)
+        return mapped == top_rank_name
 
     def get_rank_info(self, player_id: uuid.UUID) -> Optional[Dict[str, Any]]:
         """Return detailed rank information for a player."""
@@ -633,6 +639,11 @@ class RankingService:
         aria_multiplier = getattr(player, "aria_bonus_multiplier", 1.0) or 1.0
         effective_max_turns = self.calculate_max_turns(player)
 
+        # Journey win-condition state (Task B) and Suspect/Wanted law status
+        # (Task C). These are READ-ONLY here — the combat lane SETS is_suspect /
+        # is_wanted on kills, and _check_and_promote SETS is_game_complete /
+        # rank_victory_at. We only surface them for display.
+        rank_victory_at = getattr(player, "rank_victory_at", None)
         return {
             "player_id": str(player.id),
             "username": player.username,
@@ -648,6 +659,12 @@ class RankingService:
             "is_max_rank": next_rank is None,
             "effective_max_turns": effective_max_turns,
             "aria_multiplier": round(aria_multiplier, 2),
+            # Win-condition display (Task B)
+            "is_game_complete": bool(getattr(player, "is_game_complete", False)),
+            "rank_victory_at": rank_victory_at.isoformat() if rank_victory_at else None,
+            # Suspect / Wanted law-status display (Task C — read-only)
+            "is_suspect": bool(getattr(player, "is_suspect", False)),
+            "is_wanted": bool(getattr(player, "is_wanted", False)),
         }
 
     # ------------------------------------------------------------------
@@ -684,6 +701,11 @@ class RankingService:
                     "military_rank": player.military_rank,
                     "rank_points": player.rank_points or 0,
                     "rank_level": rank_info["rank_level"],
+                    # Read-only display flags (Tasks B & C). The leaderboard
+                    # Pydantic schema must opt these in to surface them.
+                    "is_game_complete": bool(getattr(player, "is_game_complete", False)),
+                    "is_suspect": bool(getattr(player, "is_suspect", False)),
+                    "is_wanted": bool(getattr(player, "is_wanted", False)),
                 }
             )
 
