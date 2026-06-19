@@ -1886,6 +1886,113 @@ interface LandedCtx {
   secondaryColor?: string;
   /** this planet's orbit_au (distance to sun); undefined → mid 0.5 */
   orbitAu?: number;
+  /** number of moons orbiting THIS landed world (drives sky-moon count) */
+  moons?: number;
+  /** this world's orbital phase in degrees — seeds each moon's lit fraction */
+  phaseDeg?: number;
+  /** true when the world has a ring system — hints a ring on the largest moon */
+  rings?: boolean;
+  /** 0–9-ish size class of THIS world — biases moon sizes */
+  sizeClass?: number;
+  /** id of THIS landed world — seeds time-of-day + landform variant so two
+   *  worlds in the same sector never share stale cached geometry. */
+  landedPlanetId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Time-of-day + landform variance — both seeded per (sector + planet) so each
+// world reads differently and a night sky NEVER carries a sun.
+// ---------------------------------------------------------------------------
+
+type TimeOfDay = 'DAY' | 'DUSK' | 'DAWN' | 'NIGHT';
+
+/** Stable hash of a string → uint32, folded into the splitmix seed so the
+ *  landed planet id (a UUID) contributes deterministic entropy. */
+function hashStr(s: string | undefined): number {
+  if (!s) return 0;
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Seed a time-of-day for this world. Weighted so DAY/NIGHT dominate and the
+ *  two twilight bands are rarer (they're the "special" looks). */
+function timeOfDayFor(seed: number): TimeOfDay {
+  const r = splitmix32(seed * 2246822519 + 101)();
+  if (r < 0.40) return 'DAY';
+  if (r < 0.58) return 'DUSK';
+  if (r < 0.72) return 'DAWN';
+  return 'NIGHT';
+}
+
+/** Day-coupling factors derived from the time of day:
+ *  - bright: 0 (deep night) → 1 (full day); lerps palette light + star count
+ *  - showSun: sun disc drawn at all (never at night)
+ *  - sunHeight: 0 = on horizon (twilight) → 1 = high (noon)
+ *  - warm: extra warm bias for the low twilight sun
+ *  - moonProminence: how bright/large moons read (1 at night → faint by day) */
+function todProfile(tod: TimeOfDay): {
+  bright: number; showSun: boolean; sunHeight: number; warm: number; moonProminence: number;
+} {
+  switch (tod) {
+    case 'DAY':   return { bright: 1.0,  showSun: true,  sunHeight: 1.0, warm: 0.0,  moonProminence: 0.22 };
+    case 'DUSK':  return { bright: 0.45, showSun: true,  sunHeight: 0.12, warm: 1.0, moonProminence: 0.55 };
+    case 'DAWN':  return { bright: 0.5,  showSun: true,  sunHeight: 0.14, warm: 0.7, moonProminence: 0.5 };
+    case 'NIGHT': return { bright: 0.08, showSun: false, sunHeight: 0.0, warm: 0.0,  moonProminence: 1.0 };
+  }
+}
+
+/** Landform variant ids per flourish family. The variant changes where water,
+ *  flora and the citadel sit and how the ridges are composed. */
+type Landform =
+  | 'OCEAN_ISLAND' | 'OCEAN_CLIFF' | 'OCEAN_SHORELINE'
+  | 'VOLC_CALDERA' | 'VOLC_PLAIN' | 'VOLC_ASHFIELD'
+  | 'ICE_GLACIER' | 'ICE_FROZENSEA' | 'ICE_PEAKS'
+  | 'DES_DUNES' | 'DES_MESA' | 'DES_SALTFLAT'
+  | 'TER_HILLS' | 'TER_FORESTVALLEY' | 'TER_COAST'
+  | 'MTN_PEAKS' | 'MTN_PLATEAU' | 'MTN_GORGE'
+  | 'BAR_CRATER' | 'BAR_ROCKY';
+
+function landformFor(flourish: LandedPalette['flourish'], seed: number): Landform {
+  const r = splitmix32(seed * 3266489917 + 53)();
+  switch (flourish) {
+    case 'OCEANIC':     return r < 0.34 ? 'OCEAN_ISLAND'  : r < 0.67 ? 'OCEAN_CLIFF'   : 'OCEAN_SHORELINE';
+    case 'VOLCANIC':    return r < 0.34 ? 'VOLC_CALDERA'  : r < 0.67 ? 'VOLC_PLAIN'    : 'VOLC_ASHFIELD';
+    case 'ICE':         return r < 0.34 ? 'ICE_GLACIER'   : r < 0.67 ? 'ICE_FROZENSEA' : 'ICE_PEAKS';
+    case 'DESERT':      return r < 0.34 ? 'DES_DUNES'     : r < 0.67 ? 'DES_MESA'      : 'DES_SALTFLAT';
+    case 'TERRAN':      return r < 0.34 ? 'TER_HILLS'     : r < 0.67 ? 'TER_FORESTVALLEY' : 'TER_COAST';
+    case 'MOUNTAINOUS': return r < 0.34 ? 'MTN_PEAKS'     : r < 0.67 ? 'MTN_PLATEAU'   : 'MTN_GORGE';
+    default:            return r < 0.5  ? 'BAR_CRATER'    : 'BAR_ROCKY';
+  }
+}
+
+/** True when this landform shows open water below the horizon (ocean variants
+ *  + a couple of cross-type water variants). */
+function landformHasWater(lf: Landform): boolean {
+  return lf === 'OCEAN_ISLAND' || lf === 'OCEAN_CLIFF' || lf === 'OCEAN_SHORELINE' ||
+         lf === 'ICE_FROZENSEA' || lf === 'TER_COAST';
+}
+
+/** Lerp a "#rrggbb" toward white (amt>0) or black (amt<0) by |amt| in 0..1. */
+function shiftHex(hex: string, amt: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  const tgt = amt >= 0 ? 255 : 0;
+  const k = Math.min(1, Math.abs(amt));
+  const ch = (c: number) => Math.round(c + (tgt - c) * k);
+  const to2 = (n: number) => n.toString(16).padStart(2, '0');
+  return `#${to2(ch(r))}${to2(ch(g))}${to2(ch(b))}`;
+}
+
+/** Warm a "#rrggbb" toward sunset orange by amt in 0..1. */
+function warmHex(hex: string, amt: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  const k = Math.min(1, Math.max(0, amt));
+  const ch = (c: number, t: number) => Math.round(c + (t - c) * k * 0.5);
+  const to2 = (n: number) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
+  return `#${to2(ch(r, 255))}${to2(ch(g, 130))}${to2(ch(b, 60))}`;
 }
 
 /** Star-kind → corona character (relative corona scale + a hotness bias for the
@@ -1925,7 +2032,14 @@ function starProfile(kind?: string): { corona: number; hot: number } {
 
 type RidgeLayer = { base: number; amp: number; speed: number; pts: number[]; color: string };
 type StarSeed = { x: number; y: number; size: number; twPhase: number; twSpeed: number; baseAlpha: number };
-type FloraSeed = { x: number; height: number; swayPhase: number; wob: number; hasFronds: boolean };
+// Plant silhouettes — chosen by planet type + landform so vegetation reads as
+// PLANTS, never "power poles". PALM/REED = oceanic shore; GRASS/BUSH = terran;
+// SHRUB = desert mesa; TUSSOCK = hardy mountain/ice.
+type FloraKind = 'PALM' | 'REED' | 'GRASS' | 'BUSH' | 'SHRUB' | 'TUSSOCK';
+type FloraSeed = {
+  x: number; height: number; swayPhase: number; wob: number;
+  kind: FloraKind; lean: number; blades: number;
+};
 type CitadelStructure = {
   x: number; bw: number; bh: number;
   windows: { dx: number; dy: number; warm: number }[];
@@ -1934,10 +2048,32 @@ type CitadelStructure = {
 type CitadelLayout = { structures: CitadelStructure[]; beacon: boolean; cityX: number; maxH: number; struct: string; twinkleWindows: boolean };
 type HazeSeed = { baseX: number; yFrac: number; w: number; speed: number };
 // Atmospheric particle kinds → drive shape/colour/motion of the precomputed seeds.
-type ParticleKind = 'EMBER' | 'SNOW' | 'DUST' | 'FLOATER' | 'FAINT';
+// SPRAY = oceanic sea-mist at the waterline; MOTE = a few low ground motes (lush).
+type ParticleKind = 'EMBER' | 'SNOW' | 'DUST' | 'SPRAY' | 'MOTE' | 'FAINT';
 type ParticleSeed = { x: number; y: number; size: number; phase: number; speed: number; drift: number; warm: number };
 type CloudSeed = { x: number; yFrac: number; w: number; hFrac: number; speed: number; alpha: number };
 type VolcFissure = { x: number; w: number; phase: number };
+/** A moon hanging in the sky: position + radius + the phase geometry that draws
+ *  its terminator (lit fraction + the orientation the shadow sweeps from). */
+type MoonSeed = {
+  x: number; y: number; r: number;
+  /** 0 = new (dark) … 1 = full (fully lit) */
+  illum: number;
+  /** angle the lit limb faces (radians) — orients the crescent/gibbous shadow */
+  lightAngle: number;
+  /** subtle CRT tint "r,g,b" */
+  tint: string;
+  /** darker "r,g,b" for the mare mottling (precomputed from tint) */
+  mareTint: string;
+  /** static halo gradient (position/size/colour fixed; only alpha varies) */
+  halo: CanvasGradient;
+  /** draw a thin ring on this moon (only the largest, when the world has rings) */
+  ring: boolean;
+};
+/** A precomputed wave crest line for the OCEANIC ocean: a horizontal band whose
+ *  crests ripple via sine. yFrac is 0 (waterline) → 1 (foreground) so the draw
+ *  can scale amplitude/spacing with depth. */
+type WaveLine = { yFrac: number; amp: number; wavelength: number; speed: number; phase: number; alpha: number; lineW: number };
 
 interface LandedCache {
   key: string;
@@ -1952,8 +2088,24 @@ interface LandedCache {
   flourish: LandedPalette['flourish'];
   flora: number[]; // parsed "r,g,b"
   haze: string;
+  // time-of-day + landform (NEW)
+  tod: TimeOfDay;
+  todBright: number;        // 0 (night) → 1 (day)
+  showSun: boolean;
+  landform: Landform;
+  hasWater: boolean;
+  waterTopY: number;        // y where the ocean begins (varies by landform)
+  landBaseFrac: number;     // ridge base lift for the variant
+  citadelOnWater: boolean;  // suppress citadel/flora that would float on water
+  // reflection anchor (sun OR brightest moon) for the water glitter column
+  reflX: number; reflTint: string;
   // sun anchor
   sunX: number; sunY: number; sunR: number; coronaR: number;
+  // moons hanging in the sky (NEW)
+  moons: MoonSeed[];
+  moonProminence: number;
+  // ocean wave lines (NEW; OCEANIC / water variants only)
+  waves: WaveLine[];
   hasCompanion: boolean; c2x: number; c2y: number; c2r: number; c2: { r: number; g: number; b: number };
   // ridge geometry (noise precomputed; drifted profile recomputed per frame)
   layers: RidgeLayer[];
@@ -1985,18 +2137,18 @@ interface LandedCache {
 
 let landedCache: LandedCache | null = null;
 
-/** Per-flourity atmospheric particle character. */
-function particleKindFor(flourish: LandedPalette['flourish'], habN: number): ParticleKind {
-  if (flourish === 'VOLCANIC') return 'EMBER';
-  if (flourish === 'ICE') return 'SNOW';
-  if (flourish === 'DESERT') return 'DUST';
-  // FLOATER (pollen/spores/fireflies) only for living-world flourishes — never
-  // on barren/gas ('NONE'), even when its neutral baseline hab (~55) trips the
-  // catch-all. NONE worlds fall through to FAINT (sparse dust).
-  if (flourish === 'TERRAN' || flourish === 'OCEANIC' ||
+/** Per-flourish atmospheric particle character. Context-appropriate + LOW —
+ *  never the up-drifting sky floaters that read as shooting stars. */
+function particleKindFor(flourish: LandedPalette['flourish'], habN: number, hasWater: boolean): ParticleKind {
+  if (flourish === 'VOLCANIC') return 'EMBER';      // embers hugging the fissures
+  if (flourish === 'ICE') return 'SNOW';            // snow falling
+  if (flourish === 'DESERT') return 'DUST';         // low blowing dust
+  if (flourish === 'OCEANIC' || hasWater) return 'SPRAY'; // sea spray at the waterline
+  // a few LOW ground-level motes only for living worlds — never on barren/gas.
+  if (flourish === 'TERRAN' ||
       (flourish === 'MOUNTAINOUS' && habN > 0.4) ||
       (habN > 0.55 && flourish !== 'NONE'))
-    return 'FLOATER';
+    return 'MOTE';
   return 'FAINT';
 }
 
@@ -2014,6 +2166,9 @@ function buildLandedCache(
 ): LandedCache {
   const horizonY = h * 0.58;
   const seed = (sectorId >>> 0) || 1;
+  // Per-world seed: fold the landed planet id into the sector seed so two worlds
+  // in one sector get distinct time-of-day + landform (and distinct cached geom).
+  const worldSeed = ((seed ^ hashStr(env?.landedPlanetId)) >>> 0) || seed || 1;
 
   const hab = env && typeof env.habitability === 'number'
     ? Math.max(0, Math.min(100, env.habitability)) : 55;
@@ -2022,14 +2177,56 @@ function buildLandedCache(
   const orbitAu = env && typeof env.orbitAu === 'number' && env.orbitAu > 0 ? env.orbitAu : 0.5;
   const ORBIT_NEAR = 0.15, ORBIT_FAR = 1.0;
   const prox = Math.max(0.05, 1 - Math.min(1, Math.max(0, (orbitAu - ORBIT_NEAR) / (ORBIT_FAR - ORBIT_NEAR))));
-  const sc = hexToRgb(env?.starColor || '#ffd27a');
   const profile = starProfile(env?.starKind);
 
-  // --- Sky gradient (static) ---
+  // --- TIME OF DAY (seeded; couples sky brightness + sun visibility) ---
+  const tod = timeOfDayFor(worldSeed);
+  const todp = todProfile(tod);
+  const todBright = todp.bright;
+  const showSun = todp.showSun;
+  // Star color, then warm it for twilight (low-sun orange wash).
+  let sc = hexToRgb(env?.starColor || '#ffd27a');
+  if (todp.warm > 0) {
+    sc = {
+      r: Math.min(255, Math.round(sc.r + (255 - sc.r) * todp.warm * 0.5)),
+      g: Math.round(sc.g + (140 - sc.g) * todp.warm * 0.4),
+      b: Math.round(sc.b + (60 - sc.b) * todp.warm * 0.4),
+    };
+  }
+
+  // --- LANDFORM VARIANT (seeded; drives water placement + ridge composition) ---
+  const landform = landformFor(pal.flourish, worldSeed);
+  const hasWater = landformHasWater(landform);
+  // Where the water surface starts + how the land sits, per variant.
+  let waterTopY = horizonY;
+  let landBaseFrac = 0;        // shift ridge base lower(+)/higher(-)
+  let citadelOnWater = false;  // true → push city onto the small land mass
+  if (hasWater) {
+    if (landform === 'OCEAN_CLIFF') {
+      // foreground cliff edge high, the sea sits far below it
+      waterTopY = h * 0.72; landBaseFrac = -0.05;
+    } else if (landform === 'OCEAN_ISLAND') {
+      // ocean fills the horizon; a small land mass in the foreground only
+      waterTopY = horizonY; landBaseFrac = 0.18; citadelOnWater = true;
+    } else { // SHORELINE / ICE_FROZENSEA / TER_COAST — land meets water mid-scene
+      waterTopY = h * 0.66; landBaseFrac = 0.04;
+    }
+  } else if (landform === 'VOLC_CALDERA' || landform === 'MTN_PEAKS' || landform === 'ICE_PEAKS') {
+    landBaseFrac = -0.08; // dramatic high rim/peaks
+  } else if (landform === 'DES_SALTFLAT' || landform === 'VOLC_PLAIN' || landform === 'MTN_PLATEAU' || landform === 'BAR_ROCKY') {
+    landBaseFrac = 0.06;  // flat, low
+  } else if (landform === 'DES_MESA' || landform === 'MTN_GORGE' || landform === 'BAR_CRATER') {
+    landBaseFrac = 0.0;
+  }
+
+  // --- Sky gradient (static; brightness coupled to time of day) ---
+  const skyTop = shiftHex(pal.skyTop, (todBright - 0.5) * 0.55 + todp.warm * 0.1);
+  const skyMid = warmHex(shiftHex(pal.skyMid, (todBright - 0.5) * 0.6), todp.warm * 0.6);
+  const skyHor = warmHex(shiftHex(pal.horizon, (todBright - 0.5) * 0.45), todp.warm);
   const skyGrad = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
-  skyGrad.addColorStop(0, pal.skyTop);
-  skyGrad.addColorStop(0.6, pal.skyMid);
-  skyGrad.addColorStop(1, pal.horizon);
+  skyGrad.addColorStop(0, skyTop);
+  skyGrad.addColorStop(0.6, skyMid);
+  skyGrad.addColorStop(1, skyHor);
 
   // --- Star-tinted sky wash (static) ---
   const washA = 0.05 + prox * profile.hot * 0.18;
@@ -2041,10 +2238,14 @@ function buildLandedCache(
   }
 
   // --- Sun anchor (seeded once) ---
-  const anchorRng = splitmix32(seed * 911 + 3);
+  // sunHeight from the time of day: high at noon, hugging the horizon at dawn/dusk.
+  const anchorRng = splitmix32(worldSeed * 911 + 3);
   const sunX = w * (0.18 + anchorRng() * 0.64);
-  const sunY = horizonY * (0.22 + anchorRng() * 0.34);
-  const sunR = Math.max(6, Math.min(Math.min(w, h) * 0.12, Math.min(w, h) * (0.018 + prox * 0.06) * profile.corona));
+  // sunHeight 1 → high in the sky (small horizonY factor); 0 → sitting on horizon.
+  const sunY = horizonY * (0.86 - todp.sunHeight * 0.62) + (anchorRng() - 0.5) * horizonY * 0.08;
+  // Twilight sun reads larger/softer near the horizon.
+  const sizeBias = tod === 'DUSK' || tod === 'DAWN' ? 1.35 : 1.0;
+  const sunR = Math.max(6, Math.min(Math.min(w, h) * 0.13, Math.min(w, h) * (0.018 + prox * 0.06) * profile.corona * sizeBias));
   const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4) * profile.corona);
 
   // corona (static gradient)
@@ -2079,6 +2280,51 @@ function buildLandedCache(
     anchorRng();
   }
 
+  // --- MOONS in the sky (seeded; phase terminator computed once) ---
+  const moonCount = env && typeof env.moons === 'number' ? Math.max(0, Math.min(3, Math.round(env.moons))) : 0;
+  const moonProminence = todp.moonProminence;
+  const moons: MoonSeed[] = [];
+  if (moonCount > 0) {
+    const mRng = splitmix32(worldSeed * 2654435761 + 777);
+    const basePhase = (typeof env?.phaseDeg === 'number' ? env.phaseDeg : 0) * Math.PI / 180;
+    const szBias = env && typeof env.sizeClass === 'number' ? 0.7 + Math.min(1, env.sizeClass / 9) * 0.7 : 1.0;
+    let biggestIdx = 0, biggestR = 0;
+    for (let i = 0; i < moonCount; i++) {
+      // Keep moons out of the sun's immediate halo and spread across the sky.
+      const mx = w * (0.12 + mRng() * 0.76);
+      const my = horizonY * (0.12 + mRng() * 0.4);
+      const r = Math.max(7, Math.min(w, h) * (0.024 + mRng() * 0.03) * szBias * (i === 0 ? 1.25 : 0.85));
+      // Illumination fraction: derive from the world phase + a per-moon offset so
+      // multiple moons show different phases (crescent / gibbous / full).
+      const ill = 0.5 + 0.5 * Math.cos(basePhase + i * 2.0 + mRng() * Math.PI);
+      const lightAngle = basePhase + i * 0.7 + (mRng() - 0.5) * 0.6;
+      // Pale CRT tint, slightly per-moon varied.
+      const warmth = mRng();
+      const tint = warmth > 0.6
+        ? '210, 200, 180'
+        : warmth > 0.3 ? '200, 210, 225' : '190, 200, 215';
+      // Precompute the darker mare tint + the static halo gradient (all inputs
+      // are cached constants — only the per-frame alpha "breathing" varies).
+      const mareTint = tint.split(',').map((s) => Math.max(0, parseInt(s, 10) - 40)).join(', ');
+      const halo = ctx.createRadialGradient(mx, my, r * 0.6, mx, my, r * 2.6);
+      halo.addColorStop(0, `rgba(${tint}, ${(0.18 * moonProminence).toFixed(3)})`);
+      halo.addColorStop(1, `rgba(${tint}, 0)`);
+      moons.push({ x: mx, y: my, r, illum: ill, lightAngle, tint, mareTint, halo, ring: false });
+      if (r > biggestR) { biggestR = r; biggestIdx = i; }
+    }
+    if (env?.rings && moons.length > 0) moons[biggestIdx].ring = true;
+  }
+
+  // --- Reflection anchor for water glitter: the sun by day, else brightest moon. ---
+  let reflX = sunX;
+  let reflTint = `${sc.r}, ${sc.g}, ${sc.b}`;
+  if (!showSun && moons.length > 0) {
+    let best = moons[0];
+    for (const m of moons) if (m.illum > best.illum) best = m;
+    reflX = best.x;
+    reflTint = best.tint;
+  }
+
   // --- Horizon glow (static) ---
   const gx = w * (0.25 + anchorRng() * 0.5);
   const glowGrad = ctx.createRadialGradient(gx, horizonY, 0, gx, horizonY, Math.max(w, h) * (0.4 + prox * 0.18));
@@ -2088,39 +2334,69 @@ function buildLandedCache(
   starHueGlow.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(prox * profile.hot * 0.22).toFixed(3)})`);
   starHueGlow.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
 
-  // --- OCEANIC water band (static gradient; glitter stays per-frame) ---
+  // --- WATER surface gradient + animated wave lines (water variants only) ---
+  // The flat teal band is replaced by a real ocean: a darker depth gradient plus
+  // layered wave crest-lines (precomputed; the crests ripple per frame).
   let waterBand: CanvasGradient | null = null;
-  if (pal.flourish === 'OCEANIC') {
-    waterBand = ctx.createLinearGradient(0, horizonY, 0, h);
-    waterBand.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.06 + prox * 0.1).toFixed(3)})`);
-    waterBand.addColorStop(0.5, 'rgba(40, 120, 150, 0.12)');
-    waterBand.addColorStop(1, 'rgba(10, 35, 55, 0.05)');
+  const waves: WaveLine[] = [];
+  if (hasWater) {
+    const bandTop = waterTopY;
+    waterBand = ctx.createLinearGradient(0, bandTop, 0, h);
+    // brighter at the waterline (sky/sun reflection on far water), deepening down.
+    const surfTint = todBright > 0.3
+      ? `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.10 + prox * 0.10).toFixed(3)})`
+      : 'rgba(60, 90, 120, 0.16)';
+    waterBand.addColorStop(0, surfTint);
+    waterBand.addColorStop(0.45, 'rgba(20, 70, 100, 0.30)');
+    waterBand.addColorStop(1, 'rgba(6, 22, 40, 0.55)');
+    // wave crest-lines: finer/denser near the waterline, larger toward foreground.
+    const wRng = splitmix32(worldSeed * 1597 + 91);
+    const lineCount = 14;
+    for (let i = 0; i < lineCount; i++) {
+      const f = i / (lineCount - 1);            // 0 = waterline … 1 = foreground
+      waves.push({
+        yFrac: f,
+        amp: (1.0 + f * 6.0) + wRng() * 1.5,    // bigger swells toward the camera
+        wavelength: (28 + f * 120) * (0.8 + wRng() * 0.5),
+        speed: 0.4 + f * 0.9,
+        phase: wRng() * Math.PI * 2,
+        alpha: (0.05 + f * 0.14),
+        lineW: 0.6 + f * 1.4,
+      });
+    }
   }
 
   // --- STARFIELD layout (twinkle stays per frame) ---
-  const starCount = Math.round(10 + (1 - habN) * 90);
-  const sfRng = splitmix32(seed * 2654435761 + 17);
+  // Mostly visible at NIGHT; sparse + dim by day. Stars never move vertically.
+  const nightBoost = 0.25 + (1 - todBright) * 0.75; // 1.0 at night → 0.25 at noon
+  const starCount = Math.round((8 + (1 - habN) * 70) * (0.4 + (1 - todBright) * 0.9));
+  const sfRng = splitmix32(worldSeed * 2654435761 + 17);
   const stars: StarSeed[] = [];
   for (let i = 0; i < starCount; i++) {
     const x = sfRng() * w;
     const y = sfRng() * (horizonY * 0.92);
     const size = 0.3 + sfRng() * 0.9;
     const twSpeed = 0.6 + sfRng() * 1.4;
-    const baseAlpha = (0.12 + sfRng() * 0.35) * (0.4 + (1 - habN) * 0.6);
+    const baseAlpha = (0.12 + sfRng() * 0.35) * (0.4 + (1 - habN) * 0.6) * nightBoost;
     stars.push({ x, y, size, twPhase: i, twSpeed, baseAlpha });
   }
 
   // --- RIDGE noise (the 3×48 pts) — drifted profile recomputed per frame ---
-  const ampBoost = pal.flourish === 'MOUNTAINOUS' ? 1.7 : 1.0;
-  const baseLift = pal.flourish === 'MOUNTAINOUS' ? -0.06 : 0;
+  // ampBoost: jagged for peaks, flatter for plains/flats. landBaseFrac lifts the
+  // whole land mass per landform (cliff sits high, plains sit low).
+  const peaky = landform === 'MTN_PEAKS' || landform === 'ICE_PEAKS' || landform === 'VOLC_CALDERA';
+  const flat = landform === 'DES_SALTFLAT' || landform === 'VOLC_PLAIN' || landform === 'MTN_PLATEAU' ||
+               landform === 'BAR_ROCKY' || landform === 'OCEAN_ISLAND';
+  const ampBoost = pal.flourish === 'MOUNTAINOUS' ? 1.7 : peaky ? 1.6 : flat ? 0.45 : 1.0;
+  const baseLift = (pal.flourish === 'MOUNTAINOUS' ? -0.06 : 0) + landBaseFrac;
   const layerCfg = [
     { base: 0.6 + baseLift, amp: 0.1 * ampBoost, speed: 1.2, seed: 5 },
     { base: 0.7 + baseLift, amp: 0.13 * ampBoost, speed: 2.6, seed: 11 },
-    { base: 0.84, amp: 0.16 * ampBoost, speed: 4.6, seed: 23 }
+    { base: 0.84 + baseLift, amp: 0.16 * ampBoost, speed: 4.6, seed: 23 }
   ];
   const period = Math.max(w * 2, 1200);
   const layers: RidgeLayer[] = layerCfg.map((cfg) => {
-    const rng = splitmix32(seed * 131 + cfg.seed);
+    const rng = splitmix32(worldSeed * 131 + cfg.seed);
     const pts: number[] = [];
     for (let i = 0; i < 48; i++) pts.push(rng());
     return { base: cfg.base, amp: cfg.amp, speed: cfg.speed, pts, color: '' };
@@ -2130,7 +2406,7 @@ function buildLandedCache(
   // --- VOLCANIC fissures (seeded; pulse per frame) ---
   const volcFissures: VolcFissure[] = [];
   if (pal.flourish === 'VOLCANIC') {
-    const fRng = splitmix32(seed * 313 + 41);
+    const fRng = splitmix32(worldSeed * 313 + 41);
     const count = 2 + Math.floor(fRng() * 2);
     for (let i = 0; i < count; i++) {
       const x = w * (0.15 + fRng() * 0.7);
@@ -2140,26 +2416,63 @@ function buildLandedCache(
   }
 
   // --- FLORA layout (sway per frame; baseY from live ridge per frame) ---
+  // Vegetation reads as PLANTS (palms/reeds/grass/bushes/shrubs), clustered on
+  // LAND only — never floating on water. The silhouette is chosen per type.
   const flora = pal.flora.split(',').map((s) => parseInt(s.trim(), 10));
   const floraEligible = pal.flourish === 'TERRAN' || pal.flourish === 'OCEANIC' ||
-    pal.flourish === 'MOUNTAINOUS' || pal.flourish === 'DESERT';
+    pal.flourish === 'MOUNTAINOUS' || pal.flourish === 'DESERT' ||
+    (pal.flourish === 'ICE' && habN > 0.4);
   const flouraSeeds: FloraSeed[] = [];
   if (floraEligible && habN > 0.15) {
-    const floraCount = Math.round(habN * (pal.flourish === 'DESERT' ? 14 : 34));
-    const flRng = splitmix32(seed * 619 + 71);
+    const baseCount = pal.flourish === 'DESERT' ? 12 : pal.flourish === 'ICE' ? 8 : 30;
+    const floraCount = Math.round(habN * baseCount);
+    const flRng = splitmix32(worldSeed * 619 + 71);
+    // x-window the plants must fall within so they sit on LAND, not water.
+    // For ocean ISLAND the land is the foreground centre; for SHORELINE/COAST the
+    // land is one half of the scene; cliff-top plants run the full width (land is
+    // the foreground plateau). Non-water worlds use the full width.
+    let xMin = 0, xMax = w;
+    if (landform === 'OCEAN_ISLAND') { xMin = w * 0.30; xMax = w * 0.70; }
+    else if (landform === 'OCEAN_SHORELINE' || landform === 'TER_COAST') { xMin = 0; xMax = w * 0.55; }
     for (let i = 0; i < floraCount; i++) {
-      const x = flRng() * w;
-      const height = (6 + flRng() * 16) * (0.5 + habN * 0.9);
+      const x = xMin + flRng() * (xMax - xMin);
       const wob = flRng() * 0.4 + 0.8;
-      flouraSeeds.push({ x, height, swayPhase: i, wob, hasFronds: habN > 0.5 });
+      const lean = (flRng() - 0.5) * 0.5;
+      // pick silhouette by type + landform
+      let kind: FloraKind;
+      let height: number;
+      let blades = 3;
+      if (pal.flourish === 'OCEANIC') {
+        kind = flRng() > 0.45 ? 'PALM' : 'REED';
+        height = kind === 'PALM' ? (18 + flRng() * 18) * (0.6 + habN * 0.7)
+                                 : (8 + flRng() * 10) * (0.6 + habN * 0.6);
+        blades = kind === 'PALM' ? 4 + Math.floor(flRng() * 3) : 3 + Math.floor(flRng() * 3);
+      } else if (pal.flourish === 'DESERT') {
+        kind = 'SHRUB';
+        height = (5 + flRng() * 8) * (0.6 + habN * 0.6);
+        blades = 3 + Math.floor(flRng() * 3);
+      } else if (pal.flourish === 'MOUNTAINOUS' || pal.flourish === 'ICE') {
+        kind = 'TUSSOCK';
+        height = (4 + flRng() * 7) * (0.6 + habN * 0.6);
+        blades = 4 + Math.floor(flRng() * 4);
+      } else { // TERRAN
+        kind = flRng() > 0.55 ? 'BUSH' : 'GRASS';
+        height = kind === 'BUSH' ? (7 + flRng() * 10) * (0.6 + habN * 0.7)
+                                 : (5 + flRng() * 9) * (0.6 + habN * 0.7);
+        blades = kind === 'GRASS' ? 4 + Math.floor(flRng() * 4) : 3 + Math.floor(flRng() * 2);
+      }
+      flouraSeeds.push({ x, height, swayPhase: i, wob, kind, lean, blades });
     }
   }
 
   // --- CITADEL skyline layout (windows/beacon/heights fixed; y per frame) ---
-  const citadelLayout = citadel > 0 ? buildCitadelLayout(w, h, seed, citadel, pal) : null;
+  // On an ocean island the city must stay on the foreground land mass (the same
+  // x-window the flora uses) so towers never stand over open water.
+  const citadelLandX = citadelOnWater ? { min: w * 0.30, max: w * 0.70 } : undefined;
+  const citadelLayout = citadel > 0 ? buildCitadelLayout(w, h, worldSeed, citadel, pal, citadelLandX) : null;
 
   // --- HAZE seeds ---
-  const hazeRng = splitmix32(seed * 53 + 7);
+  const hazeRng = splitmix32(worldSeed * 53 + 7);
   const haze3: HazeSeed[] = [];
   for (let i = 0; i < 3; i++) {
     haze3.push({
@@ -2172,7 +2485,7 @@ function buildLandedCache(
   const hazeStrength = 0.04 + habN * 0.09;
 
   // --- DRIFTING CLOUD bands (parallax across the sky) ---
-  const cloudRng = splitmix32(seed * 877 + 29);
+  const cloudRng = splitmix32(worldSeed * 877 + 29);
   const cloudCount = pal.flourish === 'VOLCANIC' || pal.flourish === 'NONE' ? 2 : 3;
   const clouds: CloudSeed[] = [];
   for (let i = 0; i < cloudCount; i++) {
@@ -2189,15 +2502,16 @@ function buildLandedCache(
   const cloudTint = pal.haze;
 
   // --- ATMOSPHERIC PARTICLES ---
-  const particleKind = particleKindFor(pal.flourish, habN);
+  const particleKind = particleKindFor(pal.flourish, habN, hasWater);
   // count scales a little with habitability; bounded for perf.
   let pCount: number;
-  if (particleKind === 'FAINT') pCount = Math.round(10 + habN * 8);
-  else if (particleKind === 'EMBER') pCount = 30;
+  if (particleKind === 'FAINT') pCount = Math.round(8 + habN * 6);
+  else if (particleKind === 'EMBER') pCount = 26;
   else if (particleKind === 'SNOW') pCount = 38;
-  else if (particleKind === 'DUST') pCount = 28;
-  else pCount = Math.round(20 + habN * 18); // FLOATER
-  const pRng = splitmix32(seed * 401 + 13);
+  else if (particleKind === 'DUST') pCount = 26;
+  else if (particleKind === 'SPRAY') pCount = 24;
+  else pCount = Math.round(8 + habN * 8); // MOTE — kept LOW/sparse
+  const pRng = splitmix32(worldSeed * 401 + 13);
   const particles: ParticleSeed[] = [];
   for (let i = 0; i < pCount; i++) {
     particles.push({
@@ -2214,7 +2528,10 @@ function buildLandedCache(
   return {
     key, ctx, horizonY, habN, citadel, prox, sc, profile,
     flourish: pal.flourish, flora, haze: pal.haze,
+    tod, todBright, showSun, landform, hasWater, waterTopY, landBaseFrac, citadelOnWater,
+    reflX, reflTint,
     sunX, sunY, sunR, coronaR,
+    moons, moonProminence, waves,
     hasCompanion, c2x, c2y, c2r, c2,
     layers, period, ridgeColors,
     skyGrad, washGrad, coronaGrad, discGrad, companionCorona, glowGrad, starHueGlow, waterBand,
@@ -2245,7 +2562,10 @@ function drawLandedScene(
   // a gray world's cached sky/ridge/haze/flora gradients.
   const key = `${(sectorId >>> 0) || 1}|${pal.flourish}|${pal.skyTop}|${pal.ridges[0]}|${pal.haze}|${pal.flora}` +
     `|${citKey}|${habBucket}|${w}|${h}` +
-    `|${env?.starKind || ''}|${env?.starColor || ''}|${env?.secondaryColor || ''}|${env?.orbitAu ?? ''}`;
+    `|${env?.starKind || ''}|${env?.starColor || ''}|${env?.secondaryColor || ''}|${env?.orbitAu ?? ''}` +
+    // per-world identity: landed planet id seeds time-of-day + landform, and the
+    // body's moon/phase/ring/size drive the sky moons — all must bust the cache.
+    `|${env?.landedPlanetId || ''}|${env?.moons ?? ''}|${env?.phaseDeg ?? ''}|${env?.rings ? 1 : 0}|${env?.sizeClass ?? ''}`;
 
   let cache = landedCache;
   // Rebuild on key change OR when the canvas context identity changes — a remount
@@ -2313,28 +2633,36 @@ function drawLandedScene(
   }
 
   // 3) THE SUN DISC (corona + disc gradients cached) --------------------------
+  // GATED by time of day: a NIGHT sky never carries a sun (the reported bug).
   const { sunX, sunY, sunR, coronaR } = cache;
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
-  // very subtle "breathing" of the corona via alpha (gradient stays cached)
-  ctx.globalAlpha = t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5);
-  ctx.fillStyle = cache.coronaGrad;
-  ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = cache.discGrad;
-  ctx.beginPath();
-  ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
-  ctx.fill();
-  if (cache.hasCompanion && cache.companionCorona) {
-    const { c2, c2x, c2y, c2r } = cache;
-    ctx.fillStyle = cache.companionCorona;
-    ctx.fillRect(c2x - c2r * 4, c2y - c2r * 4, c2r * 8, c2r * 8);
+  if (cache.showSun) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // very subtle "breathing" of the corona via alpha (gradient stays cached)
+    ctx.globalAlpha = t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5);
+    ctx.fillStyle = cache.coronaGrad;
+    ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = cache.discGrad;
     ctx.beginPath();
-    ctx.arc(c2x, c2y, c2r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${Math.min(255, c2.r + 60)}, ${Math.min(255, c2.g + 60)}, ${Math.min(255, c2.b + 60)}, 0.95)`;
+    ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
     ctx.fill();
+    if (cache.hasCompanion && cache.companionCorona) {
+      const { c2, c2x, c2y, c2r } = cache;
+      ctx.fillStyle = cache.companionCorona;
+      ctx.fillRect(c2x - c2r * 4, c2y - c2r * 4, c2r * 8, c2r * 8);
+      ctx.beginPath();
+      ctx.arc(c2x, c2y, c2r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${Math.min(255, c2.r + 60)}, ${Math.min(255, c2.g + 60)}, ${Math.min(255, c2.b + 60)}, 0.95)`;
+      ctx.fill();
+    }
+    ctx.restore();
   }
-  ctx.restore();
+
+  // 3b) MOONS — phased discs (crescent/gibbous/full via a terminator shadow).
+  if (cache.moons.length > 0) {
+    drawLandedMoons(ctx, t, cache);
+  }
 
   // 4) Horizon glow (cached gradients) ----------------------------------------
   ctx.save();
@@ -2345,19 +2673,80 @@ function drawLandedScene(
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
 
-  // 4b) OCEANIC water band (cached gradient; glitter per frame) ---------------
-  if (cache.waterBand) {
+  // 4b) REAL OCEAN — depth gradient + rippling wave crests + reflection + foam.
+  //     Drawn before the ridges so the foreground land mass occludes it as the
+  //     near shore/cliff. Reads as MOVING WATER, not a static teal band.
+  if (cache.hasWater && cache.waterBand) {
+    const wt = cache.waterTopY;
+    const wh = h - wt;
+    ctx.save();
+    // 1) base water body
+    ctx.fillStyle = cache.waterBand;
+    ctx.fillRect(0, wt, w, wh);
+
+    // 2) wave crest-lines — sine ripples; denser/finer near the waterline,
+    //    larger toward the foreground (parallax). Cheap per-frame math only.
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = cache.waterBand;
-    ctx.fillRect(0, horizonY, w, h - horizonY);
-    ctx.fillStyle = `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.18)`;
-    for (let i = 0; i < 10; i++) {
-      const gy = horizonY + i * ((h - horizonY) / 10);
-      const gwid = (w * 0.02) * (1 + i * 0.4) * (t === 0 ? 0.8 : 0.6 + 0.4 * Math.sin(t * 1.5 + i));
-      ctx.globalAlpha = 0.12 * (1 - i / 12);
-      ctx.fillRect(sunX - gwid / 2, gy, gwid, 2);
+    ctx.strokeStyle = `rgba(${reflWaveRGB(cache)}, 1)`;
+    for (let wi = 0; wi < cache.waves.length; wi++) {
+      const wv = cache.waves[wi];
+      const baseY = wt + wv.yFrac * wh;
+      ctx.globalAlpha = wv.alpha;
+      ctx.lineWidth = wv.lineW;
+      ctx.beginPath();
+      const step = 10;
+      for (let x = 0; x <= w; x += step) {
+        const drift = t === 0 ? 0 : t * wv.speed * 30;
+        const y = baseY + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * wv.amp;
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
+    ctx.restore();
+
+    // 3) reflection glitter column under the sun (day) or brightest moon (night).
+    //    A MOONLESS night has no light source — skip the column entirely so the
+    //    ocean shows only ambient ripples, not a glitter under a hidden sun.
+    const refl = cache.reflX;
+    const hasLightSource = cache.showSun || cache.moons.length > 0;
+    const reflBright = cache.showSun ? 1.0 : 0.55 * cache.moonProminence;
+    if (hasLightSource) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 14; i++) {
+      const f = i / 13;
+      const gy = wt + f * wh;
+      // shimmering width: narrow near the waterline, fanning toward foreground.
+      const baseW = (w * 0.015) * (1 + f * 3.2);
+      const flick = t === 0 ? 0.75 : 0.55 + 0.45 * Math.sin(t * 2.2 + i * 1.3);
+      const gwid = baseW * flick;
+      ctx.globalAlpha = 0.16 * (1 - f * 0.5) * reflBright;
+      ctx.fillStyle = `rgba(${cache.reflTint}, 1)`;
+      // a few broken glints rather than a solid bar
+      const segs = 2 + (i % 3);
+      for (let s = 0; s < segs; s++) {
+        const jx = (Math.sin(t * 1.7 + i * 2 + s * 3.1) * gwid * 0.6);
+        ctx.fillRect(refl + jx - gwid / (segs * 2), gy, gwid / segs, 1.6);
+      }
+    }
+    ctx.restore();
+    }
+
+    // 4) foam at the waterline — a soft bright lip where water meets the horizon/land.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(220, 240, 250, 1)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 8) {
+      const drift = t === 0 ? 0 : t * 18;
+      const fy = wt + 1 + Math.sin((x + drift) / 40 * Math.PI * 2) * 1.6;
+      if (x === 0) ctx.moveTo(x, fy); else ctx.lineTo(x, fy);
+    }
+    ctx.globalAlpha = 0.22 + (t === 0 ? 0 : 0.06 * Math.sin(t * 2));
+    ctx.stroke();
+    ctx.restore();
     ctx.restore();
   }
 
@@ -2447,32 +2836,18 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 6) HABITABILITY FLORA — layout cached; sway + ridge-glue per frame ---------
+  // 6) FLORA — recognizable PLANTS, land-only; layout cached, sway per frame.
   if (cache.flouraSeeds.length > 0) {
     const fl = cache.flora;
+    const stroke = `rgb(${fl[0]}, ${fl[1]}, ${fl[2]})`;
+    const fillSoft = `rgba(${fl[0]}, ${fl[1]}, ${fl[2]}, 0.55)`;
     ctx.save();
+    ctx.globalAlpha = 0.45 + habN * 0.4;
     for (let i = 0; i < cache.flouraSeeds.length; i++) {
       const f = cache.flouraSeeds[i];
       const baseY = ridgeYAt(f.x);
-      const sway = (t === 0 ? 0 : Math.sin(t * 0.9 + f.swayPhase)) * (1.2 + habN * 1.5);
-      const hgt = f.height;
-      ctx.globalAlpha = 0.35 + habN * 0.45;
-      ctx.strokeStyle = `rgb(${fl[0]}, ${fl[1]}, ${fl[2]})`;
-      ctx.lineWidth = 1.1 * f.wob;
-      ctx.beginPath();
-      ctx.moveTo(f.x, baseY);
-      ctx.quadraticCurveTo(f.x + sway * 0.5, baseY - hgt * 0.6, f.x + sway, baseY - hgt);
-      ctx.stroke();
-      if (f.hasFronds) {
-        ctx.lineWidth = 0.8 * f.wob;
-        const tipX = f.x + sway, tipY = baseY - hgt;
-        ctx.beginPath();
-        ctx.moveTo(tipX, tipY);
-        ctx.lineTo(tipX - 3 - habN * 2, tipY - 3);
-        ctx.moveTo(tipX, tipY);
-        ctx.lineTo(tipX + 3 + habN * 2, tipY - 3);
-        ctx.stroke();
-      }
+      const sway = (t === 0 ? 0 : Math.sin(t * 0.9 + f.swayPhase)) * (1.0 + habN * 1.2);
+      drawPlant(ctx, f, baseY, sway, stroke, fillSoft);
     }
     ctx.restore();
   }
@@ -2511,6 +2886,186 @@ function drawLandedScene(
   ctx.restore();
 }
 
+/** Wave-crest tint for the ocean — sun colour by day, pale moon tint at night. */
+function reflWaveRGB(cache: LandedCache): string {
+  if (cache.showSun) {
+    const { r, g, b } = cache.sc;
+    return `${Math.min(255, r + 30)}, ${Math.min(255, g + 50)}, ${Math.min(255, b + 60)}`;
+  }
+  return '150, 185, 210';
+}
+
+/** Draw the MOONS hanging in the sky, each with a terminator shadow producing a
+ *  crescent/gibbous/full phase. Prominent at night, faint pale by day (scaled by
+ *  cache.moonProminence). The lit body is drawn, then an unlit cap is composited
+ *  over it offset along lightAngle to carve the phase. */
+function drawLandedMoons(ctx: CanvasRenderingContext2D, t: number, cache: LandedCache): void {
+  const prom = cache.moonProminence;
+  for (let i = 0; i < cache.moons.length; i++) {
+    const m = cache.moons[i];
+    const breathe = t === 0 ? 1 : 0.96 + 0.04 * Math.sin(t * 0.3 + i);
+    ctx.save();
+    // soft halo (additive) — gradient is cached; stronger at night via its alpha.
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = m.halo;
+    ctx.fillRect(m.x - m.r * 2.6, m.y - m.r * 2.6, m.r * 5.2, m.r * 5.2);
+    ctx.restore();
+
+    // lit disc
+    ctx.save();
+    ctx.globalAlpha = (0.5 + 0.5 * prom) * breathe;
+    ctx.fillStyle = `rgb(${m.tint})`;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+    ctx.fill();
+    // faint mare mottling for texture (cheap, two darker blobs; tint precomputed)
+    ctx.globalAlpha *= 0.4;
+    ctx.fillStyle = `rgba(${m.mareTint}, 1)`;
+    ctx.beginPath();
+    ctx.arc(m.x - m.r * 0.3, m.y - m.r * 0.2, m.r * 0.28, 0, Math.PI * 2);
+    ctx.arc(m.x + m.r * 0.25, m.y + m.r * 0.3, m.r * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // terminator: carve the unlit portion with a shadow offset along lightAngle.
+    // illum 1 = full (no shadow); 0.5 = half; near 0 = thin crescent.
+    if (m.illum < 0.985) {
+      ctx.save();
+      // clip to the moon disc, then paint the shadow region as a dark overlay.
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+      ctx.clip();
+      // offset of the shadow circle along the (opposite of) light direction.
+      // when illum>0.5 (gibbous) the shadow is a thin sliver pushed far off-disc;
+      // when illum<0.5 (crescent) the shadow covers most of the disc.
+      const k = (m.illum - 0.5) * 2; // -1 (new) … +1 (full)
+      const dx = -Math.cos(m.lightAngle) * m.r * k * 1.0;
+      const dy = -Math.sin(m.lightAngle) * m.r * k * 1.0;
+      // shadow disc radius slightly larger so its curved edge is the terminator.
+      const sr = m.r * (1.0 + (1 - Math.abs(k)) * 0.04);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(8, 10, 18, 0.82)';
+      ctx.beginPath();
+      ctx.arc(m.x + dx, m.y + dy, sr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // optional ring on the largest moon (when the world has rings)
+    if (m.ring) {
+      ctx.save();
+      ctx.globalAlpha = 0.45 * prom + 0.15;
+      ctx.strokeStyle = `rgba(${m.tint}, 0.8)`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(m.x, m.y, m.r * 1.9, m.r * 0.5, -0.35, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+/** Draw a single recognizable PLANT silhouette. All kinds spring from baseY (the
+ *  live land surface) so nothing floats; trunks lean/sway with `sway`. */
+function drawPlant(
+  ctx: CanvasRenderingContext2D,
+  f: FloraSeed,
+  baseY: number,
+  sway: number,
+  stroke: string,
+  fillSoft: string
+): void {
+  const x = f.x;
+  const h = f.height;
+  const tipX = x + sway + f.lean * h * 0.4;
+  const tipY = baseY - h;
+  ctx.strokeStyle = stroke;
+  ctx.fillStyle = fillSoft;
+
+  if (f.kind === 'PALM') {
+    // curved trunk + a fan of drooping fronds at the crown
+    ctx.lineWidth = 1.6 * f.wob;
+    ctx.beginPath();
+    ctx.moveTo(x, baseY);
+    ctx.quadraticCurveTo(x + (tipX - x) * 0.4, baseY - h * 0.55, tipX, tipY);
+    ctx.stroke();
+    ctx.lineWidth = 1.0 * f.wob;
+    for (let b = 0; b < f.blades; b++) {
+      const a = (-Math.PI * 0.5) + (b / Math.max(1, f.blades - 1) - 0.5) * Math.PI * 1.1;
+      const fl = h * 0.55;
+      const ex = tipX + Math.cos(a) * fl;
+      const ey = tipY + Math.sin(a) * fl * 0.7 + fl * 0.18; // droop down
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.quadraticCurveTo(tipX + Math.cos(a) * fl * 0.5, tipY + Math.sin(a) * fl * 0.3, ex, ey);
+      ctx.stroke();
+    }
+  } else if (f.kind === 'REED') {
+    // a clustered tuft of thin reeds fanning from one root
+    ctx.lineWidth = 1.0 * f.wob;
+    for (let b = 0; b < f.blades; b++) {
+      const spread = (b / Math.max(1, f.blades - 1) - 0.5);
+      const bx = x + spread * h * 0.25;
+      const bTipX = bx + sway * (0.6 + Math.abs(spread)) + spread * h * 0.5;
+      const bTipY = baseY - h * (0.7 + Math.abs(spread) * 0.3);
+      ctx.beginPath();
+      ctx.moveTo(bx, baseY);
+      ctx.quadraticCurveTo((bx + bTipX) / 2, baseY - h * 0.5, bTipX, bTipY);
+      ctx.stroke();
+    }
+  } else if (f.kind === 'GRASS') {
+    // a clump of curved grass blades
+    ctx.lineWidth = 0.9 * f.wob;
+    for (let b = 0; b < f.blades; b++) {
+      const spread = (b / Math.max(1, f.blades - 1) - 0.5);
+      const bx = x + spread * h * 0.4;
+      const bTipX = bx + sway * (0.8 + Math.abs(spread)) + spread * h * 0.6;
+      ctx.beginPath();
+      ctx.moveTo(bx, baseY);
+      ctx.quadraticCurveTo((bx + bTipX) / 2, baseY - h * 0.6, bTipX, baseY - h * (0.6 + Math.abs(spread) * 0.4));
+      ctx.stroke();
+    }
+  } else if (f.kind === 'BUSH') {
+    // a rounded leafy mound on a short stem
+    ctx.lineWidth = 1.3 * f.wob;
+    ctx.beginPath();
+    ctx.moveTo(x, baseY);
+    ctx.lineTo(x + sway * 0.3, baseY - h * 0.4);
+    ctx.stroke();
+    const cy = baseY - h * 0.65;
+    ctx.beginPath();
+    ctx.arc(x + sway * 0.4, cy, h * 0.45, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + sway * 0.4 - h * 0.3, cy + h * 0.12, h * 0.3, 0, Math.PI * 2);
+    ctx.arc(x + sway * 0.4 + h * 0.3, cy + h * 0.1, h * 0.32, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (f.kind === 'SHRUB') {
+    // hardy desert shrub: a few stiff angled branches from a base
+    ctx.lineWidth = 1.2 * f.wob;
+    for (let b = 0; b < f.blades; b++) {
+      const a = (-Math.PI * 0.5) + (b / Math.max(1, f.blades - 1) - 0.5) * 1.6;
+      const ex = x + Math.cos(a) * h * 0.9 + sway * 0.4;
+      const ey = baseY + Math.sin(a) * h * 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x, baseY);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+    }
+  } else { // TUSSOCK — a low spiky hardy clump
+    ctx.lineWidth = 0.9 * f.wob;
+    for (let b = 0; b < f.blades; b++) {
+      const a = (-Math.PI * 0.5) + (b / Math.max(1, f.blades - 1) - 0.5) * 1.3;
+      const ex = x + Math.cos(a) * h * 0.6 + sway * 0.3;
+      const ey = baseY + Math.sin(a) * h * 0.85;
+      ctx.beginPath();
+      ctx.moveTo(x, baseY);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+    }
+  }
+}
+
 /** Atmospheric particles — planet-type-aware living motion. Positions animate
  *  from the cached seeds by t (wrap-around); never allocates. t=0 → calm rest. */
 function drawLandedParticles(
@@ -2524,19 +3079,20 @@ function drawLandedParticles(
   const horizonY = cache.horizonY;
   ctx.save();
   if (kind === 'EMBER') {
-    // embers/ash rising + flickering, warm — only over the surface band.
+    // embers ONLY hug the lava fissures: anchored near a fissure x, short rise,
+    // fire-orange. (If no fissures, fall back to spread across the surface band.)
     ctx.globalCompositeOperation = 'lighter';
+    const fiss = cache.volcFissures;
+    const RISE = h * 0.22; // short rise — embers stay low near the fire
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
-      // fold p.y into the rise so embers distribute up the band at t=0
-      // (reduced motion) instead of collapsing onto the bottom edge, and so
-      // they don't all rise in lockstep.
-      const rise = ((p.y % (h * 0.6)) + t * (12 + p.speed * 18)) % (h * 0.6);
-      const y = h - rise - 2;
-      const x = (((p.x + Math.sin(t * 0.8 + p.phase) * 8) % w) + w) % w;
+      const anchorX = fiss.length > 0 ? fiss[i % fiss.length].x : (p.x % w);
+      const x = anchorX + Math.sin(t * 1.1 + p.phase) * 7 + p.drift * 3;
+      const rise = ((p.y % RISE) + t * (10 + p.speed * 16)) % RISE;
+      const y = (cache.horizonY + RISE) - rise;
       const flick = 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + p.phase));
-      ctx.globalAlpha = 0.5 * flick * (1 - rise / (h * 0.6));
-      ctx.fillStyle = p.warm > 0.5 ? 'rgba(255, 170, 70, 1)' : 'rgba(255, 110, 40, 1)';
+      ctx.globalAlpha = 0.55 * flick * (1 - rise / RISE);
+      ctx.fillStyle = p.warm > 0.5 ? 'rgba(255, 170, 70, 1)' : 'rgba(255, 100, 35, 1)';
       ctx.fillRect(x, y, p.size, p.size);
     }
   } else if (kind === 'SNOW') {
@@ -2562,27 +3118,64 @@ function drawLandedParticles(
       ctx.fillStyle = 'rgba(230, 190, 120, 1)';
       ctx.fillRect(x, y, p.size * 1.6, p.size * 0.7);
     }
-  } else if (kind === 'FLOATER') {
-    // gentle drifting pollen/spores/fireflies — slow floaters that brighten/dim.
+  } else if (kind === 'SPRAY') {
+    // sea spray / mist hugging the WATERLINE — low, soft, drifting sideways.
+    // Plus an occasional far bird gliding across the sky.
     ctx.globalCompositeOperation = 'lighter';
+    const waterTop = cache.waterTopY;
+    const bandH = Math.max(8, h - waterTop);
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
-      const x = (((p.x + Math.sin(t * 0.3 + p.phase) * 18 + t * (2 + p.speed * 3)) % w) + w) % w;
-      const y = (p.y + Math.sin(t * 0.4 + p.phase * 1.7) * 14) % h;
-      const pulse = 0.3 + 0.7 * Math.abs(Math.sin(t * 0.9 + p.phase));
-      ctx.globalAlpha = 0.35 * pulse;
-      // warm firefly vs cool spore split
-      ctx.fillStyle = p.warm > 0.5 ? 'rgba(190, 255, 170, 1)' : 'rgba(160, 220, 255, 1)';
+      // most particles are spray near the waterline; ~1 in 12 is a far bird.
+      const isBird = (i % 12) === 0;
+      if (isBird) {
+        const bx = (((p.x + t * (14 + p.speed * 10)) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
+        const by = cache.horizonY * (0.35 + p.warm * 0.25);
+        ctx.globalAlpha = 0.18;
+        ctx.strokeStyle = 'rgba(180, 200, 215, 1)';
+        ctx.lineWidth = 1;
+        const flap = 2 + Math.sin(t * 6 + p.phase) * 1.4;
+        ctx.beginPath();
+        ctx.moveTo(bx - 3, by);
+        ctx.quadraticCurveTo(bx, by - flap, bx + 3, by);
+        ctx.stroke();
+        continue;
+      }
+      // spray: confined to a thin band just below the waterline, low rise + fade.
+      const rise = ((p.y % (bandH * 0.4)) + t * (6 + p.speed * 8)) % (bandH * 0.4);
+      const y = waterTop + 2 + (bandH * 0.4) - rise;
+      const x = (((p.x + Math.sin(t * 0.5 + p.phase) * 10 + t * (3 + p.drift * 4)) % w) + w) % w;
+      ctx.globalAlpha = 0.10 * (1 - rise / (bandH * 0.4));
+      ctx.fillStyle = 'rgba(210, 235, 245, 1)';
       ctx.beginPath();
-      ctx.arc(x, y, p.size * 0.8, 0, Math.PI * 2);
+      ctx.arc(x, y, p.size * 0.9, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (kind === 'MOTE') {
+    // a FEW low ground-level motes drifting just above the surface (lush worlds).
+    ctx.globalCompositeOperation = 'lighter';
+    const top = cache.horizonY;
+    const band = Math.max(8, h - top);
+    for (let i = 0; i < cache.particles.length; i++) {
+      const p = cache.particles[i];
+      const x = (((p.x + Math.sin(t * 0.3 + p.phase) * 12 + t * (2 + p.speed * 2)) % w) + w) % w;
+      // keep them LOW — within the bottom third of the surface band.
+      const y = top + band * 0.55 + ((p.y + Math.sin(t * 0.4 + p.phase) * 8) % (band * 0.45));
+      const pulse = 0.3 + 0.7 * Math.abs(Math.sin(t * 0.8 + p.phase));
+      ctx.globalAlpha = 0.22 * pulse;
+      ctx.fillStyle = p.warm > 0.5 ? 'rgba(190, 255, 170, 1)' : 'rgba(170, 220, 255, 1)';
+      ctx.beginPath();
+      ctx.arc(x, y, p.size * 0.7, 0, Math.PI * 2);
       ctx.fill();
     }
   } else {
-    // FAINT — sparse faint dust drifting slowly.
+    // FAINT — sparse faint dust drifting LOW near the surface (never high sky).
+    const top = cache.horizonY;
+    const band = Math.max(8, h - top);
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
       const x = (((p.x + t * (3 + p.speed * 4)) % w) + w) % w;
-      const y = (p.y + Math.sin(t * 0.3 + p.phase) * 6) % h;
+      const y = top + ((p.y + Math.sin(t * 0.3 + p.phase) * 6) % band);
       ctx.globalAlpha = 0.05 + p.warm * 0.06;
       ctx.fillStyle = '#cfd8e6';
       ctx.fillRect(x, y, p.size, p.size);
@@ -2600,11 +3193,19 @@ function buildCitadelLayout(
   h: number,
   seed: number,
   level: number,
-  pal: LandedPalette
+  pal: LandedPalette,
+  /** Optional land x-window [min,max]: when the world is an ocean island the city
+   *  must sit on the small land mass, never spilling over open water. Defaults to
+   *  the full width. */
+  landX?: { min: number; max: number }
 ): CitadelLayout | null {
   const ridgeRgb = hexToRgb(pal.ridges[2]);
   const struct = `rgb(${Math.min(255, ridgeRgb.r + 34)}, ${Math.min(255, ridgeRgb.g + 38)}, ${Math.min(255, ridgeRgb.b + 46)})`;
   const rng = splitmix32(seed * 1009 + level * 17);
+  // land bounds the whole skyline (cityX, spread, every structure x, the beacon).
+  const lMin = landX ? Math.max(8, landX.min) : 8;
+  const lMax = landX ? Math.min(w - 8, landX.max) : w - 8;
+  const clampX = (x: number) => Math.max(lMin, Math.min(lMax, x));
 
   const cfg = [
     { n: 0, maxH: 0,    win: 0,    beacon: false },
@@ -2616,13 +3217,14 @@ function buildCitadelLayout(
   ][level];
   if (!cfg || cfg.n === 0) return null;
 
-  const cityX = w * (0.3 + rng() * 0.4);
-  const spread = w * (0.12 + level * 0.05);
+  // city centre within the land window; spread bounded so structures stay on land.
+  const cityX = clampX(lMin + (lMax - lMin) * (0.3 + rng() * 0.4));
+  const spread = Math.min(w * (0.12 + level * 0.05), (lMax - lMin) * 0.5);
 
   const structures: CitadelStructure[] = [];
   for (let i = 0; i < cfg.n; i++) {
     const jitter = (rng() - 0.5) * 2 * spread;
-    const sx = Math.max(8, Math.min(w - 8, cityX + jitter));
+    const sx = clampX(cityX + jitter);
     const bw = Math.max(4, w * (0.012 + rng() * 0.02));
     const bh = h * cfg.maxH * (0.35 + rng() * 0.65);
 
@@ -2945,9 +3547,19 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   const landedCtx: LandedCtx = (() => {
     const star = system?.star || null;
     let orbitAu: number | undefined;
+    let moons: number | undefined;
+    let phaseDeg: number | undefined;
+    let rings: boolean | undefined;
+    let sizeClass: number | undefined;
     if (landedPlanetId && system?.bodies) {
       const body = system.bodies.find((b) => b.planet_id === landedPlanetId);
-      if (body && typeof body.orbit_au === 'number') orbitAu = body.orbit_au;
+      if (body) {
+        if (typeof body.orbit_au === 'number') orbitAu = body.orbit_au;
+        if (typeof body.moons === 'number') moons = body.moons;
+        if (typeof body.phase_deg === 'number') phaseDeg = body.phase_deg;
+        if (typeof body.rings === 'boolean') rings = body.rings;
+        if (typeof body.size_class === 'number') sizeClass = body.size_class;
+      }
     }
     return {
       habitability,
@@ -2956,6 +3568,11 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       starColor: star?.color,
       secondaryColor: star?.secondary?.color,
       orbitAu, // undefined → drawLandedScene falls back to mid 0.5
+      moons,
+      phaseDeg,
+      rings,
+      sizeClass,
+      landedPlanetId, // seeds time-of-day + landform per world
     };
   })();
 
