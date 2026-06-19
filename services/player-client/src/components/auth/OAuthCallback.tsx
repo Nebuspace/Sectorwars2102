@@ -3,6 +3,13 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import apiClient from '../../services/apiClient';
 
+// The ADR-0085 OAuth authorization code is SINGLE-USE. React StrictMode (dev)
+// double-invokes effects, which would POST /auth/exchange twice — the second call
+// hits the already-consumed code and 400s, flashing a false "Authentication
+// Failed" even though login actually succeeded. Track handled codes module-side so
+// each code is exchanged at most once across re-mounts/re-renders.
+const handledCodes = new Set<string>();
+
 const OAuthCallback: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -29,6 +36,10 @@ const OAuthCallback: React.FC = () => {
 
         const code = params.get('code');
         if (code) {
+          // Single-use code: if a prior (StrictMode/double-mount) invocation already
+          // exchanged this code, bail out silently rather than POST again and 400.
+          if (handledCodes.has(code)) return;
+          handledCodes.add(code);
           const { data } = await apiClient.post('/api/v1/auth/exchange', { code });
           accessToken = data.access_token;
           refreshToken = data.refresh_token;
