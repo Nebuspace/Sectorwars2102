@@ -1897,6 +1897,10 @@ interface LandedCtx {
   /** id of THIS landed world — seeds time-of-day + landform variant so two
    *  worlds in the same sector never share stale cached geometry. */
   landedPlanetId?: string;
+  /** The OTHER bodies in this system (siblings) so the landed sky can show them
+   *  as distant planets — matching the system/flight view. Excludes the landed
+   *  world itself. Cosmetic; kept minimal (kind/size/palette/rings). */
+  siblings?: { kind: string; sizeClass: number; hue: number; sat: number; rings: boolean }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -2073,7 +2077,40 @@ type MoonSeed = {
 /** A precomputed wave crest line for the OCEANIC ocean: a horizontal band whose
  *  crests ripple via sine. yFrac is 0 (waterline) → 1 (foreground) so the draw
  *  can scale amplitude/spacing with depth. */
-type WaveLine = { yFrac: number; amp: number; wavelength: number; speed: number; phase: number; alpha: number; lineW: number };
+type WaveLine = {
+  yFrac: number; amp: number; wavelength: number; speed: number; phase: number; alpha: number; lineW: number;
+  // dynamism (NEW): per-crest drift direction, a slow amplitude "swell" that
+  // breathes over time, and a second slower cross-swell so crests aren't all
+  // parallel-uniform. All seeded once → deterministic; only t animates them.
+  dir: number;          // +1 / -1 drift direction
+  swellRate: number;    // slow breathing rate of the amplitude
+  swellPhase: number;   // per-crest swell phase offset
+  crossAmp: number;     // amplitude of the slow cross-swell
+  crossWavelength: number; // wavelength of the cross-swell (much longer)
+};
+
+/** A sibling planet rendered as a distant disc high in the landed sky. Position,
+ *  size and per-kind colours are precomputed once (seeded) — only a tiny
+ *  cosmetic shimmer varies per frame. */
+type SkyPlanet = {
+  x: number; y: number; r: number;
+  treatment: Treatment;
+  hue: number; sat: number;
+  baseColor: string; bandColor: string; rimColor: string;
+  rings: boolean; alpha: number;
+};
+
+/** Aquatic life: a seeded breach window. A dolphin-like back arcs up out of the
+ *  sea and back down at (x, surfaceY) over [start, start+dur], periodically. */
+type SeaCreature = {
+  x: number;          // breach x on the sea
+  surfaceFrac: number;// where on the water band it surfaces (0 horizon … 1 foreground)
+  period: number;     // seconds between breaches (~15–40s)
+  offset: number;     // phase offset so multiple creatures don't sync
+  dur: number;        // breach duration (~1–2s)
+  size: number;       // creature scale
+  dir: number;        // +1 / -1 facing
+};
 
 interface LandedCache {
   key: string;
@@ -2104,8 +2141,12 @@ interface LandedCache {
   // moons hanging in the sky (NEW)
   moons: MoonSeed[];
   moonProminence: number;
+  // sibling planets shown as DISTANT discs in the sky (matches the system view).
+  skyPlanets: SkyPlanet[];
   // ocean wave lines (NEW; OCEANIC / water variants only)
   waves: WaveLine[];
+  // aquatic life: seeded breach windows for a creature surfacing on the sea.
+  creatures: SeaCreature[];
   // foreground SHORE (water variants only — replaces the 3 ridges on water worlds)
   shoreY: number;            // base y of the near shore the player stands on
   shoreColor: string;        // foreground landform fill
@@ -2397,11 +2438,17 @@ function buildLandedCache(
       waves.push({
         yFrac: f,
         amp: (1.5 + f * 11.0) + wRng() * 2.0,   // bigger swells toward the camera
+        // per-crest speed jitter so they no longer drift in lockstep
         wavelength: (34 + f * 150) * (0.8 + wRng() * 0.5),
-        speed: 0.4 + f * 1.1,
+        speed: (0.4 + f * 1.1) * (0.7 + wRng() * 0.6),
         phase: wRng() * Math.PI * 2,
         alpha: (0.18 + f * 0.34),               // far stronger than before
         lineW: 0.8 + f * 2.4,
+        dir: wRng() < 0.78 ? 1 : -1,            // most flow one way; a few cross
+        swellRate: 0.15 + wRng() * 0.35,        // slow breathing
+        swellPhase: wRng() * Math.PI * 2,
+        crossAmp: (1.2 + f * 4.0) * (0.5 + wRng() * 0.8),
+        crossWavelength: (220 + f * 420) * (0.7 + wRng() * 0.6),
       });
     }
 
@@ -2691,7 +2738,9 @@ function drawLandedScene(
     `|${env?.starKind || ''}|${env?.starColor || ''}|${env?.secondaryColor || ''}|${env?.orbitAu ?? ''}` +
     // per-world identity: landed planet id seeds time-of-day + landform, and the
     // body's moon/phase/ring/size drive the sky moons — all must bust the cache.
-    `|${env?.landedPlanetId || ''}|${env?.moons ?? ''}|${env?.phaseDeg ?? ''}|${env?.rings ? 1 : 0}|${env?.sizeClass ?? ''}`;
+    `|${env?.landedPlanetId || ''}|${env?.moons ?? ''}|${env?.phaseDeg ?? ''}|${env?.rings ? 1 : 0}|${env?.sizeClass ?? ''}` +
+    // sibling bodies drive the distant sky planets — bust the cache when they change.
+    `|${(env?.siblings || []).map((s) => `${s.kind}:${s.sizeClass}:${s.hue}:${s.sat}:${s.rings ? 1 : 0}`).join(',')}`;
 
   let cache = landedCache;
   // Rebuild on key change OR when the canvas context identity changes — a remount
@@ -2843,7 +2892,17 @@ function drawLandedScene(
     for (let wi = 0; wi < cache.waves.length; wi++) {
       const wv = cache.waves[wi];
       const baseY = wt + wv.yFrac * wh;
-      const drift = t === 0 ? 0 : t * wv.speed * 30;
+      // per-crest directional drift + slow amplitude swell that breathes over time.
+      const drift = t === 0 ? 0 : t * wv.speed * 30 * wv.dir;
+      const swell = t === 0 ? 1 : 1 + 0.3 * Math.sin(t * wv.swellRate + wv.swellPhase);
+      const amp = wv.amp * swell;
+      // a second, slower CROSS-swell (long wavelength, slow phase) added to each
+      // sample so the crests are not all parallel-uniform — a living sea surface.
+      const crossDrift = t === 0 ? 0 : t * 6 * wv.dir;
+      const yAt = (x: number, off: number): number =>
+        baseY + off
+        + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * amp
+        + Math.sin((x + crossDrift) / wv.crossWavelength * Math.PI * 2 + wv.swellPhase) * wv.crossAmp;
       // dark trough stroke (normal blend, just below the crest)
       ctx.save();
       ctx.globalAlpha = wv.alpha * 0.8;
@@ -2851,7 +2910,7 @@ function drawLandedScene(
       ctx.lineWidth = wv.lineW;
       ctx.beginPath();
       for (let x = 0; x <= w; x += 10) {
-        const y = baseY + 1.5 + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * wv.amp;
+        const y = yAt(x, 1.5);
         if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
       ctx.stroke();
@@ -2864,7 +2923,7 @@ function drawLandedScene(
       ctx.lineWidth = wv.lineW;
       ctx.beginPath();
       for (let x = 0; x <= w; x += 10) {
-        const y = baseY + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * wv.amp;
+        const y = yAt(x, 0);
         if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
       ctx.stroke();
@@ -3445,19 +3504,35 @@ function drawLandedParticles(
     const bandH = Math.max(8, h - waterTop);
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
-      // most particles are spray near the waterline; ~1 in 12 is a far bird.
+      // most particles are spray near the waterline; ~1 in 12 is a far seagull.
       const isBird = (i % 12) === 0;
       if (isBird) {
-        const bx = (((p.x + t * (14 + p.speed * 10)) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
-        const by = cache.horizonY * (0.35 + p.warm * 0.25);
-        ctx.globalAlpha = 0.18;
-        ctx.strokeStyle = 'rgba(180, 200, 215, 1)';
-        ctx.lineWidth = 1;
-        const flap = 2 + Math.sin(t * 6 + p.phase) * 1.4;
+        // glide across the sky on a gentle ARC (not a flat horizontal line): a slow
+        // sine bob superimposed on the horizontal travel. Dark seagull "M" of two
+        // shallow wing-arcs whose angle flaps subtly with t.
+        const span = w * 1.3;
+        const bx = (((p.x + t * (12 + p.speed * 8)) % span) + span) % span - w * 0.15;
+        const arc = Math.sin((bx / w) * Math.PI * 1.4 + p.phase) * cache.horizonY * 0.10;
+        const by = cache.horizonY * (0.30 + p.warm * 0.22) + arc;
+        const dir = p.warm > 0.5 ? 1 : -1; // facing
+        const wing = 3.5 + p.size * 1.2;   // half wing-span (distant → small)
+        // flap: wing-tips rise/fall; the dip at the body deepens as wings raise.
+        const flap = Math.sin(t * 5 + p.phase);
+        const tipY = by - flap * wing * 0.5;       // wing tips
+        const bodyDip = by + (0.5 + flap * 0.4) * wing * 0.35; // shallow centre dip
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over'; // dark against the sky
+        ctx.globalAlpha = 0.28 + 0.08 * p.warm;
+        ctx.strokeStyle = 'rgba(30, 38, 50, 1)';
+        ctx.lineWidth = 1.3;
+        ctx.lineCap = 'round';
         ctx.beginPath();
-        ctx.moveTo(bx - 3, by);
-        ctx.quadraticCurveTo(bx, by - flap, bx + 3, by);
+        // left wing arc up to the body dip, then right wing arc — an "M"/seagull.
+        ctx.moveTo(bx - wing * dir, tipY);
+        ctx.quadraticCurveTo(bx - wing * 0.4 * dir, bodyDip - wing * 0.2, bx, bodyDip);
+        ctx.quadraticCurveTo(bx + wing * 0.4 * dir, bodyDip - wing * 0.2, bx + wing * dir, tipY);
         ctx.stroke();
+        ctx.restore();
         continue;
       }
       // spray: confined to a thin band just below the waterline, low rise + fade.
@@ -3870,6 +3945,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     let phaseDeg: number | undefined;
     let rings: boolean | undefined;
     let sizeClass: number | undefined;
+    let siblings: LandedCtx['siblings'];
     if (landedPlanetId && system?.bodies) {
       const body = system.bodies.find((b) => b.planet_id === landedPlanetId);
       if (body) {
@@ -3879,6 +3955,18 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
         if (typeof body.rings === 'boolean') rings = body.rings;
         if (typeof body.size_class === 'number') sizeClass = body.size_class;
       }
+      // sibling bodies → distant sky planets (exclude the landed world itself).
+      // Cap to a handful so the sky stays uncluttered behind the HUD.
+      siblings = system.bodies
+        .filter((b) => b.planet_id !== landedPlanetId)
+        .slice(0, 5)
+        .map((b) => ({
+          kind: b.kind,
+          sizeClass: typeof b.size_class === 'number' ? b.size_class : 2,
+          hue: b.palette?.hue ?? 210,
+          sat: b.palette?.sat ?? 40,
+          rings: !!b.rings,
+        }));
     }
     return {
       habitability,
@@ -3892,6 +3980,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
       rings,
       sizeClass,
       landedPlanetId, // seeds time-of-day + landform per world
+      siblings,
     };
   })();
 
