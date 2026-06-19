@@ -1823,9 +1823,11 @@ function landedPalette(planetType?: string): LandedPalette {
       };
     case 'ICE':
       return {
-        skyTop: '#0c1622', skyMid: '#27435c', horizon: '#9cc4dd',
-        glow: 'rgba(210, 235, 255, 0.45)', haze: '190, 220, 240',
-        ridges: ['#5d7c93', '#3b566c', '#1d2f40'],
+        skyTop: '#0c1622', skyMid: '#27435c', horizon: '#bcdcec',
+        glow: 'rgba(225, 245, 255, 0.5)', haze: '215, 235, 248',
+        // frozen palette: blue glacial-ice depths in back → pale snow-white in the
+        // FRONT (ridges[2] is the foreground ridge, drawn last/on top).
+        ridges: ['#7fa6c4', '#b6d2e4', '#e6f1f8'],
         flourish: 'ICE', flora: '150, 190, 170'
       };
     case 'TERRAN':
@@ -1973,7 +1975,7 @@ function dayCycleAt(t: number, phaseOffset: number): DayCycle {
 function bodyArcPos(
   t: number, rate: number, phaseOffset: number, azDir: number,
   w: number, horizonY: number
-): { x: number; y: number; alt: number; up: boolean; fade: number } {
+): { x: number; y: number; alt: number; up: boolean; fade: number; azFrac: number } {
   const phase = t === 0
     ? (phaseOffset)
     : ((((t / (DAY_CYCLE_SECONDS * rate)) + phaseOffset) % 1) + 1) % 1;
@@ -1988,7 +1990,17 @@ function bodyArcPos(
   const up = alt > 0.0;
   // atmospheric extinction: fade out near the horizon, full strength up high.
   const fade = Math.max(0, Math.min(1, alt * 3.0));
-  return { x, y, alt, up, fade };
+  return { x, y, alt, up, fade, azFrac: xu };
+}
+
+/** Unit sky-direction vector for a body at altitude alt (-1..1 → sin of the alt
+ *  angle) and azimuth fraction azFrac (0..1 → 0..π across the visible sky). Used to
+ *  compute the true angular separation between a moon and the sun (dot product). */
+function skyDir(alt: number, azFrac: number): { x: number; y: number; z: number } {
+  const altAng = alt * (Math.PI / 2);   // -90°..+90°
+  const azAng = azFrac * Math.PI;       // 0..180° across the dome
+  const ca = Math.cos(altAng);
+  return { x: ca * Math.cos(azAng), y: ca * Math.sin(azAng), z: Math.sin(altAng) };
 }
 
 /** Landform variant ids per flourish family. The variant changes where water,
@@ -2538,7 +2550,6 @@ function buildLandedCache(
     const mRng = splitmix32(worldSeed * 2654435761 + 777);
     const basePhase = (typeof env?.phaseDeg === 'number' ? env.phaseDeg : 0) * Math.PI / 180;
     const szBias = env && typeof env.sizeClass === 'number' ? 0.7 + Math.min(1, env.sizeClass / 9) * 0.7 : 1.0;
-    let biggestIdx = 0, biggestR = 0;
     for (let i = 0; i < moonCount; i++) {
       // per-body arc params (seeded): moons move a bit faster than planets for
       // parallax; each starts at its own phase + travels its own direction.
@@ -2558,10 +2569,9 @@ function buildLandedCache(
       // Precompute the darker mare tint + the static halo gradient (all inputs
       // are cached constants — only the per-frame alpha "breathing" varies).
       const mareTint = tint.split(',').map((s) => Math.max(0, parseInt(s, 10) - 40)).join(', ');
+      // NOTE: moons never carry rings — rings render only on distant sky-PLANETS.
       moons.push({ r, arcRate, arcOffset, arcDir, illum: ill, lightAngle, tint, mareTint, ring: false });
-      if (r > biggestR) { biggestR = r; biggestIdx = i; }
     }
-    if (env?.rings && moons.length > 0) moons[biggestIdx].ring = true;
   }
 
   // --- Reflection tint for the water glitter (the brightest moon, else the sun).
@@ -3049,7 +3059,7 @@ function buildLandedCache(
   let pCount: number;
   if (particleKind === 'FAINT') pCount = Math.round(8 + habN * 6);
   else if (particleKind === 'EMBER') pCount = 26;
-  else if (particleKind === 'SNOW') pCount = 38;
+  else if (particleKind === 'SNOW') pCount = 60;   // ICE: a fuller persistent flurry
   else if (particleKind === 'DUST') pCount = 26;
   else if (particleKind === 'SPRAY') pCount = 24;
   else pCount = Math.round(8 + habN * 8); // MOTE — kept LOW/sparse
@@ -3214,6 +3224,10 @@ function drawLandedScene(
   const sunXu = cache.sunAzDir > 0 ? sunPhase : 1 - sunPhase;
   const sunX = w * (0.06 + sunXu * 0.88);
   const sunY = horizonY - Math.max(-0.05, dc.sunAlt) * horizonY * 0.74;
+  // TRUE (unclamped) sun position used for lighting the moons — even when the sun
+  // is below the horizon at night, the moons are still lit from its real direction.
+  const sunWorldX = sunX;
+  const sunWorldY = horizonY - dc.sunAlt * horizonY * 0.74;
   if (dc.sunUp) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -3266,7 +3280,7 @@ function drawLandedScene(
 
   // 3b) MOONS — phased discs that ARC across the sky and rise/set.
   if (cache.moons.length > 0) {
-    drawLandedMoons(ctx, w, horizonY, t, cache, dc);
+    drawLandedMoons(ctx, w, horizonY, t, cache, dc, sunWorldX, sunWorldY, dc.sunAlt, sunXu);
   }
 
   // 4) Horizon glow (cached base glow + a per-frame sun-hue glow that follows the
@@ -3668,10 +3682,13 @@ function drawLandedScene(
   } else {
   for (let li = 0; li < cache.layers.length; li++) {
     const layer = cache.layers[li];
-    const off = t * layer.speed;
+    const isFront = li === cache.layers.length - 1;
+    // The FRONT ridge is the GROUND the player stands/builds on — it must NOT drift,
+    // or structures + flora anchored to it would bob as crests scroll past. Only the
+    // BACK parallax layers drift; the foreground ground line is static.
+    const off = isFront ? 0 : t * layer.speed;
     const period = cache.period;
     const n = layer.pts.length;
-    const isFront = li === cache.layers.length - 1;
     const profileXs: number[] | null = isFront ? [] : null;
     ctx.beginPath();
     ctx.moveTo(0, h);
@@ -3700,18 +3717,49 @@ function drawLandedScene(
     return frontProfile[idx];
   };
 
-  // 5b) ICE pale sheen across the front ridge ---------------------------------
-  if (cache.iceSheen) {
+  // 5b) ICE/SNOW treatment on the front ridge — a bright SNOW CAP ribbon along the
+  //     crest, a specular sheen highlight, and a few seeded crevasse/crack lines so
+  //     the surface reads unmistakably as snow + glacial ice.
+  if (cache.iceSheen && !cache.hasWater) {
     ctx.save();
+    // 1) snow-cap ribbon: a thick soft white band hugging the crest line, fading
+    //    downward into the ice body (so the tops are snow-covered).
+    for (let x = 0; x <= w; x += 8) {
+      const y = ridgeYAt(x);
+      const capH = 7;
+      const cg = ctx.createLinearGradient(0, y, 0, y + capH);
+      cg.addColorStop(0, 'rgba(248, 253, 255, 0.9)');
+      cg.addColorStop(1, 'rgba(230, 244, 252, 0)');
+      ctx.fillStyle = cg;
+      ctx.fillRect(x, y, 8, capH);
+    }
+    // 2) specular sheen highlight along the very crest (additive).
     ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(210, 235, 255, 0.18)';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(225, 245, 255, 0.35)';
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
     for (let x = 0; x <= w; x += 8) {
       const y = ridgeYAt(x);
       if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
+    // 3) glacial CRACKS/crevasse lines — a few seeded blue hairline fractures
+    //    descending from the crest into the ice (deterministic via the cache seed).
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = 'rgba(120, 165, 200, 0.45)';
+    ctx.lineWidth = 1;
+    const crackN = 5;
+    for (let c = 0; c < crackN; c++) {
+      const cx = w * ((c + 0.5) / crackN) + Math.sin(c * 12.9898) * w * 0.06;
+      const cyTop = ridgeYAt(cx) + 3;
+      const len = h * (0.05 + (Math.abs(Math.sin(c * 7.3)) * 0.06));
+      const lean = (Math.sin(c * 3.1) * 6);
+      ctx.beginPath();
+      ctx.moveTo(cx, cyTop);
+      ctx.lineTo(cx + lean * 0.5, cyTop + len * 0.5);
+      ctx.lineTo(cx + lean, cyTop + len);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -4023,11 +4071,13 @@ function drawLandedSkyPlanets(
     } else if (p.treatment !== 'BARREN' && p.treatment !== 'MOUNTAINOUS') {
       ctx.fillRect(px - p.r, py - p.r * 0.1, p.r * 2, p.r * 0.5);
     }
-    // shaded limb: darken the lower-right for a lit-sphere read
+    // FULLY-LIT distant disc — a faraway planet shows no crescent/terminator
+    // (phases are only for nearby moons). Only a soft spherical sheen, no dark
+    // limb that would read as a phase.
     const lg = ctx.createRadialGradient(px - p.r * 0.3, py - p.r * 0.3, p.r * 0.1, px, py, p.r * 1.2);
-    lg.addColorStop(0, 'rgba(255,255,255,0.12)');
-    lg.addColorStop(0.6, 'rgba(0,0,0,0)');
-    lg.addColorStop(1, 'rgba(0,0,0,0.4)');
+    lg.addColorStop(0, 'rgba(255,255,255,0.16)');
+    lg.addColorStop(0.7, 'rgba(255,255,255,0)');
+    lg.addColorStop(1, 'rgba(0,0,0,0.1)'); // barely-there rim, not a terminator
     ctx.fillStyle = lg;
     ctx.fillRect(px - p.r, py - p.r, p.r * 2, p.r * 2);
     ctx.restore();
@@ -4051,14 +4101,19 @@ function drawLandedSkyPlanets(
   }
 }
 
-/** Draw the MOONS, each ARCING across the sky on the day cycle (rise/cross/set),
- *  with a terminator shadow producing a crescent/gibbous/full phase. Prominent at
- *  night, faint pale by day (scaled by dc.bodyBright), faded near the horizon. */
+/** Draw the MOONS, each ARCING across the sky on the day cycle (rise/cross/set).
+ *  The terminator is PHYSICAL: every moon is lit from the actual sun direction
+ *  (sunWorldX/Y) and its phase AMOUNT follows its angular separation from the sun
+ *  (near the sun ⇒ thin crescent/new, opposite ⇒ full) — so all moons are lit the
+ *  same way and the phases evolve as the sun + moons arc. Prominent at night, faint
+ *  by day (dc.bodyBright), faded near the horizon. */
 function drawLandedMoons(
   ctx: CanvasRenderingContext2D, w: number, horizonY: number,
-  t: number, cache: LandedCache, dc: DayCycle
+  t: number, cache: LandedCache, dc: DayCycle,
+  sunWorldX: number, sunWorldY: number, sunAlt: number, sunAzFrac: number
 ): void {
   const prom = dc.bodyBright;  // moons prominent at night, faint by day
+  const sunVec = skyDir(sunAlt, sunAzFrac);
   for (let i = 0; i < cache.moons.length; i++) {
     const m = cache.moons[i];
     // arc position this frame; skip when below the horizon.
@@ -4067,11 +4122,30 @@ function drawLandedMoons(
     const mx = pos.x, my = pos.y;
     const ext = pos.fade;        // atmospheric extinction near the horizon
     const breathe = t === 0 ? 1 : 0.96 + 0.04 * Math.sin(t * 0.3 + i);
+
+    // PHYSICAL phase from the TRUE angular separation between moon and sun:
+    // illum = (1 - cos(sep)) / 2 → 0 at the sun (NEW), 0.5 at 90°, 1 opposite (FULL).
+    const moonVec = skyDir(pos.alt, pos.azFrac);
+    const cosSep = Math.max(-1, Math.min(1,
+      sunVec.x * moonVec.x + sunVec.y * moonVec.y + sunVec.z * moonVec.z));
+    const illum = (1 - cosSep) / 2;
+    // lit limb faces the sun's SCREEN position; shadow on the away side.
+    const lightAngle = Math.atan2(sunWorldY - my, sunWorldX - mx);
+    // near-the-sun wash-out: a moon hugging the bright sun reads faint (and is
+    // near-new anyway) so we never paste a prominent moon beside the sun.
+    const nearSun = Math.max(0, 1 - illum * 2.2);       // ~1 when very near the sun
+    const sunWash = 1 - nearSun * 0.75;
+    // DAYTIME moon: while the sun is UP a moon is a faint, pale, FULLY-LIT disc —
+    // no carved terminator (a shadowed moon beside a visible sun reads as wrong).
+    // The proper sun-lit phase is only shown at night/twilight (sun at/below horizon).
+    const dayMoon = dc.sunUp;
+    const dayFaint = dayMoon ? 0.4 : 1;                 // washed-out by daylight
+
     ctx.save();
     // soft halo (additive) — gradient rebuilt per frame at the live position.
     ctx.globalCompositeOperation = 'lighter';
     const halo = ctx.createRadialGradient(mx, my, m.r * 0.6, mx, my, m.r * 2.6);
-    halo.addColorStop(0, `rgba(${m.tint}, ${(0.18 * prom * ext).toFixed(3)})`);
+    halo.addColorStop(0, `rgba(${m.tint}, ${(0.18 * prom * ext * sunWash * dayFaint).toFixed(3)})`);
     halo.addColorStop(1, `rgba(${m.tint}, 0)`);
     ctx.fillStyle = halo;
     ctx.fillRect(mx - m.r * 2.6, my - m.r * 2.6, m.r * 5.2, m.r * 5.2);
@@ -4079,7 +4153,7 @@ function drawLandedMoons(
 
     // lit disc
     ctx.save();
-    ctx.globalAlpha = (0.5 + 0.5 * prom) * breathe * ext;
+    ctx.globalAlpha = (0.5 + 0.5 * prom) * breathe * ext * sunWash * dayFaint;
     ctx.fillStyle = `rgb(${m.tint})`;
     ctx.beginPath();
     ctx.arc(mx, my, m.r, 0, Math.PI * 2);
@@ -4093,36 +4167,28 @@ function drawLandedMoons(
     ctx.fill();
     ctx.restore();
 
-    // terminator: carve the unlit portion with a shadow offset along lightAngle.
-    if (m.illum < 0.985) {
+    // terminator — ONLY at night/twilight (sun down). Carve the unlit portion with
+    // a shadow disc cast AWAY from the sun. All moons share the one sun, so all
+    // crescents point consistently. Daytime moons stay full pale discs (above).
+    if (!dayMoon && illum < 0.985) {
       ctx.save();
+      ctx.globalAlpha = ext * sunWash;
       ctx.beginPath();
       ctx.arc(mx, my, m.r, 0, Math.PI * 2);
       ctx.clip();
-      const k = (m.illum - 0.5) * 2; // -1 (new) … +1 (full)
-      const dx = -Math.cos(m.lightAngle) * m.r * k * 1.0;
-      const dy = -Math.sin(m.lightAngle) * m.r * k * 1.0;
+      const k = (illum - 0.5) * 2; // -1 (new) … +1 (full)
+      const dx = -Math.cos(lightAngle) * m.r * k;
+      const dy = -Math.sin(lightAngle) * m.r * k;
       const sr = m.r * (1.0 + (1 - Math.abs(k)) * 0.04);
       ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = ext;
       ctx.fillStyle = 'rgba(8, 10, 18, 0.82)';
       ctx.beginPath();
       ctx.arc(mx + dx, my + dy, sr, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
-
-    // optional ring on the largest moon (when the world has rings)
-    if (m.ring) {
-      ctx.save();
-      ctx.globalAlpha = (0.45 * prom + 0.15) * ext;
-      ctx.strokeStyle = `rgba(${m.tint}, 0.8)`;
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.ellipse(mx, my, m.r * 1.9, m.r * 0.5, -0.35, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-    }
+    // NOTE: moons never carry rings — rings render only on the distant sky-PLANETS
+    // (full-lit, unphased discs). A ringed-AND-phased body would read as wrong.
   }
 }
 
@@ -4260,13 +4326,18 @@ function drawLandedParticles(
       ctx.fillRect(x, y, p.size, p.size);
     }
   } else if (kind === 'SNOW') {
-    // snow falling — drift + sway, cool white.
-    ctx.fillStyle = 'rgba(225, 240, 255, 1)';
+    // SNOW — a PERSISTENT light flurry on every ice world even on a CALM day,
+    // intensifying with weather. pMul has a CALM floor so snow always reads; the
+    // fall speed + alpha grow with the tier toward a full blizzard.
+    const snowMul = Math.max(1.0, pMul);    // never below the calm baseline
+    ctx.fillStyle = 'rgba(235, 246, 255, 1)';
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
-      const fall = (p.y + t * (10 + p.speed * 14) * (0.7 + pMul * 0.3)) % h;
-      const x = (((p.x + Math.sin(t * 0.6 + p.phase) * 12 + p.drift * t * 2) % w) + w) % w;
-      ctx.globalAlpha = Math.min(1, (0.3 + p.warm * 0.4) * pMul);
+      const fall = (p.y + t * (12 + p.speed * 16) * (0.8 + snowMul * 0.3)) % h;
+      // wind-driven sideways drift grows with the tier (blizzard slants the snow).
+      const wind = p.drift * t * (2 + (snowMul - 1) * 6);
+      const x = (((p.x + Math.sin(t * 0.6 + p.phase) * 12 + wind) % w) + w) % w;
+      ctx.globalAlpha = Math.min(1, (0.45 + p.warm * 0.4) * snowMul);
       ctx.beginPath();
       ctx.arc(x, fall, p.size * 0.7, 0, Math.PI * 2);
       ctx.fill();
@@ -4527,6 +4598,70 @@ function buildCitadelLayout(
   };
 }
 
+/** Trace a structure's SILHOUETTE as the current path so window lights can be
+ *  clipped to the actual body shape (not a bounding rectangle). Mirrors the
+ *  geometry in drawCitadelStruct. Caller does beginPath()→this→clip(). */
+function clipStructPath(
+  ctx: CanvasRenderingContext2D, st: CitadelStructure, groundY: number
+): void {
+  const { x, bw, bh } = st;
+  const half = bw / 2;
+  const topY = groundY - bh;
+  switch (st.kind) {
+    case 'DOME': {
+      const r = half * 1.1;
+      const cy = groundY - r * 0.5;
+      ctx.rect(x - bw / 2, cy, bw, r * 0.5);   // base box
+      ctx.moveTo(x + r, cy); ctx.arc(x, cy, r, 0, Math.PI, true); // dome
+      break;
+    }
+    case 'GEODESIC':
+    case 'ICEDOME': {
+      const r = st.kind === 'ICEDOME' ? Math.max(half * 1.4, bh * 0.5) : Math.max(half * 1.4, bh * 0.55);
+      ctx.moveTo(x + r, groundY); ctx.arc(x, groundY, r, 0, Math.PI, true);
+      break;
+    }
+    case 'TANK': {
+      const yT = topY + bw * 0.3;
+      ctx.rect(x - half, yT, bw, groundY - yT);
+      ctx.moveTo(x + half, yT); ctx.ellipse(x, yT, half, bw * 0.3, 0, 0, Math.PI, true);
+      break;
+    }
+    case 'ZIGGURAT': {
+      const steps = 3 + Math.floor(st.v1 * 3);
+      const stepH = bh / steps;
+      for (let s2 = 0; s2 < steps; s2++) {
+        const ww = bw * (1 - s2 / (steps + 1));
+        ctx.rect(x - ww / 2, groundY - (s2 + 1) * stepH, ww, stepH);
+      }
+      break;
+    }
+    case 'ARCOLOGY': {
+      const tiers = 3 + Math.floor(st.v1 * 2);
+      const tierH = bh / tiers;
+      for (let t2 = 0; t2 < tiers; t2++) {
+        const ww = bw * (1 - t2 * 0.12);
+        ctx.rect(x - ww / 2, groundY - (t2 + 1) * tierH, ww, tierH);
+      }
+      break;
+    }
+    case 'SPIRE': {
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - half * 0.4, topY); ctx.lineTo(x, topY - bh * 0.12);
+      ctx.lineTo(x + half * 0.4, topY); ctx.lineTo(x + half, groundY); ctx.closePath();
+      break;
+    }
+    case 'LIGHTHOUSE': {
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - half * 0.5, topY + bh * 0.12);
+      ctx.lineTo(x + half * 0.5, topY + bh * 0.12); ctx.lineTo(x + half, groundY); ctx.closePath();
+      break;
+    }
+    case 'WINDTOWER':
+      ctx.rect(x - bw * 0.3, topY, bw * 0.6, bh); break;
+    default: // BOX/STILT/KEEP/BATTLEMENT/FOUNDRY/SMOKESTACK/MAST → upright body box
+      ctx.rect(x - half, topY, bw, bh);
+  }
+}
+
 /** Paint one biome-vocabulary structure. Bodies use a left/right face pair for a
  *  consistent key-light (faceSign +1 → light from the right). Crisp silhouettes. */
 function drawCitadelStruct(
@@ -4538,14 +4673,24 @@ function drawCitadelStruct(
   const half = bw / 2;
   const lit = faceSign >= 0 ? layout.bodyLight : layout.bodyDark;
   const shade = faceSign >= 0 ? layout.bodyDark : layout.bodyLight;
-  // ground footing shadow (soft ellipse) so the structure sits ON the land.
-  ctx.save();
-  ctx.globalAlpha = 0.28;
-  ctx.fillStyle = 'rgba(0, 0, 0, 1)';
-  ctx.beginPath();
-  ctx.ellipse(x, groundY + 1, bw * 0.75, Math.max(2, bw * 0.18), 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  // GROUND-CONTACT shadow — a soft dark smudge tight to the base at the contact
+  // line (groundY), NOT a bright pad/platform. A radial gradient fades it out so
+  // it reads as a shadow the building is planted in, not a disc it floats on.
+  if (st.kind !== 'MAST') {
+    ctx.save();
+    const sw = bw * 0.6, sh = Math.max(1.5, bw * 0.12);
+    const sg = ctx.createRadialGradient(x, groundY, 0, x, groundY, sw);
+    sg.addColorStop(0, 'rgba(0, 0, 0, 0.34)');
+    sg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = sg;
+    ctx.save();
+    ctx.translate(x, groundY);
+    ctx.scale(1, sh / sw);
+    ctx.translate(-x, -groundY);
+    ctx.fillRect(x - sw, groundY - sw, sw * 2, sw * 2);
+    ctx.restore();
+    ctx.restore();
+  }
 
   const box = (yTop: number, hh: number, ww: number) => {
     ctx.fillStyle = layout.body;
@@ -4604,9 +4749,9 @@ function drawCitadelStruct(
       break;
     }
     case 'GEODESIC': {
-      // big faceted dome: arc body + triangular facet seams
+      // big faceted dome: arc body + triangular facet seams. Base flush on ground.
       const r = Math.max(half * 1.4, bh * 0.55);
-      const cy = groundY - r * 0.1;
+      const cy = groundY;
       ctx.fillStyle = layout.body;
       ctx.beginPath(); ctx.arc(x, cy, r, Math.PI, 0); ctx.fill();
       ctx.fillStyle = lit;
@@ -4622,9 +4767,9 @@ function drawCitadelStruct(
       break;
     }
     case 'ICEDOME': {
-      // faceted translucent ice dome + a crowning crystal spike
+      // faceted translucent ice dome + a crowning crystal spike. Base on ground.
       const r = Math.max(half * 1.4, bh * 0.5);
-      const cy = groundY - r * 0.05;
+      const cy = groundY;
       ctx.fillStyle = layout.body; ctx.globalAlpha = 0.9;
       ctx.beginPath(); ctx.arc(x, cy, r, Math.PI, 0); ctx.fill();
       ctx.globalAlpha = 1;
@@ -4777,14 +4922,21 @@ function drawCitadelSkyline(
     drawCitadelStruct(ctx, st, groundY, layout, keyDir);
   }
 
-  // warm window lights — biome-tinted glow; twinkle subtly at higher levels.
+  // warm window lights — biome-tinted glow; twinkle subtly at higher levels. Each
+  // structure's window grid is CLIPPED to its actual silhouette so lights on domes /
+  // ziggurats / tapered towers never spill outside the drawn body as a rectangle.
   const wg = layout.winGlow;
-  ctx.globalCompositeOperation = 'lighter';
   let winIndex = 0;
   for (let s = 0; s < layout.structures.length; s++) {
     const st = layout.structures[s];
     if (st.windows.length === 0) continue;
-    const topY = ridgeYAt(st.x) - st.bh;
+    const groundY = ridgeYAt(st.x);
+    const topY = groundY - st.bh;
+    ctx.save();
+    ctx.beginPath();
+    clipStructPath(ctx, st, groundY);
+    ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
     for (let k = 0; k < st.windows.length; k++) {
       const win = st.windows[k];
       const tw = layout.twinkleWindows
@@ -4798,6 +4950,7 @@ function drawCitadelSkyline(
       ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${(0.55 * tw * winNight).toFixed(3)})`;
       ctx.fillRect(st.x + win.dx, topY + win.dy, 1.8, 1.8);
     }
+    ctx.restore();
   }
   ctx.globalCompositeOperation = 'source-over';
 
