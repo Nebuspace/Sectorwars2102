@@ -47,6 +47,14 @@ class SlipBumpRequest(BaseModel):
     occupant_player_id: str
 
 
+class LongTermMooringRequest(BaseModel):
+    station_id: str
+    # Canon (FEATURES/economy/docking-slips): long-term mooring is 1–30 days.
+    # The service re-validates against LONG_TERM_MOORING_MAX_DAYS; this bound is
+    # the API-surface guard so a bad request is rejected before any DB work.
+    days: int = Field(..., ge=1, le=30, description="Mooring duration in days (1–30)")
+
+
 class MarketInfoResponse(BaseModel):
     resources: Dict[str, Dict[str, Any]]
     port: Dict[str, Any]
@@ -1145,6 +1153,159 @@ async def bump_docking_slip(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Docking failed: {str(e)}")
+
+
+@router.post("/mooring/long-term")
+async def acquire_long_term_mooring(
+    mooring_request: LongTermMooringRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player)
+):
+    """Reserve a long-term mooring slip at a station.
+
+    Canon (FEATURES/economy/docking-slips §Long-term mooring): long-term slips
+    are a SEPARATE pool from transient slips and do NOT participate in the bump
+    mechanism. The player pays `days` * 200 cr upfront (1–30 days). Unlike a
+    transient dock this is a multi-day parking reservation — it costs no turns
+    and does not set `is_docked`; the ship occupies a long-term slip until
+    released.
+
+    The service owns reputation gating, capacity, credit deduction, and the
+    station treasury credit; this route validates the duration bound, locks the
+    station row first (deadlock contract), and maps the service status to HTTP.
+    """
+    # LOCK ORDER (global convention): STATION row first, then PLAYER rows.
+    # acquire_long_term() re-locks this same station row (already held — no
+    # extra wait) and locks the player row to deduct credits, matching the
+    # transient /dock path's lock ordering.
+    station = (
+        db.query(Station)
+        .filter(Station.id == mooring_request.station_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if not station:
+        raise HTTPException(status_code=404, detail="Station not found")
+
+    # A long-term slip is claimed at the station the player is physically at,
+    # mirroring the same-sector requirement of the transient /dock route.
+    if current_player.current_sector_id != station.sector_id:
+        raise HTTPException(status_code=400, detail="You must be in the same sector as the station")
+
+    try:
+        result = docking_service.acquire_long_term(
+            db,
+            station,
+            current_player,
+            days=mooring_request.days,
+            ship_id=current_player.current_ship_id,
+        )
+
+        status = result["status"]
+        if status == "granted":
+            occupancy = result["occupancy"]
+            db.commit()
+            return {
+                "message": (
+                    f"Long-term mooring secured at {station.name} "
+                    f"for {result['days']} day(s)"
+                ),
+                "days": result["days"],
+                "fee_paid": result["fee_paid"],
+                "credits_remaining": current_player.credits,
+                "slip": {
+                    "id": str(occupancy.id),
+                    "slip_class": occupancy.slip_class,
+                    "docked_at": occupancy.docked_at.isoformat() if occupancy.docked_at else None,
+                },
+                "slips": {
+                    "capacity": result["capacity"],
+                    "occupied": result["occupied"],
+                },
+                "station": {
+                    "id": str(station.id),
+                    "name": station.name,
+                    "type": station.type,
+                    "faction": station.faction_affiliation,
+                },
+            }
+
+        # Non-granted outcomes: roll back any locks/changes, map to HTTP.
+        db.rollback()
+        if status == "invalid_days":
+            raise HTTPException(status_code=400, detail=result["detail"])
+        if status == "unavailable":
+            raise HTTPException(status_code=400, detail=result["detail"])
+        if status == "reputation_denied":
+            raise HTTPException(status_code=403, detail=result["detail"])
+        if status == "insufficient_credits":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Insufficient credits for long-term mooring. "
+                    f"Need {result['need']}, have {result['have']}"
+                ),
+            )
+        if status == "full":
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": (
+                        f"All long-term mooring slips at {station.name} are occupied "
+                        f"({result['occupied']}/{result['capacity']})"
+                    ),
+                    "slips": {
+                        "capacity": result["capacity"],
+                        "occupied": result["occupied"],
+                    },
+                },
+            )
+        # "error" or any unforeseen status
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("detail", "Long-term mooring failed"),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Long-term mooring failed: {str(e)}")
+
+
+@router.post("/mooring/long-term/release")
+async def release_long_term_mooring(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player)
+):
+    """Release the caller's long-term mooring slip.
+
+    Canon: no fee refund — the pre-paid fee is consumed on grant. Tolerates a
+    missing slip (returns released=false). Like the service method, this owns
+    the transaction; it costs no turns, mirroring the parking-reservation
+    nature of long-term mooring.
+    """
+    try:
+        released = docking_service.release_long_term(db, None, current_player)
+        db.commit()
+
+        if not released:
+            return {
+                "message": "You hold no long-term mooring slip to release",
+                "released": False,
+            }
+
+        return {
+            "message": "Long-term mooring released",
+            "released": True,
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Releasing long-term mooring failed: {str(e)}")
 
 
 @router.get("/history")
