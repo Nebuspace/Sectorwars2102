@@ -3074,8 +3074,13 @@ function buildLandedCache(
     // Compositional THIRD, never dead-centre: the bright horizon/sun glow sits at
     // mid-sky, so seed the cone to a left or right third where its silhouette
     // stands clear against EMPTY sky (off the sun) rather than washing out.
-    const cxFrac = vRng() < 0.5 ? (0.20 + vRng() * 0.14) : (0.66 + vRng() * 0.14);
+    let cxFrac = vRng() < 0.5 ? (0.20 + vRng() * 0.14) : (0.66 + vRng() * 0.14);
     const baseHalfFrac = 0.24 + vRng() * 0.10;    // WIDE base (0.24..0.34 of w)
+    // KEEP THE WHOLE CONE ON-SCREEN: a wide base seeded to the 0.20 third put the
+    // left flank off the left edge (cxFrac - baseHalfFrac < 0 → clipped, hard edge).
+    // Pull the centre inward so both flanks taper smoothly within [0.02, 0.98]·w.
+    const MARGIN = 0.02;
+    cxFrac = Math.max(baseHalfFrac + MARGIN, Math.min(1 - baseHalfFrac - MARGIN, cxFrac));
     const peakFrac = 0.36 + vRng() * 0.12;        // TALL: peak 0.36..0.48 of h above horizon
     // Smooth clean mountain profile (a proper bell), gently asymmetric, light noise
     // so the silhouette reads as a real cone — NOT a noisy lumpy ridge.
@@ -3170,20 +3175,23 @@ function buildLandedCache(
         phase: vRng() * Math.PI * 2,
       });
     }
-    // caldera LAVA BOMBS — flaming ejecta arcing out of the crater onto the terrain.
-    // Count scales modestly with citadel/weather feel via the base 5 + seeded 0..3.
+    // caldera LAVA BOMBS — flaming ejecta arcing SHORT off the crater and landing at
+    // the BASE of the cone (its own slopes), NOT flung across the scene toward the
+    // citadel. Few, slow, calm. Landing x stays within ~±0.04–0.10·w of the crater x.
     const bombs: LavaBomb[] = [];
-    const bombN = 5 + Math.floor(vRng() * 4);     // 5..8 bombs
+    const bombN = 2 + Math.floor(vRng() * 3);     // 2..4 bombs (was 5..8)
     for (let i = 0; i < bombN; i++) {
       const rverts: { a: number; r: number }[] = [];
       const bvN = 5 + Math.floor(vRng() * 2);     // small chunky polygon
       for (let v = 0; v < bvN; v++) rverts.push({ a: (v / bvN) * Math.PI * 2 + (vRng() - 0.5) * 0.8, r: 0.7 + vRng() * 0.6 });
+      const sideSign = vRng() < 0.5 ? -1 : 1;     // fall to one slope or the other
+      const landOff = sideSign * (0.04 + vRng() * 0.06);  // ±0.04..0.10·w from crater
       bombs.push({
         launchPhase: vRng(),                       // stagger
-        period: 0.7 + vRng() * 0.6,                // per-bomb speed
-        vx0: (vRng() - 0.5) * 2,                   // outward bias (left/right of cone)
-        vy0: 0.8 + vRng() * 0.5,                   // arc height factor
-        landXFrac: vRng(),                         // landing point across the width
+        period: 1.6 + vRng() * 0.8,                // SLOW per-bomb flight (was 0.7..1.3)
+        vx0: sideSign * (0.3 + vRng() * 0.4),      // gentle outward bias toward that slope
+        vy0: 0.7 + vRng() * 0.4,                   // modest arc height
+        landXFrac: Math.max(0.02, Math.min(0.98, cxFrac + landOff)),  // BASE of the cone
         rockVerts: rverts,
         size: 2 + vRng() * 2,                      // 2..4 px
       });
@@ -4806,7 +4814,9 @@ function drawLavaBombs(
   const tier = wx ? wx.tierN : 0;
   // reduced motion: freeze just the first two bombs at a fixed mid-arc, no loop.
   const reduced = t === 0;
-  const speed = 0.45 + tier * 0.10;
+  // SLOW, calm arcs. period multiplies this, so keep the base low; tier adds only a
+  // small, capped nudge (never a fast barrage). Effective cycle ≈ 0.18..0.30 · period.
+  const speed = 0.18 + Math.min(0.06, tier * 0.04);
 
   const traceRock = (px: number, py: number, sz: number, verts: { a: number; r: number }[]) => {
     ctx.beginPath();
@@ -4832,7 +4842,10 @@ function drawLavaBombs(
     // horizontal: ease from crater to landing. vertical: parabola that rises above
     // the launch then falls to the ground (apex height scaled by vy0).
     const px = startX + (landX - startX) * u;
-    const apex = peakH * 0.28 * bomb.vy0;            // how high above the launch it arcs
+    // arc height scales with the (short) horizontal span so a near-base landing gets
+    // a modest hop, not a tall vertical fountain. Clamped to a small range.
+    const span = Math.abs(landX - startX);
+    const apex = Math.max(peakH * 0.05, Math.min(peakH * 0.16, span * 0.6)) * bomb.vy0;
     const baseLine = startY + (landY - startY) * u;  // straight crater→land descent
     const py = baseLine - apex * 4 * u * (1 - u);    // parabolic lift (0 at ends)
 
@@ -5621,6 +5634,12 @@ function buildCitadelLayout(
   ][level];
   if (!cfg || cfg.n === 0) return null;
 
+  // VOLCANIC forge-cities read a touch larger (player request): bump structure
+  // footprints + heights ~20% (within 15–25%). Grounding is unaffected — heights
+  // grow upward from the same ground baseline. Other biomes unchanged.
+  const isVolcanic = pal.flourish === 'VOLCANIC';
+  const sizeMul = isVolcanic ? 1.2 : 1.0;
+
   const cityX = clampX(lMin + (lMax - lMin) * (0.3 + rng() * 0.4));
   const spread = Math.min(w * cfg.spreadF, (lMax - lMin) * 0.5);
 
@@ -5643,8 +5662,8 @@ function buildCitadelLayout(
 
   // SIGNATURE landmark (level ≥ 3): the dominant central structure at cityX.
   if (level >= 3 && cfg.sigH > 0) {
-    const sbw = Math.max(8, w * (0.03 + level * 0.006));
-    const sbh = h * cfg.sigH * (0.8 + rng() * 0.3);
+    const sbw = Math.max(8, w * (0.03 + level * 0.006)) * sizeMul;
+    const sbh = h * cfg.sigH * (0.8 + rng() * 0.3) * sizeMul;
     structures.push({
       kind: arch.signature, x: cityX, bw: sbw, bh: sbh,
       windows: buildWindows(sbw, sbh, cfg.win), signature: true,
@@ -5652,7 +5671,6 @@ function buildCitadelLayout(
     });
   }
 
-  const isVolcanic = pal.flourish === 'VOLCANIC';
   // VOLCANIC filler pool: MAGMA_PIPELINE only at L3+ (a connector implies a complex);
   // CATWALK_GANTRY added at L4+. Other biomes use arch.fillers as-is.
   let fillerPool = arch.fillers;
@@ -5666,10 +5684,10 @@ function buildCitadelLayout(
   for (let i = 0; i < fillN; i++) {
     const jitter = (rng() - 0.5) * 2 * spread;
     const sx = clampX(cityX + jitter);
-    const bw = Math.max(4, w * (0.012 + rng() * 0.022));
+    const bw = Math.max(4, w * (0.012 + rng() * 0.022)) * sizeMul;
     // height falls off with distance from centre so the skyline reads as a city.
     const distF = 1 - Math.min(1, Math.abs(sx - cityX) / Math.max(1, spread)) * 0.45;
-    const bh = h * cfg.maxH * (0.35 + rng() * 0.65) * distF;
+    const bh = h * cfg.maxH * (0.35 + rng() * 0.65) * distF * sizeMul;
     // L1 is a single humble outpost (volcanic → a heat-vent tower, not a plain box);
     // L2 leads with a crucible/furnace so even a small base reads forge-industrial.
     let kind: CitadelKind;
