@@ -1818,7 +1818,9 @@ function landedPalette(planetType?: string): LandedPalette {
       return {
         skyTop: '#120305', skyMid: '#3a0d08', horizon: '#8a2e0a',
         glow: 'rgba(255, 110, 30, 0.5)', haze: '255, 90, 20',
-        ridges: ['#2a0c08', '#1a0705', '#0c0303'],
+        // warm→dark depth ramp so the three ridge layers separate as DEPTH (far
+        // ridge warmer/lighter → front ridge near-black), not an identical triad.
+        ridges: ['#3a1510', '#261008', '#140806'],
         flourish: 'VOLCANIC', flora: '90, 120, 70'
       };
     case 'ICE':
@@ -2991,7 +2993,10 @@ function buildLandedCache(
     // HERO stratovolcano — LARGE, fairly central, peak well up into the sky so it
     // clearly dominates the horizon and rises above the ridge line.
     const caldera = landform === 'VOLC_CALDERA' || vRng() < 0.3;
-    const cxFrac = 0.36 + vRng() * 0.28;          // 0.36..0.64 — central
+    // Compositional THIRD, never dead-centre: the bright horizon/sun glow sits at
+    // mid-sky, so seed the cone to a left or right third where its silhouette
+    // stands clear against EMPTY sky (off the sun) rather than washing out.
+    const cxFrac = vRng() < 0.5 ? (0.20 + vRng() * 0.14) : (0.66 + vRng() * 0.14);
     const baseHalfFrac = 0.24 + vRng() * 0.10;    // WIDE base (0.24..0.34 of w)
     const peakFrac = 0.36 + vRng() * 0.12;        // TALL: peak 0.36..0.48 of h above horizon
     // Smooth clean mountain profile (a proper bell), gently asymmetric, light noise
@@ -3057,7 +3062,9 @@ function buildLandedCache(
       }
       lake = { cxFrac: 0.30 + vRng() * 0.40, cyFrac: 0.74 + vRng() * 0.06, rxFrac: 0.22 + vRng() * 0.10, ryFrac: 0.05 + vRng() * 0.03, cells };
     }
-    // jagged foreground cracks (3–5, min-spread) — stepped points + optional branch.
+    // jagged foreground cracks (3–5, min-spread) — SHORT LOCAL fissures in the
+    // ground (each hugs the terrain contour at draw time), never wide horizontal
+    // spans across multiple peaks.
     const cracks: LavaCrack[] = [];
     const crackN = 3 + Math.floor(vRng() * 3);
     for (let i = 0; i < crackN; i++) {
@@ -3067,7 +3074,7 @@ function buildLandedCache(
       cracks.push({
         pts: cp,
         xFrac: (i + 0.5) / crackN + (vRng() - 0.5) * 0.06,  // min-spread across width
-        len: w * (0.14 + vRng() * 0.16),
+        len: w * (0.06 + vRng() * 0.06),                    // SHORT local fissure (~0.06–0.12 w)
         phase: vRng() * Math.PI * 2,
         branchAt: vRng() < 0.6 ? 0.4 + vRng() * 0.3 : -1,
       });
@@ -3358,7 +3365,9 @@ function drawLandedScene(
         // orange underbelly (additive, night-boosted)
         ctx.globalCompositeOperation = 'lighter';
         const ug = ctx.createRadialGradient(cx, cy + chh * 0.4, 0, cx, cy + chh * 0.4, cw * 0.8);
-        ug.addColorStop(0, `rgba(255, 90, 30, ${(0.12 * nightK).toFixed(3)})`);
+        // daytime floor so the ash-cloud underbelly stays lava-lit at midday.
+        const ubk = 0.08 + 0.10 * (1 - dc.bright);
+        ug.addColorStop(0, `rgba(255, 90, 30, ${ubk.toFixed(3)})`);
         ug.addColorStop(1, 'rgba(255, 60, 0, 0)');
         ctx.fillStyle = ug;
         ctx.save(); ctx.translate(cx, cy + chh * 0.4); ctx.scale(1, 0.5); ctx.translate(-cx, -(cy + chh * 0.4));
@@ -3927,7 +3936,10 @@ function drawLandedScene(
       const pulse = t === 0 ? 0.6 : 0.5 + 0.5 * Math.sin(t * 1.5 + b.phase);
       const by = ridgeYAt(bx) + b.yOff;
       const g = ctx.createRadialGradient(bx, by, 0, bx, by, b.r * 2);
-      g.addColorStop(0, `rgba(255, 110, 40, ${(0.4 * pulse * nightK).toFixed(3)})`);
+      // daytime floor: glows at midday (0.3) + night boost — an active volcano's
+      // crust-lava must never vanish in daylight.
+      const clk = pulse * (0.3 + 0.4 * (1 - dc.bright));
+      g.addColorStop(0, `rgba(255, 110, 40, ${clk.toFixed(3)})`);
       g.addColorStop(1, 'rgba(255, 60, 10, 0)');
       ctx.fillStyle = g;
       ctx.fillRect(bx - b.r * 2, by - b.r * 2, b.r * 4, b.r * 4);
@@ -4031,9 +4043,18 @@ function drawLandedScene(
     ctx.save();
     const surfTop = horizonY * 0.9;
     const dimGrad = ctx.createLinearGradient(0, surfTop, 0, h);
-    dimGrad.addColorStop(0, `rgba(6, 9, 18, 0)`);
-    dimGrad.addColorStop(0.25, `rgba(6, 9, 18, ${(dc.skyDim * 0.5).toFixed(3)})`);
-    dimGrad.addColorStop(1, `rgba(4, 7, 16, ${(dc.skyDim * 0.7).toFixed(3)})`);
+    if (cache.volcanic) {
+      // VOLCANIC: a WARM-dark dim (not cold navy) capped lower so the orange lava
+      // emissives bleed through at night instead of going brown/navy.
+      const vDim = Math.min(0.45, dc.skyDim);
+      dimGrad.addColorStop(0, `rgba(18, 6, 4, 0)`);
+      dimGrad.addColorStop(0.25, `rgba(18, 6, 4, ${(vDim * 0.5).toFixed(3)})`);
+      dimGrad.addColorStop(1, `rgba(14, 5, 3, ${(vDim * 0.7).toFixed(3)})`);
+    } else {
+      dimGrad.addColorStop(0, `rgba(6, 9, 18, 0)`);
+      dimGrad.addColorStop(0.25, `rgba(6, 9, 18, ${(dc.skyDim * 0.5).toFixed(3)})`);
+      dimGrad.addColorStop(1, `rgba(4, 7, 16, ${(dc.skyDim * 0.7).toFixed(3)})`);
+    }
     ctx.fillStyle = dimGrad;
     ctx.fillRect(0, surfTop, w, h - surfTop);
     ctx.restore();
@@ -4130,28 +4151,55 @@ function drawVolcanoFarLand(
     if (y < summitY) { summitY = y; summitX = x; summitIdx = i; }
   }
 
-  // 1) CONE SILHOUETTE — a large solid mountain. A vertical body gradient (lit
-  //    upper face → darker base) gives 3D form; readable in daylight.
+  // 1) CONE SILHOUETTE — a large solid mountain with ATMOSPHERIC DEPTH. A 2-stop
+  //    body (warmer lifted upper face → darker base) gives 3D form; the whole body
+  //    is then blended ~20% toward the sky-haze horizon tint so a DISTANT mountain
+  //    reads as receding rather than the same near-black as foreground rock. A
+  //    two-pass rim (soft wide outer glow + tight bright core) makes the silhouette
+  //    edge unmistakable at ANY day phase.
   ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(sil[0].x, baseY);
-  for (let i = 0; i < n; i++) {
-    // smooth the profile with quadratic midpoints so it reads as a clean cone.
-    if (i === 0) ctx.lineTo(sil[0].x, sil[0].y);
-    else { const px = (sil[i - 1].x + sil[i].x) / 2, py = (sil[i - 1].y + sil[i].y) / 2; ctx.quadraticCurveTo(sil[i - 1].x, sil[i - 1].y, px, py); }
-  }
-  ctx.lineTo(sil[n - 1].x, sil[n - 1].y);
-  ctx.lineTo(sil[n - 1].x, baseY);
-  ctx.closePath();
+  // build the smoothed cone path once (reused for fill + clip-free rim).
+  const traceCone = () => {
+    ctx.beginPath();
+    ctx.moveTo(sil[0].x, baseY);
+    for (let i = 0; i < n; i++) {
+      if (i === 0) ctx.lineTo(sil[0].x, sil[0].y);
+      else { const px = (sil[i - 1].x + sil[i].x) / 2, py = (sil[i - 1].y + sil[i].y) / 2; ctx.quadraticCurveTo(sil[i - 1].x, sil[i - 1].y, px, py); }
+    }
+    ctx.lineTo(sil[n - 1].x, sil[n - 1].y);
+    ctx.lineTo(sil[n - 1].x, baseY);
+    ctx.closePath();
+  };
+  traceCone();
+  // sky-haze horizon tint for atmospheric recession (volcanic warm-amber horizon).
+  const hazeR = 138, hazeG = 70, hazeB = 46;
+  const mix = (a: number, b: number, k: number) => Math.round(a + (b - a) * k);
+  // 2-stop warm-dark rock body (upper face lifted + warmer, base darker).
+  const day = dc.bright > 0.4;
+  const upR = day ? 92 : 60, upG = day ? 62 : 40, upB = day ? 58 : 44;
+  const loR = day ? 44 : 26, loG = day ? 28 : 16, loB = day ? 28 : 20;
+  const aMix = 0.20;   // 20% toward haze → atmospheric perspective
   const bodyGrad = ctx.createLinearGradient(0, summitY, 0, baseY);
-  // lighter than before for daylight legibility; warm-dark rock.
-  bodyGrad.addColorStop(0, dc.bright > 0.4 ? 'rgb(74, 56, 56)' : 'rgb(50, 36, 40)');
-  bodyGrad.addColorStop(1, dc.bright > 0.4 ? 'rgb(40, 28, 30)' : 'rgb(24, 16, 20)');
+  bodyGrad.addColorStop(0, `rgb(${mix(upR, hazeR, aMix)}, ${mix(upG, hazeG, aMix)}, ${mix(upB, hazeB, aMix)})`);
+  bodyGrad.addColorStop(1, `rgb(${mix(loR, hazeR, aMix)}, ${mix(loG, hazeG, aMix)}, ${mix(loB, hazeB, aMix)})`);
   ctx.fillStyle = bodyGrad;
   ctx.fill();
-  // lit RIM along the silhouette edge (form + separation from sky).
-  ctx.strokeStyle = `rgba(200, 150, 120, ${(0.4 + nightK * 0.2).toFixed(3)})`;
-  ctx.lineWidth = 1.4;
+  ctx.restore();
+
+  // two-pass RIM along the upper/sunward silhouette edge.
+  ctx.save();
+  // (a) wide soft outer glow — lifts the whole edge off the sky.
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = `rgba(255, 180, 120, ${(0.16 + nightK * 0.12).toFixed(3)})`;
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(sil[0].x, sil[0].y);
+  for (let i = 1; i < n; i++) ctx.lineTo(sil[i].x, sil[i].y);
+  ctx.stroke();
+  // (b) tight bright core — a crisp lit edge.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = `rgba(255, 210, 165, ${(0.5 + nightK * 0.25).toFixed(3)})`;
+  ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(sil[0].x, sil[0].y);
   for (let i = 1; i < n; i++) ctx.lineTo(sil[i].x, sil[i].y);
@@ -4167,85 +4215,142 @@ function drawVolcanoFarLand(
     const len = peakH * r.lenFrac;
     const sx1 = summitX + r.side * baseHalf * 0.55;     // drift outward down the face
     const midX = (sx0 + sx1) / 2 + r.wig * baseHalf * 0.08;
-    // dark runnel channel under the glow
-    ctx.strokeStyle = 'rgba(40, 16, 10, 0.7)';
-    ctx.lineWidth = 3;
+    // dark runnel CHANNEL (wide, tapering) under the glow so it reads as a carved
+    // wedge in the flank, not a 1px line.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = 'rgba(34, 12, 8, 0.75)';
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(sx0, summitY + 2);
     ctx.quadraticCurveTo(midX, summitY + len * 0.5, sx1, summitY + len);
     ctx.stroke();
-    // glowing molten core
-    ctx.strokeStyle = `rgba(255, 130, 45, ${(0.55 * runPulse * (0.7 + nightK * 0.5)).toFixed(3)})`;
-    ctx.lineWidth = 1.6;
+    // glowing molten core (additive), BRIGHTER near the crater (a gradient down the
+    // channel) — bright orange-white at the rim → deep orange at the toe.
+    ctx.globalCompositeOperation = 'lighter';
+    const rg = ctx.createLinearGradient(sx0, summitY, sx1, summitY + len);
+    const rk = runPulse * (0.7 + nightK * 0.5);
+    rg.addColorStop(0, `rgba(255, 225, 170, ${Math.min(1, 0.85 * rk).toFixed(3)})`);
+    rg.addColorStop(0.4, `rgba(255, 140, 50, ${(0.6 * rk).toFixed(3)})`);
+    rg.addColorStop(1, `rgba(220, 70, 20, ${(0.3 * rk).toFixed(3)})`);
+    ctx.strokeStyle = rg;
+    ctx.lineWidth = 2.6;
     ctx.beginPath();
     ctx.moveTo(sx0, summitY + 2);
     ctx.quadraticCurveTo(midX, summitY + len * 0.5, sx1, summitY + len);
     ctx.stroke();
   }
+  ctx.lineCap = 'butt';
   ctx.restore();
 
-  // 3) glowing CRATER mouth + summit bloom (visible day AND night).
+  // 3) CRATER — carved NOTCH + glowing molten BOWL inside it (the mouth that makes
+  //    "this is a volcano" read), then a summit sky-bloom above. The bowl punches
+  //    through DAYLIGHT (its alpha does not depend on night).
+  const craterW = baseHalf * (c.caldera ? 0.34 : 0.22);
+  const rimY = summitY + craterW * 0.18;          // crater rim sits just below the peak
+  // (a) carve a concave NOTCH at the summit — a shallow dark-rock dip so the bowl
+  //     reads as sunk into the cone, not a glow stuck on the peak.
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = day ? 'rgb(46, 30, 30)' : 'rgb(24, 14, 16)';
+  ctx.beginPath();
+  ctx.moveTo(summitX - craterW, summitY - 1);
+  ctx.quadraticCurveTo(summitX, rimY + craterW * 0.55, summitX + craterW, summitY - 1);
+  ctx.lineTo(summitX + craterW, summitY + 1);
+  ctx.lineTo(summitX - craterW, summitY + 1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  // (b) glowing molten BOWL ellipse INSIDE the notch (white-hot → orange →
+  //     transparent). High base alpha so it reads in full daylight.
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  const craterW = baseHalf * (c.caldera ? 0.34 : 0.20);
   const craterPulse = t === 0 ? 0.85 : 0.72 + 0.28 * Math.sin(t * 1.3);
-  const cgr = ctx.createRadialGradient(summitX, summitY + 2, 0, summitX, summitY + 2, craterW * 1.6);
-  cgr.addColorStop(0, `rgba(255, 235, 180, ${(0.98 * craterPulse).toFixed(3)})`);
-  cgr.addColorStop(0.45, `rgba(255, 120, 35, ${(0.8 * craterPulse).toFixed(3)})`);
-  cgr.addColorStop(1, 'rgba(255, 60, 0, 0)');
-  ctx.fillStyle = cgr;
-  ctx.fillRect(summitX - craterW * 1.6, summitY - craterW * 1.2, craterW * 3.2, craterW * 2.4);
-  // wide summit bloom — large enough to read at distance even in daylight.
-  const gr = baseHalf * (0.55 + tier * 0.3);
+  const bowlCy = rimY + craterW * 0.18;
+  const bgr = ctx.createRadialGradient(summitX, bowlCy, 0, summitX, bowlCy, craterW * 1.25);
+  bgr.addColorStop(0, `rgba(255, 250, 235, ${Math.min(1, 0.95 * craterPulse).toFixed(3)})`); // white-hot core
+  bgr.addColorStop(0.35, `rgba(255, 200, 120, ${(0.9 * craterPulse).toFixed(3)})`);
+  bgr.addColorStop(0.7, `rgba(255, 110, 30, ${(0.75 * craterPulse).toFixed(3)})`);
+  bgr.addColorStop(1, 'rgba(255, 60, 0, 0)');
+  ctx.fillStyle = bgr;
+  ctx.save();
+  ctx.translate(summitX, bowlCy); ctx.scale(1, 0.5); ctx.translate(-summitX, -bowlCy);
+  ctx.fillRect(summitX - craterW * 1.3, bowlCy - craterW * 1.3, craterW * 2.6, craterW * 2.6);
+  ctx.restore();
+  // (c) summit sky-bloom above the bowl — large enough to read at distance, but it
+  //     is the BOWL below that defines the mouth.
+  const gr = baseHalf * (0.5 + tier * 0.28);
   const bloom = ctx.createRadialGradient(summitX, summitY, 0, summitX, summitY, gr);
-  const ba = 0.45 + (1 - dc.bright) * 0.45;
-  bloom.addColorStop(0, `rgba(255, 130, 45, ${(ba * 0.7).toFixed(3)})`);
-  bloom.addColorStop(0.5, `rgba(255, 70, 20, ${(ba * 0.25).toFixed(3)})`);
+  const ba = 0.4 + (1 - dc.bright) * 0.45;
+  bloom.addColorStop(0, `rgba(255, 130, 45, ${(ba * 0.6).toFixed(3)})`);
+  bloom.addColorStop(0.5, `rgba(255, 70, 20, ${(ba * 0.22).toFixed(3)})`);
   bloom.addColorStop(1, 'rgba(255, 60, 0, 0)');
   ctx.fillStyle = bloom;
   ctx.fillRect(summitX - gr, summitY - gr, gr * 2, gr * 2);
   ctx.restore();
 
-  // 4) ASH+SMOKE PLUME — a THICK, TALL billowing column, clearly visible in DAYLIGHT.
-  //    By day: LIGHTER grey-brown smoke with real opacity + soft edges (so it stands
-  //    OUT against the dark/hazy sky). At night: darker + ember-underlit base.
+  // 4) ASH+SMOKE PLUME — a DEFINED, TALL billowing COLUMN pouring off the crater.
+  //    A real column (~0.35–0.5 canvas height of travel), widening as it rises with
+  //    a soft ANVIL flattening near the top; the lower 2–3 puffs are near-opaque
+  //    dense bodies (a solid root) with a faint silhouette edge so the billows have
+  //    shape. By DAY: light warm-grey smoke at real opacity against the dark/hazy
+  //    sky. By NIGHT: darker smoke with an additive ember-underlit base. Wind-drift
+  //    only when animating (t===0 → no drift).
   ctx.save();
-  const widen = 1.25 + tier * 0.9;
-  const day = dc.bright > 0.45;
-  for (let i = 0; i < vs.plume.puffs.length; i++) {
+  const np2 = vs.plume.puffs.length;
+  // total column height: a real column, not a blob. Anchored at the crater bowl.
+  const colH = h * (0.38 + tier * 0.10);
+  for (let i = 0; i < np2; i++) {
     const pf = vs.plume.puffs[i];
-    const up = i / (vs.plume.puffs.length - 1);
-    const rise = t === 0 ? 0 : (t * pf.spd) % (h * 0.16);
-    const px = summitX + pf.offX + (t === 0 ? 0 : Math.sin(t * 0.25 + pf.phase) * w * 0.025);
-    const py = summitY + pf.offY - rise;
-    const pr = pf.r * widen;
-    const bodyA = (0.5 - up * 0.18) * (0.85 + tier * 0.4);
-    const bg = ctx.createRadialGradient(px, py, 0, px, py, pr);
+    const up = i / (np2 - 1);                       // 0 root … 1 anvil top
+    // stack puffs up the column by their ordinal so the geometry is a true column;
+    // a slow per-frame rise cycles texture without breaking the column shape.
+    const rise = t === 0 ? 0 : ((t * pf.spd * 0.35) % (h * 0.05));
+    // anvil: widen toward the top, with extra flattening in the top third.
+    const anvil = 1 + up * (1.4 + tier * 0.7);
+    const baseR = pf.r * (0.9 + tier * 0.5);
+    const pr = baseR * anvil;
+    const colX = summitX + pf.offX
+      + (t === 0 ? 0 : Math.sin(t * 0.22 + pf.phase) * w * 0.02 * up); // drift grows w/ height
+    const colY = rimY - up * colH - rise;
+    // dense root → thinning crown.
+    const dense = up < 0.35;
+    const bodyA = (dense ? 0.78 - up * 0.3 : 0.42 - (up - 0.35) * 0.32) * (0.9 + tier * 0.35);
+    const flatY = up > 0.6 ? 0.55 : 0.92;          // anvil flattening near the top
+    const bg = ctx.createRadialGradient(colX, colY, 0, colX, colY, pr);
     if (day) {
-      // light warm-grey smoke that contrasts against the dark sky.
-      bg.addColorStop(0, `rgba(175, 160, 150, ${bodyA.toFixed(3)})`);
-      bg.addColorStop(0.6, `rgba(140, 124, 116, ${(bodyA * 0.55).toFixed(3)})`);
-      bg.addColorStop(1, 'rgba(120, 105, 100, 0)');
+      bg.addColorStop(0, `rgba(184, 168, 154, ${Math.max(0, bodyA).toFixed(3)})`);
+      bg.addColorStop(0.55, `rgba(150, 134, 124, ${Math.max(0, bodyA * 0.55).toFixed(3)})`);
+      bg.addColorStop(1, 'rgba(126, 110, 104, 0)');
     } else {
-      bg.addColorStop(0, `rgba(70, 58, 58, ${bodyA.toFixed(3)})`);
-      bg.addColorStop(0.6, `rgba(50, 40, 42, ${(bodyA * 0.55).toFixed(3)})`);
-      bg.addColorStop(1, 'rgba(36, 28, 30, 0)');
+      bg.addColorStop(0, `rgba(78, 64, 62, ${Math.max(0, bodyA).toFixed(3)})`);
+      bg.addColorStop(0.55, `rgba(54, 44, 44, ${Math.max(0, bodyA * 0.55).toFixed(3)})`);
+      bg.addColorStop(1, 'rgba(38, 30, 30, 0)');
     }
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = bg;
-    ctx.save(); ctx.translate(px, py); ctx.scale(1.25, 0.92); ctx.translate(-px, -py);
-    ctx.fillRect(px - pr, py - pr, pr * 2, pr * 2);
+    ctx.save(); ctx.translate(colX, colY); ctx.scale(1.2, flatY); ctx.translate(-colX, -colY);
+    ctx.fillRect(colX - pr, colY - pr, pr * 2, pr * 2);
     ctx.restore();
-    // ember-underlit base (additive, night-boosted) on the lower puffs.
-    if (up < 0.5) {
+    // faint silhouette edge on the dense lower billows → gives the puffs shape.
+    if (dense) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = day ? 'rgba(120, 108, 100, 0.28)' : 'rgba(30, 24, 24, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(colX, colY, pr * 0.8, pr * 0.8 * flatY, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // ember-underlit base (additive, night-boosted) on the root puffs.
+    if (up < 0.4) {
       ctx.globalCompositeOperation = 'lighter';
-      const ea = (0.26 - up * 0.4) * nightK;
+      const ea = (0.3 - up * 0.5) * nightK;
       if (ea > 0.01) {
-        const eg = ctx.createRadialGradient(px, py + pr * 0.3, 0, px, py + pr * 0.3, pr * 0.9);
+        const eg = ctx.createRadialGradient(colX, colY + pr * 0.3, 0, colX, colY + pr * 0.3, pr * 0.9);
         eg.addColorStop(0, `rgba(255, 95, 30, ${ea.toFixed(3)})`);
         eg.addColorStop(1, 'rgba(255, 60, 0, 0)');
         ctx.fillStyle = eg;
-        ctx.fillRect(px - pr, py - pr, pr * 2, pr * 2);
+        ctx.fillRect(colX - pr, colY - pr, pr * 2, pr * 2);
       }
     }
   }
@@ -4267,47 +4372,98 @@ function drawLavaUnderglow(ctx: CanvasRenderingContext2D, w: number, h: number, 
   ctx.restore();
 }
 
-/** Crusted molten lava lake in the midground (base glow + basalt cells + churn). */
+/** Molten lava lake in the midground: a hot glowing surface broken by a CRACKED
+ *  BASALT CRUST (dark plates separated by bright glowing seams), bright hot-spots
+ *  punching through, and a soft glow halo. Cached cells; slow seam/hotspot pulse. */
 function drawLavaLake(ctx: CanvasRenderingContext2D, w: number, h: number, t: number, vs: VolcanicScene, dc: DayCycle): void {
   if (!vs.lake) return;
   const lk = vs.lake;
   const cx = w * lk.cxFrac, cy = h * lk.cyFrac;
   const rx = w * lk.rxFrac, ry = h * lk.ryFrac;
   const nightK = 0.5 + (1 - dc.bright) * 0.5;
-  const churn = t === 0 ? 0 : Math.sin(t * 0.7) * 0.06;
+  const dayFloor = 0.45 + 0.55 * (1 - dc.bright);     // glows even at midday
+  const churn = t === 0 ? 0 : Math.sin(t * 0.7) * 0.05;
+  const pulse = t === 0 ? 0.8 : 0.7 + 0.3 * Math.sin(t * 1.2);
+  const eRatio = ry / rx;
   ctx.save();
-  // wide glow bloom under/around the lake — present DAY and night (the lake lights
-  // its surroundings), stronger at night. Keeps it legible in daylight/dusk.
+
+  // 1) wide soft GLOW HALO on the ground/air around the lake (lava emits light) —
+  //    daytime floor + night boost.
   {
     ctx.globalCompositeOperation = 'lighter';
     const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx * 2.4);
-    bg.addColorStop(0, `rgba(255, 95, 25, ${(0.16 + 0.16 * nightK).toFixed(3)})`);
+    bg.addColorStop(0, `rgba(255, 100, 30, ${(0.22 * dayFloor).toFixed(3)})`);
     bg.addColorStop(1, 'rgba(255, 60, 0, 0)');
     ctx.fillStyle = bg;
     ctx.fillRect(cx - rx * 2.4, cy - rx * 2.4, rx * 4.8, rx * 4.8);
   }
-  // molten base (radial: white-orange centre → dark red), clipped to the lake ellipse
-  ctx.globalCompositeOperation = 'source-over';
+
+  // clip the rest to the lake ellipse.
   ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.clip();
-  const lg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx);
-  lg.addColorStop(0, 'rgba(255, 200, 90, 1)');
-  lg.addColorStop(0.5, 'rgba(255, 90, 25, 1)');
-  lg.addColorStop(1, 'rgba(90, 20, 8, 1)');
+
+  // 2) HOT MOLTEN SURFACE base — bright white-hot core → orange → dark toward the
+  //    near rim. Brighter than a flat pool (lava is emissive).
+  ctx.globalCompositeOperation = 'source-over';
+  const lg = ctx.createRadialGradient(cx, cy - ry * 0.2, 0, cx, cy, rx * 1.05);
+  lg.addColorStop(0, 'rgba(255, 240, 200, 1)');     // white-hot
+  lg.addColorStop(0.25, 'rgba(255, 180, 70, 1)');
+  lg.addColorStop(0.6, 'rgba(255, 95, 25, 1)');
+  lg.addColorStop(1, 'rgba(110, 26, 10, 1)');       // cooling near rim
   ctx.fillStyle = lg;
   ctx.fillRect(cx - rx, cy - ry, rx * 2, ry * 2);
-  // dark basalt crust cells with glowing orange borders
+
+  // 3) glowing molten SEAM bed: an additive bright wash UNDER the crust plates so
+  //    the gaps between plates read as glowing cracks of molten rock.
+  ctx.globalCompositeOperation = 'lighter';
+  const seam = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx);
+  seam.addColorStop(0, `rgba(255, 210, 120, ${(0.5 * dayFloor).toFixed(3)})`);
+  seam.addColorStop(1, `rgba(255, 90, 20, ${(0.2 * dayFloor).toFixed(3)})`);
+  ctx.fillStyle = seam;
+  ctx.fillRect(cx - rx, cy - ry, rx * 2, ry * 2);
+
+  // 4) CRACKED BASALT CRUST — dark plates of varied size with GLOWING orange seams
+  //    along their borders. The plates cover most of the surface; the bright bed
+  //    (3) shows through the gaps as molten seams.
+  ctx.globalCompositeOperation = 'source-over';
   for (let i = 0; i < lk.cells.length; i++) {
     const ce = lk.cells[i];
     const ex = cx + ce.dx * rx * (1 + churn);
     const ey = cy + ce.dy * ry * (1 - churn);
-    const er = ce.r * rx;
-    ctx.fillStyle = 'rgba(24, 12, 8, 0.92)';
-    ctx.beginPath(); ctx.ellipse(ex, ey, er, er * (ry / rx) * 1.2, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = `rgba(255, 110, 30, ${(0.5 * nightK).toFixed(3)})`;
+    const er = ce.r * rx * 1.15;                      // slightly larger → plates pack tighter
+    // dark cooled-basalt plate
+    ctx.fillStyle = 'rgba(28, 16, 12, 0.94)';
+    ctx.beginPath(); ctx.ellipse(ex, ey, er, er * eRatio * 1.2, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  // glowing seams: bright additive rims around each plate (pulsing).
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < lk.cells.length; i++) {
+    const ce = lk.cells[i];
+    const ex = cx + ce.dx * rx * (1 + churn);
+    const ey = cy + ce.dy * ry * (1 - churn);
+    const er = ce.r * rx * 1.15;
+    // wide soft seam glow + tight bright seam core.
+    ctx.strokeStyle = `rgba(255, 120, 35, ${(0.45 * pulse * dayFloor).toFixed(3)})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(ex, ey, er, er * eRatio * 1.2, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 220, 150, ${(0.5 * pulse * dayFloor).toFixed(3)})`;
     ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath(); ctx.ellipse(ex, ey, er, er * eRatio * 1.2, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // 5) BRIGHT MOLTEN HOT-SPOTS punching through the crust (a few additive
+  //    white-orange blooms), keyed off alternating cells so they're deterministic.
+  for (let i = 0; i < lk.cells.length; i += 3) {
+    const ce = lk.cells[i];
+    const hx = cx + ce.dx * rx * 0.7;
+    const hy = cy + ce.dy * ry * 0.7;
+    const hr = ce.r * rx * 0.9;
+    const hp = t === 0 ? 0.85 : 0.65 + 0.35 * Math.sin(t * 1.6 + i);
+    const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, hr);
+    hg.addColorStop(0, `rgba(255, 250, 230, ${(0.85 * hp * dayFloor).toFixed(3)})`);  // white-hot
+    hg.addColorStop(0.5, `rgba(255, 150, 50, ${(0.55 * hp * dayFloor).toFixed(3)})`);
+    hg.addColorStop(1, 'rgba(255, 80, 20, 0)');
+    ctx.fillStyle = hg;
+    ctx.fillRect(hx - hr, hy - hr, hr * 2, hr * 2);
   }
   ctx.restore();
 }
@@ -4321,13 +4477,14 @@ function drawVolcCracks(
   for (let i = 0; i < vs.cracks.length; i++) {
     const cr = vs.cracks[i];
     const x0 = w * cr.xFrac - cr.len / 2;
-    const baseY = ridgeYAt(w * cr.xFrac) + 6;
     const pulse = t === 0 ? 0.7 : 0.6 + 0.4 * Math.sin(t * 1.8 + cr.phase);
+    // anchor EACH point to the ground at THAT x so the fissure HUGS the terrain
+    // contour rather than rendering as one flat horizontal line across peaks.
     const buildPath = (jitterMul: number) => {
       ctx.beginPath();
       for (let s = 0; s < cr.pts.length; s++) {
         const px = x0 + cr.pts[s].dx * cr.len;
-        const py = baseY + cr.pts[s].jy * 5 * jitterMul;
+        const py = ridgeYAt(px) + 6 + cr.pts[s].jy * 5 * jitterMul;
         if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
       }
     };
@@ -4336,20 +4493,25 @@ function drawVolcCracks(
     ctx.strokeStyle = 'rgba(20, 8, 4, 0.9)';
     ctx.lineWidth = 4;
     buildPath(1); ctx.stroke();
-    // glowing orange-white core (additive)
+    // glowing orange-white core (additive). Daytime floor so cracks glow at midday;
+    // a near-white innermost stroke gives real temperature range (white-hot core).
     ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = `rgba(255, 170, 70, ${(pulse * nightK).toFixed(3)})`;
+    const crk = pulse * (0.5 + 0.5 * (1 - dc.bright));   // floor 0.5 at noon + night boost
+    ctx.strokeStyle = `rgba(255, 170, 70, ${crk.toFixed(3)})`;
     ctx.lineWidth = 1.6;
     buildPath(1); ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 230, 180, ${(pulse * 0.6 * nightK).toFixed(3)})`;
+    ctx.strokeStyle = `rgba(255, 230, 180, ${(crk * 0.6).toFixed(3)})`;
     ctx.lineWidth = 0.8;
+    buildPath(1); ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 250, 235, ${(crk * 0.4).toFixed(3)})`;  // white-hot
+    ctx.lineWidth = 0.5;
     buildPath(1); ctx.stroke();
     // optional branch
     if (cr.branchAt > 0) {
       const bi = Math.floor(cr.branchAt * (cr.pts.length - 1));
       const bx = x0 + cr.pts[bi].dx * cr.len;
-      const by = baseY + cr.pts[bi].jy * 5;
-      ctx.strokeStyle = `rgba(255, 150, 60, ${(pulse * 0.7 * nightK).toFixed(3)})`;
+      const by = ridgeYAt(bx) + 6 + cr.pts[bi].jy * 5;
+      ctx.strokeStyle = `rgba(255, 150, 60, ${(crk * 0.7).toFixed(3)})`;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.moveTo(bx, by);
@@ -4365,7 +4527,7 @@ function drawVolcCracks(
       ctx.beginPath();
       for (let s = 0; s < cr.pts.length; s++) {
         const px = x0 + cr.pts[s].dx * cr.len;
-        const py = baseY - 6 + Math.sin(t * 3 + s * 0.8 + cr.phase) * 2;
+        const py = ridgeYAt(px) - 6 + Math.sin(t * 3 + s * 0.8 + cr.phase) * 2;
         if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
       }
       ctx.stroke();
@@ -4380,7 +4542,9 @@ function drawEmberFountains(
   wx: WeatherFx | null, ridgeYAt: (x: number) => number
 ): void {
   if (t === 0) return;                          // reduced motion: no active fountains
-  const dayK = dc.bright > 0.5 ? 0.5 : 1.0;
+  // daytime floor: embers stay clearly visible at midday (0.7) rising toward full
+  // at night — an active vent must not wash out in daylight.
+  const dayK = 0.7 + 0.3 * (1 - dc.bright);
   const tier = wx ? wx.tierN : 0;
   const sparks = Math.round(8 + tier * 14);     // per vent, scales with weather
   const hMul = 1 + tier * 0.8;
