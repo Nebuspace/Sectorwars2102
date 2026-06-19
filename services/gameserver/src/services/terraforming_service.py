@@ -692,8 +692,11 @@ class TerraformingService:
         """
         Lazily apply every population-scaled terraforming tick accrued since
         the project last advanced (advance-on-read — the codebase pattern
-        used by citadel upgrades, construction, and colonist growth; no
-        scheduler invokes process_terraforming_tick).
+        used by citadel upgrades, construction, and colonist growth). Also
+        driven on a fixed cadence by the npc_scheduler planetary-advance
+        sweep so progress no longer depends on the owner re-reading the
+        planet; both paths are time-accurate and idempotent, so they
+        reconcile cleanly regardless of which runs first.
 
         Tick-period derivation — this reconciles terraforming.md's two
         progress models honestly:

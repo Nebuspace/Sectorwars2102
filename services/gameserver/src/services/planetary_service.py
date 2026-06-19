@@ -902,10 +902,13 @@ class PlanetaryService:
 
     def advance_siege(self, planet: Planet) -> bool:
         """
-        Advance-on-read siege progression: apply every siege turn accrued
-        since the siege began (no scheduler calls apply_siege_effects, so
-        reads keep besieged planets honest — same lazy pattern as colonist
-        growth and terraforming).
+        Advance siege progression: apply every siege turn accrued since the
+        siege began (same lazy advance-on-read pattern as colonist growth and
+        terraforming). Driven both on read AND on a fixed cadence by the
+        npc_scheduler planetary-advance sweep, so a besieged planet keeps
+        losing morale even when its owner never re-opens the planet screen.
+        Time-accurate and idempotent, so the two paths reconcile cleanly
+        regardless of which runs first.
 
         Anchor arithmetic: `siege_turns` doubles as the applied-turn marker.
         At siege onset _detect_siege leaves it exactly at

@@ -108,6 +108,21 @@ LOOP_C_SECONDS = 30 * 60
 # stays authoritative — nothing is lost), unlike the weekly decay which needs a
 # durable anchor.
 GENESIS_COMPLETION_SECONDS = 5 * 60
+# Planetary lazy-advance sweep cadence (terraforming progress + siege turns).
+# Both systems were written as advance-on-READ only — TerraformingService.
+# _advance_terraforming / PlanetaryService.advance_siege apply every tick
+# accrued since the last anchor, but NOTHING drove them, so a project (or a
+# besieged colony) whose owner never re-opened its planet screen simply
+# stalled. This sweep makes the canonical clock authoritative for ALL such
+# planets, not just those a player happens to read. Both advance methods are
+# time-accurate (apply exactly the ticks elapsed) and idempotent (a no-op once
+# caught up), so a 5-minute sweep is finer than the smallest tick period
+# (terraforming periods are canonical-hours; one siege turn = 24 canonical
+# hours) — progress never visibly lags, and process-relative cadence is fine
+# because the durable per-planet anchor (last_tick_at / siege_turns +
+# siege_started_at) stays authoritative across restarts. Same shape as the
+# genesis completion sweep above.
+PLANETARY_ADVANCE_SECONDS = 5 * 60
 
 # Weekly maintenance (reputation/relationship decay). Unlike Loops A/B/C, a
 # weekly job CANNOT key off the process-relative ``elapsed_seconds`` clock —
@@ -1398,6 +1413,127 @@ def _run_genesis_completion_sync() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Planetary lazy-advance sweep — terraforming progress + siege turns
+# ---------------------------------------------------------------------------
+
+def _run_planetary_advance_sync() -> Dict[str, int]:
+    """Drive every terraforming project and besieged planet forward.
+
+    Before this sweep, TerraformingService._advance_terraforming and
+    PlanetaryService.advance_siege only ever ran when a player happened to
+    read the affected planet (advance-on-read) — a colony whose owner never
+    re-opened its screen would freeze mid-terraform or sit at full morale
+    under siege forever. This periodic sweep makes the canonical clock
+    authoritative for ALL such planets, mirroring the genesis-completion
+    sweep above.
+
+    Both underlying advance methods are time-accurate (they apply exactly the
+    ticks accrued since the durable per-planet anchor) and idempotent (a
+    caught-up planet is a no-op), so running them on a fixed cadence neither
+    over- nor under-awards: a planet read by its owner in between is simply
+    already current when the sweep arrives.
+
+    Cheap on a steady galaxy: the two indexed filters (terraforming_active /
+    under_siege) return nothing when no planet qualifies, so the sweep is a
+    safe no-op there. xact-advisory-lock-gated so a second instance skips
+    instead of double-advancing. Per-planet failure is isolated and rolled
+    back so one bad planet cannot abort the rest of the sweep.
+
+    Returns {terraforming, siege} — the count of planets that actually moved.
+    """
+    from src.core.database import SessionLocal
+    from src.models.planet import Planet
+    from src.services.planetary_service import PlanetaryService
+    from src.services.terraforming_service import TerraformingService
+
+    result = {"terraforming": 0, "siege": 0}
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+
+        # Terraforming progression. _advance_terraforming mutates the planet
+        # and leaves the commit to the caller, so we commit per planet (one
+        # bad planet rolls back only itself).
+        terra = TerraformingService(db)
+        terra_planets = (
+            db.query(Planet.id)
+            .filter(Planet.terraforming_active.is_(True))
+            .all()
+        )
+        for (planet_id,) in terra_planets:
+            try:
+                planet = (
+                    db.query(Planet)
+                    .filter(Planet.id == planet_id)
+                    .with_for_update()
+                    .first()
+                )
+                if planet is None:
+                    continue
+                if terra._advance_terraforming(planet):
+                    db.commit()
+                    result["terraforming"] += 1
+                else:
+                    db.rollback()  # release the row lock; nothing changed
+            except Exception:
+                logger.exception(
+                    "Planetary advance: terraforming failed for planet %s",
+                    planet_id,
+                )
+                db.rollback()
+
+        # Siege progression. advance_siege mutates the planet and leaves the
+        # commit to the caller — same per-planet commit/rollback discipline.
+        planetary = PlanetaryService(db)
+        siege_planets = (
+            db.query(Planet.id)
+            .filter(
+                Planet.under_siege.is_(True),
+                Planet.siege_started_at.isnot(None),
+            )
+            .all()
+        )
+        for (planet_id,) in siege_planets:
+            try:
+                planet = (
+                    db.query(Planet)
+                    .filter(Planet.id == planet_id)
+                    .with_for_update()
+                    .first()
+                )
+                if planet is None:
+                    continue
+                if planetary.advance_siege(planet):
+                    db.commit()
+                    result["siege"] += 1
+                else:
+                    db.rollback()  # release the row lock; nothing changed
+            except Exception:
+                logger.exception(
+                    "Planetary advance: siege failed for planet %s", planet_id,
+                )
+                db.rollback()
+
+        # Release the advisory lock held on this session's transaction. Each
+        # per-planet commit above already released it once; a final commit
+        # closes out any open transaction (e.g. the rollback after the last
+        # no-op planet) so the lock is not held on the pooled connection.
+        db.commit()
+        return result
+    except Exception:
+        logger.exception("Planetary advance sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
 
@@ -1873,6 +2009,28 @@ async def npc_scheduler_loop() -> None:
             except Exception:
                 logger.exception(
                     "NPC scheduler: genesis completion sweep crashed (loop continues)"
+                )
+
+        # Planetary lazy-advance sweep (terraforming progress + siege turns).
+        # Drives every terraforming project and besieged planet forward on the
+        # canonical clock so progress no longer depends on a player happening to
+        # read the planet — runs in the worker thread, own session, own advisory
+        # lock. Idempotent + a no-op when nothing qualifies.
+        if elapsed % PLANETARY_ADVANCE_SECONDS == 0:
+            try:
+                advanced = await asyncio.to_thread(_run_planetary_advance_sync)
+                if advanced.get("terraforming") or advanced.get("siege"):
+                    logger.info(
+                        "NPC scheduler: planetary advance — %d terraforming, "
+                        "%d siege planet(s) progressed",
+                        advanced.get("terraforming", 0),
+                        advanced.get("siege", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: planetary advance sweep crashed (loop continues)"
                 )
 
         # Weekly reputation/relationship decay (fully synchronous). Gated by a
