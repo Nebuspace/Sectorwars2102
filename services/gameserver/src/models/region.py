@@ -156,7 +156,7 @@ class Region(Base):
         CheckConstraint(
             "(region_type != 'central_nexus' OR total_sectors = 5000) AND "
             "(region_type != 'terran_space' OR total_sectors = 300) AND "
-            "(region_type != 'player_owned' OR (total_sectors >= 100 AND total_sectors <= 1000))",
+            "(region_type != 'player_owned' OR (total_sectors >= 100 AND total_sectors <= 1500))",
             name='valid_region_type_sector_count'
         ),
     )
