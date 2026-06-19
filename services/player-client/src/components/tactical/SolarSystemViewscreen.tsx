@@ -2884,10 +2884,14 @@ const BASE_FRAME_MS = 1000 / 24; // drift cap; full 60fps only during hover tran
 // Landed scene runs smooth: its per-frame work is now just the 3 ridge paths +
 // small particle/cloud/twinkle math (all static geometry + gradients are cached),
 // so it can afford a much higher cadence than the 24fps flight/docked drift cap.
-// 48fps (not a full 60) leaves headroom on weak hardware while reading visibly
-// smooth — the eye stops perceiving choppiness well below 60 once frame pacing
-// is even, and 48 halves the GPU fill cost of the additive layers vs 60.
-const LANDED_FRAME_MS = 1000 / 48;
+// Measured per-frame draw cost on the cached path is ~0.4ms (max ~1ms), so the
+// scene is throttle-bound, not work-bound. The cap must sit BELOW the display
+// vsync interval (≈16.7ms on 60Hz) or it quantizes to every-other-vsync = 30fps
+// (a 48fps / 20.8ms cap did exactly that). 1000/90 ≈ 11.1ms clears the 60Hz
+// vsync every frame → smooth 60fps, and scales up to ~90fps on high-refresh
+// panels — all for sub-millisecond main-thread cost. reduced-motion still
+// renders a single static frame (no loop).
+const LANDED_FRAME_MS = 1000 / 90;
 
 const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   sectorId,
