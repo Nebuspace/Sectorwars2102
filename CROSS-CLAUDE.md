@@ -894,3 +894,11 @@ sections PROVEN live (server-minted JWTs, no passwords):
   /ranking/rank 200 surfaces both (response-model wiring).
 • **Combat ratings** — armor 0.5→half hull dmg, 1.5→clamped 0.9; shield_res 0.5→half; 0.0→baseline.
 All test fixtures (verifpilot) reverted. No migration. gameserver healthy.
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (Phase 4 service lanes, cut 2)
+**No migration** (service + client only). gameserver restart (client hot-reloads). Cut 2 =
+L7 bounty claim ledger + collusion-faucet close (bounty_service/combat_service) · L8 fleet
+coordination_bonus wired into the damage stack (fleet_service/fleets.py, ADR-0061) · L11 player-UI
+turn-regen readout + journey-victory banner (player-client only — GameContext/TurnEconomyPage/
+GameLayout/RankDisplay + css; NOT AuthContext). Adversarial-reviewed (2): HIGH txn-poison fixed
+(SAVEPOINT), faucet hardened to per-(hunter,target). CLOSED to follow after live proof.
