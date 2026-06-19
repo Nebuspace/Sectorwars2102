@@ -2157,8 +2157,35 @@ type CloudSeed = { x: number; yFrac: number; w: number; hFrac: number; speed: nu
 type VolcFissure = { x: number; w: number; phase: number };
 
 // --- VOLCANIC scene statics (seeded once; positions/colours fixed, motion per-frame) ---
+/** Per-segment molten-line bake: a discrete palette index + local shimmer phase/
+ *  freq + a low-freq width multiplier (pinch/pool) + an occasional cooled-crust flag.
+ *  Shared by foreground ground cracks AND cone-flank runnels so both get the same
+ *  hodge-podge mixed-shade treatment instead of a single global pulse. */
+type MoltenSeg = { colorSeed: number; segPhase: number; segFreq: number; wMul: number; crusted: boolean };
+/** An irregular rock embedded in / sticking out of a molten line. */
+type MoltenRock = {
+  segIdx: number;                       // which segment it sits on
+  archetype: 'angular' | 'rounded' | 'jagged';
+  verts: { a: number; r: number }[];    // seeded polygon offsets (angle, radius mult)
+  r: number;                            // base radius (px)
+  cooled: boolean;                      // ~20% read as cold basalt (no hot rim)
+};
+/** A faster-shimmering molten hot-pool node along a line. */
+type MoltenPool = { segIdx: number; phase: number };
+/** Baked per-line molten detail (cracks + runnels both carry this). */
+type MoltenBake = { segs: MoltenSeg[]; rocks: MoltenRock[]; pools: MoltenPool[] };
 /** Jagged multi-segment lava crack across the foreground ground. */
-type LavaCrack = { pts: { dx: number; jy: number }[]; xFrac: number; len: number; phase: number; branchAt: number };
+type LavaCrack = { pts: { dx: number; jy: number }[]; xFrac: number; len: number; phase: number; branchAt: number; bake: MoltenBake };
+/** A flaming rock ejected from the crater on a ballistic arc (volcanic ejecta). */
+type LavaBomb = {
+  launchPhase: number;                  // 0..1 stagger so bombs don't fire in unison
+  period: number;                       // flight period multiplier (per-bomb speed)
+  vx0: number;                          // outward horizontal bias (-1..+1)
+  vy0: number;                          // launch height factor
+  landXFrac: number;                    // where it lands across the width (0..1)
+  rockVerts: { a: number; r: number }[];// small seeded polygon
+  size: number;                         // 2..4 px
+};
 /** A sinuous lava river: cubic-bezier control points (x fractions + y fractions). */
 type LavaRiver = { p: { xf: number; yf: number }[]; wFar: number; wNear: number; phase: number; seed: number };
 /** An ember-fountain vent on the midground ridge: a recycling spark pool. */
@@ -2170,12 +2197,14 @@ type VolcanicScene = {
     cxFrac: number; baseHalfFrac: number; peakFrac: number; pts: number[]; caldera: boolean; color: string;
     // lava runnels flowing DOWN the cone flanks from the crater: each is a side
     // (-1 left .. +1 right offset at the rim), a downward length frac, and a wiggle.
-    runnels: { side: number; lenFrac: number; phase: number; wig: number }[];
+    // bake carries the same per-segment mixed-shade detail as the ground cracks.
+    runnels: { side: number; lenFrac: number; phase: number; wig: number; bake: MoltenBake }[];
   };
   plume: { puffs: { offX: number; offY: number; r: number; spd: number; phase: number }[] };
   rivers: LavaRiver[];   // legacy (no longer drawn — replaced by cracks + lake)
   lake: { cxFrac: number; cyFrac: number; rxFrac: number; ryFrac: number; cells: { dx: number; dy: number; r: number }[] } | null;
   cracks: LavaCrack[];
+  bombs: LavaBomb[];     // caldera ejecta arcing out onto the terrain
   fountains: EmberFountain[];
   crustDark: { xFrac: number; yOff: number; r: number }[];
   crustLava: { xFrac: number; yOff: number; r: number; phase: number }[];
@@ -2990,6 +3019,55 @@ function buildLandedCache(
   let volcanic: VolcanicScene | null = null;
   if (pal.flourish === 'VOLCANIC') {
     const vRng = splitmix32(worldSeed * 2939 + 67);
+    // Bake the per-line molten detail shared by ground cracks AND cone runnels:
+    // per-segment palette/shimmer/width, 2–4 embedded rocks, 1–2 hot pools. This is
+    // ALL static seeded data — per-frame draw only does cheap shimmer math.
+    const buildMoltenBake = (segCount: number): MoltenBake => {
+      const segs: MoltenSeg[] = [];
+      // a smoothed low-freq width walk so the line PINCHES and POOLS (not uniform).
+      let wWalk = vRng();
+      for (let s = 0; s < segCount; s++) {
+        wWalk = wWalk * 0.7 + vRng() * 0.3;            // smoothing → gentle pooling
+        segs.push({
+          colorSeed: vRng(),
+          segPhase: vRng() * Math.PI * 2,
+          segFreq: 0.8 + vRng() * 0.8,
+          wMul: 0.5 + wWalk * 1.1,                     // ~0.5..1.6
+          crusted: vRng() < 0.2,                       // ~20% cooled plates
+        });
+      }
+      const rockN = 2 + Math.floor(vRng() * 3);        // 2..4 embedded rocks
+      const rocks: MoltenRock[] = [];
+      for (let r = 0; r < rockN; r++) {
+        const pick = vRng();
+        const archetype: MoltenRock['archetype'] = pick < 0.4 ? 'angular' : pick < 0.75 ? 'rounded' : 'jagged';
+        const verts: { a: number; r: number }[] = [];
+        if (archetype === 'rounded') {
+          const vN = 10 + Math.floor(vRng() * 3);      // 10..12 verts, gentle jitter
+          for (let v = 0; v < vN; v++) verts.push({ a: (v / vN) * Math.PI * 2, r: 0.85 + vRng() * 0.30 });
+        } else if (archetype === 'angular') {
+          const vN = 5 + Math.floor(vRng() * 3);       // 5..7 verts, ±40° angular jitter
+          for (let v = 0; v < vN; v++) verts.push({ a: (v / vN) * Math.PI * 2 + (vRng() - 0.5) * 1.4, r: 0.7 + vRng() * 0.6 });
+        } else {                                       // jagged: 6 verts w/ 2 inward notches
+          const vN = 6;
+          for (let v = 0; v < vN; v++) {
+            const notch = (v === 1 || v === 4);
+            verts.push({ a: (v / vN) * Math.PI * 2 + (vRng() - 0.5) * 0.5, r: notch ? 0.35 + vRng() * 0.2 : 0.95 + vRng() * 0.5 });
+          }
+        }
+        rocks.push({
+          segIdx: Math.floor(vRng() * segCount),
+          archetype,
+          verts,
+          r: 2.5 + vRng() * 4,
+          cooled: vRng() < 0.2,
+        });
+      }
+      const poolN = 1 + Math.floor(vRng() * 2);        // 1..2 hot pools
+      const pools: MoltenPool[] = [];
+      for (let p = 0; p < poolN; p++) pools.push({ segIdx: Math.floor(vRng() * segCount), phase: vRng() * Math.PI * 2 });
+      return { segs, rocks, pools };
+    };
     // HERO stratovolcano — LARGE, fairly central, peak well up into the sky so it
     // clearly dominates the horizon and rises above the ridge line.
     const caldera = landform === 'VOLC_CALDERA' || vRng() < 0.3;
@@ -3019,8 +3097,9 @@ function buildLandedCache(
     // lava runnels down the flanks from the crater (3–5).
     const runnels: VolcanicScene['cone']['runnels'] = [];
     const runN = 3 + Math.floor(vRng() * 3);
+    const RUN_SEGS = 14;   // runnels are sampled into this many segments at draw time
     for (let i = 0; i < runN; i++) {
-      runnels.push({ side: (vRng() - 0.5) * 1.6, lenFrac: 0.35 + vRng() * 0.4, phase: vRng() * Math.PI * 2, wig: 0.4 + vRng() * 0.8 });
+      runnels.push({ side: (vRng() - 0.5) * 1.6, lenFrac: 0.35 + vRng() * 0.4, phase: vRng() * Math.PI * 2, wig: 0.4 + vRng() * 0.8, bake: buildMoltenBake(RUN_SEGS) });
     }
     // ash plume puffs above the summit — a THICK, TALL billowing column (more puffs,
     // bigger radii, leaning with wind as they rise). drift up + wrap per frame.
@@ -3077,6 +3156,7 @@ function buildLandedCache(
         len: w * (0.06 + vRng() * 0.06),                    // SHORT local fissure (~0.06–0.12 w)
         phase: vRng() * Math.PI * 2,
         branchAt: vRng() < 0.6 ? 0.4 + vRng() * 0.3 : -1,
+        bake: buildMoltenBake(segs - 1),                    // one seg of detail per drawn span
       });
     }
     // ember-fountain vents on the midground ridge (2–4).
@@ -3090,13 +3170,31 @@ function buildLandedCache(
         phase: vRng() * Math.PI * 2,
       });
     }
+    // caldera LAVA BOMBS — flaming ejecta arcing out of the crater onto the terrain.
+    // Count scales modestly with citadel/weather feel via the base 5 + seeded 0..3.
+    const bombs: LavaBomb[] = [];
+    const bombN = 5 + Math.floor(vRng() * 4);     // 5..8 bombs
+    for (let i = 0; i < bombN; i++) {
+      const rverts: { a: number; r: number }[] = [];
+      const bvN = 5 + Math.floor(vRng() * 2);     // small chunky polygon
+      for (let v = 0; v < bvN; v++) rverts.push({ a: (v / bvN) * Math.PI * 2 + (vRng() - 0.5) * 0.8, r: 0.7 + vRng() * 0.6 });
+      bombs.push({
+        launchPhase: vRng(),                       // stagger
+        period: 0.7 + vRng() * 0.6,                // per-bomb speed
+        vx0: (vRng() - 0.5) * 2,                   // outward bias (left/right of cone)
+        vy0: 0.8 + vRng() * 0.5,                   // arc height factor
+        landXFrac: vRng(),                         // landing point across the width
+        rockVerts: rverts,
+        size: 2 + vRng() * 2,                      // 2..4 px
+      });
+    }
     // front-ridge crust texture: dark cooling-rock blotches + brighter cooled-lava.
     const crustDark: { xFrac: number; yOff: number; r: number }[] = [];
     for (let i = 0; i < 6; i++) crustDark.push({ xFrac: vRng(), yOff: 6 + vRng() * 26, r: 4 + vRng() * 9 });
     const crustLava: { xFrac: number; yOff: number; r: number; phase: number }[] = [];
     for (let i = 0; i < 3; i++) crustLava.push({ xFrac: vRng(), yOff: 8 + vRng() * 22, r: 3 + vRng() * 5, phase: vRng() * Math.PI * 2 });
 
-    volcanic = { cone: { cxFrac, baseHalfFrac, peakFrac, pts, caldera, color: coneColor, runnels }, plume: { puffs }, rivers, lake, cracks, fountains, crustDark, crustLava };
+    volcanic = { cone: { cxFrac, baseHalfFrac, peakFrac, pts, caldera, color: coneColor, runnels }, plume: { puffs }, rivers, lake, cracks, bombs, fountains, crustDark, crustLava };
   }
 
   // --- FLORA layout (sway per frame; baseY from live ridge per frame) ---
@@ -3998,6 +4096,8 @@ function drawLandedScene(
   if (cache.volcanic) {
     drawVolcCracks(ctx, w, t, cache.volcanic, dc, ridgeYAt);
     drawEmberFountains(ctx, w, h, t, cache.volcanic, dc, cache.weather, ridgeYAt);
+    // caldera ejecta arcing out of the crater onto the terrain (in front of cone).
+    drawLavaBombs(ctx, w, h, horizonY, t, cache.volcanic, dc, cache.weather, ridgeYAt);
   }
 
   // 5d) DESERT dune shimmer band ----------------------------------------------
@@ -4207,41 +4307,30 @@ function drawVolcanoFarLand(
   ctx.restore();
 
   // 2) LAVA RUNNELS down the flanks from the crater (attached to the mountain).
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
-  const runPulse = t === 0 ? 0.75 : 0.6 + 0.4 * Math.sin(t * 1.4);
+  //    Each is sampled into a polyline along its quadratic path, then drawn with the
+  //    SAME layered molten recipe as the ground cracks — mixed shades, local shimmer,
+  //    embedded rocks, crust bridges — so the cone lines no longer read as a flat
+  //    neon-sign pulse. Width tapers narrower toward the toe of the flow.
+  const runFloor = 0.7 + nightK * 0.4;
   for (const r of c.runnels) {
     const sx0 = summitX + r.side * baseHalf * 0.10;
     const len = peakH * r.lenFrac;
     const sx1 = summitX + r.side * baseHalf * 0.55;     // drift outward down the face
     const midX = (sx0 + sx1) / 2 + r.wig * baseHalf * 0.08;
-    // dark runnel CHANNEL (wide, tapering) under the glow so it reads as a carved
-    // wedge in the flank, not a 1px line.
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.strokeStyle = 'rgba(34, 12, 8, 0.75)';
-    ctx.lineWidth = 5;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(sx0, summitY + 2);
-    ctx.quadraticCurveTo(midX, summitY + len * 0.5, sx1, summitY + len);
-    ctx.stroke();
-    // glowing molten core (additive), BRIGHTER near the crater (a gradient down the
-    // channel) — bright orange-white at the rim → deep orange at the toe.
-    ctx.globalCompositeOperation = 'lighter';
-    const rg = ctx.createLinearGradient(sx0, summitY, sx1, summitY + len);
-    const rk = runPulse * (0.7 + nightK * 0.5);
-    rg.addColorStop(0, `rgba(255, 225, 170, ${Math.min(1, 0.85 * rk).toFixed(3)})`);
-    rg.addColorStop(0.4, `rgba(255, 140, 50, ${(0.6 * rk).toFixed(3)})`);
-    rg.addColorStop(1, `rgba(220, 70, 20, ${(0.3 * rk).toFixed(3)})`);
-    ctx.strokeStyle = rg;
-    ctx.lineWidth = 2.6;
-    ctx.beginPath();
-    ctx.moveTo(sx0, summitY + 2);
-    ctx.quadraticCurveTo(midX, summitY + len * 0.5, sx1, summitY + len);
-    ctx.stroke();
+    const cy0 = summitY + 2;
+    const cyMid = summitY + len * 0.5;
+    const cy1 = summitY + len;
+    // sample the quadratic Bézier (sx0,cy0)→(midX,cyMid control)→(sx1,cy1) into pts.
+    const SEG = r.bake.segs.length;
+    const pts: { x: number; y: number }[] = [];
+    for (let k = 0; k <= SEG; k++) {
+      const u = k / SEG, iu = 1 - u;
+      const x = iu * iu * sx0 + 2 * iu * u * midX + u * u * sx1;
+      const y = iu * iu * cy0 + 2 * iu * u * cyMid + u * u * cy1;
+      pts.push({ x, y });
+    }
+    drawMoltenLine(ctx, pts, r.bake, t, runFloor, 2.8);
   }
-  ctx.lineCap = 'butt';
-  ctx.restore();
 
   // 3) CRATER — carved NOTCH + glowing molten BOWL inside it (the mouth that makes
   //    "this is a volcano" read), then a summit sky-bloom above. The bowl punches
@@ -4468,59 +4557,211 @@ function drawLavaLake(ctx: CanvasRenderingContext2D, w: number, h: number, t: nu
   ctx.restore();
 }
 
+// Discrete mixed lava palette (NOT a smooth gradient): deep-red → cooled-orange →
+// bright-orange → amber → white-hot. Indexed by a per-segment colorSeed so adjacent
+// segments JUMP shades — the "hodge-podge mix of different shades" the player wants.
+const LAVA_PALETTE: [number, number, number][] = [
+  [140, 20, 10],    // deep red (coolest molten)
+  [220, 80, 30],    // cooled orange
+  [255, 140, 55],   // bright orange
+  [255, 200, 100],  // amber
+  [255, 245, 200],  // white-hot
+];
+function lavaShade(colorSeed: number): [number, number, number] {
+  // weight toward the mid oranges; white-hot is rarer (a sparse highlight).
+  const i = colorSeed < 0.18 ? 0 : colorSeed < 0.45 ? 1 : colorSeed < 0.72 ? 2 : colorSeed < 0.9 ? 3 : 4;
+  return LAVA_PALETTE[i];
+}
+
+/** Draw ONE molten line (a polyline in screen space) with the layered recipe:
+ *  dark halo → thermal-gradient base → per-segment mixed-shade local shimmer →
+ *  white-hot core → hot-pool micro-shimmer → crust bridges → embedded rocks.
+ *  ALL motion is LOW-amplitude LOCAL shimmer (two incommensurate slow freqs per
+ *  segment) — NO global pulse. Shared by ground cracks AND cone runnels.
+ *  `dayFloor` = 0.5 + 0.5*(1-bright) keeps lines molten at midday. baseW = base
+ *  line width (px). When t===0 every sin() collapses to its phase-only spatial form
+ *  so the still frame reads mid-shimmer with spatial variety, not flat. */
+function drawMoltenLine(
+  ctx: CanvasRenderingContext2D, pts: { x: number; y: number }[], bake: MoltenBake,
+  t: number, dayFloor: number, baseW: number
+): void {
+  const segN = Math.min(pts.length - 1, bake.segs.length);
+  if (segN < 1) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // 1) DARK HALO — wide dark channel under everything (the carved fissure).
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = 'rgba(18, 6, 4, 0.9)';
+  ctx.lineWidth = baseW + 3;
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let s = 1; s < pts.length; s++) ctx.lineTo(pts[s].x, pts[s].y);
+  ctx.stroke();
+
+  // 2) THERMAL BASE — one luminous gradient floor along the whole line so even dim
+  //    segments still read molten (deep-red → amber → deep-red).
+  ctx.globalCompositeOperation = 'lighter';
+  const a0 = pts[0], aN = pts[pts.length - 1];
+  const tg = ctx.createLinearGradient(a0.x, a0.y, aN.x, aN.y);
+  const ta = (0.5 * dayFloor).toFixed(3);
+  tg.addColorStop(0, `rgba(150, 35, 12, ${ta})`);
+  tg.addColorStop(0.5, `rgba(255, 170, 70, ${(0.55 * dayFloor).toFixed(3)})`);
+  tg.addColorStop(1, `rgba(150, 35, 12, ${ta})`);
+  ctx.strokeStyle = tg;
+  ctx.lineWidth = baseW * 1.1;
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let s = 1; s < pts.length; s++) ctx.lineTo(pts[s].x, pts[s].y);
+  ctx.stroke();
+
+  // 3) PER-SEGMENT mixed shade + LOW local shimmer (each its own stroke).
+  for (let s = 0; s < segN; s++) {
+    const sg = bake.segs[s];
+    const [r, g, b] = lavaShade(sg.colorSeed);
+    // two incommensurate slow freqs, total amplitude <=0.15 → a slow living crawl,
+    // never a flicker. t===0 drops the time term (phase-only spatial variety).
+    const sh = t === 0
+      ? 0.80 + 0.10 * Math.sin(sg.segPhase + s * 1.1) + 0.05 * Math.sin(s * 0.4 + sg.segPhase * 1.7)
+      : 0.80 + 0.10 * Math.sin(t * 0.7 * sg.segFreq + sg.segPhase + s * 1.1) + 0.05 * Math.sin(t * 1.3 + s * 0.4 + sg.segPhase * 1.7);
+    const a = (sg.crusted ? 0.2 : sh) * dayFloor;
+    ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${Math.max(0, a).toFixed(3)})`;
+    ctx.lineWidth = Math.max(0.6, baseW * sg.wMul);
+    ctx.beginPath();
+    ctx.moveTo(pts[s].x, pts[s].y);
+    ctx.lineTo(pts[s + 1].x, pts[s + 1].y);
+    ctx.stroke();
+  }
+
+  // 4) WHITE-HOT CORE — thin full-line specular highlight on top, low alpha.
+  ctx.strokeStyle = `rgba(255, 248, 225, ${(0.30 * dayFloor).toFixed(3)})`;
+  ctx.lineWidth = Math.max(0.5, baseW * 0.35);
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let s = 1; s < pts.length; s++) ctx.lineTo(pts[s].x, pts[s].y);
+  ctx.stroke();
+
+  // 5) HOT-POOL MICRO-SHIMMER — small radial blooms at 1–2 nodes, faster local pulse.
+  for (const pool of bake.pools) {
+    const idx = Math.min(pool.segIdx, pts.length - 1);
+    const p = pts[idx];
+    const pp = t === 0 ? 0.8 : 0.7 + 0.3 * Math.sin(t * 4.2 + pool.phase);
+    const pr = (4 + baseW) + 2;
+    const pg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, pr);
+    pg.addColorStop(0, `rgba(255, 230, 175, ${(0.55 * pp * dayFloor).toFixed(3)})`);
+    pg.addColorStop(1, 'rgba(255, 120, 40, 0)');
+    ctx.fillStyle = pg;
+    ctx.fillRect(p.x - pr, p.y - pr, pr * 2, pr * 2);
+  }
+
+  // 6) CRUST BRIDGES — dark plates over the ~20% crusted segments so molten glow
+  //    only shows in the GAPS between cooled rock.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = 'rgba(28, 14, 10, 0.88)';
+  for (let s = 0; s < segN; s++) {
+    if (!bake.segs[s].crusted) continue;
+    ctx.lineWidth = baseW * bake.segs[s].wMul + 1.2;
+    ctx.beginPath();
+    ctx.moveTo(pts[s].x, pts[s].y);
+    ctx.lineTo(pts[s + 1].x, pts[s + 1].y);
+    ctx.stroke();
+  }
+
+  // 7) ROCK BLOTS — irregular rocks sticking out of the line. Batched: all dark
+  //    fills + shadows first, then all hot rims, to minimise composite switches.
+  const traceRock = (cxr: number, cyr: number, rk: MoltenRock) => {
+    ctx.beginPath();
+    for (let v = 0; v < rk.verts.length; v++) {
+      const vx = cxr + Math.cos(rk.verts[v].a) * rk.r * rk.verts[v].r;
+      const vy = cyr + Math.sin(rk.verts[v].a) * rk.r * rk.verts[v].r * 0.8;   // squash → sits on ground
+      if (v === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+    }
+    ctx.closePath();
+  };
+  const rockPos = (rk: MoltenRock) => {
+    const idx = Math.min(rk.segIdx, pts.length - 1);
+    return pts[idx];
+  };
+  // pass A — soft cast shadows beneath each rock.
+  ctx.globalCompositeOperation = 'source-over';
+  for (const rk of bake.rocks) {
+    const p = rockPos(rk);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y + rk.r * 0.5, rk.r * 1.1, rk.r * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // pass B — dark rock bodies.
+  for (const rk of bake.rocks) {
+    const p = rockPos(rk);
+    ctx.fillStyle = 'rgba(30, 14, 8, 0.92)';
+    traceRock(p.x, p.y, rk);
+    ctx.fill();
+    if (rk.cooled) {
+      // cold basalt: a faint top-left specular patch, NO hot rim.
+      ctx.fillStyle = 'rgba(55, 35, 30, 0.6)';
+      ctx.beginPath();
+      ctx.ellipse(p.x - rk.r * 0.3, p.y - rk.r * 0.3, rk.r * 0.35, rk.r * 0.25, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  // pass C — additive hot rims where lava meets the (non-cooled) rock.
+  ctx.globalCompositeOperation = 'lighter';
+  for (const rk of bake.rocks) {
+    if (rk.cooled) continue;
+    const p = rockPos(rk);
+    ctx.strokeStyle = `rgba(255, 120, 35, ${(0.35 * dayFloor).toFixed(3)})`;
+    ctx.lineWidth = 1.6;
+    traceRock(p.x, p.y, rk); ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 220, 160, ${(0.25 * dayFloor).toFixed(3)})`;
+    ctx.lineWidth = 0.8;
+    traceRock(p.x, p.y, rk); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 /** Jagged glowing lava cracks across the foreground ground + heat shimmer. */
 function drawVolcCracks(
   ctx: CanvasRenderingContext2D, w: number, t: number, vs: VolcanicScene, dc: DayCycle,
   ridgeYAt: (x: number) => number
 ): void {
   const nightK = 0.5 + (1 - dc.bright) * 0.5;
+  const dayFloor = 0.5 + 0.5 * (1 - dc.bright);   // floor 0.5 at noon + night boost
   for (let i = 0; i < vs.cracks.length; i++) {
     const cr = vs.cracks[i];
     const x0 = w * cr.xFrac - cr.len / 2;
-    const pulse = t === 0 ? 0.7 : 0.6 + 0.4 * Math.sin(t * 1.8 + cr.phase);
     // anchor EACH point to the ground at THAT x so the fissure HUGS the terrain
     // contour rather than rendering as one flat horizontal line across peaks.
-    const buildPath = (jitterMul: number) => {
-      ctx.beginPath();
-      for (let s = 0; s < cr.pts.length; s++) {
-        const px = x0 + cr.pts[s].dx * cr.len;
-        const py = ridgeYAt(px) + 6 + cr.pts[s].jy * 5 * jitterMul;
-        if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      }
-    };
-    ctx.save();
-    // dark crust halo
-    ctx.strokeStyle = 'rgba(20, 8, 4, 0.9)';
-    ctx.lineWidth = 4;
-    buildPath(1); ctx.stroke();
-    // glowing orange-white core (additive). Daytime floor so cracks glow at midday;
-    // a near-white innermost stroke gives real temperature range (white-hot core).
-    ctx.globalCompositeOperation = 'lighter';
-    const crk = pulse * (0.5 + 0.5 * (1 - dc.bright));   // floor 0.5 at noon + night boost
-    ctx.strokeStyle = `rgba(255, 170, 70, ${crk.toFixed(3)})`;
-    ctx.lineWidth = 1.6;
-    buildPath(1); ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 230, 180, ${(crk * 0.6).toFixed(3)})`;
-    ctx.lineWidth = 0.8;
-    buildPath(1); ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 250, 235, ${(crk * 0.4).toFixed(3)})`;  // white-hot
-    ctx.lineWidth = 0.5;
-    buildPath(1); ctx.stroke();
-    // optional branch
+    const pts: { x: number; y: number }[] = [];
+    for (let s = 0; s < cr.pts.length; s++) {
+      const px = x0 + cr.pts[s].dx * cr.len;
+      pts.push({ x: px, y: ridgeYAt(px) + 6 + cr.pts[s].jy * 5 });
+    }
+    // the layered molten recipe (mixed shades, local shimmer, rocks, crust bridges).
+    drawMoltenLine(ctx, pts, cr.bake, t, dayFloor, 2.2);
+
+    // optional dark-rooted branch with its own small glow.
     if (cr.branchAt > 0) {
       const bi = Math.floor(cr.branchAt * (cr.pts.length - 1));
       const bx = x0 + cr.pts[bi].dx * cr.len;
       const by = ridgeYAt(bx) + 6 + cr.pts[bi].jy * 5;
-      ctx.strokeStyle = `rgba(255, 150, 60, ${(crk * 0.7).toFixed(3)})`;
-      ctx.lineWidth = 1.2;
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(255, 150, 60, ${(0.55 * dayFloor).toFixed(3)})`;
+      ctx.lineWidth = 1.4;
       ctx.beginPath();
       ctx.moveTo(bx, by);
       ctx.lineTo(bx + cr.len * 0.18, by + cr.len * 0.10);
       ctx.lineTo(bx + cr.len * 0.30, by + cr.len * 0.06);
       ctx.stroke();
+      ctx.restore();
     }
-    // faint heat-shimmer band just above the crack (additive, wobbling)
+    // faint heat-shimmer band just above the crack (additive, wobbling) — t!==0 only.
     if (t !== 0) {
+      ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       ctx.strokeStyle = `rgba(255, 140, 60, ${(0.06 * nightK).toFixed(3)})`;
       ctx.lineWidth = 6;
@@ -4531,9 +4772,130 @@ function drawVolcCracks(
         if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
       }
       ctx.stroke();
+      ctx.restore();
     }
-    ctx.restore();
   }
+}
+
+/** CALDERA LAVA BOMBS — small flaming rocks ejected from the crater on ballistic
+ *  arcs, landing on the foreground terrain. Each bomb loops on its own staggered
+ *  phase: a glowing cooling TRAIL behind it, a dark rock with a hot rim at its head,
+ *  a faint smoke puff, and a brief IMPACT FLASH + fading ember as it lands.
+ *  Reduced motion (t===0): a couple of static bombs frozen mid-arc, no loop. */
+function drawLavaBombs(
+  ctx: CanvasRenderingContext2D, w: number, h: number, horizonY: number, t: number,
+  vs: VolcanicScene, dc: DayCycle, wx: WeatherFx | null, ridgeYAt: (x: number) => number
+): void {
+  if (vs.bombs.length === 0) return;
+  // resolve the crater mouth screen coords (mirror drawVolcanoFarLand's summit math).
+  const c = vs.cone;
+  const cx = w * c.cxFrac;
+  const baseHalf = w * c.baseHalfFrac;
+  const peakH = h * c.peakFrac;
+  const n = c.pts.length;
+  const baseY = horizonY + 1;
+  let summitX = cx, summitY = baseY - peakH;
+  for (let i = 0; i < n; i++) {
+    const u = i / (n - 1);
+    const x = cx - baseHalf + u * baseHalf * 2;
+    const y = baseY - c.pts[i] * peakH;
+    if (y < summitY) { summitY = y; summitX = x; }
+  }
+  const craterY = summitY + 2;
+  const dayK = 0.6 + 0.4 * (1 - dc.bright);
+  const tier = wx ? wx.tierN : 0;
+  // reduced motion: freeze just the first two bombs at a fixed mid-arc, no loop.
+  const reduced = t === 0;
+  const speed = 0.45 + tier * 0.10;
+
+  const traceRock = (px: number, py: number, sz: number, verts: { a: number; r: number }[]) => {
+    ctx.beginPath();
+    for (let v = 0; v < verts.length; v++) {
+      const vx = px + Math.cos(verts[v].a) * sz * verts[v].r;
+      const vy = py + Math.sin(verts[v].a) * sz * verts[v].r;
+      if (v === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+    }
+    ctx.closePath();
+  };
+
+  ctx.save();
+  const count = reduced ? Math.min(2, vs.bombs.length) : vs.bombs.length;
+  for (let i = 0; i < count; i++) {
+    const bomb = vs.bombs[i];
+    // flight progress u: 0 at launch → 1 at landing.
+    const u = reduced ? 0.45 : ((t * speed * bomb.period + bomb.launchPhase) % 1 + 1) % 1;
+    const landX = bomb.landXFrac * w;
+    const landY = ridgeYAt(landX);
+    // launch a little to the bomb's outward side of the crater mouth.
+    const startX = summitX + bomb.vx0 * baseHalf * 0.12;
+    const startY = craterY;
+    // horizontal: ease from crater to landing. vertical: parabola that rises above
+    // the launch then falls to the ground (apex height scaled by vy0).
+    const px = startX + (landX - startX) * u;
+    const apex = peakH * 0.28 * bomb.vy0;            // how high above the launch it arcs
+    const baseLine = startY + (landY - startY) * u;  // straight crater→land descent
+    const py = baseLine - apex * 4 * u * (1 - u);    // parabolic lift (0 at ends)
+
+    // glowing cooling TRAIL behind the bomb (additive; hottest near launch).
+    if (!reduced) {
+      ctx.globalCompositeOperation = 'lighter';
+      const TR = 6;
+      for (let k = 1; k <= TR; k++) {
+        const tu = Math.max(0, u - k * 0.018);
+        const tpx = startX + (landX - startX) * tu;
+        const tBase = startY + (landY - startY) * tu;
+        const tpy = tBase - apex * 4 * tu * (1 - tu);
+        const heat = (1 - tu) * (1 - k / TR);        // cools along flight + along trail
+        const ta = 0.28 * heat * dayK;
+        if (ta <= 0.01) continue;
+        const tr = bomb.size * (1.2 - k * 0.1);
+        const tg = ctx.createRadialGradient(tpx, tpy, 0, tpx, tpy, Math.max(1, tr * 2));
+        tg.addColorStop(0, `rgba(255, 220, 150, ${ta.toFixed(3)})`);
+        tg.addColorStop(1, 'rgba(255, 90, 30, 0)');
+        ctx.fillStyle = tg;
+        ctx.fillRect(tpx - tr * 2, tpy - tr * 2, tr * 4, tr * 4);
+      }
+      // faint trailing smoke puff just behind the head.
+      const spx = startX + (landX - startX) * Math.max(0, u - 0.05);
+      const sBase = startY + (landY - startY) * Math.max(0, u - 0.05);
+      const spy = sBase - apex * 4 * Math.max(0, u - 0.05) * (1 - Math.max(0, u - 0.05)) - 2;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgba(90, 78, 74, ${(0.10 * (1 - u)).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(spx, spy, bomb.size * 1.6, bomb.size * 1.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // the bomb itself: a hot additive glow rim, then a dark rock head.
+    ctx.globalCompositeOperation = 'lighter';
+    const hg = ctx.createRadialGradient(px, py, 0, px, py, bomb.size * 2.4);
+    hg.addColorStop(0, `rgba(255, 235, 185, ${(0.7 * dayK).toFixed(3)})`);
+    hg.addColorStop(0.5, `rgba(255, 130, 45, ${(0.45 * dayK).toFixed(3)})`);
+    hg.addColorStop(1, 'rgba(255, 80, 20, 0)');
+    ctx.fillStyle = hg;
+    ctx.fillRect(px - bomb.size * 2.4, py - bomb.size * 2.4, bomb.size * 4.8, bomb.size * 4.8);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(34, 16, 10, 0.95)';
+    traceRock(px, py, bomb.size, bomb.rockVerts); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(255, 150, 60, ${(0.5 * dayK).toFixed(3)})`;
+    ctx.lineWidth = 1;
+    traceRock(px, py, bomb.size, bomb.rockVerts); ctx.stroke();
+
+    // IMPACT FLASH + fading ember/scorch as it nears the ground (u > 0.9).
+    if (!reduced && u > 0.9) {
+      const fk = (u - 0.9) / 0.1;                    // 0 → 1 across the last leg
+      const fa = (1 - Math.abs(fk - 0.5) * 2);       // peak mid-impact
+      const fr = bomb.size * (3 + fk * 4);
+      const fg = ctx.createRadialGradient(landX, landY, 0, landX, landY, fr);
+      fg.addColorStop(0, `rgba(255, 245, 210, ${(0.8 * fa * dayK).toFixed(3)})`);
+      fg.addColorStop(0.5, `rgba(255, 140, 50, ${(0.5 * fa * dayK).toFixed(3)})`);
+      fg.addColorStop(1, 'rgba(255, 70, 20, 0)');
+      ctx.fillStyle = fg;
+      ctx.fillRect(landX - fr, landY - fr, fr * 2, fr * 2);
+    }
+  }
+  ctx.restore();
 }
 
 /** Ember-fountain vents on the midground ridge — ballistic spark arcs, recycled. */
