@@ -2146,6 +2146,26 @@ type ParticleKind = 'EMBER' | 'SNOW' | 'DUST' | 'SPRAY' | 'MOTE' | 'FAINT';
 type ParticleSeed = { x: number; y: number; size: number; phase: number; speed: number; drift: number; warm: number };
 type CloudSeed = { x: number; yFrac: number; w: number; hFrac: number; speed: number; alpha: number };
 type VolcFissure = { x: number; w: number; phase: number };
+
+// --- VOLCANIC scene statics (seeded once; positions/colours fixed, motion per-frame) ---
+/** Jagged multi-segment lava crack across the foreground ground. */
+type LavaCrack = { pts: { dx: number; jy: number }[]; xFrac: number; len: number; phase: number; branchAt: number };
+/** A sinuous lava river: cubic-bezier control points (x fractions + y fractions). */
+type LavaRiver = { p: { xf: number; yf: number }[]; wFar: number; wNear: number; phase: number };
+/** An ember-fountain vent on the midground ridge: a recycling spark pool. */
+type EmberFountain = { xFrac: number; vx: number; vy: number; phase: number };
+type VolcanicScene = {
+  // distant stratovolcano cone (silhouette pts as fractions of its footprint),
+  // summit anchor (x frac, y at horizon), caldera (truncated) flag.
+  cone: { cxFrac: number; baseHalfFrac: number; peakFrac: number; pts: number[]; caldera: boolean; color: string };
+  plume: { puffs: { offX: number; offY: number; r: number; spd: number; phase: number }[] };
+  rivers: LavaRiver[];
+  lake: { cxFrac: number; cyFrac: number; rxFrac: number; ryFrac: number; cells: { dx: number; dy: number; r: number }[] } | null;
+  cracks: LavaCrack[];
+  fountains: EmberFountain[];
+  crustDark: { xFrac: number; yOff: number; r: number }[];
+  crustLava: { xFrac: number; yOff: number; r: number; phase: number }[];
+};
 /** A moon hanging in the sky: position + radius + the phase geometry that draws
  *  its terminator (lit fraction + the orientation the shadow sweeps from). */
 type MoonSeed = {
@@ -2279,8 +2299,9 @@ function weatherPhenomenaFor(
       // snow building to a BLIZZARD/whiteout; white haze.
       return { precip: tierN > 0.2 ? 'snow' : 'none', hazeColor: '225, 235, 245', lightning: false, sunDimBias: 0.1 };
     case 'VOLCANIC':
-      // ash motes + embers → EMBER-STORM; dark smoky-red haze.
-      return { precip: tierN > 0.2 ? 'ash' : 'dust', hazeColor: '120, 70, 60', lightning: false, sunDimBias: 0.2 };
+      // ash motes + embers → EMBER-STORM; dark smoky-red haze. Volcanic (orange)
+      // lightning kicks in at ROUGH+ (restricted to the ash-plume column in draw).
+      return { precip: tierN > 0.2 ? 'ash' : 'dust', hazeColor: '120, 70, 60', lightning: mid, sunDimBias: 0.2 };
     case 'TERRAN':
       // rain → THUNDERSTORM with lightning at storm+; dark grey haze.
       return { precip: heavy ? 'rain' : (mid ? 'rain' : 'none'), hazeColor: '140, 150, 165', lightning: heavy, sunDimBias: 0.05 };
@@ -2411,6 +2432,7 @@ interface LandedCache {
   clouds: CloudSeed[];
   cloudTint: string; // "r, g, b"
   volcFissures: VolcFissure[];
+  volcanic: VolcanicScene | null;   // full volcanic-only scene statics (else null)
   desertBands: boolean;
   iceSheen: boolean;
 }
@@ -2937,7 +2959,7 @@ function buildLandedCache(
   });
   const ridgeColors = [pal.ridges[0], pal.ridges[1], pal.ridges[2]];
 
-  // --- VOLCANIC fissures (seeded; pulse per frame) ---
+  // --- VOLCANIC fissures (seeded; kept for the ember anchor x-positions) ---
   const volcFissures: VolcFissure[] = [];
   if (pal.flourish === 'VOLCANIC') {
     const fRng = splitmix32(worldSeed * 313 + 41);
@@ -2947,6 +2969,99 @@ function buildLandedCache(
       const fw = w * (0.04 + fRng() * 0.06);
       volcFissures.push({ x, w: fw, phase: i * 2 });
     }
+  }
+
+  // --- VOLCANIC SCENE statics (seeded once; volcano cone, ash plume, lava rivers,
+  //     lava lake, jagged cracks, ember fountains, crust blotches) ---
+  let volcanic: VolcanicScene | null = null;
+  if (pal.flourish === 'VOLCANIC') {
+    const vRng = splitmix32(worldSeed * 2939 + 67);
+    // distant stratovolcano cone — asymmetric, one steeper slope; sometimes caldera.
+    const caldera = landform === 'VOLC_CALDERA' || vRng() < 0.3;
+    const cxFrac = 0.12 + vRng() * 0.76;          // off-centre on the horizon
+    const baseHalfFrac = 0.12 + vRng() * 0.10;
+    const peakFrac = 0.12 + vRng() * 0.08;        // cone height as frac of h
+    // 5–7 silhouette points (0..1 across base → relative height 0..1), skewed.
+    const np = 5 + Math.floor(vRng() * 3);
+    const skew = 0.35 + vRng() * 0.3;             // peak position along base (asym)
+    const pts: number[] = [];
+    for (let i = 0; i < np; i++) {
+      const u = i / (np - 1);
+      // bell skewed toward `skew`, with per-point noise; caldera truncates the top.
+      const env = u < skew ? u / skew : 1 - (u - skew) / (1 - skew);
+      let hgt = Math.pow(Math.max(0, env), 0.85) * (0.55 + vRng() * 0.45);
+      if (caldera) hgt = Math.min(hgt, 0.82 + vRng() * 0.05); // flat-topped rim
+      pts.push(hgt);
+    }
+    const coneColor = todBright > 0.3 ? 'rgba(46, 30, 34, 0.92)' : 'rgba(30, 18, 22, 0.95)';
+    // ash plume puffs above the summit (drift up + wrap per frame).
+    const puffN = 3 + Math.floor(vRng() * 3);
+    const puffs: VolcanicScene['plume']['puffs'] = [];
+    for (let i = 0; i < puffN; i++) {
+      puffs.push({
+        offX: (vRng() - 0.5) * w * 0.05,
+        offY: -h * (0.02 + i * (0.05 + vRng() * 0.03)),
+        r: w * (0.03 + i * 0.012 + vRng() * 0.02),
+        spd: 6 + vRng() * 8,
+        phase: vRng() * Math.PI * 2,
+      });
+    }
+    // lava rivers (1–3): seeded bezier control points midground → foreground.
+    const rivers: LavaRiver[] = [];
+    const rivN = 1 + Math.floor(vRng() * 3);
+    for (let i = 0; i < rivN; i++) {
+      const startX = 0.2 + vRng() * 0.6;
+      const p = [
+        { xf: startX, yf: 0.60 + vRng() * 0.05 },
+        { xf: startX + (vRng() - 0.5) * 0.18, yf: 0.72 + vRng() * 0.05 },
+        { xf: startX + (vRng() - 0.5) * 0.22, yf: 0.86 + vRng() * 0.04 },
+        { xf: startX + (vRng() - 0.5) * 0.26, yf: 1.0 },
+      ];
+      rivers.push({ p, wFar: 12 + vRng() * 8, wNear: 5 + vRng() * 4, phase: vRng() * Math.PI * 2 });
+    }
+    // midground crusted lava lake (seeded position + 8–12 basalt cells).
+    let lake: VolcanicScene['lake'] = null;
+    if (vRng() < 0.7) {
+      const cellN = 8 + Math.floor(vRng() * 5);
+      const cells: { dx: number; dy: number; r: number }[] = [];
+      for (let i = 0; i < cellN; i++) {
+        cells.push({ dx: (vRng() - 0.5) * 1.6, dy: (vRng() - 0.5) * 1.2, r: 0.18 + vRng() * 0.22 });
+      }
+      lake = { cxFrac: 0.25 + vRng() * 0.5, cyFrac: 0.64 + vRng() * 0.06, rxFrac: 0.12 + vRng() * 0.08, ryFrac: 0.03 + vRng() * 0.02, cells };
+    }
+    // jagged foreground cracks (3–5, min-spread) — stepped points + optional branch.
+    const cracks: LavaCrack[] = [];
+    const crackN = 3 + Math.floor(vRng() * 3);
+    for (let i = 0; i < crackN; i++) {
+      const segs = 12 + Math.floor(vRng() * 7);
+      const cp: { dx: number; jy: number }[] = [];
+      for (let s = 0; s < segs; s++) cp.push({ dx: (s / (segs - 1)), jy: (vRng() - 0.5) });
+      cracks.push({
+        pts: cp,
+        xFrac: (i + 0.5) / crackN + (vRng() - 0.5) * 0.06,  // min-spread across width
+        len: w * (0.14 + vRng() * 0.16),
+        phase: vRng() * Math.PI * 2,
+        branchAt: vRng() < 0.6 ? 0.4 + vRng() * 0.3 : -1,
+      });
+    }
+    // ember-fountain vents on the midground ridge (2–4).
+    const fountains: EmberFountain[] = [];
+    const fountN = 2 + Math.floor(vRng() * 3);
+    for (let i = 0; i < fountN; i++) {
+      fountains.push({
+        xFrac: 0.15 + vRng() * 0.7,
+        vx: (vRng() - 0.5) * 18,
+        vy: 60 + vRng() * 50,
+        phase: vRng() * Math.PI * 2,
+      });
+    }
+    // front-ridge crust texture: dark cooling-rock blotches + brighter cooled-lava.
+    const crustDark: { xFrac: number; yOff: number; r: number }[] = [];
+    for (let i = 0; i < 6; i++) crustDark.push({ xFrac: vRng(), yOff: 6 + vRng() * 26, r: 4 + vRng() * 9 });
+    const crustLava: { xFrac: number; yOff: number; r: number; phase: number }[] = [];
+    for (let i = 0; i < 3; i++) crustLava.push({ xFrac: vRng(), yOff: 8 + vRng() * 22, r: 3 + vRng() * 5, phase: vRng() * Math.PI * 2 });
+
+    volcanic = { cone: { cxFrac, baseHalfFrac, peakFrac, pts, caldera, color: coneColor }, plume: { puffs }, rivers, lake, cracks, fountains, crustDark, crustLava };
   }
 
   // --- FLORA layout (sway per frame; baseY from live ridge per frame) ---
@@ -3089,7 +3204,7 @@ function buildLandedCache(
     layers, period, ridgeColors,
     skyGrad, washGrad, glowGrad, waterBand,
     stars, flouraSeeds, citadelLayout, haze3, hazeStrength,
-    particles, particleKind, clouds, cloudTint, volcFissures,
+    particles, particleKind, clouds, cloudTint, volcFissures, volcanic,
     desertBands: pal.flourish === 'DESERT',
     iceSheen: pal.flourish === 'ICE'
   };
@@ -3187,29 +3302,50 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 2b) DRIFTING CLOUD bands (behind the sun, slow parallax) ------------------
+  // 2b) DRIFTING CLOUD bands (behind the sun, slow parallax). VOLCANIC worlds get
+  //     billowing ASH-CLOUD masses (dark grey-brown body + an orange underbelly
+  //     'lighter' pass, night-boosted) instead of the soft additive clouds.
   if (cache.clouds.length > 0) {
+    const ashClouds = !!cache.volcanic;
+    const nightK = 0.5 + (1 - dc.bright) * 0.5;
     ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
     for (let i = 0; i < cache.clouds.length; i++) {
       const c = cache.clouds[i];
       const span = w * 1.6;
       const cx = (((c.x + t * c.speed) % span) + span) % span - w * 0.3;
-      const cw = c.w;
-      const chh = h * c.hFrac;
-      // yFrac is sky-relative; scale into the sky band, then clamp so the band's
-      // bottom edge stays in open sky above the horizon (never grazes the ridge).
+      const cw = c.w * (ashClouds ? 1.15 : 1);
+      const chh = h * c.hFrac * (ashClouds ? 1.3 : 1);
       const cy = Math.min(horizonY * c.yFrac * 2, horizonY - chh - 4);
-      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, cw);
-      g.addColorStop(0, `rgba(${cache.cloudTint}, ${c.alpha.toFixed(3)})`);
-      g.addColorStop(1, `rgba(${cache.cloudTint}, 0)`);
-      ctx.fillStyle = g;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.scale(1, chh / cw);
-      ctx.translate(-cx, -cy);
-      ctx.fillRect(cx - cw, cy - cw, cw * 2, cw * 2);
-      ctx.restore();
+      if (ashClouds) {
+        // dark billowing body (overlapping ellipses via one squashed radial), then
+        // an orange underbelly bloom beneath it (lit from the lava below).
+        ctx.globalCompositeOperation = 'source-over';
+        const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cw);
+        bg.addColorStop(0, `rgba(48, 38, 36, ${(0.5).toFixed(3)})`);
+        bg.addColorStop(1, 'rgba(40, 32, 30, 0)');
+        ctx.fillStyle = bg;
+        ctx.save(); ctx.translate(cx, cy); ctx.scale(1, chh / cw); ctx.translate(-cx, -cy);
+        ctx.fillRect(cx - cw, cy - cw, cw * 2, cw * 2);
+        ctx.restore();
+        // orange underbelly (additive, night-boosted)
+        ctx.globalCompositeOperation = 'lighter';
+        const ug = ctx.createRadialGradient(cx, cy + chh * 0.4, 0, cx, cy + chh * 0.4, cw * 0.8);
+        ug.addColorStop(0, `rgba(255, 90, 30, ${(0.12 * nightK).toFixed(3)})`);
+        ug.addColorStop(1, 'rgba(255, 60, 0, 0)');
+        ctx.fillStyle = ug;
+        ctx.save(); ctx.translate(cx, cy + chh * 0.4); ctx.scale(1, 0.5); ctx.translate(-cx, -(cy + chh * 0.4));
+        ctx.fillRect(cx - cw, cy + chh * 0.4 - cw, cw * 2, cw * 2);
+        ctx.restore();
+      } else {
+        ctx.globalCompositeOperation = 'lighter';
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, cw);
+        g.addColorStop(0, `rgba(${cache.cloudTint}, ${c.alpha.toFixed(3)})`);
+        g.addColorStop(1, `rgba(${cache.cloudTint}, 0)`);
+        ctx.fillStyle = g;
+        ctx.save(); ctx.translate(cx, cy); ctx.scale(1, chh / cw); ctx.translate(-cx, -cy);
+        ctx.fillRect(cx - cw, cy - cw, cw * 2, cw * 2);
+        ctx.restore();
+      }
     }
     ctx.restore();
   }
@@ -3301,9 +3437,14 @@ function drawLandedScene(
   }
   ctx.restore();
 
-  // 4a2) DISTANT LANDMASSES for NON-WATER worlds — far mountains/mesas/dunes at the
-  //      horizon, off-centre + irregular, drawn behind the foreground ridges.
-  if (!cache.hasWater && cache.farLands.length > 0) {
+  // 4a1) VOLCANIC: lava under-glow rising from the horizon (scene lit from below)
+  //      then the distant volcano + summit bloom + ash plume (replaces farLands).
+  if (cache.volcanic) {
+    drawLavaUnderglow(ctx, w, h, horizonY, dc);
+    drawVolcanoFarLand(ctx, w, h, horizonY, t, cache.volcanic, dc, cache.weather);
+  } else if (!cache.hasWater && cache.farLands.length > 0) {
+    // 4a2) DISTANT LANDMASSES for NON-WATER worlds — far mountains/mesas/dunes at
+    //      the horizon, off-centre + irregular, drawn behind the foreground ridges.
     drawFarLands(ctx, cache.farLands, horizonY + 1);
   }
 
@@ -3690,6 +3831,8 @@ function drawLandedScene(
     const period = cache.period;
     const n = layer.pts.length;
     const profileXs: number[] | null = isFront ? [] : null;
+    // VOLCANIC: capture the crest line so we can rim-glow it (lit from below).
+    const crest: number[] | null = cache.volcanic ? [] : null;
     ctx.beginPath();
     ctx.moveTo(0, h);
     for (let x = 0; x <= w; x += 8) {
@@ -3703,12 +3846,29 @@ function drawLandedScene(
       const yTop = h * layer.base - v * h * layer.amp;
       ctx.lineTo(x, yTop);
       if (profileXs) profileXs.push(yTop);
+      if (crest) crest.push(yTop);
     }
     ctx.lineTo(w, h);
     ctx.closePath();
     ctx.fillStyle = cache.ridgeColors[li];
     ctx.fill();
     if (profileXs) frontProfile = profileXs;
+    // VOLCANIC underlit rim — a thin orange glow along this ridge's crest, scaled
+    // up at night (the lava under-glow catching the silhouette edge).
+    if (crest) {
+      const nightK = 0.5 + (1 - dc.bright) * 0.5;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(255, 90, 30, ${(0.16 * nightK).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let xi = 0; xi < crest.length; xi++) {
+        const cxp = xi * 8;
+        if (xi === 0) ctx.moveTo(cxp, crest[xi]); else ctx.lineTo(cxp, crest[xi]);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
   }
   }
   const ridgeYAt = (x: number): number => {
@@ -3716,6 +3876,36 @@ function drawLandedScene(
     const idx = Math.max(0, Math.min(frontProfile.length - 1, Math.round(x / 8)));
     return frontProfile[idx];
   };
+
+  // 5a2) VOLCANIC midground + foreground lava: crusted lake, flowing rivers, and
+  //      front-ridge crust texture (dark cooling rock + cooled-lava patches).
+  if (cache.volcanic) {
+    const vs = cache.volcanic;
+    drawLavaLake(ctx, w, h, t, vs, dc);
+    drawLavaRivers(ctx, w, h, t, vs, dc);
+    // front-ridge crust texture so the ground isn't flat black.
+    const nightK = 0.5 + (1 - dc.bright) * 0.5;
+    ctx.save();
+    for (const b of vs.crustDark) {
+      const bx = w * b.xFrac;
+      ctx.fillStyle = 'rgba(14, 8, 8, 0.5)';
+      ctx.beginPath();
+      ctx.ellipse(bx, ridgeYAt(bx) + b.yOff, b.r, b.r * 0.55, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    for (const b of vs.crustLava) {
+      const bx = w * b.xFrac;
+      const pulse = t === 0 ? 0.6 : 0.5 + 0.5 * Math.sin(t * 1.5 + b.phase);
+      const by = ridgeYAt(bx) + b.yOff;
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, b.r * 2);
+      g.addColorStop(0, `rgba(255, 110, 40, ${(0.4 * pulse * nightK).toFixed(3)})`);
+      g.addColorStop(1, 'rgba(255, 60, 10, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(bx - b.r * 2, by - b.r * 2, b.r * 4, b.r * 4);
+    }
+    ctx.restore();
+  }
 
   // 5b) ICE/SNOW treatment on the front ridge — a bright SNOW CAP ribbon along the
   //     crest, a specular sheen highlight, and a few seeded crevasse/crack lines so
@@ -3763,28 +3953,11 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 5c) VOLCANIC lava fissures — seeds cached; pulse + animated gradient per frame
-  if (cache.volcFissures.length > 0) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < cache.volcFissures.length; i++) {
-      const f = cache.volcFissures[i];
-      const fy = ridgeYAt(f.x) + 4;
-      const pulse = t === 0 ? 0.5 : 0.5 + 0.5 * Math.sin(t * 1.8 + f.phase);
-      const lg = ctx.createRadialGradient(f.x, fy, 0, f.x, fy, f.w * 2.2);
-      lg.addColorStop(0, `rgba(255, 140, 40, ${(0.4 + pulse * 0.35).toFixed(3)})`);
-      lg.addColorStop(0.5, 'rgba(255, 80, 20, 0.18)');
-      lg.addColorStop(1, 'rgba(255, 60, 10, 0)');
-      ctx.fillStyle = lg;
-      ctx.fillRect(f.x - f.w * 2.2, fy - f.w, f.w * 4.4, f.w * 2.2);
-      ctx.strokeStyle = `rgba(255, 200, 120, ${(0.5 + pulse * 0.4).toFixed(3)})`;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(f.x - f.w, fy);
-      ctx.lineTo(f.x + f.w, fy + 3);
-      ctx.stroke();
-    }
-    ctx.restore();
+  // 5c) VOLCANIC foreground — jagged glowing lava CRACKS (+ heat shimmer) and
+  //     ember-FOUNTAIN vents arcing sparks up. Replaces the old radial-blob fissures.
+  if (cache.volcanic) {
+    drawVolcCracks(ctx, w, t, cache.volcanic, dc, ridgeYAt);
+    drawEmberFountains(ctx, w, h, t, cache.volcanic, dc, cache.weather, ridgeYAt);
   }
 
   // 5d) DESERT dune shimmer band ----------------------------------------------
@@ -3877,21 +4050,335 @@ function drawLandedScene(
     drawPrecipitation(ctx, w, h, t, cache.weather, cache.precipSeeds);
   }
 
-  // 11) LIGHTNING — TERRAN/JUNGLE thunderstorms: a brief full-scene flash every few
-  //     seconds at STORM+. Deterministic timing; reduced-motion (t=0): no flash.
+  // 11) LIGHTNING. VOLCANIC (ROUGH+) → ORANGE-RED branching strikes in the ash-plume
+  //     column (jagged polyline + wide glow). TERRAN/JUNGLE → blue-white full-scene
+  //     flash. Deterministic timing; reduced-motion (t=0): no lightning.
   if (cache.weather && cache.weather.lightning && t !== 0) {
-    // a short bright pulse: fire ~every 4.5s, lasting ~0.18s, with a quick decay.
-    const cyc = t % 4.5;
-    if (cyc < 0.22) {
-      const fl = Math.max(0, 1 - cyc / 0.22);
-      const strike = fl * fl;
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.fillStyle = `rgba(200, 215, 245, ${(0.5 * strike).toFixed(3)})`;
-      ctx.fillRect(0, 0, w, h);
-      ctx.restore();
+    if (cache.volcanic) {
+      drawVolcLightning(ctx, w, h, t, cache.volcanic, horizonY);
+    } else {
+      const cyc = t % 4.5;
+      if (cyc < 0.22) {
+        const fl = Math.max(0, 1 - cyc / 0.22);
+        const strike = fl * fl;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = `rgba(200, 215, 245, ${(0.5 * strike).toFixed(3)})`;
+        ctx.fillRect(0, 0, w, h);
+        ctx.restore();
+      }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// VOLCANIC SCENE renderers (volcanic worlds only). All emissive lava/ember/glow
+// uses additive 'lighter'; lava glows brighter at night (nightK). Cached statics,
+// per-frame motion. Reduced-motion (t=0) → static (no drift/flicker advance).
+// ---------------------------------------------------------------------------
+
+/** Lava under-glow rising from the horizon into the lower sky (additive) + the
+ *  distant volcano cone, summit bloom and rising ash plume. Replaces farLands. */
+function drawVolcanoFarLand(
+  ctx: CanvasRenderingContext2D, w: number, h: number, horizonY: number,
+  t: number, vs: VolcanicScene, dc: DayCycle, wx: WeatherFx | null
+): void {
+  const nightK = 0.5 + (1 - dc.bright) * 0.5;     // brighter at night
+  const tier = wx ? wx.tierN : 0;
+  const c = vs.cone;
+  const cx = w * c.cxFrac;
+  const baseHalf = w * c.baseHalfFrac;
+  const peakH = h * c.peakFrac;
+  const n = c.pts.length;
+  // cone silhouette (filled), base on the horizon.
+  ctx.save();
+  ctx.fillStyle = c.color;
+  ctx.beginPath();
+  ctx.moveTo(cx - baseHalf, horizonY + 1);
+  let summitX = cx, summitY = horizonY - peakH;
+  for (let i = 0; i < n; i++) {
+    const u = i / (n - 1);
+    const x = cx - baseHalf + u * baseHalf * 2;
+    const y = horizonY + 1 - c.pts[i] * peakH;
+    ctx.lineTo(x, y);
+    if (y < summitY) { summitY = y; summitX = x; }
+  }
+  ctx.lineTo(cx + baseHalf, horizonY + 1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // summit glow bloom (additive, stronger at night).
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const gr = baseHalf * (0.5 + tier * 0.3);
+  const bloom = ctx.createRadialGradient(summitX, summitY, 0, summitX, summitY, gr);
+  const ba = 0.5 + (1 - dc.bright) * 0.5;
+  bloom.addColorStop(0, `rgba(255, 130, 40, ${(ba * 0.7).toFixed(3)})`);
+  bloom.addColorStop(0.5, `rgba(255, 70, 20, ${(ba * 0.25).toFixed(3)})`);
+  bloom.addColorStop(1, 'rgba(255, 60, 0, 0)');
+  ctx.fillStyle = bloom;
+  ctx.fillRect(summitX - gr, summitY - gr, gr * 2, gr * 2);
+  ctx.restore();
+
+  // rising ash plume — stacked elliptical puffs drifting up + wrapping.
+  ctx.save();
+  const widen = 1 + tier * 0.8;
+  for (let i = 0; i < vs.plume.puffs.length; i++) {
+    const pf = vs.plume.puffs[i];
+    const rise = t === 0 ? 0 : (t * pf.spd) % (h * 0.5);
+    const px = summitX + pf.offX + (t === 0 ? 0 : Math.sin(t * 0.2 + pf.phase) * w * 0.02);
+    const py = summitY + pf.offY - rise;
+    const pr = pf.r * widen;
+    // smoky body (day: ochre; night: darker) — normal blend.
+    const dayBody = dc.bright > 0.4;
+    const bodyA = (0.18 + i * 0.02) * (0.7 + tier * 0.6);
+    const bg = ctx.createRadialGradient(px, py, 0, px, py, pr);
+    bg.addColorStop(0, dayBody ? `rgba(120, 95, 70, ${bodyA.toFixed(3)})` : `rgba(60, 45, 45, ${bodyA.toFixed(3)})`);
+    bg.addColorStop(1, 'rgba(40, 30, 30, 0)');
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = bg;
+    ctx.save(); ctx.translate(px, py); ctx.scale(1.3, 0.85); ctx.translate(-px, -py);
+    ctx.fillRect(px - pr, py - pr, pr * 2, pr * 2);
+    ctx.restore();
+    // ember-edged underbelly near the summit (additive, night-boosted).
+    if (i < 2) {
+      ctx.globalCompositeOperation = 'lighter';
+      const eg = ctx.createRadialGradient(px, py + pr * 0.3, 0, px, py + pr * 0.3, pr * 0.8);
+      eg.addColorStop(0, `rgba(255, 90, 30, ${(0.18 * nightK).toFixed(3)})`);
+      eg.addColorStop(1, 'rgba(255, 60, 0, 0)');
+      ctx.fillStyle = eg;
+      ctx.fillRect(px - pr, py - pr, pr * 2, pr * 2);
+    }
+  }
+  ctx.restore();
+}
+
+/** Lava under-glow gradient from the horizon up into the lower sky (additive). */
+function drawLavaUnderglow(ctx: CanvasRenderingContext2D, w: number, h: number, horizonY: number, dc: DayCycle): void {
+  const nightK = 0.5 + (1 - dc.bright) * 0.5;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const top = horizonY * 0.55;
+  const g = ctx.createLinearGradient(0, top, 0, horizonY * 1.02);
+  g.addColorStop(0, 'rgba(255, 60, 0, 0)');
+  g.addColorStop(1, `rgba(255, 70, 10, ${(0.12 * nightK).toFixed(3)})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, top, w, horizonY * 1.02 - top);
+  ctx.restore();
+}
+
+/** Crusted molten lava lake in the midground (base glow + basalt cells + churn). */
+function drawLavaLake(ctx: CanvasRenderingContext2D, w: number, h: number, t: number, vs: VolcanicScene, dc: DayCycle): void {
+  if (!vs.lake) return;
+  const lk = vs.lake;
+  const cx = w * lk.cxFrac, cy = h * lk.cyFrac;
+  const rx = w * lk.rxFrac, ry = h * lk.ryFrac;
+  const nightK = 0.5 + (1 - dc.bright) * 0.5;
+  const churn = t === 0 ? 0 : Math.sin(t * 0.7) * 0.06;
+  ctx.save();
+  // night wide glow bloom under the lake
+  if (dc.bright < 0.6) {
+    ctx.globalCompositeOperation = 'lighter';
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx * 2.2);
+    bg.addColorStop(0, `rgba(255, 90, 20, ${(0.22 * nightK).toFixed(3)})`);
+    bg.addColorStop(1, 'rgba(255, 60, 0, 0)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(cx - rx * 2.2, cy - rx * 2.2, rx * 4.4, rx * 4.4);
+  }
+  // molten base (radial: white-orange centre → dark red), clipped to the lake ellipse
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.clip();
+  const lg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx);
+  lg.addColorStop(0, 'rgba(255, 200, 90, 1)');
+  lg.addColorStop(0.5, 'rgba(255, 90, 25, 1)');
+  lg.addColorStop(1, 'rgba(90, 20, 8, 1)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(cx - rx, cy - ry, rx * 2, ry * 2);
+  // dark basalt crust cells with glowing orange borders
+  for (let i = 0; i < lk.cells.length; i++) {
+    const ce = lk.cells[i];
+    const ex = cx + ce.dx * rx * (1 + churn);
+    const ey = cy + ce.dy * ry * (1 - churn);
+    const er = ce.r * rx;
+    ctx.fillStyle = 'rgba(24, 12, 8, 0.92)';
+    ctx.beginPath(); ctx.ellipse(ex, ey, er, er * (ry / rx) * 1.2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(255, 110, 30, ${(0.5 * nightK).toFixed(3)})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.restore();
+}
+
+/** Sinuous lava rivers flowing from midground to the foreground (cubic bezier). */
+function drawLavaRivers(ctx: CanvasRenderingContext2D, w: number, h: number, t: number, vs: VolcanicScene, dc: DayCycle): void {
+  const coreK = dc.bright > 0.5 ? 0.6 : 1.0;   // core dimmer by day, full at night
+  for (let i = 0; i < vs.rivers.length; i++) {
+    const rv = vs.rivers[i];
+    const x0 = w * rv.p[0].xf, y0 = h * rv.p[0].yf;
+    const x1 = w * rv.p[1].xf, y1 = h * rv.p[1].yf;
+    const x2 = w * rv.p[2].xf, y2 = h * rv.p[2].yf;
+    const x3 = w * rv.p[3].xf, y3 = h * rv.p[3].yf;
+    // body: dark-crust → orange → white-orange gradient along the rough path bbox.
+    ctx.save();
+    const bg = ctx.createLinearGradient(x0, y0, x3, y3);
+    bg.addColorStop(0, 'rgba(255, 200, 90, 1)');
+    bg.addColorStop(0.5, 'rgba(255, 80, 20, 1)');
+    bg.addColorStop(1, 'rgba(20, 8, 4, 1)');
+    ctx.strokeStyle = bg;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = rv.wFar;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.bezierCurveTo(x1, y1, x2, y2, x3, y3);
+    ctx.stroke();
+    // tapered near end: redraw the lower half thinner (cheap taper approximation)
+    ctx.lineWidth = rv.wNear;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.quadraticCurveTo((x2 + x3) / 2, (y2 + y3) / 2, x3, y3);
+    ctx.stroke();
+    // shimmering bright core stroke (additive).
+    ctx.globalCompositeOperation = 'lighter';
+    const sh = t === 0 ? 0.7 : 0.55 + 0.45 * Math.sin(t * 2.2 + rv.phase);
+    ctx.strokeStyle = `rgba(255, 200, 90, ${(coreK * sh).toFixed(3)})`;
+    ctx.lineWidth = rv.wFar * 0.4;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.bezierCurveTo(x1, y1, x2, y2, x3, y3);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/** Jagged glowing lava cracks across the foreground ground + heat shimmer. */
+function drawVolcCracks(
+  ctx: CanvasRenderingContext2D, w: number, t: number, vs: VolcanicScene, dc: DayCycle,
+  ridgeYAt: (x: number) => number
+): void {
+  const nightK = 0.5 + (1 - dc.bright) * 0.5;
+  for (let i = 0; i < vs.cracks.length; i++) {
+    const cr = vs.cracks[i];
+    const x0 = w * cr.xFrac - cr.len / 2;
+    const baseY = ridgeYAt(w * cr.xFrac) + 6;
+    const pulse = t === 0 ? 0.7 : 0.6 + 0.4 * Math.sin(t * 1.8 + cr.phase);
+    const buildPath = (jitterMul: number) => {
+      ctx.beginPath();
+      for (let s = 0; s < cr.pts.length; s++) {
+        const px = x0 + cr.pts[s].dx * cr.len;
+        const py = baseY + cr.pts[s].jy * 5 * jitterMul;
+        if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+    };
+    ctx.save();
+    // dark crust halo
+    ctx.strokeStyle = 'rgba(20, 8, 4, 0.9)';
+    ctx.lineWidth = 4;
+    buildPath(1); ctx.stroke();
+    // glowing orange-white core (additive)
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(255, 170, 70, ${(pulse * nightK).toFixed(3)})`;
+    ctx.lineWidth = 1.6;
+    buildPath(1); ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 230, 180, ${(pulse * 0.6 * nightK).toFixed(3)})`;
+    ctx.lineWidth = 0.8;
+    buildPath(1); ctx.stroke();
+    // optional branch
+    if (cr.branchAt > 0) {
+      const bi = Math.floor(cr.branchAt * (cr.pts.length - 1));
+      const bx = x0 + cr.pts[bi].dx * cr.len;
+      const by = baseY + cr.pts[bi].jy * 5;
+      ctx.strokeStyle = `rgba(255, 150, 60, ${(pulse * 0.7 * nightK).toFixed(3)})`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx + cr.len * 0.18, by + cr.len * 0.10);
+      ctx.lineTo(bx + cr.len * 0.30, by + cr.len * 0.06);
+      ctx.stroke();
+    }
+    // faint heat-shimmer band just above the crack (additive, wobbling)
+    if (t !== 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(255, 140, 60, ${(0.06 * nightK).toFixed(3)})`;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      for (let s = 0; s < cr.pts.length; s++) {
+        const px = x0 + cr.pts[s].dx * cr.len;
+        const py = baseY - 6 + Math.sin(t * 3 + s * 0.8 + cr.phase) * 2;
+        if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+/** Ember-fountain vents on the midground ridge — ballistic spark arcs, recycled. */
+function drawEmberFountains(
+  ctx: CanvasRenderingContext2D, w: number, h: number, t: number, vs: VolcanicScene, dc: DayCycle,
+  wx: WeatherFx | null, ridgeYAt: (x: number) => number
+): void {
+  if (t === 0) return;                          // reduced motion: no active fountains
+  const dayK = dc.bright > 0.5 ? 0.5 : 1.0;
+  const tier = wx ? wx.tierN : 0;
+  const sparks = Math.round(8 + tier * 14);     // per vent, scales with weather
+  const hMul = 1 + tier * 0.8;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let f = 0; f < vs.fountains.length; f++) {
+    const fo = vs.fountains[f];
+    const vx0 = w * fo.xFrac;
+    const vy0 = ridgeYAt(vx0) + 2;
+    for (let s = 0; s < sparks; s++) {
+      // recycle each spark over a ~1.6s ballistic life, offset per spark.
+      const life = ((t * 0.9 + s * 0.137 + fo.phase) % 1.6) / 1.6;
+      const vy = fo.vy * hMul;
+      const px = vx0 + (fo.vx + (s % 5 - 2) * 4) * life;
+      const py = vy0 - (vy * life - 0.5 * 90 * life * life);  // up then gravity
+      const a = (1 - life) * dayK * (0.6 + (1 - dc.bright) * 0.4);
+      if (a <= 0.02) continue;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = life < 0.4 ? 'rgba(255, 220, 150, 1)' : 'rgba(255, 110, 40, 1)';
+      const r = 1.4 - life;
+      ctx.beginPath(); ctx.arc(px, py, Math.max(0.6, r), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+/** Orange-red branching volcanic lightning restricted to the ash-plume column. */
+function drawVolcLightning(ctx: CanvasRenderingContext2D, w: number, h: number, t: number, vs: VolcanicScene, horizonY: number): void {
+  const cyc = t % 3.8;
+  if (cyc > 0.16) return;                        // brief strike
+  const fl = Math.max(0, 1 - cyc / 0.16);
+  const cx = w * vs.cone.cxFrac;
+  const topY = horizonY - h * vs.cone.peakFrac - h * 0.18;
+  // deterministic jagged polyline down the plume column (seeded by the strike cycle)
+  const seed = Math.floor(t / 3.8) * 911 + 7;
+  const jr = splitmix32(seed >>> 0 || 1);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const pts: { x: number; y: number }[] = [{ x: cx + (jr() - 0.5) * w * 0.05, y: topY }];
+  const segs = 6;
+  for (let s = 1; s <= segs; s++) {
+    const py = topY + (horizonY - h * vs.cone.peakFrac - topY) * (s / segs);
+    pts.push({ x: cx + (jr() - 0.5) * w * 0.07, y: py });
+  }
+  // wide low-alpha glow stroke
+  ctx.strokeStyle = `rgba(255, 90, 30, ${(0.35 * fl).toFixed(3)})`;
+  ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+  for (const p of pts) ctx.lineTo(p.x, p.y);
+  ctx.stroke();
+  // bright jagged core
+  ctx.strokeStyle = `rgba(255, 210, 150, ${(0.85 * fl).toFixed(3)})`;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+  for (const p of pts) ctx.lineTo(p.x, p.y);
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** Shared WEATHER SKY overlay — darkens + biome-tints the sky by tier. The tint
@@ -4318,10 +4805,12 @@ function drawLandedParticles(
   const pMul = cache.weather ? cache.weather.particleMul : 1;
   ctx.save();
   if (kind === 'EMBER') {
-    // embers ONLY hug the lava fissures: anchored near a fissure x, short rise,
-    // fire-orange. (If no fissures, fall back to spread across the surface band.)
+    // embers hug the lava fissures/cracks: anchored near a vent x, short rise, fire-
+    // orange. Now visible GLOWING motes (soft arc + halo, not 1px). Day ×0.5/night ×1.
     ctx.globalCompositeOperation = 'lighter';
     const fiss = cache.volcFissures;
+    const dayBright = dayCycleAt(t, cache.dayPhaseOffset).bright;
+    const dayK = dayBright > 0.5 ? 0.5 : 1.0;
     const RISE = h * 0.22; // short rise — embers stay low near the fire
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
@@ -4330,9 +4819,19 @@ function drawLandedParticles(
       const rise = ((p.y % RISE) + t * (10 + p.speed * 16) * (0.7 + pMul * 0.3)) % RISE;
       const y = (cache.horizonY + RISE) - rise;
       const flick = 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + p.phase));
-      ctx.globalAlpha = Math.min(1, 0.55 * flick * (1 - rise / RISE) * pMul);
-      ctx.fillStyle = p.warm > 0.5 ? 'rgba(255, 170, 70, 1)' : 'rgba(255, 100, 35, 1)';
-      ctx.fillRect(x, y, p.size, p.size);
+      const a = Math.min(1, 0.6 * flick * (1 - rise / RISE) * pMul * dayK);
+      const r = (1.1 + p.size * 1.1) * (1 - rise / RISE * 0.4);  // bigger, shrinks as it rises
+      // soft halo
+      ctx.globalAlpha = a * 0.5;
+      const hg = ctx.createRadialGradient(x, y, 0, x, y, r * 2.4);
+      hg.addColorStop(0, p.warm > 0.5 ? 'rgba(255, 170, 70, 1)' : 'rgba(255, 100, 35, 1)');
+      hg.addColorStop(1, 'rgba(255, 60, 10, 0)');
+      ctx.fillStyle = hg;
+      ctx.fillRect(x - r * 2.4, y - r * 2.4, r * 4.8, r * 4.8);
+      // bright core
+      ctx.globalAlpha = a;
+      ctx.fillStyle = p.warm > 0.5 ? 'rgba(255, 210, 140, 1)' : 'rgba(255, 130, 60, 1)';
+      ctx.beginPath(); ctx.arc(x, y, Math.max(0.8, r * 0.5), 0, Math.PI * 2); ctx.fill();
     }
   } else if (kind === 'SNOW') {
     // SNOW — a PERSISTENT light flurry on every ice world even on a CALM day,
