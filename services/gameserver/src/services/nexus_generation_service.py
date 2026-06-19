@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, insert, update, delete
 from sqlalchemy.orm import selectinload
 
+from src.core.commodity_economy import base_price as commodity_base_price
 from src.core.database import get_async_session
 from src.models.sector import Sector
 from src.models.planet import Planet
@@ -510,16 +511,23 @@ class NexusGenerationService:
         if not stations:
             return 0
 
-        # Base commodity definitions
+        # Base commodity definitions. base_price now derives from the WO-Y /
+        # ADR-0082 single source of truth (src.core.commodity_economy), the same
+        # table that feeds the trading-engine ranges and the citadel safe credit
+        # values — so nexus seeds can no longer drift from the live economy.
+        # quantity/capacity remain local bootstrap stock seeds (not price econ).
+        # Behaviour-preserving: commodity_base_price() reproduces ore 15 /
+        # organics 18 / equipment 35 / fuel 12 / luxury 100 / gourmet 80 /
+        # exotic 250 / colonists 50 exactly.
         base_commodities = {
-            "ore": {"base_price": 15, "quantity": 1000, "capacity": 5000},
-            "organics": {"base_price": 18, "quantity": 800, "capacity": 3000},
-            "equipment": {"base_price": 35, "quantity": 500, "capacity": 2000},
-            "fuel": {"base_price": 12, "quantity": 1500, "capacity": 4000},
-            "luxury_goods": {"base_price": 100, "quantity": 200, "capacity": 800},
-            "gourmet_food": {"base_price": 80, "quantity": 150, "capacity": 600},
-            "exotic_technology": {"base_price": 250, "quantity": 50, "capacity": 200},
-            "colonists": {"base_price": 50, "quantity": 100, "capacity": 500},
+            "ore": {"base_price": commodity_base_price("ore"), "quantity": 1000, "capacity": 5000},
+            "organics": {"base_price": commodity_base_price("organics"), "quantity": 800, "capacity": 3000},
+            "equipment": {"base_price": commodity_base_price("equipment"), "quantity": 500, "capacity": 2000},
+            "fuel": {"base_price": commodity_base_price("fuel"), "quantity": 1500, "capacity": 4000},
+            "luxury_goods": {"base_price": commodity_base_price("luxury_goods"), "quantity": 200, "capacity": 800},
+            "gourmet_food": {"base_price": commodity_base_price("gourmet_food"), "quantity": 150, "capacity": 600},
+            "exotic_technology": {"base_price": commodity_base_price("exotic_technology"), "quantity": 50, "capacity": 200},
+            "colonists": {"base_price": commodity_base_price("colonists"), "quantity": 100, "capacity": 500},
         }
 
         # Trading patterns by station class

@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 
 from sqlalchemy.orm import Session
 
+from src.core.commodity_economy import get_commodity_credit_values
 from src.models.player import Player
 from src.models.planet import Planet
 
@@ -108,11 +109,16 @@ CITADEL_LEVELS = {
 # safe_storage figures above are that cap. These per-unit values (the economy's
 # base trade prices — see ADR-0082) convert stored commodities into that
 # cr-equivalent so credits and goods share one capacity pool.
-COMMODITY_CREDIT_VALUE = {
-    "fuel_ore": 15,
-    "organics": 18,
-    "equipment": 35,
-}
+#
+# WO-Y / ADR-0082: these values now derive from the SINGLE source of truth in
+# src.core.commodity_economy (which also feeds the trading-engine price ranges),
+# so the safe and the market can no longer silently disagree on base prices.
+# Keys keep the citadel/planet "fuel_ore" vocabulary (the planet.fuel_ore Column
+# and the citadel API ^(fuel_ore|organics|equipment)$ contract); the single
+# table speaks canonical "ore" and is remapped here at the domain boundary.
+# Behaviour-preserving: reproduces fuel_ore 15 / organics 18 / equipment 35
+# exactly (guarded by import-time assertions in commodity_economy).
+COMMODITY_CREDIT_VALUE = get_commodity_credit_values()
 
 
 class CitadelService:

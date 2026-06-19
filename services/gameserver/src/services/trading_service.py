@@ -12,6 +12,7 @@ from datetime import datetime, UTC
 import logging
 
 from src.core.game_time import canonical_hours_since
+from src.core.commodity_economy import get_commodity_price_ranges
 from src.models.station import Station, StationClass
 from src.models.market_transaction import MarketPrice
 
@@ -280,18 +281,14 @@ def compute_station_lever_multiplier(db: Session, player, station) -> Tuple[floa
 
 # Spec-defined price ranges per commodity (from Resources.aispec;
 # precious_metals per sw2102-docs ADR-0062 E-D1: 80-180 cr/unit, slotted
-# between equipment and exotic_technology)
-COMMODITY_PRICE_RANGES: Dict[str, Dict[str, int]] = {
-    "ore":               {"min": 15,  "max": 45},
-    "organics":          {"min": 8,   "max": 25},
-    "gourmet_food":      {"min": 30,  "max": 70},
-    "fuel":              {"min": 20,  "max": 60},
-    "equipment":         {"min": 50,  "max": 120},
-    "precious_metals":   {"min": 80,  "max": 180},
-    "exotic_technology":  {"min": 150, "max": 300},
-    "luxury_goods":      {"min": 75,  "max": 200},
-    "colonists":         {"min": 30,  "max": 80},
-}
+# between equipment and exotic_technology).
+#
+# WO-Y / ADR-0082: these ranges now derive from the SINGLE source of truth in
+# src.core.commodity_economy (which also feeds the citadel safe credit values),
+# so trading and construction/credit valuation can no longer silently disagree.
+# This is a behaviour-preserving alias — get_commodity_price_ranges() reproduces
+# the exact prior values (guarded by import-time assertions in that module).
+COMMODITY_PRICE_RANGES: Dict[str, Dict[str, int]] = get_commodity_price_ranges()
 
 # Sell/buy price spread factor — stations sell higher and buy lower
 # This creates the profit margin that drives inter-station trade routes
