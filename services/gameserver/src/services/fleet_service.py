@@ -306,6 +306,179 @@ class FleetService:
         logger.info(f"Disbanded fleet {fleet_id}")
         return True
 
+    # Fleet Supply Methods
+
+    # ---- Resupply kernel constants (NO-CANON — FLAGGED for DECISIONS Pending) ----
+    #
+    # fleet-tactics.md "Supply" states only: "Supply replenishes when the fleet
+    # is docked at a friendly station, at a rate proportional to station class."
+    # It is explicitly marked 📐 design-only and gives NO credit cost and NO
+    # per-class numbers. The values below are a SENSIBLE KERNEL, not canon, and
+    # must be reconciled with a Max ruling (see report → DECISIONS Pending
+    # "fleet-station-resupply cost+rate"). They are intentionally named so a
+    # future canon swap is a one-line change.
+    SUPPLY_MAX = 100                      # Fleet.supply_level upper bound (model: 0-100)
+    RESUPPLY_COST_PER_POINT = 50         # credits charged per supply POINT restored
+    # "rate proportional to station class": a single resupply visit can raise
+    # supply by at most (base + class * step) points. A Class-0/1 outpost tops
+    # up slowly; a Class-11 hub can fully refill in one visit. This is the
+    # canon "rate proportional to station class" expressed as a per-action
+    # restore CEILING (the fleet still pays per point actually restored).
+    RESUPPLY_BASE_RESTORE = 20           # min points any friendly station restores per visit
+    RESUPPLY_RESTORE_PER_CLASS = 8       # additional restore-ceiling points per station class
+
+    def _max_restore_for_station(self, station: "Station") -> int:
+        """Per-visit restore CEILING for a station, scaling with its class.
+
+        NO-CANON kernel (see RESUPPLY_* constants). station_class is a
+        StationClass enum whose .value is the 0-11 integer class.
+        """
+        try:
+            station_class = station.station_class.value if station.station_class is not None else 0
+        except AttributeError:
+            station_class = int(station.station_class or 0)
+        return self.RESUPPLY_BASE_RESTORE + self.RESUPPLY_RESTORE_PER_CLASS * int(station_class)
+
+    def resupply_fleet(self, fleet_id: UUID, player_id: UUID) -> Dict[str, Any]:
+        """Pay credits to raise a docked fleet's supply_level back toward max.
+
+        This is the recovery counterpart to the WO-R decay tick (which only ever
+        LOWERS supply); it is the only path that RAISES Fleet.supply_level, so a
+        depleted fleet is no longer permanently combat-locked once it can reach a
+        friendly station. DOES NOT touch decay or _calculate_formation_bonus.
+
+        Requirements (all enforced; reject before mutating any state):
+          - The fleet exists and is not disbanded.
+          - The requesting player is a MEMBER of the fleet.
+          - The fleet is not IN_BATTLE.
+          - The player is DOCKED at a station (player.is_docked + current_port_id),
+            and that station is in the fleet's sector (the fleet is at the dock).
+          - The player has enough credits for the restore being purchased.
+
+        Cost + restore-rate numbers are a NO-CANON kernel (see RESUPPLY_*).
+
+        Returns: {fleet_id, supply_level (new), supply_restored, credits_spent,
+                  station_id, station_class, credits_remaining}.
+        Raises ValueError on any precondition failure.
+        """
+        # Lock the fleet row so concurrent resupply/decay/battle transitions are
+        # serialized against this top-up.
+        fleet = self.db.query(Fleet).filter(
+            Fleet.id == fleet_id
+        ).with_for_update().first()
+        if not fleet:
+            raise ValueError(f"Fleet {fleet_id} not found")
+
+        if fleet.status == FleetStatus.DISBANDED.value:
+            raise ValueError("Cannot resupply a disbanded fleet")
+
+        if fleet.status == FleetStatus.IN_BATTLE.value:
+            raise ValueError("Cannot resupply a fleet during battle")
+
+        # Requesting player must be a member of the fleet (owner check mirrored
+        # by the route's auth/ownership gate; enforced here too for safety).
+        membership = self.db.query(FleetMember).filter(
+            and_(
+                FleetMember.fleet_id == fleet_id,
+                FleetMember.player_id == player_id
+            )
+        ).first()
+        if not membership:
+            raise ValueError("Only a member of the fleet can resupply it")
+
+        # Row-lock the paying player; read docking + credits under the lock.
+        player = self.db.query(Player).filter(
+            Player.id == player_id
+        ).with_for_update().first()
+        if not player:
+            raise ValueError(f"Player {player_id} not found")
+
+        # The fleet is "docked" when its paying member is docked at a station
+        # that sits in the fleet's sector. Fleet.sector_id is a Station/Sector
+        # UUID; Station.sector_id is the integer sector number, so we resolve
+        # the docked station and verify it is the fleet's location.
+        if not player.is_docked or player.current_port_id is None:
+            raise ValueError("You must be docked at a station to resupply the fleet")
+
+        from src.models.station import Station
+        station = self.db.query(Station).filter(
+            Station.id == player.current_port_id
+        ).first()
+        if not station:
+            raise ValueError("Docked station not found")
+
+        # Verify the fleet is at this dock. The fleet tracks a Sector UUID
+        # (Fleet.sector_id → sectors.id); the station carries that same UUID in
+        # sector_uuid. If the fleet has no sector recorded we fall back to the
+        # player's integer sector vs the station's integer sector_id.
+        fleet_at_station = False
+        if fleet.sector_id is not None and station.sector_uuid is not None:
+            fleet_at_station = fleet.sector_id == station.sector_uuid
+        else:
+            fleet_at_station = player.current_sector_id == station.sector_id
+        if not fleet_at_station:
+            raise ValueError("The fleet is not docked at your station")
+
+        current_supply = fleet.supply_level if fleet.supply_level is not None else self.SUPPLY_MAX
+
+        # Idempotent / safe at (or above) full supply: reject as a no-op so the
+        # player is never charged for nothing.
+        if current_supply >= self.SUPPLY_MAX:
+            raise ValueError("Fleet supply is already full")
+
+        # How much CAN this station restore in one visit (class-scaled ceiling),
+        # bounded by the headroom to SUPPLY_MAX.
+        headroom = self.SUPPLY_MAX - current_supply
+        restore_ceiling = self._max_restore_for_station(station)
+        desired_restore = min(headroom, restore_ceiling)
+
+        # How much can the player AFFORD (charged per point restored)? Restore
+        # only the points they can pay for — never partially mutate then fail.
+        credits = player.credits or 0
+        affordable_points = credits // self.RESUPPLY_COST_PER_POINT
+        if affordable_points <= 0:
+            raise ValueError("Insufficient credits to resupply the fleet")
+
+        supply_restored = int(min(desired_restore, affordable_points))
+        if supply_restored <= 0:
+            # Defensive: nothing to do (e.g. headroom rounded to 0).
+            raise ValueError("No supply could be restored")
+
+        cost = supply_restored * self.RESUPPLY_COST_PER_POINT
+
+        # Apply: charge credits, raise supply. This is the ONLY place supply
+        # rises — combat's 0-supply block at initiate_battle clears the moment
+        # supply_level goes above 0.
+        player.credits = credits - cost
+        fleet.supply_level = current_supply + supply_restored
+
+        station_class_value = None
+        try:
+            station_class_value = (
+                station.station_class.value if station.station_class is not None else None
+            )
+        except AttributeError:
+            station_class_value = int(station.station_class) if station.station_class is not None else None
+
+        self.db.commit()
+        self.db.refresh(fleet)
+
+        logger.info(
+            "Resupplied fleet %s at station %s (class %s): +%d supply (now %d) for %d cr by player %s",
+            fleet_id, station.id, station_class_value, supply_restored,
+            fleet.supply_level, cost, player_id,
+        )
+
+        return {
+            "fleet_id": str(fleet.id),
+            "supply_level": fleet.supply_level,
+            "supply_restored": supply_restored,
+            "credits_spent": cost,
+            "credits_remaining": player.credits,
+            "station_id": str(station.id),
+            "station_class": station_class_value,
+        }
+
     # Fleet Battle Methods
 
     def initiate_battle(
