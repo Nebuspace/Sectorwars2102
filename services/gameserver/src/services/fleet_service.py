@@ -716,7 +716,11 @@ class FleetService:
             if current_hull <= 0:
                 current_hull = 0
                 self._set_ship_combat_stat(ship, "hull", 0)
-                ship.is_destroyed = True
+                # NOTE: do NOT pre-set ship.is_destroyed here. The shared
+                # destruction handler (ShipService.destroy_ship), invoked from
+                # _record_ship_casualty, owns the is_destroyed flag along with
+                # the escape-pod swap, emergency-cargo transfer, and insurance
+                # payout — giving FLEET kills parity with SOLO kills.
                 self._record_ship_casualty(ship, battle, destroyed=True)
                 round_results["ships_destroyed"].append({
                     "ship_id": str(ship.id),
@@ -792,6 +796,34 @@ class FleetService:
             fleet = member.fleet
             if fleet is not None:
                 fleet.morale = max(0, (fleet.morale or 100) - 30)
+
+        # Route the actual hull destruction through the SAME shared handler the
+        # SOLO combat path uses (ShipService.destroy_ship). This is what gives
+        # FLEET kills parity on the destruction side: escape-pod ejection,
+        # 10% emergency-cargo transfer, and — the dead-end this fixes — the
+        # INSURANCE payout to the registered owner. Previously a fleet KIA only
+        # flipped is_destroyed and recorded a casualty row, so a hull insured
+        # under ship-insurance.md never paid out when it died in a fleet battle.
+        #
+        # The destroyer is the opposing fleet's commander (the destroyed ship's
+        # fleet is the attacker iff is_attacker, so the killer is the other
+        # side). destroy_ship currently makes no use of the destroyer arg, but
+        # it is passed for signature/audit parity with the solo path.
+        #
+        # Ordering: destroy_ship runs BEFORE remove_ship_from_fleet because the
+        # latter commits the session; destroy_ship itself never commits, so its
+        # owner relocation + insurance credit ride along in the same commit.
+        # Escape pods are indestructible (mirrors CombatService): skip them so a
+        # pod that bottoms out at hull 0 isn't fed to destroy_ship (which would
+        # no-op anyway) and the casualty/removal bookkeeping still runs.
+        if destroyed:
+            from src.services.ship_service import ShipService
+            if not ShipService(self.db).is_ship_indestructible(ship):
+                killer_fleet = (
+                    battle.defender_fleet if is_attacker else battle.attacker_fleet
+                )
+                destroyer = killer_fleet.commander if killer_fleet else None
+                ShipService(self.db).destroy_ship(ship, destroyer=destroyer, cause="combat")
 
         # Remove ship from fleet if destroyed
         if destroyed:
