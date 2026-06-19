@@ -881,3 +881,16 @@ regen (replaces daily reset; wired into movement + trading dock/undock) · comba
 /armor_rating applied · relational medals (ADR-0028: catalog seed + idempotent SAVEPOINT-scoped
 award + dispatcher + `/medals` routes) · journey win-state (Fleet Admiral → is_game_complete).
 Suspect/Wanted SET deferred (canon conflict → DECISIONS.md). CLOSED to follow after live proof.
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 4 service lanes, cut 1)
+Deployed `a1ff6b6`, gameserver healthy, boot log "Seeded 13 medals into the catalog". All four
+sections PROVEN live (server-minted JWTs, no passwords):
+• **Turn regen (ADR-0004)** — GET /player/state took verifpilot 100→142 turns over ~1h elapsed
+  (rate 1000/86400 ≈ 41.6/h), capped at max_turns=1000 (rank-only — double-aria fix confirmed);
+  DB anchor advanced to exactly start+42×86.4s (remainder-rollover exact).
+• **Medals (ADR-0028)** — award_medal first=True / second=False (SAVEPOINT idempotency, the
+  CRITICAL review fix); GET /medals/me 200 returns Bronze Star w/ catalog data.
+• **Journey victory** — 60k pts → Fleet Admiral → is_game_complete=true + rank_victory_at; GET
+  /ranking/rank 200 surfaces both (response-model wiring).
+• **Combat ratings** — armor 0.5→half hull dmg, 1.5→clamped 0.9; shield_res 0.5→half; 0.0→baseline.
+All test fixtures (verifpilot) reverted. No migration. gameserver healthy.
