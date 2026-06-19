@@ -1417,36 +1417,42 @@ def _run_genesis_completion_sync() -> int:
 # ---------------------------------------------------------------------------
 
 def _run_planetary_advance_sync() -> Dict[str, int]:
-    """Drive every terraforming project and besieged planet forward.
+    """Drive terraforming, siege AND commodity production forward for planets.
 
-    Before this sweep, TerraformingService._advance_terraforming and
-    PlanetaryService.advance_siege only ever ran when a player happened to
-    read the affected planet (advance-on-read) — a colony whose owner never
-    re-opened its screen would freeze mid-terraform or sit at full morale
-    under siege forever. This periodic sweep makes the canonical clock
-    authoritative for ALL such planets, mirroring the genesis-completion
-    sweep above.
+    Before this sweep, TerraformingService._advance_terraforming,
+    PlanetaryService.advance_siege and PlanetaryService.realize_production
+    (commodity accrual) only ever ran when a player happened to read the
+    affected planet (advance-on-read) — a colony whose owner never re-opened
+    its screen would freeze mid-terraform, sit at full morale under siege, or
+    stop banking the fuel/organics/equipment its colonists produce. This
+    periodic sweep makes the canonical clock authoritative for ALL such
+    planets, mirroring the genesis-completion sweep above.
 
-    Both underlying advance methods are time-accurate (they apply exactly the
-    ticks accrued since the durable per-planet anchor) and idempotent (a
-    caught-up planet is a no-op), so running them on a fixed cadence neither
-    over- nor under-awards: a planet read by its owner in between is simply
-    already current when the sweep arrives.
+    All three underlying advance methods are time-accurate (they apply exactly
+    the ticks/elapsed accrued since the durable per-planet anchor —
+    terraforming_progress, siege_turns, and last_production + the
+    active_events['production_carry'] fractional bank respectively) and
+    idempotent (a caught-up planet is a no-op), so running them on a fixed
+    cadence neither over- nor under-awards: a planet read by its owner in
+    between is simply already current when the sweep arrives, and the sweep
+    + an interleaved read accrue exactly elapsed × rate ONCE.
 
-    Cheap on a steady galaxy: the two indexed filters (terraforming_active /
-    under_siege) return nothing when no planet qualifies, so the sweep is a
-    safe no-op there. xact-advisory-lock-gated so a second instance skips
-    instead of double-advancing. Per-planet failure is isolated and rolled
-    back so one bad planet cannot abort the rest of the sweep.
+    Cheap on a steady galaxy: the indexed filters (terraforming_active /
+    under_siege / owned-and-colonized) return nothing or no-op rows when no
+    planet qualifies, so the sweep is a safe no-op there. xact-advisory-lock-
+    gated so a second instance skips instead of double-advancing. Per-planet
+    failure is isolated and rolled back so one bad planet cannot abort the
+    rest of the sweep.
 
-    Returns {terraforming, siege} — the count of planets that actually moved.
+    Returns {terraforming, siege, production} — the count of planets that
+    actually moved in each phase.
     """
     from src.core.database import SessionLocal
     from src.models.planet import Planet
     from src.services.planetary_service import PlanetaryService
     from src.services.terraforming_service import TerraformingService
 
-    result = {"terraforming": 0, "siege": 0}
+    result = {"terraforming": 0, "siege": 0, "production": 0}
     db = SessionLocal()
     try:
         got_lock = db.execute(
@@ -1516,6 +1522,44 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
             except Exception:
                 logger.exception(
                     "Planetary advance: siege failed for planet %s", planet_id,
+                )
+                db.rollback()
+
+        # Commodity production progression. realize_production accrues exactly
+        # the fuel/organics/equipment (and research points) produced since the
+        # durable last_production anchor and leaves the commit to the caller —
+        # same per-planet commit/rollback discipline as terraforming/siege. The
+        # filter targets owned, colonized planets only (owner_id set AND
+        # colonists > 0); an unowned or empty planet produces nothing and is
+        # skipped without a row lock. Idempotent: a player read between sweeps
+        # leaves the planet already current, so the sweep is a clean no-op.
+        production_planets = (
+            db.query(Planet.id)
+            .filter(
+                Planet.owner_id.isnot(None),
+                Planet.colonists > 0,
+            )
+            .all()
+        )
+        for (planet_id,) in production_planets:
+            try:
+                planet = (
+                    db.query(Planet)
+                    .filter(Planet.id == planet_id)
+                    .with_for_update()
+                    .first()
+                )
+                if planet is None:
+                    continue
+                if planetary.realize_production(planet):
+                    db.commit()
+                    result["production"] += 1
+                else:
+                    db.rollback()  # release the row lock; nothing changed
+            except Exception:
+                logger.exception(
+                    "Planetary advance: production failed for planet %s",
+                    planet_id,
                 )
                 db.rollback()
 
@@ -2019,12 +2063,17 @@ async def npc_scheduler_loop() -> None:
         if elapsed % PLANETARY_ADVANCE_SECONDS == 0:
             try:
                 advanced = await asyncio.to_thread(_run_planetary_advance_sync)
-                if advanced.get("terraforming") or advanced.get("siege"):
+                if (
+                    advanced.get("terraforming")
+                    or advanced.get("siege")
+                    or advanced.get("production")
+                ):
                     logger.info(
                         "NPC scheduler: planetary advance — %d terraforming, "
-                        "%d siege planet(s) progressed",
+                        "%d siege, %d production planet(s) progressed",
                         advanced.get("terraforming", 0),
                         advanced.get("siege", 0),
+                        advanced.get("production", 0),
                     )
             except asyncio.CancelledError:
                 raise

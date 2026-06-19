@@ -128,6 +128,16 @@ class TerraformingProject(BaseModel):
     cost: Dict[str, int]
     impact: Dict[str, Any]
 
+class PlanetTickResult(BaseModel):
+    """Result of force-advancing one planet's commodity production."""
+    planetId: str
+    planetName: str
+    changed: bool
+    before: Dict[str, int]
+    after: Dict[str, int]
+    delta: Dict[str, int]
+    lastProductionAt: Optional[str]
+
 # Production Monitoring Endpoint
 
 @router.get("/colonization/production")
@@ -735,3 +745,92 @@ async def get_admin_colonization_planets(
     except Exception as e:
         logger.error(f"Error in get_admin_planets: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch planetary data: {str(e)}")
+
+
+# Manual Production Tick Trigger
+#
+# Canon: SYSTEMS/planetary-production-tick.md "Inputs" lists
+# `POST /api/v1/admin/planets/{id}/tick` as the manual admin trigger for the
+# production tick. This router mounts at /admin, so the path below resolves to
+# exactly that under the /api/v1 prefix. Gated by the SAME get_current_admin
+# dependency every other route in this file uses (no new RBAC/gating invented).
+
+@router.post("/planets/{planet_id}/tick", response_model=PlanetTickResult)
+async def tick_planet_production(
+    planet_id: str,
+    current_admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Force-advance one planet's commodity production and return the DB delta.
+
+    Drives PlanetaryService.realize_production (the lazy advance-on-read accrual
+    extracted as a player-read-independent entry point) on a single planet under
+    a row lock, mirroring the scheduler's planetary-advance sweep. Idempotent:
+    the accrual consumes only the elapsed time that produced whole units from the
+    durable last_production anchor (with sub-unit progress banked in
+    active_events['production_carry']), so calling it repeatedly accrues exactly
+    elapsed × rate once and is a no-op once caught up — it never double-counts.
+    """
+    from uuid import UUID
+    from src.services.planetary_service import PlanetaryService
+
+    try:
+        pid = UUID(planet_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid planet id")
+
+    # Lock the row for the duration of the accrual so a concurrent scheduled
+    # sweep or player read serializes behind us and sees our advanced anchor
+    # (no double-credit). Same with_for_update discipline as the sweep.
+    planet = (
+        db.query(Planet)
+        .filter(Planet.id == pid)
+        .with_for_update()
+        .first()
+    )
+    if planet is None:
+        raise HTTPException(status_code=404, detail="Planet not found")
+
+    def _research_points(p) -> int:
+        ev = p.active_events
+        return int(ev.get("research_points", 0) or 0) if isinstance(ev, dict) else 0
+
+    before = {
+        "fuel": planet.fuel_ore or 0,
+        "organics": planet.organics or 0,
+        "equipment": planet.equipment or 0,
+        "research": _research_points(planet),
+    }
+
+    try:
+        changed = PlanetaryService(db).realize_production(planet)
+        # Commit even on the no-unit-but-anchor-advanced path so the durable
+        # anchor advance persists (realize_production returns True there too);
+        # rollback only when truly nothing changed to release the row lock.
+        if changed:
+            db.commit()
+            db.refresh(planet)
+        else:
+            db.rollback()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error ticking production for planet {planet_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to tick planet production: {str(e)}")
+
+    after = {
+        "fuel": planet.fuel_ore or 0,
+        "organics": planet.organics or 0,
+        "equipment": planet.equipment or 0,
+        "research": _research_points(planet),
+    }
+    delta = {k: after[k] - before[k] for k in before}
+
+    return PlanetTickResult(
+        planetId=str(planet.id),
+        planetName=planet.name,
+        changed=changed,
+        before=before,
+        after=after,
+        delta=delta,
+        lastProductionAt=planet.last_production.isoformat() if planet.last_production else None,
+    )

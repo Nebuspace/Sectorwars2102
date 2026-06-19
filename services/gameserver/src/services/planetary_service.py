@@ -15,7 +15,7 @@ import logging
 
 from src.core.game_time import canonical_hours_since
 from src.models.player import Player
-from src.models.planet import Planet, player_planets
+from src.models.planet import Planet, PlanetType, player_planets
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.genesis_device import GenesisDevice, GenesisType, GenesisStatus, PlanetFormation
@@ -114,6 +114,50 @@ RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
 # i.e. base growth = 1% per day, scaled linearly by habitability.
 DAILY_GROWTH_BASE = 0.01
 SECONDS_PER_DAY = 86400.0
+
+# Per-PlanetType production-efficiency multipliers. CANON: the planet-type
+# efficiency table in FEATURES/planets/production.md ("Planet-type efficiency
+# table") and the matching column block in FEATURES/planets/colonization.md
+# ("Planet types"). The doc names the welcome-world type "TERRA"; the enum
+# (models/planet.py:PlanetType) spells it "TERRAN" — mapped to the documented
+# TERRA row (0/0/0: a Capital welcome world doesn't produce). The table folds
+# directly into _calculate_production_rates as a per-resource multiplier on top
+# of building / specialization / citadel / siege modifiers.
+#
+# CANON GAP (flagged, NOT invented): PlanetType also defines GAS_GIANT, JUNGLE,
+# ARCTIC and TROPICAL, which the canon efficiency table does not list. Per the
+# WO-O instruction ("If a specific type's number isn't in canon, FLAG it and use
+# a neutral 1.0"), each of those four gets a neutral {1.0, 1.0, 1.0} and is
+# recorded in NEUTRAL_TYPE_EFFICIENCY_TYPES so the gap is auditable rather than
+# silently guessed. See DECISIONS write-back note in the WO-O report.
+TYPE_EFFICIENCY = {
+    # type:                 fuel,  organics, equipment
+    PlanetType.TERRAN:      {"fuel": 0.0, "organics": 0.0, "equipment": 0.0},
+    PlanetType.MOUNTAINOUS: {"fuel": 0.6, "organics": 0.4, "equipment": 1.5},
+    PlanetType.OCEANIC:     {"fuel": 1.5, "organics": 0.4, "equipment": 0.6},
+    PlanetType.DESERT:      {"fuel": 0.4, "organics": 1.5, "equipment": 0.6},
+    PlanetType.VOLCANIC:    {"fuel": 1.0, "organics": 0.0, "equipment": 2.0},
+    PlanetType.BARREN:      {"fuel": 0.0, "organics": 0.0, "equipment": 1.5},
+    PlanetType.ICE:         {"fuel": 0.8, "organics": 1.2, "equipment": 0.5},
+}
+# Neutral 1.0 fallback for the four enum types absent from the canon table.
+NEUTRAL_TYPE_EFFICIENCY = {"fuel": 1.0, "organics": 1.0, "equipment": 1.0}
+NEUTRAL_TYPE_EFFICIENCY_TYPES = (
+    PlanetType.GAS_GIANT,
+    PlanetType.JUNGLE,
+    PlanetType.ARCTIC,
+    PlanetType.TROPICAL,
+)
+
+
+def type_efficiency_for(planet_type) -> Dict[str, float]:
+    """Per-resource production multiplier for a PlanetType (canon table above).
+
+    Returns a neutral {1.0, 1.0, 1.0} for any type not in the canon table
+    (the four flagged GAP types, or a NULL/unknown type from legacy data) so an
+    un-canonized planet type never zeroes or inflates production by accident.
+    """
+    return TYPE_EFFICIENCY.get(planet_type, NEUTRAL_TYPE_EFFICIENCY)
 
 
 def max_colonists_for(citadel_level: int) -> int:
@@ -414,6 +458,29 @@ class PlanetaryService:
             + (f", +{research_gained} research" if research_gained > 0 else "")
         )
         return True
+
+    def realize_production(self, planet: Planet) -> bool:
+        """Force-advance one planet's commodity production to the canonical now.
+
+        Scheduler/admin-facing alias for the lazy advance-on-read accrual
+        (apply_resource_production). Extracted so the production sweep and the
+        admin /tick endpoint can drive a planet's production forward WITHOUT a
+        player read of get_planet_details, exactly as terraforming/siege use
+        _advance_terraforming / advance_siege off the read path.
+
+        Idempotency is inherited unchanged from apply_resource_production: the
+        durable per-planet anchor is planet.last_production, with sub-unit
+        progress banked in active_events['production_carry']. Only the elapsed
+        time that produced whole units is consumed from the anchor; running it
+        twice in quick succession (e.g. scheduler sweep + admin tick + a player
+        read) accrues exactly elapsed × rate once and is a no-op thereafter —
+        never double-counting. Mutates the planet; the CALLER commits (mirrors
+        the terraforming/siege advance methods the sweep already drives).
+
+        Returns True if any state changed (units accrued, or the anchor was
+        initialized/advanced) so the caller knows to commit.
+        """
+        return self.apply_resource_production(planet)
 
     def allocate_colonists(
         self,
@@ -1492,6 +1559,19 @@ class PlanetaryService:
         fuel_rate = (planet.fuel_allocation or 0) * base_rate * (1 + mine_level * 0.1)
         organics_rate = (planet.organics_allocation or 0) * base_rate * (1 + farm_level * 0.1)
         equipment_rate = (planet.equipment_allocation or 0) * base_rate * (1 + factory_level * 0.1)
+
+        # Planet-type efficiency (CANON: FEATURES/planets/production.md formula
+        # `resource += ... × planet_type_efficiency × ...`; per-type table in
+        # production.md / colonization.md). A VOLCANIC world produces 0 organics
+        # and 2× equipment; a TERRA(N) welcome world produces nothing. Applied
+        # to the three commodity rates only — colonist growth is governed by the
+        # habitability formula below, and the per-type growth bias is captured
+        # there via habitability_score (the per-type negative-growth branch is
+        # design-only per colonization.md, so not enforced here).
+        type_eff = type_efficiency_for(planet.type)
+        fuel_rate *= type_eff["fuel"]
+        organics_rate *= type_eff["organics"]
+        equipment_rate *= type_eff["equipment"]
 
         # Colonist growth rate (1% per day base), scaled by habitability
         habitability = max(planet.habitability_score or 0, 1)
