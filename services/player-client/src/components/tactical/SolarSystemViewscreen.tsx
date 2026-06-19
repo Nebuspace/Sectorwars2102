@@ -3144,7 +3144,14 @@ function buildLandedCache(
       for (let i = 0; i < cellN; i++) {
         cells.push({ dx: (vRng() - 0.5) * 1.7, dy: (vRng() - 0.5) * 1.3, r: 0.16 + vRng() * 0.20 });
       }
-      lake = { cxFrac: 0.30 + vRng() * 0.40, cyFrac: 0.74 + vRng() * 0.06, rxFrac: 0.22 + vRng() * 0.10, ryFrac: 0.05 + vRng() * 0.03, cells };
+      // Bias the lake to ONE side of the foreground so the citadel can sit on the
+      // OPPOSITE shore (buildings beside the lake, never in it). Still large/visible.
+      const lakeSide = vRng() < 0.5 ? -1 : 1;            // -1 left shore, +1 right shore
+      const lakeRx = 0.20 + vRng() * 0.07;              // 0.20..0.27 (kept large)
+      // centre sits in the biased third, far enough that the far rim leaves an
+      // opposite shore clear of the lake for the city.
+      const lakeCx = lakeSide < 0 ? (0.24 + vRng() * 0.08) : (0.68 + vRng() * 0.08);
+      lake = { cxFrac: lakeCx, cyFrac: 0.74 + vRng() * 0.06, rxFrac: lakeRx, ryFrac: 0.05 + vRng() * 0.03, cells };
     }
     // jagged foreground cracks (3–5, min-spread) — SHORT LOCAL fissures in the
     // ground (each hugs the terrain contour at draw time), never wide horizontal
@@ -3276,6 +3283,18 @@ function buildLandedCache(
     citadelLandX = headland.side === 'left'
       ? { min: w * 0.05, max: w * (headland.landFrac - 0.06) }
       : { min: w * (1 - headland.landFrac + 0.06), max: w * 0.95 };
+  }
+  // VOLCANIC: keep the city on the shore OPPOSITE the lava lake (no buildings in it).
+  // The lake is biased to one foreground side at seed time; give the citadel the
+  // other side's land window (with a small margin off the lake's near rim).
+  if (volcanic && volcanic.lake) {
+    const lk = volcanic.lake;
+    const lakeRight = lk.cxFrac + lk.rxFrac + 0.05;   // right rim of the lake (+margin)
+    const lakeLeft = lk.cxFrac - lk.rxFrac - 0.05;    // left rim of the lake (+margin)
+    // lake biased left → city on the right shore; biased right → city on the left.
+    citadelLandX = lk.cxFrac < 0.5
+      ? { min: w * Math.min(0.92, lakeRight), max: w * 0.96 }
+      : { min: w * 0.04, max: w * Math.max(0.08, lakeLeft) };
   }
   const citadelLayout = citadel > 0 ? buildCitadelLayout(w, h, worldSeed, citadel, pal, citadelLandX) : null;
 
@@ -5637,11 +5656,12 @@ function buildCitadelLayout(
   ][level];
   if (!cfg || cfg.n === 0) return null;
 
-  // VOLCANIC forge-cities read a touch larger (player request): bump structure
-  // footprints + heights ~20% (within 15–25%). Grounding is unaffected — heights
-  // grow upward from the same ground baseline. Other biomes unchanged.
+  // VOLCANIC forge-cities read a touch larger (player request): a GENTLE +8% bump to
+  // structure footprints + heights (a touch bigger than stock, not oversized — 1.2
+  // looked too big at L1). Grounding is unaffected — heights grow upward from the
+  // same ground baseline. Other biomes unchanged.
   const isVolcanic = pal.flourish === 'VOLCANIC';
-  const sizeMul = isVolcanic ? 1.2 : 1.0;
+  const sizeMul = isVolcanic ? 1.08 : 1.0;
 
   const cityX = clampX(lMin + (lMax - lMin) * (0.3 + rng() * 0.4));
   const spread = Math.min(w * cfg.spreadF, (lMax - lMin) * 0.5);
