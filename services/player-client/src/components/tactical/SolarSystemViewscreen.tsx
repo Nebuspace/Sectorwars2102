@@ -4105,7 +4105,7 @@ function drawLandedScene(
     drawVolcCracks(ctx, w, t, cache.volcanic, dc, ridgeYAt);
     drawEmberFountains(ctx, w, h, t, cache.volcanic, dc, cache.weather, ridgeYAt);
     // caldera ejecta arcing out of the crater onto the terrain (in front of cone).
-    drawLavaBombs(ctx, w, h, horizonY, t, cache.volcanic, dc, cache.weather, ridgeYAt);
+    drawLavaBombs(ctx, w, h, horizonY, t, cache.volcanic, dc, cache.weather);
   }
 
   // 5d) DESERT dune shimmer band ----------------------------------------------
@@ -4792,7 +4792,7 @@ function drawVolcCracks(
  *  Reduced motion (t===0): a couple of static bombs frozen mid-arc, no loop. */
 function drawLavaBombs(
   ctx: CanvasRenderingContext2D, w: number, h: number, horizonY: number, t: number,
-  vs: VolcanicScene, dc: DayCycle, wx: WeatherFx | null, ridgeYAt: (x: number) => number
+  vs: VolcanicScene, dc: DayCycle, wx: WeatherFx | null
 ): void {
   if (vs.bombs.length === 0) return;
   // resolve the crater mouth screen coords (mirror drawVolcanoFarLand's summit math).
@@ -4835,7 +4835,10 @@ function drawLavaBombs(
     // flight progress u: 0 at launch → 1 at landing.
     const u = reduced ? 0.45 : ((t * speed * bomb.period + bomb.launchPhase) % 1 + 1) % 1;
     const landX = bomb.landXFrac * w;
-    const landY = ridgeYAt(landX);
+    // land at the FOOT of the distant cone (on the horizon), NOT the foreground ground.
+    // ridgeYAt(landX) would drop the bomb all the way down to the near terrain, making it
+    // look like it flies a long way to the citadel; the volcano sits back at baseY.
+    const landY = baseY - 2;
     // launch a little to the bomb's outward side of the crater mouth.
     const startX = summitX + bomb.vx0 * baseHalf * 0.12;
     const startY = craterY;
