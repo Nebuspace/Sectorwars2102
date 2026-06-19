@@ -3092,11 +3092,15 @@ function buildLandedCache(
       const u = i / (np - 1);
       // smooth raised-cosine bell skewed toward `skew`.
       const d = u < skew ? (u / skew) : (1 - (u - skew) / (1 - skew));
-      let hgt = (0.5 - 0.5 * Math.cos(Math.max(0, d) * Math.PI)) ; // 0..1 smooth
-      hgt = 0.15 + hgt * 0.85;                    // never collapse to the horizon
+      let hgt = (0.5 - 0.5 * Math.cos(Math.max(0, d) * Math.PI)); // 0..1 smooth bell, 0 at both base ends
       hgt += (vRng() - 0.5) * noiseAmp;           // faint texture
       if (caldera) hgt = Math.min(hgt, 0.86);     // flat-topped rim
-      pts.push(Math.max(0.12, Math.min(1, hgt)));
+      hgt = Math.max(0, Math.min(1, hgt));
+      // The flanks must taper flush to the ground. Forcing the two base ends to 0
+      // (no lift, no min-height floor) keeps the silhouette from ending above the
+      // base and closing with a vertical cliff on the left/right.
+      if (i === 0 || i === np - 1) hgt = 0;
+      pts.push(hgt);
     }
     const coneColor = todBright > 0.3 ? 'rgba(40, 28, 32, 0.96)' : 'rgba(26, 16, 20, 0.97)';
     // lava runnels down the flanks from the crater (3–5).
