@@ -2123,6 +2123,11 @@ type CitadelKind =
   | 'OBSIDIAN_BUNKER'     // low angular heat-shielded bunker + slit-window strip
   | 'MAGMA_PIPELINE'      // two pillars + a glowing horizontal pipe (L3+ connector)
   | 'CATWALK_GANTRY'      // skeletal column + gantry arm + lit observation pod (L4+)
+  // --- OCEANIC coastal-future vocabulary (pass 3) ---
+  | 'SEADOME'        // translucent sea-blue glass observation dome (oceanic dome)
+  | 'DESAL_TOWER'    // coastal desalination tower: cylinder + external pipes + tank
+  | 'STILT_PLATFORM' // raised railed deck on stilts built out over the water
+  | 'SAIL_HALL'      // white tensile/sail peaked-roof hall (marina convention look)
   | 'ARCOLOGY'   // green tiered garden tower (terran signature)
   | 'TANK'       // utilitarian storage tank
   | 'MAST';      // antenna/mast (L1 outpost flourish)
@@ -5786,9 +5791,11 @@ function biomeArch(flourish: LandedPalette['flourish'], pal: LandedPalette): {
         winGlow: { r: 255, g: 190, b: 110 }, accent: 'rgba(235, 205, 150, 1)',
         signature: 'ZIGGURAT', fillers: ['DOME', 'WINDTOWER', 'BOX'], beaconKind: 'AIRCRAFT' };
     case 'OCEANIC':
-      return { body: 'rgb(214, 228, 236)', bodyLight: 'rgb(238, 248, 252)', bodyDark: 'rgb(150, 172, 188)',
-        winGlow: { r: 200, g: 235, b: 245 }, accent: 'rgba(150, 255, 200, 1)',
-        signature: 'LIGHTHOUSE', fillers: ['STILT', 'BOX', 'DOME'], beaconKind: 'LAMP' };
+      // coastal-future colony: clean WHITE bodies, sea-blue shadow face, warm-lit
+      // windows, a TEAL accent trim. Bespoke maritime vocabulary (see drawCitadelStruct).
+      return { body: 'rgb(228, 238, 244)', bodyLight: 'rgb(248, 252, 255)', bodyDark: 'rgb(150, 178, 196)',
+        winGlow: { r: 255, g: 226, b: 168 }, accent: 'rgba(40, 200, 190, 1)',
+        signature: 'LIGHTHOUSE', fillers: ['SEADOME', 'STILT_PLATFORM', 'DESAL_TOWER', 'SAIL_HALL'], beaconKind: 'LAMP' };
     case 'TERRAN':
       return { body: 'rgb(150, 190, 165)', bodyLight: 'rgb(190, 222, 198)', bodyDark: 'rgb(96, 140, 116)',
         winGlow: { r: 210, g: 255, b: 200 }, accent: 'rgba(150, 235, 170, 1)',
@@ -5840,6 +5847,7 @@ function buildCitadelLayout(
   // looked too big at L1). Grounding is unaffected — heights grow upward from the
   // same ground baseline. Other biomes unchanged.
   const isVolcanic = pal.flourish === 'VOLCANIC';
+  const isOceanic = pal.flourish === 'OCEANIC';
   const sizeMul = isVolcanic ? 1.08 : 1.0;
 
   const cityX = clampX(lMin + (lMax - lMin) * (0.3 + rng() * 0.4));
@@ -5894,7 +5902,7 @@ function buildCitadelLayout(
     // L2 leads with a crucible/furnace so even a small base reads forge-industrial.
     let kind: CitadelKind;
     if (level === 1) {
-      kind = isVolcanic ? 'HEAT_VENT_TOWER' : 'BOX';
+      kind = isVolcanic ? 'HEAT_VENT_TOWER' : isOceanic ? 'STILT_PLATFORM' : 'BOX';
     } else if (isVolcanic && level === 2 && i === 0) {
       kind = rng() < 0.5 ? 'SMELTER_CRUCIBLE' : 'BLAST_FURNACE_DOME';
     } else {
@@ -5915,12 +5923,12 @@ function buildCitadelLayout(
     });
   }
 
-  // VOLCANIC: re-lay the row with EVEN, NON-OVERLAPPING spacing. The random jitter
-  // above packs structures into ±spread and the big lakeside window is narrow, so
-  // footprints (esp. wide domes) intersected. Here we distribute across the FULL
-  // window and enforce a center-to-center gap = effHalf[i] + effHalf[i+1] + pad,
-  // using each kind's ACTUAL rendered half-width (domes/furnaces extend past bw).
-  if (isVolcanic && structures.length > 0) {
+  // VOLCANIC + OCEANIC: re-lay the row with EVEN, NON-OVERLAPPING spacing. The random
+  // jitter above packs structures into ±spread (and on a side-window biome the room is
+  // narrow), so footprints (esp. wide domes/sail halls) intersected. Distribute across
+  // the FULL window and enforce a center-to-center gap = effHalf[i]+effHalf[i+1]+pad,
+  // using each kind's ACTUAL rendered half-width (domes/halls extend past bw).
+  if ((isVolcanic || isOceanic) && structures.length > 0) {
     // effective half-footprint per kind (mirrors clipStructPath's widest extent).
     const effHalf = (st: CitadelStructure): number => {
       const half = st.bw / 2;
@@ -5929,6 +5937,9 @@ function buildCitadelLayout(
         case 'GEODESIC': return Math.max(half * 1.4, st.bh * 0.55);
         case 'ICEDOME': return Math.max(half * 1.4, st.bh * 0.5);
         case 'BLAST_FURNACE_DOME': return Math.max(half, st.bh * 0.9);
+        case 'SEADOME': return half * 1.15;             // glass dome arcs past bw
+        case 'SAIL_HALL': return half * 1.12;           // peaked roof overhangs a touch
+        case 'STILT_PLATFORM': return half * 1.18;      // deck cantilevers past the legs
         case 'MAST': return Math.max(2, half);
         default: return half;     // upright bodies + tapered towers ≈ bw/2
       }
@@ -6075,6 +6086,40 @@ function clipStructPath(
     }
     case 'CATWALK_GANTRY':
       ctx.rect(x - bw * 0.18, topY, bw * 0.36, bh); break;
+    // --- OCEANIC coastal-future kinds (pass 3) ---
+    case 'SEADOME': {
+      const r = half * 1.15;
+      const cy = groundY - r * 0.4;
+      ctx.rect(x - bw / 2, cy, bw, r * 0.4);             // base ring
+      ctx.moveTo(x + r, cy); ctx.arc(x, cy, r, 0, Math.PI, true);
+      break;
+    }
+    case 'DESAL_TOWER': {
+      const cw = bw * 0.66;
+      const tankH = bh * 0.16;
+      const bodyTop = topY + tankH;
+      ctx.rect(x - cw / 2, bodyTop, cw, groundY - bodyTop);
+      ctx.moveTo(x + cw * 0.62, bodyTop); ctx.ellipse(x, bodyTop, cw * 0.62, tankH, 0, 0, Math.PI, true);
+      break;
+    }
+    case 'STILT_PLATFORM': {
+      const deckH = Math.max(4, bh * 0.34);
+      const deckTop = groundY - bh;
+      const deckW = bw * 1.15;
+      ctx.rect(x - deckW / 2, deckTop, deckW, deckH);    // window-clip to the deck slab
+      break;
+    }
+    case 'SAIL_HALL': {
+      const wallH = bh * 0.32;
+      const wallTop = groundY - wallH;
+      const midY = topY + bh * 0.22;
+      ctx.rect(x - half, wallTop, bw, wallH);            // base wall
+      ctx.moveTo(x - half, wallTop);
+      ctx.quadraticCurveTo(x - half * 0.5, midY, x, topY);
+      ctx.quadraticCurveTo(x + half * 0.5, midY, x + half, wallTop);
+      ctx.closePath();
+      break;
+    }
     default: // BOX/STILT/KEEP/BATTLEMENT/FOUNDRY/SMOKESTACK/MAST → upright body box
       ctx.rect(x - half, topY, bw, bh);
   }
@@ -6116,7 +6161,7 @@ function drawCitadelStruct(
   // terrain surface across the full width. Guarantees no overhang/gap on the low
   // side; reads as a building founded on a slope. Generic for all kinds. Sampled
   // densely enough to follow the terrain; tinted a touch darker than the body.
-  if (st.kind !== 'MAST') {
+  if (st.kind !== 'MAST' && st.kind !== 'STILT_PLATFORM') {
     let lowestY = groundY;
     ctx.save();
     ctx.fillStyle = layout.bodyDark;
@@ -6333,21 +6378,42 @@ function drawCitadelStruct(
       break;
     }
     case 'LIGHTHOUSE': {
-      // tapered tower + a lamp room at the top (the lamp itself pulses in the beacon pass)
+      // STRIKING white tapered tower + subtle teal banding + a GLASS lamp room with a
+      // warm-lit interior (the sweeping beam itself is drawn in the beacon pass).
+      const lampH = bh * 0.14;
+      const lampTop = topY;
+      const towerTopY = topY + lampH;        // tower body stops below the lamp room
+      const towerTopW = half * 0.5;
+      // tapered body (trapezoid) — clean white, lit/shade faces.
       ctx.fillStyle = layout.body;
       ctx.beginPath();
-      ctx.moveTo(x - half, groundY); ctx.lineTo(x - half * 0.5, topY + bh * 0.12);
-      ctx.lineTo(x + half * 0.5, topY + bh * 0.12); ctx.lineTo(x + half, groundY); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = lit;
-      ctx.beginPath();
-      ctx.moveTo(x, groundY); ctx.lineTo(x, topY + bh * 0.12); ctx.lineTo(x + half * 0.5, topY + bh * 0.12); ctx.lineTo(x + half, groundY); ctx.closePath(); ctx.fill();
-      // candy-stripe band
-      ctx.fillStyle = layout.bodyDark; ctx.globalAlpha = 0.5;
-      ctx.fillRect(x - half * 0.85, groundY - bh * 0.45, bw * 0.85, 2);
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - towerTopW, towerTopY);
+      ctx.lineTo(x + towerTopW, towerTopY); ctx.lineTo(x + half, groundY); ctx.closePath(); ctx.fill();
+      ctx.save(); ctx.clip();
+      ctx.fillStyle = lit; ctx.fillRect(x, towerTopY, half, bh);
+      ctx.fillStyle = shade; ctx.fillRect(x - half, towerTopY, half, bh);
+      // subtle TEAL accent bands wrapping the tower (3 thin rings).
+      ctx.globalAlpha = 0.5; ctx.fillStyle = layout.accent;
+      for (let b = 1; b <= 3; b++) ctx.fillRect(x - half, groundY - bh * (0.18 + b * 0.2), bw, 1.5);
       ctx.globalAlpha = 1;
-      // lamp room
+      ctx.restore();
+      // GALLERY rail beneath the lamp room (a thin teal trim ledge).
+      ctx.fillStyle = layout.accent; ctx.globalAlpha = 0.8;
+      ctx.fillRect(x - towerTopW * 1.25, towerTopY - 1.5, towerTopW * 2.5, 1.5);
+      ctx.globalAlpha = 1;
+      // GLASS lamp room: a small framed box with a warm-lit interior (night-aware).
+      const lw = towerTopW * 1.8;
+      ctx.fillStyle = layout.bodyDark;
+      ctx.fillRect(x - lw / 2, lampTop, lw, lampH);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const lampGlow = t === 0 ? 0.7 : 0.6 + 0.3 * Math.sin(t * 1.2 + st.v1 * 6.28);
+      const wg2 = layout.winGlow;
+      ctx.fillStyle = `rgba(${wg2.r}, ${wg2.g}, ${wg2.b}, ${(0.8 * lampGlow * (0.5 + winNight * 0.5)).toFixed(3)})`;
+      ctx.fillRect(x - lw / 2 + 1, lampTop + 1, lw - 2, lampH - 2);
+      ctx.restore();
+      // domed cap on the lamp room.
       ctx.fillStyle = layout.bodyLight;
-      ctx.fillRect(x - half * 0.5, topY, bw * 0.5, bh * 0.12);
+      ctx.beginPath(); ctx.ellipse(x, lampTop, lw * 0.5, lampH * 0.5, 0, Math.PI, 0); ctx.fill();
       break;
     }
     // --- VOLCANIC forge-city kinds (pass 2) ---
@@ -6509,6 +6575,122 @@ function drawCitadelStruct(
       ctx.restore();
       break;
     }
+    // --- OCEANIC coastal-future kinds (pass 3) ---
+    case 'SEADOME': {
+      // translucent SEA-BLUE glass observation dome: a low base + a tinted glass dome
+      // with a warm-lit interior and a bright specular sheen sweeping the upper-left.
+      const r = half * 1.15;
+      const cy = groundY - r * 0.4;
+      box(cy, r * 0.4, bw);                       // low base ring
+      // warm interior glow first (shows THROUGH the translucent glass at night).
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const wg3 = layout.winGlow;
+      ctx.fillStyle = `rgba(${wg3.r}, ${wg3.g}, ${wg3.b}, ${(0.3 * (0.4 + winNight * 0.6)).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(x, cy, r * 0.8, Math.PI, 0); ctx.fill();
+      ctx.restore();
+      // translucent blue glass dome.
+      ctx.save();
+      ctx.fillStyle = layout.accent; ctx.globalAlpha = 0.32;
+      ctx.beginPath(); ctx.arc(x, cy, r, Math.PI, 0); ctx.fill();
+      ctx.globalAlpha = 1;
+      // glass framing meridians (thin teal seams).
+      ctx.strokeStyle = layout.accent; ctx.globalAlpha = 0.5; ctx.lineWidth = 1;
+      for (let f = 1; f < 4; f++) { const a = Math.PI + (f / 4) * Math.PI; ctx.beginPath(); ctx.moveTo(x, cy); ctx.lineTo(x + Math.cos(a) * r, cy + Math.sin(a) * r); ctx.stroke(); }
+      ctx.beginPath(); ctx.ellipse(x, cy, r * 0.6, r * 0.3, 0, Math.PI, 0); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.restore();
+      // bright specular GLASS sheen (upper-left arc).
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)'; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.arc(x, cy, r * 0.78, Math.PI * 1.12, Math.PI * 1.42); ctx.stroke();
+      break;
+    }
+    case 'DESAL_TOWER': {
+      // coastal desalination tower: a cylindrical white body, a side intake PIPE pair,
+      // a top tank, and a teal accent band. Reads as clean maritime infrastructure.
+      const cw = bw * 0.66;                       // cylinder narrower than footprint
+      const tankH = bh * 0.16;
+      const bodyTop = topY + tankH;
+      // cylinder body with lit/shade faces + rounded top via an ellipse cap.
+      ctx.fillStyle = layout.body; ctx.fillRect(x - cw / 2, bodyTop, cw, groundY - bodyTop);
+      ctx.fillStyle = lit; ctx.fillRect(x, bodyTop, cw / 2, groundY - bodyTop);
+      ctx.fillStyle = shade; ctx.fillRect(x - cw / 2, bodyTop, cw * 0.18, groundY - bodyTop);
+      // external pipes running up one side.
+      const dir = st.v1 > 0.5 ? 1 : -1;
+      ctx.strokeStyle = layout.bodyDark; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x + dir * cw * 0.42, groundY); ctx.lineTo(x + dir * cw * 0.42, bodyTop + tankH * 0.5);
+      ctx.moveTo(x + dir * cw * 0.6, groundY); ctx.lineTo(x + dir * cw * 0.6, bodyTop + tankH);
+      ctx.stroke();
+      // pipe cross-braces
+      ctx.lineWidth = 1;
+      for (let p = 1; p <= 3; p++) { const py = groundY - (groundY - bodyTop) * (p / 4); ctx.beginPath(); ctx.moveTo(x + dir * cw * 0.42, py); ctx.lineTo(x + dir * cw * 0.6, py); ctx.stroke(); }
+      // top TANK (rounded).
+      ctx.fillStyle = layout.bodyLight;
+      ctx.beginPath(); ctx.ellipse(x, bodyTop, cw * 0.62, tankH, 0, Math.PI, 0); ctx.fill();
+      ctx.fillRect(x - cw * 0.62, bodyTop, cw * 1.24, 2);
+      // teal accent band around the body.
+      ctx.fillStyle = layout.accent; ctx.globalAlpha = 0.7;
+      ctx.fillRect(x - cw / 2, groundY - (groundY - bodyTop) * 0.5, cw, 2);
+      ctx.globalAlpha = 1;
+      break;
+    }
+    case 'STILT_PLATFORM': {
+      // a raised railed DECK on stilts built out over the water. Deck cantilevers past
+      // the legs; a lit deck edge + railing posts read as an over-water platform.
+      const deckH = Math.max(4, bh * 0.34);
+      const deckTop = groundY - bh;
+      const deckW = bw * 1.15;                    // cantilevers past the footprint
+      const legTop = deckTop + deckH;
+      // stilt legs down to / below the waterline.
+      ctx.strokeStyle = layout.bodyDark; ctx.lineWidth = 1.6;
+      for (const lx of [-deckW * 0.4, -deckW * 0.12, deckW * 0.18, deckW * 0.42]) {
+        ctx.beginPath(); ctx.moveTo(x + lx, legTop); ctx.lineTo(x + lx, groundY + bh * 0.16); ctx.stroke();
+      }
+      // the deck slab (lit top edge).
+      ctx.fillStyle = layout.body; ctx.fillRect(x - deckW / 2, deckTop, deckW, deckH);
+      ctx.fillStyle = lit; ctx.fillRect(x - deckW / 2, deckTop, deckW, Math.max(1.5, deckH * 0.4));
+      ctx.fillStyle = shade; ctx.fillRect(x - deckW / 2, deckTop + deckH - 1.5, deckW, 1.5);
+      // teal railing along the seaward edge (posts + top rail).
+      ctx.strokeStyle = layout.accent; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x - deckW / 2, deckTop - 3); ctx.lineTo(x + deckW / 2, deckTop - 3); ctx.stroke();
+      for (let p = 0; p <= 5; p++) { const px = x - deckW / 2 + (deckW * p) / 5; ctx.beginPath(); ctx.moveTo(px, deckTop - 3); ctx.lineTo(px, deckTop); ctx.stroke(); }
+      // a small lit deck lamp (night-aware).
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const wg4 = layout.winGlow;
+      ctx.fillStyle = `rgba(${wg4.r}, ${wg4.g}, ${wg4.b}, ${(0.6 * winNight).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(x + deckW * 0.35, deckTop - 3, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      break;
+    }
+    case 'SAIL_HALL': {
+      // a white tensile/SAIL peaked-roof hall (marina convention look): a low wall +
+      // two swept sail peaks with a teal ridge seam; a bright sun-lit sail face.
+      const wallH = bh * 0.32;
+      const wallTop = groundY - wallH;
+      box(wallTop, wallH, bw);                    // low base wall
+      const peakY = topY;                          // sail apex
+      const midY = topY + bh * 0.22;
+      // two swept sail panels (left + right), meeting at a central mast.
+      ctx.fillStyle = layout.body;
+      ctx.beginPath();
+      ctx.moveTo(x - half, wallTop);
+      ctx.quadraticCurveTo(x - half * 0.5, midY, x, peakY);     // left sail sweep
+      ctx.quadraticCurveTo(x + half * 0.5, midY, x + half, wallTop);
+      ctx.closePath(); ctx.fill();
+      // sun-lit right sail face.
+      ctx.fillStyle = lit;
+      ctx.beginPath();
+      ctx.moveTo(x, peakY);
+      ctx.quadraticCurveTo(x + half * 0.5, midY, x + half, wallTop);
+      ctx.lineTo(x, wallTop); ctx.closePath(); ctx.fill();
+      // teal ridge seam from apex down to the wall + a thin mast.
+      ctx.strokeStyle = layout.accent; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.8;
+      ctx.beginPath(); ctx.moveTo(x, peakY); ctx.lineTo(x, wallTop); ctx.stroke();
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath(); ctx.moveTo(x - half, wallTop); ctx.quadraticCurveTo(x - half * 0.5, midY, x, peakY); ctx.stroke();
+      ctx.globalAlpha = 1;
+      break;
+    }
     default:
       box(topY, bh, bw);
   }
@@ -6638,22 +6820,31 @@ function drawCitadelSkyline(
       ctx.fillStyle = cg;
       ctx.fillRect(bx - baseW * 2, by - baseW * 2, baseW * 4, baseW * 4);
     } else if (layout.beaconKind === 'LAMP') {
-      // lighthouse lamp: a bright green-white core + a slow sweeping beam.
-      const lr = 16;
+      // lighthouse lamp: a bright white-teal core + a slow rotating BEAM sweeping out
+      // over the sea. Clean maritime light (matches the coastal palette). Static at t=0.
+      const lr = 17;
       const lg = ctx.createRadialGradient(bx, by, 0, bx, by, lr);
-      lg.addColorStop(0, `rgba(180, 255, 220, ${(0.55 + pulse * 0.4).toFixed(3)})`);
-      lg.addColorStop(1, 'rgba(180, 255, 220, 0)');
+      lg.addColorStop(0, `rgba(220, 255, 252, ${(0.6 + pulse * 0.4).toFixed(3)})`);
+      lg.addColorStop(0.5, `rgba(120, 230, 225, ${(0.4 + pulse * 0.3).toFixed(3)})`);
+      lg.addColorStop(1, 'rgba(80, 210, 205, 0)');
       ctx.fillStyle = lg;
       ctx.fillRect(bx - lr, by - lr, lr * 2, lr * 2);
-      // sweeping beam (a thin rotating wedge); static at t=0
-      const ang = t === 0 ? -0.6 : (t * 0.8) % (Math.PI * 2);
-      ctx.globalAlpha = 0.25 + pulse * 0.2;
-      ctx.fillStyle = 'rgba(200, 255, 235, 1)';
-      ctx.beginPath();
-      ctx.moveTo(bx, by);
-      ctx.lineTo(bx + Math.cos(ang - 0.12) * 60, by + Math.sin(ang - 0.12) * 60 * 0.5);
-      ctx.lineTo(bx + Math.cos(ang + 0.12) * 60, by + Math.sin(ang + 0.12) * 60 * 0.5);
-      ctx.closePath(); ctx.fill();
+      // sweeping beam — a thin rotating wedge with a soft falloff gradient; the sweep
+      // is biased to arc out over the OPEN sea side away from the land mass.
+      const ang = t === 0 ? -0.55 : (t * 0.7) % (Math.PI * 2);
+      const beamLen = 78;
+      for (let pass = 0; pass < 2; pass++) {            // wide soft beam + tight bright core
+        const spread = pass === 0 ? 0.18 : 0.07;
+        const ex1 = bx + Math.cos(ang - spread) * beamLen, ey1 = by + Math.sin(ang - spread) * beamLen * 0.5;
+        const ex2 = bx + Math.cos(ang + spread) * beamLen, ey2 = by + Math.sin(ang + spread) * beamLen * 0.5;
+        const bg = ctx.createLinearGradient(bx, by, (ex1 + ex2) / 2, (ey1 + ey2) / 2);
+        const a = (pass === 0 ? 0.18 : 0.4) * (0.6 + pulse * 0.4);
+        bg.addColorStop(0, `rgba(225, 255, 252, ${a.toFixed(3)})`);
+        bg.addColorStop(1, 'rgba(150, 235, 230, 0)');
+        ctx.fillStyle = bg;
+        ctx.beginPath();
+        ctx.moveTo(bx, by); ctx.lineTo(ex1, ey1); ctx.lineTo(ex2, ey2); ctx.closePath(); ctx.fill();
+      }
     } else {
       const bg = ctx.createRadialGradient(bx, by, 0, bx, by, 12);
       bg.addColorStop(0, `rgba(255, 70, 60, ${(0.5 + pulse * 0.45).toFixed(3)})`);
