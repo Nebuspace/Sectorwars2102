@@ -825,9 +825,187 @@ class FleetService:
                 destroyer = killer_fleet.commander if killer_fleet else None
                 ShipService(self.db).destroy_ship(ship, destroyer=destroyer, cause="combat")
 
+                # WO-C2 (fleet-kill-attribution option (b)): on a FLEET kill,
+                # split the per-kill REPUTATION + BOUNTY across the killing
+                # fleet's participating members — mirroring the SOLO destroy-ship
+                # hooks in CombatService, but with EACH member's bounty share
+                # resolved through their OWN per-(hunter,target) claim ledger.
+                # The fleet total is ENTITLEMENT-BOUNDED (a member who already
+                # claimed this target contributes ZERO), so it may be LESS than a
+                # solo single-kill — that is canon-correct, and it makes
+                # collector-rotation alt-farming impossible (each alt is capped by
+                # its own ledger). Runs inside the SAME `not indestructible` guard
+                # as the
+                # insurance payout so it fires exactly ONCE per genuinely
+                # destroyed (non-escape-pod) ship — escape-pod "kills" are
+                # skipped here just as the indestructible guard skips them for
+                # destroy_ship. The killing fleet's roster is untouched by this
+                # casualty (only the DEAD ship's member, on the opposing fleet,
+                # is removed below), so reading killer_fleet's members now is
+                # safe and complete.
+                self._distribute_fleet_kill_rewards(ship, killer_fleet)
+
         # Remove ship from fleet if destroyed
         if destroyed:
             self.remove_ship_from_fleet(member.fleet_id, ship.id)
+
+    def _distribute_fleet_kill_rewards(
+        self,
+        killed_ship: Ship,
+        killer_fleet: Optional[Fleet],
+    ) -> None:
+        """Split the per-kill REPUTATION + BOUNTY for a FLEET kill across the
+        killing fleet's participating members (WO-C2, fleet-kill-attribution
+        option (b)).
+
+        Mirrors the SOLO destroy-ship hooks in
+        ``CombatService._resolve_combat`` (defeat_bounty_target / attack_innocent
+        / defend bounty pot) but DIVIDES the award across the killing fleet's
+        distinct participating players. Best-effort: a reward hiccup never breaks
+        battle resolution (matches the solo try/except discipline).
+
+        BOUNTY — per-member ledger resolution (closes the alt-farm faucet).
+        Canon (DECISIONS.md fleet-kill-attribution): "each contributing member's
+        share is bounded by their own unclaimed entitlement, reconciling with the
+        once-per-(hunter,target) bounty_claims dedup from system-bounty-anti-
+        faucet." We do NOT pay the whole pot to one collector and shuffle credits
+        — that REOPENS the faucet: rotating the collector role across colluding
+        alts would re-mint the full system bounty, because the non-collectors
+        never burn their own per-(hunter,target) claim. Instead each DISTINCT
+        participating player resolves their OWN even share through their OWN
+        ledger via ``BountyService.collect_bounty_share``: a member with an
+        existing PAID system claim against this target gets ZERO, and every
+        member who IS paid writes their own PAID claim row + is credited under a
+        lock on their own Player row. Consequence (canon-correct, NOT a bug): the
+        fleet total may be LESS than a solo single-kill — a member who already
+        claimed this target contributes nothing. We do NOT force total == solo.
+
+        SPLIT METHOD — EVEN SPLIT (canon fallback, FLAGGED). The proportional-to-
+        damage default would require per-participant damage dealt to THIS killed
+        ship, which the fleet battle model does NOT track: combat damage is
+        attributed only per-FLEET (FleetBattle.attacker_damage_dealt /
+        defender_damage_dealt) and per-CASUALTY (damage that casualty *dealt*),
+        never per-(attacker-ship → specific-target). Each hit in
+        ``simulate_battle_round`` picks a random target and discards the firing
+        ship's identity. Until a per-attacker→per-target damage ledger exists, we
+        EVEN-SPLIT among the distinct participating PLAYERS of the killing fleet.
+        The split method is a tunable knob; swapping to proportional only requires
+        that ledger plus a weight map here.
+
+        Why split per distinct PLAYER (not per member ship): a player flying 3
+        ships in one fleet must not collect 3× — that is exactly the alt-padding
+        faucet the per-member ledger forbids.
+        """
+        try:
+            killed_player_id = killed_ship.owner_id
+            if killed_player_id is None or killer_fleet is None:
+                return
+
+            # Distinct participating players of the killing fleet (dedup so a
+            # multi-ship pilot gets ONE share, never one-per-hull). Exclude the
+            # killed player defensively (a fleet should never contain its own
+            # victim, but never award the corpse a share of its own bounty).
+            participant_ids: List[UUID] = []
+            seen: set = set()
+            for m in killer_fleet.members:
+                pid = m.player_id
+                if pid is None or pid == killed_player_id or pid in seen:
+                    continue
+                seen.add(pid)
+                participant_ids.append(pid)
+
+            if not participant_ids:
+                return
+
+            n = len(participant_ids)
+
+            from src.services.personal_reputation_service import PersonalReputationService
+            from src.services.bounty_service import BountyService
+
+            rep_service = PersonalReputationService(self.db)
+            bounty_service = BountyService(self.db)
+
+            # --- BOUNTY: per-member ledger resolution -------------------------
+            # Lock the killed (target) player's row ONCE for the whole loop so
+            # the JSONB read/clear and reputation reads are serialized against
+            # concurrent kills (collect_bounty_share locks each HUNTER row, not
+            # the target — the target lock belongs here, mirroring solo's
+            # collect_bounty which locks both).
+            self.db.query(Player).filter(
+                Player.id == killed_player_id
+            ).with_for_update().first()
+
+            had_bounty = False
+            # Designate the FIRST participant to claim the pay-once-then-cleared
+            # player-placed pot (it has no per-member ledger). The system pot is
+            # always per-member ledger-bounded inside collect_bounty_share.
+            for idx, pid in enumerate(participant_ids):
+                share_result = bounty_service.collect_bounty_share(
+                    hunter_id=pid,
+                    target_id=killed_player_id,
+                    num_participants=n,
+                    claim_player_pot=(idx == 0),
+                )
+                if share_result.get("had_bounty"):
+                    had_bounty = True
+                if (share_result.get("paid", 0) or 0) > 0:
+                    # This member is a heroic bounty hunter for THIS kill — award
+                    # the full +100 defeat_bounty_target to them individually,
+                    # exactly as the solo path awards +100 to the hunter who
+                    # collected. Members paid ZERO (already-claimed dedup) get
+                    # no +100, mirroring solo leaving that case alone.
+                    rep_service.adjust_reputation(
+                        pid, 100, "defeat_bounty_target"
+                    )
+
+            if not had_bounty:
+                # Target carried NO bounty at all — the fleet gunned down a
+                # genuine innocent. Split the -100 attack_innocent penalty across
+                # the participants (the whole fleet shares the infamy). The
+                # per-player [-1000, 1000] clamp is acceptable; we do not claim
+                # exact total conservation for reputation.
+                self._split_reputation(
+                    rep_service, participant_ids, -100, "attack_innocent"
+                )
+            # else: had_bounty True — at least one bounty existed. Members who
+            # collected got +100 above; members blocked by their own dedup got
+            # neither +100 nor -100, exactly as the solo path leaves the
+            # already-claimed-criminal case alone (neither heroic nor innocent-
+            # slaughter).
+
+            # NOTE on escape pods + police engagement: escape-pod "kills" never
+            # reach this method (the indestructible guard at the call site skips
+            # them, mirroring solo's separate -500 kill_escape_pod penalty path,
+            # which is a PENALTY not a reward to split — deferred, see report).
+            # Police engagement routing (attack_innocent / wanted_status spawn)
+            # is the CombatService PvP path's concern and is intentionally NOT
+            # duplicated here for fleet kills (separate WO if desired).
+
+        except Exception as e:  # never break battle resolution on a reward hiccup
+            logger.error("Failed fleet-kill reward distribution: %s", e)
+
+    @staticmethod
+    def _split_reputation(
+        rep_service: "PersonalReputationService",
+        participant_ids: List[UUID],
+        total_amount: int,
+        reason: str,
+    ) -> None:
+        """Apply ``total_amount`` reputation split EVENLY across participants so
+        the summed delta EXACTLY equals the solo single-kill award. Integer
+        remainder (and its sign) is folded into the first participant's share so
+        no reputation is created or lost in the division."""
+        n = len(participant_ids)
+        if n == 0 or total_amount == 0:
+            return
+        # int() truncates toward zero, keeping the remainder same-signed as the
+        # total; the remainder is added back to the first share → exact sum.
+        base = int(total_amount / n)
+        remainder = total_amount - base * n
+        for idx, pid in enumerate(participant_ids):
+            share = base + (remainder if idx == 0 else 0)
+            if share != 0:
+                rep_service.adjust_reputation(pid, share, reason)
 
     def _should_end_battle(
         self,

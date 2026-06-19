@@ -251,6 +251,151 @@ class BountyService:
             "new_credits": collector.credits,
         }
 
+    def collect_bounty_share(
+        self,
+        hunter_id: uuid.UUID,
+        target_id: uuid.UUID,
+        num_participants: int,
+        claim_player_pot: bool,
+    ) -> Dict[str, Any]:
+        """Award ONE fleet member's even share of a kill's bounty, resolved
+        entirely through THAT MEMBER'S OWN ledger (WO-C2, fleet-kill-attribution
+        option (b)).
+
+        Canon (DECISIONS.md fleet-kill-attribution): "each contributing member's
+        share is bounded by their own unclaimed entitlement, reconciling with the
+        once-per-(hunter,target) bounty_claims dedup from system-bounty-anti-
+        faucet." This is the per-member resolver the fleet helper calls once per
+        DISTINCT participating player. It deliberately does NOT pay a whole pot to
+        a single collector and shuffle credits (that reopens the alt-farm faucet:
+        rotating the collector role across colluding alts would re-mint the full
+        system bounty because the non-collectors never burned their own claim).
+        Here every member burns their OWN claim or is paid ZERO — collector
+        rotation is impossible because each alt is bounded by its own ledger.
+
+        Two pots, two dedup mechanisms:
+
+        * SYSTEM bounty — deduped per-(hunter, target) by the bounty_claims
+          ledger. This member is paid their even share of the system pot ONLY IF
+          they have no PAID system claim against this target (``_has_paid_system_
+          claim``). When paid, we write THIS member's own PAID system claim row,
+          so a member who already turned in this criminal (solo, or in a prior
+          fleet kill) gets ZERO. The total handed out across the fleet may
+          therefore be LESS than a solo single-kill — that is the canon-correct
+          outcome, not a bug to "top up".
+
+        * PLAYER-placed bounty — pay-once-then-cleared (clearing the JSONB list
+          IS the dedup; there is no per-member ledger for it). It cannot be
+          per-member ledger-bounded, so exactly ONE member (``claim_player_pot``
+          True, chosen by the caller) claims the whole player-placed pot as an
+          even-split share and the pot is cleared; the other members get a 0
+          player-placed share. Each member who is paid records a PAID player-pot
+          claim row for provenance.
+
+        Locks ONLY this member's Player row (``with_for_update``) before
+        crediting, closing the lost-update window the prior whole-pot-shuffle had.
+        The target row is locked once by the caller (the fleet helper) for the
+        first member so the JSONB clear + reputation reads are serialized.
+
+        Returns ``{paid, system_paid, player_paid, had_bounty, new_credits}``.
+        ``paid`` > 0 ⇒ this member is a "heroic bounty kill" (caller awards the
+        +100 rep); ``had_bounty`` reflects whether the target carried ANY bounty
+        at call time (so the caller can distinguish innocent-slaughter from a
+        deduped criminal exactly as the solo path does).
+        """
+        n = max(1, int(num_participants))
+
+        # Lock THIS member's row before any credit mutation (lost-update guard).
+        hunter = (
+            self.db.query(Player)
+            .filter(Player.id == hunter_id)
+            .with_for_update()
+            .first()
+        )
+        # Target is read (and, on the player-pot claim, mutated). The caller has
+        # already locked the target row; re-query without a redundant lock.
+        target = self.db.query(Player).filter(Player.id == target_id).first()
+
+        if not hunter or not target:
+            return {
+                "success": False,
+                "message": "Player not found",
+                "paid": 0,
+                "system_paid": 0,
+                "player_paid": 0,
+                "had_bounty": False,
+            }
+
+        player_bounties = self._get_bounties(target)
+        system_bounties = self._get_system_bounties(target)
+        had_bounty = bool(player_bounties) or bool(system_bounties)
+
+        now = datetime.now(UTC)
+
+        # --- SYSTEM pot: this member's even share, bounded by their OWN ledger --
+        system_paid = 0
+        if system_bounties and not self._has_paid_system_claim(hunter_id, target_id):
+            for b in system_bounties:
+                amount = b.get("amount", 0)
+                # Even split per distinct participating player. Integer floor;
+                # we do NOT chase the remainder across members (no top-up to
+                # match solo — the canon total is entitlement-bounded).
+                share = amount // n
+                if share <= 0:
+                    continue
+                system_paid += share
+                self._write_claim(
+                    claimant_id=hunter_id,
+                    target_id=target_id,
+                    amount=share,
+                    bounty_ref=str(b.get("id")),  # f"system_{threshold}"
+                    resolved_at=now,
+                )
+
+        # --- PLAYER-placed pot: claimed once by the designated member only ------
+        player_paid = 0
+        if claim_player_pot and player_bounties:
+            for b in player_bounties:
+                amount = b.get("amount", 0)
+                share = amount // n
+                if share <= 0:
+                    continue
+                player_paid += share
+                self._write_claim(
+                    claimant_id=hunter_id,
+                    target_id=target_id,
+                    amount=share,
+                    bounty_ref=str(b.get("id")),
+                    resolved_at=now,
+                )
+            # Pay-once-then-clear: the JSONB list is the dedup for player-placed
+            # bounties, so clear it now that the designated member has claimed it.
+            self._set_bounties(target, [])
+
+        total = system_paid + player_paid
+        if total > 0:
+            hunter.credits += total
+
+        # Flush within the caller's locked transaction (caller owns the commit).
+        self.db.flush()
+
+        if total > 0:
+            logger.info(
+                "Fleet bounty share: %s collected %d (system=%d player=%d) from %s",
+                hunter_id, total, system_paid, player_paid, target_id,
+            )
+
+        return {
+            "success": True,
+            "hunter_id": str(hunter_id),
+            "target_id": str(target_id),
+            "had_bounty": had_bounty,
+            "paid": total,
+            "system_paid": system_paid,
+            "player_paid": player_paid,
+            "new_credits": hunter.credits,
+        }
+
     def _has_paid_system_claim(
         self, claimant_id: uuid.UUID, target_id: uuid.UUID
     ) -> bool:
