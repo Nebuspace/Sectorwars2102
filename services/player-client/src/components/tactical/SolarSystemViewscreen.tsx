@@ -2086,12 +2086,47 @@ type FloraSeed = {
   x: number; height: number; swayPhase: number; wob: number;
   kind: FloraKind; lean: number; blades: number;
 };
+/** Biome-vocabulary structure kinds. Each biome's citadel composes from its own
+ *  subset (see biomeArch). signature flags the one landmark structure. */
+type CitadelKind =
+  | 'BOX'        // generic boxy habitat block
+  | 'DOME'       // rounded habitat dome
+  | 'GEODESIC'   // big faceted geodesic dome (barren/gas signature)
+  | 'ZIGGURAT'   // stepped pyramid (desert signature)
+  | 'WINDTOWER'  // slender desert wind-tower
+  | 'SPIRE'      // angular ice spire
+  | 'ICEDOME'    // faceted translucent ice dome (ice signature)
+  | 'LIGHTHOUSE' // shore lighthouse with a rotating lamp (oceanic signature)
+  | 'STILT'      // stilted shore platform
+  | 'KEEP'       // stone castle keep (mountainous signature)
+  | 'BATTLEMENT' // crenellated rampart tower
+  | 'FOUNDRY'    // volcanic foundry tower with lava-glow crown (signature)
+  | 'SMOKESTACK' // industrial vent stack with ember seams
+  | 'ARCOLOGY'   // green tiered garden tower (terran signature)
+  | 'TANK'       // utilitarian storage tank
+  | 'MAST';      // antenna/mast (L1 outpost flourish)
+
 type CitadelStructure = {
+  kind: CitadelKind;
   x: number; bw: number; bh: number;
   windows: { dx: number; dy: number; warm: number }[];
-  isOutpost: boolean; isSpire: boolean;
+  signature: boolean;
+  /** small per-structure seeded variation (step count, facet count, lean…) */
+  v1: number; v2: number;
 };
-type CitadelLayout = { structures: CitadelStructure[]; beacon: boolean; cityX: number; maxH: number; struct: string; twinkleWindows: boolean };
+
+type CitadelLayout = {
+  structures: CitadelStructure[];
+  beacon: boolean;
+  beaconKind: 'AIRCRAFT' | 'LAMP';   // L5 red warning light, or oceanic lighthouse lamp
+  cityX: number; maxH: number;
+  twinkleWindows: boolean;
+  biome: LandedPalette['flourish'];
+  // palette: lighter-than-ridge body fill + a light/dark face pair + window glow.
+  body: string; bodyLight: string; bodyDark: string;
+  winGlow: { r: number; g: number; b: number };
+  accent: string;                    // signature accent (lava crown, ice sheen, etc.)
+};
 type HazeSeed = { baseX: number; yFrac: number; w: number; speed: number };
 // Atmospheric particle kinds → drive shape/colour/motion of the precomputed seeds.
 // SPRAY = oceanic sea-mist at the waterline; MOTE = a few low ground motes (lush).
@@ -3732,9 +3767,12 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 7) CITADEL SKYLINE — layout cached; baseline + lights per frame -----------
+  // 7) CITADEL SKYLINE — layout cached; baseline + key-light + lights per frame.
+  //    Key-light direction reads the live sun x; windows glow stronger at night.
   if (citadel > 0 && cache.citadelLayout) {
-    drawCitadelSkyline(ctx, h, t, cache.citadelLayout, ridgeYAt);
+    const keyDir = dc.sunUp ? Math.sign(sunX - cache.citadelLayout.cityX) || 1 : 1;
+    const winNight = 0.45 + (1 - dc.bright) * 0.55; // windows brighter after dark
+    drawCitadelSkyline(ctx, h, t, cache.citadelLayout, ridgeYAt, keyDir, winNight);
   }
 
   // 7d) NIGHT LIGHTING — the ground/ocean/ridges are baked at a daytime reference,
@@ -4335,6 +4373,55 @@ function drawLandedParticles(
  *  beacon, colour). Per-frame draw recomputes only baseline Y (from the live
  *  drifted ridge) + light twinkle/pulse. Density/height/lights scale with the
  *  citadel level (1 Outpost → 5 Capital). */
+/** Per-biome architectural vocabulary: palette (lighter than the ridge), window
+ *  glow colour, the signature landmark kind, and the filler kinds the cluster is
+ *  built from. Deterministic lookup. */
+function biomeArch(flourish: LandedPalette['flourish'], pal: LandedPalette): {
+  body: string; bodyLight: string; bodyDark: string;
+  winGlow: { r: number; g: number; b: number }; accent: string;
+  signature: CitadelKind; fillers: CitadelKind[]; beaconKind: 'AIRCRAFT' | 'LAMP';
+} {
+  const ridge = hexToRgb(pal.ridges[2] || pal.ridges[0] || '#5a5560');
+  const lift = (k: number) => ({
+    r: Math.min(255, Math.round(ridge.r + (255 - ridge.r) * k)),
+    g: Math.min(255, Math.round(ridge.g + (255 - ridge.g) * k)),
+    b: Math.min(255, Math.round(ridge.b + (255 - ridge.b) * k)),
+  });
+  const rgb = (c: { r: number; g: number; b: number }) => `rgb(${c.r}, ${c.g}, ${c.b})`;
+  // base: a touch lighter than the ridge so the city reads as built, not terrain.
+  const baseC = lift(0.22), lightC = lift(0.4), darkC = { r: Math.round(ridge.r * 0.7), g: Math.round(ridge.g * 0.7), b: Math.round(ridge.b * 0.72) };
+  switch (flourish) {
+    case 'VOLCANIC':
+      return { body: 'rgb(42, 36, 40)', bodyLight: 'rgb(70, 58, 60)', bodyDark: 'rgb(24, 20, 24)',
+        winGlow: { r: 255, g: 130, b: 60 }, accent: 'rgba(255, 110, 40, 1)',
+        signature: 'FOUNDRY', fillers: ['SMOKESTACK', 'BOX', 'TANK'], beaconKind: 'AIRCRAFT' };
+    case 'ICE':
+      return { body: 'rgb(200, 224, 238)', bodyLight: 'rgb(228, 244, 252)', bodyDark: 'rgb(150, 180, 205)',
+        winGlow: { r: 170, g: 230, b: 255 }, accent: 'rgba(210, 245, 255, 1)',
+        signature: 'ICEDOME', fillers: ['SPIRE', 'DOME', 'BOX'], beaconKind: 'AIRCRAFT' };
+    case 'DESERT':
+      return { body: 'rgb(196, 158, 110)', bodyLight: 'rgb(222, 188, 142)', bodyDark: 'rgb(150, 116, 78)',
+        winGlow: { r: 255, g: 190, b: 110 }, accent: 'rgba(235, 205, 150, 1)',
+        signature: 'ZIGGURAT', fillers: ['DOME', 'WINDTOWER', 'BOX'], beaconKind: 'AIRCRAFT' };
+    case 'OCEANIC':
+      return { body: 'rgb(214, 228, 236)', bodyLight: 'rgb(238, 248, 252)', bodyDark: 'rgb(150, 172, 188)',
+        winGlow: { r: 200, g: 235, b: 245 }, accent: 'rgba(150, 255, 200, 1)',
+        signature: 'LIGHTHOUSE', fillers: ['STILT', 'BOX', 'DOME'], beaconKind: 'LAMP' };
+    case 'TERRAN':
+      return { body: 'rgb(150, 190, 165)', bodyLight: 'rgb(190, 222, 198)', bodyDark: 'rgb(96, 140, 116)',
+        winGlow: { r: 210, g: 255, b: 200 }, accent: 'rgba(150, 235, 170, 1)',
+        signature: 'ARCOLOGY', fillers: ['DOME', 'BOX', 'ARCOLOGY'], beaconKind: 'AIRCRAFT' };
+    case 'MOUNTAINOUS':
+      return { body: rgb(baseC), bodyLight: rgb(lightC), bodyDark: rgb(darkC),
+        winGlow: { r: 255, g: 200, b: 130 }, accent: 'rgba(220, 215, 205, 1)',
+        signature: 'KEEP', fillers: ['BATTLEMENT', 'BOX', 'BATTLEMENT'], beaconKind: 'AIRCRAFT' };
+    default: // NONE → barren / gas / unknown: utilitarian steel habitat.
+      return { body: 'rgb(150, 156, 168)', bodyLight: 'rgb(186, 192, 204)', bodyDark: 'rgb(96, 102, 116)',
+        winGlow: { r: 200, g: 215, b: 235 }, accent: 'rgba(200, 210, 225, 1)',
+        signature: 'GEODESIC', fillers: ['DOME', 'TANK', 'BOX'], beaconKind: 'AIRCRAFT' };
+  }
+}
+
 function buildCitadelLayout(
   w: number,
   h: number,
@@ -4346,97 +4433,354 @@ function buildCitadelLayout(
    *  the full width. */
   landX?: { min: number; max: number }
 ): CitadelLayout | null {
-  const ridgeRgb = hexToRgb(pal.ridges[2]);
-  const struct = `rgb(${Math.min(255, ridgeRgb.r + 34)}, ${Math.min(255, ridgeRgb.g + 38)}, ${Math.min(255, ridgeRgb.b + 46)})`;
+  if (level <= 0) return null;
+  const arch = biomeArch(pal.flourish, pal);
   const rng = splitmix32(seed * 1009 + level * 17);
   // land bounds the whole skyline (cityX, spread, every structure x, the beacon).
   const lMin = landX ? Math.max(8, landX.min) : 8;
   const lMax = landX ? Math.min(w - 8, landX.max) : w - 8;
   const clampX = (x: number) => Math.max(lMin, Math.min(lMax, x));
 
+  // Level progression: count, footprint width, max height + window density grow
+  // with the tier. 1 Outpost → 5 Planetary Capital.
   const cfg = [
-    { n: 0, maxH: 0,    win: 0,    beacon: false },
-    { n: 1, maxH: 0.05, win: 0,    beacon: false },
-    { n: 3, maxH: 0.07, win: 0.1,  beacon: false },
-    { n: 5, maxH: 0.11, win: 0.25, beacon: false },
-    { n: 8, maxH: 0.14, win: 0.45, beacon: false },
-    { n: 12, maxH: 0.2, win: 0.7,  beacon: true  }
+    { n: 0, maxH: 0,    win: 0,   sigH: 0,    spreadF: 0    },
+    { n: 1, maxH: 0.05, win: 0,   sigH: 0,    spreadF: 0.06 }, // Outpost
+    { n: 4, maxH: 0.07, win: 0.1, sigH: 0,    spreadF: 0.14 }, // Settlement
+    { n: 6, maxH: 0.10, win: 0.25, sigH: 0.14, spreadF: 0.22 }, // Colony (1 landmark)
+    { n: 9, maxH: 0.15, win: 0.45, sigH: 0.20, spreadF: 0.32 }, // Major Colony
+    { n: 14, maxH: 0.20, win: 0.7, sigH: 0.30, spreadF: 0.46 }, // Planetary Capital
   ][level];
   if (!cfg || cfg.n === 0) return null;
 
-  // city centre within the land window; spread bounded so structures stay on land.
   const cityX = clampX(lMin + (lMax - lMin) * (0.3 + rng() * 0.4));
-  const spread = Math.min(w * (0.12 + level * 0.05), (lMax - lMin) * 0.5);
+  const spread = Math.min(w * cfg.spreadF, (lMax - lMin) * 0.5);
 
-  const structures: CitadelStructure[] = [];
-  for (let i = 0; i < cfg.n; i++) {
-    const jitter = (rng() - 0.5) * 2 * spread;
-    const sx = clampX(cityX + jitter);
-    const bw = Math.max(4, w * (0.012 + rng() * 0.02));
-    const bh = h * cfg.maxH * (0.35 + rng() * 0.65);
-
+  const buildWindows = (bw: number, bh: number, density: number) => {
     const windows: { dx: number; dy: number; warm: number }[] = [];
-    if (cfg.win > 0) {
-      const rows = Math.max(1, Math.floor(bh / 7));
-      for (let r = 0; r < rows; r++) {
-        for (let c = -1; c <= 1; c++) {
-          if (rng() > cfg.win) continue;
-          // store window offsets relative to (sx, topY) so the per-frame draw
-          // can re-anchor them to the live baseline cheaply.
-          windows.push({ dx: c * (bw * 0.3), dy: 4 + r * 7, warm: rng() });
-        }
+    if (density <= 0) return windows;
+    const rows = Math.max(1, Math.floor(bh / 7));
+    const cols = Math.max(1, Math.round(bw / 5));
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (rng() > density) continue;
+        const dx = (c - (cols - 1) / 2) * (bw / Math.max(1, cols)) * 0.9;
+        windows.push({ dx, dy: 5 + r * 7, warm: rng() });
       }
     }
+    return windows;
+  };
 
+  const structures: CitadelStructure[] = [];
+
+  // SIGNATURE landmark (level ≥ 3): the dominant central structure at cityX.
+  if (level >= 3 && cfg.sigH > 0) {
+    const sbw = Math.max(8, w * (0.03 + level * 0.006));
+    const sbh = h * cfg.sigH * (0.8 + rng() * 0.3);
     structures.push({
-      x: sx, bw, bh, windows,
-      isOutpost: level === 1,
-      isSpire: i === 0 && level >= 3
+      kind: arch.signature, x: cityX, bw: sbw, bh: sbh,
+      windows: buildWindows(sbw, sbh, cfg.win), signature: true,
+      v1: rng(), v2: rng(),
     });
   }
 
-  return { structures, beacon: cfg.beacon, cityX, maxH: cfg.maxH, struct, twinkleWindows: level >= 4 };
+  // FILLER cluster around the centre (the remaining count).
+  const fillN = Math.max(0, cfg.n - (structures.length));
+  for (let i = 0; i < fillN; i++) {
+    const jitter = (rng() - 0.5) * 2 * spread;
+    const sx = clampX(cityX + jitter);
+    const bw = Math.max(4, w * (0.012 + rng() * 0.022));
+    // height falls off with distance from centre so the skyline reads as a city.
+    const distF = 1 - Math.min(1, Math.abs(sx - cityX) / Math.max(1, spread)) * 0.45;
+    const bh = h * cfg.maxH * (0.35 + rng() * 0.65) * distF;
+    // L1 is a single humble outpost + a mast; otherwise pick from biome fillers.
+    let kind: CitadelKind;
+    if (level === 1) {
+      kind = 'BOX';
+    } else {
+      kind = arch.fillers[Math.floor(rng() * arch.fillers.length)];
+    }
+    structures.push({
+      kind, x: sx, bw, bh, windows: buildWindows(bw, bh, cfg.win),
+      signature: false, v1: rng(), v2: rng(),
+    });
+  }
+
+  // L1 Outpost: append a slender antenna mast beside the lone structure.
+  if (level === 1 && structures.length > 0) {
+    const base = structures[0];
+    structures.push({
+      kind: 'MAST', x: clampX(base.x + base.bw * 1.2), bw: Math.max(2, base.bw * 0.25),
+      bh: base.bh * 1.6, windows: [], signature: false, v1: rng(), v2: rng(),
+    });
+  }
+
+  return {
+    structures,
+    beacon: level >= 5 || (arch.beaconKind === 'LAMP' && level >= 3),
+    beaconKind: arch.beaconKind,
+    cityX, maxH: cfg.maxH,
+    twinkleWindows: level >= 4,
+    biome: pal.flourish,
+    body: arch.body, bodyLight: arch.bodyLight, bodyDark: arch.bodyDark,
+    winGlow: arch.winGlow, accent: arch.accent,
+  };
 }
 
-/** Per-frame citadel draw — re-anchors the cached layout to the live ridge and
- *  applies window twinkle / beacon pulse. No allocations beyond the beacon gradient. */
+/** Paint one biome-vocabulary structure. Bodies use a left/right face pair for a
+ *  consistent key-light (faceSign +1 → light from the right). Crisp silhouettes. */
+function drawCitadelStruct(
+  ctx: CanvasRenderingContext2D,
+  st: CitadelStructure, groundY: number, layout: CitadelLayout, faceSign: number
+): void {
+  const { x, bw, bh } = st;
+  const topY = groundY - bh;
+  const half = bw / 2;
+  const lit = faceSign >= 0 ? layout.bodyLight : layout.bodyDark;
+  const shade = faceSign >= 0 ? layout.bodyDark : layout.bodyLight;
+  // ground footing shadow (soft ellipse) so the structure sits ON the land.
+  ctx.save();
+  ctx.globalAlpha = 0.28;
+  ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+  ctx.beginPath();
+  ctx.ellipse(x, groundY + 1, bw * 0.75, Math.max(2, bw * 0.18), 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  const box = (yTop: number, hh: number, ww: number) => {
+    ctx.fillStyle = layout.body;
+    ctx.fillRect(x - ww / 2, yTop, ww, hh);
+    // lit + shade faces split down the middle for a simple key-light read
+    ctx.fillStyle = lit;
+    ctx.fillRect(x, yTop, ww / 2, hh);
+    ctx.fillStyle = shade;
+    ctx.fillRect(x - ww / 2, yTop, ww / 2, hh);
+  };
+
+  switch (st.kind) {
+    case 'BOX':
+    case 'STILT': {
+      box(topY, bh, bw);
+      if (st.kind === 'STILT') {
+        // stilt legs below into the shore/water line
+        ctx.strokeStyle = layout.bodyDark;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x - half * 0.7, groundY); ctx.lineTo(x - half * 0.5, groundY + bh * 0.18);
+        ctx.moveTo(x + half * 0.7, groundY); ctx.lineTo(x + half * 0.5, groundY + bh * 0.18);
+        ctx.stroke();
+      }
+      break;
+    }
+    case 'TANK': {
+      // squat rounded storage tank
+      box(topY + bw * 0.3, bh - bw * 0.3, bw);
+      ctx.fillStyle = lit;
+      ctx.beginPath();
+      ctx.ellipse(x, topY + bw * 0.3, half, bw * 0.3, 0, Math.PI, 0);
+      ctx.fill();
+      break;
+    }
+    case 'MAST': {
+      ctx.strokeStyle = layout.bodyLight;
+      ctx.lineWidth = Math.max(1, bw * 0.4);
+      ctx.beginPath();
+      ctx.moveTo(x, groundY); ctx.lineTo(x, topY);
+      ctx.stroke();
+      // cross-arms
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x - bw, topY + bh * 0.25); ctx.lineTo(x + bw, topY + bh * 0.25);
+      ctx.stroke();
+      break;
+    }
+    case 'DOME': {
+      const r = half * 1.1;
+      box(groundY - r * 0.5, r * 0.5, bw);
+      ctx.fillStyle = layout.body;
+      ctx.beginPath(); ctx.arc(x, groundY - r * 0.5, r, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = lit;
+      ctx.beginPath(); ctx.arc(x, groundY - r * 0.5, r, Math.PI, Math.PI * 1.5); ctx.fill();
+      break;
+    }
+    case 'GEODESIC': {
+      // big faceted dome: arc body + triangular facet seams
+      const r = Math.max(half * 1.4, bh * 0.55);
+      const cy = groundY - r * 0.1;
+      ctx.fillStyle = layout.body;
+      ctx.beginPath(); ctx.arc(x, cy, r, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = lit;
+      ctx.beginPath(); ctx.arc(x, cy, r, Math.PI, Math.PI * 1.5); ctx.fill();
+      ctx.strokeStyle = layout.bodyDark; ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
+      const facets = 4 + Math.floor(st.v1 * 3);
+      for (let f = 1; f < facets; f++) {
+        const a = Math.PI + (f / facets) * Math.PI;
+        ctx.beginPath(); ctx.moveTo(x, cy); ctx.lineTo(x + Math.cos(a) * r, cy + Math.sin(a) * r); ctx.stroke();
+      }
+      ctx.beginPath(); ctx.ellipse(x, cy, r * 0.6, r * 0.3, 0, Math.PI, 0); ctx.stroke();
+      ctx.globalAlpha = 1;
+      break;
+    }
+    case 'ICEDOME': {
+      // faceted translucent ice dome + a crowning crystal spike
+      const r = Math.max(half * 1.4, bh * 0.5);
+      const cy = groundY - r * 0.05;
+      ctx.fillStyle = layout.body; ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.arc(x, cy, r, Math.PI, 0); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = lit;
+      ctx.beginPath(); ctx.moveTo(x - r, cy); ctx.lineTo(x, cy - r); ctx.lineTo(x, cy); ctx.closePath(); ctx.fill();
+      // crystal spike
+      ctx.fillStyle = layout.accent;
+      ctx.beginPath(); ctx.moveTo(x - half * 0.3, cy - r); ctx.lineTo(x, groundY - bh); ctx.lineTo(x + half * 0.3, cy - r); ctx.closePath(); ctx.fill();
+      // sheen highlight
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, cy, r * 0.7, Math.PI * 1.15, Math.PI * 1.45); ctx.stroke();
+      break;
+    }
+    case 'SPIRE': {
+      // angular ice/crystal spire — a tall faceted shard
+      ctx.fillStyle = layout.body;
+      ctx.beginPath();
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - half * 0.4, topY); ctx.lineTo(x, topY - bh * 0.12);
+      ctx.lineTo(x + half * 0.4, topY); ctx.lineTo(x + half, groundY); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = lit;
+      ctx.beginPath();
+      ctx.moveTo(x, topY - bh * 0.12); ctx.lineTo(x + half * 0.4, topY); ctx.lineTo(x + half, groundY); ctx.lineTo(x, groundY); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'ZIGGURAT': {
+      // stepped pyramid: each tier narrower as it rises
+      const steps = 3 + Math.floor(st.v1 * 3);
+      const stepH = bh / steps;
+      for (let s2 = 0; s2 < steps; s2++) {
+        const ww = bw * (1 - s2 / (steps + 1));
+        const yT = groundY - (s2 + 1) * stepH;
+        ctx.fillStyle = layout.body; ctx.fillRect(x - ww / 2, yT, ww, stepH);
+        ctx.fillStyle = lit; ctx.fillRect(x, yT, ww / 2, stepH);
+        ctx.fillStyle = shade; ctx.fillRect(x - ww / 2, yT, ww / 2, stepH);
+      }
+      break;
+    }
+    case 'WINDTOWER': {
+      box(topY, bh, bw * 0.6);
+      // vented cap
+      ctx.fillStyle = lit;
+      ctx.fillRect(x - bw * 0.45, topY - 3, bw * 0.9, 3);
+      break;
+    }
+    case 'KEEP': {
+      // stone keep with crenellated top
+      box(topY, bh, bw);
+      ctx.fillStyle = layout.bodyLight;
+      const merl = 4;
+      for (let m = 0; m < merl; m++) {
+        if (m % 2 === 0) ctx.fillRect(x - half + (m / merl) * bw, topY - 3, bw / merl, 3);
+      }
+      break;
+    }
+    case 'BATTLEMENT': {
+      box(topY, bh, bw);
+      ctx.fillStyle = layout.bodyLight;
+      ctx.fillRect(x - half - 1, topY - 2, bw + 2, 2); // capped rampart
+      break;
+    }
+    case 'FOUNDRY': {
+      // tall foundry tower with a lava-glow crown
+      box(topY, bh, bw);
+      // glowing seams down the body
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = layout.accent; ctx.lineWidth = 1; ctx.globalAlpha = 0.7;
+      ctx.beginPath(); ctx.moveTo(x - half * 0.4, topY + 4); ctx.lineTo(x - half * 0.4, groundY - 4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + half * 0.3, topY + 8); ctx.lineTo(x + half * 0.3, groundY - 4); ctx.stroke();
+      // lava-glow crown
+      const cg = ctx.createRadialGradient(x, topY, 0, x, topY, bw);
+      cg.addColorStop(0, layout.accent); cg.addColorStop(1, 'rgba(255,90,30,0)');
+      ctx.globalAlpha = 1; ctx.fillStyle = cg;
+      ctx.fillRect(x - bw, topY - bw, bw * 2, bw * 1.4);
+      ctx.restore();
+      break;
+    }
+    case 'SMOKESTACK': {
+      box(topY, bh, bw * 0.55);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = layout.accent; ctx.globalAlpha = 0.6;
+      ctx.fillRect(x - bw * 0.25, topY, bw * 0.5, 2); // ember mouth
+      ctx.restore();
+      break;
+    }
+    case 'ARCOLOGY': {
+      // green tiered garden tower: a tapered stack with planted terrace lips
+      const tiers = 3 + Math.floor(st.v1 * 2);
+      const tierH = bh / tiers;
+      for (let t2 = 0; t2 < tiers; t2++) {
+        const ww = bw * (1 - t2 * 0.12);
+        const yT = groundY - (t2 + 1) * tierH;
+        ctx.fillStyle = layout.body; ctx.fillRect(x - ww / 2, yT, ww, tierH);
+        ctx.fillStyle = lit; ctx.fillRect(x, yT, ww / 2, tierH);
+        ctx.fillStyle = shade; ctx.fillRect(x - ww / 2, yT, ww / 2, tierH);
+        // planted terrace lip (accent green)
+        ctx.fillStyle = layout.accent; ctx.globalAlpha = 0.5;
+        ctx.fillRect(x - ww / 2, yT + tierH - 2, ww, 2);
+        ctx.globalAlpha = 1;
+      }
+      // crowning dome
+      ctx.fillStyle = layout.bodyLight;
+      ctx.beginPath(); ctx.arc(x, topY + 2, bw * 0.28, Math.PI, 0); ctx.fill();
+      break;
+    }
+    case 'LIGHTHOUSE': {
+      // tapered tower + a lamp room at the top (the lamp itself pulses in the beacon pass)
+      ctx.fillStyle = layout.body;
+      ctx.beginPath();
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - half * 0.5, topY + bh * 0.12);
+      ctx.lineTo(x + half * 0.5, topY + bh * 0.12); ctx.lineTo(x + half, groundY); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = lit;
+      ctx.beginPath();
+      ctx.moveTo(x, groundY); ctx.lineTo(x, topY + bh * 0.12); ctx.lineTo(x + half * 0.5, topY + bh * 0.12); ctx.lineTo(x + half, groundY); ctx.closePath(); ctx.fill();
+      // candy-stripe band
+      ctx.fillStyle = layout.bodyDark; ctx.globalAlpha = 0.5;
+      ctx.fillRect(x - half * 0.85, groundY - bh * 0.45, bw * 0.85, 2);
+      ctx.globalAlpha = 1;
+      // lamp room
+      ctx.fillStyle = layout.bodyLight;
+      ctx.fillRect(x - half * 0.5, topY, bw * 0.5, bh * 0.12);
+      break;
+    }
+    default:
+      box(topY, bh, bw);
+  }
+}
+
+/** Per-frame citadel draw — re-anchors the cached biome+level layout to the live
+ *  ridge, paints each structure in its biome vocabulary with a sun key-light +
+ *  ground shadow, then window glow (twinkle at L4+) and the beacon/lamp pulse. */
 function drawCitadelSkyline(
   ctx: CanvasRenderingContext2D,
   h: number,
   t: number,
   layout: CitadelLayout,
-  ridgeYAt: (x: number) => number
+  ridgeYAt: (x: number) => number,
+  keyDir: number,
+  winNight: number
 ): void {
   ctx.save();
-  // bodies + structural flourishes
-  let winIndex = 0;
-  for (let s = 0; s < layout.structures.length; s++) {
+  // draw back-to-front: sort by x distance from centre so nearer-centre (usually
+  // the tall signature) overlaps cleanly — cheap insertion via index order is fine
+  // since the layout was emitted signature-first; paint fillers first, signature last.
+  const order = layout.structures
+    .map((_, i) => i)
+    .sort((a, b) => (layout.structures[a].signature ? 1 : 0) - (layout.structures[b].signature ? 1 : 0));
+  for (const s of order) {
     const st = layout.structures[s];
     const groundY = ridgeYAt(st.x);
-    const topY = groundY - st.bh;
-    ctx.fillStyle = layout.struct;
-    ctx.fillRect(st.x - st.bw / 2, topY, st.bw, st.bh);
-    if (st.isOutpost) {
-      ctx.beginPath();
-      ctx.arc(st.x, groundY - st.bh * 0.5, st.bw * 0.7, Math.PI, 0);
-      ctx.fill();
-      ctx.strokeStyle = layout.struct;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(st.x, topY);
-      ctx.lineTo(st.x, topY - st.bh * 0.6);
-      ctx.stroke();
-    } else if (st.isSpire) {
-      ctx.beginPath();
-      ctx.moveTo(st.x - st.bw / 2, topY);
-      ctx.lineTo(st.x, topY - st.bh * 0.5);
-      ctx.lineTo(st.x + st.bw / 2, topY);
-      ctx.fill();
-    }
+    drawCitadelStruct(ctx, st, groundY, layout, keyDir);
   }
 
-  // warm window lights — twinkle subtly at higher levels (additive)
+  // warm window lights — biome-tinted glow; twinkle subtly at higher levels.
+  const wg = layout.winGlow;
   ctx.globalCompositeOperation = 'lighter';
+  let winIndex = 0;
   for (let s = 0; s < layout.structures.length; s++) {
     const st = layout.structures[s];
     if (st.windows.length === 0) continue;
@@ -4447,28 +4791,53 @@ function drawCitadelSkyline(
         ? (t === 0 ? 0.85 : 0.6 + 0.4 * Math.sin(t * 2 + winIndex * 1.3))
         : 0.85;
       winIndex++;
-      ctx.fillStyle = `rgba(255, ${190 + Math.round(win.warm * 40)}, ${110 + Math.round(win.warm * 50)}, ${(0.55 * tw).toFixed(3)})`;
-      ctx.fillRect(st.x + win.dx, topY + win.dy, 1.6, 1.6);
+      const warm = win.warm;
+      const r = Math.min(255, wg.r);
+      const g = Math.min(255, Math.round(wg.g * (0.85 + warm * 0.15)));
+      const b = Math.min(255, Math.round(wg.b * (0.85 + warm * 0.15)));
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${(0.55 * tw * winNight).toFixed(3)})`;
+      ctx.fillRect(st.x + win.dx, topY + win.dy, 1.8, 1.8);
     }
   }
   ctx.globalCompositeOperation = 'source-over';
 
-  // Capital beacon — a pulsing aircraft-warning light atop the tallest tower
+  // Beacon — L5 pulsing red aircraft-warning light, OR the oceanic lighthouse
+  // lamp (a sweeping green-white pulse from the signature lighthouse top).
   if (layout.beacon) {
-    const bx = layout.cityX;
-    const by = ridgeYAt(bx) - h * layout.maxH - 4;
+    const sig = layout.structures.find((s) => s.signature) || layout.structures[0];
+    const bx = sig ? sig.x : layout.cityX;
+    const by = ridgeYAt(bx) - (sig ? sig.bh : h * layout.maxH) - 4;
     const pulse = t === 0 ? 0.5 : 0.5 + 0.5 * Math.sin(t * 2.4);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const bg = ctx.createRadialGradient(bx, by, 0, bx, by, 12);
-    bg.addColorStop(0, `rgba(255, 70, 60, ${(0.5 + pulse * 0.45).toFixed(3)})`);
-    bg.addColorStop(1, 'rgba(255, 70, 60, 0)');
-    ctx.fillStyle = bg;
-    ctx.fillRect(bx - 12, by - 12, 24, 24);
-    ctx.beginPath();
-    ctx.arc(bx, by, 2, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255, 120, 110, ${(0.7 + pulse * 0.3).toFixed(3)})`;
-    ctx.fill();
+    if (layout.beaconKind === 'LAMP') {
+      // lighthouse lamp: a bright green-white core + a slow sweeping beam.
+      const lr = 16;
+      const lg = ctx.createRadialGradient(bx, by, 0, bx, by, lr);
+      lg.addColorStop(0, `rgba(180, 255, 220, ${(0.55 + pulse * 0.4).toFixed(3)})`);
+      lg.addColorStop(1, 'rgba(180, 255, 220, 0)');
+      ctx.fillStyle = lg;
+      ctx.fillRect(bx - lr, by - lr, lr * 2, lr * 2);
+      // sweeping beam (a thin rotating wedge); static at t=0
+      const ang = t === 0 ? -0.6 : (t * 0.8) % (Math.PI * 2);
+      ctx.globalAlpha = 0.25 + pulse * 0.2;
+      ctx.fillStyle = 'rgba(200, 255, 235, 1)';
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx + Math.cos(ang - 0.12) * 60, by + Math.sin(ang - 0.12) * 60 * 0.5);
+      ctx.lineTo(bx + Math.cos(ang + 0.12) * 60, by + Math.sin(ang + 0.12) * 60 * 0.5);
+      ctx.closePath(); ctx.fill();
+    } else {
+      const bg = ctx.createRadialGradient(bx, by, 0, bx, by, 12);
+      bg.addColorStop(0, `rgba(255, 70, 60, ${(0.5 + pulse * 0.45).toFixed(3)})`);
+      bg.addColorStop(1, 'rgba(255, 70, 60, 0)');
+      ctx.fillStyle = bg;
+      ctx.fillRect(bx - 12, by - 12, 24, 24);
+      ctx.beginPath();
+      ctx.arc(bx, by, 2, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255, 120, 110, ${(0.7 + pulse * 0.3).toFixed(3)})`;
+      ctx.fill();
+    }
     ctx.restore();
   }
   ctx.restore();
