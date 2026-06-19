@@ -63,6 +63,17 @@ class ShipUpgradeService:
             "effect_per_level": {"genesis_capacity_bonus": 2},
             "description": "Increases genesis device capacity by +2 per level"
         },
+        # NO-CANON kernel (sw2102-docs ship-systems.md §2.9 marks cost/effect 📐 Design-only).
+        # Cost scaling mirrors the Hull/Sensor utility tier (base 6,000, x2.0). Effect:
+        # each level reduces the ship's mechanical failure rate by 0.15 (15% relative)
+        # of the spec's base maintenance_rate, applied via _apply_upgrade_effects into the
+        # maintenance JSONB. Numbers flagged for a DECISIONS Pending entry.
+        UpgradeType.MAINTENANCE_SYSTEM: {
+            "base_cost": 6000,
+            "cost_multiplier": 2.0,
+            "effect_per_level": {"failure_rate_reduction": 0.15},
+            "description": "Reduces mechanical failure rate by 15% per level"
+        },
     }
 
     EQUIPMENT_DEFINITIONS = {
@@ -339,6 +350,19 @@ class ShipUpgradeService:
             genesis_bonus = effects["genesis_capacity_bonus"]
             ship.max_genesis_devices += genesis_bonus
             updated["max_genesis_devices"] = ship.max_genesis_devices
+
+        elif upgrade_type == UpgradeType.MAINTENANCE_SYSTEM:
+            # Accumulate a cumulative failure-rate reduction into the maintenance JSONB.
+            # Stored as a fraction (0.0–1.0); the failure-roll logic multiplies the spec's
+            # base maintenance_rate by (1 - failure_rate_reduction). Clamp at 1.0 so the
+            # cumulative reduction can never invert the rate.
+            maintenance = ship.maintenance if isinstance(ship.maintenance, dict) else {}
+            reduction = effects["failure_rate_reduction"]
+            current_reduction = maintenance.get("failure_rate_reduction", 0)
+            maintenance["failure_rate_reduction"] = min(1.0, current_reduction + reduction)
+            ship.maintenance = maintenance
+            flag_modified(ship, 'maintenance')
+            updated["failure_rate_reduction"] = maintenance["failure_rate_reduction"]
 
         return updated
 
