@@ -916,6 +916,15 @@ Deployed `7779260`, gameserver healthy, clean startup. Proofs (server-minted JWT
   in cut 1+2. **Visual browser screenshot PENDING** — the Chrome extension isn't connected in this
   autonomous run; will capture the TurnEconomy MFD + victory banner when Max connects it. No migration.
 
+### 2026-06-19 — PLAYER/GAMESERVER → ADMIN-UI — ✅ L11 visual proof CAPTURED + living landed-vista shipped (client-only)
+Chrome reachable via the chrome-devtools bridge (claude-in-chrome still reports disconnected; chrome-devtools
+works). **L11 now fully proven**: TurnEconomy MFD regen readout (TURNS/MAX/REGEN 41.7hr/TIME-TO-FULL) +
+journey-victory banner ("FLEET ADMIRAL — JOURNEY COMPLETE", MAX TURNS lifts to 1,120 at Fleet Admiral).
+**New feature (`0d538ad`, player-client only, no gameserver/migration)**: living landed-planet vista —
+drawLandedScene now varies by star type, planet type, habitability, citadel level, distance-to-sun (real
+sun disc, flora, horizon skyline by citadel L0–5, MOUNTAINOUS palette). Proven live (VOLCANIC→OCEANIC→L5
+capital, real M-dwarf star + orbit_au). All fixtures reverted. Screenshots in e2e_tests/screenshots/neon/.
+
 ### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — 🔧→✅ DEPLOY WINDOW (Phase 4 L8b: fleet combat model)
 **No migration** (fleet_service.py only). gameserver restart. Completed the fleet combat model on top
 of the proven coordination_bonus: supply penalties (>50 none/25-50 −5%/<25 −15%, attack+defense),
