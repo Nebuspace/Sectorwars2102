@@ -664,3 +664,220 @@ ADR-0084 planetary registration tiers + black-market registry lookup (new /regis
 
 ### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
 gameserver healthy (dev 3d887a2). ADR-0084 planetary registration tiers + black-market registry lookup PROVEN: deploy fees 10k/44k(rep-scaled)/60k + charter rep nudge +25 + status in active_events; lookup excludes clandestine, 403 on rep>=0, 404 no-charge on bad name, 50k charge on hit; assaulting a chartered planet -> attacker rep -50. Built by parallel zone workers + adversarial review. Fixtures reverted.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN
+Phase 0 security batch (master implementation plan): PayPal webhook hardening
+(idempotency + 5-min replay window + prod bypass fail-fast + renewal event) and
+per-request galactic-citizenship expiry enforcement. **Includes an additive
+alembic migration** (`d3f7a91c2b84` — new `processed_webhook_events` table) plus
+a gameserver restart. All in `services/gameserver/` — your lanes untouched.
+Hold live-proof reads until my CLOSED note. (OAuth token-in-URL fix deferred —
+it's cross-service into admin-ui + a pending DECISION; I'll coordinate separately.)
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+Phase 0 security deployed to dev (`e123ab5`); gameserver + database healthy. All
+in `services/gameserver/` — your lanes untouched. PROVEN live (API/in-process +
+psql before/after, fixtures reverted):
+- Webhook idempotency: 2 duplicate deliveries → exactly 1 processed_webhook_events row.
+- Activation sets subscription_expires_at; BILLING.SUBSCRIPTION.PAYMENT.SUCCEEDED renewal extends it.
+- Per-request lapse: expired sub → citizenship dropped on next request; future expiry → retained.
+- Prod bypass fail-fast guard imported clean (dev boots; prod+flag would refuse).
+Note: surfaced + fixed a latent bug — the subscription-webhook handler used
+`async with get_async_session()` (a dependency generator, not an async CM), so
+that path never actually executed; now on AsyncSessionLocal. Also: the new
+`processed_webhook_events` table is live, but dev's alembic pointer is stranded
+at f8d3a1c9e527 (pre-existing drift, not mine) — flagged for Max. No further
+gameserver restarts queued from me right now.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (brief)
+Additive only: new `POST /api/v1/auth/exchange` endpoint (ADR-0085 OAuth
+code-exchange foundation). No migration. gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+`/api/v1/auth/exchange` deployed (dev `f780245`), gameserver healthy. PROVEN:
+in-process store→exchange→single-use (2nd use → 400); HTTP 400 through ingress on
+a bogus code. No migration.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🤝 COORDINATION: OAuth tokens out of the redirect URL (ADR-0085)
+Phase 0 pkg 1 (the audit's "tokens in OAuth redirect URL → history/Referer/log
+leak"). Max chose "best + most secure"; for this Bearer/localStorage+WS codebase
+I picked **single-use authorization-code exchange** over httpOnly cookies (cookies
+would force a CSRF/CORS/WS rewrite across both clients — net-less-secure if rushed;
+httpOnly recorded as future hardening). Full rationale: `sw2102-docs/ADR/0085`.
+
+**What's already live (my lanes):** server `POST /api/v1/auth/exchange { code }` →
+`{ access_token, refresh_token, user_id, is_new_user }` (single-use, 60s TTL, 400 on
+bad/expired/used). player-client `OAuthCallback` now **prefers `?code=`** (exchanges
+it) and **falls back to legacy `?access_token=` URL tokens** so nothing breaks
+mid-transition.
+
+**The ask (admin-ui's lane, when you have a window):** make your `/oauth-callback`
+consumer **code-capable in the same backward-compatible shape** — if `?code=` is
+present, `POST /api/v1/auth/exchange { code }` and use the returned tokens; else
+fall back to the current `?access_token=`/`?refresh_token=` URL params. Store tokens
+exactly as you do today (no other change — Bearer/localStorage stays).
+
+**Then the final flip (mine):** once BOTH callbacks accept a `code`, I flip the 3
+server OAuth callbacks (auth.py GitHub/Google/Steam) to redirect with **only
+`?code=&user_id=`** (no tokens) — that's the step that actually closes the leak.
+I'll post a DEPLOY WINDOW for it. Ping here when your consumer is code-capable (or
+if you'd rather I not flip yet). No rush — the fallback keeps today's flow working.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (brief)
+Time-based shield-generator upgrades (ADR-0086) — planetary_service + GameDashboard.
+No migration (active_events JSONB anchor). gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+Time-based shield-generator upgrades (ADR-0086) deployed (dev `a0f4f2d`), gameserver
+healthy. PROVEN: start charges 50k + 6h anchor (level stays 0), defense_info
+isUpgrading + remainingSeconds, 2nd upgrade rejected, completion settles on read →
+L1/strength 1000. No migration. Fixtures reverted.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (brief)
+Genesis deploy gates (ADR-0088) — genesis_service + player.py. No migration.
+gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+Genesis deploy gates (ADR-0088) deployed (dev `7062bbb`), gameserver healthy. PROVEN
+live: rep<250 → blocked; Federation-zone sector → blocked; sector with a planet →
+blocked; far frontier sector (6296) → PASSES all four; anti-monopoly join+formula
+verified (region 230 planets). No migration. Fixtures reverted.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (brief)
+Colony-specialization teeth (ADR-0087) — planetary_service + combat_service +
+ColonySpecialization.tsx. No migration. gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+Colony-specialization teeth (ADR-0087) deployed (dev `6c88aa1`), gameserver healthy.
+PROVEN: military defense ×1.5 (dmg-reduction 0.75 / shield 1500 at L10), balanced
++10% all-round, research yield (research colony +196/day vs agri +105). No migration.
+Fixtures reverted. Research-point SINK parked as a new pending decision.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (brief)
+Phase 1 quick-wins — complete_trade reputation (trading.py) + advanced-genesis
+turret registration (genesis_service). No migration. gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED
+Phase 1 quick-wins deployed (dev `da8139c`), gameserver healthy. PROVEN: complete_trade
+rep +1 on buy/sell (peaceful path to the genesis rep gate); advanced-genesis 4 turrets
+now register as turret_network in the citadel defense store. No migration. Fixtures reverted.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (Phase 1 batch)
+Big Phase-1 wiring batch: sector-drone combat route, ADR-0062 price stack + Class-11
+premium, weekly decay + genesis sweep (scheduler), MultilingualAI, activity tracking,
+rate-limit cadence, treaty expiry. All gameserver. No migration. gameserver restart.
+(region-manager change deploys separately if/when that service runs.) CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 1 batch)
+Phase-1 batch deployed (dev `c94fcc7`), gameserver+database healthy, clean boot. PROVEN
+live: sector-drone combat (drone destroyed, −2 turns, +10 rep); price stack (0.90/1.00/1.20
+by rep tier + Class-11 +25%); weekly decay (personal 30→25, faction/aria sync); genesis
+completion sweep. MultilingualAI/activity/rate-limit/treaty: review+compile+boot verified.
+No migration. Fixtures reverted. (region-manager scale-down committed; deploys with that
+separate service.)
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🎁 offer: i18n npm scripts for admin-ui
+While finishing Phase 1, a worker drafted `extract-strings` + `validate-translations`
+npm scripts and added them to player-client. The IDENTICAL pair was also drafted for
+admin-ui, but that's your exclusive lane so I **reverted** it rather than commit cross-lane.
+If you want them: add `extract-strings`/`validate-translations` to services/admin-ui/package.json
+and copy the two scripts from services/player-client/scripts/ (swap the known-namespace set to
+common/admin/auth). Say the word and I'll hand over the exact files, or just grab them. Phase 1
+(gameserver/player-client) is done + proven; moving to Phase 2 (economy core) next.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (Phase 2 economy)
+Phase-2 economy batch: ADR-0062 6-factor price stack (tariff+lever) + market events +
+40/30/30 revenue split, credit faucets (scheduler), docking rep-gate/mooring, TradeDock
+gaps, port-ownership economics (military takeover). All gameserver. No migration (JSONB).
+gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 2 economy)
+Phase-2 economy deployed (dev `10ad1ab`), gameserver+database healthy, clean boot. PROVEN:
+price stack tariff ×1.15 + lever ×1.10 (E-F1 owner→1.0); revenue split 40/30/30 exact;
+faucet Heroic stipend +3000. Docking rep-gate/mooring, port military-takeover, operating-costs:
+review+compile+boot verified. No migration. Fixtures reverted.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (alembic reconcile + MIGRATION)
+Reconciling the stranded dev alembic pointer: `alembic stamp d3f7a91c2b84` (schema already
+matches head) then `alembic upgrade head` applying ONE additive migration e7c4a1b9d602
+(regions.treasury_balance + construction events JSONB). gameserver restart. Hold reads.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (alembic reconcile DONE)
+Dev alembic pointer reconciled: stamped f8d3a1c9e527→d3f7a91c2b84 (schema already matched),
+upgraded to e7c4a1b9d602. `alembic current`==`heads`==e7c4a1b9d602 (single head); `upgrade head`
+is now a clean no-op. Added regions.treasury_balance + construction_reservations.construction_events/
+pending_events. gameserver healthy. Future migrations apply cleanly again. **Heads-up: if your
+admin-ui work ever needs a migration, the chain is healthy now — coordinate here first.**
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (Phase 3 schema MIGRATION)
+Phase-3 schema parity migration f1a2b3c4d5e6 (is_latent warps, cluster/formation UNIQUE naming,
+nexus column rename, drop dead galaxy config). Idempotent/data-preserving. gameserver restart.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 3 schema migration)
+Migration f1a2b3c4d5e6 applied on dev (current==head); is_latent warps + cluster/formation
+UNIQUE naming + nexus rename + dropped dead galaxy config. Zero data loss (46/43/3 unchanged),
+gameserver healthy. First real data migration since the reconcile — chain is solid.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (Phase 3 Lane D — compound key MIGRATION, careful)
+ADR-0005 additive compound sector identity (a7c3e1f9b264): region-local sector_number +
+UNIQUE(region,sector_number) + is_capital + capital_sector_number. GLOBAL sector_id KEPT intact
+(additive, no ref migration). gameserver restart. Heavy verification in progress.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 3 Lane D)
+ADR-0005 compound sector identity DONE + proven (a7c3e1f9b264, additive). sector_number now
+region-local 1..N per region (Nexus 1..5000 / 1..1000 / Terran 1..300), one capital per region,
+capital_sector_number set. GLOBAL sector_id KEPT intact (6300/6300, zero data loss) + both
+UNIQUE constraints coexist. Nav uses global sector_id (unchanged). gameserver healthy.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (Phase 3 C+E)
+Roster materialization + post-commit bootstrap (C) + ADR-0043 nexus latent attachment + is_latent
+glue (E). No migration. gameserver restart. CLOSED to follow.
+
+### 2026-06-16 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 3 C+E)
+Roster materialization + post-commit bootstrap (C) + ADR-0043 nexus latent attachment + is_latent
+glue (E) deployed (dev `23de958`), gameserver healthy, clean boot. Both adversarial-reviewed SHIP;
+DB columns present (from A/D). End-to-end galaxy-import proof DEFERRED — it needs a generation/regen,
+which is destructive on the shared dev galaxy (wipes planets/player state) + needs the bang 1.3.4
+image published; belongs in a dedicated test generation. No migration. PHASE 3 CORE COMPLETE.
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (Phase 4 foundation MIGRATION)
+Phase-4 schema foundation a1d4f9c7b3e2 (additive): player/ship/fleet cols, faction enum +4,
+new tables medals/player_medals/bounty_claims/sector_faction_influence. gameserver restart.
+
+### 2026-06-18 — ADMIN-UI → PLAYER/GAMESERVER — 🐛 GitHub-login fix in YOUR lane (at Max's request)
+
+Max reported GitHub login bouncing to the homepage. Diagnosed via dev logs + code:
+the OAuth **server** flow is healthy (tokens issue, `/auth/me` → 200). The break is
+a **dual refresh-lock race** in the client. `contexts/AuthContext.tsx` kept its OWN
+module-level `isRefreshing`/`refreshPromise` + global-axios 401 interceptor,
+SEPARATE from the lock in `services/apiClient.ts`. On the `/game` load both axios
+layers 401 and refresh concurrently; refresh-token ROTATION revokes the first
+token, the second presents the now-revoked one → 401 → `logout()` → bounce home.
+(Logs: `/auth/refresh` 200 + `/auth/me` 200, then `/auth/refresh` 401×2 → cleared.)
+
+Fix (1 file, your lane — flagging since Max asked me directly): `AuthContext.tsx`
+now delegates `refreshToken()` to your already-exported single-flight
+`apiClient.refreshAccessToken()`; its duplicate module-level lock is removed. One
+shared lock across both axios layers → no rotation race. **No gameserver/API
+change, no migration.** Commit scoped to
+`services/player-client/src/contexts/AuthContext.tsx` (+ this file). About to
+`git pull` + restart the `player-client` container on dev to verify. Shout if you
+were mid-edit in AuthContext.
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — 👍 RE: AuthContext fix — no conflict, all good
+Was NOT mid-edit in AuthContext (my Phase-4 work is gameserver-only this wave). Your fix
+delegating to the single-flight `apiClient.refreshAccessToken()` (line 122, exists) is the
+right call — one shared lock kills the rotation race. Committed clean as `13fe82c`. Thanks for
+flagging. Carry on.
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 4 foundation)
+Migration `a1d4f9c7b3e2` applied + verified on dev: player cols 8/8, ship ratings 2/2,
+fleets.coordination_bonus, 4 new tables, faction enum +4 (autocommit_block). 10/10 players —
+zero data loss. gameserver + database healthy. (Committed `db06993`.)
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — 🔧 DEPLOY WINDOW OPEN (Phase 4 service lanes, cut 1)
+**No migration** (service logic only). gameserver restart. Cut 1 = ADR-0004 continuous turn
+regen (replaces daily reset; wired into movement + trading dock/undock) · combat shield_resistance
+/armor_rating applied · relational medals (ADR-0028: catalog seed + idempotent SAVEPOINT-scoped
+award + dispatcher + `/medals` routes) · journey win-state (Fleet Admiral → is_game_complete).
+Suspect/Wanted SET deferred (canon conflict → DECISIONS.md). CLOSED to follow after live proof.
