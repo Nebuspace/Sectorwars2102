@@ -2116,22 +2116,38 @@ type SeaCreature = {
   dir: number;        // +1 / -1 facing
 };
 
-// --- SEA-STATE WEATHER (water variants only) -------------------------------
+// --- WORLD WEATHER (biome-agnostic) ----------------------------------------
 // Deterministic per (world, day): the same world reads calm one day, stormy the
-// next; two worlds on the same day differ. Drives a single factor set (wx) that
-// scales the SAME ocean code — waves, foam, spray, sky — so weather is uniform.
-type SeaWeather = 'CALM' | 'CHOPPY' | 'ROUGH' | 'STORM' | 'HURRICANE';
+// next; two worlds on the same day differ. A single generic intensity scale
+// (CALM…EXTREME) drives a shared factor set (WeatherFx) consumed by EVERY biome:
+// sky darken/haze, precipitation, sun dimming, ambient-particle scaling — plus
+// ocean-only wave fields used solely by water variants. weatherPhenomenaFor()
+// maps a biome + tier to the right precip type + haze tint so the same engine
+// renders rain, snow, ash, sand or dust depending on the world.
+type WorldWeather = 'CALM' | 'CHOPPY' | 'ROUGH' | 'STORM' | 'HURRICANE';
+
+type PrecipKind = 'none' | 'rain' | 'snow' | 'ash' | 'sand' | 'dust';
 
 type WeatherFx = {
-  state: SeaWeather;
+  tier: WorldWeather;       // generic intensity tier (0..4)
+  tierN: number;            // 0..1 normalized intensity
+  // GENERIC (all biomes)
+  skyDarken: number;        // 0 (clear) … 1 (very dark) overlay on the sky
+  sunDim: number;           // 0 (full sun) … 1 (sun fully veiled)
+  hazeMul: number;          // multiplies the world's ambient haze strength
+  hazeColor: string;        // "r, g, b" biome-tinted weather haze/overlay tint
+  precip: PrecipKind;       // what falls/blows
+  precipIntensity: number;  // 0..1 density of precipitation
+  precipAngle: number;      // radians from vertical (wind-blown)
+  windMul: number;          // generic wind strength (drift speeds)
+  particleMul: number;      // scales the per-biome ambient particles (embers etc.)
+  lightning: boolean;       // occasional full-scene flash (TERRAN/JUNGLE storms)
+  // OCEAN-ONLY (consumed by water variants; harmless/neutral elsewhere)
   waveAmpMul: number;       // swell height multiplier
   waveCountMul: number;     // how many swell layers (× base)
   choppiness: number;       // extra high-frequency ripple amplitude (px)
   whitecapDensity: number;  // 0..1 fraction of swells that foam + fleck density
   foamMul: number;          // waterline / shore foam strength
-  skyDarken: number;        // 0 (clear) … 1 (very dark) overlay on the sky
-  rain: number;             // 0 (none) … 1 (driving) rain density
-  rainAngle: number;        // radians from vertical (wind-blown)
   spraySpeedMul: number;    // sea-spray velocity multiplier
 };
 
@@ -2152,33 +2168,79 @@ function shoreCurveYAt(
   return h * (curve.baseFrac + tilt) - (arc + noise) * curve.amp;
 }
 
-/** Seed a sea-state for this world+day and resolve its effect factors. */
-function weatherFor(worldSeed: number, dayBucket: number): WeatherFx {
-  const r = splitmix32((worldSeed ^ (dayBucket >>> 0)) >>> 0 || 1)();
-  // weighted: most days are sailable; storms/hurricanes are the rare drama.
-  let state: SeaWeather;
-  if (r < 0.34) state = 'CALM';
-  else if (r < 0.64) state = 'CHOPPY';
-  else if (r < 0.84) state = 'ROUGH';
-  else if (r < 0.95) state = 'STORM';
-  else state = 'HURRICANE';
-  switch (state) {
-    case 'CALM':
-      return { state, waveAmpMul: 0.55, waveCountMul: 0.8, choppiness: 0, whitecapDensity: 0.05,
-        foamMul: 0.6, skyDarken: 0, rain: 0, rainAngle: 0, spraySpeedMul: 0.7 };
-    case 'CHOPPY':
-      return { state, waveAmpMul: 0.9, waveCountMul: 1.1, choppiness: 2.5, whitecapDensity: 0.3,
-        foamMul: 1.0, skyDarken: 0.05, rain: 0, rainAngle: 0, spraySpeedMul: 1.0 };
-    case 'ROUGH':
-      return { state, waveAmpMul: 1.35, waveCountMul: 1.3, choppiness: 5, whitecapDensity: 0.6,
-        foamMul: 1.5, skyDarken: 0.18, rain: 0, rainAngle: 0.15, spraySpeedMul: 1.3 };
-    case 'STORM':
-      return { state, waveAmpMul: 1.8, waveCountMul: 1.5, choppiness: 9, whitecapDensity: 0.85,
-        foamMul: 2.0, skyDarken: 0.42, rain: 0.6, rainAngle: 0.45, spraySpeedMul: 1.7 };
-    case 'HURRICANE':
-      return { state, waveAmpMul: 2.3, waveCountMul: 1.7, choppiness: 14, whitecapDensity: 1.0,
-        foamMul: 2.6, skyDarken: 0.6, rain: 1.0, rainAngle: 0.8, spraySpeedMul: 2.2 };
+/** Map a biome (flourish) + intensity tier → the precipitation kind + haze tint
+ *  that reads right for that world. Pure lookup; no randomness. tierN is 0..1. */
+function weatherPhenomenaFor(
+  flourish: LandedPalette['flourish'],
+  tier: WorldWeather,
+  tierN: number
+): { precip: PrecipKind; hazeColor: string; lightning: boolean; sunDimBias: number } {
+  const heavy = tier === 'STORM' || tier === 'HURRICANE';
+  const mid = tier === 'ROUGH' || heavy;
+  switch (flourish) {
+    case 'OCEANIC':
+      // rain only at storm+; storm-grey haze.
+      return { precip: heavy ? 'rain' : 'none', hazeColor: '150, 165, 185', lightning: false, sunDimBias: 0 };
+    case 'DESERT':
+      // dust haze building to a SANDSTORM; warm orange tint; strong sun-dim high up.
+      return { precip: mid ? 'sand' : 'dust', hazeColor: '210, 165, 95', lightning: false, sunDimBias: 0.25 };
+    case 'ICE':
+      // snow building to a BLIZZARD/whiteout; white haze.
+      return { precip: tierN > 0.2 ? 'snow' : 'none', hazeColor: '225, 235, 245', lightning: false, sunDimBias: 0.1 };
+    case 'VOLCANIC':
+      // ash motes + embers → EMBER-STORM; dark smoky-red haze.
+      return { precip: tierN > 0.2 ? 'ash' : 'dust', hazeColor: '120, 70, 60', lightning: false, sunDimBias: 0.2 };
+    case 'TERRAN':
+      // rain → THUNDERSTORM with lightning at storm+; dark grey haze.
+      return { precip: heavy ? 'rain' : (mid ? 'rain' : 'none'), hazeColor: '140, 150, 165', lightning: heavy, sunDimBias: 0.05 };
+    case 'MOUNTAINOUS':
+      // wind-driven snow up high; cool grey-white haze.
+      return { precip: mid ? 'snow' : 'none', hazeColor: '200, 210, 220', lightning: false, sunDimBias: 0.1 };
+    default: // NONE → barren/gas/unknown: dust storm.
+      return { precip: tierN > 0.3 ? 'dust' : 'none', hazeColor: '160, 150, 140', lightning: false, sunDimBias: 0.1 };
   }
+}
+
+/** Seed a world-weather tier for this world+day and resolve its generic factor
+ *  set, then overlay the biome-specific precip + haze via weatherPhenomenaFor. */
+function weatherFor(
+  worldSeed: number,
+  dayBucket: number,
+  flourish: LandedPalette['flourish']
+): WeatherFx {
+  const r = splitmix32((worldSeed ^ (dayBucket >>> 0)) >>> 0 || 1)();
+  // weighted: most days are mild; storms/extremes are the rare drama.
+  let tier: WorldWeather;
+  if (r < 0.34) tier = 'CALM';
+  else if (r < 0.64) tier = 'CHOPPY';
+  else if (r < 0.84) tier = 'ROUGH';
+  else if (r < 0.95) tier = 'STORM';
+  else tier = 'HURRICANE';
+  const tierIdx = { CALM: 0, CHOPPY: 1, ROUGH: 2, STORM: 3, HURRICANE: 4 }[tier];
+  const tierN = tierIdx / 4;
+  // generic intensity ramps (shared across biomes)
+  const skyDarken = [0, 0.05, 0.18, 0.42, 0.6][tierIdx];
+  const hazeMul = [0.8, 1.0, 1.5, 2.2, 3.0][tierIdx];
+  const precipIntensity = [0, 0.1, 0.4, 0.7, 1.0][tierIdx];
+  const precipAngle = [0, 0.05, 0.18, 0.45, 0.8][tierIdx];
+  const windMul = [0.7, 1.0, 1.3, 1.7, 2.2][tierIdx];
+  const particleMul = [0.7, 1.0, 1.4, 1.9, 2.4][tierIdx];
+  // ocean-only ramps
+  const waveAmpMul = [0.55, 0.9, 1.35, 1.8, 2.3][tierIdx];
+  const waveCountMul = [0.8, 1.1, 1.3, 1.5, 1.7][tierIdx];
+  const choppiness = [0, 2.5, 5, 9, 14][tierIdx];
+  const whitecapDensity = [0.05, 0.3, 0.6, 0.85, 1.0][tierIdx];
+  const foamMul = [0.6, 1.0, 1.5, 2.0, 2.6][tierIdx];
+  const spraySpeedMul = [0.7, 1.0, 1.3, 1.7, 2.2][tierIdx];
+
+  const phen = weatherPhenomenaFor(flourish, tier, tierN);
+  const sunDim = Math.min(1, skyDarken * 0.8 + phen.sunDimBias * tierN);
+  return {
+    tier, tierN, skyDarken, sunDim, hazeMul, hazeColor: phen.hazeColor,
+    precip: phen.precip, precipIntensity, precipAngle, windMul, particleMul,
+    lightning: phen.lightning,
+    waveAmpMul, waveCountMul, choppiness, whitecapDensity, foamMul, spraySpeedMul,
+  };
 }
 
 interface LandedCache {
@@ -2214,9 +2276,9 @@ interface LandedCache {
   skyPlanets: SkyPlanet[];
   // ocean wave lines (NEW; OCEANIC / water variants only)
   waves: WaveLine[];
-  // sea-state weather (water variants only) + per-frame rain streak seeds.
+  // world weather (ALL biomes) + seeded precipitation streak/flake positions.
   weather: WeatherFx | null;
-  rainSeeds: { x: number; len: number; speed: number; alpha: number }[];
+  precipSeeds: { x: number; y: number; len: number; speed: number; alpha: number; size: number }[];
   // aquatic life: seeded breach windows for a creature surfacing on the sea.
   creatures: SeaCreature[];
   // foreground SHORE (water variants only — replaces the 3 ridges on water worlds)
@@ -2490,13 +2552,40 @@ function buildLandedCache(
   const farLands: LandedCache['farLands'] = [];
   let headland: LandedCache['headland'] = null;
   const creatures: SeaCreature[] = [];
-  // Sea-state weather: deterministic per (world, day) — clear/calm one day, a
-  // hurricane the next. dayBucket is folded into the cache key so it rebuilds.
-  let weather: WeatherFx | null = null;
-  const rainSeeds: LandedCache['rainSeeds'] = [];
+
+  // --- WORLD WEATHER (ALL biomes) — deterministic per (world, day). dayBucket is
+  // folded into the cache key so it rebuilds daily. Drives sky/haze/precip/sun-dim
+  // for every landform; water variants additionally consume the wave fields. We
+  // skip weather for GAS-default skies with no surface? No — even barren/gas get a
+  // dust haze. Only suppress on the unknown-violet 'NONE' if it has no ground? It
+  // still has ridges, so weather applies everywhere. ---
+  const weather: WeatherFx = weatherFor(worldSeed, dayBucket, pal.flourish);
+  const wx = weather;
+  // Seeded precipitation positions (rain streaks / snow flakes / ash / sand / dust
+  // motes). Count scales with the day's intensity; capped for perf. Drawn per
+  // frame by the shared drawPrecipitation renderer.
+  const precipSeeds: LandedCache['precipSeeds'] = [];
+  if (weather.precip !== 'none' && weather.precipIntensity > 0) {
+    const pkMax = weather.precip === 'snow' ? 120
+      : weather.precip === 'ash' ? 70
+      : weather.precip === 'dust' ? 60
+      : weather.precip === 'sand' ? 110
+      : 90; // rain
+    const pCountW = Math.max(8, Math.round(pkMax * weather.precipIntensity));
+    const pwRng = splitmix32(worldSeed * 7919 + 401);
+    for (let i = 0; i < pCountW; i++) {
+      precipSeeds.push({
+        x: pwRng(),                 // 0..1 across an extended span
+        y: pwRng(),                 // 0..1 down the scene (start offset)
+        len: 8 + pwRng() * 16,
+        speed: 0.7 + pwRng() * 0.7,
+        alpha: 0.10 + pwRng() * 0.18,
+        size: 0.7 + pwRng() * 1.6,  // flake/mote radius
+      });
+    }
+  }
+
   if (hasWater) {
-    weather = weatherFor(worldSeed, dayBucket);
-    const wx = weather;
     const bandTop = waterTopY;
     // The sea band now spans most of the lower scene (horizon → shore). Make the
     // depth gradient OPAQUE blue-teal so it reads unmistakably as water, not a
@@ -2565,19 +2654,6 @@ function buildLandedCache(
         chopAmp: (0.4 + f * 0.8) * wx.choppiness,
         chopWavelength: (8 + f * 16),
       });
-    }
-    // RAIN streak seeds (drawn per frame; count + angle from weather).
-    if (wx.rain > 0) {
-      const rnRng = splitmix32(worldSeed * 7919 + 401);
-      const rainCount = Math.round(60 * wx.rain);
-      for (let i = 0; i < rainCount; i++) {
-        rainSeeds.push({
-          x: rnRng(),                            // 0..1 across an extended span
-          len: 10 + rnRng() * 18,
-          speed: 0.8 + rnRng() * 0.6,
-          alpha: 0.12 + rnRng() * 0.18,
-        });
-      }
     }
 
     // --- foreground SHORE colour + foam, per water variant ---
@@ -2695,6 +2771,29 @@ function buildLandedCache(
         size: 10 + crRng() * 10,
         dir: crRng() < 0.5 ? 1 : -1,
       });
+    }
+  } else {
+    // NON-WATER worlds: a distant horizon feature must ALSO be off-centre +
+    // irregular (the player flagged centred/symmetric silhouettes). Reuse the
+    // farLands off-centre logic for far mountains / mesas / dunes sitting behind
+    // the 3 noise ridges, palette-tinted and dimmed by distance. 0–2 masses.
+    const lRng = splitmix32(worldSeed * 3371 + 97);
+    const landRoll = lRng() < 0.5 ? (lRng() < 0.4 ? 2 : 1) : 0;
+    if (landRoll > 0) {
+      // distant land tint: darker shade of the world's mid ridge colour, hazed.
+      const rc = hexToRgb(pal.ridges[1] || pal.ridges[0] || '#4a4652');
+      const far = { r: Math.round(rc.r * 0.55 + 20), g: Math.round(rc.g * 0.55 + 24), b: Math.round(rc.b * 0.55 + 30) };
+      for (let li = 0; li < landRoll; li++) {
+        const cx = w * (lRng() * 1.2 - 0.1);      // off-centre, can run off-screen
+        const halfW = w * (0.10 + lRng() * 0.26);
+        const peak = h * (0.04 + lRng() * 0.10) * (li === 0 ? 1 : 0.7); // far peaks
+        const ipts = 10 + Math.floor(lRng() * 12);
+        const pts: number[] = [];
+        for (let i = 0; i < ipts; i++) pts.push(lRng());
+        const dim = li === 0 ? 0.8 : 0.6;
+        const ic = `rgba(${far.r}, ${far.g}, ${far.b}, ${(0.8 * dim).toFixed(2)})`;
+        farLands.push({ cx, halfW, peak, pts, color: ic });
+      }
     }
   }
 
@@ -2948,7 +3047,7 @@ function buildLandedCache(
     tod, todBright, showSun, landform, hasWater, waterTopY, landBaseFrac, citadelOnWater,
     reflX, reflTint,
     sunX, sunY, sunR, coronaR,
-    moons, moonProminence, skyPlanets, waves, weather, rainSeeds, creatures,
+    moons, moonProminence, skyPlanets, waves, weather, precipSeeds, creatures,
     shoreY, shoreColor, shoreFoamColor, shoreProfile, shoreCurve, farLands, headland,
     hasCompanion, c2x, c2y, c2r, c2,
     layers, period, ridgeColors,
@@ -3012,17 +3111,10 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 1b) WEATHER SKY DARKEN — storm/hurricane days drop a grey-blue overlay over
-  //     the sky (heaviest at the top), so the whole vista reads as overcast.
+  // 1b) WEATHER SKY — shared biome-tinted overcast overlay (storm-grey for rain,
+  //     tan for sand, white for snow, smoky-red for ash). Darkens + tints by tier.
   if (cache.weather && cache.weather.skyDarken > 0) {
-    const sd = cache.weather.skyDarken;
-    ctx.save();
-    const stormGrad = ctx.createLinearGradient(0, 0, 0, horizonY * 1.1);
-    stormGrad.addColorStop(0, `rgba(24, 30, 40, ${(sd * 0.85).toFixed(3)})`);
-    stormGrad.addColorStop(1, `rgba(40, 48, 60, ${(sd * 0.45).toFixed(3)})`);
-    ctx.fillStyle = stormGrad;
-    ctx.fillRect(0, 0, w, horizonY * 1.1);
-    ctx.restore();
+    drawWeatherSky(ctx, w, horizonY, cache.weather);
   }
 
   // 2) STARFIELD — layout cached; twinkle per frame ---------------------------
@@ -3117,6 +3209,12 @@ function drawLandedScene(
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
 
+  // 4a2) DISTANT LANDMASSES for NON-WATER worlds — far mountains/mesas/dunes at the
+  //      horizon, off-centre + irregular, drawn behind the foreground ridges.
+  if (!cache.hasWater && cache.farLands.length > 0) {
+    drawFarLands(ctx, cache.farLands, horizonY + 1);
+  }
+
   // 4b) REAL OCEAN — depth gradient + rippling wave crests + reflection + foam.
   //     Drawn before the ridges so the foreground land mass occludes it as the
   //     near shore/cliff. Reads as MOVING WATER, not a static teal band.
@@ -3128,34 +3226,10 @@ function drawLandedScene(
     ctx.fillStyle = cache.waterBand;
     ctx.fillRect(0, wt, w, wh);
 
-    // 1b) DISTANT LANDMASSES at the horizon — 0, 1, or 2 irregular, OFF-CENTRE
-    //     silhouettes (seeded position/width/shape), sometimes partly off-screen.
-    //     Drawn under the waves so ripples cross in front. Each is an asymmetric
-    //     profile (per-point noise + a skewed envelope), not a symmetric bell.
-    for (let li = 0; li < cache.farLands.length; li++) {
-      const fl = cache.farLands[li];
-      const n = fl.pts.length;
-      const ix0 = fl.cx - fl.halfW, ix1 = fl.cx + fl.halfW;
-      // skew the envelope peak off-centre so the silhouette is asymmetric
-      const peakAt = 0.3 + (fl.pts[0]) * 0.4;   // 0.3..0.7 along the mass
-      ctx.save();
-      ctx.fillStyle = fl.color;
-      ctx.beginPath();
-      ctx.moveTo(ix0, wt + 1);
-      for (let s = 0; s <= n - 1; s++) {
-        const u = s / (n - 1);
-        const x = ix0 + (ix1 - ix0) * u;
-        // asymmetric envelope: rises to peakAt, falls after — plus per-point noise.
-        const env = u < peakAt ? (u / peakAt) : (1 - (u - peakAt) / (1 - peakAt));
-        const shaped = Math.pow(Math.max(0, env), 0.8);
-        const y = wt + 1 - shaped * fl.peak * (0.45 + fl.pts[s] * 0.55);
-        ctx.lineTo(x, y);
-      }
-      ctx.lineTo(ix1, wt + 1);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
+    // 1b) DISTANT LANDMASSES at the waterline — 0, 1, or 2 irregular, OFF-CENTRE
+    //     silhouettes. Drawn under the waves so ripples cross in front (shared
+    //     renderer; baseline = waterTopY for water worlds).
+    drawFarLands(ctx, cache.farLands, wt + 1);
 
     // 2) wave crest-lines — clearly visible sine ripples; denser near the waterline,
     //    larger toward the foreground (parallax). Each line is drawn TWICE: a dark
@@ -3628,7 +3702,11 @@ function drawLandedScene(
     drawLandedParticles(ctx, w, h, 0, cache);
   }
 
-  // 9) Atmospheric haze — seeds cached; drift + animated radial per frame -----
+  // 9) Atmospheric haze — seeds cached; drift + animated radial per frame.
+  //    Weather thickens it (hazeMul) and tints it toward the weather haze colour.
+  const hazeMul = cache.weather ? cache.weather.hazeMul : 1;
+  const hazeTint = cache.weather && cache.weather.skyDarken > 0 ? cache.weather.hazeColor : cache.haze;
+  const hazeStr = Math.min(0.5, cache.hazeStrength * hazeMul);
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   for (let i = 0; i < cache.haze3.length; i++) {
@@ -3636,8 +3714,8 @@ function drawLandedScene(
     const hy = h * hz.yFrac + (t === 0 ? 0 : Math.sin(t * 0.05 + i * 2.1) * 4);
     const hx = ((hz.baseX + t * hz.speed) % (w * 1.4)) - w * 0.2;
     const grad = ctx.createRadialGradient(hx, hy, 0, hx, hy, hz.w);
-    grad.addColorStop(0, `rgba(${cache.haze}, ${cache.hazeStrength.toFixed(3)})`);
-    grad.addColorStop(1, `rgba(${cache.haze}, 0)`);
+    grad.addColorStop(0, `rgba(${hazeTint}, ${hazeStr.toFixed(3)})`);
+    grad.addColorStop(1, `rgba(${hazeTint}, 0)`);
     ctx.fillStyle = grad;
     ctx.save();
     ctx.translate(hx, hy);
@@ -3648,33 +3726,154 @@ function drawLandedScene(
   }
   ctx.restore();
 
-  // 10) WEATHER RAIN — diagonal wind-blown streaks across the whole scene during
-  //     storm/hurricane days. Reduced-motion (t=0): a few static streaks only so
-  //     the weather still reads without animation.
-  if (cache.weather && cache.rainSeeds.length > 0) {
-    const wx = cache.weather;
-    const ang = wx.rainAngle;                  // lean from vertical (wind)
-    const dx = Math.sin(ang), dy = Math.cos(ang);
-    const span = w * 1.4;
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(200, 220, 240, 1)';
-    ctx.lineWidth = 1;
-    for (let i = 0; i < cache.rainSeeds.length; i++) {
-      const r = cache.rainSeeds[i];
-      // fall down + drift sideways with the wind; wrap across an extended span.
-      const fallY = t === 0 ? (r.x * h) : ((r.x * h + t * (260 + r.speed * 240)) % h);
-      const sideX = t === 0 ? (r.x * span) : (((r.x * span + t * (260 + r.speed * 240) * dx) % span) + span) % span;
-      const sx = sideX - w * 0.2;
-      const len = r.len * (0.8 + wx.rain * 0.6);
-      ctx.globalAlpha = r.alpha * (0.6 + wx.rain * 0.6);
-      ctx.beginPath();
-      ctx.moveTo(sx, fallY);
-      ctx.lineTo(sx + dx * len, fallY + dy * len);
-      ctx.stroke();
+  // 10) WEATHER PRECIPITATION — shared renderer: rain streaks / snow flakes / ash
+  //     motes / sand streaks / dust haze, per the biome's weather. Drawn over the
+  //     whole scene. Reduced-motion (t=0): static positions, no fall/drift.
+  if (cache.weather && cache.precipSeeds.length > 0 && cache.weather.precip !== 'none') {
+    drawPrecipitation(ctx, w, h, t, cache.weather, cache.precipSeeds);
+  }
+
+  // 11) LIGHTNING — TERRAN/JUNGLE thunderstorms: a brief full-scene flash every few
+  //     seconds at STORM+. Deterministic timing; reduced-motion (t=0): no flash.
+  if (cache.weather && cache.weather.lightning && t !== 0) {
+    // a short bright pulse: fire ~every 4.5s, lasting ~0.18s, with a quick decay.
+    const cyc = t % 4.5;
+    if (cyc < 0.22) {
+      const fl = Math.max(0, 1 - cyc / 0.22);
+      const strike = fl * fl;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = `rgba(200, 215, 245, ${(0.5 * strike).toFixed(3)})`;
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
     }
+  }
+}
+
+/** Shared WEATHER SKY overlay — darkens + biome-tints the sky by tier. The tint
+ *  comes from WeatherFx.hazeColor (storm-grey / tan / white / smoky-red). */
+function drawWeatherSky(ctx: CanvasRenderingContext2D, w: number, horizonY: number, wx: WeatherFx): void {
+  const sd = wx.skyDarken;
+  const [r, g, b] = wx.hazeColor.split(',').map((s) => parseInt(s.trim(), 10));
+  ctx.save();
+  // darken (multiply-ish via a dark overlay), heaviest at the top
+  const dark = ctx.createLinearGradient(0, 0, 0, horizonY * 1.1);
+  dark.addColorStop(0, `rgba(18, 22, 30, ${(sd * 0.8).toFixed(3)})`);
+  dark.addColorStop(1, `rgba(28, 34, 44, ${(sd * 0.4).toFixed(3)})`);
+  ctx.fillStyle = dark;
+  ctx.fillRect(0, 0, w, horizonY * 1.1);
+  // biome tint wash (tan/white/red) so the overcast reads as that world's weather
+  const tint = ctx.createLinearGradient(0, 0, 0, horizonY * 1.1);
+  tint.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${(sd * 0.22).toFixed(3)})`);
+  tint.addColorStop(1, `rgba(${r}, ${g}, ${b}, ${(sd * 0.10).toFixed(3)})`);
+  ctx.fillStyle = tint;
+  ctx.fillRect(0, 0, w, horizonY * 1.1);
+  ctx.restore();
+}
+
+/** Shared DISTANT-LANDMASS renderer — off-centre, irregular, asymmetric silhouettes
+ *  at a baseline y. Used by both water (waterline) and non-water (horizon) worlds. */
+function drawFarLands(
+  ctx: CanvasRenderingContext2D,
+  farLands: LandedCache['farLands'],
+  baseY: number
+): void {
+  for (let li = 0; li < farLands.length; li++) {
+    const fl = farLands[li];
+    const n = fl.pts.length;
+    const ix0 = fl.cx - fl.halfW, ix1 = fl.cx + fl.halfW;
+    const peakAt = 0.3 + fl.pts[0] * 0.4;   // skewed off-centre peak → asymmetric
+    ctx.save();
+    ctx.fillStyle = fl.color;
+    ctx.beginPath();
+    ctx.moveTo(ix0, baseY);
+    for (let s = 0; s <= n - 1; s++) {
+      const u = s / (n - 1);
+      const x = ix0 + (ix1 - ix0) * u;
+      const env = u < peakAt ? (u / peakAt) : (1 - (u - peakAt) / (1 - peakAt));
+      const shaped = Math.pow(Math.max(0, env), 0.8);
+      const y = baseY - shaped * fl.peak * (0.45 + fl.pts[s] * 0.55);
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(ix1, baseY);
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
   }
+}
+
+/** Shared PRECIPITATION renderer — rain / snow / ash / sand / dust, driven by the
+ *  weather factor set. Streak/flake positions come from the cache; only sine drift
+ *  + fall animate per frame. Reduced-motion (t=0): static positions, no motion. */
+function drawPrecipitation(
+  ctx: CanvasRenderingContext2D,
+  w: number, h: number, t: number,
+  wx: WeatherFx,
+  seeds: LandedCache['precipSeeds']
+): void {
+  const span = w * 1.4;
+  const intensity = wx.precipIntensity;
+  ctx.save();
+  if (wx.precip === 'rain' || wx.precip === 'sand') {
+    // diagonal/near-horizontal STREAKS. sand is faster + flatter + warm-toned.
+    const isSand = wx.precip === 'sand';
+    // sand blows near-horizontal regardless of precipAngle; rain follows the wind.
+    const ang = isSand ? Math.PI * 0.42 : wx.precipAngle;
+    const dx = Math.sin(ang), dy = Math.cos(ang);
+    const fallSpeed = (isSand ? 360 : 260) * (0.7 + wx.windMul * 0.4);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = isSand ? 'rgba(225, 180, 110, 1)' : 'rgba(200, 220, 240, 1)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < seeds.length; i++) {
+      const s = seeds[i];
+      const baseX = s.x * span;
+      const baseY = s.y * h;
+      const sx = t === 0 ? baseX - w * 0.2
+        : (((baseX + t * fallSpeed * s.speed * dx) % span) + span) % span - w * 0.2;
+      const sy = t === 0 ? baseY : ((baseY + t * fallSpeed * s.speed * (isSand ? 0.4 : 1)) % h);
+      const len = s.len * (0.8 + intensity * 0.6) * (isSand ? 1.4 : 1);
+      ctx.globalAlpha = s.alpha * (0.6 + intensity * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + dx * len, sy + dy * len);
+      ctx.stroke();
+    }
+  } else {
+    // FALLING MOTES — snow (white), ash (grey), dust (haze-tan). Drift sideways.
+    const col = wx.precip === 'snow' ? '235, 245, 255'
+      : wx.precip === 'ash' ? '120, 115, 110'
+      : '170, 155, 135'; // dust
+    const fallSpeed = (wx.precip === 'snow' ? 36 : wx.precip === 'ash' ? 22 : 16)
+      * (0.7 + wx.windMul * 0.4);
+    const swayMul = wx.windMul;
+    ctx.globalCompositeOperation = wx.precip === 'ash' ? 'source-over' : 'lighter';
+    for (let i = 0; i < seeds.length; i++) {
+      const s = seeds[i];
+      const baseX = s.x * w;
+      const sway = t === 0 ? 0 : Math.sin(t * 0.6 + i) * 10 * swayMul + t * (2 + s.speed * 4) * swayMul;
+      const x = (((baseX + sway) % w) + w) % w;
+      const y = t === 0 ? s.y * h : ((s.y * h + t * fallSpeed * s.speed) % h);
+      ctx.globalAlpha = s.alpha * (0.6 + intensity * 0.5);
+      ctx.fillStyle = `rgba(${col}, 1)`;
+      ctx.beginPath();
+      ctx.arc(x, y, s.size * (wx.precip === 'dust' ? 1.4 : 0.9), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // VOLCANIC ash-storm: a few additive glowing ember sparks riding the ash.
+    if (wx.precip === 'ash') {
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < seeds.length; i += 4) {
+        const s = seeds[i];
+        const x = (((s.x * w + (t === 0 ? 0 : t * (6 + s.speed * 10) * swayMul)) % w) + w) % w;
+        const y = t === 0 ? s.y * h : ((s.y * h + t * (fallSpeed * 0.6) * s.speed) % h);
+        const flick = t === 0 ? 0.6 : 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + i));
+        ctx.globalAlpha = 0.5 * intensity * flick;
+        ctx.fillStyle = i % 8 === 0 ? 'rgba(255, 150, 60, 1)' : 'rgba(255, 100, 40, 1)';
+        ctx.fillRect(x, y, s.size, s.size);
+      }
+    }
+  }
+  ctx.restore();
 }
 
 /** Wave-crest tint for the ocean — sun colour by day, pale moon tint at night. */
@@ -3931,6 +4130,9 @@ function drawLandedParticles(
 ): void {
   const kind = cache.particleKind;
   const horizonY = cache.horizonY;
+  // weather intensifies the per-biome ambient particles (e.g. a volcanic ember-
+  // storm whips up the existing embers; a blizzard thickens the snow).
+  const pMul = cache.weather ? cache.weather.particleMul : 1;
   ctx.save();
   if (kind === 'EMBER') {
     // embers ONLY hug the lava fissures: anchored near a fissure x, short rise,
@@ -3942,10 +4144,10 @@ function drawLandedParticles(
       const p = cache.particles[i];
       const anchorX = fiss.length > 0 ? fiss[i % fiss.length].x : (p.x % w);
       const x = anchorX + Math.sin(t * 1.1 + p.phase) * 7 + p.drift * 3;
-      const rise = ((p.y % RISE) + t * (10 + p.speed * 16)) % RISE;
+      const rise = ((p.y % RISE) + t * (10 + p.speed * 16) * (0.7 + pMul * 0.3)) % RISE;
       const y = (cache.horizonY + RISE) - rise;
       const flick = 0.4 + 0.6 * Math.abs(Math.sin(t * 3 + p.phase));
-      ctx.globalAlpha = 0.55 * flick * (1 - rise / RISE);
+      ctx.globalAlpha = Math.min(1, 0.55 * flick * (1 - rise / RISE) * pMul);
       ctx.fillStyle = p.warm > 0.5 ? 'rgba(255, 170, 70, 1)' : 'rgba(255, 100, 35, 1)';
       ctx.fillRect(x, y, p.size, p.size);
     }
@@ -3954,9 +4156,9 @@ function drawLandedParticles(
     ctx.fillStyle = 'rgba(225, 240, 255, 1)';
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
-      const fall = (p.y + t * (10 + p.speed * 14)) % h;
+      const fall = (p.y + t * (10 + p.speed * 14) * (0.7 + pMul * 0.3)) % h;
       const x = (((p.x + Math.sin(t * 0.6 + p.phase) * 12 + p.drift * t * 2) % w) + w) % w;
-      ctx.globalAlpha = 0.3 + p.warm * 0.4;
+      ctx.globalAlpha = Math.min(1, (0.3 + p.warm * 0.4) * pMul);
       ctx.beginPath();
       ctx.arc(x, fall, p.size * 0.7, 0, Math.PI * 2);
       ctx.fill();
@@ -3966,9 +4168,9 @@ function drawLandedParticles(
     ctx.globalCompositeOperation = 'lighter';
     for (let i = 0; i < cache.particles.length; i++) {
       const p = cache.particles[i];
-      const x = (((p.x + t * (30 + p.speed * 40)) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
+      const x = (((p.x + t * (30 + p.speed * 40) * (0.7 + pMul * 0.3)) % (w * 1.2)) + w * 1.2) % (w * 1.2) - w * 0.1;
       const y = horizonY + 6 + ((p.y + Math.sin(t * 0.7 + p.phase) * 4) % Math.max(1, h - horizonY - 6));
-      ctx.globalAlpha = 0.12 + p.warm * 0.12;
+      ctx.globalAlpha = Math.min(1, (0.12 + p.warm * 0.12) * pMul);
       ctx.fillStyle = 'rgba(230, 190, 120, 1)';
       ctx.fillRect(x, y, p.size * 1.6, p.size * 0.7);
     }
