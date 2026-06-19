@@ -73,6 +73,17 @@ class Player(Base):
     insurance = Column(JSONB, nullable=True)
     last_game_login = Column(DateTime(timezone=True), nullable=True)  # Renamed from last_login to avoid confusion
     turn_reset_at = Column(DateTime(timezone=True), nullable=True)
+    # ADR-0004: continuous turn regeneration anchor + stored cap.
+    last_turn_regeneration = Column(DateTime(timezone=True), nullable=True)
+    max_turns = Column(Integer, nullable=False, default=1000, server_default=text("1000"))
+    # Suspect / Wanted lifecycle (Fringe/Federation contraband + bounty law).
+    is_suspect = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    is_wanted = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    suspect_declared_at = Column(DateTime(timezone=True), nullable=True)
+    wanted_declared_at = Column(DateTime(timezone=True), nullable=True)
+    # Journey victory (rank-1 completion of the campaign).
+    is_game_complete = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    rank_victory_at = Column(DateTime(timezone=True), nullable=True)
     settings = Column(JSONB, nullable=False, default={})
     first_login = Column(JSONB, nullable=False, default={"completed": False})
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)  # When the player was created

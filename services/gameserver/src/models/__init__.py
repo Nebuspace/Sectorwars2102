@@ -62,3 +62,6 @@ from src.models.port_ownership import StationListing, PurchaseOffer, TakeoverCam
 from src.models.warp_gate import WarpGate, WarpGateBeacon, WarpGateStatus, WarpGateBeaconStatus
 from src.models.sector_celestial import SectorCelestial, SectorFeatureDiscovery
 from src.models.processed_webhook_event import ProcessedWebhookEvent
+from src.models.sector_faction_influence import SectorFactionInfluence
+from src.models.medal import Medal, PlayerMedal
+from src.models.bounty_claim import BountyClaim, BountyClaimStatus

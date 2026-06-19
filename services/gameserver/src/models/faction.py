@@ -23,7 +23,14 @@ class FactionType(str, enum.Enum):
     PIRATES = "Pirates"
     MERCHANTS = "Merchants"
     EXPLORERS = "Explorers"
-    MILITARY = "Military"
+    MILITARY = "Military"  # Code-wins: kept (predates ADR-0033's enum table).
+    # ADR-0033: Astral Mining Consortium promoted to first-class faction type.
+    MINING = "Mining"
+    # ADR-0033: Fringe Alliance (clarified from generic outlaw) + Shadow Syndicate.
+    OUTLAWS = "Outlaws"
+    SYNDICATE = "Syndicate"
+    # Galactic Concord — police / law-enforcement faction.
+    CONCORD = "Concord"
     
     @classmethod
     def _missing_(cls, value):

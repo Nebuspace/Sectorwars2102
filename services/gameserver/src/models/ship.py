@@ -129,6 +129,10 @@ class Ship(Base):
     # Combat
     combat = Column(JSONB, nullable=False)
     attack_turn_cost = Column(Integer, nullable=True)  # Turn cost to initiate combat with this ship
+    # Combat resolver storage (combat_service._apply_weapon_damage): fraction of
+    # incoming damage absorbed by shields / armor before hull damage applies.
+    shield_resistance = Column(Float, nullable=False, default=0.0, server_default=text("0"))
+    armor_rating = Column(Float, nullable=False, default=0.0, server_default=text("0"))
 
     # Upgrades and modifications
     upgrades = Column(JSONB, nullable=False, default=[])
@@ -204,6 +208,10 @@ class ShipSpecification(Base):
     attack_rating = Column(Integer, nullable=False)
     defense_rating = Column(Integer, nullable=False)
     attack_turn_cost = Column(Integer, nullable=True)  # Turn cost to initiate combat
+    # Combat resolver storage (combat_service._apply_weapon_damage): per-hull-type
+    # baseline shield/armor mitigation, copied onto Ship instances at construction.
+    shield_resistance = Column(Float, nullable=False, default=0.0, server_default=text("0"))
+    armor_rating = Column(Float, nullable=False, default=0.0, server_default=text("0"))
     maintenance_rate = Column(Float, nullable=False)
     construction_time = Column(Integer, nullable=False)
     fuel_efficiency = Column(Integer, nullable=False)
