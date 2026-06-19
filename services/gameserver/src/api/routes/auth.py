@@ -787,11 +787,23 @@ async def github_callback(request: Request, code: str, register: bool = False, s
         access_token, refresh_token = create_tokens(str(user.id), db)
         update_user_last_login(db, str(user.id))
 
+        # ADR-0085: keep tokens OUT of the redirect URL. Stash the token payload
+        # server-side under a short-lived single-use code and redirect with only
+        # the code (+ user_id / is_new_user, which are not secrets). The SPA POSTs
+        # the code to /auth/exchange exactly once to retrieve the tokens in the
+        # response body, so they never land in history / Referer / logs.
+        auth_code = store_auth_code({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "user_id": str(user.id),
+            "is_new_user": is_new_user,
+        })
+
         # Get the frontend URL for the OAuth callback page
         frontend_base = settings.get_frontend_url()
-        frontend_url = f"{frontend_base}/oauth-callback?access_token={access_token}&refresh_token={refresh_token}&user_id={user.id}&is_new_user={is_new_user}"
+        frontend_url = f"{frontend_base}/oauth-callback?code={auth_code}&user_id={user.id}&is_new_user={is_new_user}"
 
-        logger.debug("OAuth callback: is_new_user=%s, tokens_issued=True", is_new_user)
+        logger.debug("OAuth callback: is_new_user=%s, code_issued=True", is_new_user)
 
         # Ensure our redirect is absolute
         if not frontend_url.startswith(('http://', 'https://')):
@@ -799,7 +811,7 @@ async def github_callback(request: Request, code: str, register: bool = False, s
             if settings.detect_environment() == 'codespaces':
                 codespace_name = os.environ.get('CODESPACE_NAME', '')
                 if codespace_name:
-                    frontend_url = f"https://{codespace_name}-3000.app.github.dev/oauth-callback?access_token={access_token}&refresh_token={refresh_token}&user_id={user.id}&is_new_user={is_new_user}"
+                    frontend_url = f"https://{codespace_name}-3000.app.github.dev/oauth-callback?code={auth_code}&user_id={user.id}&is_new_user={is_new_user}"
 
         return RedirectResponse(frontend_url)
 
@@ -880,9 +892,17 @@ async def google_callback(request: Request, code: str, register: bool = False, s
     access_token, refresh_token = create_tokens(str(user.id), db)
     update_user_last_login(db, str(user.id))
 
+    # ADR-0085: tokens go server-side under a single-use code, not in the URL.
+    auth_code = store_auth_code({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user_id": str(user.id),
+        "is_new_user": is_new_user,
+    })
+
     # Use auto-detected frontend URL
     frontend_base = settings.get_frontend_url()
-    frontend_url = f"{frontend_base}/oauth-callback?access_token={access_token}&refresh_token={refresh_token}&user_id={user.id}&is_new_user={is_new_user}"
+    frontend_url = f"{frontend_base}/oauth-callback?code={auth_code}&user_id={user.id}&is_new_user={is_new_user}"
 
     return RedirectResponse(frontend_url)
 
@@ -932,8 +952,16 @@ async def steam_callback(request: Request, register: bool = False, db: Session =
     access_token, refresh_token = create_tokens(str(user.id), db)
     update_user_last_login(db, str(user.id))
 
+    # ADR-0085: tokens go server-side under a single-use code, not in the URL.
+    auth_code = store_auth_code({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user_id": str(user.id),
+        "is_new_user": is_new_user,
+    })
+
     # Use auto-detected frontend URL
     frontend_base = settings.get_frontend_url()
-    frontend_url = f"{frontend_base}/oauth-callback?access_token={access_token}&refresh_token={refresh_token}&user_id={user.id}&is_new_user={is_new_user}"
+    frontend_url = f"{frontend_base}/oauth-callback?code={auth_code}&user_id={user.id}&is_new_user={is_new_user}"
 
     return RedirectResponse(frontend_url)
