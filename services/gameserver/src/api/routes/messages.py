@@ -23,7 +23,7 @@ class MessageCreateRequest(BaseModel):
     recipient_id: Optional[UUID] = None
     team_id: Optional[UUID] = None
     subject: Optional[str] = Field(None, max_length=255)
-    content: str = Field(..., min_length=1, max_length=5000)
+    content: str = Field(..., min_length=1, max_length=4000)
     priority: str = Field("normal", pattern="^(low|normal|high|urgent)$")
     reply_to_id: Optional[UUID] = None
 

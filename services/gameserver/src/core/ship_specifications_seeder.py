@@ -278,7 +278,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.CARRIER: {
-        "base_cost": 150000,
+        "base_cost": 1500000,
         "speed": 0.75,
         "turn_cost": 2,
         "attack_turn_cost": 45,  # Massive fleet combat vessel
