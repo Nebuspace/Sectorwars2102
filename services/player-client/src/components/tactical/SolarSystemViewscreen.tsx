@@ -1908,8 +1908,6 @@ interface LandedCtx {
 // world reads differently and a night sky NEVER carries a sun.
 // ---------------------------------------------------------------------------
 
-type TimeOfDay = 'DAY' | 'DUSK' | 'DAWN' | 'NIGHT';
-
 /** Stable hash of a string → uint32, folded into the splitmix seed so the
  *  landed planet id (a UUID) contributes deterministic entropy. */
 function hashStr(s: string | undefined): number {
@@ -1922,31 +1920,75 @@ function hashStr(s: string | undefined): number {
   return h >>> 0;
 }
 
-/** Seed a time-of-day for this world. Weighted so DAY/NIGHT dominate and the
- *  two twilight bands are rarer (they're the "special" looks). */
-function timeOfDayFor(seed: number): TimeOfDay {
-  const r = splitmix32(seed * 2246822519 + 101)();
-  if (r < 0.40) return 'DAY';
-  if (r < 0.58) return 'DUSK';
-  if (r < 0.72) return 'DAWN';
-  return 'NIGHT';
+// ---------------------------------------------------------------------------
+// LIVE DAY/NIGHT CYCLE — the landed sky is now a continuous cycle. A full
+// day→night→day takes DAY_CYCLE_SECONDS (~6 min) so it's visibly moving over a
+// session. Each world starts at a seeded phase offset so two worlds read at
+// different times. EVERYTHING (sky colour, star alpha, sun + body arcs, lighting)
+// is driven from the sun altitude derived here — nothing time-of-day is static.
+// ---------------------------------------------------------------------------
+const DAY_CYCLE_SECONDS = 360;
+/** Frozen reduced-motion phase: a pleasant high-morning sun, calm + stable. */
+const FROZEN_DAY_PHASE = 0.40;
+
+type DayCycle = {
+  dayPhase: number;   // 0..1: 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
+  sunAlt: number;     // -1 (deep below) … +1 (zenith)
+  sunUp: boolean;     // sun disc above the horizon
+  bright: number;     // 0 (deep night) … 1 (full day) — smooth twilight ramp
+  warm: number;       // 0 … 1 extra warm bias near sunrise/sunset
+  skyDim: number;     // 0 (noon) … 1 (midnight) darkening of the whole scene
+  bodyBright: number; // moon/planet prominence: 1 at night → faint by day
+};
+
+/** Per-world seeded phase offset (where in the cycle this world starts). */
+function dayPhaseOffsetFor(worldSeed: number): number {
+  return splitmix32(worldSeed * 2246822519 + 101)();
 }
 
-/** Day-coupling factors derived from the time of day:
- *  - bright: 0 (deep night) → 1 (full day); lerps palette light + star count
- *  - showSun: sun disc drawn at all (never at night)
- *  - sunHeight: 0 = on horizon (twilight) → 1 = high (noon)
- *  - warm: extra warm bias for the low twilight sun
- *  - moonProminence: how bright/large moons read (1 at night → faint by day) */
-function todProfile(tod: TimeOfDay): {
-  bright: number; showSun: boolean; sunHeight: number; warm: number; moonProminence: number;
-} {
-  switch (tod) {
-    case 'DAY':   return { bright: 1.0,  showSun: true,  sunHeight: 1.0, warm: 0.0,  moonProminence: 0.22 };
-    case 'DUSK':  return { bright: 0.45, showSun: true,  sunHeight: 0.12, warm: 1.0, moonProminence: 0.55 };
-    case 'DAWN':  return { bright: 0.5,  showSun: true,  sunHeight: 0.14, warm: 0.7, moonProminence: 0.5 };
-    case 'NIGHT': return { bright: 0.08, showSun: false, sunHeight: 0.0, warm: 0.0,  moonProminence: 1.0 };
-  }
+/** Resolve the live day-cycle factors at time t (seconds). Reduced-motion (t=0)
+ *  freezes at FROZEN_DAY_PHASE (a stable daytime frame). */
+function dayCycleAt(t: number, phaseOffset: number): DayCycle {
+  const dayPhase = t === 0
+    ? FROZEN_DAY_PHASE
+    : (((t / DAY_CYCLE_SECONDS) + phaseOffset) % 1 + 1) % 1;
+  // sun angle: dayPhase 0.25→0 (rise), 0.5→π/2 (noon), 0.75→π (set), 0→-π/2.
+  const sunAngle = (dayPhase - 0.25) * Math.PI * 2;
+  const sunAlt = Math.sin(sunAngle);
+  const sunUp = sunAlt > 0.02;
+  // brightness: smooth ramp around the horizon so twilight is a band, not a step.
+  const bright = Math.max(0.06, Math.min(1, 0.5 + sunAlt * 1.4));
+  // warm: strongest when the sun is low but up (|alt| small near the horizon).
+  const warm = sunUp ? Math.max(0, 1 - Math.abs(sunAlt) * 3.2) : 0;
+  const skyDim = Math.max(0, Math.min(0.82, 0.5 - sunAlt * 0.95));
+  const bodyBright = Math.max(0.18, Math.min(1, 0.55 - sunAlt * 0.85));
+  return { dayPhase, sunAlt, sunUp, bright, warm, skyDim, bodyBright };
+}
+
+/** Parametric arc for a celestial body across the sky. Each body advances its own
+ *  azimuth with t (rate + seeded offset); altitude is the sin of that azimuth so
+ *  it rises on one side, crosses, and sets on the other. Returns screen x/y plus
+ *  an above-horizon flag + a near-horizon fade factor. Reduced-motion (t=0): the
+ *  body sits at a fixed daytime position from its offset only. */
+function bodyArcPos(
+  t: number, rate: number, phaseOffset: number, azDir: number,
+  w: number, horizonY: number
+): { x: number; y: number; alt: number; up: boolean; fade: number } {
+  const phase = t === 0
+    ? (phaseOffset)
+    : ((((t / (DAY_CYCLE_SECONDS * rate)) + phaseOffset) % 1) + 1) % 1;
+  const ang = phase * Math.PI * 2;
+  const alt = Math.sin(ang);                 // -1..1
+  // azimuth maps to x across the screen (with some margin); azDir flips direction.
+  const az = phase;                          // 0..1 left→right (or reversed)
+  const xu = azDir > 0 ? az : 1 - az;
+  const x = w * (0.06 + xu * 0.88);
+  // altitude → height above the horizon (upper sky only).
+  const y = horizonY - Math.max(0, alt) * horizonY * 0.78;
+  const up = alt > 0.0;
+  // atmospheric extinction: fade out near the horizon, full strength up high.
+  const fade = Math.max(0, Math.min(1, alt * 3.0));
+  return { x, y, alt, up, fade };
 }
 
 /** Landform variant ids per flourish family. The variant changes where water,
@@ -2060,7 +2102,9 @@ type VolcFissure = { x: number; w: number; phase: number };
 /** A moon hanging in the sky: position + radius + the phase geometry that draws
  *  its terminator (lit fraction + the orientation the shadow sweeps from). */
 type MoonSeed = {
-  x: number; y: number; r: number;
+  r: number;
+  /** day-cycle arc params (positions computed per frame; see bodyArcPos) */
+  arcRate: number; arcOffset: number; arcDir: number;
   /** 0 = new (dark) … 1 = full (fully lit) */
   illum: number;
   /** angle the lit limb faces (radians) — orients the crescent/gibbous shadow */
@@ -2069,8 +2113,6 @@ type MoonSeed = {
   tint: string;
   /** darker "r,g,b" for the mare mottling (precomputed from tint) */
   mareTint: string;
-  /** static halo gradient (position/size/colour fixed; only alpha varies) */
-  halo: CanvasGradient;
   /** draw a thin ring on this moon (only the largest, when the world has rings) */
   ring: boolean;
 };
@@ -2097,7 +2139,9 @@ type WaveLine = {
  *  size and per-kind colours are precomputed once (seeded) — only a tiny
  *  cosmetic shimmer varies per frame. */
 type SkyPlanet = {
-  x: number; y: number; r: number;
+  r: number;
+  /** day-cycle arc params (positions computed per frame; see bodyArcPos) */
+  arcRate: number; arcOffset: number; arcDir: number;
   treatment: Treatment;
   hue: number; sat: number;
   baseColor: string; bandColor: string; rimColor: string;
@@ -2256,22 +2300,19 @@ interface LandedCache {
   flourish: LandedPalette['flourish'];
   flora: number[]; // parsed "r,g,b"
   haze: string;
-  // time-of-day + landform (NEW)
-  tod: TimeOfDay;
-  todBright: number;        // 0 (night) → 1 (day)
-  showSun: boolean;
+  // day/night cycle (continuous) + landform. Positions/sky colour are per-frame.
+  dayPhaseOffset: number;   // per-world seeded start phase of the day cycle
   landform: Landform;
   hasWater: boolean;
   waterTopY: number;        // y where the ocean begins (varies by landform)
   landBaseFrac: number;     // ridge base lift for the variant
   citadelOnWater: boolean;  // suppress citadel/flora that would float on water
-  // reflection anchor (sun OR brightest moon) for the water glitter column
-  reflX: number; reflTint: string;
-  // sun anchor
-  sunX: number; sunY: number; sunR: number; coronaR: number;
-  // moons hanging in the sky (NEW)
+  // reflection tint for the water glitter column (position computed per frame)
+  reflTint: string;
+  // sun (size cached; POSITION + gradients computed per frame from the arc)
+  sunR: number; coronaR: number; sunAzDir: number; coreWhite: number;
+  // moons hanging in the sky (POSITIONS arc per frame)
   moons: MoonSeed[];
-  moonProminence: number;
   // sibling planets shown as DISTANT discs in the sky (matches the system view).
   skyPlanets: SkyPlanet[];
   // ocean wave lines (NEW; OCEANIC / water variants only)
@@ -2302,7 +2343,7 @@ interface LandedCache {
     edgeColor: string;       // highlight stroke along the clifftop edge
     plateauY: number;        // base y of the clifftop plateau
   } | null;
-  hasCompanion: boolean; c2x: number; c2y: number; c2r: number; c2: { r: number; g: number; b: number };
+  hasCompanion: boolean; c2side: number; c2r: number; c2: { r: number; g: number; b: number };
   // ridge geometry (noise precomputed; drifted profile recomputed per frame)
   layers: RidgeLayer[];
   period: number;
@@ -2310,11 +2351,7 @@ interface LandedCache {
   // STATIC gradients (coordinate + colour fixed for the session)
   skyGrad: CanvasGradient;
   washGrad: CanvasGradient | null;
-  coronaGrad: CanvasGradient;
-  discGrad: CanvasGradient;
-  companionCorona: CanvasGradient | null;
   glowGrad: CanvasGradient;
-  starHueGlow: CanvasGradient;
   waterBand: CanvasGradient | null;
   // layouts
   stars: StarSeed[];
@@ -2377,20 +2414,15 @@ function buildLandedCache(
   const prox = Math.max(0.05, 1 - Math.min(1, Math.max(0, (orbitAu - ORBIT_NEAR) / (ORBIT_FAR - ORBIT_NEAR))));
   const profile = starProfile(env?.starKind);
 
-  // --- TIME OF DAY (seeded; couples sky brightness + sun visibility) ---
-  const tod = timeOfDayFor(worldSeed);
-  const todp = todProfile(tod);
-  const todBright = todp.bright;
-  const showSun = todp.showSun;
-  // Star color, then warm it for twilight (low-sun orange wash).
-  let sc = hexToRgb(env?.starColor || '#ffd27a');
-  if (todp.warm > 0) {
-    sc = {
-      r: Math.min(255, Math.round(sc.r + (255 - sc.r) * todp.warm * 0.5)),
-      g: Math.round(sc.g + (140 - sc.g) * todp.warm * 0.4),
-      b: Math.round(sc.b + (60 - sc.b) * todp.warm * 0.4),
-    };
-  }
+  // --- DAY/NIGHT CYCLE (continuous; positions + sky colour computed PER FRAME) ---
+  // The cache stores only the per-world seeded phase offset. Static colours below
+  // are baked at a neutral mid-day REFERENCE brightness; the live cycle applies
+  // per-frame brightness/warmth (sky gradient rebuilt each frame) + a scene dim
+  // overlay for night, and arcs the sun/moons/planets. No static time-of-day.
+  const dayPhaseOffset = dayPhaseOffsetFor(worldSeed);
+  const REF_BRIGHT = 0.7;   // reference for baking static tints (shore/ridge/water)
+  const todBright = REF_BRIGHT;
+  const sc = hexToRgb(env?.starColor || '#ffd27a');
 
   // --- LANDFORM VARIANT (seeded; drives water placement + ridge composition) ---
   const landform = landformFor(pal.flourish, worldSeed);
@@ -2422,10 +2454,11 @@ function buildLandedCache(
     landBaseFrac = 0.0;
   }
 
-  // --- Sky gradient (static; brightness coupled to time of day) ---
-  const skyTop = shiftHex(pal.skyTop, (todBright - 0.5) * 0.55 + todp.warm * 0.1);
-  const skyMid = warmHex(shiftHex(pal.skyMid, (todBright - 0.5) * 0.6), todp.warm * 0.6);
-  const skyHor = warmHex(shiftHex(pal.horizon, (todBright - 0.5) * 0.45), todp.warm);
+  // --- Sky gradient (BASE/fallback; the LIVE per-frame sky is rebuilt in draw
+  //     from the day cycle). Baked at the neutral reference brightness. ---
+  const skyTop = shiftHex(pal.skyTop, (REF_BRIGHT - 0.5) * 0.55);
+  const skyMid = shiftHex(pal.skyMid, (REF_BRIGHT - 0.5) * 0.6);
+  const skyHor = shiftHex(pal.horizon, (REF_BRIGHT - 0.5) * 0.45);
   const skyGrad = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
   skyGrad.addColorStop(0, skyTop);
   skyGrad.addColorStop(0.6, skyMid);
@@ -2440,52 +2473,31 @@ function buildLandedCache(
     washGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${washA.toFixed(3)})`);
   }
 
-  // --- Sun anchor (seeded once) ---
-  // sunHeight from the time of day: high at noon, hugging the horizon at dawn/dusk.
+  // --- Sun (size cached; POSITION + gradients computed per frame from the arc) ---
+  // The sun now travels east→west across the sky on the day-cycle arc; only its
+  // size + the seeded azimuth direction are cached. anchorRng is still drawn so
+  // downstream seeded layouts (horizon glow x, companion side) stay deterministic.
   const anchorRng = splitmix32(worldSeed * 911 + 3);
-  const sunX = w * (0.18 + anchorRng() * 0.64);
-  // sunHeight 1 → high in the sky (small horizonY factor); 0 → sitting on horizon.
-  const sunY = horizonY * (0.86 - todp.sunHeight * 0.62) + (anchorRng() - 0.5) * horizonY * 0.08;
-  // Twilight sun reads larger/softer near the horizon.
-  const sizeBias = tod === 'DUSK' || tod === 'DAWN' ? 1.35 : 1.0;
-  const sunR = Math.max(6, Math.min(Math.min(w, h) * 0.13, Math.min(w, h) * (0.018 + prox * 0.06) * profile.corona * sizeBias));
+  anchorRng();                                   // (was the seeded sunX jitter)
+  const sunAzDir = anchorRng() > 0.5 ? 1 : -1;   // which way the sun travels
+  const sunR = Math.max(6, Math.min(Math.min(w, h) * 0.13, Math.min(w, h) * (0.018 + prox * 0.06) * profile.corona));
   const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4) * profile.corona);
-
-  // corona (static gradient)
-  const coronaGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
-  coronaGrad.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.35 + prox * 0.35).toFixed(3)})`);
-  coronaGrad.addColorStop(0.35, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.12 + prox * 0.15).toFixed(3)})`);
-  coronaGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
-
-  // bright core disc (static gradient)
-  const discGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
   const coreWhite = Math.round(160 + prox * 95);
-  discGrad.addColorStop(0, `rgba(${Math.min(255, sc.r + coreWhite * 0.4)}, ${Math.min(255, sc.g + coreWhite * 0.4)}, ${Math.min(255, sc.b + coreWhite * 0.4)}, 0.98)`);
-  discGrad.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.95)`);
-  discGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.5)`);
 
-  // companion sun (binary, static)
-  let hasCompanion = false, c2x = 0, c2y = 0, c2r = 0;
+  // companion sun (binary): position is relative to the sun, applied per frame.
+  let hasCompanion = false, c2side = 1, c2r = 0;
   let c2 = { r: 0, g: 0, b: 0 };
-  let companionCorona: CanvasGradient | null = null;
   if (env?.secondaryColor) {
     hasCompanion = true;
     c2 = hexToRgb(env.secondaryColor);
-    c2x = sunX + sunR * 4.5 * (anchorRng() > 0.5 ? 1 : -1);
-    c2y = sunY + sunR * 1.8;
+    c2side = anchorRng() > 0.5 ? 1 : -1;
     c2r = sunR * 0.55;
-    companionCorona = ctx.createRadialGradient(c2x, c2y, 0, c2x, c2y, c2r * 4);
-    companionCorona.addColorStop(0, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0.4)`);
-    companionCorona.addColorStop(1, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0)`);
   } else {
-    // consume the same RNG draw the companion branch would have so downstream
-    // seeded draws stay identical whether or not a companion exists.
     anchorRng();
   }
 
-  // --- MOONS in the sky (seeded; phase terminator computed once) ---
+  // --- MOONS in the sky (seeded params; POSITIONS arc per frame) ---
   const moonCount = env && typeof env.moons === 'number' ? Math.max(0, Math.min(3, Math.round(env.moons))) : 0;
-  const moonProminence = todp.moonProminence;
   const moons: MoonSeed[] = [];
   if (moonCount > 0) {
     const mRng = splitmix32(worldSeed * 2654435761 + 777);
@@ -2493,9 +2505,11 @@ function buildLandedCache(
     const szBias = env && typeof env.sizeClass === 'number' ? 0.7 + Math.min(1, env.sizeClass / 9) * 0.7 : 1.0;
     let biggestIdx = 0, biggestR = 0;
     for (let i = 0; i < moonCount; i++) {
-      // Keep moons out of the sun's immediate halo and spread across the sky.
-      const mx = w * (0.12 + mRng() * 0.76);
-      const my = horizonY * (0.12 + mRng() * 0.4);
+      // per-body arc params (seeded): moons move a bit faster than planets for
+      // parallax; each starts at its own phase + travels its own direction.
+      const arcRate = 0.7 + mRng() * 0.5;        // < 1 → faster than a full day
+      const arcOffset = mRng();
+      const arcDir = mRng() > 0.5 ? 1 : -1;
       const r = Math.max(7, Math.min(w, h) * (0.024 + mRng() * 0.03) * szBias * (i === 0 ? 1.25 : 0.85));
       // Illumination fraction: derive from the world phase + a per-moon offset so
       // multiple moons show different phases (crescent / gibbous / full).
@@ -2509,33 +2523,26 @@ function buildLandedCache(
       // Precompute the darker mare tint + the static halo gradient (all inputs
       // are cached constants — only the per-frame alpha "breathing" varies).
       const mareTint = tint.split(',').map((s) => Math.max(0, parseInt(s, 10) - 40)).join(', ');
-      const halo = ctx.createRadialGradient(mx, my, r * 0.6, mx, my, r * 2.6);
-      halo.addColorStop(0, `rgba(${tint}, ${(0.18 * moonProminence).toFixed(3)})`);
-      halo.addColorStop(1, `rgba(${tint}, 0)`);
-      moons.push({ x: mx, y: my, r, illum: ill, lightAngle, tint, mareTint, halo, ring: false });
+      moons.push({ r, arcRate, arcOffset, arcDir, illum: ill, lightAngle, tint, mareTint, ring: false });
       if (r > biggestR) { biggestR = r; biggestIdx = i; }
     }
     if (env?.rings && moons.length > 0) moons[biggestIdx].ring = true;
   }
 
-  // --- Reflection anchor for water glitter: the sun by day, else brightest moon. ---
-  let reflX = sunX;
+  // --- Reflection tint for the water glitter (the brightest moon, else the sun).
+  //     reflX is now computed per frame from the live light-source position. ---
   let reflTint = `${sc.r}, ${sc.g}, ${sc.b}`;
-  if (!showSun && moons.length > 0) {
+  if (moons.length > 0) {
     let best = moons[0];
     for (const m of moons) if (m.illum > best.illum) best = m;
-    reflX = best.x;
     reflTint = best.tint;
   }
 
-  // --- Horizon glow (static) ---
+  // --- Horizon glow (static position; the sun-hue glow follows the sun per frame). ---
   const gx = w * (0.25 + anchorRng() * 0.5);
   const glowGrad = ctx.createRadialGradient(gx, horizonY, 0, gx, horizonY, Math.max(w, h) * (0.4 + prox * 0.18));
   glowGrad.addColorStop(0, pal.glow);
   glowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  const starHueGlow = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35);
-  starHueGlow.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(prox * profile.hot * 0.22).toFixed(3)})`);
-  starHueGlow.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
 
   // --- WATER surface gradient + animated wave lines (water variants only) ---
   // The flat teal band is replaced by a real ocean: a darker depth gradient plus
@@ -2813,38 +2820,21 @@ function buildLandedCache(
   }
 
   // --- SIBLING PLANETS as distant sky discs (matches the system/flight view) ---
-  // Each sibling body from the /system snapshot is placed high in the sky, spread
-  // out and kept clear of the sun + moons, sized by size_class and dimmed by the
-  // "distance" haze. Per-kind colours mirror the flight scene's treatment vocab.
+  // Each sibling body ARCS across the sky on its own seeded path (slower than the
+  // moons → parallax). Only static params are cached; positions compute per frame.
+  // Per-kind colours mirror the flight scene's treatment vocab.
   const skyPlanets: SkyPlanet[] = [];
   const sibs = env?.siblings || [];
   if (sibs.length > 0) {
     const spRng = splitmix32(worldSeed * 6271 + 313);
-    // sky band: upper region only (above the horizon, clear of the lower scene)
-    const skyTopBand = horizonY * 0.10;
-    const skyBotBand = horizonY * 0.46;
-    const occupied: { x: number; y: number; r: number }[] = [];
-    // exclusions: the sun + each moon (so siblings never overlap them)
-    if (showSun) occupied.push({ x: sunX, y: sunY, r: sunR * 2.2 });
-    for (const m of moons) occupied.push({ x: m.x, y: m.y, r: m.r * 2.2 });
     for (let i = 0; i < sibs.length; i++) {
       const s = sibs[i];
       const treatment = treatmentFor(s.kind);
       const r = Math.max(5, Math.min(w, h) * (0.012 + Math.min(9, s.sizeClass) / 9 * 0.022));
-      // try a few seeded positions; pick the first that clears sun/moons/others
-      let px = 0, py = 0, ok = false;
-      for (let attempt = 0; attempt < 6; attempt++) {
-        // spread across width in soft columns so siblings don't clump
-        px = w * ((i + 0.5) / sibs.length) + (spRng() - 0.5) * (w / sibs.length) * 0.7;
-        py = skyTopBand + spRng() * (skyBotBand - skyTopBand);
-        ok = true;
-        for (const o of occupied) {
-          if (Math.hypot(px - o.x, py - o.y) < o.r + r * 1.8) { ok = false; break; }
-        }
-        if (ok) break;
-      }
-      px = Math.max(r + 4, Math.min(w - r - 4, px));
-      occupied.push({ x: px, y: py, r: r * 1.8 });
+      // arc params: planets move slower than a full day (rate > 1) for parallax.
+      const arcRate = 1.4 + spRng() * 1.2;
+      const arcOffset = (i + 0.3) / sibs.length + spRng() * 0.15; // spread starts
+      const arcDir = spRng() > 0.5 ? 1 : -1;
       // per-kind colours from hue/sat (mirrors drawPlanetSurface treatment vocab)
       const hue = s.hue, sat = s.sat;
       let baseColor: string, bandColor: string, rimColor: string;
@@ -2873,9 +2863,10 @@ function buildLandedCache(
         bandColor = `hsla(${hue}, ${sat}%, 32%, 0.5)`;
         rimColor = `hsla(${hue}, 10%, 70%, 0.4)`;
       }
-      // distance dimming: smaller/farther bodies sit fainter; brighter at night.
-      const alpha = (0.4 + Math.min(9, s.sizeClass) / 9 * 0.3) * (0.55 + nightBoost * 0.45);
-      skyPlanets.push({ x: px, y: py, r, treatment, hue, sat, baseColor, bandColor, rimColor, rings: s.rings, alpha });
+      // base distance dimming (smaller/farther bodies fainter); the live day-cycle
+      // brightness is multiplied in per frame at draw time.
+      const alpha = 0.4 + Math.min(9, s.sizeClass) / 9 * 0.3;
+      skyPlanets.push({ r, arcRate, arcOffset, arcDir, treatment, hue, sat, baseColor, bandColor, rimColor, rings: s.rings, alpha });
     }
   }
 
@@ -3044,14 +3035,14 @@ function buildLandedCache(
   return {
     key, ctx, horizonY, habN, citadel, prox, sc, profile,
     flourish: pal.flourish, flora, haze: pal.haze,
-    tod, todBright, showSun, landform, hasWater, waterTopY, landBaseFrac, citadelOnWater,
-    reflX, reflTint,
-    sunX, sunY, sunR, coronaR,
-    moons, moonProminence, skyPlanets, waves, weather, precipSeeds, creatures,
+    dayPhaseOffset, landform, hasWater, waterTopY, landBaseFrac, citadelOnWater,
+    reflTint,
+    sunR, coronaR, sunAzDir, coreWhite,
+    moons, skyPlanets, waves, weather, precipSeeds, creatures,
     shoreY, shoreColor, shoreFoamColor, shoreProfile, shoreCurve, farLands, headland,
-    hasCompanion, c2x, c2y, c2r, c2,
+    hasCompanion, c2side, c2r, c2,
     layers, period, ridgeColors,
-    skyGrad, washGrad, coronaGrad, discGrad, companionCorona, glowGrad, starHueGlow, waterBand,
+    skyGrad, washGrad, glowGrad, waterBand,
     stars, flouraSeeds, citadelLayout, haze3, hazeStrength,
     particles, particleKind, clouds, cloudTint, volcFissures,
     desertBands: pal.flourish === 'DESERT',
@@ -3098,14 +3089,31 @@ function drawLandedScene(
 
   const { horizonY, habN, citadel, prox, sc, profile } = cache;
 
-  // 1) Sky gradient (cached) ---------------------------------------------------
-  ctx.fillStyle = cache.skyGrad;
-  ctx.fillRect(0, 0, w, h);
+  // --- LIVE DAY/NIGHT CYCLE — resolve the sun altitude + brightness for this
+  //     frame; everything (sky, stars, sun + body arcs, lighting) reads from it. ---
+  const dc = dayCycleAt(t, cache.dayPhaseOffset);
 
-  // Star-tinted sky wash (cached)
-  if (cache.washGrad) {
+  // 1) Sky gradient — REBUILT PER FRAME from the palette + the day cycle so the
+  //    sky transitions night → dawn(warm) → day(bright) → dusk(warm) → night.
+  {
+    const b = dc.bright;
+    const warm = dc.warm;
+    const top = warmHex(shiftHex(pal.skyTop, (b - 0.5) * 0.7), warm * 0.12);
+    const mid = warmHex(shiftHex(pal.skyMid, (b - 0.5) * 0.75), warm * 0.6);
+    const hor = warmHex(shiftHex(pal.horizon, (b - 0.5) * 0.6), warm);
+    const g = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
+    g.addColorStop(0, top);
+    g.addColorStop(0.6, mid);
+    g.addColorStop(1, hor);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  // Star-tinted sky wash (cached colour; only shown when the sun is fairly high)
+  if (cache.washGrad && dc.bright > 0.4) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = Math.min(1, (dc.bright - 0.4) * 1.6);
     ctx.fillStyle = cache.washGrad;
     ctx.fillRect(0, 0, w, horizonY * 1.15);
     ctx.restore();
@@ -3117,14 +3125,16 @@ function drawLandedScene(
     drawWeatherSky(ctx, w, horizonY, cache.weather);
   }
 
-  // 2) STARFIELD — layout cached; twinkle per frame ---------------------------
-  if (cache.stars.length > 0) {
+  // 2) STARFIELD — layout cached; twinkle per frame. Stars FADE IN at night and
+  //    OUT by day: alpha ∝ (1 - sunAltitude). Skip entirely in bright daylight.
+  const starVisibility = Math.max(0, Math.min(1, 1 - (dc.sunAlt + 0.15) * 1.3));
+  if (cache.stars.length > 0 && starVisibility > 0.02) {
     ctx.save();
     ctx.fillStyle = '#dfe7f5';
     for (let i = 0; i < cache.stars.length; i++) {
       const s = cache.stars[i];
       const tw = t === 0 ? 0.75 : 0.5 + 0.5 * Math.sin(t * s.twSpeed + s.twPhase);
-      ctx.globalAlpha = s.baseAlpha * tw;
+      ctx.globalAlpha = s.baseAlpha * tw * starVisibility;
       ctx.beginPath();
       ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
       ctx.fill();
@@ -3159,26 +3169,51 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 3) THE SUN DISC (corona + disc gradients cached) --------------------------
-  // GATED by time of day: a NIGHT sky never carries a sun (the reported bug).
-  const { sunX, sunY, sunR, coronaR } = cache;
-  if (cache.showSun) {
+  // 3) THE SUN — ARCS east→west across the sky on the day cycle. x travels with
+  //    dayPhase, y follows the altitude (sin). Drawn only when above the horizon;
+  //    gradients rebuilt per frame at the live position (2 gradients — cheap).
+  const { sunR, coronaR } = cache;
+  // azimuth maps to x; altitude → y above the horizon line. Sun sits a touch
+  // lower (larger/softer) near the horizon for a sunrise/sunset feel.
+  const sunPhase = dc.dayPhase;
+  const sunXu = cache.sunAzDir > 0 ? sunPhase : 1 - sunPhase;
+  const sunX = w * (0.06 + sunXu * 0.88);
+  const sunY = horizonY - Math.max(-0.05, dc.sunAlt) * horizonY * 0.74;
+  if (dc.sunUp) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    // storm/hurricane days dim the sun (clouds in front of it).
-    const sunDim = cache.weather ? 1 - cache.weather.skyDarken * 0.8 : 1;
-    // very subtle "breathing" of the corona via alpha (gradient stays cached)
-    ctx.globalAlpha = (t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5)) * sunDim;
-    ctx.fillStyle = cache.coronaGrad;
+    // dim near the horizon (extinction) + storm/hurricane veil.
+    const horizonFade = Math.max(0.25, Math.min(1, dc.sunAlt * 4));
+    const sunDim = (cache.weather ? 1 - cache.weather.skyDarken * 0.8 : 1) * horizonFade;
+    const breathe = t === 0 ? 1 : 0.92 + 0.08 * Math.sin(t * 0.5);
+    // corona (per-frame gradient at the arc position)
+    const coronaGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
+    coronaGrad.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.35 + prox * 0.35).toFixed(3)})`);
+    coronaGrad.addColorStop(0.35, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.12 + prox * 0.15).toFixed(3)})`);
+    coronaGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+    ctx.globalAlpha = breathe * sunDim;
+    ctx.fillStyle = coronaGrad;
     ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
+    // bright core disc (per-frame gradient)
+    const cw = cache.coreWhite;
+    const discGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+    discGrad.addColorStop(0, `rgba(${Math.min(255, sc.r + cw * 0.4)}, ${Math.min(255, sc.g + cw * 0.4)}, ${Math.min(255, sc.b + cw * 0.4)}, 0.98)`);
+    discGrad.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.95)`);
+    discGrad.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.5)`);
     ctx.globalAlpha = sunDim;
-    ctx.fillStyle = cache.discGrad;
+    ctx.fillStyle = discGrad;
     ctx.beginPath();
     ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
     ctx.fill();
-    if (cache.hasCompanion && cache.companionCorona) {
-      const { c2, c2x, c2y, c2r } = cache;
-      ctx.fillStyle = cache.companionCorona;
+    // companion sun (binary) — positioned relative to the moving primary.
+    if (cache.hasCompanion) {
+      const { c2, c2side, c2r } = cache;
+      const c2x = sunX + sunR * 4.5 * c2side;
+      const c2y = sunY + sunR * 1.8;
+      const cc = ctx.createRadialGradient(c2x, c2y, 0, c2x, c2y, c2r * 4);
+      cc.addColorStop(0, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0.4)`);
+      cc.addColorStop(1, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0)`);
+      ctx.fillStyle = cc;
       ctx.fillRect(c2x - c2r * 4, c2y - c2r * 4, c2r * 8, c2r * 8);
       ctx.beginPath();
       ctx.arc(c2x, c2y, c2r, 0, Math.PI * 2);
@@ -3188,25 +3223,33 @@ function drawLandedScene(
     ctx.restore();
   }
 
-  // 3a2) SIBLING PLANETS — distant discs high in the sky (matches the system view).
-  //      Drawn behind the moons (which are closer). Subtle so they never fight the
-  //      HUD: small, dimmed, per-kind treatment at a distance.
+  // 3a2) SIBLING PLANETS — distant discs that ARC across the sky (slower than the
+  //      moons → parallax). Drawn behind the moons (which are closer).
   if (cache.skyPlanets.length > 0) {
-    drawLandedSkyPlanets(ctx, t, cache);
+    drawLandedSkyPlanets(ctx, w, horizonY, t, cache, dc);
   }
 
-  // 3b) MOONS — phased discs (crescent/gibbous/full via a terminator shadow).
+  // 3b) MOONS — phased discs that ARC across the sky and rise/set.
   if (cache.moons.length > 0) {
-    drawLandedMoons(ctx, t, cache);
+    drawLandedMoons(ctx, w, horizonY, t, cache, dc);
   }
 
-  // 4) Horizon glow (cached gradients) ----------------------------------------
+  // 4) Horizon glow (cached base glow + a per-frame sun-hue glow that follows the
+  //    sun's azimuth and brightens with the day). ------------------------------
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = Math.max(0.3, dc.bright);
   ctx.fillStyle = cache.glowGrad;
   ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = cache.starHueGlow;
-  ctx.fillRect(0, 0, w, h);
+  if (dc.sunUp) {
+    const shg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35);
+    const sa = prox * profile.hot * 0.22 * Math.max(0.2, dc.bright) * (1 + dc.warm * 0.8);
+    shg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${sa.toFixed(3)})`);
+    shg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = shg;
+    ctx.fillRect(0, 0, w, h);
+  }
   ctx.restore();
 
   // 4a2) DISTANT LANDMASSES for NON-WATER worlds — far mountains/mesas/dunes at the
@@ -3239,7 +3282,7 @@ function drawLandedScene(
     // and down (vertical bob), with non-uniform crests (sum of two sines, varied
     // size) so it never reads as a repeating comb of identical stripes. A bright
     // crest highlight + whitecap foam on the nearer swells complete the moving sea.
-    const crestRGB = reflWaveRGB(cache);
+    const crestRGB = reflWaveRGB(cache, dc.sunUp);
     const whitecapD = cache.weather ? cache.weather.whitecapDensity : 0.4;
     for (let wi = 0; wi < cache.waves.length; wi++) {
       const wv = cache.waves[wi];
@@ -3321,12 +3364,12 @@ function drawLandedScene(
       }
     }
 
-    // 3) reflection glitter column under the sun (day) or brightest moon (night).
-    //    A MOONLESS night has no light source — skip the column entirely so the
-    //    ocean shows only ambient ripples, not a glitter under a hidden sun.
-    const refl = cache.reflX;
-    const hasLightSource = cache.showSun || cache.moons.length > 0;
-    const reflBright = cache.showSun ? 1.0 : 0.55 * cache.moonProminence;
+    // 3) reflection glitter column under the LIVE light source: the sun while it's
+    //    up, else the brightest moon (faint). It tracks the moving sun's azimuth.
+    //    No light source up → skip the column (only ambient ripples).
+    const refl = dc.sunUp ? sunX : w * 0.5;
+    const hasLightSource = dc.sunUp || (cache.moons.length > 0 && dc.bodyBright > 0.2);
+    const reflBright = dc.sunUp ? Math.max(0.3, dc.bright) : 0.45 * dc.bodyBright;
     if (hasLightSource) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -3694,6 +3737,21 @@ function drawLandedScene(
     drawCitadelSkyline(ctx, h, t, cache.citadelLayout, ridgeYAt);
   }
 
+  // 7d) NIGHT LIGHTING — the ground/ocean/ridges are baked at a daytime reference,
+  //     so darken the lower scene as the sun sets (skyDim). The sky itself already
+  //     dims via its per-frame gradient, so only the surface band is overlaid here.
+  if (dc.skyDim > 0.02) {
+    ctx.save();
+    const surfTop = horizonY * 0.9;
+    const dimGrad = ctx.createLinearGradient(0, surfTop, 0, h);
+    dimGrad.addColorStop(0, `rgba(6, 9, 18, 0)`);
+    dimGrad.addColorStop(0.25, `rgba(6, 9, 18, ${(dc.skyDim * 0.5).toFixed(3)})`);
+    dimGrad.addColorStop(1, `rgba(4, 7, 16, ${(dc.skyDim * 0.7).toFixed(3)})`);
+    ctx.fillStyle = dimGrad;
+    ctx.fillRect(0, surfTop, w, h - surfTop);
+    ctx.restore();
+  }
+
   // 8) ATMOSPHERIC PARTICLES — kind-specific living motion --------------------
   if (cache.particles.length > 0 && t !== 0) {
     drawLandedParticles(ctx, w, h, t, cache);
@@ -3877,8 +3935,8 @@ function drawPrecipitation(
 }
 
 /** Wave-crest tint for the ocean — sun colour by day, pale moon tint at night. */
-function reflWaveRGB(cache: LandedCache): string {
-  if (cache.showSun) {
+function reflWaveRGB(cache: LandedCache, sunUp: boolean): string {
+  if (sunUp) {
     const { r, g, b } = cache.sc;
     return `${Math.min(255, r + 30)}, ${Math.min(255, g + 50)}, ${Math.min(255, b + 60)}`;
   }
@@ -3889,117 +3947,129 @@ function reflWaveRGB(cache: LandedCache): string {
  *  the flight scene's per-kind treatment (gas-giant banding, ice pale, volcanic
  *  ember, rings). Position/colours are cached; only a faint cosmetic shimmer of the
  *  rim varies per frame. Subtle by design so it never overpowers the HUD. */
-function drawLandedSkyPlanets(ctx: CanvasRenderingContext2D, t: number, cache: LandedCache): void {
+function drawLandedSkyPlanets(
+  ctx: CanvasRenderingContext2D, w: number, horizonY: number,
+  t: number, cache: LandedCache, dc: DayCycle
+): void {
   for (let i = 0; i < cache.skyPlanets.length; i++) {
     const p = cache.skyPlanets[i];
+    // arc position this frame; skip when below the horizon.
+    const pos = bodyArcPos(t, p.arcRate, p.arcOffset, p.arcDir, w, horizonY);
+    if (!pos.up) continue;
+    const px = pos.x, py = pos.y;
+    // alpha: base distance dim × horizon extinction × day-cycle prominence (still
+    // faintly visible by day, prominent at night).
+    const a = p.alpha * pos.fade * (0.45 + dc.bodyBright * 0.85);
+    if (a <= 0.01) continue;
     ctx.save();
-    ctx.globalAlpha = p.alpha;
+    ctx.globalAlpha = a;
     // body disc (clipped) — base fill + a couple of cheap "band" arcs for character
     ctx.save();
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.arc(px, py, p.r, 0, Math.PI * 2);
     ctx.clip();
     ctx.fillStyle = p.baseColor;
-    ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
-    // distance treatment: horizontal banding (gas/desert/terran) or a soft hemi
-    // gradient feel via two offset bands. Cheap, deterministic, no per-frame seed.
+    ctx.fillRect(px - p.r, py - p.r, p.r * 2, p.r * 2);
     ctx.fillStyle = p.bandColor;
     if (p.treatment === 'GAS_GIANT') {
       for (let b = -2; b <= 2; b++) {
-        ctx.fillRect(p.x - p.r, p.y + b * p.r * 0.4 - p.r * 0.12, p.r * 2, p.r * 0.24);
+        ctx.fillRect(px - p.r, py + b * p.r * 0.4 - p.r * 0.12, p.r * 2, p.r * 0.24);
       }
     } else if (p.treatment === 'VOLCANIC') {
-      // ember mottling — a few additive warm blots
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       ctx.fillStyle = p.bandColor;
-      ctx.fillRect(p.x - p.r * 0.6, p.y - p.r * 0.2, p.r * 0.5, p.r * 0.4);
-      ctx.fillRect(p.x + p.r * 0.1, p.y + p.r * 0.1, p.r * 0.4, p.r * 0.3);
+      ctx.fillRect(px - p.r * 0.6, py - p.r * 0.2, p.r * 0.5, p.r * 0.4);
+      ctx.fillRect(px + p.r * 0.1, py + p.r * 0.1, p.r * 0.4, p.r * 0.3);
       ctx.restore();
     } else if (p.treatment !== 'BARREN' && p.treatment !== 'MOUNTAINOUS') {
-      ctx.fillRect(p.x - p.r, p.y - p.r * 0.1, p.r * 2, p.r * 0.5);
+      ctx.fillRect(px - p.r, py - p.r * 0.1, p.r * 2, p.r * 0.5);
     }
     // shaded limb: darken the lower-right for a lit-sphere read
-    const lg = ctx.createRadialGradient(p.x - p.r * 0.3, p.y - p.r * 0.3, p.r * 0.1, p.x, p.y, p.r * 1.2);
+    const lg = ctx.createRadialGradient(px - p.r * 0.3, py - p.r * 0.3, p.r * 0.1, px, py, p.r * 1.2);
     lg.addColorStop(0, 'rgba(255,255,255,0.12)');
     lg.addColorStop(0.6, 'rgba(0,0,0,0)');
     lg.addColorStop(1, 'rgba(0,0,0,0.4)');
     ctx.fillStyle = lg;
-    ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+    ctx.fillRect(px - p.r, py - p.r, p.r * 2, p.r * 2);
     ctx.restore();
     // faint rim shimmer (cosmetic; calm at t=0)
     const shimmer = t === 0 ? 0.5 : 0.4 + 0.2 * Math.sin(t * 0.4 + i);
     ctx.strokeStyle = p.rimColor;
-    ctx.globalAlpha = p.alpha * shimmer;
+    ctx.globalAlpha = a * shimmer;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.r + 0.5, 0, Math.PI * 2);
+    ctx.arc(px, py, p.r + 0.5, 0, Math.PI * 2);
     ctx.stroke();
-    // rings (thin ellipse) if the body has them
     if (p.rings) {
-      ctx.globalAlpha = p.alpha * 0.7;
+      ctx.globalAlpha = a * 0.7;
       ctx.strokeStyle = p.rimColor;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.ellipse(p.x, p.y, p.r * 1.8, p.r * 0.5, -0.3, 0, Math.PI * 2);
+      ctx.ellipse(px, py, p.r * 1.8, p.r * 0.5, -0.3, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.restore();
   }
 }
 
-/** Draw the MOONS hanging in the sky, each with a terminator shadow producing a
- *  crescent/gibbous/full phase. Prominent at night, faint pale by day (scaled by
- *  cache.moonProminence). The lit body is drawn, then an unlit cap is composited
- *  over it offset along lightAngle to carve the phase. */
-function drawLandedMoons(ctx: CanvasRenderingContext2D, t: number, cache: LandedCache): void {
-  const prom = cache.moonProminence;
+/** Draw the MOONS, each ARCING across the sky on the day cycle (rise/cross/set),
+ *  with a terminator shadow producing a crescent/gibbous/full phase. Prominent at
+ *  night, faint pale by day (scaled by dc.bodyBright), faded near the horizon. */
+function drawLandedMoons(
+  ctx: CanvasRenderingContext2D, w: number, horizonY: number,
+  t: number, cache: LandedCache, dc: DayCycle
+): void {
+  const prom = dc.bodyBright;  // moons prominent at night, faint by day
   for (let i = 0; i < cache.moons.length; i++) {
     const m = cache.moons[i];
+    // arc position this frame; skip when below the horizon.
+    const pos = bodyArcPos(t, m.arcRate, m.arcOffset, m.arcDir, w, horizonY);
+    if (!pos.up) continue;
+    const mx = pos.x, my = pos.y;
+    const ext = pos.fade;        // atmospheric extinction near the horizon
     const breathe = t === 0 ? 1 : 0.96 + 0.04 * Math.sin(t * 0.3 + i);
     ctx.save();
-    // soft halo (additive) — gradient is cached; stronger at night via its alpha.
+    // soft halo (additive) — gradient rebuilt per frame at the live position.
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = m.halo;
-    ctx.fillRect(m.x - m.r * 2.6, m.y - m.r * 2.6, m.r * 5.2, m.r * 5.2);
+    const halo = ctx.createRadialGradient(mx, my, m.r * 0.6, mx, my, m.r * 2.6);
+    halo.addColorStop(0, `rgba(${m.tint}, ${(0.18 * prom * ext).toFixed(3)})`);
+    halo.addColorStop(1, `rgba(${m.tint}, 0)`);
+    ctx.fillStyle = halo;
+    ctx.fillRect(mx - m.r * 2.6, my - m.r * 2.6, m.r * 5.2, m.r * 5.2);
     ctx.restore();
 
     // lit disc
     ctx.save();
-    ctx.globalAlpha = (0.5 + 0.5 * prom) * breathe;
+    ctx.globalAlpha = (0.5 + 0.5 * prom) * breathe * ext;
     ctx.fillStyle = `rgb(${m.tint})`;
     ctx.beginPath();
-    ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+    ctx.arc(mx, my, m.r, 0, Math.PI * 2);
     ctx.fill();
     // faint mare mottling for texture (cheap, two darker blobs; tint precomputed)
     ctx.globalAlpha *= 0.4;
     ctx.fillStyle = `rgba(${m.mareTint}, 1)`;
     ctx.beginPath();
-    ctx.arc(m.x - m.r * 0.3, m.y - m.r * 0.2, m.r * 0.28, 0, Math.PI * 2);
-    ctx.arc(m.x + m.r * 0.25, m.y + m.r * 0.3, m.r * 0.2, 0, Math.PI * 2);
+    ctx.arc(mx - m.r * 0.3, my - m.r * 0.2, m.r * 0.28, 0, Math.PI * 2);
+    ctx.arc(mx + m.r * 0.25, my + m.r * 0.3, m.r * 0.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
     // terminator: carve the unlit portion with a shadow offset along lightAngle.
-    // illum 1 = full (no shadow); 0.5 = half; near 0 = thin crescent.
     if (m.illum < 0.985) {
       ctx.save();
-      // clip to the moon disc, then paint the shadow region as a dark overlay.
       ctx.beginPath();
-      ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+      ctx.arc(mx, my, m.r, 0, Math.PI * 2);
       ctx.clip();
-      // offset of the shadow circle along the (opposite of) light direction.
-      // when illum>0.5 (gibbous) the shadow is a thin sliver pushed far off-disc;
-      // when illum<0.5 (crescent) the shadow covers most of the disc.
       const k = (m.illum - 0.5) * 2; // -1 (new) … +1 (full)
       const dx = -Math.cos(m.lightAngle) * m.r * k * 1.0;
       const dy = -Math.sin(m.lightAngle) * m.r * k * 1.0;
-      // shadow disc radius slightly larger so its curved edge is the terminator.
       const sr = m.r * (1.0 + (1 - Math.abs(k)) * 0.04);
       ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = ext;
       ctx.fillStyle = 'rgba(8, 10, 18, 0.82)';
       ctx.beginPath();
-      ctx.arc(m.x + dx, m.y + dy, sr, 0, Math.PI * 2);
+      ctx.arc(mx + dx, my + dy, sr, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
@@ -4007,11 +4077,11 @@ function drawLandedMoons(ctx: CanvasRenderingContext2D, t: number, cache: Landed
     // optional ring on the largest moon (when the world has rings)
     if (m.ring) {
       ctx.save();
-      ctx.globalAlpha = 0.45 * prom + 0.15;
+      ctx.globalAlpha = (0.45 * prom + 0.15) * ext;
       ctx.strokeStyle = `rgba(${m.tint}, 0.8)`;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.ellipse(m.x, m.y, m.r * 1.9, m.r * 0.5, -0.35, 0, Math.PI * 2);
+      ctx.ellipse(mx, my, m.r * 1.9, m.r * 0.5, -0.35, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
