@@ -361,11 +361,20 @@ class CombatService:
                 bounty_service = BountyService(self.db)
                 bounty_result = bounty_service.collect_bounty(attacker.id, defender.id)
                 if bounty_result.get("total_collected", 0) > 0:
+                    # Bounty paid out — heroic bounty hunting.
                     rep_service.adjust_reputation(attacker.id, 100, "defeat_bounty_target")
-                else:
-                    # Attacked an innocent (no bounty) — reputation penalty
+                elif not bounty_result.get("had_bounty"):
+                    # Target carried NO bounty at all — attacked a genuine
+                    # innocent. Reputation penalty + police "attack_innocent"
+                    # engagement trigger (attacked_innocent gates that below).
                     rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
                     attacked_innocent = True
+                # else: had_bounty True but total_collected == 0 — the target
+                # was a known criminal whose head this hunter had ALREADY turned
+                # in (system bounty deduped by the claims ledger). Killing a
+                # criminal you've already claimed is neither heroic nor innocent-
+                # slaughter: apply NEITHER +100 nor -100, and do NOT set
+                # attacked_innocent (no police "attack_innocent" routing).
                 # Check if the DESTROYED defender ship was an escape pod —
                 # evaluated against the pre-destruction snapshot, not
                 # defender.current_ship (which is now the post-kill pod).
