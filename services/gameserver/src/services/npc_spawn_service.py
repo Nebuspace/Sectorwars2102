@@ -462,12 +462,12 @@ def _ensure_federation_faction(db: Session) -> Faction:
     Canon (police-forces.md "Faction registration"): the Federation Police
     are the enforcement arm of the existing **Terran Federation** — and the
     Marshal-kill reputation hook (−250, police-forces.md) needs this row to
-    exist. The factions table ships empty: the only existing seeder
-    (auth/admin.py create_default_factions) is dead code with zero call
-    sites AND names this faction "United Space Federation" vs canon's
-    "Terran Federation" — docs-vs-code discrepancy FLAGGED, not followed;
-    the canon name is used here. An existing FEDERATION-typed row (however
-    named) is left untouched.
+    exist. This ensure path is the runtime safety net: the canonical roster
+    seeder (auth/admin.py create_default_factions) now seeds the full 7-row
+    roster with canon names ("Terran Federation"), but is not yet wired into
+    app startup (FLAGGED — see WO-E report). Until it is, this get-or-create
+    guarantees at least the Federation row exists when police spawn. An
+    existing FEDERATION-typed row (however named) is left untouched.
 
     The Galactic Concord (Sentinel force) is NOT seeded: its CONCORD
     FactionType is Design-only (police-forces.md "Faction registration")

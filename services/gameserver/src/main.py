@@ -47,13 +47,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Initialize default admin user if needed
     try:
-        from src.auth.admin import create_default_admin
+        from src.auth.admin import create_default_admin, create_default_factions
         from src.core.database import SessionLocal
 
         db = SessionLocal()
         try:
             create_default_admin(db)
             logger.info("Admin user initialization completed")
+            # WO-E: seed the canon faction roster at startup (idempotent per
+            # faction_type; coexists with npc_spawn_service._ensure_federation_faction).
+            create_default_factions(db)
+            logger.info("Faction roster seed completed")
         finally:
             db.close()
     except Exception as e:

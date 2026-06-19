@@ -143,98 +143,169 @@ def create_default_player(db: Session) -> None:
 
 def create_default_factions(db: Session, max_retries: int = 3) -> None:
     """
-    Create default factions if they don't exist.
-    This ensures the game has the necessary factions for proper gameplay.
-    
+    Seed the canonical faction roster if rows are missing.
+
+    Canon (FEATURES/gameplay/faction-lore.md: "codified in
+    models/faction.py:FactionType and the seed data"; Status line "six
+    allyable factions seeded plus Pirates"). Names, FactionType codes,
+    aggression, and diplomacy stance follow faction-lore.md /
+    factions-and-teams.md per faction.
+
+    Roster scope (7 rows): the six allyable factions canon marks as seeded —
+    Terran Federation (FEDERATION), Mercantile Guild (MERCHANTS), Frontier
+    Coalition (INDEPENDENTS), Astral Mining Consortium (MINING, per ADR-0033),
+    Nova Scientific Institute (EXPLORERS), Fringe Alliance (OUTLAWS) — plus
+    the hostile-only Pirates (PIRATES).
+
+    Deliberately NOT seeded (canon, not an oversight):
+      - Shadow Syndicate (SYNDICATE): faction-lore.md "🚧 seed pending".
+      - Galactic Concord (CONCORD): police-forces.md "📐 Design-only,
+        operator-managed; not in the standard NPC-faction list".
+      - The Cabal: 📐 Design-only and not present in the FactionType enum.
+      - FactionType.MILITARY: not a canonical roster faction (no faction-lore
+        entry); a legacy enum value retained per the model comment.
+
+    Idempotent **per faction_type** (not "any rows exist"): the runtime
+    npc_spawn_service._ensure_federation_faction may already have created the
+    Terran Federation row before this seeder runs, so a blanket "skip if any
+    factions exist" guard would leave the rest of the roster unseeded. Each
+    row is created only if no row of that faction_type exists yet; an existing
+    typed row (however named) is left untouched.
+
     Args:
         db: Database session
         max_retries: Maximum number of times to retry on database error
     """
     retry_count = 0
-    
-    # Define default factions data
+
+    # Canonical faction roster (faction-lore.md / factions-and-teams.md).
     factions_data = [
         {
-            "name": "United Space Federation",
+            "name": "Terran Federation",
             "faction_type": FactionType.FEDERATION,
-            "description": "The governing body of civilized space, enforcing law and order.",
-            "base_pricing_modifier": 1.05,
-            "aggression_level": 3,
-            "diplomacy_stance": "neutral",
-            "color_primary": "#0066CC",
-            "color_secondary": "#FFFFFF"
-        },
-        {
-            "name": "Independent Traders Alliance",
-            "faction_type": FactionType.INDEPENDENTS,
-            "description": "A loose confederation of free traders and entrepreneurs.",
-            "base_pricing_modifier": 0.95,
+            "description": (
+                "Earth's parliamentary government scaled to the settled "
+                "volume. Order is the precondition for prosperity; maintains "
+                "a standing navy and the Federation Bounty Board."
+            ),
             "aggression_level": 4,
             "diplomacy_stance": "friendly",
-            "color_primary": "#FF9900",
-            "color_secondary": "#333333"
+            "color_primary": "#0066CC",
+            "color_secondary": "#FFFFFF",
         },
         {
-            "name": "Shadow Syndicate",
-            "faction_type": FactionType.PIRATES,
-            "description": "Ruthless pirates operating from hidden bases in frontier space.",
-            "base_pricing_modifier": 1.15,
-            "aggression_level": 9,
-            "diplomacy_stance": "hostile",
-            "color_primary": "#CC0000",
-            "color_secondary": "#000000"
-        },
-        {
-            "name": "Merchant Guild",
+            "name": "Mercantile Guild",
             "faction_type": FactionType.MERCHANTS,
-            "description": "The economic powerhouse controlling major trade routes.",
-            "base_pricing_modifier": 0.90,
+            "description": (
+                "A neutral merchant cartel that built the inter-sector trade "
+                "network. Charges the same prices to everyone — the manifest "
+                "is the only thing that matters."
+            ),
             "aggression_level": 2,
             "diplomacy_stance": "neutral",
             "color_primary": "#009900",
-            "color_secondary": "#FFCC00"
+            "color_secondary": "#FFCC00",
         },
         {
-            "name": "Stellar Cartographers",
+            "name": "Frontier Coalition",
+            "faction_type": FactionType.INDEPENDENTS,
+            "description": (
+                "Loose alliance of outer-rim colonies that broke from "
+                "Federation oversight. Self-sufficient where possible, "
+                "prickly where not."
+            ),
+            "aggression_level": 6,
+            "diplomacy_stance": "neutral",
+            "color_primary": "#FF9900",
+            "color_secondary": "#333333",
+        },
+        {
+            "name": "Astral Mining Consortium",
+            "faction_type": FactionType.MINING,
+            "description": (
+                "The galaxy's largest extraction conglomerate. Owns mining "
+                "rights on most resource-rich planets and belts; treats "
+                "independent miners as competition."
+            ),
+            "aggression_level": 5,
+            "diplomacy_stance": "neutral",
+            "color_primary": "#8B5A2B",
+            "color_secondary": "#333333",
+        },
+        {
+            "name": "Nova Scientific Institute",
             "faction_type": FactionType.EXPLORERS,
-            "description": "Scientists and explorers mapping the unknown regions.",
-            "base_pricing_modifier": 1.00,
-            "aggression_level": 1,
+            "description": (
+                "A multi-discipline research institute studying warp-tunnel "
+                "mechanics, quantum trade dynamics, and exotic-matter "
+                "applications."
+            ),
+            "aggression_level": 3,
             "diplomacy_stance": "friendly",
             "color_primary": "#6600CC",
-            "color_secondary": "#CCCCCC"
+            "color_secondary": "#CCCCCC",
         },
         {
-            "name": "Colonial Defense Force",
-            "faction_type": FactionType.MILITARY,
-            "description": "The military arm protecting human colonies from threats.",
-            "base_pricing_modifier": 1.10,
+            "name": "Fringe Alliance",
+            "faction_type": FactionType.OUTLAWS,
+            "description": (
+                "Loose confederation of smugglers, ex-pirates, refugees, and "
+                "dissidents who reject Federation jurisdiction. Operates on a "
+                "loose honor code — unlike the Pirates."
+            ),
             "aggression_level": 7,
-            "diplomacy_stance": "neutral",
-            "color_primary": "#333333",
-            "color_secondary": "#CC0000"
-        }
+            "diplomacy_stance": "hostile",
+            "color_primary": "#996600",
+            "color_secondary": "#000000",
+        },
+        {
+            "name": "Pirates",
+            "faction_type": FactionType.PIRATES,
+            "description": (
+                "Anarchic raiders that exist as antagonists. Players cannot "
+                "accumulate positive reputation with Pirates — only attack "
+                "them."
+            ),
+            "aggression_level": 10,
+            "diplomacy_stance": "hostile",
+            "color_primary": "#CC0000",
+            "color_secondary": "#000000",
+        },
     ]
 
     while retry_count < max_retries:
         try:
-            # Check if factions already exist
-            existing_count = db.query(Faction).count()
-            if existing_count > 0:
-                logger.info(f"Found {existing_count} existing factions, skipping default faction creation")
+            # Idempotent per faction_type: seed only the rows that don't yet
+            # exist (the Federation row may already be present from the
+            # runtime npc_spawn_service ensure path).
+            existing_types = {
+                row[0] for row in db.query(Faction.faction_type).all()
+            }
+            to_create = [
+                fd for fd in factions_data
+                if fd["faction_type"] not in existing_types
+            ]
+            if not to_create:
+                logger.info(
+                    "Faction roster already seeded (%d of %d canonical types "
+                    "present); skipping",
+                    len(existing_types), len(factions_data),
+                )
                 return
 
-            logger.info("Creating default factions...")
-            
+            logger.info(
+                "Seeding %d missing canonical faction(s)...", len(to_create)
+            )
+
             # Create factions in a transaction
             try:
                 created_count = 0
-                for faction_data in factions_data:
+                for faction_data in to_create:
                     faction = Faction(**faction_data)
                     db.add(faction)
                     created_count += 1
                     logger.debug(f"Added faction: {faction.name}")
-                
+
                 db.commit()
                 logger.info(f"Successfully created {created_count} default factions")
                 break
