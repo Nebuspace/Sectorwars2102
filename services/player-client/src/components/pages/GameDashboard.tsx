@@ -1605,6 +1605,9 @@ const GameDashboard: React.FC = () => {
                 sectorId={sceneSectorId}
                 scene="landed"
                 planetType={landedPlanet?.type}
+                habitability={landedPlanet?.habitability_score}
+                citadelLevel={citadelInfo?.citadel_level ?? 0}
+                landedPlanetId={playerState?.current_planet_id}
               />
 
               {/* Cockpit frame vignette */}

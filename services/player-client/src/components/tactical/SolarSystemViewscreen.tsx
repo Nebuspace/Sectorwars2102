@@ -135,6 +135,16 @@ interface SolarSystemViewscreenProps {
   isSpaceDock?: boolean;
   /** landed scene only: planet type drives the sky/ridge palette */
   planetType?: string;
+  /** landed scene only: 0–100 habitability — drives flora vs desolation + star count */
+  habitability?: number;
+  /** landed scene only: 0–5 citadel level — drives the built skyline on the horizon */
+  citadelLevel?: number;
+  /**
+   * landed scene only: the landed planet's id, used to locate THIS world's body
+   * in the system snapshot for its orbit_au (distance-to-sun). Falls back to a
+   * mid orbit (~0.5) when it can't be matched.
+   */
+  landedPlanetId?: string;
   /**
    * flight scene only: when provided, the real-planet info popup offers a
    * 🛬 LAND action that calls this with the planet id (wire to the same
@@ -415,7 +425,7 @@ function drawStar(
 // Planet surface treatments — the variety is the feature
 // ---------------------------------------------------------------------------
 
-type Treatment = 'GAS_GIANT' | 'BARREN' | 'ICE' | 'VOLCANIC' | 'DESERT' | 'TERRAN' | 'OCEANIC';
+type Treatment = 'GAS_GIANT' | 'BARREN' | 'MOUNTAINOUS' | 'ICE' | 'VOLCANIC' | 'DESERT' | 'TERRAN' | 'OCEANIC';
 
 function treatmentFor(kind: string): Treatment {
   const k = (kind || '').toUpperCase().replace('PLANETTYPE.', '');
@@ -433,6 +443,7 @@ function treatmentFor(kind: string): Treatment {
 const PROC_FLAVOR: Record<Treatment, string> = {
   GAS_GIANT: 'GAS GIANT — UNINHABITABLE',
   BARREN: 'BARREN WORLD — UNINHABITABLE',
+  MOUNTAINOUS: 'MOUNTAINOUS WORLD — MARGINAL',
   ICE: 'ICE WORLD — UNINHABITABLE',
   VOLCANIC: 'VOLCANIC WORLD — UNINHABITABLE',
   DESERT: 'DESERT WORLD — UNINHABITABLE',
@@ -1772,6 +1783,10 @@ interface LandedPalette {
   haze: string;
   /** ridge silhouettes, back → front (front is darkest) */
   ridges: [string, string, string];
+  /** per-type surface signature flourish (drives drawLandedScene flourishes) */
+  flourish: 'VOLCANIC' | 'ICE' | 'OCEANIC' | 'DESERT' | 'TERRAN' | 'MOUNTAINOUS' | 'NONE';
+  /** "r, g, b" tint for habitability flora tufts (green for living worlds) */
+  flora: string;
 }
 
 /** Sky/ridge palette per planet type — reuses the treatment mapping above. */
@@ -1783,6 +1798,17 @@ function landedPalette(planetType?: string): LandedPalette {
   // to the violet-dusk default below (matches the legacy landed-band gradient
   // and the tint accent), so a landed scene and its planet card agree.
   const kind = (planetType || '').toUpperCase().replace('PLANETTYPE.', '');
+  // MOUNTAINOUS gets a dedicated stone-grey identity (distinct from dead BARREN)
+  // WITHOUT disturbing treatmentFor() — which still buckets it to BARREN for the
+  // flight-scene popup/painter, keeping that lane identical.
+  if (kind === 'MOUNTAINOUS') {
+    return {
+      skyTop: '#0c0e12', skyMid: '#2a2d36', horizon: '#6b6f7e',
+      glow: 'rgba(200, 205, 220, 0.32)', haze: '170, 175, 190',
+      ridges: ['#4a4e5b', '#33363f', '#191b22'],
+      flourish: 'MOUNTAINOUS', flora: '120, 150, 110'
+    };
+  }
   const treatment = treatmentFor(planetType || '');
   const effective = treatment === 'BARREN' && !KNOWN_BARREN.has(kind)
     ? 'GAS_GIANT' // violet-dusk default branch
@@ -1792,37 +1818,43 @@ function landedPalette(planetType?: string): LandedPalette {
       return {
         skyTop: '#120305', skyMid: '#3a0d08', horizon: '#8a2e0a',
         glow: 'rgba(255, 110, 30, 0.5)', haze: '255, 90, 20',
-        ridges: ['#2a0c08', '#1a0705', '#0c0303']
+        ridges: ['#2a0c08', '#1a0705', '#0c0303'],
+        flourish: 'VOLCANIC', flora: '90, 120, 70'
       };
     case 'ICE':
       return {
         skyTop: '#0c1622', skyMid: '#27435c', horizon: '#9cc4dd',
         glow: 'rgba(210, 235, 255, 0.45)', haze: '190, 220, 240',
-        ridges: ['#5d7c93', '#3b566c', '#1d2f40']
+        ridges: ['#5d7c93', '#3b566c', '#1d2f40'],
+        flourish: 'ICE', flora: '150, 190, 170'
       };
     case 'TERRAN':
       return {
         skyTop: '#04121f', skyMid: '#0d3a4a', horizon: '#2f8c74',
         glow: 'rgba(150, 230, 200, 0.4)', haze: '120, 210, 180',
-        ridges: ['#14463c', '#0d2f29', '#061a16']
+        ridges: ['#14463c', '#0d2f29', '#061a16'],
+        flourish: 'TERRAN', flora: '90, 210, 130'
       };
     case 'OCEANIC':
       return {
         skyTop: '#03101f', skyMid: '#0a3550', horizon: '#2a7f9e',
         glow: 'rgba(120, 210, 235, 0.4)', haze: '110, 190, 220',
-        ridges: ['#0f3f55', '#0a2b3c', '#051824']
+        ridges: ['#0f3f55', '#0a2b3c', '#051824'],
+        flourish: 'OCEANIC', flora: '80, 200, 160'
       };
     case 'DESERT':
       return {
         skyTop: '#190b04', skyMid: '#4a2410', horizon: '#c07a2e',
         glow: 'rgba(255, 190, 90, 0.45)', haze: '230, 160, 70',
-        ridges: ['#5c3014', '#3c1f0c', '#201006']
+        ridges: ['#5c3014', '#3c1f0c', '#201006'],
+        flourish: 'DESERT', flora: '150, 170, 90'
       };
     case 'BARREN':
       return {
         skyTop: '#0a0a12', skyMid: '#23232f', horizon: '#5a5a6e',
         glow: 'rgba(190, 190, 210, 0.3)', haze: '160, 160, 180',
-        ridges: ['#3a3a4a', '#26262f', '#131318']
+        ridges: ['#3a3a4a', '#26262f', '#131318'],
+        flourish: 'NONE', flora: '120, 140, 120'
       };
     case 'GAS_GIANT':
     default:
@@ -1830,9 +1862,56 @@ function landedPalette(planetType?: string): LandedPalette {
       return {
         skyTop: '#120822', skyMid: '#2d1a3d', horizon: '#6a4a8a',
         glow: 'rgba(190, 140, 255, 0.4)', haze: '170, 120, 240',
-        ridges: ['#3a2a4f', '#241a33', '#120c1c']
+        ridges: ['#3a2a4f', '#241a33', '#120c1c'],
+        flourish: 'NONE', flora: '150, 130, 190'
       };
   }
+}
+
+/**
+ * The five-axis context fed to the landed scene each frame. Sun type/color +
+ * distance come from the component's own /system snapshot; habitability and
+ * citadel level come from the dashboard's landed-planet data.
+ */
+interface LandedCtx {
+  /** 0–100; undefined → neutral mid (treated as ~55) */
+  habitability?: number;
+  /** 0–5 citadel build level; 0/undefined → untouched wilderness */
+  citadelLevel?: number;
+  /** star.kind from the system snapshot (e.g. RED_DWARF, BLUE_GIANT) */
+  starKind?: string;
+  /** star.color hex; undefined → derived default warm yellow */
+  starColor?: string;
+  /** companion star color hex if the system is a binary */
+  secondaryColor?: string;
+  /** this planet's orbit_au (distance to sun); undefined → mid 0.5 */
+  orbitAu?: number;
+}
+
+/** Star-kind → corona character (relative corona scale + a hotness bias for the
+ *  sky wash). Falls back to a sun-like profile for unknown kinds. */
+function starProfile(kind?: string): { corona: number; hot: number } {
+  const k = (kind || '').toUpperCase().replace('STARTYPE.', '');
+  // Specific compound kinds FIRST so generic substrings (GIANT/WHITE/RED) can't
+  // shadow them (e.g. RED_GIANT must not match the blue-GIANT branch, and
+  // WHITE_DWARF must not match the plain-WHITE branch).
+  if (k.includes('NEUTRON') || k.includes('PULSAR') || k.includes('WHITE_DWARF') || k.includes('WHITE DWARF'))
+    return { corona: 0.6, hot: 0.85 };  // tiny but fierce
+  if (k.includes('RED') && k.includes('GIANT'))
+    return { corona: 1.4, hot: 0.35 };  // red giant — bloated but cool
+  if (k.includes('BLUE') || k === 'O' || k === 'B')
+    return { corona: 1.7, hot: 1.0 };   // blue giant — huge searing corona
+  if (k.includes('RED') || k.includes('DWARF') || k === 'M')
+    return { corona: 0.7, hot: 0.25 };  // red dwarf — small, cool ember
+  if (k.includes('ORANGE') || k === 'K')
+    return { corona: 0.85, hot: 0.4 };
+  if (k.includes('YELLOW') || k === 'G' || k === 'SOL')
+    return { corona: 1.0, hot: 0.55 };
+  if (k.includes('WHITE') || k === 'A' || k === 'F')
+    return { corona: 1.2, hot: 0.7 };
+  if (k.includes('GIANT'))                // any other (yellow/orange) giant
+    return { corona: 1.3, hot: 0.6 };
+  return { corona: 1.0, hot: 0.55 };
 }
 
 function drawLandedScene(
@@ -1841,11 +1920,31 @@ function drawLandedScene(
   h: number,
   sectorId: number,
   t: number,
-  pal: LandedPalette
+  pal: LandedPalette,
+  env?: LandedCtx
 ): void {
   const horizonY = h * 0.58;
+  const seed = (sectorId >>> 0) || 1;
 
-  // 1) Sky gradient — top of atmosphere down to the horizon line
+  // --- Resolve the five axes (graceful defaults if data not yet present) ---
+  const hab = env && typeof env.habitability === 'number'
+    ? Math.max(0, Math.min(100, env.habitability)) : 55;       // neutral baseline
+  const habN = hab / 100;
+  const citadel = env ? Math.max(0, Math.min(5, Math.round(env.citadelLevel || 0))) : 0;
+  const orbitAu = env && typeof env.orbitAu === 'number' && env.orbitAu > 0 ? env.orbitAu : 0.5;
+  // proximity: small orbit → ~1 (close/hot), large orbit → ~0 (far/cold).
+  // Linear sweep across the real display orbit domain (~0.15 inner → ~1.0 outer)
+  // so the FULL range is distinct — a 0.55/orbit reciprocal pegged the whole
+  // inner half to max and made the distance axis invisible. Keep a small floor
+  // so the most distant world still shows a faint sun + warmth.
+  const ORBIT_NEAR = 0.15, ORBIT_FAR = 1.0;
+  const prox = Math.max(0.05, 1 - Math.min(1, Math.max(0, (orbitAu - ORBIT_NEAR) / (ORBIT_FAR - ORBIT_NEAR))));
+  const starColor = env?.starColor || '#ffd27a';
+  const sc = hexToRgb(starColor);
+  const profile = starProfile(env?.starKind);
+
+  // 1) Sky gradient — top of atmosphere down to the horizon line, warmed toward
+  //    the star color and brightened by proximity (close sun = hotter wash).
   const sky = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
   sky.addColorStop(0, pal.skyTop);
   sky.addColorStop(0.6, pal.skyMid);
@@ -1853,30 +1952,148 @@ function drawLandedScene(
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, w, h);
 
-  // 2) Low sun / atmospheric glow near the horizon (seeded x per sector)
-  const anchorRng = splitmix32(sectorId * 911 + 3);
+  // Star-tinted sky wash near the horizon: warms the whole vista toward the
+  // sun's hue. Strength scales with proximity × star hotness.
+  const washA = 0.05 + prox * profile.hot * 0.18;
+  const wash = ctx.createLinearGradient(0, horizonY * 0.4, 0, horizonY * 1.1);
+  wash.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+  wash.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${washA.toFixed(3)})`);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = wash;
+  ctx.fillRect(0, 0, w, horizonY * 1.15);
+  ctx.restore();
+
+  // 2) STARFIELD — thin atmosphere (low hab) reveals the void; lush worlds wash
+  //    it out. Star count scales inversely with habitability. Painted before the
+  //    sun & ridges so it sits behind everything in the sky.
+  const starCount = Math.round(10 + (1 - habN) * 90); // 10 (lush) → 100 (barren)
+  if (starCount > 0) {
+    const sfRng = splitmix32(seed * 2654435761 + 17);
+    ctx.save();
+    ctx.fillStyle = '#dfe7f5';
+    for (let i = 0; i < starCount; i++) {
+      const sx = sfRng() * w;
+      const sy = sfRng() * (horizonY * 0.92);
+      const sz = 0.3 + sfRng() * 0.9;
+      const tw = 0.5 + 0.5 * Math.sin(t * (0.6 + sfRng() * 1.4) + i);
+      ctx.globalAlpha = (0.12 + sfRng() * 0.35) * tw * (0.4 + (1 - habN) * 0.6);
+      ctx.beginPath();
+      ctx.arc(sx, sy, sz, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // 3) THE SUN DISC — a real star above the horizon. Position seeded but high
+  //    enough to sit in open sky; radius + brightness scale with proximity and
+  //    star kind; color from star.color; additive corona.
+  const anchorRng = splitmix32(seed * 911 + 3);
+  const sunX = w * (0.18 + anchorRng() * 0.64);
+  const sunY = horizonY * (0.22 + anchorRng() * 0.34); // open sky, above horizon
+  // Disc radius scales with proximity + star kind, but is capped so a close
+  // blue-giant can't swell into an absurd inner-orbit disc.
+  const sunR = Math.max(6, Math.min(Math.min(w, h) * 0.12, Math.min(w, h) * (0.018 + prox * 0.06) * profile.corona));
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  // wide corona — clamped to a fraction of the viewport diagonal so the additive
+  // wash never balloons past the screen and overpowers the overlaid HUD chips.
+  const coronaR = Math.min(Math.hypot(w, h) * 0.55, sunR * (5 + prox * 4) * profile.corona);
+  const corona = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
+  corona.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.35 + prox * 0.35).toFixed(3)})`);
+  corona.addColorStop(0.35, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.12 + prox * 0.15).toFixed(3)})`);
+  corona.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+  ctx.fillStyle = corona;
+  ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
+  // bright core disc — white-hot center fading to the star hue
+  const disc = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+  const coreWhite = Math.round(160 + prox * 95);
+  disc.addColorStop(0, `rgba(${Math.min(255, sc.r + coreWhite * 0.4)}, ${Math.min(255, sc.g + coreWhite * 0.4)}, ${Math.min(255, sc.b + coreWhite * 0.4)}, 0.98)`);
+  disc.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.95)`);
+  disc.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.5)`);
+  ctx.fillStyle = disc;
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
+  ctx.fill();
+  // companion sun (binary) — a smaller second disc nearby
+  if (env?.secondaryColor) {
+    const c2 = hexToRgb(env.secondaryColor);
+    const c2x = sunX + sunR * 4.5 * (anchorRng() > 0.5 ? 1 : -1);
+    const c2y = sunY + sunR * 1.8;
+    const c2r = sunR * 0.55;
+    const cor2 = ctx.createRadialGradient(c2x, c2y, 0, c2x, c2y, c2r * 4);
+    cor2.addColorStop(0, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0.4)`);
+    cor2.addColorStop(1, `rgba(${c2.r}, ${c2.g}, ${c2.b}, 0)`);
+    ctx.fillStyle = cor2;
+    ctx.fillRect(c2x - c2r * 4, c2y - c2r * 4, c2r * 8, c2r * 8);
+    ctx.beginPath();
+    ctx.arc(c2x, c2y, c2r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${Math.min(255, c2.r + 60)}, ${Math.min(255, c2.g + 60)}, ${Math.min(255, c2.b + 60)}, 0.95)`;
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // 4) Low atmospheric glow near the horizon — warmed toward the star color and
+  //    brightened by proximity (preserves the legacy seeded horizon glow).
   const gx = w * (0.25 + anchorRng() * 0.5);
-  const glow = ctx.createRadialGradient(gx, horizonY, 0, gx, horizonY, Math.max(w, h) * 0.45);
+  const glow = ctx.createRadialGradient(gx, horizonY, 0, gx, horizonY, Math.max(w, h) * (0.4 + prox * 0.18));
   glow.addColorStop(0, pal.glow);
   glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, w, h);
+  // a touch of the star hue layered into the horizon glow
+  const hg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, Math.max(w, h) * 0.35);
+  hg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(prox * profile.hot * 0.22).toFixed(3)})`);
+  hg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+  ctx.fillStyle = hg;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
 
-  // 3) Parallax ridge layers (3, back → front) — deterministic jagged
+  // 4b) OCEANIC reflective water band just below the horizon (type flourish) —
+  //     drawn before the ridges so the front ridge sits on its shoreline.
+  if (pal.flourish === 'OCEANIC') {
+    const wb = ctx.createLinearGradient(0, horizonY, 0, h);
+    wb.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(0.06 + prox * 0.1).toFixed(3)})`);
+    wb.addColorStop(0.5, 'rgba(40, 120, 150, 0.12)');
+    wb.addColorStop(1, 'rgba(10, 35, 55, 0.05)');
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = wb;
+    ctx.fillRect(0, horizonY, w, h - horizonY);
+    // sun glitter column on the water
+    ctx.fillStyle = `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0.18)`;
+    for (let i = 0; i < 10; i++) {
+      const gy = horizonY + i * ((h - horizonY) / 10);
+      const gwid = (w * 0.02) * (1 + i * 0.4) * (0.6 + 0.4 * Math.sin(t * 1.5 + i));
+      ctx.globalAlpha = 0.12 * (1 - i / 12);
+      ctx.fillRect(sunX - gwid / 2, gy, gwid, 2);
+    }
+    ctx.restore();
+  }
+
+  // 5) Parallax ridge layers (3, back → front) — deterministic jagged
   //    silhouettes sampled from a wrapping noise strip; each layer drifts
-  //    at its own speed for depth.
+  //    at its own speed for depth. MOUNTAINOUS worlds push the crests higher.
+  const ampBoost = pal.flourish === 'MOUNTAINOUS' ? 1.7 : 1.0;
+  const baseLift = pal.flourish === 'MOUNTAINOUS' ? -0.06 : 0;
   const layers = [
-    { base: 0.6, amp: 0.1, speed: 1.2, seed: 5, color: pal.ridges[0] },
-    { base: 0.7, amp: 0.13, speed: 2.6, seed: 11, color: pal.ridges[1] },
-    { base: 0.84, amp: 0.16, speed: 4.6, seed: 23, color: pal.ridges[2] }
+    { base: 0.6 + baseLift, amp: 0.1 * ampBoost, speed: 1.2, seed: 5, color: pal.ridges[0] },
+    { base: 0.7 + baseLift, amp: 0.13 * ampBoost, speed: 2.6, seed: 11, color: pal.ridges[1] },
+    { base: 0.84, amp: 0.16 * ampBoost, speed: 4.6, seed: 23, color: pal.ridges[2] }
   ];
-  for (const layer of layers) {
-    const rng = splitmix32(sectorId * 131 + layer.seed);
+  // capture the front-ridge profile so flora / skyline / lava sit ON the ridge.
+  let frontProfile: number[] | null = null;
+  for (let li = 0; li < layers.length; li++) {
+    const layer = layers[li];
+    const rng = splitmix32(seed * 131 + layer.seed);
     const period = Math.max(w * 2, 1200);
     const n = 48;
     const pts: number[] = [];
     for (let i = 0; i < n; i++) pts.push(rng());
     const off = t * layer.speed;
+    const profileXs: number[] = [];
     ctx.beginPath();
     ctx.moveTo(0, h);
     for (let x = 0; x <= w; x += 8) {
@@ -1887,24 +2104,135 @@ function drawLandedScene(
       const frac = fi - Math.floor(fi);
       const s = frac * frac * (3 - 2 * frac); // smoothstep — soft crests
       const v = pts[i0] * (1 - s) + pts[i1] * s;
-      ctx.lineTo(x, h * layer.base - v * h * layer.amp);
+      const yTop = h * layer.base - v * h * layer.amp;
+      ctx.lineTo(x, yTop);
+      if (li === layers.length - 1) profileXs.push(yTop);
     }
     ctx.lineTo(w, h);
     ctx.closePath();
     ctx.fillStyle = layer.color;
     ctx.fill();
+    if (li === layers.length - 1) frontProfile = profileXs;
+  }
+  // helper: front-ridge surface Y at an x position (samples the captured profile)
+  const ridgeYAt = (x: number): number => {
+    if (!frontProfile || frontProfile.length === 0) return h * 0.84;
+    const idx = Math.max(0, Math.min(frontProfile.length - 1, Math.round(x / 8)));
+    return frontProfile[idx];
+  };
+
+  // 5b) ICE pale sheen across the front ridge (type flourish)
+  if (pal.flourish === 'ICE') {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(210, 235, 255, 0.18)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 8) {
+      const y = ridgeYAt(x);
+      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
-  // 4) Atmospheric haze — wide translucent bands drifting slowly
+  // 5c) VOLCANIC lava fissure + ember glow on the front ridge (type flourish)
+  if (pal.flourish === 'VOLCANIC') {
+    const fRng = splitmix32(seed * 313 + 41);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const fissures = 2 + Math.floor(fRng() * 2);
+    for (let i = 0; i < fissures; i++) {
+      const fx = w * (0.15 + fRng() * 0.7);
+      const fy = ridgeYAt(fx) + 4;
+      const pulse = 0.5 + 0.5 * Math.sin(t * 1.8 + i * 2);
+      const fw = w * (0.04 + fRng() * 0.06);
+      const lg = ctx.createRadialGradient(fx, fy, 0, fx, fy, fw * 2.2);
+      lg.addColorStop(0, `rgba(255, 140, 40, ${(0.4 + pulse * 0.35).toFixed(3)})`);
+      lg.addColorStop(0.5, 'rgba(255, 80, 20, 0.18)');
+      lg.addColorStop(1, 'rgba(255, 60, 10, 0)');
+      ctx.fillStyle = lg;
+      ctx.fillRect(fx - fw * 2.2, fy - fw, fw * 4.4, fw * 2.2);
+      // bright fissure line
+      ctx.strokeStyle = `rgba(255, 200, 120, ${(0.5 + pulse * 0.4).toFixed(3)})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(fx - fw, fy);
+      ctx.lineTo(fx + fw, fy + 3);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 5d) DESERT dune shimmer band above the front ridge (type flourish)
+  if (pal.flourish === 'DESERT') {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) {
+      const dy = horizonY + 8 + i * 10 + Math.sin(t * 0.8 + i) * 2;
+      ctx.fillStyle = `rgba(255, 200, 110, ${(0.05 - i * 0.012).toFixed(3)})`;
+      ctx.fillRect(0, dy, w, 3);
+    }
+    ctx.restore();
+  }
+
+  // 6) HABITABILITY FLORA — foreground vegetation tufts on the front ridge for
+  //    living worlds (TERRAN/OCEANIC/JUNGLE/TROPICAL & temperate types). Count
+  //    + size scale with habitability; barren worlds grow nothing.
+  const floraEligible = pal.flourish === 'TERRAN' || pal.flourish === 'OCEANIC' ||
+    pal.flourish === 'MOUNTAINOUS' || pal.flourish === 'DESERT';
+  if (floraEligible && habN > 0.15) {
+    const floraCount = Math.round(habN * (pal.flourish === 'DESERT' ? 14 : 34));
+    const fl = pal.flora.split(',').map((s) => parseInt(s.trim(), 10));
+    const flRng = splitmix32(seed * 619 + 71);
+    ctx.save();
+    for (let i = 0; i < floraCount; i++) {
+      const fx = flRng() * w;
+      const baseY = ridgeYAt(fx);
+      const hgt = (6 + flRng() * 16) * (0.5 + habN * 0.9);
+      const sway = Math.sin(t * 0.9 + i) * (1.2 + habN * 1.5);
+      const wob = flRng() * 0.4 + 0.8;
+      ctx.globalAlpha = 0.35 + habN * 0.45;
+      ctx.strokeStyle = `rgb(${fl[0]}, ${fl[1]}, ${fl[2]})`;
+      ctx.lineWidth = 1.1 * wob;
+      // a stem with a slight curve toward the sway
+      ctx.beginPath();
+      ctx.moveTo(fx, baseY);
+      ctx.quadraticCurveTo(fx + sway * 0.5, baseY - hgt * 0.6, fx + sway, baseY - hgt);
+      ctx.stroke();
+      // a couple of fronds for lush worlds
+      if (habN > 0.5) {
+        ctx.lineWidth = 0.8 * wob;
+        const tipX = fx + sway, tipY = baseY - hgt;
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX - 3 - habN * 2, tipY - 3);
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX + 3 + habN * 2, tipY - 3);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // 7) CITADEL SKYLINE — built structures on the front ridge scaling with the
+  //    citadel level (0 = wilderness/nothing → 5 = lit megastructure skyline).
+  if (citadel > 0) {
+    drawCitadelSkyline(ctx, w, h, seed, t, citadel, pal, ridgeYAt);
+  }
+
+  // 8) Atmospheric haze — wide translucent bands drifting slowly. Lush worlds
+  //    carry denser, softer atmosphere; thin-air barren worlds barely any.
+  const hazeStrength = 0.04 + habN * 0.09; // 0.04 (barren) → 0.13 (lush)
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  const hazeRng = splitmix32(sectorId * 53 + 7);
+  const hazeRng = splitmix32(seed * 53 + 7);
   for (let i = 0; i < 3; i++) {
     const hy = h * (0.5 + i * 0.13) + Math.sin(t * 0.05 + i * 2.1) * 4;
     const hx = ((hazeRng() * w + t * (3 + i * 2)) % (w * 1.4)) - w * 0.2;
     const hw = w * (0.5 + hazeRng() * 0.3);
     const grad = ctx.createRadialGradient(hx, hy, 0, hx, hy, hw);
-    grad.addColorStop(0, `rgba(${pal.haze}, 0.07)`);
+    grad.addColorStop(0, `rgba(${pal.haze}, ${hazeStrength.toFixed(3)})`);
     grad.addColorStop(1, `rgba(${pal.haze}, 0)`);
     ctx.fillStyle = grad;
     // Squash the blob into a horizontal haze band
@@ -1913,6 +2241,122 @@ function drawLandedScene(
     ctx.scale(1, 0.22);
     ctx.translate(-hx, -hy);
     ctx.fillRect(hx - hw, hy - hw, hw * 2, hw * 2);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/** Citadel skyline: deterministic silhouettes sitting on the front ridge whose
+ *  density/height/lights scale with citadel level (1 Outpost → 5 Capital). */
+function drawCitadelSkyline(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  seed: number,
+  t: number,
+  level: number,
+  pal: LandedPalette,
+  ridgeYAt: (x: number) => number
+): void {
+  // Lighten the front ridge color a touch for the structures.
+  const ridgeRgb = hexToRgb(pal.ridges[2]);
+  const struct = `rgb(${Math.min(255, ridgeRgb.r + 34)}, ${Math.min(255, ridgeRgb.g + 38)}, ${Math.min(255, ridgeRgb.b + 46)})`;
+  const rng = splitmix32(seed * 1009 + level * 17);
+
+  // per-level shape: structure count, max height fraction, window density
+  const cfg = [
+    { n: 0, maxH: 0,    win: 0,    beacon: false }, // 0 (unused)
+    { n: 1, maxH: 0.05, win: 0,    beacon: false }, // 1 Outpost — one dome+antenna
+    { n: 3, maxH: 0.07, win: 0.1,  beacon: false }, // 2 Settlement
+    { n: 5, maxH: 0.11, win: 0.25, beacon: false }, // 3 Colony — cluster + tower
+    { n: 8, maxH: 0.14, win: 0.45, beacon: false }, // 4 Major Colony — dense
+    { n: 12, maxH: 0.2, win: 0.7,  beacon: true  }  // 5 Capital — megastructure + beacon
+  ][level];
+  if (!cfg || cfg.n === 0) return;
+
+  // cluster the structures around a seeded city-center x for cohesion
+  const cityX = w * (0.3 + rng() * 0.4);
+  const spread = w * (0.12 + level * 0.05);
+
+  ctx.save();
+  const windows: { x: number; y: number; warm: number }[] = [];
+  for (let i = 0; i < cfg.n; i++) {
+    const jitter = (rng() - 0.5) * 2 * spread;
+    const sx = Math.max(8, Math.min(w - 8, cityX + jitter));
+    const groundY = ridgeYAt(sx);
+    const bw = Math.max(4, w * (0.012 + rng() * 0.02));
+    const bh = h * cfg.maxH * (0.35 + rng() * 0.65);
+    const topY = groundY - bh;
+
+    // tower body
+    ctx.fillStyle = struct;
+    ctx.fillRect(sx - bw / 2, topY, bw, bh);
+
+    // structure-type flourish by level
+    if (level === 1) {
+      // Outpost: small dome + antenna
+      ctx.beginPath();
+      ctx.arc(sx, groundY - bh * 0.5, bw * 0.7, Math.PI, 0);
+      ctx.fill();
+      ctx.strokeStyle = struct;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(sx, topY);
+      ctx.lineTo(sx, topY - bh * 0.6);
+      ctx.stroke();
+    } else if (i === 0 && level >= 3) {
+      // signature central tower with a tapered spire for Colony+
+      ctx.beginPath();
+      ctx.moveTo(sx - bw / 2, topY);
+      ctx.lineTo(sx, topY - bh * 0.5);
+      ctx.lineTo(sx + bw / 2, topY);
+      ctx.fill();
+    }
+
+    // collect window slots
+    if (cfg.win > 0) {
+      const rows = Math.max(1, Math.floor(bh / 7));
+      for (let r = 0; r < rows; r++) {
+        for (let c = -1; c <= 1; c++) {
+          if (rng() > cfg.win) continue;
+          windows.push({
+            x: sx + c * (bw * 0.3),
+            y: topY + 4 + r * 7,
+            warm: rng()
+          });
+        }
+      }
+    }
+  }
+
+  // warm window lights — twinkle subtly at higher levels (additive)
+  if (windows.length > 0) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < windows.length; i++) {
+      const win = windows[i];
+      const tw = level >= 4 ? (0.6 + 0.4 * Math.sin(t * 2 + i * 1.3)) : 0.85;
+      ctx.fillStyle = `rgba(255, ${190 + Math.round(win.warm * 40)}, ${110 + Math.round(win.warm * 50)}, ${(0.55 * tw).toFixed(3)})`;
+      ctx.fillRect(win.x, win.y, 1.6, 1.6);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // Capital beacon — a pulsing aircraft-warning light atop the tallest tower
+  if (cfg.beacon) {
+    const bx = cityX;
+    const by = ridgeYAt(bx) - h * cfg.maxH - 4;
+    const pulse = 0.5 + 0.5 * Math.sin(t * 2.4);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const bg = ctx.createRadialGradient(bx, by, 0, bx, by, 12);
+    bg.addColorStop(0, `rgba(255, 70, 60, ${(0.5 + pulse * 0.45).toFixed(3)})`);
+    bg.addColorStop(1, 'rgba(255, 70, 60, 0)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(bx - 12, by - 12, 24, 24);
+    ctx.beginPath();
+    ctx.arc(bx, by, 2, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 120, 110, ${(0.7 + pulse * 0.3).toFixed(3)})`;
+    ctx.fill();
     ctx.restore();
   }
   ctx.restore();
@@ -2088,6 +2532,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   scene = 'flight',
   isSpaceDock = false,
   planetType,
+  habitability,
+  citadelLevel,
+  landedPlanetId,
   onRequestLand,
   onRequestDock,
   selectedShipId = null
@@ -2117,9 +2564,30 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   reducedMotionRef.current = reducedMotion;
   const envRef = useRef({ hazardLevel, radiationLevel });
   envRef.current = { hazardLevel, radiationLevel };
+  // Landed five-axis context: star kind/color + this planet's orbit come from
+  // the live /system snapshot (matched by landedPlanetId); habitability +
+  // citadel level are dashboard-supplied props. Recomputed each render and
+  // ref-mirrored so the rAF loop always reads current values.
+  const landedCtx: LandedCtx = (() => {
+    const star = system?.star || null;
+    let orbitAu: number | undefined;
+    if (landedPlanetId && system?.bodies) {
+      const body = system.bodies.find((b) => b.planet_id === landedPlanetId);
+      if (body && typeof body.orbit_au === 'number') orbitAu = body.orbit_au;
+    }
+    return {
+      habitability,
+      citadelLevel,
+      starKind: star?.kind,
+      starColor: star?.color,
+      secondaryColor: star?.secondary?.color,
+      orbitAu, // undefined → drawLandedScene falls back to mid 0.5
+    };
+  })();
+
   // Scene mode + per-scene parameters, ref-mirrored for the draw loop
-  const sceneRef = useRef({ scene, isSpaceDock, palette: landedPalette(planetType) });
-  sceneRef.current = { scene, isSpaceDock, palette: landedPalette(planetType) };
+  const sceneRef = useRef({ scene, isSpaceDock, palette: landedPalette(planetType), landedCtx });
+  sceneRef.current = { scene, isSpaceDock, palette: landedPalette(planetType), landedCtx };
 
   // Sector ships, ref-mirrored so the draw loop reads the latest poll without
   // restarting the animation effect every 5s.
@@ -2201,7 +2669,7 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     }
     if (mode === 'landed') {
       hitTargetsRef.current.length = 0;
-      drawLandedScene(ctx, w, h, sectorId, t, sceneRef.current.palette);
+      drawLandedScene(ctx, w, h, sectorId, t, sceneRef.current.palette, sceneRef.current.landedCtx);
       return;
     }
     const orb = orbitRef.current;
@@ -2259,7 +2727,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     systemRef.current = null;
     setFetchFailed(false);
     hoverRef.current = null;
-    if (scene !== 'flight') {
+    // The landed scene also needs the snapshot (for star kind/color + this
+    // planet's orbit_au → distance-to-sun). The docked scene is pure paint.
+    if (scene !== 'flight' && scene !== 'landed') {
       return;
     }
     apiClient
@@ -2400,7 +2870,9 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
 
   // ---- Animation loop: 24fps drift, 60fps hover transitions, hidden = paused ----
   useEffect(() => {
-    if (fetchFailed) return;
+    // A failed snapshot drops the flight scene to the SectorViewport (no canvas),
+    // but the landed scene keeps painting its self-contained vista (default sun).
+    if (fetchFailed && scene === 'flight') return;
 
     if (reducedMotion) {
       // Static render — no drift, no twinkle. Redraws happen on hover/resize/data.
@@ -2445,7 +2917,8 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     // SpaceDock↔station change must restart the loop to repaint the bay
     // guide-light tint — otherwise the stale tint persists until another dep
     // changes.
-  }, [fetchFailed, system, sectorId, reducedMotion, scene, planetType, isSpaceDock, orbit]);
+  }, [fetchFailed, system, sectorId, reducedMotion, scene, planetType, isSpaceDock, orbit,
+      habitability, citadelLevel, landedPlanetId]);
 
   // ---- Pointer interaction ----
   // Hit radius: recorded r + 8px slack, with a ~12px minimum effective radius
@@ -2681,7 +3154,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   };
 
   // ---- Fallback: the viewscreen never breaks ----
-  if (fetchFailed) {
+  // Only the flight scene falls back to the legacy SectorViewport. The landed
+  // scene paints its own vista regardless of the snapshot — if the fetch fails
+  // it simply degrades to the default sun (graceful), so it must keep its canvas.
+  if (fetchFailed && scene === 'flight') {
     return (
       <div ref={containerRef} className="solar-viewscreen-container">
         <SectorViewport
