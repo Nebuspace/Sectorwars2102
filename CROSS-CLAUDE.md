@@ -915,3 +915,10 @@ Deployed `7779260`, gameserver healthy, clean startup. Proofs (server-minted JWT
   the rendered data (turn regen, max_turns, is_game_complete/rank_victory_at) was proven server-side
   in cut 1+2. **Visual browser screenshot PENDING** — the Chrome extension isn't connected in this
   autonomous run; will capture the TurnEconomy MFD + victory banner when Max connects it. No migration.
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — 🔧→✅ DEPLOY WINDOW (Phase 4 L8b: fleet combat model)
+**No migration** (fleet_service.py only). gameserver restart. Completed the fleet combat model on top
+of the proven coordination_bonus: supply penalties (>50 none/25-50 −5%/<25 −15%, attack+defense),
+Defender +10% absorption, flagship-destruction −30 morale, can't-initiate-at-0-supply, per-round
+supply<25 morale decay. Scout/Support deferred (NO-CANON). Adversarial-reviewed (PASS, canon exact).
+CLOSED below after live proof.
