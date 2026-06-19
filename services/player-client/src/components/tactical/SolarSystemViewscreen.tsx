@@ -2453,6 +2453,17 @@ interface LandedCache {
     faceColor: string;       // vertical cliff face fill (darker)
     edgeColor: string;       // highlight stroke along the clifftop edge
     plateauY: number;        // base y of the clifftop plateau
+    // numeric face base (day-tinted) so the draw can derive strata/rim/wet tones.
+    faceRGB: { r: number; g: number; b: number };
+    // IRREGULAR sea-facing edge: seeded outcrop/notch offsets from clifftop→waterline.
+    // tFrac = how far down the face (0 top .. 1 base); off = px outward(+)/inward(−).
+    edgePts: { tFrac: number; off: number }[];
+    // horizontal-ish STRATA bands down the face (yFrac 0..1 of the face, tone delta).
+    strata: { yFrac: number; tone: number; thick: number }[];
+    // subtle vertical FRACTURE cracks on the face (xFrac across the face, depth frac).
+    fractures: { xFrac: number; top: number; len: number; wig: number }[];
+    // talus ROCKS at the cliff foot in the shallows (xOff from edge, size, yJit).
+    talus: { xOff: number; r: number; yJit: number; phase: number }[];
   } | null;
   hasCompanion: boolean; c2side: number; c2r: number; c2: { r: number; g: number; b: number };
   // ridge geometry (noise precomputed; drifted profile recomputed per frame)
@@ -2861,11 +2872,40 @@ function buildLandedCache(
       const top = lighten(baseRidge, 0.18 + todBright * 0.12);
       const face = darken(baseRidge, 0.42);
       const edge = lighten(baseRidge, 0.5 + todBright * 0.2);
+      // IRREGULAR sea-facing edge: seeded outcrops/notches from clifftop down to the
+      // waterline so the silhouette reads as broken rock, not a clean curve.
+      const edgePts: { tFrac: number; off: number }[] = [];
+      const epN = 6 + Math.floor(hRng() * 3);          // 6..8 break points
+      for (let i = 0; i < epN; i++) {
+        const tFrac = i / (epN - 1);
+        // outcrops jut out near mid-face, notches cut in; smaller near the very top.
+        const amp = w * 0.035 * Math.sin(tFrac * Math.PI);    // 0 at ends, max mid
+        edgePts.push({ tFrac, off: (hRng() - 0.5) * 2 * amp });
+      }
+      // horizontal strata bands down the face.
+      const strata: { yFrac: number; tone: number; thick: number }[] = [];
+      const stN = 4 + Math.floor(hRng() * 3);
+      for (let i = 0; i < stN; i++) {
+        strata.push({ yFrac: 0.12 + (i + hRng() * 0.5) / (stN + 1), tone: (hRng() - 0.5) * 0.5, thick: 2 + hRng() * 4 });
+      }
+      // vertical fracture cracks on the face.
+      const fractures: { xFrac: number; top: number; len: number; wig: number }[] = [];
+      const frN = 3 + Math.floor(hRng() * 3);
+      for (let i = 0; i < frN; i++) {
+        fractures.push({ xFrac: 0.12 + hRng() * 0.76, top: 0.05 + hRng() * 0.3, len: 0.3 + hRng() * 0.5, wig: 0.3 + hRng() * 0.6 });
+      }
+      // talus rocks in the shallows at the cliff foot.
+      const talus: { xOff: number; r: number; yJit: number; phase: number }[] = [];
+      const tlN = 2 + Math.floor(hRng() * 3);
+      for (let i = 0; i < tlN; i++) {
+        talus.push({ xOff: w * (0.01 + hRng() * 0.07), r: 4 + hRng() * 7, yJit: hRng() * h * 0.04, phase: hRng() * Math.PI * 2 });
+      }
       headland = {
         side, landFrac, topProfile, plateauY,
         topColor: `rgb(${top.r}, ${top.g}, ${top.b})`,
         faceColor: `rgb(${face.r}, ${face.g}, ${face.b})`,
         edgeColor: `rgba(${edge.r}, ${edge.g}, ${edge.b}, 0.7)`,
+        faceRGB: face, edgePts, strata, fractures, talus,
       };
     }
 
@@ -3862,28 +3902,89 @@ function drawLandedScene(
       return hl.plateauY - (v - 0.5) * h * 0.05; // gentle plateau undulation
     };
 
-    // 1) cliff FACE — a clean curved drop from the clifftop edge down to the sea on
-    //    the open side. Drawn darker; gives the headland body its mass.
+    // --- ROCKY CLIFF rendering (OCEAN_CLIFF headland). The face is no longer a flat
+    //     wall: an IRREGULAR jagged sea-facing edge, a vertical sea-lit→wet gradient,
+    //     horizontal strata, vertical fractures, and a lit rim give it rock form. ---
+    const edgeTopY = topYAt(landEdgeX);
+    const edgeSign = isLeft ? 1 : -1;                 // outward direction toward the sea
+    // irregular sea-facing edge x at a fractional depth (0 top .. 1 base/waterline).
+    const eps = hl.edgePts;
+    const edgeXAt = (tFrac: number): number => {
+      const f = Math.max(0, Math.min(1, tFrac)) * (eps.length - 1);
+      const i0 = Math.floor(f), i1 = Math.min(eps.length - 1, i0 + 1), fr = f - i0;
+      const off = eps[i0].off * (1 - fr) + eps[i1].off * fr;
+      return landEdgeX + edgeSign * off;
+    };
+    const edgeYAt = (tFrac: number): number => edgeTopY + tFrac * (h - edgeTopY);
+    // trace the cliff BODY path (clifftop surface + irregular drop to the sea).
+    const traceCliffBody = () => {
+      ctx.beginPath();
+      if (isLeft) {
+        ctx.moveTo(0, h);
+        ctx.lineTo(0, topYAt(0));
+        for (let x = 0; x <= landEdgeX; x += 8) ctx.lineTo(x, topYAt(x));
+      } else {
+        ctx.moveTo(w, h);
+        ctx.lineTo(w, topYAt(w));
+        for (let x = w; x >= landEdgeX; x -= 8) ctx.lineTo(x, topYAt(x));
+      }
+      // irregular jagged edge down to the waterline.
+      const steps = 14;
+      for (let s = 1; s <= steps; s++) { const tf = s / steps; ctx.lineTo(edgeXAt(tf), edgeYAt(tf)); }
+      ctx.closePath();
+    };
+
+    // 1) cliff FACE — vertical gradient (sea-lit near the top edge → darker toward
+    //    the waterline + a darker WET band at the very base) clipped to the body.
     ctx.save();
-    ctx.fillStyle = hl.faceColor;
-    ctx.beginPath();
-    if (isLeft) {
-      ctx.moveTo(0, h);
-      ctx.lineTo(0, topYAt(0));
-      for (let x = 0; x <= landEdgeX; x += 8) ctx.lineTo(x, topYAt(x));
-      // curved cliff edge dropping to the sea
-      const edgeTopY = topYAt(landEdgeX);
-      ctx.quadraticCurveTo(landEdgeX + w * 0.04, (edgeTopY + h) * 0.5, landEdgeX, h);
-      ctx.closePath();
-    } else {
-      ctx.moveTo(w, h);
-      ctx.lineTo(w, topYAt(w));
-      for (let x = w; x >= landEdgeX; x -= 8) ctx.lineTo(x, topYAt(x));
-      const edgeTopY = topYAt(landEdgeX);
-      ctx.quadraticCurveTo(landEdgeX - w * 0.04, (edgeTopY + h) * 0.5, landEdgeX, h);
-      ctx.closePath();
+    traceCliffBody();
+    ctx.clip();
+    const fc = hl.faceRGB;
+    const liftF = (k: number) => `rgb(${Math.min(255, Math.round(fc.r + (255 - fc.r) * k))}, ${Math.min(255, Math.round(fc.g + (255 - fc.g) * k))}, ${Math.min(255, Math.round(fc.b + (255 - fc.b) * k))})`;
+    const darkF = (k: number) => `rgb(${Math.round(fc.r * (1 - k))}, ${Math.round(fc.g * (1 - k))}, ${Math.round(fc.b * (1 - k))})`;
+    const fg = ctx.createLinearGradient(0, edgeTopY, 0, h);
+    fg.addColorStop(0, liftF(0.16));                  // sea-lit upper face
+    fg.addColorStop(0.55, hl.faceColor);              // mid body
+    fg.addColorStop(0.88, darkF(0.22));               // shaded lower face
+    fg.addColorStop(1, darkF(0.42));                  // dark WET band at the base
+    ctx.fillStyle = fg;
+    ctx.fillRect(0, edgeTopY - h * 0.1, w, h);
+    // 1b) horizontal STRATA bands — slightly varied tone across the face width.
+    for (const st of hl.strata) {
+      const by = edgeTopY + st.yFrac * (h - edgeTopY);
+      ctx.fillStyle = st.tone >= 0 ? liftF(st.tone * 0.5) : darkF(-st.tone * 0.5);
+      ctx.globalAlpha = 0.35;
+      ctx.fillRect(0, by, w, st.thick);
     }
-    ctx.fill();
+    ctx.globalAlpha = 1;
+    // 1c) vertical FRACTURE cracks (seeded, darker hairlines following the face).
+    ctx.strokeStyle = darkF(0.5);
+    ctx.lineWidth = 1;
+    for (const fr of hl.fractures) {
+      const cxTop = edgeTopY + fr.top * (h - edgeTopY);
+      const len = fr.len * (h - edgeTopY);
+      // anchor the crack between the inland edge and the sea edge at its depth.
+      const baseX = isLeft ? landEdgeX * (0.2 + fr.xFrac * 0.7) : landEdgeX + (w - landEdgeX) * (1 - (0.2 + fr.xFrac * 0.7));
+      ctx.beginPath();
+      const segs = 5;
+      for (let s = 0; s <= segs; s++) {
+        const yy = cxTop + (len * s) / segs;
+        const xx = baseX + Math.sin(s * 1.3 + fr.wig * 6) * fr.wig * 4;
+        if (s === 0) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // 1d) lit RIM along the irregular sea-facing edge (catches the sky/sea light) so
+    //     the cliff reads 3D, not a flat wall.
+    ctx.save();
+    ctx.strokeStyle = hl.edgeColor;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(edgeXAt(0), edgeYAt(0));
+    for (let s = 1; s <= 14; s++) { const tf = s / 14; ctx.lineTo(edgeXAt(tf), edgeYAt(tf)); }
+    ctx.stroke();
     ctx.restore();
 
     // 2) clifftop PLATEAU cap — a lighter band along the top surface so the player
@@ -3921,22 +4022,96 @@ function drawLandedScene(
     ctx.stroke();
     ctx.restore();
 
-    // 4) foam where the waves meet the BASE of the cliff (the open-side waterline
-    //    against the headland). A bright lip running down the cliff edge.
+    // 4) SURF at the cliff BASE — waves break HORIZONTALLY against the rock foot at
+    //    the waterline (no vertical stripe down the face). Wet sheen on the lowest
+    //    face, talus rocks in the shallows, then a whitecap band + spray at the foot.
+    // the waterline against the cliff sits in the lower face; the foot of the
+    // irregular edge runs from ~tFrac 0.78 to 1.0.
+    const footTop = 0.78;
+    // 4a) WET SHEEN on the lowest face — a faint cool reflective wash just above the
+    //     waterline, clipped to the cliff body.
+    ctx.save();
+    traceCliffBody();
+    ctx.clip();
+    const sheenY = edgeYAt(footTop);
+    const sh = ctx.createLinearGradient(0, sheenY, 0, h);
+    sh.addColorStop(0, 'rgba(150, 190, 205, 0)');
+    sh.addColorStop(1, 'rgba(170, 205, 220, 0.22)');
+    ctx.fillStyle = sh;
+    ctx.fillRect(0, sheenY, w, h - sheenY);
+    ctx.restore();
+
+    // 4b) TALUS ROCKS in the shallows at the foot (dark fills + a foam ring each).
+    ctx.save();
+    for (const tk of hl.talus) {
+      const rx = edgeXAt(0.99) + edgeSign * tk.xOff;
+      const ry = h - tk.r * 0.6 - tk.yJit;
+      ctx.fillStyle = darkF(0.3);
+      ctx.beginPath();
+      ctx.ellipse(rx, ry, tk.r, tk.r * 0.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // foam ring lapping the rock (gentle pulse, frozen at t===0).
+      const ring = t === 0 ? 0.5 : 0.5 + 0.3 * Math.sin(t * 1.8 + tk.phase);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = cache.shoreFoamColor;
+      ctx.globalAlpha = 0.4 * ring;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.ellipse(rx, ry + tk.r * 0.5, tk.r * 1.3, tk.r * 0.5, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.restore();
+
+    // 4c) WHITECAP SURF band hugging the cliff foot — horizontal, along the lower
+    //     edge, gently breathing (frozen at t===0). Plus a few spray flecks.
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
+    const surfPulse = t === 0 ? 0.6 : 0.55 + 0.18 * Math.sin(t * 1.6);
+    // a soft foam wash along the foot.
     ctx.strokeStyle = cache.shoreFoamColor;
-    ctx.lineWidth = 2.5;
-    ctx.globalAlpha = 0.5 + (t === 0 ? 0 : 0.14 * Math.sin(t * 1.6));
+    ctx.lineWidth = 5;
+    ctx.globalAlpha = 0.45 * surfPulse;
     ctx.beginPath();
-    const foamX = landEdgeX + (isLeft ? 2 : -2);
-    const foamTop = topYAt(landEdgeX) + h * 0.04;
-    for (let y = foamTop; y <= h; y += 8) {
-      const drift = t === 0 ? 0 : Math.sin((y + t * 22) / 30 * Math.PI * 2) * 2.0;
-      const fx = foamX + drift * (isLeft ? 1 : -1);
-      if (y === foamTop) ctx.moveTo(fx, y); else ctx.lineTo(fx, y);
+    for (let s = 0; s <= 10; s++) {
+      const tf = footTop + (1 - footTop) * (s / 10);
+      const wob = t === 0 ? 0 : Math.sin(s * 0.9 + t * 2.2) * 2;
+      const ex = edgeXAt(tf) + edgeSign * (3 + wob);   // sit just seaward of the rock
+      const ey = edgeYAt(tf);
+      if (s === 0) ctx.moveTo(ex, ey); else ctx.lineTo(ex, ey);
     }
     ctx.stroke();
+    // a brighter crisp whitecap lip on top of the wash.
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = 1.6;
+    ctx.globalAlpha = 0.6 * surfPulse;
+    ctx.beginPath();
+    for (let s = 0; s <= 10; s++) {
+      const tf = footTop + (1 - footTop) * (s / 10);
+      const wob = t === 0 ? 0 : Math.sin(s * 0.9 + t * 2.2 + 1) * 2.5;
+      const ex = edgeXAt(tf) + edgeSign * (3 + wob);
+      const ey = edgeYAt(tf);
+      if (s === 0) ctx.moveTo(ex, ey); else ctx.lineTo(ex, ey);
+    }
+    ctx.stroke();
+    // spray flecks bursting off the foot (t!==0 only).
+    if (t !== 0) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      for (let s = 0; s < 5; s++) {
+        const tf = footTop + (1 - footTop) * ((s + 0.5) / 5);
+        const life = ((t * 0.8 + s * 0.27) % 1);
+        const ex = edgeXAt(tf) + edgeSign * (4 + life * 10);
+        const ey = edgeYAt(tf) - life * h * 0.04;
+        const a = (1 - life) * 0.6 * surfPulse;
+        if (a <= 0.03) continue;
+        ctx.globalAlpha = a;
+        ctx.beginPath();
+        ctx.arc(ex, ey, Math.max(0.6, 1.6 - life), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
     ctx.restore();
 
     // frontProfile: clifftop surface over the land x-window; the open side reports a
