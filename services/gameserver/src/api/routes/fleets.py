@@ -50,6 +50,7 @@ class FleetResponse(BaseModel):
     total_shields: int
     total_hull: int
     average_speed: float
+    coordination_bonus: float
     morale: int
     supply_level: int
     commander_id: Optional[UUID]
@@ -144,6 +145,7 @@ async def create_fleet(
             total_shields=fleet.total_shields,
             total_hull=fleet.total_hull,
             average_speed=fleet.average_speed,
+            coordination_bonus=fleet.coordination_bonus,
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
@@ -180,6 +182,7 @@ async def get_team_fleets(
             total_shields=fleet.total_shields,
             total_hull=fleet.total_hull,
             average_speed=fleet.average_speed,
+            coordination_bonus=fleet.coordination_bonus,
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
@@ -213,6 +216,7 @@ async def get_my_fleets(
             total_shields=fleet.total_shields,
             total_hull=fleet.total_hull,
             average_speed=fleet.average_speed,
+            coordination_bonus=fleet.coordination_bonus,
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
@@ -333,6 +337,7 @@ async def get_fleet(
         total_shields=fleet.total_shields,
         total_hull=fleet.total_hull,
         average_speed=fleet.average_speed,
+        coordination_bonus=fleet.coordination_bonus,
         morale=fleet.morale,
         supply_level=fleet.supply_level,
         commander_id=fleet.commander_id,

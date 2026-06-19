@@ -78,6 +78,21 @@ class FleetService:
         speeds = [m.ship.current_speed for m in fleet.members if m.ship]
         fleet.average_speed = sum(speeds) / len(speeds) if speeds else 0.0
 
+    def _compute_coordination_bonus(self, fleet: Fleet) -> float:
+        """
+        Compute the static multi-ship coordination bonus for a fleet.
+
+        Per ADR-0061 S-I3 and FEATURES/gameplay/fleet-tactics.md:
+            coord_bonus = min(0.20, max(0.0, (ships - 2) * 0.025))
+
+        1-2 ships → 0%, 3 → 2.5%, 5 → 7.5%, 8 → 15%, 10+ → 20% (capped).
+        The bonus is static — recomputed only on roster-change events
+        (member added / removed / KIA) — and the combat resolver reads the
+        cached fleet.coordination_bonus value as an OUTER attack multiplier.
+        """
+        ships = fleet.total_ships or 0
+        return min(0.20, max(0.0, (ships - 2) * 0.025))
+
     # Fleet Management Methods
 
     def create_fleet(
@@ -109,6 +124,10 @@ class FleetService:
             formation=formation,
             status=FleetStatus.FORMING.value
         )
+
+        # Coordination bonus is static; a freshly-created fleet has 0 ships,
+        # so it starts at 0.0 and is recomputed when ships are added.
+        fleet.coordination_bonus = self._compute_coordination_bonus(fleet)
 
         self.db.add(fleet)
         self.db.commit()
@@ -161,6 +180,8 @@ class FleetService:
 
         # Update fleet stats
         self._recalculate_fleet_stats(fleet)
+        # Roster changed → recompute static coordination bonus (ADR-0061 S-I3)
+        fleet.coordination_bonus = self._compute_coordination_bonus(fleet)
 
         self.db.commit()
         self.db.refresh(member)
@@ -185,6 +206,12 @@ class FleetService:
 
         # Recalculate fleet stats
         self._recalculate_fleet_stats(fleet)
+        # Roster changed (manual removal OR mid-battle KIA via
+        # _record_ship_casualty → remove_ship_from_fleet). Recompute the
+        # static coordination bonus from the surviving roster (ADR-0061 S-I3).
+        # For a KIA mid-combat this recompute takes effect at the next round
+        # boundary, which is exactly the ADR's required timing.
+        fleet.coordination_bonus = self._compute_coordination_bonus(fleet)
 
         # Disband fleet if no ships remain
         if fleet.total_ships == 0:
@@ -395,7 +422,7 @@ class FleetService:
         # Attackers fire at defenders
         for ship in attacker_ships:
             if random.random() < 0.7 and defender_ships:  # 70% hit chance
-                damage = self._calculate_ship_damage(ship, attacker_bonus)
+                damage = self._calculate_ship_damage(ship, attacker_bonus, attacker)
                 target = random.choice(defender_ships)
                 self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["attacker_damage"] += damage
@@ -411,7 +438,7 @@ class FleetService:
         # Defenders return fire at attackers
         for ship in active_defender_ships:
             if random.random() < 0.7 and attacker_ships:  # 70% hit chance
-                damage = self._calculate_ship_damage(ship, defender_bonus)
+                damage = self._calculate_ship_damage(ship, defender_bonus, defender)
                 target = random.choice(attacker_ships)
                 self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["defender_damage"] += damage
@@ -585,17 +612,37 @@ class FleetService:
 
         return formation_bonus
 
-    def _calculate_ship_damage(self, ship: Ship, fleet_bonus: Dict[str, float]) -> int:
+    def _calculate_ship_damage(
+        self,
+        ship: Ship,
+        fleet_bonus: Dict[str, float],
+        fleet: Optional[Fleet] = None,
+    ) -> int:
         """
         Calculate damage output for a ship.
 
         Uses attack_rating from the ship's combat JSONB as base firepower.
         Each gun-equivalent deals 10 base damage, scaled by formation attack bonus
         and a random variance of +/- 20%.
+
+        Per ADR-0061 S-I3, the firing fleet's static coordination bonus is
+        applied as an OUTER attack multiplier in the damage stack:
+            final = base × formation_attack × (1 + coordination_bonus) × variance
+        Formation already folds in the per-round morale modifier (morale scales
+        the formation multiplier), so coordination layers on top of attack only.
+        With coordination_bonus = 0.0 (≤ 2 ships) this multiplier is 1.0 and the
+        result is identical to the pre-S-I3 behavior.
         """
         attack_rating = self._get_ship_combat_stat(ship, "attack_rating", 1)
         base_damage = attack_rating * 10
         damage = int(base_damage * fleet_bonus["attack"])
+
+        # Static coordination bonus (outer attack multiplier, ADR-0061 S-I3).
+        # Read the cached value off the live fleet; clamp defensively.
+        coordination_bonus = 0.0
+        if fleet is not None:
+            coordination_bonus = max(0.0, fleet.coordination_bonus or 0.0)
+        damage = int(damage * (1 + coordination_bonus))
 
         # Random variance +/- 20%
         damage = int(damage * random.uniform(0.8, 1.2))
