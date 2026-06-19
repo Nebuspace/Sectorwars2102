@@ -4114,6 +4114,15 @@ function drawLandedMoons(
 ): void {
   const prom = dc.bodyBright;  // moons prominent at night, faint by day
   const sunVec = skyDir(sunAlt, sunAzFrac);
+  // ONE global PARALLEL sun-light direction shared by ALL moons. The sun is
+  // effectively at infinity vs moon-to-moon distances, so every moon's lit limb
+  // faces the SAME screen direction (parallel rays) — never each toward the sun's
+  // finite screen point (that made adjacent moons' terminators diverge). Anchor the
+  // direction at the scene's horizon-centre so it points consistently toward the sun
+  // and rotates slowly as the sun arcs; computed from the sun's TRUE position so it
+  // stays correct even when the sun is below the horizon (night/twilight).
+  const lightDir = Math.atan2(sunWorldY - horizonY, sunWorldX - w / 2);
+  const lightCos = Math.cos(lightDir), lightSin = Math.sin(lightDir);
   for (let i = 0; i < cache.moons.length; i++) {
     const m = cache.moons[i];
     // arc position this frame; skip when below the horizon.
@@ -4129,8 +4138,6 @@ function drawLandedMoons(
     const cosSep = Math.max(-1, Math.min(1,
       sunVec.x * moonVec.x + sunVec.y * moonVec.y + sunVec.z * moonVec.z));
     const illum = (1 - cosSep) / 2;
-    // lit limb faces the sun's SCREEN position; shadow on the away side.
-    const lightAngle = Math.atan2(sunWorldY - my, sunWorldX - mx);
     // near-the-sun wash-out: a moon hugging the bright sun reads faint (and is
     // near-new anyway) so we never paste a prominent moon beside the sun.
     const nearSun = Math.max(0, 1 - illum * 2.2);       // ~1 when very near the sun
@@ -4168,8 +4175,9 @@ function drawLandedMoons(
     ctx.restore();
 
     // terminator — ONLY at night/twilight (sun down). Carve the unlit portion with
-    // a shadow disc cast AWAY from the sun. All moons share the one sun, so all
-    // crescents point consistently. Daytime moons stay full pale discs (above).
+    // a shadow disc offset along the SHARED parallel lightDir (toward the sun), so
+    // EVERY moon's lit limb faces the same way (parallel rays from a distant sun) —
+    // adjacent moons never show mismatched shadow angles. Daytime → full pale discs.
     if (!dayMoon && illum < 0.985) {
       ctx.save();
       ctx.globalAlpha = ext * sunWash;
@@ -4177,8 +4185,9 @@ function drawLandedMoons(
       ctx.arc(mx, my, m.r, 0, Math.PI * 2);
       ctx.clip();
       const k = (illum - 0.5) * 2; // -1 (new) … +1 (full)
-      const dx = -Math.cos(lightAngle) * m.r * k;
-      const dy = -Math.sin(lightAngle) * m.r * k;
+      // shadow cast AWAY from the sun: opposite the shared lightDir, same for all.
+      const dx = -lightCos * m.r * k;
+      const dy = -lightSin * m.r * k;
       const sr = m.r * (1.0 + (1 - Math.abs(k)) * 0.04);
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = 'rgba(8, 10, 18, 0.82)';
@@ -4662,33 +4671,71 @@ function clipStructPath(
   }
 }
 
-/** Paint one biome-vocabulary structure. Bodies use a left/right face pair for a
- *  consistent key-light (faceSign +1 → light from the right). Crisp silhouettes. */
+/** The building FLOOR for a structure on uneven terrain: sample the ground across
+ *  the full footprint [x−w/2 … x+w/2] and return the HIGHEST point (min Y) so the
+ *  base never hangs over a drop on its low side (a foundation skirt then fills the
+ *  gap down to the real terrain). 5 samples — cheap + robust on any slope. */
+function footprintFloorY(st: CitadelStructure, ridgeYAt: (x: number) => number): number {
+  const half = st.bw / 2;
+  let minY = Infinity;
+  for (let s = 0; s <= 4; s++) {
+    const sx = st.x - half + (st.bw * s) / 4;
+    const gy = ridgeYAt(sx);
+    if (gy < minY) minY = gy;     // smaller y = higher ground
+  }
+  return minY === Infinity ? ridgeYAt(st.x) : minY;
+}
+
+/** Paint one biome-vocabulary structure. floorY is the foundation floor (highest
+ *  ground under the footprint); a poured foundation fills from it down to the real
+ *  terrain across the width so the base meets the ground along its entire span.
+ *  Bodies use a left/right face pair for a consistent key-light. */
 function drawCitadelStruct(
   ctx: CanvasRenderingContext2D,
-  st: CitadelStructure, groundY: number, layout: CitadelLayout, faceSign: number
+  st: CitadelStructure, groundY: number, layout: CitadelLayout, faceSign: number,
+  ridgeYAt: (x: number) => number
 ): void {
   const { x, bw, bh } = st;
   const topY = groundY - bh;
   const half = bw / 2;
   const lit = faceSign >= 0 ? layout.bodyLight : layout.bodyDark;
   const shade = faceSign >= 0 ? layout.bodyDark : layout.bodyLight;
-  // GROUND-CONTACT shadow — a soft dark smudge tight to the base at the contact
-  // line (groundY), NOT a bright pad/platform. A radial gradient fades it out so
-  // it reads as a shadow the building is planted in, not a disc it floats on.
+
+  // FOUNDATION SKIRT — a solid poured base filling the gap from the flat building
+  // floor (groundY = the highest ground under the footprint) DOWN to the actual
+  // terrain surface across the full width. Guarantees no overhang/gap on the low
+  // side; reads as a building founded on a slope. Generic for all kinds. Sampled
+  // densely enough to follow the terrain; tinted a touch darker than the body.
   if (st.kind !== 'MAST') {
+    let lowestY = groundY;
     ctx.save();
-    const sw = bw * 0.6, sh = Math.max(1.5, bw * 0.12);
-    const sg = ctx.createRadialGradient(x, groundY, 0, x, groundY, sw);
+    ctx.fillStyle = layout.bodyDark;
+    ctx.beginPath();
+    ctx.moveTo(x - half, groundY);             // flat floor, left
+    ctx.lineTo(x + half, groundY);             // flat floor, right
+    // bottom edge follows the terrain right→left
+    for (let sx = x + half; sx >= x - half; sx -= Math.max(3, bw / 6)) {
+      const gy = ridgeYAt(sx) + 1;             // +1 so it meets, not floats above
+      if (gy > lowestY) lowestY = gy;
+      ctx.lineTo(sx, gy);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // GROUND-CONTACT shadow at the foundation's actual lowest contact line — a soft
+    // dark smudge, NOT a bright pad. Placed at the bottom of the skirt so it reads
+    // as the building planted in the slope.
+    ctx.save();
+    const sw = bw * 0.62, sh = Math.max(1.5, bw * 0.12);
+    const sg = ctx.createRadialGradient(x, lowestY, 0, x, lowestY, sw);
     sg.addColorStop(0, 'rgba(0, 0, 0, 0.34)');
     sg.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = sg;
-    ctx.save();
-    ctx.translate(x, groundY);
+    ctx.translate(x, lowestY);
     ctx.scale(1, sh / sw);
-    ctx.translate(-x, -groundY);
-    ctx.fillRect(x - sw, groundY - sw, sw * 2, sw * 2);
-    ctx.restore();
+    ctx.translate(-x, -lowestY);
+    ctx.fillRect(x - sw, lowestY - sw, sw * 2, sw * 2);
     ctx.restore();
   }
 
@@ -4918,8 +4965,12 @@ function drawCitadelSkyline(
     .sort((a, b) => (layout.structures[a].signature ? 1 : 0) - (layout.structures[b].signature ? 1 : 0));
   for (const s of order) {
     const st = layout.structures[s];
-    const groundY = ridgeYAt(st.x);
-    drawCitadelStruct(ctx, st, groundY, layout, keyDir);
+    // FOUNDATION FLOOR: sample the terrain across the FULL footprint and floor the
+    // building at the HIGHEST point (min Y) so no edge of its base hangs over a
+    // drop. drawCitadelStruct then pours a foundation skirt down to the real
+    // terrain across the width, so the base meets the ground along its whole span.
+    const floorY = footprintFloorY(st, ridgeYAt);
+    drawCitadelStruct(ctx, st, floorY, layout, keyDir, ridgeYAt);
   }
 
   // warm window lights — biome-tinted glow; twinkle subtly at higher levels. Each
@@ -4930,7 +4981,8 @@ function drawCitadelSkyline(
   for (let s = 0; s < layout.structures.length; s++) {
     const st = layout.structures[s];
     if (st.windows.length === 0) continue;
-    const groundY = ridgeYAt(st.x);
+    // use the SAME foundation floor the body was drawn from so windows align.
+    const groundY = footprintFloorY(st, ridgeYAt);
     const topY = groundY - st.bh;
     ctx.save();
     ctx.beginPath();
@@ -4959,7 +5011,10 @@ function drawCitadelSkyline(
   if (layout.beacon) {
     const sig = layout.structures.find((s) => s.signature) || layout.structures[0];
     const bx = sig ? sig.x : layout.cityX;
-    const by = ridgeYAt(bx) - (sig ? sig.bh : h * layout.maxH) - 4;
+    // sit the beacon atop the signature's FLOORED top (same foundation floor as the
+    // body) so it caps the tower, not a center-only ground sample.
+    const sigFloor = sig ? footprintFloorY(sig, ridgeYAt) : ridgeYAt(bx);
+    const by = sigFloor - (sig ? sig.bh : h * layout.maxH) - 4;
     const pulse = t === 0 ? 0.5 : 0.5 + 0.5 * Math.sin(t * 2.4);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
