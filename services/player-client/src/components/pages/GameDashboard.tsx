@@ -245,9 +245,16 @@ const TerraformHeaderPanel: React.FC<{
   planetId?: string;
   isOwned: boolean;
   habitability: number;
-}> = ({ planetId, isOwned, habitability }) => {
-  // Read-only: only refreshPlayerState is used, to re-pull credits after a
-  // terraforming START debits the ladder cost server-side.
+  // Player's spendable credits and the LANDED planet's current resource
+  // stockpiles. The backend debits creditCost from the player but consumes
+  // organicsCost/equipmentCost from the PLANET's stock, so we need all three
+  // to gate the START button and explain the requirement before the click.
+  credits: number;
+  planetOrganics: number;
+  planetEquipment: number;
+}> = ({ planetId, isOwned, habitability, credits, planetOrganics, planetEquipment }) => {
+  // refreshPlayerState re-pulls credits after a terraforming START debits the
+  // ladder cost server-side.
   const { refreshPlayerState } = useGame();
   const [status, setStatus] = useState<TerraformStatus | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -329,6 +336,44 @@ const TerraformHeaderPanel: React.FC<{
     : [];
   const selectedInfo = levels.find(l => l.level === selectedLevel) || null;
 
+  // Reconcile selectedLevel with the server's actual availableLevels set. The
+  // default useState(1) can desync when the server omits level 1 (e.g. the
+  // planet's habitability is already past the L1 tier): selectedInfo would
+  // resolve to null, the <select value={1}> would have no matching <option>,
+  // and START could otherwise POST target_level:1 and re-trigger a 400. Snapping
+  // to the first available level keeps the dropdown, the cost breakdown, and the
+  // gate all pointed at a real, valid tier. (No conditional hooks precede this,
+  // so placing the effect here is safe.)
+  const levelKey = levels.map(l => l.level).join(',');
+  useEffect(() => {
+    if (levels.length === 0) return;
+    if (!levels.some(l => l.level === selectedLevel)) {
+      setSelectedLevel(levels[0].level);
+    }
+    // levelKey captures the available-level set; selectedLevel is read inside.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [levelKey]);
+
+  // Affordability gate. The server debits credits from the player but consumes
+  // organics + equipment from the PLANET's stockpile, so a freshly-colonized
+  // planet (0 stock) cannot start a project even when the player is rich. We
+  // surface the full requirement and disable START until every cost is met,
+  // turning the old confusing 400 ("Insufficient organics on planet…") into an
+  // upfront, explained condition.
+  const haveCredits = !!selectedInfo && credits >= selectedInfo.creditCost;
+  const haveOrganics = !!selectedInfo && planetOrganics >= selectedInfo.organicsCost;
+  const haveEquipment = !!selectedInfo && planetEquipment >= selectedInfo.equipmentCost;
+  // Defense-in-depth: a null/invalid selection is NOT affordable, so START stays
+  // disabled rather than submitting an unvalidated target_level.
+  const canAfford = !!selectedInfo && haveCredits && haveOrganics && haveEquipment;
+  // Inline reason shown when something is short — credits first, then the
+  // planet-stock resources the player likely didn't know were required.
+  const shortfallMsg = selectedInfo && !canAfford
+    ? (!haveCredits
+        ? `Need ${selectedInfo.creditCost.toLocaleString()} cr (you have ${credits.toLocaleString()}).`
+        : `Requires ${selectedInfo.organicsCost.toLocaleString()} organics + ${selectedInfo.equipmentCost.toLocaleString()} equipment (planet has ${Math.floor(planetOrganics).toLocaleString()} / ${Math.floor(planetEquipment).toLocaleString()}). Build up production first.`)
+    : null;
+
   return (
     <div className="header-terraform">
       <div className="header-terra-top">
@@ -390,7 +435,7 @@ const TerraformHeaderPanel: React.FC<{
                 <button
                   className="header-terra-btn"
                   onClick={handleStart}
-                  disabled={busy}
+                  disabled={busy || !canAfford}
                   title={selectedInfo
                     ? `${selectedInfo.name}: ${selectedInfo.creditCost.toLocaleString()} cr + ${selectedInfo.organicsCost.toLocaleString()} organics + ${selectedInfo.equipmentCost.toLocaleString()} equipment (planet stock), +${selectedInfo.habitabilityBoost} hab over ${selectedInfo.durationHours}h`
                     : undefined}
@@ -402,33 +447,67 @@ const TerraformHeaderPanel: React.FC<{
                 </button>
               </div>
             ) : (
-              <div className="header-terra-bonus">
-                <select
-                  value={selectedLevel}
-                  onChange={e => setSelectedLevel(Number(e.target.value))}
-                  style={{
-                    background: 'rgba(0, 100, 50, 0.3)', color: '#00ff41',
-                    border: '1px solid rgba(0, 255, 100, 0.4)', borderRadius: '3px',
-                    font: 'inherit', fontSize: '0.6rem', padding: '0.15rem'
-                  }}
-                  aria-label="Terraforming level"
-                >
-                  {levels.map(l => (
-                    <option key={l.level} value={l.level}>
-                      L{l.level} {l.name} — {l.creditCost.toLocaleString()} cr
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="header-terra-btn"
-                  onClick={() => setConfirming(true)}
-                  title={selectedInfo
-                    ? `+${selectedInfo.habitabilityBoost} habitability over ${selectedInfo.durationHours}h — also consumes ${selectedInfo.organicsCost.toLocaleString()} organics + ${selectedInfo.equipmentCost.toLocaleString()} equipment from planet stock`
-                    : undefined}
-                >
-                  START
-                </button>
-              </div>
+              <>
+                <div className="header-terra-bonus">
+                  <select
+                    value={selectedLevel}
+                    onChange={e => setSelectedLevel(Number(e.target.value))}
+                    style={{
+                      background: 'rgba(0, 100, 50, 0.3)', color: '#00ff41',
+                      border: '1px solid rgba(0, 255, 100, 0.4)', borderRadius: '3px',
+                      font: 'inherit', fontSize: '0.6rem', padding: '0.15rem'
+                    }}
+                    aria-label="Terraforming level"
+                  >
+                    {levels.map(l => (
+                      <option key={l.level} value={l.level}>
+                        L{l.level} {l.name} — {l.creditCost.toLocaleString()} cr
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="header-terra-btn"
+                    onClick={() => setConfirming(true)}
+                    disabled={!canAfford}
+                    title={selectedInfo
+                      ? `+${selectedInfo.habitabilityBoost} habitability over ${selectedInfo.durationHours}h — costs ${selectedInfo.creditCost.toLocaleString()} cr and consumes ${selectedInfo.organicsCost.toLocaleString()} organics + ${selectedInfo.equipmentCost.toLocaleString()} equipment from planet stock`
+                      : undefined}
+                  >
+                    START
+                  </button>
+                </div>
+                {/* Full cost breakdown for the selected level — all THREE costs
+                    (credits debited from the player; organics + equipment
+                    consumed from the planet's stock) plus duration and the
+                    habitability gain. Each resource line shows the planet's
+                    current stockpile next to the requirement, and turns red
+                    when short, so the player understands the requirement
+                    BEFORE clicking rather than hitting a 400. */}
+                {selectedInfo && (
+                  <div className="header-terra-desc" style={{ lineHeight: 1.5 }}>
+                    <div style={{ color: haveCredits ? undefined : '#ff6b6b' }}>
+                      💰 {selectedInfo.creditCost.toLocaleString()} cr
+                      {!haveCredits && ` (have ${credits.toLocaleString()})`}
+                    </div>
+                    <div style={{ color: haveOrganics ? undefined : '#ff6b6b' }}>
+                      🌿 {selectedInfo.organicsCost.toLocaleString()} organics
+                      {' '}(planet has {Math.floor(planetOrganics).toLocaleString()})
+                    </div>
+                    <div style={{ color: haveEquipment ? undefined : '#ff6b6b' }}>
+                      🔧 {selectedInfo.equipmentCost.toLocaleString()} equipment
+                      {' '}(planet has {Math.floor(planetEquipment).toLocaleString()})
+                    </div>
+                    <div style={{ opacity: 0.85 }}>
+                      +{selectedInfo.habitabilityBoost} hab over {selectedInfo.durationHours}h
+                    </div>
+                  </div>
+                )}
+                {shortfallMsg && (
+                  <div className="header-terra-bonus" role="status" style={{ color: '#ff6b6b', opacity: 0.95 }}>
+                    {shortfallMsg}
+                  </div>
+                )}
+              </>
             )
           )}
         </>
@@ -2152,6 +2231,9 @@ const GameDashboard: React.FC = () => {
                             planetId={currentPlanet?.id}
                             isOwned={!!currentPlanet && isLandedPlanetMine}
                             habitability={currentPlanet?.habitability_score || 0}
+                            credits={playerState?.credits ?? 0}
+                            planetOrganics={projectedStock('organics')}
+                            planetEquipment={projectedStock('equipment')}
                           />
                           <div className="planet-stats">
                             <div className="stat"><span className="label">Population</span><span className="value green">{population.toLocaleString()}</span></div>
