@@ -206,6 +206,7 @@ export interface PlayerState {
   username: string;
   credits: number;
   turns: number;
+  max_turns?: number;
   current_sector_id: number;
   is_docked: boolean;
   is_landed: boolean;

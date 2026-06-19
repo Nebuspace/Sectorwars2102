@@ -93,6 +93,39 @@
   font-style: italic;
 }
 
+/* Journey-complete victory banner — CRT gold, scanline glow. */
+.rank-victory-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 215, 0, 0.6);
+  border-radius: 4px;
+  background: linear-gradient(135deg, rgba(60, 45, 0, 0.6) 0%, rgba(30, 22, 0, 0.6) 100%);
+  text-shadow: 0 0 6px rgba(255, 215, 0, 0.7);
+  animation: rank-victory-pulse 2.2s ease-in-out infinite;
+}
+
+.rank-victory-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #ffd700;
+  text-transform: uppercase;
+}
+
+.rank-victory-date {
+  font-size: 0.62rem;
+  color: #ffe98a;
+  opacity: 0.85;
+}
+
+@keyframes rank-victory-pulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(255, 215, 0, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(255, 215, 0, 0.55); }
+}
+
 .rank-bonuses {
   display: flex;
   gap: 8px;

@@ -114,6 +114,13 @@
   letter-spacing: 0.3px;
 }
 
+/* Capacity denominator on the TURN chip — dimmer, smaller than the live value. */
+.header-commander-bar .data-readout .data-readout-max {
+  font-size: 0.7em;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
 /* Narrow viewport: stack the header more compactly. */
 @media (max-width: 1100px) {
   .header-commander-bar {

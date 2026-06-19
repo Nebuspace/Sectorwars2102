@@ -187,7 +187,12 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             </div>
             <div className="header-stat">
               <span className="header-stat-label">TURN</span>
-              <span className="data-readout turns">{playerState?.turns?.toLocaleString() || '0'}</span>
+              <span className="data-readout turns">
+                {playerState?.turns?.toLocaleString() || '0'}
+                {typeof playerState?.max_turns === 'number' && (
+                  <span className="data-readout-max">/{playerState.max_turns.toLocaleString()}</span>
+                )}
+              </span>
             </div>
             <div className="header-stat">
               <span className="header-stat-label">DRONE</span>

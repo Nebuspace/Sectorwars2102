@@ -21,6 +21,8 @@ interface RankInfo {
   progress_percent: number;
   bonuses: RankBonuses;
   is_max_rank: boolean;
+  is_game_complete?: boolean;
+  rank_victory_at?: string | null;
 }
 
 /** Keys match the rank tiers the backend emits (RANK_DEFINITIONS). */
@@ -96,8 +98,22 @@ const RankDisplay: React.FC = () => {
             {rankInfo.rank_points} / {rankInfo.next_rank_points_required} pts &rarr; {rankInfo.next_rank}
           </div>
         )}
-        {rankInfo.is_max_rank && (
+        {rankInfo.is_max_rank && !rankInfo.is_game_complete && (
           <div className="rank-next rank-max">Maximum Rank Achieved</div>
+        )}
+        {rankInfo.is_max_rank && rankInfo.is_game_complete && (
+          <div className="rank-victory-banner">
+            <span className="rank-victory-title">★ FLEET ADMIRAL — JOURNEY COMPLETE ★</span>
+            {rankInfo.rank_victory_at && (
+              <span className="rank-victory-date">
+                {new Date(rankInfo.rank_victory_at).toLocaleDateString(undefined, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                })}
+              </span>
+            )}
+          </div>
         )}
       </div>
       <div className="rank-bonuses">
