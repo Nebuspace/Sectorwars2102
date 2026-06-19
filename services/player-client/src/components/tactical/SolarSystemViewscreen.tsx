@@ -2410,6 +2410,7 @@ function buildLandedCache(
   const shoreProfile: number[] = [];
   let farIsland: { pts: number[]; color: string } | null = null;
   let headland: LandedCache['headland'] = null;
+  const creatures: SeaCreature[] = [];
   if (hasWater) {
     const bandTop = waterTopY;
     // The sea band now spans most of the lower scene (horizon → shore). Make the
@@ -2430,25 +2431,28 @@ function buildLandedCache(
     // bright top stroke + a darker trough stroke drawn just below for definition so
     // the surface reads as moving water, not a flat tint.
     const wRng = splitmix32(worldSeed * 1597 + 91);
-    const lineCount = 24;
+    // Fewer, larger, layered SWELLS (not a dense comb of identical stripes). Each
+    // becomes a filled undulating water layer that visibly rises & falls. Crests
+    // vary in size (amp/wavelength jitter) + carry a long cross-swell so no two
+    // look alike, and each gets its own vertical-bob rate so the surface heaves.
+    const lineCount = 11;
     for (let i = 0; i < lineCount; i++) {
-      // ease the fraction so lines bunch up near the horizon and spread near camera
       const lin = i / (lineCount - 1);          // 0 = waterline … 1 = foreground
       const f = lin * lin;                       // perspective spacing
+      const sizeJitter = 0.6 + wRng() * 0.9;     // each swell a different size
       waves.push({
         yFrac: f,
-        amp: (1.5 + f * 11.0) + wRng() * 2.0,   // bigger swells toward the camera
-        // per-crest speed jitter so they no longer drift in lockstep
-        wavelength: (34 + f * 150) * (0.8 + wRng() * 0.5),
-        speed: (0.4 + f * 1.1) * (0.7 + wRng() * 0.6),
+        amp: (2 + f * 16) * sizeJitter,          // big, varied swell height
+        wavelength: (90 + f * 320) * (0.6 + wRng() * 0.9), // long, varied crests
+        speed: (0.5 + f * 1.4) * (0.7 + wRng() * 0.7),
         phase: wRng() * Math.PI * 2,
-        alpha: (0.18 + f * 0.34),               // far stronger than before
-        lineW: 0.8 + f * 2.4,
-        dir: wRng() < 0.78 ? 1 : -1,            // most flow one way; a few cross
-        swellRate: 0.15 + wRng() * 0.35,        // slow breathing
+        alpha: (0.5 + f * 0.4),
+        lineW: 1 + f * 2.6,
+        dir: wRng() < 0.78 ? 1 : -1,
+        swellRate: 0.25 + wRng() * 0.5,          // each heaves at its own pace
         swellPhase: wRng() * Math.PI * 2,
-        crossAmp: (1.2 + f * 4.0) * (0.5 + wRng() * 0.8),
-        crossWavelength: (220 + f * 420) * (0.7 + wRng() * 0.6),
+        crossAmp: (2 + f * 7) * (0.5 + wRng() * 0.9),
+        crossWavelength: (160 + f * 360) * (0.7 + wRng() * 0.7),
       });
     }
 
@@ -2518,6 +2522,27 @@ function buildLandedCache(
         edgeColor: `rgba(${edge.r}, ${edge.g}, ${edge.b}, 0.7)`,
       };
     }
+
+    // --- AQUATIC LIFE: 1–2 sea creatures with seeded breach windows ---
+    const crRng = splitmix32(worldSeed * 5179 + 211);
+    const crCount = 1 + (crRng() < 0.5 ? 1 : 0);
+    for (let i = 0; i < crCount; i++) {
+      // surface on the OPEN water — for the cliff, keep clear of the headland side.
+      let xMin = w * 0.1, xMax = w * 0.9;
+      if (headland) {
+        if (headland.side === 'left') xMin = w * (headland.landFrac + 0.05);
+        else xMax = w * (1 - headland.landFrac - 0.05);
+      }
+      creatures.push({
+        x: xMin + crRng() * (xMax - xMin),
+        surfaceFrac: 0.35 + crRng() * 0.5,         // mid-to-near sea, not at the horizon
+        period: 15 + crRng() * 25,                 // every ~15–40s
+        offset: crRng() * 40,                      // desync the breaches
+        dur: 1.0 + crRng() * 1.0,                  // ~1–2s breach
+        size: 10 + crRng() * 10,
+        dir: crRng() < 0.5 ? 1 : -1,
+      });
+    }
   }
 
   // --- STARFIELD layout (twinkle stays per frame) ---
@@ -2533,6 +2558,73 @@ function buildLandedCache(
     const twSpeed = 0.6 + sfRng() * 1.4;
     const baseAlpha = (0.12 + sfRng() * 0.35) * (0.4 + (1 - habN) * 0.6) * nightBoost;
     stars.push({ x, y, size, twPhase: i, twSpeed, baseAlpha });
+  }
+
+  // --- SIBLING PLANETS as distant sky discs (matches the system/flight view) ---
+  // Each sibling body from the /system snapshot is placed high in the sky, spread
+  // out and kept clear of the sun + moons, sized by size_class and dimmed by the
+  // "distance" haze. Per-kind colours mirror the flight scene's treatment vocab.
+  const skyPlanets: SkyPlanet[] = [];
+  const sibs = env?.siblings || [];
+  if (sibs.length > 0) {
+    const spRng = splitmix32(worldSeed * 6271 + 313);
+    // sky band: upper region only (above the horizon, clear of the lower scene)
+    const skyTopBand = horizonY * 0.10;
+    const skyBotBand = horizonY * 0.46;
+    const occupied: { x: number; y: number; r: number }[] = [];
+    // exclusions: the sun + each moon (so siblings never overlap them)
+    if (showSun) occupied.push({ x: sunX, y: sunY, r: sunR * 2.2 });
+    for (const m of moons) occupied.push({ x: m.x, y: m.y, r: m.r * 2.2 });
+    for (let i = 0; i < sibs.length; i++) {
+      const s = sibs[i];
+      const treatment = treatmentFor(s.kind);
+      const r = Math.max(5, Math.min(w, h) * (0.012 + Math.min(9, s.sizeClass) / 9 * 0.022));
+      // try a few seeded positions; pick the first that clears sun/moons/others
+      let px = 0, py = 0, ok = false;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        // spread across width in soft columns so siblings don't clump
+        px = w * ((i + 0.5) / sibs.length) + (spRng() - 0.5) * (w / sibs.length) * 0.7;
+        py = skyTopBand + spRng() * (skyBotBand - skyTopBand);
+        ok = true;
+        for (const o of occupied) {
+          if (Math.hypot(px - o.x, py - o.y) < o.r + r * 1.8) { ok = false; break; }
+        }
+        if (ok) break;
+      }
+      px = Math.max(r + 4, Math.min(w - r - 4, px));
+      occupied.push({ x: px, y: py, r: r * 1.8 });
+      // per-kind colours from hue/sat (mirrors drawPlanetSurface treatment vocab)
+      const hue = s.hue, sat = s.sat;
+      let baseColor: string, bandColor: string, rimColor: string;
+      if (treatment === 'GAS_GIANT') {
+        baseColor = `hsl(${hue}, ${sat}%, 42%)`;
+        bandColor = `hsla(${hue + 18}, ${sat}%, 30%, 0.85)`;   // banding
+        rimColor = `hsla(${hue}, ${sat}%, 70%, 0.5)`;
+      } else if (treatment === 'ICE') {
+        baseColor = `hsl(${hue}, ${Math.max(8, sat - 20)}%, 78%)`; // pale
+        bandColor = `hsla(${hue}, ${sat}%, 88%, 0.6)`;
+        rimColor = `hsla(${hue}, 20%, 95%, 0.5)`;
+      } else if (treatment === 'VOLCANIC') {
+        baseColor = `hsl(${hue}, ${sat}%, 30%)`;
+        bandColor = `hsla(20, 90%, 55%, 0.5)`;                  // ember glow
+        rimColor = `hsla(30, 100%, 60%, 0.5)`;
+      } else if (treatment === 'DESERT') {
+        baseColor = `hsl(${hue}, ${sat}%, 52%)`;
+        bandColor = `hsla(${hue - 12}, ${sat}%, 44%, 0.6)`;
+        rimColor = `hsla(${hue}, ${sat}%, 72%, 0.4)`;
+      } else if (treatment === 'TERRAN' || treatment === 'OCEANIC') {
+        baseColor = `hsl(${hue}, ${sat}%, 46%)`;
+        bandColor = `hsla(${hue + 8}, ${sat}%, 38%, 0.55)`;
+        rimColor = `hsla(${hue}, ${sat}%, 70%, 0.5)`;
+      } else { // BARREN / MOUNTAINOUS
+        baseColor = `hsl(${hue}, ${Math.max(6, sat - 24)}%, 42%)`;
+        bandColor = `hsla(${hue}, ${sat}%, 32%, 0.5)`;
+        rimColor = `hsla(${hue}, 10%, 70%, 0.4)`;
+      }
+      // distance dimming: smaller/farther bodies sit fainter; brighter at night.
+      const alpha = (0.4 + Math.min(9, s.sizeClass) / 9 * 0.3) * (0.55 + nightBoost * 0.45);
+      skyPlanets.push({ x: px, y: py, r, treatment, hue, sat, baseColor, bandColor, rimColor, rings: s.rings, alpha });
+    }
   }
 
   // --- RIDGE noise (the 3×48 pts) — drifted profile recomputed per frame ---
@@ -2703,7 +2795,7 @@ function buildLandedCache(
     tod, todBright, showSun, landform, hasWater, waterTopY, landBaseFrac, citadelOnWater,
     reflX, reflTint,
     sunX, sunY, sunR, coronaR,
-    moons, moonProminence, waves,
+    moons, moonProminence, skyPlanets, waves, creatures,
     shoreY, shoreColor, shoreFoamColor, shoreProfile, farIsland, headland,
     hasCompanion, c2x, c2y, c2r, c2,
     layers, period, ridgeColors,
@@ -2834,6 +2926,13 @@ function drawLandedScene(
     ctx.restore();
   }
 
+  // 3a2) SIBLING PLANETS — distant discs high in the sky (matches the system view).
+  //      Drawn behind the moons (which are closer). Subtle so they never fight the
+  //      HUD: small, dimmed, per-kind treatment at a distance.
+  if (cache.skyPlanets.length > 0) {
+    drawLandedSkyPlanets(ctx, t, cache);
+  }
+
   // 3b) MOONS — phased discs (crescent/gibbous/full via a terminator shadow).
   if (cache.moons.length > 0) {
     drawLandedMoons(ctx, t, cache);
@@ -2888,46 +2987,67 @@ function drawLandedScene(
     //    larger toward the foreground (parallax). Each line is drawn TWICE: a dark
     //    trough stroke just below, then a bright crest stroke on top, so the surface
     //    reads as moving water with depth, not a flat tint. Cheap per-frame math.
+    // SWELL FACES — each swell is a FILLED, lit wave face that visibly HEAVES up
+    // and down (vertical bob), with non-uniform crests (sum of two sines, varied
+    // size) so it never reads as a repeating comb of identical stripes. A bright
+    // crest highlight + whitecap foam on the nearer swells complete the moving sea.
     const crestRGB = reflWaveRGB(cache);
     for (let wi = 0; wi < cache.waves.length; wi++) {
       const wv = cache.waves[wi];
-      const baseY = wt + wv.yFrac * wh;
-      // per-crest directional drift + slow amplitude swell that breathes over time.
-      const drift = t === 0 ? 0 : t * wv.speed * 30 * wv.dir;
-      const swell = t === 0 ? 1 : 1 + 0.3 * Math.sin(t * wv.swellRate + wv.swellPhase);
+      const f = wv.yFrac;
+      // VERTICAL BOB — the whole swell rises & falls over time (the motion that
+      // was missing). Bigger + slower toward the foreground.
+      const bob = t === 0 ? 0 : Math.sin(t * wv.swellRate * 0.7 + wv.swellPhase) * (4 + f * 18);
+      const baseY = wt + f * wh + bob;
+      const drift = t === 0 ? 0 : t * wv.speed * 24 * wv.dir;
+      const crossDrift = t === 0 ? 0 : t * 5 * wv.dir;
+      const swell = t === 0 ? 1 : 1 + 0.4 * Math.sin(t * wv.swellRate + wv.swellPhase);
       const amp = wv.amp * swell;
-      // a second, slower CROSS-swell (long wavelength, slow phase) added to each
-      // sample so the crests are not all parallel-uniform — a living sea surface.
-      const crossDrift = t === 0 ? 0 : t * 6 * wv.dir;
-      const yAt = (x: number, off: number): number =>
-        baseY + off
+      const yAt = (x: number): number =>
+        baseY
         + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * amp
         + Math.sin((x + crossDrift) / wv.crossWavelength * Math.PI * 2 + wv.swellPhase) * wv.crossAmp;
-      // dark trough stroke (normal blend, just below the crest)
+      // filled wave FACE: crest edge → down a perspective-scaled slab. A lit face
+      // over the dark water body gives each swell real body (not a thin line).
+      const slab = 6 + f * 30;
       ctx.save();
-      ctx.globalAlpha = wv.alpha * 0.8;
-      ctx.strokeStyle = 'rgba(4, 20, 38, 1)';
-      ctx.lineWidth = wv.lineW;
       ctx.beginPath();
-      for (let x = 0; x <= w; x += 10) {
-        const y = yAt(x, 1.5);
-        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
+      ctx.moveTo(0, yAt(0));
+      for (let x = 0; x <= w; x += 10) ctx.lineTo(x, yAt(x));
+      for (let x = w; x >= 0; x -= 10) ctx.lineTo(x, yAt(x) + slab);
+      ctx.closePath();
+      const faceGrad = ctx.createLinearGradient(0, baseY - amp, 0, baseY + slab);
+      faceGrad.addColorStop(0, `rgba(${Math.round(70 + f * 60)}, ${Math.round(140 + f * 50)}, ${Math.round(175 + f * 40)}, ${(0.30 + f * 0.22).toFixed(3)})`);
+      faceGrad.addColorStop(1, 'rgba(6, 26, 48, 0)');
+      ctx.fillStyle = faceGrad;
+      ctx.fill();
       ctx.restore();
-      // bright crest stroke (additive, on top)
+      // bright crest highlight on the very top edge
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = wv.alpha;
+      ctx.globalAlpha = 0.28 + f * 0.45;
       ctx.strokeStyle = `rgba(${crestRGB}, 1)`;
       ctx.lineWidth = wv.lineW;
       ctx.beginPath();
-      for (let x = 0; x <= w; x += 10) {
-        const y = yAt(x, 0);
-        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      }
+      for (let x = 0; x <= w; x += 8) { const y = yAt(x); if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
       ctx.stroke();
       ctx.restore();
+      // whitecap foam — bright flecks on the cresting tops of the nearer swells
+      if (f > 0.38) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = 'rgba(235, 248, 255, 1)';
+        const span = Math.max(70, wv.wavelength * 0.85);
+        for (let x = (wi * 53) % span; x <= w; x += span) {
+          const tw = t === 0 ? 0.55 : 0.5 + 0.5 * Math.sin(t * 2.3 + x * 0.05 + wi);
+          if (tw > 0.6) {
+            const y = yAt(x);
+            ctx.globalAlpha = (0.3 + f * 0.4) * tw;
+            ctx.fillRect(x - 2, y - 1, 5 + f * 4, 1.8);
+          }
+        }
+        ctx.restore();
+      }
     }
 
     // 3) reflection glitter column under the sun (day) or brightest moon (night).
@@ -2972,6 +3092,73 @@ function drawLandedScene(
     ctx.globalAlpha = 0.22 + (t === 0 ? 0 : 0.06 * Math.sin(t * 2));
     ctx.stroke();
     ctx.restore();
+
+    // 5) AQUATIC LIFE — a dolphin-like back breaches at seeded intervals, leaving
+    //    a ripple + splash. Reduced-motion (t=0): draw only a calm static ripple.
+    if (cache.creatures.length > 0) {
+      for (let ci = 0; ci < cache.creatures.length; ci++) {
+        const cr = cache.creatures[ci];
+        const sy = wt + cr.surfaceFrac * wh; // sea surface y at this creature
+        if (t === 0) {
+          // calm static ripple at the breach spot (no animation)
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.strokeStyle = 'rgba(210, 235, 245, 0.4)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.ellipse(cr.x, sy, cr.size * 0.9, cr.size * 0.3, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+          continue;
+        }
+        // breach phase: 0..1 within the active window, else dormant.
+        const cyc = (t + cr.offset) % cr.period;
+        if (cyc > cr.dur) continue;        // dormant between breaches
+        const u = cyc / cr.dur;            // 0 → emerge, 0.5 → apex, 1 → submerged
+        const arc = Math.sin(u * Math.PI); // smooth up-and-down
+        const backY = sy - arc * cr.size * 1.3;
+        const dir = cr.dir;
+        ctx.save();
+        // expanding ripple ring at the breach point (grows as the creature rises)
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = 'rgba(210, 235, 245, 1)';
+        ctx.globalAlpha = 0.45 * (1 - u * 0.5);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.ellipse(cr.x, sy + 1, cr.size * (0.6 + u * 1.6), cr.size * (0.2 + u * 0.5), 0, 0, Math.PI * 2);
+        ctx.stroke();
+        // dark smooth back + dorsal fin arcing out of the water
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.85 * arc;
+        ctx.fillStyle = 'rgba(28, 36, 48, 1)';
+        ctx.beginPath();
+        // back: a smooth crescent from the waterline up over the apex and back down
+        ctx.moveTo(cr.x - cr.size * 0.9 * dir, sy);
+        ctx.quadraticCurveTo(cr.x - cr.size * 0.2 * dir, backY, cr.x + cr.size * 0.3 * dir, backY + cr.size * 0.15);
+        ctx.quadraticCurveTo(cr.x + cr.size * 0.7 * dir, backY + cr.size * 0.4, cr.x + cr.size * 0.9 * dir, sy);
+        ctx.closePath();
+        ctx.fill();
+        // dorsal fin (a small triangle on the apex of the back)
+        ctx.beginPath();
+        ctx.moveTo(cr.x - cr.size * 0.05 * dir, backY + cr.size * 0.05);
+        ctx.lineTo(cr.x + cr.size * 0.12 * dir, backY - cr.size * 0.35);
+        ctx.lineTo(cr.x + cr.size * 0.25 * dir, backY + cr.size * 0.05);
+        ctx.closePath();
+        ctx.fill();
+        // small splash near the apex tail-end
+        if (u > 0.35 && u < 0.75) {
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = 0.5 * arc;
+          ctx.fillStyle = 'rgba(225, 245, 252, 1)';
+          for (let s = 0; s < 4; s++) {
+            const sx = cr.x + (Math.sin(s * 2.1 + ci) * cr.size * 0.5);
+            const spy = backY + Math.cos(s * 1.7) * cr.size * 0.2;
+            ctx.fillRect(sx, spy, 1.4, 1.4);
+          }
+        }
+        ctx.restore();
+      }
+    }
     ctx.restore();
   }
 
@@ -3271,6 +3458,69 @@ function reflWaveRGB(cache: LandedCache): string {
     return `${Math.min(255, r + 30)}, ${Math.min(255, g + 50)}, ${Math.min(255, b + 60)}`;
   }
   return '150, 185, 210';
+}
+
+/** Draw the SIBLING PLANETS as distant discs in the sky — a small, dimmed echo of
+ *  the flight scene's per-kind treatment (gas-giant banding, ice pale, volcanic
+ *  ember, rings). Position/colours are cached; only a faint cosmetic shimmer of the
+ *  rim varies per frame. Subtle by design so it never overpowers the HUD. */
+function drawLandedSkyPlanets(ctx: CanvasRenderingContext2D, t: number, cache: LandedCache): void {
+  for (let i = 0; i < cache.skyPlanets.length; i++) {
+    const p = cache.skyPlanets[i];
+    ctx.save();
+    ctx.globalAlpha = p.alpha;
+    // body disc (clipped) — base fill + a couple of cheap "band" arcs for character
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = p.baseColor;
+    ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+    // distance treatment: horizontal banding (gas/desert/terran) or a soft hemi
+    // gradient feel via two offset bands. Cheap, deterministic, no per-frame seed.
+    ctx.fillStyle = p.bandColor;
+    if (p.treatment === 'GAS_GIANT') {
+      for (let b = -2; b <= 2; b++) {
+        ctx.fillRect(p.x - p.r, p.y + b * p.r * 0.4 - p.r * 0.12, p.r * 2, p.r * 0.24);
+      }
+    } else if (p.treatment === 'VOLCANIC') {
+      // ember mottling — a few additive warm blots
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = p.bandColor;
+      ctx.fillRect(p.x - p.r * 0.6, p.y - p.r * 0.2, p.r * 0.5, p.r * 0.4);
+      ctx.fillRect(p.x + p.r * 0.1, p.y + p.r * 0.1, p.r * 0.4, p.r * 0.3);
+      ctx.restore();
+    } else if (p.treatment !== 'BARREN' && p.treatment !== 'MOUNTAINOUS') {
+      ctx.fillRect(p.x - p.r, p.y - p.r * 0.1, p.r * 2, p.r * 0.5);
+    }
+    // shaded limb: darken the lower-right for a lit-sphere read
+    const lg = ctx.createRadialGradient(p.x - p.r * 0.3, p.y - p.r * 0.3, p.r * 0.1, p.x, p.y, p.r * 1.2);
+    lg.addColorStop(0, 'rgba(255,255,255,0.12)');
+    lg.addColorStop(0.6, 'rgba(0,0,0,0)');
+    lg.addColorStop(1, 'rgba(0,0,0,0.4)');
+    ctx.fillStyle = lg;
+    ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+    ctx.restore();
+    // faint rim shimmer (cosmetic; calm at t=0)
+    const shimmer = t === 0 ? 0.5 : 0.4 + 0.2 * Math.sin(t * 0.4 + i);
+    ctx.strokeStyle = p.rimColor;
+    ctx.globalAlpha = p.alpha * shimmer;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r + 0.5, 0, Math.PI * 2);
+    ctx.stroke();
+    // rings (thin ellipse) if the body has them
+    if (p.rings) {
+      ctx.globalAlpha = p.alpha * 0.7;
+      ctx.strokeStyle = p.rimColor;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, p.r * 1.8, p.r * 0.5, -0.3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 }
 
 /** Draw the MOONS hanging in the sky, each with a terminator shadow producing a
