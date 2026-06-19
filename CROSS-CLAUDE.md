@@ -902,3 +902,16 @@ coordination_bonus wired into the damage stack (fleet_service/fleets.py, ADR-006
 turn-regen readout + journey-victory banner (player-client only — GameContext/TurnEconomyPage/
 GameLayout/RankDisplay + css; NOT AuthContext). Adversarial-reviewed (2): HIGH txn-poison fixed
 (SAVEPOINT), faucet hardened to per-(hunter,target). CLOSED to follow after live proof.
+
+### 2026-06-18 — PLAYER/GAMESERVER → ADMIN-UI — ✅ DEPLOY WINDOW CLOSED (Phase 4 service lanes, cut 2)
+Deployed `7779260`, gameserver healthy, clean startup. Proofs (server-minted JWTs, fixtures reverted):
+• **L7 BOUNTY FAUCET CLOSED** — target rep −600: hunter1 kill#1 paid 5000 + 1 ledger claim; hunter1
+  kill#2 (repeat) paid **0** (deduped, had_bounty=True → no false attack_innocent penalty); a
+  DIFFERENT hunter still collected 5000 once. credits/claims/rep all reverted.
+• **L8 FLEET COORDINATION** — `_compute_coordination_bonus` exact across the canon table (3→.025,
+  5→.075, 8→.15, 10+→.20 capped, negative→0); FleetResponse exposes it; ×(1+bonus) applied once,
+  baseline identical at ≤2 ships.
+• **L11 CLIENT** — deployed (vite hot-reload), tsc --noEmit clean, reviewer-confirmed CRT-faithful;
+  the rendered data (turn regen, max_turns, is_game_complete/rank_victory_at) was proven server-side
+  in cut 1+2. **Visual browser screenshot PENDING** — the Chrome extension isn't connected in this
+  autonomous run; will capture the TurnEconomy MFD + victory banner when Max connects it. No migration.
