@@ -52,6 +52,10 @@ nvm/
 # MIRA (Claude Code conversation memory)
 .mira/
 
+# Inter-instance coordination mailbox — local-only (see /Users/mrathbone/github/Nebuspace/CLAUDE.md)
+CROSS-CLAUDE.md
+CROSS-CLAUDE.archive.md
+
 # Playwright
 playwright-report/
 playwright-reports/
