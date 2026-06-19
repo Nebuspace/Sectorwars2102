@@ -2112,8 +2112,15 @@ type CitadelKind =
   | 'STILT'      // stilted shore platform
   | 'KEEP'       // stone castle keep (mountainous signature)
   | 'BATTLEMENT' // crenellated rampart tower
-  | 'FOUNDRY'    // volcanic foundry tower with lava-glow crown (signature)
-  | 'SMOKESTACK' // industrial vent stack with ember seams
+  | 'FOUNDRY'    // volcanic foundry tower with lava-glow crown (legacy)
+  | 'SMOKESTACK' // industrial vent stack with ember seams (legacy)
+  // --- VOLCANIC forge-city vocabulary (pass 2) ---
+  | 'SMELTER_CRUCIBLE'    // tapered tower, open molten crucible notch on top (signature)
+  | 'BLAST_FURNACE_DOME'  // squat hemispherical furnace, top opening glow
+  | 'HEAT_VENT_TOWER'     // slender tower + flared hot funnel cap + glow column
+  | 'OBSIDIAN_BUNKER'     // low angular heat-shielded bunker + slit-window strip
+  | 'MAGMA_PIPELINE'      // two pillars + a glowing horizontal pipe (L3+ connector)
+  | 'CATWALK_GANTRY'      // skeletal column + gantry arm + lit observation pod (L4+)
   | 'ARCOLOGY'   // green tiered garden tower (terran signature)
   | 'TANK'       // utilitarian storage tank
   | 'MAST';      // antenna/mast (L1 outpost flourish)
@@ -2130,7 +2137,7 @@ type CitadelStructure = {
 type CitadelLayout = {
   structures: CitadelStructure[];
   beacon: boolean;
-  beaconKind: 'AIRCRAFT' | 'LAMP';   // L5 red warning light, or oceanic lighthouse lamp
+  beaconKind: 'AIRCRAFT' | 'LAMP' | 'LAVA_PLUME';   // L5 red blinker / oceanic lamp / volcanic lava-plume
   cityX: number; maxH: number;
   twinkleWindows: boolean;
   biome: LandedPalette['flourish'];
@@ -2151,7 +2158,7 @@ type VolcFissure = { x: number; w: number; phase: number };
 /** Jagged multi-segment lava crack across the foreground ground. */
 type LavaCrack = { pts: { dx: number; jy: number }[]; xFrac: number; len: number; phase: number; branchAt: number };
 /** A sinuous lava river: cubic-bezier control points (x fractions + y fractions). */
-type LavaRiver = { p: { xf: number; yf: number }[]; wFar: number; wNear: number; phase: number };
+type LavaRiver = { p: { xf: number; yf: number }[]; wFar: number; wNear: number; phase: number; seed: number };
 /** An ember-fountain vent on the midground ridge: a recycling spark pool. */
 type EmberFountain = { xFrac: number; vx: number; vy: number; phase: number };
 type VolcanicScene = {
@@ -2978,9 +2985,9 @@ function buildLandedCache(
     const vRng = splitmix32(worldSeed * 2939 + 67);
     // distant stratovolcano cone — asymmetric, one steeper slope; sometimes caldera.
     const caldera = landform === 'VOLC_CALDERA' || vRng() < 0.3;
-    const cxFrac = 0.12 + vRng() * 0.76;          // off-centre on the horizon
-    const baseHalfFrac = 0.12 + vRng() * 0.10;
-    const peakFrac = 0.12 + vRng() * 0.08;        // cone height as frac of h
+    const cxFrac = 0.18 + vRng() * 0.64;          // off-centre on the horizon
+    const baseHalfFrac = 0.18 + vRng() * 0.12;    // WIDER cone (was 0.12+0.10)
+    const peakFrac = 0.22 + vRng() * 0.12;        // TALLER cone (was 0.12+0.08)
     // 5–7 silhouette points (0..1 across base → relative height 0..1), skewed.
     const np = 5 + Math.floor(vRng() * 3);
     const skew = 0.35 + vRng() * 0.3;             // peak position along base (asym)
@@ -2994,15 +3001,19 @@ function buildLandedCache(
       pts.push(hgt);
     }
     const coneColor = todBright > 0.3 ? 'rgba(46, 30, 34, 0.92)' : 'rgba(30, 18, 22, 0.95)';
-    // ash plume puffs above the summit (drift up + wrap per frame).
-    const puffN = 3 + Math.floor(vRng() * 3);
+    // ash plume puffs above the summit — a THICK, TALL billowing column (more puffs,
+    // bigger radii, leaning with wind as they rise). drift up + wrap per frame.
+    const puffN = 7 + Math.floor(vRng() * 3);
+    const windLean = (vRng() - 0.5) * 0.5;        // overall plume lean direction
     const puffs: VolcanicScene['plume']['puffs'] = [];
     for (let i = 0; i < puffN; i++) {
+      const up = i / (puffN - 1);
       puffs.push({
-        offX: (vRng() - 0.5) * w * 0.05,
-        offY: -h * (0.02 + i * (0.05 + vRng() * 0.03)),
-        r: w * (0.03 + i * 0.012 + vRng() * 0.02),
-        spd: 6 + vRng() * 8,
+        // lean increases with height; wider higher up (billowing).
+        offX: windLean * w * 0.16 * up + (vRng() - 0.5) * w * 0.04,
+        offY: -h * (0.03 + up * 0.34),
+        r: w * (0.045 + up * 0.05 + vRng() * 0.02),
+        spd: 5 + vRng() * 7,
         phase: vRng() * Math.PI * 2,
       });
     }
@@ -3017,7 +3028,7 @@ function buildLandedCache(
         { xf: startX + (vRng() - 0.5) * 0.22, yf: 0.86 + vRng() * 0.04 },
         { xf: startX + (vRng() - 0.5) * 0.26, yf: 1.0 },
       ];
-      rivers.push({ p, wFar: 12 + vRng() * 8, wNear: 5 + vRng() * 4, phase: vRng() * Math.PI * 2 });
+      rivers.push({ p, wFar: 14 + vRng() * 10, wNear: 6 + vRng() * 5, phase: vRng() * Math.PI * 2, seed: (worldSeed * 53 + i * 97 + 11) >>> 0 });
     }
     // midground crusted lava lake (seeded position + 8–12 basalt cells).
     let lake: VolcanicScene['lake'] = null;
@@ -4090,62 +4101,104 @@ function drawVolcanoFarLand(
   const baseHalf = w * c.baseHalfFrac;
   const peakH = h * c.peakFrac;
   const n = c.pts.length;
-  // cone silhouette (filled), base on the horizon.
-  ctx.save();
-  ctx.fillStyle = c.color;
-  ctx.beginPath();
-  ctx.moveTo(cx - baseHalf, horizonY + 1);
-  let summitX = cx, summitY = horizonY - peakH;
+  // resolve the silhouette points to screen + find the summit + crater rim corners.
+  const sil: { x: number; y: number }[] = [];
+  let summitX = cx, summitY = horizonY - peakH, summitIdx = 0;
   for (let i = 0; i < n; i++) {
     const u = i / (n - 1);
     const x = cx - baseHalf + u * baseHalf * 2;
     const y = horizonY + 1 - c.pts[i] * peakH;
-    ctx.lineTo(x, y);
-    if (y < summitY) { summitY = y; summitX = x; }
+    sil.push({ x, y });
+    if (y < summitY) { summitY = y; summitX = x; summitIdx = i; }
   }
-  ctx.lineTo(cx + baseHalf, horizonY + 1);
+  // cone silhouette — DARKER than the sky with a slightly raised base, so it reads
+  // as a distinct mountain above the ridge line, not a smudge.
+  ctx.save();
+  ctx.fillStyle = c.color;
+  ctx.beginPath();
+  ctx.moveTo(sil[0].x, horizonY + 1);
+  for (const p of sil) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(sil[n - 1].x, horizonY + 1);
   ctx.closePath();
   ctx.fill();
+  // subtle LIT RIM along the sunward (or, at night, the lava-lit) slope so the cone
+  // has form. Trace the silhouette as a thin warm-grey stroke.
+  ctx.strokeStyle = `rgba(${Math.round(120 * (0.5 + nightK * 0.5))}, 70, 55, ${(0.5).toFixed(3)})`;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(sil[0].x, sil[0].y);
+  for (const p of sil) ctx.lineTo(p.x, p.y);
+  ctx.stroke();
   ctx.restore();
 
-  // summit glow bloom (additive, stronger at night).
+  // glowing CRATER mouth at the summit — a bright molten notch (caldera reads as a
+  // wider mouth between the two rim points either side of the summit).
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  const gr = baseHalf * (0.5 + tier * 0.3);
+  const rimL = sil[Math.max(0, summitIdx - 1)];
+  const rimR = sil[Math.min(n - 1, summitIdx + 1)];
+  const craterW = Math.max(baseHalf * 0.18, Math.abs(rimR.x - rimL.x) * (c.caldera ? 0.9 : 0.5));
+  const craterPulse = t === 0 ? 0.85 : 0.7 + 0.3 * Math.sin(t * 1.3);
+  // molten crater fill
+  const cgr = ctx.createRadialGradient(summitX, summitY + 2, 0, summitX, summitY + 2, craterW);
+  cgr.addColorStop(0, `rgba(255, 230, 160, ${(0.95 * craterPulse).toFixed(3)})`);
+  cgr.addColorStop(0.5, `rgba(255, 110, 30, ${(0.7 * craterPulse).toFixed(3)})`);
+  cgr.addColorStop(1, 'rgba(255, 60, 0, 0)');
+  ctx.fillStyle = cgr;
+  ctx.fillRect(summitX - craterW, summitY - craterW * 0.6, craterW * 2, craterW * 1.4);
+  // summit GLOW bloom (large, night-boosted) so it's visible from afar.
+  const gr = baseHalf * (0.6 + tier * 0.3);
   const bloom = ctx.createRadialGradient(summitX, summitY, 0, summitX, summitY, gr);
   const ba = 0.5 + (1 - dc.bright) * 0.5;
-  bloom.addColorStop(0, `rgba(255, 130, 40, ${(ba * 0.7).toFixed(3)})`);
-  bloom.addColorStop(0.5, `rgba(255, 70, 20, ${(ba * 0.25).toFixed(3)})`);
+  bloom.addColorStop(0, `rgba(255, 130, 40, ${(ba * 0.75).toFixed(3)})`);
+  bloom.addColorStop(0.5, `rgba(255, 70, 20, ${(ba * 0.28).toFixed(3)})`);
   bloom.addColorStop(1, 'rgba(255, 60, 0, 0)');
   ctx.fillStyle = bloom;
   ctx.fillRect(summitX - gr, summitY - gr, gr * 2, gr * 2);
+  // LAVA STREAKS spilling a short way down the upper slopes (2–3 thin glowing lines).
+  for (let sgn = -1; sgn <= 1; sgn++) {
+    if (sgn === 0 && !c.caldera) continue;
+    const streakLen = peakH * (0.28 + (sgn === 0 ? 0.1 : 0));
+    const sx0 = summitX + sgn * craterW * 0.4;
+    const sx1 = summitX + sgn * craterW * 0.9 + sgn * baseHalf * 0.12;
+    ctx.strokeStyle = `rgba(255, 140, 50, ${(0.5 * craterPulse * nightK).toFixed(3)})`;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(sx0, summitY + 2);
+    ctx.quadraticCurveTo((sx0 + sx1) / 2, summitY + streakLen * 0.5, sx1, summitY + streakLen);
+    ctx.stroke();
+  }
   ctx.restore();
 
-  // rising ash plume — stacked elliptical puffs drifting up + wrapping.
+  // rising ASH+SMOKE PLUME — a THICK, TALL billowing column, visible at ALL times
+  // (dark smoke by day, ember-underlit + glowing at night). Widens as it rises.
   ctx.save();
-  const widen = 1 + tier * 0.8;
+  const widen = 1.2 + tier * 0.9;
+  const dayBody = dc.bright > 0.45;
   for (let i = 0; i < vs.plume.puffs.length; i++) {
     const pf = vs.plume.puffs[i];
-    const rise = t === 0 ? 0 : (t * pf.spd) % (h * 0.5);
-    const px = summitX + pf.offX + (t === 0 ? 0 : Math.sin(t * 0.2 + pf.phase) * w * 0.02);
+    const up = i / (vs.plume.puffs.length - 1);
+    const rise = t === 0 ? 0 : (t * pf.spd) % (h * 0.18);   // gentle convective wrap
+    const px = summitX + pf.offX + (t === 0 ? 0 : Math.sin(t * 0.25 + pf.phase) * w * 0.025);
     const py = summitY + pf.offY - rise;
     const pr = pf.r * widen;
-    // smoky body (day: ochre; night: darker) — normal blend.
-    const dayBody = dc.bright > 0.4;
-    const bodyA = (0.18 + i * 0.02) * (0.7 + tier * 0.6);
+    // dense smoky body — clearly visible (higher alpha than before).
+    const bodyA = (0.42 - up * 0.18) * (0.85 + tier * 0.5);
     const bg = ctx.createRadialGradient(px, py, 0, px, py, pr);
-    bg.addColorStop(0, dayBody ? `rgba(120, 95, 70, ${bodyA.toFixed(3)})` : `rgba(60, 45, 45, ${bodyA.toFixed(3)})`);
-    bg.addColorStop(1, 'rgba(40, 30, 30, 0)');
+    bg.addColorStop(0, dayBody ? `rgba(86, 70, 58, ${bodyA.toFixed(3)})` : `rgba(46, 36, 38, ${bodyA.toFixed(3)})`);
+    bg.addColorStop(0.7, dayBody ? `rgba(70, 56, 46, ${(bodyA * 0.5).toFixed(3)})` : `rgba(36, 28, 30, ${(bodyA * 0.5).toFixed(3)})`);
+    bg.addColorStop(1, 'rgba(30, 24, 24, 0)');
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = bg;
-    ctx.save(); ctx.translate(px, py); ctx.scale(1.3, 0.85); ctx.translate(-px, -py);
+    ctx.save(); ctx.translate(px, py); ctx.scale(1.25, 0.9); ctx.translate(-px, -py);
     ctx.fillRect(px - pr, py - pr, pr * 2, pr * 2);
     ctx.restore();
-    // ember-edged underbelly near the summit (additive, night-boosted).
-    if (i < 2) {
+    // ember-underlit base of the column (additive, night-boosted) — lower puffs glow.
+    if (up < 0.5) {
       ctx.globalCompositeOperation = 'lighter';
-      const eg = ctx.createRadialGradient(px, py + pr * 0.3, 0, px, py + pr * 0.3, pr * 0.8);
-      eg.addColorStop(0, `rgba(255, 90, 30, ${(0.18 * nightK).toFixed(3)})`);
+      const ea = (0.28 - up * 0.4) * nightK;
+      const eg = ctx.createRadialGradient(px, py + pr * 0.3, 0, px, py + pr * 0.3, pr * 0.9);
+      eg.addColorStop(0, `rgba(255, 95, 30, ${Math.max(0, ea).toFixed(3)})`);
       eg.addColorStop(1, 'rgba(255, 60, 0, 0)');
       ctx.fillStyle = eg;
       ctx.fillRect(px - pr, py - pr, pr * 2, pr * 2);
@@ -4214,41 +4267,110 @@ function drawLavaLake(ctx: CanvasRenderingContext2D, w: number, h: number, t: nu
 
 /** Sinuous lava rivers flowing from midground to the foreground (cubic bezier). */
 function drawLavaRivers(ctx: CanvasRenderingContext2D, w: number, h: number, t: number, vs: VolcanicScene, dc: DayCycle): void {
-  const coreK = dc.bright > 0.5 ? 0.6 : 1.0;   // core dimmer by day, full at night
+  const coreK = dc.bright > 0.5 ? 0.6 : 1.0;     // core dimmer by day, full at night
+  const nightK = 0.5 + (1 - dc.bright) * 0.5;
   for (let i = 0; i < vs.rivers.length; i++) {
     const rv = vs.rivers[i];
-    const x0 = w * rv.p[0].xf, y0 = h * rv.p[0].yf;
-    const x1 = w * rv.p[1].xf, y1 = h * rv.p[1].yf;
-    const x2 = w * rv.p[2].xf, y2 = h * rv.p[2].yf;
-    const x3 = w * rv.p[3].xf, y3 = h * rv.p[3].yf;
-    // body: dark-crust → orange → white-orange gradient along the rough path bbox.
+    // sample the centreline of the bezier into N points with a per-point WIDTH that
+    // varies along the path (noise) and POOLS wider toward the foreground (near end).
+    const N = 18;
+    const pts: { x: number; y: number; wd: number }[] = [];
+    const wRng = splitmix32(rv.seed || 1);
+    const widthNoise: number[] = [];
+    for (let s = 0; s < N; s++) widthNoise.push(0.7 + wRng() * 0.7);  // 0.7..1.4 jitter
+    for (let s = 0; s < N; s++) {
+      const u = s / (N - 1);
+      const mt = 1 - u;
+      // cubic bezier point
+      const bx = mt * mt * mt * (w * rv.p[0].xf) + 3 * mt * mt * u * (w * rv.p[1].xf) + 3 * mt * u * u * (w * rv.p[2].xf) + u * u * u * (w * rv.p[3].xf);
+      const by = mt * mt * mt * (h * rv.p[0].yf) + 3 * mt * mt * u * (h * rv.p[1].yf) + 3 * mt * u * u * (h * rv.p[2].yf) + u * u * u * (h * rv.p[3].yf);
+      // base width interpolates far→near, × noise, with a strong POOL widening near u=1.
+      const base = rv.wFar * (1 - u) + rv.wNear * u;
+      const ni = Math.floor(u * (N - 1));
+      const pool = u > 0.82 ? 1 + (u - 0.82) / 0.18 * 1.8 : 1;   // widen into a pool
+      pts.push({ x: bx, y: by, wd: base * widthNoise[ni] * pool });
+    }
+    // build left/right edge polygons from the centreline + half-width normals.
+    const left: { x: number; y: number }[] = [];
+    const right: { x: number; y: number }[] = [];
+    for (let s = 0; s < N; s++) {
+      const a = pts[Math.max(0, s - 1)], b = pts[Math.min(N - 1, s + 1)];
+      let nx = -(b.y - a.y), ny = (b.x - a.x);
+      const len = Math.hypot(nx, ny) || 1; nx /= len; ny /= len;
+      const hw = pts[s].wd / 2;
+      left.push({ x: pts[s].x + nx * hw, y: pts[s].y + ny * hw });
+      right.push({ x: pts[s].x - nx * hw, y: pts[s].y - ny * hw });
+    }
+    const tracePoly = (extra: number) => {
+      ctx.beginPath();
+      ctx.moveTo(left[0].x, left[0].y);
+      for (let s = 1; s < N; s++) ctx.lineTo(left[s].x + (left[s].x - pts[s].x) / Math.max(1, pts[s].wd) * extra, left[s].y);
+      for (let s = N - 1; s >= 0; s--) ctx.lineTo(right[s].x + (right[s].x - pts[s].x) / Math.max(1, pts[s].wd) * extra, right[s].y);
+      ctx.closePath();
+    };
+
     ctx.save();
-    const bg = ctx.createLinearGradient(x0, y0, x3, y3);
-    bg.addColorStop(0, 'rgba(255, 200, 90, 1)');
-    bg.addColorStop(0.5, 'rgba(255, 80, 20, 1)');
-    bg.addColorStop(1, 'rgba(20, 8, 4, 1)');
-    ctx.strokeStyle = bg;
-    ctx.lineCap = 'round';
-    ctx.lineWidth = rv.wFar;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.bezierCurveTo(x1, y1, x2, y2, x3, y3);
+    // 1) GLOW HALO bleeding onto the surrounding ground (additive, night-boosted).
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = `rgba(255, 90, 25, ${(0.10 * nightK).toFixed(3)})`;
+    ctx.lineWidth = rv.wFar * 2.4;
+    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+    for (let s = 1; s < N; s++) ctx.lineTo(pts[s].x, pts[s].y);
     ctx.stroke();
-    // tapered near end: redraw the lower half thinner (cheap taper approximation)
-    ctx.lineWidth = rv.wNear;
+
+    // 2) dark crusted BANKS — a wider dark-basalt channel under/around the lava so
+    //    the molten flow sits IN a channel with raised crust edges.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(24, 12, 8, 1)';
+    tracePoly(5); ctx.fill();                     // banks = the channel + crust lip
+
+    // 3) molten CORE polygon — hotter centre via a vertical gradient + brightness
+    //    variation; slightly inset from the banks so the crust edge shows.
+    const cg = ctx.createLinearGradient(0, pts[0].y, 0, pts[N - 1].y);
+    cg.addColorStop(0, 'rgba(255, 200, 90, 1)');
+    cg.addColorStop(0.5, 'rgba(255, 95, 25, 1)');
+    cg.addColorStop(1, 'rgba(200, 50, 12, 1)');
+    ctx.fillStyle = cg;
+    // inset core: rebuild edges at ~70% half-width
     ctx.beginPath();
-    ctx.moveTo(x2, y2);
-    ctx.quadraticCurveTo((x2 + x3) / 2, (y2 + y3) / 2, x3, y3);
-    ctx.stroke();
-    // shimmering bright core stroke (additive).
+    for (let s = 0; s < N; s++) { const lx = pts[s].x + (left[s].x - pts[s].x) * 0.7, ly = pts[s].y + (left[s].y - pts[s].y) * 0.7; if (s === 0) ctx.moveTo(lx, ly); else ctx.lineTo(lx, ly); }
+    for (let s = N - 1; s >= 0; s--) { const rx = pts[s].x + (right[s].x - pts[s].x) * 0.7, ry = pts[s].y + (right[s].y - pts[s].y) * 0.7; ctx.lineTo(rx, ry); }
+    ctx.closePath(); ctx.fill();
+
+    // 4) cooling-CRUST patches/islands breaking up the molten skin (dark blobs along
+    //    the flow) so it reads as crusting lava, not a paint stroke.
+    const cRng = splitmix32((rv.seed * 7 + 3) >>> 0 || 1);
+    ctx.fillStyle = 'rgba(28, 14, 9, 0.92)';
+    const patchN = 5 + Math.floor(cRng() * 4);
+    for (let p = 0; p < patchN; p++) {
+      const u = 0.1 + cRng() * 0.8;
+      const si = Math.round(u * (N - 1));
+      const off = (cRng() - 0.5) * pts[si].wd * 0.5;
+      const a2 = pts[Math.max(0, si - 1)], b2 = pts[Math.min(N - 1, si + 1)];
+      let nx = -(b2.y - a2.y), ny = (b2.x - a2.x); const ln = Math.hypot(nx, ny) || 1; nx /= ln; ny /= ln;
+      const pr = pts[si].wd * (0.12 + cRng() * 0.16);
+      ctx.beginPath(); ctx.ellipse(pts[si].x + nx * off, pts[si].y + ny * off, pr, pr * 0.7, 0, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // 5) shimmering bright core line (additive) down the channel centre.
     ctx.globalCompositeOperation = 'lighter';
     const sh = t === 0 ? 0.7 : 0.55 + 0.45 * Math.sin(t * 2.2 + rv.phase);
-    ctx.strokeStyle = `rgba(255, 200, 90, ${(coreK * sh).toFixed(3)})`;
-    ctx.lineWidth = rv.wFar * 0.4;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.bezierCurveTo(x1, y1, x2, y2, x3, y3);
+    ctx.strokeStyle = `rgba(255, 210, 110, ${(coreK * sh).toFixed(3)})`;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(1.5, rv.wNear * 0.4);
+    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+    for (let s = 1; s < N; s++) ctx.lineTo(pts[s].x, pts[s].y);
     ctx.stroke();
+
+    // 6) foreground POOL glow where the flow widens at the bottom (additive bloom).
+    const pend = pts[N - 1];
+    const pr = pts[N - 1].wd;
+    const pg = ctx.createRadialGradient(pend.x, pend.y, 0, pend.x, pend.y, pr * 1.6);
+    pg.addColorStop(0, `rgba(255, 180, 80, ${(0.5 * nightK).toFixed(3)})`);
+    pg.addColorStop(1, 'rgba(255, 70, 20, 0)');
+    ctx.fillStyle = pg;
+    ctx.fillRect(pend.x - pr * 1.6, pend.y - pr * 1.6, pr * 3.2, pr * 3.2);
     ctx.restore();
   }
 }
@@ -4958,7 +5080,7 @@ function drawLandedParticles(
 function biomeArch(flourish: LandedPalette['flourish'], pal: LandedPalette): {
   body: string; bodyLight: string; bodyDark: string;
   winGlow: { r: number; g: number; b: number }; accent: string;
-  signature: CitadelKind; fillers: CitadelKind[]; beaconKind: 'AIRCRAFT' | 'LAMP';
+  signature: CitadelKind; fillers: CitadelKind[]; beaconKind: 'AIRCRAFT' | 'LAMP' | 'LAVA_PLUME';
 } {
   const ridge = hexToRgb(pal.ridges[2] || pal.ridges[0] || '#5a5560');
   const lift = (k: number) => ({
@@ -4971,9 +5093,13 @@ function biomeArch(flourish: LandedPalette['flourish'], pal: LandedPalette): {
   const baseC = lift(0.22), lightC = lift(0.4), darkC = { r: Math.round(ridge.r * 0.7), g: Math.round(ridge.g * 0.7), b: Math.round(ridge.b * 0.72) };
   switch (flourish) {
     case 'VOLCANIC':
-      return { body: 'rgb(42, 36, 40)', bodyLight: 'rgb(70, 58, 60)', bodyDark: 'rgb(24, 20, 24)',
+      // forge-city: bodies lifted a touch for contrast against the dark terrain;
+      // warm accents; new heat-forge structure vocabulary; lava-plume beacon.
+      return { body: 'rgb(58, 48, 52)', bodyLight: 'rgb(92, 76, 78)', bodyDark: 'rgb(30, 24, 28)',
         winGlow: { r: 255, g: 130, b: 60 }, accent: 'rgba(255, 110, 40, 1)',
-        signature: 'FOUNDRY', fillers: ['SMOKESTACK', 'BOX', 'TANK'], beaconKind: 'AIRCRAFT' };
+        signature: 'SMELTER_CRUCIBLE',
+        fillers: ['HEAT_VENT_TOWER', 'BLAST_FURNACE_DOME', 'OBSIDIAN_BUNKER', 'MAGMA_PIPELINE'],
+        beaconKind: 'LAVA_PLUME' };
     case 'ICE':
       return { body: 'rgb(200, 224, 238)', bodyLight: 'rgb(228, 244, 252)', bodyDark: 'rgb(150, 180, 205)',
         winGlow: { r: 170, g: 230, b: 255 }, accent: 'rgba(210, 245, 255, 1)',
@@ -5063,6 +5189,15 @@ function buildCitadelLayout(
     });
   }
 
+  const isVolcanic = pal.flourish === 'VOLCANIC';
+  // VOLCANIC filler pool: MAGMA_PIPELINE only at L3+ (a connector implies a complex);
+  // CATWALK_GANTRY added at L4+. Other biomes use arch.fillers as-is.
+  let fillerPool = arch.fillers;
+  if (isVolcanic) {
+    fillerPool = arch.fillers.filter((k) => k !== 'MAGMA_PIPELINE' || level >= 3);
+    if (level >= 4) fillerPool = [...fillerPool, 'CATWALK_GANTRY'];
+  }
+
   // FILLER cluster around the centre (the remaining count).
   const fillN = Math.max(0, cfg.n - (structures.length));
   for (let i = 0; i < fillN; i++) {
@@ -5072,12 +5207,15 @@ function buildCitadelLayout(
     // height falls off with distance from centre so the skyline reads as a city.
     const distF = 1 - Math.min(1, Math.abs(sx - cityX) / Math.max(1, spread)) * 0.45;
     const bh = h * cfg.maxH * (0.35 + rng() * 0.65) * distF;
-    // L1 is a single humble outpost + a mast; otherwise pick from biome fillers.
+    // L1 is a single humble outpost (volcanic → a heat-vent tower, not a plain box);
+    // L2 leads with a crucible/furnace so even a small base reads forge-industrial.
     let kind: CitadelKind;
     if (level === 1) {
-      kind = 'BOX';
+      kind = isVolcanic ? 'HEAT_VENT_TOWER' : 'BOX';
+    } else if (isVolcanic && level === 2 && i === 0) {
+      kind = rng() < 0.5 ? 'SMELTER_CRUCIBLE' : 'BLAST_FURNACE_DOME';
     } else {
-      kind = arch.fillers[Math.floor(rng() * arch.fillers.length)];
+      kind = fillerPool[Math.floor(rng() * fillerPool.length)];
     }
     structures.push({
       kind, x: sx, bw, bh, windows: buildWindows(bw, bh, cfg.win),
@@ -5165,6 +5303,35 @@ function clipStructPath(
     }
     case 'WINDTOWER':
       ctx.rect(x - bw * 0.3, topY, bw * 0.6, bh); break;
+    case 'SMELTER_CRUCIBLE': {
+      // tapered tower: wider at the base (bw) narrowing to ~0.62 at the top.
+      const tw = bw * 0.62;
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - tw / 2, topY);
+      ctx.lineTo(x + tw / 2, topY); ctx.lineTo(x + half, groundY); ctx.closePath();
+      break;
+    }
+    case 'BLAST_FURNACE_DOME': {
+      const r = Math.max(half, bh * 0.9);
+      ctx.moveTo(x + r, groundY); ctx.arc(x, groundY, r, 0, Math.PI, true);
+      break;
+    }
+    case 'HEAT_VENT_TOWER':
+      ctx.rect(x - bw * 0.28, topY, bw * 0.56, bh); break;
+    case 'OBSIDIAN_BUNKER': {
+      // parallelogram with inward-sloped walls (wider base, narrower top).
+      const inset = bw * 0.16;
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - half + inset, topY);
+      ctx.lineTo(x + half - inset, topY); ctx.lineTo(x + half, groundY); ctx.closePath();
+      break;
+    }
+    case 'MAGMA_PIPELINE': {
+      // two pillars (no windows really, but clip to their union just in case).
+      ctx.rect(x - half, topY, bw * 0.22, bh);
+      ctx.rect(x + half - bw * 0.22, topY, bw * 0.22, bh);
+      break;
+    }
+    case 'CATWALK_GANTRY':
+      ctx.rect(x - bw * 0.18, topY, bw * 0.36, bh); break;
     default: // BOX/STILT/KEEP/BATTLEMENT/FOUNDRY/SMOKESTACK/MAST → upright body box
       ctx.rect(x - half, topY, bw, bh);
   }
@@ -5192,13 +5359,14 @@ function footprintFloorY(st: CitadelStructure, ridgeYAt: (x: number) => number):
 function drawCitadelStruct(
   ctx: CanvasRenderingContext2D,
   st: CitadelStructure, groundY: number, layout: CitadelLayout, faceSign: number,
-  ridgeYAt: (x: number) => number
+  ridgeYAt: (x: number) => number, t = 0, winNight = 0.5
 ): void {
   const { x, bw, bh } = st;
   const topY = groundY - bh;
   const half = bw / 2;
   const lit = faceSign >= 0 ? layout.bodyLight : layout.bodyDark;
   const shade = faceSign >= 0 ? layout.bodyDark : layout.bodyLight;
+  const volc = layout.biome === 'VOLCANIC';
 
   // FOUNDATION SKIRT — a solid poured base filling the gap from the flat building
   // floor (groundY = the highest ground under the footprint) DOWN to the actual
@@ -5228,8 +5396,9 @@ function drawCitadelStruct(
     ctx.save();
     const sw = bw * 0.62, sh = Math.max(1.5, bw * 0.12);
     const sg = ctx.createRadialGradient(x, lowestY, 0, x, lowestY, sw);
-    sg.addColorStop(0, 'rgba(0, 0, 0, 0.34)');
-    sg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    // VOLCANIC: warm lava-tinted contact shadow (the ground glows from the lava).
+    sg.addColorStop(0, volc ? 'rgba(80, 20, 5, 0.4)' : 'rgba(0, 0, 0, 0.34)');
+    sg.addColorStop(1, volc ? 'rgba(80, 20, 5, 0)' : 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = sg;
     ctx.translate(x, lowestY);
     ctx.scale(1, sh / sw);
@@ -5438,8 +5607,182 @@ function drawCitadelStruct(
       ctx.fillRect(x - half * 0.5, topY, bw * 0.5, bh * 0.12);
       break;
     }
+    // --- VOLCANIC forge-city kinds (pass 2) ---
+    case 'SMELTER_CRUCIBLE': {
+      // tapered tower (wider base → narrower top), open crucible U-notch on top
+      // with a glowing molten core, + horizontal slag banding lines.
+      const tw = bw * 0.62;                       // top width
+      const notchTop = topY + bh * 0.20;          // crucible occupies top ~20%
+      // tapered body (trapezoid), lit/shade faces
+      ctx.fillStyle = layout.body;
+      ctx.beginPath();
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - tw / 2, topY);
+      ctx.lineTo(x + tw / 2, topY); ctx.lineTo(x + half, groundY); ctx.closePath(); ctx.fill();
+      ctx.save(); ctx.clip();
+      ctx.fillStyle = lit; ctx.fillRect(x, topY, half, bh);
+      ctx.fillStyle = shade; ctx.fillRect(x - half, topY, half, bh);
+      // slag banding lines across the body (additive heat-metal)
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = layout.accent; ctx.globalAlpha = 0.3;
+      ctx.lineWidth = 1;
+      for (let b = 1; b <= 4; b++) {
+        const by = topY + bh * (0.25 + b * 0.16);
+        ctx.beginPath(); ctx.moveTo(x - half, by); ctx.lineTo(x + half, by); ctx.stroke();
+      }
+      ctx.restore();
+      // open crucible notch (carve a U) + molten core glow fanning up
+      ctx.fillStyle = layout.bodyDark;
+      ctx.fillRect(x - tw * 0.32, topY, tw * 0.64, notchTop - topY);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const pulse = t === 0 ? 0.75 : 0.6 + 0.4 * Math.sin(t * 1.6 + st.v1 * 6.28);
+      const mg = ctx.createRadialGradient(x, topY + 1, 0, x, topY + 1, tw);
+      mg.addColorStop(0, `rgba(255, 210, 120, ${(0.85 * pulse).toFixed(3)})`);
+      mg.addColorStop(0.4, `rgba(255, 100, 30, ${(0.5 * pulse).toFixed(3)})`);
+      mg.addColorStop(1, 'rgba(255, 60, 0, 0)');
+      ctx.fillStyle = mg;
+      ctx.fillRect(x - tw, topY - tw, tw * 2, tw * 1.6);
+      ctx.restore();
+      break;
+    }
+    case 'BLAST_FURNACE_DOME': {
+      // squat hemispherical furnace (flat base, dome top) + top opening glow + seams
+      const r = Math.max(half, bh * 0.9);
+      ctx.fillStyle = layout.body;
+      ctx.beginPath(); ctx.arc(x, groundY, r, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = lit;
+      ctx.beginPath(); ctx.arc(x, groundY, r, Math.PI, Math.PI * 1.5); ctx.fill();
+      // hot seam lines up the sides (additive)
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = layout.accent; ctx.globalAlpha = 0.4; ctx.lineWidth = 1;
+      for (let a = -1; a <= 1; a += 1) {
+        const ax = x + a * r * 0.5;
+        ctx.beginPath(); ctx.moveTo(ax, groundY); ctx.lineTo(x + a * r * 0.2, groundY - r * 0.9); ctx.stroke();
+      }
+      // top opening: a directional orange bloom blooming UPWARD from the crown
+      const pulse = t === 0 ? 0.75 : 0.6 + 0.4 * Math.sin(t * 1.4 + st.v2 * 6.28);
+      const og = ctx.createRadialGradient(x, groundY - r, 0, x, groundY - r, r * 0.9);
+      og.addColorStop(0, `rgba(255, 180, 90, ${(0.8 * pulse).toFixed(3)})`);
+      og.addColorStop(1, 'rgba(255, 80, 20, 0)');
+      ctx.globalAlpha = 1; ctx.fillStyle = og;
+      ctx.fillRect(x - r, groundY - r * 1.9, r * 2, r * 1.2);
+      ctx.restore();
+      break;
+    }
+    case 'HEAT_VENT_TOWER': {
+      // slender tower + a FLARED FUNNEL CAP (trapezoid wider at top) lit hot, plus a
+      // soft additive glow column rising above the cap.
+      const tbw = bw * 0.56;
+      box(topY + bh * 0.10, bh * 0.90, tbw);
+      // flared funnel cap (wider at the top)
+      const capH = bh * 0.12;
+      ctx.fillStyle = lit;
+      ctx.beginPath();
+      ctx.moveTo(x - tbw * 0.5, topY + capH); ctx.lineTo(x - tbw * 0.9, topY);
+      ctx.lineTo(x + tbw * 0.9, topY); ctx.lineTo(x + tbw * 0.5, topY + capH); ctx.closePath(); ctx.fill();
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      // hot funnel mouth
+      ctx.fillStyle = layout.accent; ctx.globalAlpha = 0.7;
+      ctx.fillRect(x - tbw * 0.9, topY - 1, tbw * 1.8, 2);
+      // glow column rising ~20px above the cap
+      const pulse = t === 0 ? 0.7 : 0.55 + 0.45 * Math.sin(t * 2 + st.v1 * 6.28);
+      const colH = 20;
+      const gc = ctx.createLinearGradient(0, topY - colH, 0, topY);
+      gc.addColorStop(0, 'rgba(255, 90, 30, 0)');
+      gc.addColorStop(1, `rgba(255, 130, 50, ${(0.4 * pulse).toFixed(3)})`);
+      ctx.globalAlpha = 1; ctx.fillStyle = gc;
+      ctx.fillRect(x - tbw * 0.5, topY - colH, tbw, colH);
+      ctx.restore();
+      break;
+    }
+    case 'OBSIDIAN_BUNKER': {
+      // low wide angular bunker: parallelogram with inward-sloped walls + roof lip +
+      // a full-width glowing slit-window strip. Dark blue-black obsidian body.
+      const inset = bw * 0.16;
+      ctx.fillStyle = 'rgb(20, 18, 28)';          // obsidian (cool dark) to contrast warm
+      ctx.beginPath();
+      ctx.moveTo(x - half, groundY); ctx.lineTo(x - half + inset, topY);
+      ctx.lineTo(x + half - inset, topY); ctx.lineTo(x + half, groundY); ctx.closePath(); ctx.fill();
+      // lit face (right half) for the key-light
+      ctx.save(); ctx.clip();
+      ctx.fillStyle = faceSign >= 0 ? 'rgba(70, 66, 86, 0.6)' : 'rgba(8, 6, 14, 0.5)';
+      ctx.fillRect(x, topY, half, bh);
+      ctx.restore();
+      // thick roof overhang lip
+      ctx.fillStyle = 'rgb(36, 32, 46)';
+      ctx.fillRect(x - half + inset * 0.5, topY - 3, bw - inset, 4);
+      // full-width glowing slit-window strip (additive)
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const sy = topY + bh * 0.4;
+      const sg = ctx.createLinearGradient(x - half, sy, x + half, sy);
+      sg.addColorStop(0, 'rgba(255, 90, 30, 0)');
+      sg.addColorStop(0.5, `rgba(255, 140, 60, ${(0.7 * winNight).toFixed(3)})`);
+      sg.addColorStop(1, 'rgba(255, 90, 30, 0)');
+      ctx.fillStyle = sg;
+      ctx.fillRect(x - half + inset * 0.6, sy, bw - inset * 1.2, 2.4);
+      ctx.restore();
+      break;
+    }
+    case 'MAGMA_PIPELINE': {
+      // two short pillars + a horizontal pipe at mid-height glowing orange underneath
+      const pw = bw * 0.22;
+      const pipeY = topY + bh * 0.45;
+      // two pillars (drawn manually — the box helper would centre a single block)
+      ctx.fillStyle = layout.body; ctx.fillRect(x - half, pipeY, pw, groundY - pipeY);
+      ctx.fillStyle = layout.body; ctx.fillRect(x + half - pw, pipeY, pw, groundY - pipeY);
+      ctx.fillStyle = lit; ctx.fillRect(x - half + pw * 0.5, pipeY, pw * 0.5, groundY - pipeY);
+      ctx.fillStyle = lit; ctx.fillRect(x + half - pw * 0.5, pipeY, pw * 0.5, groundY - pipeY);
+      // the spanning pipe
+      ctx.fillStyle = layout.bodyLight;
+      ctx.fillRect(x - half, pipeY - 3, bw, 5);
+      // glowing underside (additive)
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const pulse = t === 0 ? 0.7 : 0.55 + 0.45 * Math.sin(t * 1.8 + st.v1 * 6.28);
+      ctx.fillStyle = `rgba(255, 110, 40, ${(0.6 * pulse * winNight).toFixed(3)})`;
+      ctx.fillRect(x - half, pipeY + 2, bw, 1.6);
+      ctx.restore();
+      break;
+    }
+    case 'CATWALK_GANTRY': {
+      // skeletal column + horizontal gantry arm + a small lit observation pod at tip.
+      const dir = st.v1 > 0.5 ? 1 : -1;
+      const cw = bw * 0.36;
+      ctx.fillStyle = layout.body; ctx.fillRect(x - cw / 2, topY, cw, bh);
+      ctx.fillStyle = lit; ctx.fillRect(x, topY, cw / 2, bh);
+      // gantry arm
+      const armY = topY + bh * 0.2;
+      const armLen = bw * 0.9 * dir;
+      ctx.strokeStyle = layout.bodyLight; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, armY); ctx.lineTo(x + armLen, armY); ctx.stroke();
+      // diagonal brace
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, armY + bh * 0.18); ctx.lineTo(x + armLen, armY); ctx.stroke();
+      // lit observation pod at the arm tip
+      const podX = x + armLen;
+      ctx.fillStyle = layout.bodyLight;
+      ctx.beginPath(); ctx.arc(podX, armY, Math.max(2.5, cw * 0.6), 0, Math.PI * 2); ctx.fill();
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = `rgba(${layout.winGlow.r}, ${layout.winGlow.g}, ${layout.winGlow.b}, ${(0.7 * winNight).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(podX, armY, Math.max(1.5, cw * 0.35), 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      break;
+    }
     default:
       box(topY, bh, bw);
+  }
+
+  // 7) LAVA RIM-LIGHT WASH — all VOLCANIC structures get an additive linear glow up
+  //    the lower ~18% of the body (lava-pool bounce-light); brighter at night (×1.5).
+  if (volc && st.kind !== 'MAST') {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const rh = bh * 0.18;
+    const rg = ctx.createLinearGradient(0, groundY, 0, groundY - rh);
+    const ra = Math.min(0.6, 0.3 * (1 + (winNight - 0.5)));   // ~×1.5 at night
+    rg.addColorStop(0, `rgba(255, 90, 20, ${ra.toFixed(3)})`);
+    rg.addColorStop(1, 'rgba(255, 90, 20, 0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(x - half, groundY - rh, bw, rh);
+    ctx.restore();
   }
 }
 
@@ -5469,7 +5812,7 @@ function drawCitadelSkyline(
     // drop. drawCitadelStruct then pours a foundation skirt down to the real
     // terrain across the width, so the base meets the ground along its whole span.
     const floorY = footprintFloorY(st, ridgeYAt);
-    drawCitadelStruct(ctx, st, floorY, layout, keyDir, ridgeYAt);
+    drawCitadelStruct(ctx, st, floorY, layout, keyDir, ridgeYAt, t, winNight);
   }
 
   // warm window lights — biome-tinted glow; twinkle subtly at higher levels. Each
@@ -5517,7 +5860,31 @@ function drawCitadelSkyline(
     const pulse = t === 0 ? 0.5 : 0.5 + 0.5 * Math.sin(t * 2.4);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    if (layout.beaconKind === 'LAMP') {
+    if (layout.beaconKind === 'LAVA_PLUME') {
+      // CALDERA BEACON: a sustained vertical LAVA-PLUME column rising ~48px from the
+      // signature's crown — white-orange base → red → transparent; width oscillates.
+      const plumeH = 48;
+      const wob = t === 0 ? 0 : Math.sin(t * 1.8) * 2;
+      const baseW = 5 + wob;
+      const pg = ctx.createLinearGradient(0, by, 0, by - plumeH);
+      pg.addColorStop(0, 'rgba(255, 220, 150, 0.9)');
+      pg.addColorStop(0.45, 'rgba(255, 90, 30, 0.5)');
+      pg.addColorStop(1, 'rgba(255, 50, 10, 0)');
+      ctx.fillStyle = pg;
+      // a tapering column (wider at base) via a trapezoid
+      ctx.beginPath();
+      ctx.moveTo(bx - baseW, by);
+      ctx.lineTo(bx - baseW * 0.3, by - plumeH);
+      ctx.lineTo(bx + baseW * 0.3, by - plumeH);
+      ctx.lineTo(bx + baseW, by);
+      ctx.closePath(); ctx.fill();
+      // bright molten core at the base
+      const cg = ctx.createRadialGradient(bx, by, 0, bx, by, baseW * 2);
+      cg.addColorStop(0, 'rgba(255, 230, 170, 0.9)');
+      cg.addColorStop(1, 'rgba(255, 90, 30, 0)');
+      ctx.fillStyle = cg;
+      ctx.fillRect(bx - baseW * 2, by - baseW * 2, baseW * 4, baseW * 4);
+    } else if (layout.beaconKind === 'LAMP') {
       // lighthouse lamp: a bright green-white core + a slow sweeping beam.
       const lr = 16;
       const lg = ctx.createRadialGradient(bx, by, 0, bx, by, lr);
