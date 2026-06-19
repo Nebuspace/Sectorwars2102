@@ -3151,7 +3151,7 @@ function buildLandedCache(
       // Bias the lake to ONE side of the foreground so the citadel can sit on the
       // OPPOSITE shore (buildings beside the lake, never in it). Still large/visible.
       const lakeSide = vRng() < 0.5 ? -1 : 1;            // -1 left shore, +1 right shore
-      const lakeRx = 0.20 + vRng() * 0.07;              // 0.20..0.27 (kept large)
+      const lakeRx = 0.14 + vRng() * 0.05;              // 0.14..0.19 (visible, leaves a wide shore)
       // centre sits in the biased third, far enough that the far rim leaves an
       // opposite shore clear of the lake for the city.
       const lakeCx = lakeSide < 0 ? (0.24 + vRng() * 0.08) : (0.68 + vRng() * 0.08);
@@ -5740,16 +5740,76 @@ function buildCitadelLayout(
     });
   }
 
-  return {
-    structures,
-    beacon: level >= 5 || (arch.beaconKind === 'LAMP' && level >= 3),
-    beaconKind: arch.beaconKind,
-    cityX, maxH: cfg.maxH,
-    twinkleWindows: level >= 4,
-    biome: pal.flourish,
-    body: arch.body, bodyLight: arch.bodyLight, bodyDark: arch.bodyDark,
-    winGlow: arch.winGlow, accent: arch.accent,
-  };
+  // VOLCANIC: re-lay the row with EVEN, NON-OVERLAPPING spacing. The random jitter
+  // above packs structures into ±spread and the big lakeside window is narrow, so
+  // footprints (esp. wide domes) intersected. Here we distribute across the FULL
+  // window and enforce a center-to-center gap = effHalf[i] + effHalf[i+1] + pad,
+  // using each kind's ACTUAL rendered half-width (domes/furnaces extend past bw).
+  if (isVolcanic && structures.length > 0) {
+    // effective half-footprint per kind (mirrors clipStructPath's widest extent).
+    const effHalf = (st: CitadelStructure): number => {
+      const half = st.bw / 2;
+      switch (st.kind) {
+        case 'DOME': return half * 1.1;
+        case 'GEODESIC': return Math.max(half * 1.4, st.bh * 0.55);
+        case 'ICEDOME': return Math.max(half * 1.4, st.bh * 0.5);
+        case 'BLAST_FURNACE_DOME': return Math.max(half, st.bh * 0.9);
+        case 'MAST': return Math.max(2, half);
+        default: return half;     // upright bodies + tapered towers ≈ bw/2
+      }
+    };
+    // order the row so the SIGNATURE/largest sits in the MIDDLE: sort by effHalf
+    // descending, then deal alternately outward from centre (big core, smaller wings).
+    const ordered = [...structures].sort((a, b) => effHalf(b) - effHalf(a));
+    const arranged: CitadelStructure[] = [];
+    for (let i = 0; i < ordered.length; i++) {
+      if (i % 2 === 0) arranged.push(ordered[i]);      // grow to the right end
+      else arranged.unshift(ordered[i]);               // grow to the left end
+    }
+    const winW = lMax - lMin;
+    const gaps = Math.max(0, arranged.length - 1);
+    const footSum = arranged.reduce((s2, st) => s2 + effHalf(st) * 2, 0);
+    // choose the pad (gap) so the row fits the window: start from a comfortable gap,
+    // squeeze it toward 0 if needed. Footprints stay intact (no overlap) unless even
+    // touching footprints overflow — then scale every footprint down proportionally.
+    const wantPad = Math.max(3, w * 0.006);
+    let pad = wantPad;
+    if (footSum + wantPad * gaps > winW) {
+      const avail = winW - footSum;                    // room left for the gaps
+      pad = gaps > 0 ? Math.max(0, avail / gaps) : 0;  // squeeze pads first
+      if (avail < 0) {                                 // footprints alone overflow → scale
+        const scale = winW / footSum;
+        for (const st of arranged) { st.bw *= scale; st.bh *= scale; }
+        pad = 0;
+      }
+    }
+    // recompute total with the chosen pad + (possibly scaled) footprints, then centre
+    // the row in the window and walk left→right so adjacent footprints never intersect.
+    const totalW = arranged.reduce((s2, st) => s2 + effHalf(st) * 2, 0) + pad * gaps;
+    let cursor = lMin + Math.max(0, (winW - totalW) / 2);
+    for (let i = 0; i < arranged.length; i++) {
+      const eh = effHalf(arranged[i]);
+      cursor += eh;
+      arranged[i].x = clampX(cursor);
+      cursor += eh + pad;
+    }
+    return finalizeLayout();
+  }
+
+  return finalizeLayout();
+
+  function finalizeLayout(): CitadelLayout {
+    return {
+      structures,
+      beacon: level >= 5 || (arch.beaconKind === 'LAMP' && level >= 3),
+      beaconKind: arch.beaconKind,
+      cityX, maxH: cfg.maxH,
+      twinkleWindows: level >= 4,
+      biome: pal.flourish,
+      body: arch.body, bodyLight: arch.bodyLight, bodyDark: arch.bodyDark,
+      winGlow: arch.winGlow, accent: arch.accent,
+    };
+  }
 }
 
 /** Trace a structure's SILHOUETTE as the current path so window lights can be
