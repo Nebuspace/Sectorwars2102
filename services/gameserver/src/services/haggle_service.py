@@ -49,6 +49,36 @@ ROUND_NARROW_PER_ROUND = 0.8         # point 2: band narrows 20% / round
 PRICE_CLAMP_LO = 0.80                # point 7: final realized price floor
 PRICE_CLAMP_HI = 1.20                # point 7: final realized price ceiling
 
+
+def _commodity_band(commodity: Optional[str]) -> Optional[Tuple[float, float]]:
+    """Return the commodity hard [min, max] band the BUY/SELL route enforces, or
+    None when the commodity is unbounded (absent from COMMODITY_PRICE_RANGES).
+
+    ADR-0062 (blessed by Max 2026-06-14): this hard band is the ABSOLUTE final
+    floor/ceiling the route applies via ``clamp_to_commodity_band`` AFTER reading
+    the agreed price. The haggle desk MUST bound its negotiable band and realized
+    agreed price by this SAME band so it never strikes a deal the route will
+    silently clamp away (the precious_metals-at-floor bug: a struck buy at 78 on a
+    floor=80 commodity was clamped back up to 80 → player charged full price,
+    single-use deal forfeited). Imported lazily to avoid an import cycle and to
+    degrade gracefully (None = unbounded) if trading_service is unavailable."""
+    if not commodity:
+        return None
+    try:
+        from src.services.trading_service import COMMODITY_PRICE_RANGES
+
+        rng = COMMODITY_PRICE_RANGES.get(commodity)
+        if not rng:
+            return None
+        return float(rng["min"]), float(rng["max"])
+    except Exception:
+        logger.warning(
+            "haggle commodity-band lookup failed for %s; treating as unbounded",
+            commodity,
+            exc_info=True,
+        )
+        return None
+
 # Base acceptance half-band, expressed as a fraction of fair price. haggling.md's
 # round-1 bands are: BUY accept at >= fair*0.97 (a 3% distance), reject below
 # fair*0.80 (a 20% distance). The "accept" half-band (how close to fair an offer
@@ -365,6 +395,7 @@ def _compute_band(
     side: str,
     round_index: int,
     band_multiplier: float,
+    commodity: Optional[str] = None,
 ) -> Dict[str, float]:
     """Compute the round's accept / counter / reject thresholds around fair_price.
 
@@ -383,6 +414,16 @@ def _compute_band(
         reject  : offer < fair * (1 - reject_half)
     For a SELL (player selling, higher offer = better for player) the bands mirror
     above fair price.
+
+    Commodity-band bound (the precious_metals-at-floor fix): the route hard-clamps
+    the final price to the commodity [min, max] (ADR-0062), so an achievable price
+    beyond that band would be clamped away after a "deal struck" confirmation. We
+    bound the displayed/verdicted thresholds by the SAME band — for a BUY the
+    lowest acceptable price is ``max(0.80×fair-derived, commodity_floor)``; for a
+    SELL the highest is ``min(1.20×fair-derived, commodity_ceiling)``. If the band
+    collapses (fair == floor for a buy → no discount possible) the engine still
+    functions: the only achievable price is the floor (= fair), i.e. haggling
+    yields no false savings on a floored commodity but the deal is not wasted.
     """
     scale = _round_band_scale(round_index)
     m = max(0.01, band_multiplier)
@@ -391,17 +432,51 @@ def _compute_band(
     # Guard: accept zone must sit inside the reject zone.
     accept_half = min(accept_half, reject_half)
 
+    band = _commodity_band(commodity)
+
     if side == "buy":
+        accept_threshold = fair_price * (1.0 - accept_half)
+        reject_threshold = fair_price * (1.0 - reject_half)
+        if band is not None:
+            # Player can never realize a price below the commodity floor (the route
+            # clamps up to it), so a deal cannot be struck below the floor: the
+            # lowest ACCEPTABLE price is the floor. Raise accept_threshold to the
+            # floor. We deliberately do NOT raise the reject_threshold — an offer
+            # between the (un-raised) reject line and the floor is COUNTERed (and
+            # the counter clamps to the floor), keeping the session alive so a
+            # follow-up offer at the floor accepts, rather than a false reject. If
+            # fair == floor the accept zone collapses to exactly the floor: the
+            # only achievable price is the floor (no false discount, deal honest).
+            cmin, _cmax = band
+            accept_threshold = max(accept_threshold, cmin)
+            # accept_threshold must not drop below reject_threshold for a buy
+            # (a tightened band could otherwise invert them).
+            accept_threshold = max(accept_threshold, reject_threshold)
         return {
-            "accept_threshold": fair_price * (1.0 - accept_half),
-            "reject_threshold": fair_price * (1.0 - reject_half),
+            "accept_threshold": accept_threshold,
+            "reject_threshold": reject_threshold,
             "accept_half": accept_half,
             "reject_half": reject_half,
         }
     else:  # sell
+        accept_threshold = fair_price * (1.0 + accept_half)
+        reject_threshold = fair_price * (1.0 + reject_half)
+        if band is not None:
+            # Player can never realize a price above the commodity ceiling (the
+            # route clamps down to it), so a deal cannot be struck above it: the
+            # highest ACCEPTABLE price is the ceiling. Lower accept_threshold to
+            # the ceiling. We deliberately do NOT lower the reject_threshold — an
+            # offer between the ceiling and the (un-lowered) reject line is
+            # COUNTERed (and the counter clamps to the ceiling), keeping the
+            # session alive. If fair == ceiling the accept zone collapses to the
+            # ceiling: the only achievable price is the ceiling (no false premium).
+            _cmin, cmax = band
+            accept_threshold = min(accept_threshold, cmax)
+            # accept_threshold must not exceed reject_threshold for a sell.
+            accept_threshold = min(accept_threshold, reject_threshold)
         return {
-            "accept_threshold": fair_price * (1.0 + accept_half),
-            "reject_threshold": fair_price * (1.0 + reject_half),
+            "accept_threshold": accept_threshold,
+            "reject_threshold": reject_threshold,
             "accept_half": accept_half,
             "reject_half": reject_half,
         }
@@ -432,11 +507,24 @@ def _resolve_offer(
         return "reject", None
 
 
-def _clamp_realized(price: float, fair_price: float) -> float:
-    """Point 7: final realized price clamped to [0.80, 1.20] × fair."""
+def _clamp_realized(
+    price: float, fair_price: float, commodity: Optional[str] = None
+) -> float:
+    """Point 7: final realized price clamped to [0.80, 1.20] × fair, THEN bounded
+    by the commodity hard [min, max] band the route enforces.
+
+    The commodity-band bound is an ADDITIONAL outer clamp applied LAST, matching
+    the buy/sell route's ``clamp_to_commodity_band``. This makes the stored
+    agreed_price equal exactly what the route will charge — no surprise re-clamp
+    that silently negates a struck deal (the precious_metals-at-floor bug)."""
     lo = fair_price * PRICE_CLAMP_LO
     hi = fair_price * PRICE_CLAMP_HI
-    return max(lo, min(hi, price))
+    realized = max(lo, min(hi, price))
+    band = _commodity_band(commodity)
+    if band is not None:
+        cmin, cmax = band
+        realized = max(cmin, min(cmax, realized))
+    return realized
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -671,7 +759,7 @@ class HaggleService:
         personality = tp.normalize_personality(station.trader_personality)
         fair = _fair_price(self.db, player, station, commodity, side)
         band_mult = _aggregate_band_multiplier(self.db, player, station, personality)
-        band = _compute_band(fair, side, 1, band_mult)
+        band = _compute_band(fair, side, 1, band_mult, commodity)
 
         session = {
             "key": key,
@@ -719,13 +807,13 @@ class HaggleService:
         fair = float(session["fair_price"])
         round_index = int(session["round"])
         band_mult = float(session["band_multiplier"])
-        band = _compute_band(fair, side, round_index, band_mult)
+        band = _compute_band(fair, side, round_index, band_mult, commodity)
 
         verdict, counter = _resolve_offer(offer, fair, side, band)
         pid = str(player.id)
 
         if verdict == "accept":
-            agreed = _clamp_realized(offer, fair)
+            agreed = _clamp_realized(offer, fair, commodity)
             session["status"] = "accepted"
             session["agreed_price"] = agreed
             self._set_cooldown(state, key)             # point 7: non-reject → cooldown
@@ -746,7 +834,7 @@ class HaggleService:
             return self._result(session, "reject", round_index)
 
         # counter — advance the round, or time out at the 4-round limit.
-        clamped_counter = _clamp_realized(float(counter), fair)
+        clamped_counter = _clamp_realized(float(counter), fair, commodity)
         if round_index >= MAX_ROUNDS:
             # 4 rounds elapsed without acceptance → timeout close. Point 7: a
             # timeout is a NON-REJECT close → cooldown applies, no lock.
@@ -760,7 +848,7 @@ class HaggleService:
             )
 
         session["round"] = round_index + 1
-        next_band = _compute_band(fair, side, session["round"], band_mult)
+        next_band = _compute_band(fair, side, session["round"], band_mult, commodity)
         _save_haggle_state(player, state)
         result = self._result(
             session, "counter", round_index, counter_price=clamped_counter
@@ -847,6 +935,13 @@ class HaggleService:
     def _card(
         self, session: Dict[str, Any], band: Dict[str, float], personality: Dict[str, Any]
     ) -> Dict[str, Any]:
+        # The displayed price_clamp must reflect the REALIZABLE range, i.e. the
+        # [0.80, 1.20]×fair window further bounded by the commodity hard band the
+        # route enforces — so the desk never advertises a floor below the
+        # commodity floor (the precious_metals-at-floor honesty fix).
+        fair = float(session["fair_price"])
+        clamp_min = _clamp_realized(fair * PRICE_CLAMP_LO, fair, session["commodity"])
+        clamp_max = _clamp_realized(fair * PRICE_CLAMP_HI, fair, session["commodity"])
         return {
             "status": "open",
             "commodity": session["commodity"],
@@ -858,8 +953,8 @@ class HaggleService:
             "haggling_difficulty": personality.get("haggling_difficulty"),
             "band": self._band_view(band, session["side"], session["fair_price"]),
             "price_clamp": {
-                "min": round(session["fair_price"] * PRICE_CLAMP_LO, 2),
-                "max": round(session["fair_price"] * PRICE_CLAMP_HI, 2),
+                "min": round(clamp_min, 2),
+                "max": round(clamp_max, 2),
             },
         }
 

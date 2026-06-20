@@ -108,6 +108,60 @@ def test_final_price_clamp():
     assert h._clamp_realized(95.0, 100.0) == pytest.approx(95.0)
 
 
+# ── precious_metals-at-floor fix: the desk is bounded by the commodity hard band
+# the route enforces, so it never strikes a deal the route's clamp_to_commodity_band
+# would silently negate (a struck buy at 78 on a floor=80 commodity was clamped
+# back UP to 80 → player charged full price, single-use deal forfeited).
+def test_clamp_realized_bounded_by_commodity_floor(monkeypatch):
+    # commodity floored at 80 (precious_metals at fair==floor==80).
+    monkeypatch.setattr(h, "_commodity_band", lambda c: (80.0, 180.0) if c == "precious_metals" else None)
+    # [0.80, 1.20]×80 = [64, 96], but the hard floor 80 raises the realized price.
+    assert h._clamp_realized(64.0, 80.0, "precious_metals") == pytest.approx(80.0)
+    assert h._clamp_realized(78.0, 80.0, "precious_metals") == pytest.approx(80.0)
+    # an offer at/above the floor passes through (still within the [0.80,1.20] window).
+    assert h._clamp_realized(90.0, 80.0, "precious_metals") == pytest.approx(90.0)
+    # ceiling bound: a sell realized price above the commodity ceiling is capped.
+    assert h._clamp_realized(220.0, 180.0, "precious_metals") == pytest.approx(180.0)
+    # no commodity → unbounded by the hard band (legacy behaviour preserved).
+    assert h._clamp_realized(64.0, 80.0, None) == pytest.approx(64.0)
+
+
+def test_buy_band_bounded_by_commodity_floor(monkeypatch):
+    # fair == floor == 80: no discount is achievable; the lowest acceptable price
+    # is the floor itself. Haggling yields no false savings, but the deal is honest.
+    monkeypatch.setattr(h, "_commodity_band", lambda c: (80.0, 180.0))
+    band = h._compute_band(80.0, "buy", 1, 1.0, "precious_metals")
+    # accept_threshold raised to the floor — the only achievable price is 80.
+    assert band["accept_threshold"] == pytest.approx(80.0)
+    # an offer at the floor accepts; the realized agreed price equals the floor.
+    verdict, _ = h._resolve_offer(80.0, 80.0, "buy", band)
+    assert verdict == "accept"
+    assert h._clamp_realized(80.0, 80.0, "precious_metals") == pytest.approx(80.0)
+    # an offer BELOW the floor is NOT a silent full-price strike: it counters
+    # (session stays alive) rather than confirming a phantom discount.
+    verdict_lo, counter = h._resolve_offer(78.0, 80.0, "buy", band)
+    assert verdict_lo == "counter"
+
+
+def test_buy_band_unfloored_commodity_unchanged(monkeypatch):
+    # fair well above the floor: the floor never binds, ordinary discount available.
+    monkeypatch.setattr(h, "_commodity_band", lambda c: (80.0, 180.0))
+    band = h._compute_band(120.0, "buy", 1, 1.0, "precious_metals")
+    # neutral round-1 buy band is fair*0.97 = 116.4, above the 80 floor → untouched.
+    assert band["accept_threshold"] == pytest.approx(116.4)
+    assert band["reject_threshold"] == pytest.approx(96.0)  # fair*0.80, above floor
+
+
+def test_sell_band_bounded_by_commodity_ceiling(monkeypatch):
+    # fair == ceiling: no premium achievable; highest acceptable price is the ceiling.
+    monkeypatch.setattr(h, "_commodity_band", lambda c: (80.0, 180.0))
+    band = h._compute_band(180.0, "sell", 1, 1.0, "precious_metals")
+    assert band["accept_threshold"] == pytest.approx(180.0)
+    verdict, _ = h._resolve_offer(180.0, 180.0, "sell", band)
+    assert verdict == "accept"
+    assert h._clamp_realized(180.0, 180.0, "precious_metals") == pytest.approx(180.0)
+
+
 # ── FIX 1 (ADR-0079 point 6): haggle is never worse than not haggling ──────────
 # fair_price IS the posted/effective price the route would charge un-haggled
 # (trading.md stack baked in). A successful BUY accept must therefore land at or
