@@ -1683,6 +1683,19 @@ Description: {ship_specs.get('description', 'N/A')}
         player.aria_relationship_score = 50
         player.aria_total_interactions = 1
 
+        # WO-CG3 — award first-login special medals (Orange Cat Society / Honorary
+        # Tabby) for a cat-mention session, inside this open transaction. Lazy import
+        # avoids a circular dependency; defensive dispatcher never breaks completion.
+        try:
+            import src.services.medal_service as _medal_module
+            _award_special = getattr(
+                _medal_module, "check_and_award_first_login_special_medals", None
+            )
+            if _award_special is not None:
+                _award_special(self.db, session.id)
+        except Exception as _e:  # never break first-login completion on medal award
+            logger.error("first-login special-medal award failed for %s: %s", player.id, _e)
+
         self.db.commit()
         
         return {

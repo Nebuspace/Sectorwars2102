@@ -241,7 +241,10 @@ MEDAL_CATALOG: Dict[str, Dict[str, Any]] = {
     "special.orange_cat_society": _medal(
         "special.orange_cat_society", "Orange Cat Society", CAT_SPECIAL, TIER_UNIQUE,
         "Awarded for discovering the hidden Orange Cat sector",
-        "special_discovery", 1, "cat_orange", "orange_cat_society",
+        # WO-CG3: DISTINCT trigger_type (was the shared "special_discovery" @1) so a
+        # count-based _evaluate_and_award can never sweep the special-medal group.
+        # threshold=1: the single cat-mention-during-first-login earn event. Wired.
+        "cat_mention_first_login", 1, "cat_orange", "orange_cat_society",
         # SPECIAL-CASE (FINAL): the PUBLISHED +15% haggle ease, EXEMPT from the
         # +0.08 medal cap. Applied through haggle_service's dedicated Orange-Cat
         # lever (ORANGE_CAT_BAND_FACTOR), NOT through the capped generic fold —
@@ -385,14 +388,23 @@ MEDAL_CATALOG: Dict[str, Dict[str, Any]] = {
     "special.honorary_tabby": _medal(
         "special.honorary_tabby", "Honorary Tabby", CAT_SPECIAL, TIER_UNIQUE,
         "Awarded for a second hidden cat-related discovery",
-        "special_discovery", 2, "tabby_honorary", "honorary_tabby",
+        # WO-CG3: DISTINCT trigger_type (was the shared "special_discovery" @2).
+        # threshold=1: the composite first-login earn event — cat-mention AND
+        # negotiation_skill=STRONG AND awarded ship rarity_tier>=3, all in one
+        # session (the dispatcher gates the conjunction, then fires this @1). Wired.
+        "honorary_tabby_combo", 1, "tabby_honorary", "honorary_tabby",
         effect=_effect("passive", hook=HOOK_HAGGLE_BAND, scope="loop:trade",
                        magnitude=0.02, notes="+0.02 haggle band sliver (cat-charm)."),
     ),
     "special.pioneer_office_pillar": _medal(
         "special.pioneer_office_pillar", "Pillar of the Pioneer Office", CAT_SPECIAL, TIER_UNIQUE,
         "Awarded for a hidden civic-recognition event",
-        "special_discovery", 3, "pillar_pioneer", "pioneer_office_pillar",
+        # WO-CG3: DISTINCT trigger_type (was the shared "special_discovery" @3) so it
+        # is admin-grant-safe and group-collision-proof. PARKED — UNWIRED: the doc
+        # has an identity collision (Economic/Silver "10,000 colonists hauled" vs this
+        # Special/Unique "civic-recognition event"; neither is concretely earnable
+        # here). No auto-award dispatcher; no invented threshold. Routed to Max.
+        "pioneer_office_civic", 1, "pillar_pioneer", "pioneer_office_pillar",
         # FINAL: Pioneer Office keeps published −2%. Sign convention: positive
         # magnitude on trading_discount = a buy discount / sell uplift.
         effect=_effect("passive", hook=HOOK_TRADING_DISCOUNT, scope="loop:trade",
@@ -401,7 +413,12 @@ MEDAL_CATALOG: Dict[str, Dict[str, Any]] = {
     "special.ghost_in_the_static": _medal(
         "special.ghost_in_the_static", "Ghost in the Static", CAT_SPECIAL, TIER_UNIQUE,
         "Awarded for discovering a lost world in dark territory",
-        "special_discovery", 4, "ghost_static", "ghost_in_the_static",
+        # WO-CG3: DISTINCT trigger_type (was the shared "special_discovery" @4) so it
+        # is admin-grant-safe and group-collision-proof. PARKED — UNWIRED: NO-CANON
+        # (no Special/Hidden doc entry defines it) and no supporting "dark-territory /
+        # lost-world discovery" game system exists. No dispatcher; no invented
+        # criterion. Admin-grant-only until canon defines it. Routed to Max.
+        "dark_territory_discovery", 1, "ghost_static", "ghost_in_the_static",
         effect=None,  # pure prestige — cosmetic-only.
     ),
 }

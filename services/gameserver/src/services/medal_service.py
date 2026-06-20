@@ -634,6 +634,99 @@ def check_and_award_governance_medals(db: Session, player_id: uuid.UUID) -> List
         return []
 
 
+def check_and_award_first_login_special_medals(
+    db: Session, session_id: uuid.UUID
+) -> List[str]:
+    """Award the first-login special cat medals from a completed first-login session.
+
+    WO-CG3 — the two concrete-canon special medals, each on its OWN trigger_type
+    (so the legacy ``special_discovery`` group can never be swept):
+
+    * ``special.orange_cat_society`` (trigger ``cat_mention_first_login``) — the
+      player mentioned a cat during first-login dialogue (medals.md: "Mention the
+      cat … during first-login dialogue"). Detected by re-scanning the session's
+      persisted ``DialogueExchange.player_response`` text with the SAME detector the
+      live dialogue uses (``CatBoostDetector.detect_cat_mention``) — no new column.
+    * ``special.honorary_tabby`` (trigger ``honorary_tabby_combo``) — the composite
+      criterion (medals.md): cat-mention AND ``negotiation_skill == STRONG`` AND the
+      awarded ship's ``rarity_tier >= 3`` — all in this one session. The dispatcher
+      gates the conjunction, then fires the medal at threshold 1.
+
+    Recounts authoritative state from the session row + persisted exchanges; never
+    trusts a caller-passed flag. Idempotent via ``award_medal`` /
+    UNIQUE(player_id, medal_id). Dispatched from ``complete_first_login`` inside the
+    caller's open transaction. Defensive — never raises into first-login completion.
+    """
+    try:
+        from src.models.first_login import (
+            FirstLoginSession,
+            DialogueExchange,
+            NegotiationSkillLevel,
+            ShipRarityConfig,
+        )
+        from src.services.enhanced_manual_provider import CatBoostDetector
+
+        session = (
+            db.query(FirstLoginSession)
+            .filter(FirstLoginSession.id == session_id)
+            .first()
+        )
+        if session is None:
+            return []
+
+        player_id = session.player_id
+
+        # Leg 1 — cat mention: re-scan the player's responses for this session with
+        # the live dialogue detector. (No cat_mentioned column exists; the criterion
+        # is the documented cat-mention event, so we read it back from the record.)
+        responses = (
+            db.query(DialogueExchange.player_response)
+            .filter(DialogueExchange.session_id == session_id)
+            .all()
+        )
+        cat_mentioned = any(
+            CatBoostDetector.detect_cat_mention(text)
+            for (text,) in responses
+            if text
+        )
+        if not cat_mentioned:
+            return []  # neither special medal is earnable without the cat mention
+
+        awarded: List[str] = []
+
+        # orange_cat_society — cat mention alone.
+        awarded += _evaluate_and_award(
+            db, player_id, "cat_mention_first_login", 1,
+            source_event_key="first_login.cat_mention", awarded_via="first_login",
+        )
+
+        # honorary_tabby — cat mention AND strong negotiation AND rarity_tier>=3 ship.
+        strong = session.negotiation_skill == NegotiationSkillLevel.STRONG
+        rarity_ok = False
+        if session.awarded_ship is not None:
+            tier = (
+                db.query(ShipRarityConfig.rarity_tier)
+                .filter(ShipRarityConfig.ship_type == session.awarded_ship)
+                .scalar()
+            )
+            rarity_ok = tier is not None and int(tier) >= 3
+
+        if strong and rarity_ok:
+            awarded += _evaluate_and_award(
+                db, player_id, "honorary_tabby_combo", 1,
+                source_event_key="first_login.honorary_tabby",
+                awarded_via="first_login",
+            )
+
+        return awarded
+    except Exception as e:
+        logger.error(
+            "check_and_award_first_login_special_medals failed for session %s: %s",
+            session_id, e,
+        )
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Legacy-compatible service class — same public surface, relational backing.
 # ---------------------------------------------------------------------------
