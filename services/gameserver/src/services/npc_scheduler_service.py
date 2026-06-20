@@ -89,6 +89,25 @@ from src.services.npc_spawn_service import (
 
 logger = logging.getLogger(__name__)
 
+
+def _dispatch_governance_medals(db: Session, player_id) -> None:
+    """Fire the medals-lane governance hook
+    ``medal_service.check_and_award_governance_medals(db, player_id)`` after a
+    policy authored by ``player_id`` is enacted (diplomatic.lawgiver /
+    ordinances_passed).
+
+    Defensive: resolved by ``getattr`` (the medals lane may be absent),
+    idempotent on the medals side, and any failure is logged and swallowed — a
+    medal hiccup must NEVER break the governance finalize sweep."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_governance_medals", None)
+        if callable(hook):
+            hook(db, player_id)
+    except Exception as e:  # never let a medal hiccup break the sweep
+        logger.error("Governance medal dispatch hook failed: %s", e)
+
+
 # Wake interval of the host task; loop cadences must be multiples.
 TICK_SECONDS = 60
 # ADR-0042: the PendingEngagement sweep runs every minute, distinct
@@ -2021,6 +2040,12 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
                     policy.proposed_changes = cleaned
                     flag_modified(policy, "proposed_changes")
                     policy.status = PolicyStatus.IMPLEMENTED
+                    # Medal: diplomatic.lawgiver (ordinances_passed >= 1) — awarded
+                    # to the policy AUTHOR (proposed_by) on genuine enactment, in
+                    # this same per-policy transaction (before the commit below);
+                    # idempotent on the medals side. Defensive — never breaks the
+                    # governance sweep.
+                    _dispatch_governance_medals(db, policy.proposed_by)
                     db.commit()
                     result["enacted"] += 1
                 else:

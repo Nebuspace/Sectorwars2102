@@ -449,6 +449,192 @@ def check_and_award_exploration_medals(
 
 
 # ---------------------------------------------------------------------------
+# WO-CG2 — additional earn-event dispatchers. Each mirrors the frozen-hook
+# pattern above: compute the documented counter from EXISTING data (no new
+# columns), then route through _evaluate_and_award (idempotent via award_medal /
+# UNIQUE(player_id, medal_id)). Every dispatcher is DEFENSIVE — it NEVER raises
+# into its caller's unit of work; on any error it logs and returns []. Each is
+# called from a genuinely-completed action under the caller's open transaction.
+# ---------------------------------------------------------------------------
+def check_and_award_fleet_medals(db: Session, player_id: uuid.UUID) -> List[str]:
+    """Award fleet medals (combat.fleet_commander, ``ships_owned``) for a player.
+
+    Counter: the player's live, non-destroyed ship count (``Ship.owner_id``).
+    Dispatched after a genuine ship acquisition (create_ship). Defensive.
+    """
+    try:
+        from src.models.ship import Ship
+
+        ships_owned = (
+            db.query(Ship)
+            .filter(Ship.owner_id == player_id, Ship.is_destroyed.is_(False))
+            .count()
+        )
+        return _evaluate_and_award(
+            db, player_id, "ships_owned", ships_owned,
+            source_event_key="ship.acquired", awarded_via="system",
+        )
+    except Exception as e:
+        logger.error("check_and_award_fleet_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_port_medals(db: Session, player_id: uuid.UUID) -> List[str]:
+    """Award port medals (economic.port_baron, ``ports_owned``) for a player.
+
+    Counter: the player's owned-station count from the ``player_stations``
+    association table. Dispatched after an ownership transfer. Defensive.
+    """
+    try:
+        from sqlalchemy import select, func
+        from src.models.station import player_stations
+
+        ports_owned = db.execute(
+            select(func.count())
+            .select_from(player_stations)
+            .where(player_stations.c.player_id == player_id)
+        ).scalar() or 0
+        return _evaluate_and_award(
+            db, player_id, "ports_owned", int(ports_owned),
+            source_event_key="port.acquired", awarded_via="system",
+        )
+    except Exception as e:
+        logger.error("check_and_award_port_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_bounty_medals(db: Session, collector_id: uuid.UUID) -> List[str]:
+    """Award bounty medals (combat.bounty_hunter, ``bounties_collected``).
+
+    Counter: the number of DISTINCT bounty-collection KILL EVENTS this collector
+    has resolved — counted as distinct ``target_id`` over PAID ``BountyClaim``
+    rows for this collector. A single kill writes one row per bounty source
+    (player-placed + system pot), so counting distinct targets folds those to one
+    "bounty collected" per head, matching the documented criterion. Dispatched
+    after a paying collect_bounty in the combat unit of work. Defensive.
+    """
+    try:
+        from sqlalchemy import func, distinct
+        from src.models.bounty_claim import BountyClaim, BountyClaimStatus
+
+        bounties_collected = (
+            db.query(func.count(distinct(BountyClaim.target_id)))
+            .filter(
+                BountyClaim.claimant_id == collector_id,
+                BountyClaim.status == BountyClaimStatus.PAID,
+            )
+            .scalar()
+        ) or 0
+        return _evaluate_and_award(
+            db, collector_id, "bounties_collected", int(bounties_collected),
+            source_event_key="bounty.collected", awarded_via="combat",
+        )
+    except Exception as e:
+        logger.error("check_and_award_bounty_medals failed for %s: %s", collector_id, e)
+        return []
+
+
+def check_and_award_faction_medals(db: Session, player_id: uuid.UUID) -> List[str]:
+    """Award diplomatic faction medals (peacemaker @3, ambassadors_star @10).
+
+    Counter: the number of factions with which this player has reached HONORED
+    (``Reputation.current_level == ReputationLevel.HONORED``). This is the
+    SIMPLIFIED catalog interpretation of ``faction_honored`` (a straight HONORED
+    count); the docs' "mutually-rivalrous factions simultaneously" nuance for
+    Ambassador's Star is NOT enforced here (NO-CANON — routed to orchestrator).
+    Dispatched on a reputation level transition that reaches HONORED. Defensive.
+    """
+    try:
+        from src.models.reputation import Reputation, ReputationLevel
+
+        honored = (
+            db.query(Reputation)
+            .filter(
+                Reputation.player_id == player_id,
+                Reputation.current_level == ReputationLevel.HONORED,
+            )
+            .count()
+        )
+        return _evaluate_and_award(
+            db, player_id, "faction_honored", honored,
+            source_event_key="faction.honored", awarded_via="system",
+        )
+    except Exception as e:
+        logger.error("check_and_award_faction_medals failed for %s: %s", player_id, e)
+        return []
+
+
+def check_and_award_team_founder_medal(
+    db: Session, leader_id: uuid.UUID, member_count: int
+) -> List[str]:
+    """Award diplomatic.team_founder (``team_members`` >= 5) to a team's FOUNDER.
+
+    The founder is the team's ``leader_id``. Rather than trust the caller's
+    passed ``member_count`` (which can drift from the persisted roster), this
+    RECOUNTS the live member tally from ``team_members`` for the team(s) this
+    player leads, taking the largest (a player may have founded more than one
+    team; the founder medal turns on the best roster they have grown). The passed
+    ``member_count`` is kept only as a defensive fallback if the recount cannot
+    run. Dispatched after a member join. Defensive.
+    """
+    try:
+        from sqlalchemy import func
+        from src.models.team import Team
+        from src.models.team_member import TeamMember
+
+        # Per-team member tally for teams this player founded (leads), then the
+        # largest. A player may have founded more than one team; the founder
+        # medal turns on the best roster they have grown.
+        per_team_counts = (
+            db.query(func.count(TeamMember.id))
+            .join(Team, Team.id == TeamMember.team_id)
+            .filter(Team.leader_id == leader_id)
+            .group_by(TeamMember.team_id)
+            .all()
+        )
+        recounted = max((c for (c,) in per_team_counts), default=None)
+        effective_count = (
+            int(recounted) if recounted is not None else int(member_count)
+        )
+        return _evaluate_and_award(
+            db, leader_id, "team_members", effective_count,
+            source_event_key="team.member_joined", awarded_via="system",
+        )
+    except Exception as e:
+        logger.error("check_and_award_team_founder_medal failed for %s: %s", leader_id, e)
+        return []
+
+
+def check_and_award_governance_medals(db: Session, player_id: uuid.UUID) -> List[str]:
+    """Award diplomatic.lawgiver (``ordinances_passed`` >= 1) to a policy author.
+
+    Counter: the number of regional policies this player authored that reached
+    IMPLEMENTED (``RegionalPolicy.proposed_by == player AND status==IMPLEMENTED``).
+    Dispatched from the governance finalize sweep when a policy is enacted.
+    Defensive. (Note: ``diplomatic.first_citizen`` / governance_votes is NOT
+    wired here — its only earn-event lives behind an AsyncSession and is parked.)
+    """
+    try:
+        from src.models.region import RegionalPolicy, PolicyStatus
+
+        ordinances_passed = (
+            db.query(RegionalPolicy)
+            .filter(
+                RegionalPolicy.proposed_by == player_id,
+                RegionalPolicy.status == PolicyStatus.IMPLEMENTED,
+            )
+            .count()
+        )
+        return _evaluate_and_award(
+            db, player_id, "ordinances_passed", ordinances_passed,
+            source_event_key="governance.ordinance_passed", awarded_via="system",
+        )
+    except Exception as e:
+        logger.error("check_and_award_governance_medals failed for %s: %s", player_id, e)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Legacy-compatible service class — same public surface, relational backing.
 # ---------------------------------------------------------------------------
 class MedalService:
@@ -630,6 +816,12 @@ __all__ = [
     "check_and_award_combat_medals",
     "check_and_award_trade_medals",
     "check_and_award_exploration_medals",
+    "check_and_award_fleet_medals",
+    "check_and_award_port_medals",
+    "check_and_award_bounty_medals",
+    "check_and_award_faction_medals",
+    "check_and_award_team_founder_medal",
+    "check_and_award_governance_medals",
     "get_active_medal_bonuses",
     "MEDAL_BONUS_CAPS",
 ]

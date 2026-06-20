@@ -16,6 +16,24 @@ from src.models.sector import Sector
 from src.services.websocket_service import ConnectionManager
 
 logger = logging.getLogger(__name__)
+
+
+def _dispatch_faction_medals(db: Session, player_id: UUID) -> None:
+    """Fire the medals-lane faction hook
+    ``medal_service.check_and_award_faction_medals(db, player_id)`` after a
+    reputation transition reaches HONORED (diplomatic.peacemaker @3 /
+    ambassadors_star @10 — faction_honored count).
+
+    Defensive: resolved by ``getattr`` (the medals lane may be absent),
+    idempotent on the medals side, and any failure is logged and swallowed — a
+    medal hiccup must NEVER break a reputation adjustment."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_faction_medals", None)
+        if callable(hook):
+            hook(db, player_id)
+    except Exception as e:  # never let a medal hiccup break reputation
+        logger.error("Faction medal dispatch hook failed: %s", e)
 manager = ConnectionManager()
 
 # Faction rivalry configuration: paired factions have a combined reputation cap.
@@ -258,8 +276,23 @@ class FactionService:
         reputation.history = history
         
         reputation.last_updated = datetime.utcnow()
+
+        # Medal: diplomatic.peacemaker (3) / ambassadors_star (10) — count of
+        # factions at HONORED. Fires only on a level transition that REACHES
+        # HONORED (the genuine earning event). Dispatched BEFORE the commit below
+        # so the medal INSERT rides this transaction's commit (the durable
+        # pattern the other wired medals use — dispatch into the caller's open
+        # unit of work, never after it has already committed). Idempotent on the
+        # medals side; defensive dispatcher — never breaks the reputation
+        # adjustment. (Simplified faction_honored count; the docs'
+        # "mutually-rivalrous factions simultaneously" nuance for Ambassador's
+        # Star is NO-CANON here and is NOT enforced.)
+        if (old_level != reputation.current_level
+                and reputation.current_level == ReputationLevel.HONORED):
+            _dispatch_faction_medals(self.db, player_id)
+
         self.db.commit()
-        
+
         # Send WebSocket notification if reputation level changed
         if old_level != reputation.current_level:
             recipient = self.db.query(Player).filter(Player.id == player_id).first()

@@ -17,6 +17,23 @@ from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
 logger = logging.getLogger(__name__)
 
 
+def _dispatch_fleet_medals(db: Session, owner_id: uuid.UUID) -> None:
+    """Fire the medals-lane fleet hook
+    ``medal_service.check_and_award_fleet_medals(db, owner_id)`` after a ship
+    acquisition (combat.fleet_commander / ships_owned).
+
+    Defensive: resolved by ``getattr`` (the medals lane may be absent),
+    idempotent on the medals side, and any failure is logged and swallowed — a
+    medal hiccup must NEVER break ship creation."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_fleet_medals", None)
+        if callable(hook):
+            hook(db, owner_id)
+    except Exception as e:  # never let a medal hiccup break ship creation
+        logger.error("Fleet medal dispatch hook failed: %s", e)
+
+
 class ShipService:
     """Service for managing ships and ship operations"""
     
@@ -107,8 +124,14 @@ class ShipService:
         # Add to database
         self.db.add(ship)
         self.db.flush()  # Get the ID
-        
+
         logger.info(f"Created ship {ship.name} ({ship_type.value}) for player {owner_id}")
+
+        # Medal: combat.fleet_commander (ships_owned >= 5). Fires after a genuine
+        # ship acquisition, in the caller's open transaction; idempotent on the
+        # medals side. Defensive — a medal hiccup never breaks ship creation.
+        _dispatch_fleet_medals(self.db, owner_id)
+
         return ship
     
     def destroy_ship(self, ship: Ship, destroyer: Optional[Player] = None, cause: str = "combat") -> Ship:

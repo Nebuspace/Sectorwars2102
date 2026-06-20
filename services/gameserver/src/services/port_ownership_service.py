@@ -89,6 +89,23 @@ from src.models.station import Station, player_stations
 logger = logging.getLogger(__name__)
 
 
+def _dispatch_port_medals(db: Session, owner_id) -> None:
+    """Fire the medals-lane port hook
+    ``medal_service.check_and_award_port_medals(db, owner_id)`` after an
+    ownership transfer (economic.port_baron / ports_owned).
+
+    Defensive: resolved by ``getattr`` (the medals lane may be absent),
+    idempotent on the medals side, and any failure is logged and swallowed — a
+    medal hiccup must NEVER break an ownership transfer."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_port_medals", None)
+        if callable(hook):
+            hook(db, owner_id)
+    except Exception as e:  # never let a medal hiccup break the transfer
+        logger.error("Port medal dispatch hook failed: %s", e)
+
+
 class PortOwnershipError(Exception):
     """Raised on invalid ownership actions; carries an HTTP status hint."""
 
@@ -508,6 +525,11 @@ def _transfer_station(
         "acquisition_method": method,
     }
     flag_modified(station, "ownership")
+
+    # Medal: economic.port_baron (ports_owned >= 5). Fires after the ownership
+    # association rows are written, in the caller's locked transaction;
+    # idempotent on the medals side. Defensive — never breaks the transfer.
+    _dispatch_port_medals(db, new_owner.id)
 
     # Owner-change guard: every OTHER active campaign against this station
     # was building eligibility against the PREVIOUS owner — the new owner

@@ -101,6 +101,24 @@ def _dispatch_combat_medals(db: Session, killer: Player, context: Dict[str, Any]
         logger.error("Combat medal dispatch hook failed: %s", e)
 
 
+def _dispatch_bounty_medals(db: Session, collector_id) -> None:
+    """Fire the medals-lane bounty hook
+    ``medal_service.check_and_award_bounty_medals(db, collector_id)`` after a
+    paying bounty collection (combat.bounty_hunter / bounties_collected).
+
+    Same defensive contract as ``_dispatch_combat_medals``: resolved by
+    ``getattr`` (the hook may be absent in a deployment where the medals lane
+    hasn't landed), idempotent on the medals-lane side, and any failure is
+    logged and swallowed — a medal hiccup must NEVER break combat resolution."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_bounty_medals", None)
+        if callable(hook):
+            hook(db, collector_id)
+    except Exception as e:  # never let a medal hiccup break combat
+        logger.error("Bounty medal dispatch hook failed: %s", e)
+
+
 # Map the engine's CombatResult enum onto the outcome strings the combat_logs
 # table actually stores (see CombatOutcome / migration c138b33baec4). The
 # outcome column only has 5 values, so fled results collapse to "escaped" and
@@ -417,6 +435,11 @@ class CombatService:
                 if bounty_result.get("total_collected", 0) > 0:
                     # Bounty paid out — heroic bounty hunting.
                     rep_service.adjust_reputation(attacker.id, 100, "defeat_bounty_target")
+                    # Medal: combat.bounty_hunter (bounties_collected). Fires only
+                    # on a genuine paying collection, inside this combat unit of
+                    # work; idempotent on the medals side. Defensive dispatch —
+                    # never breaks combat (the hook swallows its own errors).
+                    _dispatch_bounty_medals(self.db, attacker.id)
                 elif not bounty_result.get("had_bounty"):
                     # Target carried NO bounty at all — attacked a genuine
                     # innocent. Reputation penalty + police "attack_innocent"
