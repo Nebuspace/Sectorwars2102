@@ -324,11 +324,48 @@ async def claim_planet(
     # contract is multi-trip by design.
     colony_level = planet.citadel_level if (planet.citadel_level or 0) >= 1 else 1
     settle_cap = max_colonists_for(colony_level)
-    colonists_settled = min(colonists_aboard, max(0, settle_cap - (planet.colonists or 0)))
+    free_cap = max(0, settle_cap - (planet.colonists or 0))
 
-    contents['colonists'] = colonists_aboard - colonists_settled
+    # planetary_lander throughput bonus (WO-AL).
+    # Canon (FEATURES/gameplay/ship-systems.md:136) marks landing_bonus as
+    # 📐 Design-only: "multiplier on planet-side production / colonist
+    # throughput". Orchestrator ANCHOR (Max's proxy, DECISIONS Pending):
+    # interpret it as a LANDING-action throughput efficiency — a
+    # planetary_lander-equipped ship lands ~25% MORE colonists per unit of
+    # cargo at the deposit. It stays OUT of the continuous production tick.
+    #
+    # Mechanic: base_settled is the colonists that WOULD settle without the
+    # bonus — and is exactly the cargo we consume (cryosleep pods spent).
+    # The bonus amplifies how many of those pods successfully decant into the
+    # workforce, so colonists_settled = round(base_settled * landing_factor),
+    # STILL clamped to the workforce ceiling (free_cap). NO-CANON flagged:
+    # the cargo-vs-landed semantics and the cap-absorption rule below are this
+    # implementation's interpretation pending the DECISIONS ruling.
+    landing_factor = 1.0
+    try:
+        from src.services.ship_upgrade_service import ShipUpgradeService
+        raw_factor = ShipUpgradeService.get_equipment_effects(ship).get("landing_bonus")
+        if isinstance(raw_factor, (int, float)) and raw_factor > 0:
+            landing_factor = float(raw_factor)
+    except Exception:
+        logger.exception("landing_bonus lookup failed on claim; defaulting to 1.0")
+
+    # base_settled: cargo-limited deposit BEFORE the throughput bonus — this is
+    # the cargo actually spent. Capping by free_cap here too means a near-full
+    # planet spends only what it can house (no wasted pods on a closed door).
+    base_settled = min(colonists_aboard, free_cap)
+    # colonists_settled: bonus-amplified landing, clamped to the ceiling. When
+    # the planet is at/near cap the bonus is PARTIALLY ABSORBED by the clamp —
+    # accepted per WO (the workforce ceiling is never exceeded). On a fresh L1
+    # claim (free_cap = 1,000) the bonus only bites when base_settled > 800,
+    # i.e. >800 colonists aboard; below that the full ×1.25 lands.
+    colonists_settled = min(round(base_settled * landing_factor), free_cap)
+
+    # Cargo is consumed by the BASE (pre-bonus) amount, so the SAME cargo lands
+    # ~25% more colonists — the throughput efficiency the equipment exists for.
+    contents['colonists'] = colonists_aboard - base_settled
     cargo['contents'] = contents
-    cargo['used'] = max(0, cargo.get('used', 0) - colonists_settled)
+    cargo['used'] = max(0, cargo.get('used', 0) - base_settled)
     ship.cargo = cargo
     flag_modified(ship, 'cargo')
 
@@ -336,9 +373,13 @@ async def claim_planet(
     # Migration-contract ledger: attribute the just-settled pioneers to the
     # player's open contracts FIFO (advances `delivered`). Best-effort — a
     # ledger hiccup must never block a colony founding.
+    # Attribute by base_settled (the PHYSICAL pods unloaded from cargo), NOT
+    # the bonus-amplified colonists_settled: the landing_bonus is an in-situ
+    # throughput efficiency, not extra contracted pioneers delivered, and the
+    # ledger moves `loaded` -> `delivered` 1:1 with cargo actually carried.
     try:
         from src.services import pioneer_service
-        pioneer_service.attribute_settlement(db, player.id, colonists_settled)
+        pioneer_service.attribute_settlement(db, player.id, base_settled)
     except Exception:
         logger.exception("Migration-contract attribution failed on claim")
     # Dual ceilings at colonization (ADR-0035 "Genesis and colonization
