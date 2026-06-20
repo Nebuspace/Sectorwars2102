@@ -4,6 +4,7 @@ Military Ranking, Reputation & Bounty API Routes
 Player-facing and admin endpoints for ranking, reputation, and bounty systems.
 """
 
+import logging
 import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,6 +18,9 @@ from src.models.user import User
 from src.services.ranking_service import RankingService, RANK_DEFINITIONS
 from src.services.bounty_service import BountyService
 from src.services.personal_reputation_service import PersonalReputationService
+from src.services.websocket_service import connection_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/ranking",
@@ -594,6 +598,70 @@ async def place_bounty(
             detail=result.get("message", "Failed to place bounty"),
         )
     db.commit()
+
+    # Best-effort realtime broadcast — a websocket failure must never undo the
+    # committed credit transaction, so it runs AFTER commit inside try/except.
+    try:
+        await connection_manager.send_bounty_update(
+            action="placed",
+            bounty_data={
+                "bounty_id": result.get("bounty_id"),
+                "target_id": str(request.target_id),
+                "amount": result.get("amount"),
+                "placed_by": str(player.id),
+                "placed_by_name": player.nickname,
+            },
+            placer_id=str(player.id),
+            target_id=str(request.target_id),
+        )
+    except Exception as e:  # noqa: BLE001 — broadcast is non-critical
+        logger.error("Failed to broadcast bounty_placed event: %s", e)
+
+    return result
+
+
+class CancelBountyRequest(BaseModel):
+    target_id: uuid.UUID = Field(..., description="The player the bounty was placed on")
+
+
+@router.post("/bounties/{bounty_id}/cancel")
+async def cancel_bounty(
+    bounty_id: str,
+    request: CancelBountyRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Cancel one of YOUR OWN uncollected bounties and get refunded.
+
+    Only the original placer may cancel, and only a not-yet-collected bounty is
+    refundable. The escrowed principal is refunded; the 10% placement fee is
+    non-refundable (canon invariant #9).
+    """
+    bounty_service = BountyService(db)
+    result = bounty_service.cancel_bounty(player.id, bounty_id, request.target_id)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Failed to cancel bounty"),
+        )
+    db.commit()
+
+    # Best-effort realtime broadcast (post-commit, never undoes the refund).
+    try:
+        await connection_manager.send_bounty_update(
+            action="cancelled",
+            bounty_data={
+                "bounty_id": result.get("bounty_id"),
+                "target_id": str(request.target_id),
+                "refund": result.get("refund"),
+                "placed_by": str(player.id),
+            },
+            placer_id=str(player.id),
+            target_id=str(request.target_id),
+        )
+    except Exception as e:  # noqa: BLE001 — broadcast is non-critical
+        logger.error("Failed to broadcast bounty_cancelled event: %s", e)
+
     return result
 
 

@@ -262,6 +262,34 @@ class ConnectionManager:
         else:
             await self.broadcast_global(message)
     
+    async def send_bounty_update(
+        self,
+        action: str,
+        bounty_data: Dict[str, Any],
+        placer_id: str = None,
+        target_id: str = None,
+    ):
+        """Broadcast a bounty lifecycle event (place / collect / cancel).
+
+        Mirrors send_market_update / send_combat_update: a typed ``bounty_updated``
+        message. The bounty board is globally interesting (anyone can hunt), so
+        the event broadcasts globally; the placer and target additionally get a
+        personal copy (already covered by the global broadcast if connected, but
+        sent explicitly so they receive it even when the global fan-out is
+        filtered). ``action`` is one of "placed" | "collected" | "cancelled".
+        """
+        message = {
+            "type": "bounty_updated",
+            "action": action,
+            "timestamp": datetime.now(UTC).isoformat(),
+            **bounty_data,
+        }
+        await self.broadcast_global(message)
+        if placer_id:
+            await self.send_personal_message(placer_id, message)
+        if target_id:
+            await self.send_personal_message(target_id, message)
+
     async def send_planetary_update(self, planet_data: Dict[str, Any], owner_user_id: str = None, sector_id: int = None):
         """Send planetary update to planet owner or sector"""
         message = {

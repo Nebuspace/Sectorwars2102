@@ -107,6 +107,104 @@ class BountyService:
             "remaining_credits": placer.credits,
         }
 
+    def cancel_bounty(
+        self, placer_id: uuid.UUID, bounty_id: str, target_id: uuid.UUID
+    ) -> Dict[str, Any]:
+        """Cancel a still-uncollected PLAYER-placed bounty and refund the placer.
+
+        Canon (SYSTEMS/bounty-and-reputation.md#cancellation, invariant #9):
+        only the ORIGINAL PLACER may cancel; only a not-yet-collected bounty is
+        cancellable; the placer is refunded the escrowed PRINCIPAL (``amount``)
+        — the 10% placement fee is NON-refundable. The entry is then removed so
+        it can never be collected after the refund.
+
+        Safety (system-economy money — no inflation, no double-refund):
+
+        * Both the placer's Player row AND the target's Player row are
+          ``with_for_update``-locked before any mutation. Two concurrent paths
+          that could touch the same JSONB pot — a second cancel, or a kill's
+          ``collect_bounty`` (which locks the target) — serialize behind this
+          lock, so the cancel either runs before the pot is cleared (refund +
+          remove) or finds nothing afterwards (clean rejection).
+        * The refund equals exactly the escrowed ``amount`` of the located
+          entry and nothing else — system/auto (``type == "system"``) bounties
+          have no stored principal, are recomputed from reputation, and are NOT
+          cancellable/refundable here (they never live in the JSONB pot).
+        * Double-cancel guard: a second cancel of the same ``bounty_id`` finds
+          no matching entry (the first removed it / collect cleared the pot) and
+          returns a clean failure WITHOUT a second credit.
+        """
+        # Lock placer + target rows. Acquire the target lock as well so a
+        # concurrent collect_bounty (which locks the target) cannot clear the
+        # pot between our read and our remove — the refund stays exact.
+        placer = (
+            self.db.query(Player)
+            .filter(Player.id == placer_id)
+            .with_for_update()
+            .first()
+        )
+        target = (
+            self.db.query(Player)
+            .filter(Player.id == target_id)
+            .with_for_update()
+            .first()
+        )
+
+        if not placer or not target:
+            return {"success": False, "message": "Player not found"}
+
+        bounties = self._get_bounties(target)
+
+        # Locate the entry by id. A missing entry = already cancelled, already
+        # collected (pot cleared), or never existed → clean rejection, no credit.
+        entry = next((b for b in bounties if str(b.get("id")) == str(bounty_id)), None)
+        if entry is None:
+            return {
+                "success": False,
+                "message": "Bounty not found or already resolved",
+            }
+
+        # Only the original placer may cancel. System bounties have
+        # placed_by == "SYSTEM" and are never stored here, but guard regardless.
+        if str(entry.get("placed_by")) != str(placer_id):
+            return {
+                "success": False,
+                "message": "Only the original placer may cancel this bounty",
+            }
+
+        if entry.get("type") == "system":
+            # Defensive: system bounties are never persisted to the pot, so this
+            # should be unreachable — but never refund an unfunded bounty.
+            return {
+                "success": False,
+                "message": "System bounties cannot be cancelled",
+            }
+
+        # Refund the escrowed principal only (fee is non-refundable, invariant #9).
+        refund = int(entry.get("amount", 0))
+
+        # Remove the entry FIRST so it can never be collected after the refund,
+        # then credit. Both happen under the target+placer locks atomically.
+        remaining = [b for b in bounties if str(b.get("id")) != str(bounty_id)]
+        self._set_bounties(target, remaining)
+
+        placer.credits += refund
+
+        self.db.flush()
+
+        logger.info(
+            "Bounty cancelled: %s cancelled bounty %s on %s, refunded %d",
+            placer_id, bounty_id, target_id, refund,
+        )
+
+        return {
+            "success": True,
+            "bounty_id": str(bounty_id),
+            "target_id": str(target_id),
+            "refund": refund,
+            "remaining_credits": placer.credits,
+        }
+
     def get_bounties_on_player(self, target_id: uuid.UUID) -> Dict[str, Any]:
         """List all active bounties on a player."""
         target = self.db.query(Player).filter(Player.id == target_id).first()
