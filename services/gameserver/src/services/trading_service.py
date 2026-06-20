@@ -290,6 +290,31 @@ def compute_station_lever_multiplier(db: Session, player, station) -> Tuple[floa
 # the exact prior values (guarded by import-time assertions in that module).
 COMMODITY_PRICE_RANGES: Dict[str, Dict[str, int]] = get_commodity_price_ranges()
 
+
+def clamp_to_commodity_band(commodity_name: str, price: int) -> int:
+    """Clamp a final per-unit price to the commodity's hard [min, max] band.
+
+    Canon (trading.md#price-stacking-order, blessed by Max 2026-06-14): the
+    commodity-specific [min, max] range is the ABSOLUTE floor/ceiling on the
+    final per-unit price — it is the LAST step, applied AFTER every multiplicative
+    modifier (faction reputation × personal reputation × military rank ×
+    Class-8/9/11 premium × region tariff × station lever). No stack of modifiers
+    may carry a price outside the band in either trade direction.
+
+    The route applies its modifiers AFTER reading the (already band-clamped)
+    persisted MarketPrice, so those modifiers can re-escape the band; this helper
+    is the final re-clamp on the route's per-unit price for both buy and sell.
+    Commodities absent from COMMODITY_PRICE_RANGES are returned unbounded
+    (floored at 1) — matching calculate_dynamic_price, which only clamps known
+    commodities.
+    """
+    price = max(1, int(price))
+    price_range = COMMODITY_PRICE_RANGES.get(commodity_name)
+    if price_range:
+        price = max(price_range["min"], min(price, price_range["max"]))
+    return price
+
+
 # Sell/buy price spread factor — stations sell higher and buy lower
 # This creates the profit margin that drives inter-station trade routes
 SELL_SPREAD = 1.15   # Station sell price is 15% above dynamic midpoint

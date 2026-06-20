@@ -17,6 +17,7 @@ from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
 from src.models.market_transaction import MarketTransaction, MarketPrice, TransactionType
 from src.services.trading_service import (
     TradingService,
+    clamp_to_commodity_band,
     compute_player_price_multiplier,
     compute_region_tariff_multiplier,
     compute_station_lever_multiplier,
@@ -245,7 +246,15 @@ async def buy_resource(
     tariff_mult, tariff_rate_eff = compute_region_tariff_multiplier(db, station)
     lever_mult, lever_eff = compute_station_lever_multiplier(db, current_player, station)
     discounted_price *= tariff_mult * lever_mult
-    effective_buy_price = max(1, int(discounted_price))  # Floor at 1 credit
+    # Canon (trading.md#price-stacking-order, Max-blessed): the commodity hard
+    # [min, max] band is the FINAL clamp — applied AFTER every multiplicative
+    # modifier (rank × faction-rep × personal-rep × tariff × lever). The
+    # persisted sell_price was already band-clamped, but the modifiers above can
+    # re-escape it (a max-rep+rank stack could undercut the floor / exceed the
+    # ceiling), so re-clamp the final per-unit price LAST. Floors at 1 internally.
+    effective_buy_price = clamp_to_commodity_band(
+        trade_request.resource_type, int(discounted_price)
+    )
 
     # Calculate total cost
     total_cost = effective_buy_price * trade_request.quantity
@@ -547,7 +556,15 @@ async def sell_resource(
         boosted_price /= tariff_mult
     if lever_mult > 0:
         boosted_price /= lever_mult
-    effective_sell_price = max(1, int(boosted_price))
+    # Canon (trading.md#price-stacking-order, Max-blessed): the commodity hard
+    # [min, max] band is the FINAL clamp — applied AFTER every multiplicative
+    # modifier (rank × faction-rep × personal-rep × tariff × lever). The
+    # persisted buy_price was already band-clamped, but the modifiers above can
+    # re-escape it (a max-rep+rank stack could push the payout above the ceiling),
+    # so re-clamp the final per-unit price LAST. Floors at 1 internally.
+    effective_sell_price = clamp_to_commodity_band(
+        trade_request.resource_type, int(boosted_price)
+    )
 
     # Calculate total earnings (gross, before station trade tax)
     total_earnings = effective_sell_price * trade_request.quantity
