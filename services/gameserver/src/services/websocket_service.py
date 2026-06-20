@@ -235,7 +235,24 @@ class ConnectionManager:
             **turn_data,
         }
         await self.send_personal_message(user_id, message)
-    
+
+    async def send_hostile_detected(self, owner_user_id: str, payload: Dict[str, Any]):
+        """Push a player-scoped ``hostile_detected`` frame to a planet owner.
+
+        A Long-Range Scanner Array (citadel_service DEFENSE_BUILDINGS
+        "scanner_array", effect detection_range_sectors) on the owner's planet
+        picks up a hostile ship moving within detection range of the planet's
+        sector. Mirrors send_turn_pool_update / send_ship_status_change (typed
+        message, personal scope). ``owner_user_id`` is the owning User's id
+        string (the key send_personal_message routes on); ``payload`` carries
+        ``{sector_id, detection_range, ship_id, detected_player_id}``."""
+        message = {
+            "type": "hostile_detected",
+            "timestamp": datetime.now(UTC).isoformat(),
+            **payload,
+        }
+        await self.send_personal_message(owner_user_id, message)
+
     async def send_economy_alert(self, alert_data: Dict[str, Any], admin_only: bool = True):
         """Send economy alert to admins or all users"""
         message = {

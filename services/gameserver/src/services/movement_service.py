@@ -4,11 +4,12 @@ import uuid
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, select
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus, ShipType
 from src.models.sector import Sector, sector_warps
+from src.models.planet import Planet
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
 from src.models.combat import CombatResult
 from src.models.combat_log import CombatLog
@@ -153,6 +154,197 @@ class MovementService:
             except Exception:
                 pass
 
+    # Scanner-array detection model (WO-AY). After a SUCCESSFUL move, a
+    # best-effort sweep finds planets within the scanner_array's
+    # detection_range_sectors (JUMPS) of the destination that have an
+    # OPERATIONAL scanner_array, and warns each detecting planet's owner if the
+    # moving ship is hostile to them. Range is read from citadel_service's
+    # building def (READ-ONLY) — never hardcoded — and the BFS is bounded by it
+    # so the sweep stays cheap (~2 hops). Combat-adjacent "hostile" definition
+    # (owner mismatch AND not same team/corp) is NO-CANON and DECISIONS-filed.
+
+    def _scanner_detection_range(self) -> int:
+        """Read the scanner_array's detection_range_sectors from citadel_service's
+        building definitions (READ-ONLY). Falls back to 0 (sweep no-ops) if the
+        def or effect is missing — never raises, never hardcodes the range."""
+        try:
+            from src.services.citadel_service import DEFENSE_BUILDINGS
+            spec = DEFENSE_BUILDINGS.get("scanner_array", {}) or {}
+            effects = spec.get("effects", {}) or {}
+            return int(effects.get("detection_range_sectors", 0) or 0)
+        except Exception as e:
+            logger.error("Failed to read scanner detection range: %s", e)
+            return 0
+
+    def _bounded_sector_distances(self, start_uuid: uuid.UUID, max_jumps: int) -> Dict[uuid.UUID, int]:
+        """Map each sector UUID within ``max_jumps`` warp-jumps of ``start_uuid``
+        to its jump distance, over the bidirectional ``sector_warps`` graph.
+
+        Level-batched BFS (one pair of queries per depth) mirroring
+        genesis_service._bfs_distances and bounded by ``max_jumps`` so a sweep
+        never traverses the galaxy. Edge model matches the rest of this service:
+        forward source->dest edges plus reverse dest->source edges for
+        bidirectional warps. ``start_uuid`` is at distance 0 (the destination
+        sector itself — a planet sitting in the arrival sector counts)."""
+        distances: Dict[uuid.UUID, int] = {start_uuid: 0}
+        frontier: List[uuid.UUID] = [start_uuid]
+        for depth in range(1, max_jumps + 1):
+            if not frontier:
+                break
+            fwd = self.db.execute(
+                select(sector_warps.c.destination_sector_id)
+                .where(sector_warps.c.source_sector_id.in_(frontier))
+            ).scalars().all()
+            rev = self.db.execute(
+                select(sector_warps.c.source_sector_id)
+                .where(and_(
+                    sector_warps.c.destination_sector_id.in_(frontier),
+                    sector_warps.c.is_bidirectional.is_(True),
+                ))
+            ).scalars().all()
+            nxt: List[uuid.UUID] = []
+            for nbr in list(fwd) + list(rev):
+                if nbr not in distances:
+                    distances[nbr] = depth
+                    nxt.append(nbr)
+            frontier = nxt
+        return distances
+
+    def _is_hostile_to_planet(self, player: Player, owner: Optional[Player]) -> bool:
+        """The moving ``player`` is hostile to a planet whose owner is ``owner``
+        (NO-CANON, DECISIONS-filed conservative "someone's approaching" rule):
+        hostile iff the mover is NOT the owner AND NOT a member of the owner's
+        team/corp. An unowned planet (owner is None) has no one to warn and is
+        never hostile-detecting here."""
+        if owner is None:
+            return False
+        if owner.id == player.id:
+            return False  # the owner's own ship is never hostile
+        # Same team/corp is friendly. team_id is nullable; two None team_ids do
+        # NOT make strangers teammates, so require a real shared team_id.
+        if (
+            owner.team_id is not None
+            and player.team_id is not None
+            and owner.team_id == player.team_id
+        ):
+            return False
+        return True
+
+    def _sweep_scanner_detection(self, player: Player, destination_sector_id: int) -> None:
+        """Best-effort scanner-array detection sweep after a SUCCESSFUL move (WO-AY).
+
+        Finds planets within the scanner_array's detection_range_sectors JUMPS of
+        the destination that have an OPERATIONAL scanner_array (count >= 1), and
+        pushes a player-scoped ``hostile_detected`` WS frame to each detecting
+        planet's owner when the moving ship is hostile to them. The detection
+        range is read from citadel_service's building def (never hardcoded) and
+        the BFS is bounded by it.
+
+        Best-effort, exactly like _roll_mechanical_failure / _notify_bumped: the
+        whole sweep is wrapped so it can NEVER block or crash the move. The WS
+        send is async and this runs in a sync path, so it is scheduled on the
+        running loop via get_running_loop + create_task (it fires after the
+        caller's transaction commits and yields). All DB reads here are
+        READ-ONLY (planets/sectors/owners) — no mutation, no commit.
+        """
+        try:
+            max_jumps = self._scanner_detection_range()
+            if max_jumps <= 0:
+                return
+
+            dest_sector = (
+                self.db.query(Sector)
+                .filter(Sector.sector_id == destination_sector_id)
+                .first()
+            )
+            if not dest_sector:
+                return
+
+            # Sector UUIDs within range (distance 0..max_jumps from destination).
+            distances = self._bounded_sector_distances(dest_sector.id, max_jumps)
+            in_range_uuids = list(distances.keys())
+            if not in_range_uuids:
+                return
+
+            # Planets sitting in any in-range sector (READ-ONLY).
+            planets = (
+                self.db.query(Planet)
+                .filter(Planet.sector_uuid.in_(in_range_uuids))
+                .all()
+            )
+            if not planets:
+                return
+
+            ship_id = player.current_ship_id
+            for planet in planets:
+                # Only OPERATIONAL scanner arrays detect. defense_buildings lives
+                # under active_events['defense_buildings'] as building->count;
+                # active_events may be a legacy list, in which case it's empty
+                # (mirrors citadel_service._get_defense_buildings tolerance).
+                events = planet.active_events
+                if not isinstance(events, dict):
+                    continue
+                buildings = events.get("defense_buildings", {}) or {}
+                try:
+                    scanner_count = int(buildings.get("scanner_array", 0) or 0)
+                except (TypeError, ValueError):
+                    scanner_count = 0
+                if scanner_count < 1:
+                    continue
+
+                if planet.owner_id is None:
+                    continue
+                owner = (
+                    self.db.query(Player)
+                    .filter(Player.id == planet.owner_id)
+                    .first()
+                )
+                if owner is None or owner.user_id is None:
+                    continue
+
+                if not self._is_hostile_to_planet(player, owner):
+                    continue
+
+                self._dispatch_hostile_detected(
+                    owner_user_id=owner.user_id,
+                    sector_id=destination_sector_id,
+                    detection_range=distances.get(planet.sector_uuid, 0),
+                    ship_id=ship_id,
+                    detected_player_id=player.id,
+                )
+        except Exception as e:
+            logger.error("Scanner detection sweep failed during movement: %s", e)
+
+    def _dispatch_hostile_detected(self, owner_user_id, sector_id: int,
+                                   detection_range: int, ship_id,
+                                   detected_player_id) -> None:
+        """Schedule the async ``hostile_detected`` WS push to a planet owner.
+
+        Mirrors docking_service._notify_bumped / turn_service._emit_turn_pool_update:
+        import inside the function, grab the running loop, schedule the coroutine
+        with loop.create_task (so it runs after the move's transaction commits and
+        yields, never blocking the sync move), and swallow any failure (no loop,
+        no socket) so a quiet socket can never break the move."""
+        try:
+            import asyncio
+            from src.services.websocket_service import connection_manager
+
+            loop = asyncio.get_running_loop()
+            loop.create_task(connection_manager.send_hostile_detected(
+                str(owner_user_id),
+                {
+                    "sector_id": sector_id,
+                    "detection_range": detection_range,
+                    "ship_id": str(ship_id) if ship_id else None,
+                    "detected_player_id": str(detected_player_id),
+                },
+            ))
+        except Exception:
+            logger.debug(
+                "Skipped hostile-detected WS notice (no loop or socket)",
+                exc_info=True,
+            )
+
     def move_player_to_sector(self, player_id: uuid.UUID, destination_sector_id: int) -> Dict[str, Any]:
         """
         Move a player to a destination sector.
@@ -224,6 +416,10 @@ class MovementService:
             )
             encounters = self._check_for_encounters(player, destination_sector_id)
             result.update({"tunnel_events": tunnel_events, "encounters": encounters})
+            # WO-AY: a successful gate jump is a real arrival — sweep for
+            # scanner-array detections (best-effort; only on real success).
+            if result.get("success"):
+                self._sweep_scanner_detection(player, destination_sector_id)
             return result
 
         # Check if direct warp exists
@@ -249,6 +445,8 @@ class MovementService:
             # mechanical failure (best-effort; only fires on a real move success).
             if result.get("success"):
                 self._roll_mechanical_failure(player, result)
+                # WO-AY: same success path — sweep for scanner-array detections.
+                self._sweep_scanner_detection(player, destination_sector_id)
             return result
 
         # Check if warp tunnel exists
@@ -277,6 +475,8 @@ class MovementService:
             # mechanical failure (best-effort; only fires on a real move success).
             if result.get("success"):
                 self._roll_mechanical_failure(player, result)
+                # WO-AY: same success path — sweep for scanner-array detections.
+                self._sweep_scanner_detection(player, destination_sector_id)
             return result
 
         # If we get here, no valid path was found
