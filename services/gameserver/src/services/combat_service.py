@@ -360,6 +360,24 @@ class CombatService:
                 },
             )
 
+        # Grey-flag PvP status (WO-BL). Two interacting facts, both evaluated
+        # against PRE-resolution standing so a kill that drops the defender's rep
+        # via destruction side-effects can't change the verdict:
+        #   - was the DEFENDER a good-standing player? → only then does attacking
+        #     them mark the ATTACKER grey (1h, "player_attack").
+        #   - is the DEFENDER currently grey, and does the ATTACKER qualify for the
+        #     penalty-free exemption? → then the attack_innocent rep penalty AND the
+        #     attack_innocent police engagement are both SKIPPED.
+        # Snapshot the defender's good-standing BEFORE any rep mutation below.
+        from src.services.grey_flag_service import (
+            GreyFlagService,
+            GREY_KIND_PLAYER_ATTACK,
+            is_good_standing,
+            attack_is_penalty_free,
+        )
+        defender_was_good_standing = is_good_standing(defender)
+        attack_was_penalty_free = attack_is_penalty_free(attacker, defender)
+
         # Personal reputation + bounty hooks
         attacked_innocent = False
         killed_escape_pod = False
@@ -378,9 +396,31 @@ class CombatService:
                 elif not bounty_result.get("had_bounty"):
                     # Target carried NO bounty at all — attacked a genuine
                     # innocent. Reputation penalty + police "attack_innocent"
-                    # engagement trigger (attacked_innocent gates that below).
-                    rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
-                    attacked_innocent = True
+                    # engagement trigger (attacked_innocent gates that below) —
+                    # UNLESS the target is grey and this attacker qualifies for the
+                    # penalty-free exemption (WO-BL): bringing a flagged aggressor
+                    # to justice is lawful, so neither the rep penalty nor the
+                    # police "attack_innocent" routing fires.
+                    if attack_was_penalty_free:
+                        logger.info(
+                            "Grey-flag exemption: player %s killed grey target %s "
+                            "penalty-free (kind=%s) — attack_innocent rep + police "
+                            "skipped (WO-BL)",
+                            attacker.id, defender.id, defender.grey_kind,
+                        )
+                    else:
+                        rep_service.adjust_reputation(attacker.id, -100, "attack_innocent")
+                        attacked_innocent = True
+                        # Aggressing on a GOOD-STANDING player marks the ATTACKER
+                        # grey for 1h: good-standing players may now hunt them
+                        # penalty-free. Only good-standing victims trigger this —
+                        # gunning down an already-grey/outlaw player is its own
+                        # (separate) consequence, not a fresh open-season mark. MAX
+                        # rule applied inside set_grey (never shortens a longer grey).
+                        if defender_was_good_standing:
+                            GreyFlagService(self.db).set_grey(
+                                attacker, GREY_KIND_PLAYER_ATTACK
+                            )
                 # else: had_bounty True but total_collected == 0 — the target
                 # was a known criminal whose head this hunter had ALREADY turned
                 # in (system bounty deduped by the claims ledger). Killing a
@@ -1231,17 +1271,34 @@ class CombatService:
         
         # Update port defenses
         station.defense_level = max(0, station.defense_level - combat_result["port_damage"])
-        
+
         # If port was captured, transfer ownership
         if combat_result["port_captured"]:
             self._transfer_port_ownership(station, attacker)
-        
+
         # Update last_attacked timestamp for port
         station.last_attacked = datetime.now()
-        
+
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
-        
+
+        # Grey-flag PvP status (WO-BL): assaulting a STATION marks the attacker
+        # grey for 1 DAY ("station_attack") — while grey, ANY player may attack
+        # them penalty-free. Charged for the act of assaulting infrastructure,
+        # regardless of capture/outcome (this line is only reached after every
+        # guard has passed and the attack has definitively proceeded). MAX rule
+        # applied inside set_grey. Best-effort: a grey-flag hiccup never breaks
+        # combat resolution. (attack_port is not yet route-wired — port assault
+        # returns 501 — but the rail is ready for when it lands.)
+        try:
+            from src.services.grey_flag_service import (
+                GreyFlagService,
+                GREY_KIND_STATION_ATTACK,
+            )
+            GreyFlagService(self.db).set_grey(attacker, GREY_KIND_STATION_ATTACK)
+        except Exception as e:
+            logger.error("Failed grey-flag hook after port assault: %s", e)
+
         # Commit changes
         self.db.commit()
         
@@ -3198,30 +3255,16 @@ class CombatService:
         
         logger.info(f"Player {player.id} ship destroyed, ejected to {escape_pod.name}")
 
-    @staticmethod
-    def _set_suspect(player: Player) -> None:
-        """Idempotently raise a player's Suspect flag (police-forces.md /
-        ranking.md). SET-once: an already-suspect player (suspect_declared_at
-        present) is left untouched so a repeat offense never resets the
-        ranking/police lane's auto-clear timer. is_suspect is forced True
-        whenever a declared_at exists, healing a flag that was cleared in
-        isolation."""
-        if getattr(player, "suspect_declared_at", None) is None:
-            player.is_suspect = True
-            player.suspect_declared_at = datetime.now()
-        elif not player.is_suspect:
-            player.is_suspect = True
-
-    @staticmethod
-    def _set_wanted(player: Player) -> None:
-        """Idempotently raise a player's Wanted flag (police-forces.md /
-        ranking.md). SET-once on wanted_declared_at — see _set_suspect for the
-        idempotency rationale."""
-        if getattr(player, "wanted_declared_at", None) is None:
-            player.is_wanted = True
-            player.wanted_declared_at = datetime.now()
-        elif not player.is_wanted:
-            player.is_wanted = True
+    # NOTE (WO-BL): the dead combat-driven _set_suspect / _set_wanted static
+    # helpers were REMOVED here. They were the never-wired (zero call sites)
+    # combat auto-setters for is_suspect / is_wanted — wrong triggers (attack-
+    # innocent / escape-pod / rep-threshold are police *engagement* triggers, not
+    # the canon Suspect/Wanted lifecycle), no expiry, and a canon conflict (see
+    # the deferred note in attack_player + DECISIONS.md "combat-suspect-wanted-
+    # triggers"). The GREY-FLAG system (grey_flag_service) now carries the
+    # combat-aggression consequence with the correct expiring open-season
+    # semantics. The is_suspect / is_wanted COLUMNS remain in place (untouched)
+    # for the canon-correct cargo-wreck / stolen-ship triggers when they land.
 
     def _transfer_cargo(self, source_ship: Ship, target_ship: Ship, cargo_to_transfer: Dict[str, int]) -> None:
         """Transfer cargo from one ship to another.

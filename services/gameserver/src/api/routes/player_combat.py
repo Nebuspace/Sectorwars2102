@@ -571,3 +571,75 @@ async def retreat_from_sector(
             turnsConsumed=turn_cost,
             turnsRemaining=player.turns
         )
+
+
+# --- Grey-flag PvP status (WO-BL) ---
+
+class GreyStatusResponse(BaseModel):
+    """Current grey-flag PvP status for the authenticated player.
+
+    Grey is a temporary "open season" mark earned by aggressing on a lawful
+    target (attacking a good-standing player → 1h; attacking a station → 1 day).
+    While grey, qualifying players may attack this player with no reputation
+    penalty. Clears at greyUntil or by paying clearFineCredits early.
+    """
+    isGrey: bool
+    kind: Optional[str] = Field(
+        None, description="'player_attack' (1h) | 'station_attack' (1 day) | null"
+    )
+    greyUntil: Optional[str] = Field(None, description="ISO8601 expiry, or null")
+    remainingSeconds: int = Field(0, description="Seconds until auto-expiry (0 if not grey)")
+    clearFineCredits: Optional[int] = Field(
+        None, description="Credits to clear early (null if not grey)"
+    )
+
+
+@router.get("/grey-status", response_model=GreyStatusResponse)
+async def get_grey_status(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Report the authenticated player's grey-flag PvP status.
+
+    Expired grey reports isGrey=False with remainingSeconds 0 (the predicate
+    ignores lapsed flags). Read-only — no mutation, no commit.
+    """
+    from src.services.grey_flag_service import GreyFlagService
+    status = GreyFlagService(db).grey_status(player)
+    return GreyStatusResponse(
+        isGrey=status["is_grey"],
+        kind=status["kind"],
+        greyUntil=status["grey_until"],
+        remainingSeconds=status["remaining_seconds"],
+        clearFineCredits=status["clear_fine_credits"],
+    )
+
+
+class GreyClearFineResponse(BaseModel):
+    """Result of paying the fine to clear grey status early."""
+    success: bool
+    message: str
+    finePaid: Optional[int] = None
+    creditsRemaining: Optional[int] = None
+
+
+@router.post("/grey-status/clear-fine", response_model=GreyClearFineResponse)
+async def clear_grey_by_fine(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Pay the early-clear fine to remove the authenticated player's grey status.
+
+    Charges the kind-specific fine under a row lock and clears the flag. Returns
+    success=False (with a reason) when the player is not grey, the grey has
+    already expired, or there are insufficient credits — credits and grey status
+    are left untouched in every failure case.
+    """
+    from src.services.grey_flag_service import GreyFlagService
+    result = GreyFlagService(db).clear_grey_by_fine(player.id)
+    return GreyClearFineResponse(
+        success=result.get("success", False),
+        message=result.get("message", ""),
+        finePaid=result.get("fine_paid"),
+        creditsRemaining=result.get("credits_remaining"),
+    )

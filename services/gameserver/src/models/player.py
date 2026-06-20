@@ -81,6 +81,17 @@ class Player(Base):
     is_wanted = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     suspect_declared_at = Column(DateTime(timezone=True), nullable=True)
     wanted_declared_at = Column(DateTime(timezone=True), nullable=True)
+    # Grey-flag PvP status (WO-BL, Max-ruled). A temporary "open season" mark
+    # earned by aggressing on a lawful target:
+    #   - attacking a GOOD-STANDING player → grey 1h (grey_kind="player_attack");
+    #     while grey, GOOD-STANDING players may attack this player penalty-free.
+    #   - attacking a STATION → grey 1 day (grey_kind="station_attack"); while
+    #     grey, ANY player may attack this player penalty-free.
+    # grey_until is the UTC expiry (NULL = not grey); a lesser later offense never
+    # shortens it (MAX of existing/new). Cleared early by paying a fine. NO-CANON
+    # numbers (durations / fines / good-standing threshold) — flagged for Max.
+    grey_until = Column(DateTime(timezone=True), nullable=True)
+    grey_kind = Column(String(20), nullable=True)  # "player_attack" | "station_attack"
     # Journey victory (rank-1 completion of the campaign).
     is_game_complete = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     rank_victory_at = Column(DateTime(timezone=True), nullable=True)

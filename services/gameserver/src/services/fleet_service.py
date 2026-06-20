@@ -1133,7 +1133,7 @@ class FleetService:
             # concurrent kills (collect_bounty_share locks each HUNTER row, not
             # the target — the target lock belongs here, mirroring solo's
             # collect_bounty which locks both).
-            self.db.query(Player).filter(
+            killed_player = self.db.query(Player).filter(
                 Player.id == killed_player_id
             ).with_for_update().first()
 
@@ -1168,9 +1168,67 @@ class FleetService:
                 # the participants (the whole fleet shares the infamy). The
                 # per-player [-1000, 1000] clamp is acceptable; we do not claim
                 # exact total conservation for reputation.
-                self._split_reputation(
-                    rep_service, participant_ids, -100, "attack_innocent"
+                #
+                # Grey-flag exemption (WO-BL), mirrored from the solo PvP path
+                # (combat_service attack_player): if the killed target is GREY,
+                # each participant who individually qualifies for that grey kind's
+                # exemption (station_attack → anyone; player_attack → only
+                # good-standing) is bringing a flagged aggressor to justice and is
+                # EXCLUDED from the penalty split. Only the non-exempt participants
+                # share the -100. The penalty-free check is per-attacker, so we
+                # partition rather than all-or-nothing.
+                from src.services.grey_flag_service import (
+                    GreyFlagService,
+                    GREY_KIND_PLAYER_ATTACK,
+                    attack_is_penalty_free,
+                    is_good_standing,
                 )
+                penalized_ids: List[UUID] = []
+                exempt_count = 0
+                for pid in participant_ids:
+                    member = (
+                        self.db.query(Player).filter(Player.id == pid).first()
+                        if killed_player is not None else None
+                    )
+                    if (member is not None and killed_player is not None
+                            and attack_is_penalty_free(member, killed_player)):
+                        exempt_count += 1
+                        continue
+                    penalized_ids.append(pid)
+                if exempt_count:
+                    logger.info(
+                        "Grey-flag exemption (fleet): %d of %d participants killed "
+                        "grey target %s penalty-free (kind=%s) — excluded from the "
+                        "attack_innocent split (WO-BL)",
+                        exempt_count, len(participant_ids), killed_player_id,
+                        getattr(killed_player, "grey_kind", None),
+                    )
+                if penalized_ids:
+                    self._split_reputation(
+                        rep_service, penalized_ids, -100, "attack_innocent"
+                    )
+                    # Grey-flag SET (WO-BL), symmetric with the solo PvP path:
+                    # aggressing on a GOOD-STANDING player marks each NON-exempt
+                    # participant grey for 1h ("player_attack"). Only fires when the
+                    # killed target was good-standing (gunning down an already-grey/
+                    # outlaw player is not a fresh open-season offense), and only on
+                    # the participants who actually ate the penalty (an exempt
+                    # justice-bringer does not become grey for the kill). MAX rule
+                    # inside set_grey. Best-effort: never break battle resolution.
+                    if (killed_player is not None
+                            and is_good_standing(killed_player)):
+                        grey_service = GreyFlagService(self.db)
+                        for pid in penalized_ids:
+                            member = (
+                                self.db.query(Player)
+                                .filter(Player.id == pid)
+                                .with_for_update()
+                                .first()
+                            )
+                            if member is not None:
+                                grey_service.set_grey(
+                                    member, GREY_KIND_PLAYER_ATTACK
+                                )
             # else: had_bounty True — at least one bounty existed. Members who
             # collected got +100 above; members blocked by their own dedup got
             # neither +100 nor -100, exactly as the solo path leaves the
