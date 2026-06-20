@@ -570,7 +570,15 @@ class ARIAPersonalIntelligenceService:
     async def evolve_trading_pattern(self, player_id: str, trade_result: Dict[str, Any],
                                    db: AsyncSession):
         """
-        Evolve player's personal trading patterns based on success/failure
+        Update a player's personal trading-pattern observation accounting.
+
+        Per ADR-0038 (Accepted) ARIA learning is a purely append-only
+        observation log: this records plain performance metrics
+        (times_used / success_rate / average_profit / best_profit /
+        worst_loss / last_used) for the pattern derived from this trade.
+        There is no genetic-algorithm evolution — no fitness-driven
+        mutation or offspring. The method name is retained for caller
+        compatibility.
         """
         pattern_id = trade_result.get("pattern_id")
         if not pattern_id:
@@ -608,37 +616,28 @@ class ARIAPersonalIntelligenceService:
                 (pattern.success_rate * (pattern.times_used - 1)) / pattern.times_used
             )
             pattern.worst_loss = min(pattern.worst_loss, profit)
-        
-        # Calculate fitness
-        pattern.fitness_score = self._calculate_pattern_fitness(pattern)
-        
-        # Evolution decision
-        if pattern.times_used >= 10:
-            if pattern.fitness_score < 0.3:
-                # Pattern is failing, mutate it
-                await self._mutate_pattern(pattern, db)
-            elif pattern.fitness_score > 0.7:
-                # Pattern is successful, create offspring
-                await self._create_pattern_offspring(player_id, pattern, db)
-        
+
         await db.commit()
         self.patterns_evolved += 1
     
-    async def get_evolved_patterns(self, player_id: str, 
+    async def get_evolved_patterns(self, player_id: str,
                                  db: AsyncSession,
                                  pattern_type: Optional[str] = None) -> List[ARIATradingPattern]:
         """
-        Get player's evolved trading patterns
+        Get a player's recorded trading patterns, most-used first.
+
+        Ordered by observation accounting (times_used) rather than the legacy
+        GA fitness score, per ADR-0038's append-only observation-log model.
         """
         stmt = select(ARIATradingPattern).where(
             ARIATradingPattern.player_id == player_id
         )
-        
+
         if pattern_type:
             stmt = stmt.where(ARIATradingPattern.pattern_type == pattern_type)
-        
-        stmt = stmt.order_by(ARIATradingPattern.fitness_score.desc()).limit(10)
-        
+
+        stmt = stmt.order_by(ARIATradingPattern.times_used.desc()).limit(10)
+
         result = await db.execute(stmt)
         return result.scalars().all()
     
@@ -962,31 +961,7 @@ class ARIAPersonalIntelligenceService:
         random_component = hashlib.sha256(str(np.random.random()).encode()).hexdigest()[:8]
         return f"cascade_{timestamp}_{random_component}"
     
-    def _calculate_pattern_fitness(self, pattern: ARIATradingPattern) -> float:
-        """Calculate evolutionary fitness of a trading pattern"""
-        if pattern.times_used == 0:
-            return 0.5  # Neutral fitness for unused patterns
-        
-        # Success rate component (40%)
-        success_component = pattern.success_rate * 0.4
-        
-        # Profit component (40%)
-        if pattern.average_profit > 0:
-            # Normalize profit (assume 1000 credits is good profit)
-            profit_component = min(pattern.average_profit / 1000, 1.0) * 0.4
-        else:
-            profit_component = 0
-        
-        # Risk component (20%) - penalize high losses
-        if pattern.worst_loss < -1000:
-            risk_component = 0
-        else:
-            risk_component = (1 + pattern.worst_loss / 1000) * 0.2
-        
-        fitness = success_component + profit_component + risk_component
-        return min(fitness, 1.0)
-    
-    def _generate_recommendation(self, value: float, action: str, 
+    def _generate_recommendation(self, value: float, action: str,
                                commodity: str) -> str:
         """Generate trading recommendation"""
         if action == "buy":
@@ -1214,58 +1189,6 @@ class ARIAPersonalIntelligenceService:
         else:
             return "general"
     
-    async def _mutate_pattern(self, pattern: ARIATradingPattern, db: AsyncSession):
-        """Mutate unsuccessful pattern"""
-        # Mutate DNA
-        mutated_dna = pattern.pattern_dna.copy()
-        
-        # Random mutations
-        if "risk_tolerance" in mutated_dna:
-            mutated_dna["risk_tolerance"] *= (1 + np.random.uniform(-0.2, 0.2))
-            
-        if "time_preference" in mutated_dna:
-            mutated_dna["time_preference"] = (mutated_dna["time_preference"] + 
-                                            np.random.randint(-2, 3)) % 24
-        
-        pattern.pattern_dna = mutated_dna
-        pattern.generation += 1
-        pattern.evolved_at = datetime.now(UTC)
-        pattern.mutations.append({
-            "generation": pattern.generation,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "changes": "risk_and_time_mutations"
-        })
-    
-    async def _create_pattern_offspring(self, player_id: str, 
-                                      parent: ARIATradingPattern,
-                                      db: AsyncSession):
-        """Create offspring from successful pattern"""
-        # Create variation
-        offspring_dna = parent.pattern_dna.copy()
-        
-        # Small variations
-        for key, value in offspring_dna.items():
-            if isinstance(value, (int, float)):
-                offspring_dna[key] = value * (1 + np.random.uniform(-0.05, 0.05))
-        
-        # New pattern ID
-        pattern_id = hashlib.sha256(
-            json.dumps(offspring_dna, sort_keys=True).encode()
-        ).hexdigest()[:16]
-        
-        offspring = ARIATradingPattern(
-            player_id=player_id,
-            pattern_id=pattern_id,
-            pattern_type=parent.pattern_type,
-            pattern_dna=offspring_dna,
-            generation=parent.generation + 1,
-            parent_pattern=parent.pattern_id,
-            discovered_at=datetime.now(UTC)
-        )
-        
-        db.add(offspring)
-        await db.commit()
-
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
     # =============================================================================
