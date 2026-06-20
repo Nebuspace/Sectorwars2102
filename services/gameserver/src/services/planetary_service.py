@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 SIEGE_TURNS_THRESHOLD = 3       # Consecutive turns enemies must be present to trigger siege
 SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
-DEFENSE_UPGRADE_COST = 1000     # Credits per defense level
+# ADR-0076 retired the flat DEFENSE_UPGRADE_COST=1000/level path (upgrade_defense);
+# citadel level unlocks tiers and defense_unit_price (per added unit) prices them.
 DEFENSE_MAX_LEVEL = 10          # Maximum defense level
 # Per-unit credit cost to ADD planetary defense units (ADR-0076 "Scaled defense
 # pricing", Accepted). The price is no longer flat: it scales with citadel level
@@ -1129,71 +1130,6 @@ class PlanetaryService:
             f"{applied} turn(s) applied, morale now {planet.morale}"
         )
         return True
-
-    def upgrade_defense(
-        self,
-        planet_id: UUID,
-        player_id: UUID
-    ) -> Dict[str, Any]:
-        """
-        Upgrade a planet's defense level by one.
-        Costs DEFENSE_UPGRADE_COST credits per level.
-        Max defense level is DEFENSE_MAX_LEVEL.
-        Each level adds DEFENSE_DAMAGE_REDUCTION_PER_LEVEL damage reduction during siege.
-        """
-        # Verify ownership
-        planet = self.db.query(Planet).join(
-            player_planets,
-            Planet.id == player_planets.c.planet_id
-        ).filter(
-            and_(
-                Planet.id == planet_id,
-                player_planets.c.player_id == player_id
-            )
-        ).first()
-
-        if not planet:
-            raise ValueError("Planet not found or not owned by player")
-
-        current_level = planet.defense_level or 0
-
-        if current_level >= DEFENSE_MAX_LEVEL:
-            raise ValueError(f"Defense is already at maximum level ({DEFENSE_MAX_LEVEL})")
-
-        # Cost scales with level: base_cost * (current_level + 1)
-        upgrade_cost = DEFENSE_UPGRADE_COST * (current_level + 1)
-
-        # Lock player for credit deduction
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
-        if not player:
-            raise ValueError("Player not found")
-
-        if player.credits < upgrade_cost:
-            raise ValueError(
-                f"Insufficient credits. Need {upgrade_cost}, have {player.credits}"
-            )
-
-        # Deduct credits and upgrade
-        player.credits -= upgrade_cost
-        new_level = current_level + 1
-        planet.defense_level = new_level
-
-        # Calculate new damage reduction
-        damage_reduction = new_level * DEFENSE_DAMAGE_REDUCTION_PER_LEVEL
-
-        self.db.commit()
-        self.db.refresh(planet)
-        self.db.refresh(player)
-
-        return {
-            "success": True,
-            "defenseLevel": new_level,
-            "maxLevel": DEFENSE_MAX_LEVEL,
-            "damageReduction": f"{int(damage_reduction * 100)}%",
-            "creditsCost": upgrade_cost,
-            "creditsRemaining": player.credits,
-            "nextUpgradeCost": DEFENSE_UPGRADE_COST * (new_level + 1) if new_level < DEFENSE_MAX_LEVEL else None
-        }
 
     def _get_shield_upgrade(self, planet: Planet) -> Optional[Dict[str, Any]]:
         """Return the in-progress shield-upgrade anchor from active_events, or None."""
