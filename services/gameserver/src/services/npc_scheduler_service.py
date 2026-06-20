@@ -124,6 +124,17 @@ GENESIS_COMPLETION_SECONDS = 5 * 60
 # genesis completion sweep above.
 PLANETARY_ADVANCE_SECONDS = 5 * 60
 
+# Regional governance sweep cadence (open due elections, close+tally elections
+# past their window, finalize policies past their window). The state machine is
+# driven by wall-clock voting windows (voting_opens_at / voting_closes_at /
+# RegionalPolicy.voting_closes_at are absolute timestamps set at creation), so
+# this sweep — like the genesis/planetary sweeps — keys off the per-row durable
+# timestamp, not a process-relative clock: a missed boundary on restart is just
+# processed by the next sweep (nothing is lost). A 5-minute cadence settles a
+# closed election/policy promptly without churning the DB; idempotent + a clean
+# no-op when nothing is due.
+GOVERNANCE_SWEEP_SECONDS = 5 * 60
+
 # Weekly maintenance (reputation/relationship decay). Unlike Loops A/B/C, a
 # weekly job CANNOT key off the process-relative ``elapsed_seconds`` clock —
 # that counter resets on every restart, so an ``elapsed % week == 0`` guard
@@ -1578,6 +1589,235 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Regional governance sweep — open/close elections + finalize policies
+# ---------------------------------------------------------------------------
+
+def _run_governance_sweep_sync() -> Dict[str, int]:
+    """Drive the regional democratic loop forward on the canonical clock.
+
+    Three idempotent phases mirroring the planetary advance sweep's discipline
+    (own session, xact advisory lock, per-row with_for_update + per-row commit,
+    per-row failure isolation):
+
+      1. OPEN due elections: PENDING elections whose voting_opens_at has passed
+         become ACTIVE (so voting can begin).
+      2. CLOSE + TALLY elections past voting_closes_at: ACTIVE -> COMPLETED with
+         the winner persisted to results. A COMPLETED election is never re-
+         tallied (the status filter excludes it).
+      3. FINALIZE policies past voting_closes_at: VOTING -> {IMPLEMENTED |
+         REJECTED}, applying a passed policy's effect onto the region CLAMPED to
+         the CHECK bounds. A non-VOTING policy is never re-finalized.
+
+    All logic is reimplemented SYNCHRONOUSLY here against the sync session and
+    reuses the PURE, session-agnostic helpers in regional_governance_service
+    (compute_quorum / quorum_pct_for_region / determine_election_winner /
+    enact_changes_onto_region / threshold_for_policy) so the sweep applies
+    IDENTICAL canon to the async vote-time path. We cannot await the async
+    service methods here without poisoning the shared async engine pool — the
+    same constraint that forces the faction/ARIA decay to be reimplemented in
+    sync (see _apply_faction_decay_sync). Idempotent + a clean no-op when
+    nothing is due.
+
+    Returns {opened, tallied, enacted, rejected}.
+    """
+    from src.core.database import SessionLocal
+    from src.models.region import (
+        Region, RegionalElection, RegionalPolicy, RegionalVote,
+        RegionalMembership, ElectionStatus, PolicyStatus,
+    )
+    from src.services.regional_governance_service import (
+        compute_quorum, quorum_pct_for_region, threshold_for_policy,
+        determine_election_winner, enact_changes_onto_region,
+        ELECTION_TALLYING, POLICY_VOTERS_KEY,
+    )
+    from sqlalchemy import func as sa_func
+    from sqlalchemy.orm.attributes import flag_modified
+
+    result = {"opened": 0, "tallied": 0, "enacted": 0, "rejected": 0}
+    now = datetime.utcnow()
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+
+        # --- Phase 1: open due PENDING elections -----------------------------
+        due_open = (
+            db.query(RegionalElection.id)
+            .filter(
+                RegionalElection.status == ElectionStatus.PENDING,
+                RegionalElection.voting_opens_at <= now,
+                RegionalElection.voting_closes_at > now,
+            )
+            .all()
+        )
+        for (eid,) in due_open:
+            try:
+                election = (
+                    db.query(RegionalElection)
+                    .filter(RegionalElection.id == eid)
+                    .with_for_update()
+                    .first()
+                )
+                if election is None or election.status != ElectionStatus.PENDING:
+                    db.rollback()
+                    continue
+                election.status = ElectionStatus.ACTIVE
+                db.commit()
+                result["opened"] += 1
+            except Exception:
+                logger.exception("Governance sweep: open failed for election %s", eid)
+                db.rollback()
+
+        # --- Phase 2: close + tally elections past their window --------------
+        due_close = (
+            db.query(RegionalElection.id)
+            .filter(
+                RegionalElection.status == ElectionStatus.ACTIVE,
+                RegionalElection.voting_closes_at <= now,
+            )
+            .all()
+        )
+        for (eid,) in due_close:
+            try:
+                election = (
+                    db.query(RegionalElection)
+                    .filter(RegionalElection.id == eid)
+                    .with_for_update()
+                    .first()
+                )
+                # Idempotency: skip anything that left ACTIVE since we listed it.
+                if election is None or election.status != ElectionStatus.ACTIVE:
+                    db.rollback()
+                    continue
+                region = (
+                    db.query(Region)
+                    .filter(Region.id == election.region_id)
+                    .first()
+                )
+                if region is None:
+                    db.rollback()
+                    continue
+
+                election.status = ELECTION_TALLYING
+                rows = (
+                    db.query(
+                        RegionalVote.candidate_id,
+                        sa_func.coalesce(sa_func.sum(RegionalVote.weight), 0),
+                    )
+                    .filter(RegionalVote.election_id == election.id)
+                    .group_by(RegionalVote.candidate_id)
+                    .all()
+                )
+                tallies = {str(cid): float(total) for cid, total in rows}
+                _winner, payload = determine_election_winner(region, election, tallies)
+                if not tallies:
+                    payload["inconclusive"] = True
+                election.results = payload
+                flag_modified(election, "results")
+                election.status = ElectionStatus.COMPLETED
+                db.commit()
+                result["tallied"] += 1
+            except Exception:
+                logger.exception("Governance sweep: tally failed for election %s", eid)
+                db.rollback()
+
+        # --- Phase 3: finalize policies past their window --------------------
+        due_policies = (
+            db.query(RegionalPolicy.id)
+            .filter(
+                RegionalPolicy.status == PolicyStatus.VOTING,
+                RegionalPolicy.voting_closes_at <= now,
+            )
+            .all()
+        )
+        for (pid,) in due_policies:
+            try:
+                policy = (
+                    db.query(RegionalPolicy)
+                    .filter(RegionalPolicy.id == pid)
+                    .with_for_update()
+                    .first()
+                )
+                # Idempotency: only a still-VOTING policy is finalized.
+                if policy is None or policy.status != PolicyStatus.VOTING:
+                    db.rollback()
+                    continue
+                region = (
+                    db.query(Region)
+                    .filter(Region.id == policy.region_id)
+                    .with_for_update()
+                    .first()
+                )
+                if region is None:
+                    db.rollback()
+                    continue
+
+                eligible = (
+                    db.query(sa_func.count(RegionalMembership.id))
+                    .filter(
+                        RegionalMembership.region_id == region.id,
+                        RegionalMembership.membership_type.in_(["citizen", "resident"]),
+                        RegionalMembership.voting_power > 0,
+                    )
+                    .scalar()
+                ) or 0
+                quorum = compute_quorum(int(eligible), quorum_pct_for_region(region))
+
+                changes = dict(policy.proposed_changes or {})
+                voters = changes.get(POLICY_VOTERS_KEY)
+                votes_cast = (
+                    len(voters) if isinstance(voters, list)
+                    else (1 if (policy.votes_for or 0) + (policy.votes_against or 0) > 0 else 0)
+                )
+
+                threshold = threshold_for_policy(region, policy.policy_type)
+                total_weight = int(policy.votes_for or 0) + int(policy.votes_against or 0)
+                approval = (
+                    float(policy.votes_for or 0) / total_weight
+                    if total_weight > 0 else 0.0
+                )
+
+                if votes_cast < quorum:
+                    policy.status = PolicyStatus.REJECTED
+                    db.commit()
+                    result["rejected"] += 1
+                elif approval >= float(threshold):
+                    policy.status = PolicyStatus.PASSED
+                    enact_changes_onto_region(region, policy.proposed_changes)
+                    region.updated_at = now
+                    cleaned = dict(policy.proposed_changes or {})
+                    cleaned.pop(POLICY_VOTERS_KEY, None)
+                    policy.proposed_changes = cleaned
+                    flag_modified(policy, "proposed_changes")
+                    policy.status = PolicyStatus.IMPLEMENTED
+                    db.commit()
+                    result["enacted"] += 1
+                else:
+                    policy.status = PolicyStatus.REJECTED
+                    db.commit()
+                    result["rejected"] += 1
+            except Exception:
+                logger.exception("Governance sweep: finalize failed for policy %s", pid)
+                db.rollback()
+
+        # Final commit closes out any open (no-op) transaction so the advisory
+        # lock is not held on the pooled connection.
+        db.commit()
+        return result
+    except Exception:
+        logger.exception("Governance sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
 
@@ -2080,6 +2320,33 @@ async def npc_scheduler_loop() -> None:
             except Exception:
                 logger.exception(
                     "NPC scheduler: planetary advance sweep crashed (loop continues)"
+                )
+
+        # Regional governance sweep (open/close elections + finalize policies).
+        # Drives the democratic loop forward on the durable per-row voting
+        # windows so an election/policy resolves even if no player happens to
+        # read it — runs in the worker thread, own session, own advisory lock.
+        # Idempotent + a no-op when nothing is due.
+        if elapsed % GOVERNANCE_SWEEP_SECONDS == 0:
+            try:
+                gov = await asyncio.to_thread(_run_governance_sweep_sync)
+                if (
+                    gov.get("opened")
+                    or gov.get("tallied")
+                    or gov.get("enacted")
+                    or gov.get("rejected")
+                ):
+                    logger.info(
+                        "NPC scheduler: governance sweep — %d opened, "
+                        "%d tallied, %d enacted, %d rejected",
+                        gov.get("opened", 0), gov.get("tallied", 0),
+                        gov.get("enacted", 0), gov.get("rejected", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: governance sweep crashed (loop continues)"
                 )
 
         # Weekly reputation/relationship decay (fully synchronous). Gated by a

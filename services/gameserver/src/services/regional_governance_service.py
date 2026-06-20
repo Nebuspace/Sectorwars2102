@@ -5,19 +5,270 @@ Handles business logic for regional governance operations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, and_, or_
-from typing import List, Dict, Optional, Any
+from sqlalchemy.exc import IntegrityError
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timedelta
+from decimal import Decimal
+from math import ceil
 import uuid
 import logging
 
 from src.models.region import (
-    Region, RegionalMembership, RegionalPolicy, RegionalElection, 
+    Region, RegionalMembership, RegionalPolicy, RegionalElection,
     RegionalVote, RegionalTreaty, GovernanceType, PolicyStatus, ElectionStatus
 )
 from src.models.player import Player
 from src.models.user import User
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Governance loop — canon constants (sw2102-docs SYSTEMS/regional-governance.md
+# + FEATURES/gameplay/regional-governance.md + ADR-0059 N-D5/N-F5/N-I4).
+# ---------------------------------------------------------------------------
+
+# ADR-0059 N-D5: region-owner-configurable quorum, Decimal(3,2), clamped
+# [0.25, 0.60], default 0.33. The `Region.governance_quorum_pct` COLUMN is
+# ADR-Accepted but NOT yet in the live model (alembic head is branched / no
+# migration in scope) — so we read it via getattr and fall back to the canon
+# default. Flagged NO-CANON-INFRA in the run report.
+QUORUM_PCT_DEFAULT = Decimal("0.33")
+QUORUM_PCT_MIN = Decimal("0.25")
+QUORUM_PCT_MAX = Decimal("0.60")
+
+# Constitutional changes require a fixed supermajority regardless of the
+# region default (FEATURES …/regional-governance.md "Supermajority").
+SUPERMAJORITY_THRESHOLD = Decimal("0.66")
+# Positions whose winner must clear Region.voting_threshold (FEATURES result
+# determination step 3) rather than win on plurality alone.
+SUPERMAJORITY_POSITIONS = frozenset({"governor"})
+# Policy types that require the constitutional supermajority to pass.
+CONSTITUTIONAL_POLICY_TYPES = frozenset({"governance_change", "voting_threshold"})
+
+# Transient tally phase. The model's ElectionStatus enum has no TALLYING value
+# (PENDING/ACTIVE/COMPLETED/CANCELLED), and the `status` column is a plain
+# String(50); we briefly stamp this string between ACTIVE and the terminal
+# state so a concurrent reader/sweep sees the in-flight phase and never
+# re-tallies a COMPLETED election. Mirrors the doc state machine
+# ACTIVE -> TALLYING -> COMPLETED.
+ELECTION_TALLYING = "tallying"
+
+# Reserved key inside RegionalPolicy.proposed_changes that holds the per-policy
+# voter ledger (list of voter_id strings) used for one-vote-per-policy dedup.
+# RegionalVote is ELECTION-only (election_id + candidate_id, both NOT NULL) and
+# there is no RegionalPolicyVote table in scope (no migration) — so policy-vote
+# dedup has no dedicated storage. We track voters here and STRIP this key before
+# applying proposed_changes to the region at enactment, so it never reaches a
+# Region column. Flagged NO-CANON-INFRA in the run report.
+POLICY_VOTERS_KEY = "_voters"
+
+
+# ---------------------------------------------------------------------------
+# Pure, session-agnostic governance helpers
+#
+# These are called from BOTH the async service methods below AND the SYNC
+# scheduler sweep in npc_scheduler_service (which cannot await the async path
+# without poisoning the shared async engine pool — the same constraint that
+# forces the faction/ARIA decay to be reimplemented synchronously). Keeping the
+# rules here as pure functions over plain values guarantees the cast path and
+# the sweep path apply IDENTICAL canon.
+# ---------------------------------------------------------------------------
+
+def quorum_pct_for_region(region: Region) -> Decimal:
+    """ADR-0059 N-D5 participation threshold for a region, clamped to the
+    canon [0.25, 0.60] band with the 0.33 default. Reads the (ADR-Accepted,
+    not-yet-migrated) governance_quorum_pct column when present."""
+    raw = getattr(region, "governance_quorum_pct", None)
+    if raw is None:
+        return QUORUM_PCT_DEFAULT
+    try:
+        pct = Decimal(str(raw))
+    except (TypeError, ValueError):
+        return QUORUM_PCT_DEFAULT
+    return max(QUORUM_PCT_MIN, min(QUORUM_PCT_MAX, pct))
+
+
+def compute_quorum(total_eligible: int, quorum_pct: Decimal) -> int:
+    """Canon quorum (ADR-0059 N-D5 / FEATURES quorum table):
+
+        total_eligible if total_eligible <= 1   # single-voter region: moot
+        else max(2, ceil(total_eligible * pct))
+
+    The 2-voter hard floor (when 2+ eligible) prevents single-voter
+    rubberstamps; pct is already clamped to [0.25, 0.60]."""
+    if total_eligible <= 1:
+        return total_eligible
+    return max(2, ceil(total_eligible * float(quorum_pct)))
+
+
+def threshold_for_policy(region: Region, policy_type: str) -> Decimal:
+    """Approval threshold a policy must clear. Constitutional changes need the
+    fixed 0.66 supermajority regardless of region default; everything else uses
+    Region.voting_threshold (default 0.51, range 0.10-0.90)."""
+    if policy_type in CONSTITUTIONAL_POLICY_TYPES:
+        return SUPERMAJORITY_THRESHOLD
+    return Decimal(str(region.voting_threshold))
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    """Clamp a numeric to [lo, hi]."""
+    return max(lo, min(hi, value))
+
+
+def enact_changes_onto_region(region: Region, proposed_changes: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply a PASSED policy's proposed_changes onto the region row, CLAMPED to
+    the region CHECK bounds so an enacted policy can never write an out-of-range
+    value (the DB CHECK would otherwise reject the whole transaction). Mutates
+    `region` in place and returns the dict of fields actually changed
+    (old -> new) for the audit/event payload.
+
+    Canon policy-type -> region-field map (FEATURES …/regional-governance.md
+    "Policy types"). Only fields with an existing CHECK-bounded column are
+    enacted here; design-only types (starting_credits beyond floor,
+    economic_specialization modifiers, immigration_policy) and any treasury-
+    touching effect are NOT auto-enacted (no RegionalTreasuryEntry table in
+    scope) — they are reported as skipped. The reserved POLICY_VOTERS_KEY ledger
+    is stripped so it never reaches a column.
+    """
+    changes = dict(proposed_changes or {})
+    changes.pop(POLICY_VOTERS_KEY, None)
+    applied: Dict[str, Any] = {}
+
+    # tax_rate -> Region.tax_rate, CHECK 0.05-0.25.
+    if "tax_rate" in changes:
+        try:
+            new_tax = _clamp(float(changes["tax_rate"]), 0.05, 0.25)
+            old = float(region.tax_rate)
+            if new_tax != old:
+                region.tax_rate = new_tax
+                applied["tax_rate"] = {"old": old, "new": new_tax}
+        except (TypeError, ValueError):
+            logger.warning("Policy enact: non-numeric tax_rate ignored")
+
+    # voting_threshold -> Region.voting_threshold, CHECK 0.1-0.9.
+    if "voting_threshold" in changes:
+        try:
+            new_vt = _clamp(float(changes["voting_threshold"]), 0.1, 0.9)
+            old = float(region.voting_threshold)
+            if new_vt != old:
+                region.voting_threshold = new_vt
+                applied["voting_threshold"] = {"old": old, "new": new_vt}
+        except (TypeError, ValueError):
+            logger.warning("Policy enact: non-numeric voting_threshold ignored")
+
+    # election_frequency_days -> Region.election_frequency_days, CHECK 30-365.
+    if "election_frequency_days" in changes:
+        try:
+            new_freq = int(_clamp(int(changes["election_frequency_days"]), 30, 365))
+            old = int(region.election_frequency_days)
+            if new_freq != old:
+                region.election_frequency_days = new_freq
+                applied["election_frequency_days"] = {"old": old, "new": new_freq}
+        except (TypeError, ValueError):
+            logger.warning("Policy enact: non-numeric election_frequency_days ignored")
+
+    # governance_change -> Region.governance_type (enum-validated).
+    if "governance_type" in changes:
+        gt = str(changes["governance_type"])
+        valid = {g.value for g in GovernanceType}
+        if gt in valid and gt != region.governance_type:
+            old = region.governance_type
+            region.governance_type = gt
+            applied["governance_type"] = {"old": old, "new": gt}
+        elif gt not in valid:
+            logger.warning("Policy enact: invalid governance_type %r ignored", gt)
+
+    # governance_quorum_pct -> Region column (only if the column exists),
+    # clamped to the ADR-0059 band.
+    if "governance_quorum_pct" in changes and hasattr(region, "governance_quorum_pct"):
+        try:
+            new_q = _clamp(float(changes["governance_quorum_pct"]),
+                           float(QUORUM_PCT_MIN), float(QUORUM_PCT_MAX))
+            old_raw = getattr(region, "governance_quorum_pct", None)
+            old = float(old_raw) if old_raw is not None else None
+            if old != new_q:
+                region.governance_quorum_pct = new_q
+                applied["governance_quorum_pct"] = {"old": old, "new": new_q}
+        except (TypeError, ValueError):
+            logger.warning("Policy enact: non-numeric governance_quorum_pct ignored")
+
+    # trade_policy -> Region.trade_bonuses JSONB (per-resource, each 1.0-3.0
+    # mirroring the economy-config route's validation). Merged, not replaced.
+    if "trade_bonuses" in changes and isinstance(changes["trade_bonuses"], dict):
+        merged = dict(region.trade_bonuses or {})
+        touched = {}
+        # ADR-0062: trade_bonuses ALSO holds non-multiplier keys (e.g. tariff_rate,
+        # a ~0.0 per-trade modifier). Clamping those into the [1.0,3.0] multiplier
+        # band would corrupt them — skip reserved keys; only per-resource multipliers enact.
+        RESERVED_NON_MULTIPLIER = {"tariff_rate"}
+        for resource, bonus in changes["trade_bonuses"].items():
+            if resource in RESERVED_NON_MULTIPLIER:
+                continue
+            try:
+                clamped = _clamp(float(bonus), 1.0, 3.0)
+            except (TypeError, ValueError):
+                continue
+            if merged.get(resource) != clamped:
+                merged[resource] = clamped
+                touched[resource] = clamped
+        if touched:
+            region.trade_bonuses = merged
+            applied["trade_bonuses"] = touched
+
+    return applied
+
+
+def determine_election_winner(
+    region: Region,
+    election: RegionalElection,
+    tallies: Dict[str, float],
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Compute the winner of an election from per-candidate weight tallies.
+
+    Canon (FEATURES result determination): plurality winner by default; for
+    SUPERMAJORITY_POSITIONS (governor) the leader must also clear
+    Region.voting_threshold of the total weight cast, else the election is
+    VOIDED (no winner). Ties broken by earliest candidate registration order in
+    the candidates JSONB (SYSTEMS invariant: "ties broken by earliest
+    registration").
+
+    Returns (winner_candidate_id_or_None, results_payload). The payload is
+    written verbatim to RegionalElection.results.
+    """
+    total_weight = sum(tallies.values())
+    # Registration order index for deterministic tie-break.
+    order: Dict[str, int] = {}
+    for i, cand in enumerate(election.candidates or []):
+        cid = cand.get("player_id") if isinstance(cand, dict) else str(cand)
+        if cid is not None and str(cid) not in order:
+            order[str(cid)] = i
+
+    winner: Optional[str] = None
+    if tallies:
+        # Sort by (weight desc, registration order asc) so the earliest-
+        # registered candidate wins a tie.
+        ranked = sorted(
+            tallies.items(),
+            key=lambda kv: (-kv[1], order.get(kv[0], len(order) + 1)),
+        )
+        leader_id, leader_weight = ranked[0]
+        winner = leader_id
+        # Supermajority gate for high-stakes positions.
+        if election.position in SUPERMAJORITY_POSITIONS and total_weight > 0:
+            share = leader_weight / total_weight
+            if share < float(region.voting_threshold):
+                winner = None  # voided — no candidate cleared the threshold
+
+    payload = {
+        "tallies": {cid: float(w) for cid, w in tallies.items()},
+        "total_weight": float(total_weight),
+        "winner": winner,
+        "voided": winner is None,
+        "position": election.position,
+        "tallied_at": datetime.utcnow().isoformat(),
+    }
+    return winner, payload
 
 
 class RegionalGovernanceService:
@@ -405,3 +656,368 @@ class RegionalGovernanceService:
             logger.error(f"Failed to update cultural identity: {e}")
             await db.rollback()
             return False
+
+    # =====================================================================
+    # THE DEMOCRATIC LOOP — vote casting, tally + winner, policy enactment
+    # (sw2102-docs SYSTEMS/regional-governance.md + FEATURES/gameplay/
+    # regional-governance.md + ADR-0059).
+    # =====================================================================
+
+    @staticmethod
+    async def _get_voting_membership(
+        db: AsyncSession,
+        region_id: uuid.UUID,
+        player_id: uuid.UUID,
+    ) -> Optional[RegionalMembership]:
+        """The voter's membership row in this region, or None if they are not a
+        member. Eligibility (can_vote) is checked by the caller so the precise
+        rejection reason can be surfaced."""
+        result = await db.execute(
+            select(RegionalMembership).where(
+                and_(
+                    RegionalMembership.region_id == region_id,
+                    RegionalMembership.player_id == player_id,
+                )
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def _count_eligible_voters(db: AsyncSession, region_id: uuid.UUID) -> int:
+        """Count memberships eligible to vote (can_vote == true): citizen or
+        resident with voting_power > 0. Drives the quorum denominator."""
+        result = await db.scalar(
+            select(func.count(RegionalMembership.id)).where(
+                and_(
+                    RegionalMembership.region_id == region_id,
+                    RegionalMembership.membership_type.in_(["citizen", "resident"]),
+                    RegionalMembership.voting_power > 0,
+                )
+            )
+        )
+        return int(result or 0)
+
+    @staticmethod
+    async def cast_election_vote(
+        db: AsyncSession,
+        region: Region,
+        election: RegionalElection,
+        voter: Player,
+        candidate_id: str,
+    ) -> Dict[str, Any]:
+        """Cast (or reject) a vote in an ACTIVE election.
+
+        Canon validations (FEATURES …/regional-governance.md "Voting"):
+        - voter is a member of the region,
+        - membership.can_vote is true (citizen/resident with voting_power > 0),
+        - election is ACTIVE and now is within [voting_opens_at, voting_closes_at],
+        - candidate is one of the election's registered candidates,
+        - one vote per (election, voter) — ADR-0059 N-F5 first-vote-sticks; a
+          second attempt rejects with ERR_ALREADY_VOTED (the UNIQUE constraint
+          is the backstop against a concurrent double-cast).
+
+        Vote weight is SNAPSHOT from membership.voting_power at cast time and is
+        immutable thereafter (ADR-0059 N-F5). Returns {ok, code, ...}.
+        """
+        now = datetime.utcnow()
+
+        if election.region_id != region.id:
+            return {"ok": False, "code": "ERR_ELECTION_NOT_IN_REGION"}
+        if election.status != ElectionStatus.ACTIVE:
+            return {"ok": False, "code": "ERR_ELECTION_NOT_ACTIVE"}
+        if not (election.voting_opens_at <= now <= election.voting_closes_at):
+            return {"ok": False, "code": "ERR_VOTING_WINDOW_CLOSED"}
+
+        membership = await RegionalGovernanceService._get_voting_membership(
+            db, region.id, voter.id
+        )
+        if membership is None:
+            return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
+        if not membership.can_vote:
+            return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
+
+        # Candidate must be one of the registered candidates.
+        candidate_ids = {
+            str(c.get("player_id")) if isinstance(c, dict) else str(c)
+            for c in (election.candidates or [])
+        }
+        if candidate_ids and str(candidate_id) not in candidate_ids:
+            return {"ok": False, "code": "ERR_UNKNOWN_CANDIDATE"}
+
+        # candidate_id must be a real player UUID (the FK target).
+        try:
+            candidate_uuid = uuid.UUID(str(candidate_id))
+        except (TypeError, ValueError):
+            return {"ok": False, "code": "ERR_UNKNOWN_CANDIDATE"}
+
+        # Pre-check for an existing vote (fast path); the UNIQUE constraint is
+        # the authoritative backstop against a concurrent double-cast.
+        existing = await db.scalar(
+            select(RegionalVote.id).where(
+                and_(
+                    RegionalVote.election_id == election.id,
+                    RegionalVote.voter_id == voter.id,
+                )
+            )
+        )
+        if existing is not None:
+            return {"ok": False, "code": "ERR_ALREADY_VOTED"}
+
+        vote = RegionalVote(
+            election_id=election.id,
+            voter_id=voter.id,
+            candidate_id=candidate_uuid,
+            weight=membership.voting_power,  # snapshot, immutable
+            cast_at=now,
+        )
+        db.add(vote)
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Concurrent double-cast lost the race to the UNIQUE constraint.
+            await db.rollback()
+            return {"ok": False, "code": "ERR_ALREADY_VOTED"}
+        return {
+            "ok": True,
+            "code": "VOTE_RECORDED",
+            "vote_id": str(vote.id),
+            "weight": float(membership.voting_power),
+        }
+
+    @staticmethod
+    async def cast_policy_vote(
+        db: AsyncSession,
+        region: Region,
+        policy: RegionalPolicy,
+        voter: Player,
+        support: bool,
+    ) -> Dict[str, Any]:
+        """Cast (or reject) a yes/no vote on a policy in the VOTING state.
+
+        Each vote adds the voter's voting_power to votes_for or votes_against
+        (FEATURES weighted tally). One vote per (policy, voter): RegionalVote is
+        ELECTION-only and there is no RegionalPolicyVote table in scope, so the
+        per-policy voter ledger is kept in a reserved key inside
+        proposed_changes (POLICY_VOTERS_KEY) and STRIPPED at enactment so it
+        never reaches a region column. Flagged NO-CANON-INFRA.
+
+        Vote weight is snapshot at cast time (ADR-0059 N-F5). Returns
+        {ok, code, ...}.
+        """
+        from sqlalchemy.orm.attributes import flag_modified
+
+        now = datetime.utcnow()
+        if policy.region_id != region.id:
+            return {"ok": False, "code": "ERR_POLICY_NOT_IN_REGION"}
+        if policy.status != PolicyStatus.VOTING:
+            return {"ok": False, "code": "ERR_POLICY_NOT_VOTING"}
+        if now > policy.voting_closes_at:
+            return {"ok": False, "code": "ERR_VOTING_WINDOW_CLOSED"}
+
+        membership = await RegionalGovernanceService._get_voting_membership(
+            db, region.id, voter.id
+        )
+        if membership is None:
+            return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
+        if not membership.can_vote:
+            return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
+
+        # Re-read the policy under a row lock so the read-modify-write of the
+        # tallies + voter ledger is atomic against a concurrent vote.
+        locked = await db.execute(
+            select(RegionalPolicy)
+            .where(RegionalPolicy.id == policy.id)
+            .with_for_update()
+        )
+        policy = locked.scalar_one()
+
+        # Recheck under the lock: a concurrent finalize may have closed the
+        # window between the route's unlocked read and this lock.
+        if policy.status != PolicyStatus.VOTING:
+            await db.rollback()
+            return {"ok": False, "code": "ERR_POLICY_NOT_VOTING"}
+        if now > policy.voting_closes_at:
+            await db.rollback()
+            return {"ok": False, "code": "ERR_VOTING_WINDOW_CLOSED"}
+
+        changes = dict(policy.proposed_changes or {})
+        voters = list(changes.get(POLICY_VOTERS_KEY) or [])
+        if str(voter.id) in voters:
+            await db.rollback()  # release the row lock; nothing changed
+            return {"ok": False, "code": "ERR_ALREADY_VOTED"}
+
+        weight = int(round(float(membership.voting_power)))  # tallies are Integer columns
+        # voting_power is DECIMAL(5,4) in [0,5]; a member with can_vote is > 0,
+        # so guarantee at least 1 weight is counted for an eligible voter.
+        weight = max(1, weight)
+        if support:
+            policy.votes_for = int(policy.votes_for or 0) + weight
+        else:
+            policy.votes_against = int(policy.votes_against or 0) + weight
+
+        voters.append(str(voter.id))
+        changes[POLICY_VOTERS_KEY] = voters
+        policy.proposed_changes = changes
+        flag_modified(policy, "proposed_changes")
+
+        await db.commit()
+        return {
+            "ok": True,
+            "code": "VOTE_RECORDED",
+            "support": support,
+            "weight": weight,
+            "votes_for": policy.votes_for,
+            "votes_against": policy.votes_against,
+        }
+
+    @staticmethod
+    async def tally_election(
+        db: AsyncSession,
+        election_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Close + tally a single election (idempotent).
+
+        Transitions ACTIVE -> (TALLYING) -> COMPLETED, aggregates vote weight
+        per candidate, determines the winner per canon, writes the results
+        JSONB. A COMPLETED election is NEVER re-tallied. Locks the election row
+        so a concurrent sweep + manual close cannot double-tally.
+        """
+        locked = await db.execute(
+            select(RegionalElection)
+            .where(RegionalElection.id == election_id)
+            .with_for_update()
+        )
+        election = locked.scalar_one_or_none()
+        if election is None:
+            return {"ok": False, "code": "ERR_ELECTION_NOT_FOUND"}
+        # Idempotency: a terminal election is never re-tallied.
+        if election.status in (ElectionStatus.COMPLETED, ElectionStatus.CANCELLED):
+            return {"ok": False, "code": "ERR_ALREADY_TALLIED",
+                    "status": election.status}
+
+        region = await db.scalar(
+            select(Region).where(Region.id == election.region_id)
+        )
+        if region is None:
+            await db.rollback()
+            return {"ok": False, "code": "ERR_REGION_NOT_FOUND"}
+
+        # Mark the in-flight tally phase.
+        election.status = ELECTION_TALLYING
+
+        # Aggregate sum(weight) per candidate_id.
+        rows = await db.execute(
+            select(
+                RegionalVote.candidate_id,
+                func.coalesce(func.sum(RegionalVote.weight), 0),
+            )
+            .where(RegionalVote.election_id == election.id)
+            .group_by(RegionalVote.candidate_id)
+        )
+        tallies = {str(cid): float(total) for cid, total in rows.all()}
+
+        winner, payload = determine_election_winner(region, election, tallies)
+        # No votes cast -> inconclusive (SYSTEMS failure mode); still COMPLETED
+        # with a voided result so the cycle can schedule a fresh election.
+        if not tallies:
+            payload["inconclusive"] = True
+
+        election.results = payload
+        election.status = ElectionStatus.COMPLETED
+        await db.commit()
+        return {
+            "ok": True,
+            "code": "ELECTION_COMPLETED",
+            "election_id": str(election.id),
+            "winner": winner,
+            "results": payload,
+        }
+
+    @staticmethod
+    async def finalize_policy(
+        db: AsyncSession,
+        policy_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Close + resolve a single policy (idempotent).
+
+        VOTING -> {PASSED -> IMPLEMENTED | REJECTED}. Verifies quorum, then the
+        approval threshold; on pass, applies proposed_changes onto the region
+        CLAMPED to the CHECK bounds and marks IMPLEMENTED (no double-enact). A
+        non-VOTING policy is never re-finalized. Locks the policy + region rows.
+        """
+        locked = await db.execute(
+            select(RegionalPolicy)
+            .where(RegionalPolicy.id == policy_id)
+            .with_for_update()
+        )
+        policy = locked.scalar_one_or_none()
+        if policy is None:
+            return {"ok": False, "code": "ERR_POLICY_NOT_FOUND"}
+        # Idempotency: only a VOTING policy is ever finalized.
+        if policy.status != PolicyStatus.VOTING:
+            return {"ok": False, "code": "ERR_ALREADY_FINALIZED",
+                    "status": policy.status}
+
+        region = await db.execute(
+            select(Region).where(Region.id == policy.region_id).with_for_update()
+        )
+        region = region.scalar_one_or_none()
+        if region is None:
+            await db.rollback()
+            return {"ok": False, "code": "ERR_REGION_NOT_FOUND"}
+
+        eligible = await RegionalGovernanceService._count_eligible_voters(
+            db, region.id
+        )
+        quorum = compute_quorum(eligible, quorum_pct_for_region(region))
+
+        # Quorum denominator: number of distinct voters who actually voted
+        # (tracked in the reserved ledger). Falls back to raw tally count when
+        # the ledger is absent (legacy/manual rows).
+        changes = dict(policy.proposed_changes or {})
+        voters = changes.get(POLICY_VOTERS_KEY)
+        votes_cast = (
+            len(voters) if isinstance(voters, list)
+            else (1 if (policy.votes_for or 0) + (policy.votes_against or 0) > 0 else 0)
+        )
+
+        threshold = threshold_for_policy(region, policy.policy_type)
+        total_weight = int(policy.votes_for or 0) + int(policy.votes_against or 0)
+        approval = (float(policy.votes_for or 0) / total_weight) if total_weight > 0 else 0.0
+
+        result: Dict[str, Any] = {
+            "ok": True,
+            "policy_id": str(policy.id),
+            "quorum_required": quorum,
+            "votes_cast": votes_cast,
+            "approval": round(approval, 4),
+            "threshold": float(threshold),
+        }
+
+        if votes_cast < quorum:
+            policy.status = PolicyStatus.REJECTED
+            result.update(code="POLICY_REJECTED", reason="no_quorum")
+            await db.commit()
+            return result
+
+        if approval >= float(threshold):
+            # PASSED -> apply effects -> IMPLEMENTED, all in one transaction.
+            policy.status = PolicyStatus.PASSED
+            applied = enact_changes_onto_region(region, policy.proposed_changes)
+            region.updated_at = datetime.utcnow()
+            # Strip the voter ledger from the stored policy now that it's
+            # resolved (it was only needed during the voting window).
+            cleaned = dict(policy.proposed_changes or {})
+            cleaned.pop(POLICY_VOTERS_KEY, None)
+            policy.proposed_changes = cleaned
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(policy, "proposed_changes")
+            policy.status = PolicyStatus.IMPLEMENTED
+            result.update(code="POLICY_ENACTED", applied=applied)
+            await db.commit()
+            return result
+
+        policy.status = PolicyStatus.REJECTED
+        result.update(code="POLICY_REJECTED", reason="below_threshold")
+        await db.commit()
+        return result

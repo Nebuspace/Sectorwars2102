@@ -22,10 +22,48 @@ from src.models.sector import Sector
 from src.models.planet import Planet
 from src.models.station import Station
 from src.models.ship import Ship
+from src.services.regional_governance_service import RegionalGovernanceService
 from pydantic import BaseModel, Field
 
 
 router = APIRouter(prefix="/regions")
+
+
+# Map governance-service rejection codes to HTTP status. Anything not listed is
+# a 400 (a validation/eligibility failure the caller can act on).
+_VOTE_ERROR_STATUS = {
+    "ERR_ELECTION_NOT_FOUND": 404,
+    "ERR_POLICY_NOT_FOUND": 404,
+    "ERR_REGION_NOT_FOUND": 404,
+    "ERR_ELECTION_NOT_IN_REGION": 404,
+    "ERR_POLICY_NOT_IN_REGION": 404,
+    "ERR_NOT_A_MEMBER": 403,
+    "ERR_NOT_ELIGIBLE": 403,
+    "ERR_ALREADY_VOTED": 409,
+    "ERR_ELECTION_NOT_ACTIVE": 409,
+    "ERR_POLICY_NOT_VOTING": 409,
+    "ERR_VOTING_WINDOW_CLOSED": 409,
+    "ERR_UNKNOWN_CANDIDATE": 400,
+}
+
+
+async def _get_region_by_id(db: AsyncSession, region_id: uuid.UUID) -> Region:
+    """Fetch a region by id (404 if missing). Used by the member-facing vote
+    routes, which are NOT owner-scoped (any eligible member can vote)."""
+    region = await db.scalar(select(Region).where(Region.id == region_id))
+    if region is None:
+        raise HTTPException(status_code=404, detail="Region not found")
+    return region
+
+
+async def _get_current_player(db: AsyncSession, user: User) -> Player:
+    """Resolve the Player record for the authenticated user (404 if absent),
+    mirroring the create-policy route's lookup."""
+    result = await db.execute(select(Player).where(Player.user_id == user.id))
+    player = result.scalar_one_or_none()
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player record not found")
+    return player
 
 
 class EconomicConfigUpdate(BaseModel):
@@ -61,6 +99,15 @@ class CulturalUpdate(BaseModel):
     aesthetic_theme: Dict[str, Any] = Field(default_factory=dict)
     traditions: Dict[str, Any] = Field(default_factory=dict)
     regional_motto: Optional[str] = None
+
+
+class ElectionVoteCast(BaseModel):
+    candidate_id: str
+
+
+class PolicyVoteCast(BaseModel):
+    # True = yes / for; False = no / against.
+    support: bool
 
 
 async def get_user_region(db: AsyncSession, user_id: uuid.UUID) -> Optional[Region]:
@@ -529,3 +576,94 @@ async def get_regional_members(
         }
         for membership, username in members
     ]
+
+
+# =====================================================================
+# The democratic loop — member-facing vote casting + result reads
+# (canon paths: POST /regions/{region_id}/elections/{election_id}/vote,
+#  POST /regions/{region_id}/policies/{policy_id}/vote). These are gated by
+# the existing auth dependency but are NOT owner-scoped — any eligible region
+# member can vote (eligibility is enforced in the service).
+# =====================================================================
+
+@router.post("/{region_id}/elections/{election_id}/vote")
+async def cast_election_vote(
+    region_id: uuid.UUID,
+    election_id: uuid.UUID,
+    vote: ElectionVoteCast,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Cast a vote in an ACTIVE regional election (one vote per voter, final)."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+
+    election = await db.scalar(
+        select(RegionalElection).where(RegionalElection.id == election_id)
+    )
+    if election is None or election.region_id != region.id:
+        raise HTTPException(status_code=404, detail="Election not found in this region")
+
+    result = await RegionalGovernanceService.cast_election_vote(
+        db, region, election, player, vote.candidate_id
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_VOTE_REJECTED")
+        raise HTTPException(
+            status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return result
+
+
+@router.post("/{region_id}/policies/{policy_id}/vote")
+async def cast_policy_vote(
+    region_id: uuid.UUID,
+    policy_id: uuid.UUID,
+    vote: PolicyVoteCast,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Cast a yes/no vote on a policy that is in the VOTING state."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+
+    policy = await db.scalar(
+        select(RegionalPolicy).where(RegionalPolicy.id == policy_id)
+    )
+    if policy is None or policy.region_id != region.id:
+        raise HTTPException(status_code=404, detail="Policy not found in this region")
+
+    result = await RegionalGovernanceService.cast_policy_vote(
+        db, region, policy, player, vote.support
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_VOTE_REJECTED")
+        raise HTTPException(
+            status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return result
+
+
+@router.get("/{region_id}/elections/{election_id}/results")
+async def get_election_results(
+    region_id: uuid.UUID,
+    election_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Read an election's status + tally results (the results JSONB is
+    populated once the election COMPLETES)."""
+    election = await db.scalar(
+        select(RegionalElection).where(RegionalElection.id == election_id)
+    )
+    if election is None or election.region_id != region_id:
+        raise HTTPException(status_code=404, detail="Election not found in this region")
+    return {
+        "id": str(election.id),
+        "position": election.position,
+        "status": election.status,
+        "candidates": election.candidates,
+        "voting_opens_at": election.voting_opens_at.isoformat(),
+        "voting_closes_at": election.voting_closes_at.isoformat(),
+        "results": election.results,
+    }
