@@ -55,9 +55,10 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.core.game_time import scaled_deadline
 from src.services.turn_service import spend_turns
 from src.models.player import Player
-from src.models.ship import Ship, ShipStatus, ShipType
+from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.station import Station
+from src.services.ship_upgrade_service import ShipUpgradeService
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +268,26 @@ def _sensor_level(ship: Ship) -> int:
         return 0
 
 
+def _scanner_range_bonus_spacings(db: Session, ship: Ship) -> float:
+    """Extra scan reach (in inter-sector spacings) granted by Sensor upgrades.
+
+    The canonical scanner range lives on ShipSpecification.scanner_range;
+    ShipUpgradeService.effective_scanner_range adds the Sensor-upgrade scan-range
+    bonus (+1 sector / level — NO-CANON kernel, ship-systems.md §2.5 marks the
+    exact figure 📐 Design-only). The bonus is the difference between the
+    upgraded effective range and the hull's base, mapped 1 scanner sector → 1
+    spacing so each Sensor level widens the quantum scan cone by one hop-unit.
+    """
+    spec = (
+        db.query(ShipSpecification)
+        .filter(ShipSpecification.type == ship.type)
+        .first()
+    )
+    base = spec.scanner_range if spec and spec.scanner_range is not None else 0
+    effective = ShipUpgradeService.effective_scanner_range(ship, base)
+    return float(max(0, effective - base))
+
+
 def _validate_band(range_band: str) -> Tuple[float, float]:
     band = RANGE_BANDS.get(range_band)
     if band is None:
@@ -339,7 +360,14 @@ def scan(
         )
     spacing = _inter_sector_spacing(points)
     direction = _bearing_unit_vector(yaw_deg, pitch_deg)
-    cone = _sectors_in_cone(points, origin, direction, band_max * spacing)
+    # Scan reach = the band ceiling EXTENDED by the Sensor-upgrade scan-range
+    # bonus (canon ship-systems.md §2.5: "Sensors also affect scan range").
+    # effective_scanner_range adds +1 sector per Sensor level over the hull
+    # spec's base scanner_range; the delta above the unupgraded baseline is the
+    # extra reach, expressed in inter-sector spacings, so a Sensor-upgraded
+    # Warp Jumper literally detects farther down the same bearing.
+    scan_reach_spacings = band_max + _scanner_range_bonus_spacings(db, ship)
+    cone = _sectors_in_cone(points, origin, direction, scan_reach_spacings * spacing)
 
     # Resonance: fuzzy WARP-ACTIVITY band, never exact counts. Canon
     # (ADR-0030): resonance reads "warps' worth of activity" — bright 5+,

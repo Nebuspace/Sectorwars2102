@@ -48,8 +48,17 @@ class ShipUpgradeService:
         UpgradeType.SENSOR: {
             "base_cost": 6000,
             "cost_multiplier": 2.5,
-            "effect_per_level": {"evasion_bonus_percent": 15},
-            "description": "Increases evasion by +15% per level"
+            # Canon (sw2102-docs ship-systems.md §2.5): "Each Sensor level adds
+            # +15% evasion. Sensors also affect scan range." The evasion number
+            # is canon; the scan-range increment is NO-CANON (the doc marks the
+            # scan-range effect 📐 Design-only with no per-level figure). Kernel:
+            # +1 scanner-range sector per Sensor level — flagged for a
+            # DECISIONS.md Pending ruling. The effective scanner range
+            # (spec base + this bonus) is computed by effective_scanner_range();
+            # there is no per-instance scanner_range column to mutate, so the
+            # bonus is applied as a derived value the scan path consults.
+            "effect_per_level": {"evasion_bonus_percent": 15, "scanner_range_bonus": 1},
+            "description": "Increases evasion by +15% per level and scan range by +1 sector per level"
         },
         UpgradeType.DRONE_BAY: {
             "base_cost": 10000,
@@ -99,6 +108,37 @@ class ShipUpgradeService:
             "effects": {"landing_bonus": 1.25}
         },
     }
+
+    # NO-CANON kernel (ship-systems.md §2.5 marks the Sensor scan-range effect
+    # 📐 Design-only): each Sensor upgrade level adds +1 sector of scanner range
+    # on top of the hull spec's base scanner_range. Flagged for a DECISIONS.md
+    # Pending ruling on the exact per-level figure.
+    SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL = 1
+
+    @staticmethod
+    def get_sensor_level(ship) -> int:
+        """Read the ship's current Sensor upgrade level from its upgrades JSONB."""
+        upgrades = getattr(ship, "upgrades", None)
+        if not isinstance(upgrades, dict):
+            return 0
+        try:
+            return int(upgrades.get(UpgradeType.SENSOR.value, 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def effective_scanner_range(ship, base_scanner_range: int) -> int:
+        """Effective scanner range = the hull spec's base scanner_range plus the
+        Sensor-upgrade scan-range bonus (+1 sector per Sensor level, NO-CANON
+        kernel — see SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL).
+
+        `Ship` has no per-instance scanner_range column (the value lives on
+        `ShipSpecification.scanner_range`); callers pass that spec base in and
+        the scan path consults the returned effective value.
+        """
+        sensor_level = ShipUpgradeService.get_sensor_level(ship)
+        bonus = sensor_level * ShipUpgradeService.SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL
+        return int(base_scanner_range) + bonus
 
     @staticmethod
     def get_equipment_effects(ship) -> Dict[str, Any]:
@@ -339,6 +379,16 @@ class ShipUpgradeService:
             ship.combat = combat
             flag_modified(ship, 'combat')
             updated["evasion"] = combat["evasion"]
+            # Scan-range half of the Sensor upgrade (canon ship-systems.md §2.5;
+            # NO-CANON per-level figure). `Ship` has no scanner_range column, so
+            # the effective value is derived from the hull spec's base
+            # scanner_range plus the (now incremented) Sensor level. Reported so
+            # the upgrade UI / scan path can surface the wider reach.
+            spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == ship.type
+            ).first()
+            base_scanner_range = spec.scanner_range if spec and spec.scanner_range is not None else 0
+            updated["scanner_range"] = self.effective_scanner_range(ship, base_scanner_range)
 
         elif upgrade_type == UpgradeType.DRONE_BAY:
             drone_bonus = effects["drone_capacity_bonus"]
