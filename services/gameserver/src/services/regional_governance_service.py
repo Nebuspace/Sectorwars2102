@@ -829,6 +829,7 @@ class RegionalGovernanceService:
         membership = await RegionalGovernanceService._get_voting_membership(
             db, region_id, player_id
         )
+        inserted = False
         if membership is None:
             # Enroll directly at citizen tier (default voting_power 1.0).
             membership = RegionalMembership(
@@ -840,6 +841,7 @@ class RegionalGovernanceService:
             db.add(membership)
             try:
                 await db.commit()
+                inserted = True  # a brand-new citizen row was created (GRANTED, not CONFIRMED)
             except IntegrityError:
                 # Lost the race to a concurrent enroll/upsert (e.g. a turn-spend
                 # visitor row created between our read and insert). Roll back the
@@ -866,7 +868,7 @@ class RegionalGovernanceService:
             await db.commit()
         return {
             "ok": True,
-            "code": "CITIZENSHIP_GRANTED" if promoted else "CITIZENSHIP_CONFIRMED",
+            "code": "CITIZENSHIP_GRANTED" if (promoted or inserted) else "CITIZENSHIP_CONFIRMED",
             "membership_type": membership.membership_type,
             "voting_power": float(membership.voting_power),
         }
