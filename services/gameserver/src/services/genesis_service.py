@@ -124,7 +124,7 @@ GENESIS_TIERS = {
 GENESIS_CAPACITY_BY_SHIP = {
     ShipType.LIGHT_FREIGHTER: 0,  # ADR/DECISIONS 2026-06-16: aligned to doc + seeder (0); genesis needs a larger hull
     ShipType.CARGO_HAULER: 2,
-    ShipType.COLONY_SHIP: 3,
+    ShipType.COLONY_SHIP: 5,  # ship-roster.md:58 "Colony Ship 5" (matches seeder; was the lone 3 outlier)
     ShipType.DEFENDER: 3,
     ShipType.CARRIER: 5,
     ShipType.WARP_JUMPER: 1,
@@ -244,7 +244,8 @@ class GenesisService:
     def _enforce_deploy_restrictions(self, player: Player, sector: Sector) -> None:
         """Enforce the ratified genesis deploy gates (ADR-0088). Raises ValueError
         with a ``genesis_blocked_*`` reason on the first failed gate."""
-        # Gate 1 — Federation reputation tier 8 (Legendary, >= 500).
+        # Gate 1 — Federation reputation tier 7 (Heroic, >= 250) per ADR-0088
+        # (matches GENESIS_MIN_REPUTATION + the error text below).
         rep = player.personal_reputation or 0
         if rep < GENESIS_MIN_REPUTATION:
             raise ValueError(
