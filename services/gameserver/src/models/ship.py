@@ -212,6 +212,10 @@ class ShipSpecification(Base):
     # baseline shield/armor mitigation, copied onto Ship instances at construction.
     shield_resistance = Column(Float, nullable=False, default=0.0, server_default=text("0"))
     armor_rating = Column(Float, nullable=False, default=0.0, server_default=text("0"))
+    # DEAD/UNUSED: nothing reads this column for decay. Canon ship decay uses the
+    # by-hull-class decay table, NOT this per-spec value. Column is NOT NULL so it
+    # cannot be nulled without a migration; seeded to a neutral 0.0 in
+    # ship_specifications_seeder.py (WO-BI). Do not reintroduce per-spec decay rates here.
     maintenance_rate = Column(Float, nullable=False)
     construction_time = Column(Integer, nullable=False)
     fuel_efficiency = Column(Integer, nullable=False)

@@ -31,7 +31,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 1,
         "attack_rating": 0,
         "defense_rating": 5,
-        "maintenance_rate": 0.1,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 0,
         "fuel_efficiency": 50,
         "max_upgrade_levels": {
@@ -69,7 +69,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 2,
         "attack_rating": 15,
         "defense_rating": 20,
-        "maintenance_rate": 0.05,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 1,
         "fuel_efficiency": 80,
         "max_upgrade_levels": {
@@ -107,7 +107,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 2,
         "attack_rating": 10,
         "defense_rating": 30,
-        "maintenance_rate": 0.08,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 3,
         "fuel_efficiency": 60,
         "max_upgrade_levels": {
@@ -145,7 +145,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 3,
         "attack_rating": 5,
         "defense_rating": 10,
-        "maintenance_rate": 0.12,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 2,
         "fuel_efficiency": 90,
         "max_upgrade_levels": {
@@ -183,7 +183,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 5,
         "attack_rating": 8,
         "defense_rating": 8,
-        "maintenance_rate": 0.15,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 2,
         "fuel_efficiency": 95,
         "max_upgrade_levels": {
@@ -221,7 +221,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 2,
         "attack_rating": 5,
         "defense_rating": 25,
-        "maintenance_rate": 0.20,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 7,
         "fuel_efficiency": 40,
         "max_upgrade_levels": {
@@ -259,7 +259,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 3,
         "attack_rating": 40,
         "defense_rating": 45,
-        "maintenance_rate": 0.15,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 5,
         "fuel_efficiency": 70,
         "max_upgrade_levels": {
@@ -297,7 +297,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 4,
         "attack_rating": 50,
         "defense_rating": 60,
-        "maintenance_rate": 0.25,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 10,
         "fuel_efficiency": 50,
         "max_upgrade_levels": {
@@ -336,7 +336,7 @@ SHIP_SPECIFICATIONS = {
         "scanner_range": 8,
         "attack_rating": 10,
         "defense_rating": 35,
-        "maintenance_rate": 0.30,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         "construction_time": 21,  # 3-5 days
         "fuel_efficiency": 20,
         "max_upgrade_levels": {
@@ -393,7 +393,7 @@ SHIP_SPECIFICATIONS = {
         "attack_rating": 35,  # canon
         "defense_rating": 50,  # canon
         # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
-        "maintenance_rate": 0.15,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
         "construction_time": 5,
         # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
@@ -446,7 +446,7 @@ SHIP_SPECIFICATIONS = {
         "attack_rating": 40,  # canon
         "defense_rating": 60,  # canon
         # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
-        "maintenance_rate": 0.15,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
         # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
         "construction_time": 5,
         # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
