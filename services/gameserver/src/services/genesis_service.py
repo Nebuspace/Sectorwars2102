@@ -558,23 +558,14 @@ class GenesisService:
             # with current_ship_id = None and no pod.
             from src.services.ship_service import ShipService
             ShipService(self.db).destroy_ship(ship, cause="genesis_sacrifice")
-            # Advanced planets form INSTANTLY at Settlement (citadel L2, 5,000
-            # colonists, +10% production via the L2 citadel bonus, 4 automated
-            # turrets, basic shield generator) — genesis-devices.md "Advanced tier".
+            # Advanced planets form INSTANTLY at Settlement — citadel L2, 5,000
+            # colonists, +10% production (derived from the L2 citadel level), 4
+            # automated turrets, and basic shields are ALL conferred inside
+            # _complete_formation's advanced branch (genesis-deploy.md "advanced
+            # tier"). Here we only flip the wall-clock completion stamp, since the
+            # advanced tier bypasses the 48h formation timer.
             self._complete_formation(planet)
             planet.formation_complete_at = now
-            planet.defense_turrets = 4
-            planet.defense_shields = 1
-            # Register the 4 seeded turrets in the citadel defense-buildings store
-            # (Phase 1 / audit fix): previously they lived only in the flat
-            # defense_turrets column and never counted as a turret_network in
-            # citadel_service. Mirror the JSONB dict-reassign pattern.
-            ev = planet.active_events if isinstance(planet.active_events, dict) else {}
-            ev = dict(ev)
-            buildings = dict(ev.get("defense_buildings", {}))
-            buildings["turret_network"] = buildings.get("turret_network", 0) + 4
-            ev["defense_buildings"] = buildings
-            planet.active_events = ev
             logger.info(
                 f"Advanced genesis: Colony Ship '{sacrifice_info['ship_name']}' sacrificed; "
                 f"instant Settlement colony on planet {planet.id} by player {player_id}"
@@ -961,8 +952,14 @@ class GenesisService:
 
         # Set initial population based on tier
         if tier == "advanced":
-            # Spec: Advanced genesis creates a Settlement-level colony
-            # with a Level 2 (Settlement) citadel and 5000 colonists
+            # Canon (genesis-deploy.md "advanced tier"): the advanced
+            # (Colony-Ship-sacrifice) tier deploys a Settlement-phase colony at
+            # citadel level 2, 5,000 colonists, +10% production, 4 turrets, and a
+            # basic shield generator — all applied at completion. Because advanced
+            # planets complete INSTANTLY via the deploy path (never the 48h timer),
+            # this branch is the single place that confers the full Settlement
+            # colony, so the production bonus / turrets / shields live here too
+            # rather than only in the deploy-time sacrifice block.
             planet.colonists = 5000
             planet.population = 5000
             planet.max_colonists = max(planet.max_colonists, 5000)
@@ -977,9 +974,31 @@ class GenesisService:
             planet.citadel_drone_capacity = settlement_config["drone_capacity"]
             planet.citadel_max_population = settlement_config["max_population"]
 
+            # +10% production: the citadel passive bonus is DERIVED, not stored —
+            # planetary_service._calculate_production_rates computes
+            # (1 + 0.05 * citadel_level), so citadel_level == 2 yields exactly
+            # +10% on commodity output. Setting the level above is what confers it.
+
+            # Basic shields + 4 automated turrets (canon advanced-tier loadout).
+            # Turrets are tracked in two places that must agree: the flat
+            # planet.defense_turrets column AND the citadel defense-buildings
+            # store (active_events['defense_buildings']['turret_network']), which
+            # citadel_service treats as the authoritative turret count. Mirror the
+            # JSONB dict-reassign pattern so SQLAlchemy detects the mutation and
+            # the existing registration_status key is preserved.
+            planet.defense_shields = 1
+            planet.defense_turrets = 4
+            ev = planet.active_events if isinstance(planet.active_events, dict) else {}
+            ev = dict(ev)
+            buildings = dict(ev.get("defense_buildings", {}))
+            buildings["turret_network"] = 4
+            ev["defense_buildings"] = buildings
+            planet.active_events = ev
+
             logger.info(
                 f"Advanced genesis: Settlement-level colony created with L2 citadel "
-                f"(Settlement) and 5000 colonists on planet {planet.id}"
+                f"(Settlement, +10% production), 5000 colonists, 4 turrets, and "
+                f"basic shields on planet {planet.id}"
             )
         elif tier == "enhanced":
             # Enhanced tier gets a modest head start over basic
