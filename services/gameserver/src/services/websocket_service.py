@@ -219,6 +219,22 @@ class ConnectionManager:
             **ship_data
         }
         await self.send_personal_message(user_id, message)
+
+    async def send_turn_pool_update(self, user_id: str, turn_data: Dict[str, Any]):
+        """Push an authoritative turn-pool snapshot to the pool's owner.
+
+        The promised SYSTEMS/turn-regeneration.md "Authoritative push": a
+        player-scoped ``turn_pool_updated`` frame emitted by ``regenerate_turns``
+        whenever lazy regen actually credits turns (N>0), so connected clients
+        refresh the pool without polling. Mirrors send_ship_status_change /
+        send_personal_message (typed message, personal scope). ``user_id`` is the
+        owning User's id string (the key send_personal_message routes on)."""
+        message = {
+            "type": "turn_pool_updated",
+            "timestamp": datetime.now(UTC).isoformat(),
+            **turn_data,
+        }
+        await self.send_personal_message(user_id, message)
     
     async def send_economy_alert(self, alert_data: Dict[str, Any], admin_only: bool = True):
         """Send economy alert to admins or all users"""

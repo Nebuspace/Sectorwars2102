@@ -166,6 +166,15 @@ def regenerate_turns(db: Session, player: Player) -> Dict[str, Any]:
         max_turns, aria_multiplier, elapsed_seconds,
     )
 
+    # Authoritative push (SYSTEMS/turn-regeneration.md): a real credit (N>0)
+    # emits ONE player-scoped turn_pool_updated frame so clients refresh
+    # without polling. No-op regen (0 added) emits nothing — all the early
+    # returns above short-circuit before reaching here. Best-effort only;
+    # never fail the spend transaction over a quiet socket.
+    if actually_added > 0:
+        _emit_turn_pool_update(player, new_turns, max_turns, actually_added,
+                               aria_multiplier)
+
     return {
         "regenerated": actually_added > 0,
         "turns_added": actually_added,
@@ -173,6 +182,49 @@ def regenerate_turns(db: Session, player: Player) -> Dict[str, Any]:
         "new_turns": new_turns,
         "max_turns": max_turns,
     }
+
+
+def _emit_turn_pool_update(player: Player, new_turns: int, max_turns: int,
+                           turns_added: int, aria_multiplier: float) -> None:
+    """Best-effort player-scoped ``turn_pool_updated`` WS push.
+
+    ``regenerate_turns`` is sync and runs inside the caller's row-locked
+    ``SELECT ... FOR UPDATE`` transaction; the WS send is async. We mirror the
+    proven sync→async pattern in ``docking_service._notify_bumped``: import
+    inside the function, grab the running loop, schedule the coroutine with
+    ``loop.create_task`` (so it runs after the caller's transaction commits and
+    yields — never blocking or breaking the sync spend path), and swallow any
+    failure (no loop, no socket) so regen can never crash a spend.
+
+    Routes on the owning User's id (``player.user_id``) — the key
+    ``send_personal_message`` uses, per message_service / faction_service.
+
+    Payload (NO-CANON for ``turns_added``): canon SYSTEMS/turn-regeneration.md
+    specifies ``{player_id, turns, max_turns, bonus_multiplier}``; the WO also
+    requires "turns added", so ``turns_added`` is added beyond canon and FLAGGED.
+    """
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        user_id = getattr(player, "user_id", None)
+        if user_id is None:
+            return
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(connection_manager.send_turn_pool_update(
+            str(user_id),
+            {
+                "player_id": str(getattr(player, "id", "")),
+                "turns": new_turns,
+                "max_turns": max_turns,
+                "turns_added": turns_added,  # NO-CANON: WO-required, beyond spec
+                "bonus_multiplier": aria_multiplier,
+            },
+        ))
+    except Exception:
+        logger.debug("Skipped turn_pool_updated WS push (no loop or socket)",
+                     exc_info=True)
 
 
 def _timedelta_seconds(seconds: float):
