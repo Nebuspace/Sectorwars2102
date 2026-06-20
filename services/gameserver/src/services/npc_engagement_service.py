@@ -486,20 +486,52 @@ def sweep_pending_engagements(db: Session) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     now = datetime.now(UTC)
 
-    open_rows = (
-        db.query(PendingEngagement)
+    # PER-ROW ISOLATION (WO-B1/B2): mirror the bounty-accrual / planetary-
+    # advance sweeps' discipline so one bad engagement cannot lose the rest
+    # of the tick's transitions, and no batch-wide row lock blocks the
+    # offense path's route_engagement insert.
+    #
+    # B2 — query the CANDIDATE ids (the open PENDING/ARRIVED subset) with NO
+    # lock; the per-row loop re-fetches each by id with_for_update under its
+    # own savepoint, so locks are held briefly per row rather than across the
+    # whole sweep.
+    candidate_ids = (
+        db.query(PendingEngagement.id)
         .filter(PendingEngagement.status.in_(
             (EngagementStatus.PENDING, EngagementStatus.ARRIVED)
         ))
-        .with_for_update()
         .all()
     )
 
-    for engagement in open_rows:
+    for (engagement_id,) in candidate_ids:
+        # B1 — each engagement runs inside its OWN SAVEPOINT. A Postgres-level
+        # error inside _sweep_one aborts only this savepoint's subtransaction;
+        # sp.rollback() restores the session to the pre-row state (releasing
+        # this row's lock) and the loop CONTINUES, so earlier successful rows
+        # survive to the caller's outer commit. sp.commit() releases the
+        # savepoint while keeping the row's changes buffered for that commit.
+        sp = db.begin_nested()
         try:
-            events.extend(_sweep_one(db, engagement, now))
+            engagement = (
+                db.query(PendingEngagement)
+                .filter(PendingEngagement.id == engagement_id)
+                .with_for_update()
+                .first()
+            )
+            # Re-confirm on the locked row: a concurrent sweep / resolution
+            # could have moved it out of the open set since the candidate
+            # query. Skip without touching it.
+            if engagement is None or engagement.status not in (
+                EngagementStatus.PENDING, EngagementStatus.ARRIVED
+            ):
+                sp.rollback()
+                continue
+            row_events = _sweep_one(db, engagement, now)
+            sp.commit()
+            events.extend(row_events)
         except Exception:
-            logger.exception("Engagement sweep failed for %s", engagement.id)
+            logger.exception("Engagement sweep failed for %s", engagement_id)
+            sp.rollback()
 
     db.flush()
     return events
