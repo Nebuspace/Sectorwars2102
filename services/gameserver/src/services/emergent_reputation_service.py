@@ -390,6 +390,28 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
         deltas=[FactionDelta(FactionType.MERCHANTS, 10)],
         doc_source="factions-and-teams.md MG: Buy PREMIUM insurance (+10)",
     ),
+    # Nova Scientific Institute: "First-scan a NEBULA / BLACK_HOLE / ANOMALY /
+    # WARP_STORM sector | +15 | research data" (factions-and-teams.md NS table,
+    # line 128). CONCRETE-CANON: explicit +15 NS, single static faction (Nova =
+    # FactionType.EXPLORERS), no anti-symmetric matrix entry. Wired at the
+    # first-visit (first-scan) surface in movement_service._execute_movement.
+    #
+    # CANON-SUBSET (deliberate, not invention): the canon names four research
+    # sector types but only NEBULA and BLACK_HOLE have a populated
+    # ``Sector.type`` value in code — ANOMALY and WARP_STORM exist only in the
+    # un-columned ``SectorSpecialType`` enum, so they are unrepresentable and the
+    # caller fires only on the two that exist. Firing on a faithful subset of the
+    # canon set is not a fabricated number; the magnitude (+15) and faction are
+    # taken verbatim from canon. The ANOMALY/WARP_STORM coverage is flagged for
+    # the orchestrator (no column to gate on).
+    "NOVA_FIRST_SCAN_RESEARCH_SECTOR": EmergentAction(
+        name="NOVA_FIRST_SCAN_RESEARCH_SECTOR",
+        deltas=[FactionDelta(FactionType.EXPLORERS, 15)],
+        doc_source=(
+            "factions-and-teams.md NS: First-scan a NEBULA / BLACK_HOLE / "
+            "ANOMALY / WARP_STORM sector (+15) — NEBULA/BLACK_HOLE subset wired"
+        ),
+    ),
 }
 
 

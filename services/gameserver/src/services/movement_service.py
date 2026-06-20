@@ -8,7 +8,7 @@ from sqlalchemy import and_, or_, select
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus, ShipType
-from src.models.sector import Sector, sector_warps
+from src.models.sector import Sector, SectorType, sector_warps
 from src.models.planet import Planet
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
 from src.models.combat import CombatResult
@@ -1122,6 +1122,41 @@ class MovementService:
                         sector_id=destination_sector.id,
                     )
                 )
+                # Emergent faction-rep (ADR-0032): "First-scan a NEBULA /
+                # BLACK_HOLE / ANOMALY / WARP_STORM sector | +15 Nova Scientific
+                # Institute" (factions-and-teams.md NS table). IDEMPOTENT BY
+                # CONSTRUCTION: this is the new-row branch — it runs only the
+                # FIRST time this (player, sector) pair is recorded, i.e. the
+                # player's first scan/arrival in the sector. Subsequent visits
+                # take the `if visit:` branch above and never re-award.
+                #
+                # Routed through the ADR-0032 dispatcher (the single canon entry
+                # point), flush-only, riding this method's single commit below —
+                # exactly like the KILL_PIRATE_NPC combat hook. Gated on the two
+                # canon research-sector types that have a populated Sector.type
+                # value (NEBULA, BLACK_HOLE); ANOMALY/WARP_STORM are un-columned
+                # and so unrepresentable here (flagged, not invented). DOUBLE-
+                # FIRE SAFE: no prior faction-rep hook exists at this site (the
+                # ARIA/medal/formation hooks are disjoint signals).
+                if destination_sector.type in (
+                    SectorType.NEBULA,
+                    SectorType.BLACK_HOLE,
+                ):
+                    try:
+                        from src.services.emergent_reputation_service import (
+                            apply_emergent_action,
+                        )
+                        apply_emergent_action(
+                            self.db,
+                            player,
+                            "NOVA_FIRST_SCAN_RESEARCH_SECTOR",
+                            {"sector_id": destination_sector.sector_id},
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed NOVA_FIRST_SCAN_RESEARCH_SECTOR emergent-rep "
+                            "hook: %s", e
+                        )
         except Exception as e:
             logger.error("Failed ARIA exploration-map hook during movement: %s", e)
 
