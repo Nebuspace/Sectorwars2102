@@ -190,6 +190,16 @@ class Ship(Base):
     # Equipment slots
     equipment_slots = Column(JSONB, nullable=False, default={})
 
+    # Carrier ship-hangar (WO-AE; DATA_MODELS/ships.md#carrier-ship-hangar).
+    # Only populated on capital-size hulls (the Carrier at launch); NULL on
+    # every other ship. Holds whole player ships in transit, SEPARATE from the
+    # Carrier's 12-drone bay (no shared budget). Shape:
+    #   {"capacity_units": 8, "docked": [{ship_id, owner_id, size, size_units,
+    #     docked_at, request_state}]}
+    # Managed exclusively by hangar_service (the single source of truth for
+    # dock / undock / disembark / jettison-on-destruction).
+    hangar = Column(JSONB, nullable=True)
+
     # Insurance
     insurance = Column(JSONB, nullable=True)
     

@@ -177,6 +177,17 @@ class CombatService:
             Ship.id.in_(ship_ids)
         ).order_by(Ship.id).populate_existing().with_for_update().all()
 
+        # Carrier ship-hangar inertness (WO-AE; ships.md:341): a ship docked
+        # inside a Carrier hangar cannot attack and cannot be individually
+        # targeted (damage to the Carrier never reaches it). Reject before any
+        # turn charge. Lazy import avoids a service import cycle.
+        from src.services.hangar_service import HangarService
+        _hangar = HangarService(self.db)
+        if _hangar.is_ship_hangared(attacker.current_ship_id):
+            return {"success": False, "message": "Your ship is docked inside a Carrier and cannot attack — undock first"}
+        if _hangar.is_ship_hangared(defender.current_ship_id):
+            return {"success": False, "message": "That ship is docked inside a Carrier and cannot be targeted"}
+
         # Escape pods are indestructible — the resolver rejects them as valid
         # targets at the validation step before any turn charge or damage roll
         # (combat-resolver.md S-V1: "target.type == 'escape_pod' raises
@@ -483,6 +494,13 @@ class CombatService:
 
         if not attacker.current_ship:
             return {"success": False, "message": "Attacker has no active ship"}
+
+        # Carrier ship-hangar inertness (WO-AE): a docked passenger cannot
+        # attack. (An NPC ship is never hangared, so only the attacker is
+        # guarded here.)
+        from src.services.hangar_service import HangarService
+        if HangarService(self.db).is_ship_hangared(attacker.current_ship_id):
+            return {"success": False, "message": "Your ship is docked inside a Carrier and cannot attack — undock first"}
 
         if attacker.current_sector_id != npc_ship.sector_id:
             return {"success": False, "message": "Target is not in your sector"}

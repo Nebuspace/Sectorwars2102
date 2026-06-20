@@ -131,6 +131,20 @@ class ShipService:
             logger.warning(f"Attempted to destroy indestructible Escape Pod for player {player.id}")
             return ship  # Return the same ship (indestructible)
 
+        # Carrier ship-hangar jettison (WO-AE; FEATURES/gameplay/ships.md:341).
+        # If THIS hull is a Carrier carrying docked ships, jettison them INTACT
+        # into the destruction sector and auto-eject their pilots to Escape Pods
+        # BEFORE the Carrier itself runs the standard destruction flow below.
+        # The docked ships are NOT destroyed and spawn NO wrecks (cargo /
+        # insurance unaffected). Best-effort: a hangar hiccup must never block
+        # the Carrier's own destruction (it would strand the kill).
+        if ship.hangar and (ship.hangar.get("docked")):
+            try:
+                from src.services.hangar_service import HangarService
+                HangarService(self.db).jettison_all(ship, ship.sector_id, self)
+            except Exception as e:
+                logger.error("Hangar jettison-on-destruction failed for Carrier %s: %s", ship.id, e)
+
         is_planned_dismantle = cause == "warp_gate_anchor"
         # A voluntary genesis sacrifice (advanced tier) behaves like the planned
         # dismantle for property handling: ALL non-bound cargo transfers to the

@@ -398,6 +398,22 @@ class MovementService:
                 "turn_cost": 0,
             }
 
+        # Carrier ship-hangar (WO-AE; ships.md:338-340): a ship docked inside a
+        # Carrier is an inert passenger — it cannot move independently. The
+        # pilot rides along when the Carrier moves, or pays 1 turn to undock and
+        # resume control. Reject independent moves before any turn charge.
+        try:
+            from src.services.hangar_service import HangarService
+            if HangarService(self.db).is_ship_hangared(player.current_ship_id):
+                return {
+                    "success": False,
+                    "message": "Your ship is docked inside a Carrier — undock to move "
+                               "under your own power",
+                    "turn_cost": 0,
+                }
+        except Exception as e:
+            logger.error("Hangar passenger move-guard failed: %s", e)
+
         current_sector_id = player.current_sector_id
         
         # Return early if already in the destination sector
@@ -976,6 +992,20 @@ class MovementService:
         # Update ship position
         if player.current_ship:
             player.current_ship.sector_id = destination_sector_id
+
+            # Carrier ship-hangar ride-along (WO-AE; ships.md:340). When a
+            # Carrier moves, every docked passenger's ship + pilot follows to
+            # the destination at 0 turns for the passenger. Best-effort — a
+            # hangar hiccup must never strand the Carrier's own move; it rides
+            # this method's single commit below.
+            if player.current_ship.hangar and player.current_ship.hangar.get("docked"):
+                try:
+                    from src.services.hangar_service import HangarService
+                    HangarService(self.db).carry_hangared_ships(
+                        player.current_ship, destination_sector_id
+                    )
+                except Exception as e:
+                    logger.error("Carrier hangar ride-along hook failed: %s", e)
 
         # Mine detonation: hostile armored mines in the destination detonate
         # against the entering ship (combat.md "mines damage hostile entrants";
