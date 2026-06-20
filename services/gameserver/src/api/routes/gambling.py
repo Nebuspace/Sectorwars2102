@@ -14,6 +14,7 @@ from src.core.database import get_db
 from src.auth.dependencies import get_current_user, get_current_player
 from src.models.user import User
 from src.models.player import Player
+from src.models.station import Station
 
 
 # ============================================
@@ -139,6 +140,27 @@ def reconstruct_blackjack_hands(deck: list[dict], player_card_count: int):
 router = APIRouter(prefix="/gambling", tags=["gambling"])
 
 
+def _require_spacedock(db: Session, current_player: Player) -> None:
+    """Canon gating (FEATURES/economy/gambling.md §1): gambling is offered ONLY
+    at a SpaceDock facility. The endpoint's own `is_docked` check (HTTP 400)
+    confirms the player is docked; this resolves the docked station via
+    current_port_id and requires Station.is_spacedock, raising 403 otherwise.
+    Mirrors armory.py's station-service gating (armory.py:79/142/148)."""
+    if not current_player.current_port_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You must be docked at a SpaceDock to gamble"
+        )
+    station = db.query(Station).filter(
+        Station.id == current_player.current_port_id
+    ).first()
+    if not station or not bool(station.is_spacedock):
+        raise HTTPException(
+            status_code=403,
+            detail="Gambling is only available at a SpaceDock facility"
+        )
+
+
 class SlotSpinRequest(BaseModel):
     bet_amount: int = Field(..., ge=10, le=10000)
 
@@ -238,12 +260,15 @@ async def spin_slots(
             detail=f"Insufficient credits. Need {request.bet_amount}, have {current_player.credits}"
         )
 
-    # Verify player is docked at a SpaceDock (has gambling)
+    # Verify player is docked
     if not current_player.is_docked:
         raise HTTPException(
             status_code=400,
             detail="You must be docked at a SpaceDock to gamble"
         )
+
+    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+    _require_spacedock(db, current_player)
 
     # Lock the player row so the bet deduction + payout are atomic against a
     # concurrent gambling request (no lost-update / concurrent double-spend).
@@ -326,6 +351,9 @@ async def roll_dice(
             status_code=400,
             detail="You must be docked at a SpaceDock to gamble"
         )
+
+    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+    _require_spacedock(db, current_player)
 
     # Lock the player row so the bet deduction + payout are atomic against a
     # concurrent gambling request (no lost-update / concurrent double-spend).
@@ -441,6 +469,9 @@ async def buy_lottery_ticket(
             detail="You must be docked at a SpaceDock to gamble"
         )
 
+    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+    _require_spacedock(db, current_player)
+
     # Lock the player row so the bet deduction + payout are atomic against a
     # concurrent gambling request (no lost-update / concurrent double-spend).
     # populate_existing refreshes the locked row's credits rather than reusing a
@@ -513,6 +544,9 @@ async def blackjack_deal(
             status_code=400,
             detail="You must be docked at a SpaceDock to gamble"
         )
+
+    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+    _require_spacedock(db, current_player)
 
     # Lock the player row so the bet deduction + active-game write are atomic
     # against a concurrent deal/action (no double-spend, no two live games).
@@ -618,6 +652,9 @@ async def blackjack_action(
             status_code=400,
             detail="You must be docked at a SpaceDock to gamble"
         )
+
+    # Canon: gambling is offered ONLY at a SpaceDock (403 at any other station)
+    _require_spacedock(db, current_player)
 
     # Lock the player + load the authoritative active game. No active game means
     # no real un-settled deal — reject (closes the "/action without /deal" and
