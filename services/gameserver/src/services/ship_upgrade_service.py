@@ -108,6 +108,26 @@ class ShipUpgradeService:
             "compatible_ships": [ShipType.COLONY_SHIP, ShipType.LIGHT_FREIGHTER, ShipType.CARGO_HAULER],
             "effects": {"landing_bonus": 1.25}
         },
+        # CANON (sw2102-docs ship-systems.md:127, ships.md tractor-beam-tow-operations,
+        # combat.md:154-167): dual-use Tractor Beam. Cost 40,000; installable on
+        # Cargo Hauler / Defender / Carrier / Warp Jumper. Two effects:
+        #   - tow_capable: the AF ship-tow flag (movement consults it + Ship.tow_state).
+        #     INCLUDED here per canon so the equipment is canon-complete, but the tow
+        #     BEHAVIOR is NOT built here — that is WO-AF.
+        #   - weapon_mode "tractor": the combat-side face. In combat the tractor does
+        #     NO damage (combat.md:167) and denies the target's escape (combat.md:162).
+        #     WO-BC builds only the single-shot escape-suppression kernel of this; the
+        #     full multi-round 3-round lock / additive speed-debuff stacking / counterplay
+        #     described in combat.md:161-165 is DEFERRED to a multi-round combat-engagement
+        #     model (DECISIONS.md tractor-weapon-mode-scope, ⏳ Pending — orchestrator
+        #     selected option (a), ship the single-shot MVP now).
+        "tractor_beam": {
+            "name": "Tractor Beam",
+            "description": "Dual-use tractor projector: in combat it locks the target and denies escape (no damage); as a tow rig it enables ship-towing through warp tunnels",
+            "cost": 40000,
+            "compatible_ships": [ShipType.CARGO_HAULER, ShipType.DEFENDER, ShipType.CARRIER, ShipType.WARP_JUMPER],
+            "effects": {"tow_capable": True, "weapon_mode": "tractor"}
+        },
     }
 
     # NO-CANON kernel (ship-systems.md §2.5 marks the Sensor scan-range effect

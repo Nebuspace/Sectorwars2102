@@ -20,6 +20,7 @@ from src.models.region import RegionType
 from src.models.station import Station
 from src.services.ship_service import ShipService
 from src.services.ranking_service import RankingService
+from src.services.ship_upgrade_service import ShipUpgradeService
 from src.services.turn_service import spend_turns
 
 logger = logging.getLogger(__name__)
@@ -1770,6 +1771,27 @@ class CombatService:
         """
         # Get ships and equipment
         attacker_ship = attacker.current_ship
+
+        # WO-BC tractor escape-suppression (single-shot MVP). CANON combat.md:162
+        # — a tractor-locked target "cannot succeed at flee actions while the lock
+        # holds"; tractor does NO damage (combat.md:167). If the ATTACKER's ship
+        # carries the tractor_beam equipment in weapon_mode "tractor", the DEFENDER's
+        # escape chance is forced to 0 for this single combat resolution. The full
+        # multi-round 3-round lock / speed-debuff stacking / counterplay is DEFERRED
+        # (DECISIONS.md tractor-weapon-mode-scope; orchestrator option (a)). Read via
+        # the canonical equipment-effects merge; defensive (a None ship or a missing
+        # equipment_slots JSONB simply yields no tractor, never a crash — combat must
+        # never break on a missing accessory). Damage/outcome are UNCHANGED — the only
+        # effect is zeroing the defender's flee roll.
+        attacker_has_tractor = False
+        try:
+            if attacker_ship is not None:
+                attacker_effects = ShipUpgradeService.get_equipment_effects(attacker_ship)
+                attacker_has_tractor = attacker_effects.get("weapon_mode") == "tractor"
+        except Exception as e:  # never let an equipment-read break combat
+            logger.error("Tractor equipment read failed (continuing without lock): %s", e)
+            attacker_has_tractor = False
+
         if defender is not None:
             defender_ship = defender.current_ship
             defender_name = defender.username
@@ -2044,7 +2066,17 @@ class CombatService:
                 # actually leaves the sector.
                 if defender is not None and defender_drones <= 0:
                     escape_pct = self._calculate_escape_chance(defender_ship, attacker_ship)
-                    if random.randint(1, 100) <= escape_pct:
+                    # WO-BC tractor lock: a tractor-equipped attacker denies the
+                    # defender's escape (canon combat.md:162). Force the chance to 0
+                    # so the flee roll can never succeed this resolution. Applies to
+                    # BOTH attack_player and attack_npc_ship — the defender here is the
+                    # non-attacker side regardless of player/NPC type (NPC defenders
+                    # already skip the roll via the `defender is not None` guard, so in
+                    # practice this bites the PvP defender; harmless and correct either
+                    # way). Damage/outcome otherwise unchanged.
+                    if attacker_has_tractor:
+                        escape_pct = 0
+                    if escape_pct > 0 and random.randint(1, 100) <= escape_pct:
                         fled_result = CombatResult.DEFENDER_FLED
                         combat_details.append({
                             "round": round_number,
