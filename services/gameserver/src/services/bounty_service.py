@@ -21,11 +21,57 @@ logger = logging.getLogger(__name__)
 BOUNTY_MIN_AMOUNT = 1000
 BOUNTY_PLACEMENT_FEE = 0.10  # 10% fee
 
-# System-generated bounty thresholds based on personal reputation
+# System-generated bounty thresholds based on personal reputation. These define
+# WHO the Federation wants (a player must be at or below the shallowest tier,
+# -500, to accrue any system bounty) and the per-tier ACCRUAL CAP — the deepest
+# matched tier sets the ceiling the stored pot grows toward. (Previously these
+# were instantaneous bounty values recomputed on every kill; under WO-BN the pot
+# is STORED and GROWS over time, so a tier's figure is now the cap, not the
+# constant payout.)
 SYSTEM_BOUNTY_TIERS = {
-    -500: 5000,    # Criminal: 5,000 credit bounty
-    -750: 25000,   # Villain low: 25,000 credit bounty
-    -1000: 100000, # Villain max: 100,000 credit bounty
+    -500: 5000,    # Criminal: pot caps at 5,000 credits
+    -750: 25000,   # Villain low: pot caps at 25,000 credits
+    -1000: 100000, # Villain max: pot caps at 100,000 credits
+}
+
+# Shallowest criminal threshold — a player whose personal_reputation is strictly
+# greater than this is NOT wanted and accrues no system pot.
+SYSTEM_BOUNTY_CRIMINAL_THRESHOLD = max(SYSTEM_BOUNTY_TIERS)  # == -500
+
+# --- WO-BN stored-pot model -------------------------------------------------
+# The SYSTEM bounty is no longer recomputed on demand; it is a STORED pot per
+# criminal that GROWS over time (npc_scheduler accrual sweep) and RESETS to 0
+# when a hunter kills+collects. The pot lives in Player.settings JSONB (additive,
+# NO migration; mirrors the per-player _daily_stipend / per-ship _passive_income
+# anchor convention used by the other economy faucets).
+#
+# Storage keys (Player.settings):
+#   system_bounty_pot         -> int credits currently owed on this criminal's head
+#   system_bounty_pot_period  -> canonical-day index of the last accrual (durable
+#                                idempotency anchor: a restart / duplicate wake /
+#                                re-run within the same canonical day re-reads this
+#                                and skips, so the pot NEVER double-accrues)
+SYSTEM_BOUNTY_POT_KEY = "system_bounty_pot"
+SYSTEM_BOUNTY_POT_PERIOD_KEY = "system_bounty_pot_period"
+
+# ACCRUAL MODEL (NO-CANON — bounties.md gives the tier FIGURES but is silent on
+# any growth rate; proposed conservatively and flagged for DECISIONS.md):
+#   * base accrual per canonical day for a shallow criminal (-500..-749);
+#   * scaled UP by a per-tier "dastardly" multiplier (more-severe criminals
+#     accrue FASTER — the deeper the pit, the bigger the daily bounty bump);
+#   * each criminal's pot is CAPPED at its deepest-matched tier figure, so a
+#     -500 player tops out at 5,000, a -1000 player at 100,000 — the same
+#     ceilings the old on-demand model paid, now reached gradually.
+# Conservative: at base 250/day a -500 criminal needs ~20 canonical days to fill
+# its 5,000 cap; a -1000 criminal at 4x (1,000/day) needs ~100 days to fill
+# 100,000 — slow enough that the pot is never a runaway faucet.
+SYSTEM_BOUNTY_BASE_ACCRUAL_PER_DAY = 250  # credits/canonical-day, shallow tier
+# Per-tier dastardly multiplier on the base daily accrual (keyed by the same
+# thresholds as SYSTEM_BOUNTY_TIERS — deepest matched tier wins).
+SYSTEM_BOUNTY_ACCRUAL_MULTIPLIER = {
+    -500: 1.0,   # Criminal:    250/day
+    -750: 2.0,   # Villain low: 500/day
+    -1000: 4.0,  # Villain max: 1,000/day
 }
 
 
@@ -44,6 +90,112 @@ class BountyService:
             player.settings = {}
         player.settings["bounties"] = bounties
         flag_modified(player, "settings")
+
+    # --- WO-BN stored system-bounty pot (Player.settings JSONB) -------------
+
+    @staticmethod
+    def get_system_bounty_pot(player: Player) -> int:
+        """Read the stored system-bounty pot (credits) for this criminal.
+
+        The pot is the GROWING-then-RESET value the accrual sweep writes and the
+        kill+collect path zeroes. A non-criminal (positive/neutral rep) simply
+        never accrues, so its pot stays 0. Robust to a missing/None/garbage
+        stored value (treated as 0)."""
+        settings = player.settings or {}
+        try:
+            return max(0, int(settings.get(SYSTEM_BOUNTY_POT_KEY, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _set_system_bounty_pot(player: Player, value: int) -> None:
+        """Write the stored system-bounty pot (clamped >= 0) and flag the JSONB
+        column dirty so SQLAlchemy persists the in-place mutation."""
+        if player.settings is None:
+            player.settings = {}
+        player.settings[SYSTEM_BOUNTY_POT_KEY] = max(0, int(value))
+        flag_modified(player, "settings")
+
+    @staticmethod
+    def is_criminal(player: Player) -> bool:
+        """True if this player is wanted by the Federation — i.e. deep enough in
+        negative personal reputation to carry a system bounty. Reuses the exact
+        threshold the on-demand model used (``personal_reputation <= -500``), so
+        WHO accrues is identical to who used to be assigned a system bounty."""
+        return (player.personal_reputation or 0) <= SYSTEM_BOUNTY_CRIMINAL_THRESHOLD
+
+    @staticmethod
+    def _matched_tier(score: int) -> Optional[int]:
+        """The deepest (most-negative) tier threshold this rep score has reached,
+        or None if the player is not a criminal. Mirrors _get_system_bounties'
+        'deepest matched tier wins' rule."""
+        matched = [t for t in SYSTEM_BOUNTY_TIERS if score <= t]
+        return min(matched) if matched else None
+
+    @classmethod
+    def system_bounty_pot_cap(cls, player: Player) -> int:
+        """The ceiling this criminal's pot may grow to — the deepest-matched
+        tier's figure (5k / 25k / 100k). 0 for a non-criminal."""
+        tier = cls._matched_tier(player.personal_reputation or 0)
+        return SYSTEM_BOUNTY_TIERS.get(tier, 0) if tier is not None else 0
+
+    @classmethod
+    def system_bounty_daily_accrual(cls, player: Player) -> int:
+        """Credits this criminal's pot grows per canonical day — base rate scaled
+        by the deepest-matched tier's dastardly multiplier. 0 for a non-criminal
+        (so the accrual sweep credits nothing)."""
+        tier = cls._matched_tier(player.personal_reputation or 0)
+        if tier is None:
+            return 0
+        mult = SYSTEM_BOUNTY_ACCRUAL_MULTIPLIER.get(tier, 1.0)
+        return int(SYSTEM_BOUNTY_BASE_ACCRUAL_PER_DAY * mult)
+
+    @classmethod
+    def accrue_system_bounty_pot(cls, player: Player, period: int) -> int:
+        """Grow this criminal's stored pot for ``period`` (a canonical-day
+        index), idempotently. Returns the credits ADDED (0 on a no-op).
+
+        Idempotency: the durable per-player anchor
+        ``settings[SYSTEM_BOUNTY_POT_PERIOD_KEY]`` records the last period
+        accrued. We accrue at most ONE period's worth per call and only when the
+        anchor is BEHIND ``period`` — a restart, duplicate wake, or re-run within
+        the same canonical day re-reads the anchor and skips, so the pot NEVER
+        double-accrues. (We deliberately do NOT back-fill multiple missed periods
+        in one call: a criminal who was offline for a week shouldn't get a lump
+        sum — the cap and the slow daily drip keep the faucet conservative.)
+
+        The caller (the scheduler sweep) owns the lock on this player row and the
+        commit; this method only mutates the JSONB on the locked instance."""
+        settings = player.settings or {}
+        try:
+            last_period = int(settings.get(SYSTEM_BOUNTY_POT_PERIOD_KEY))
+        except (TypeError, ValueError):
+            last_period = None
+
+        # Already accrued this (or a later) period -> idempotent no-op. We still
+        # advance a stale/missing anchor below so the next period accrues cleanly.
+        if last_period is not None and last_period >= period:
+            return 0
+
+        added = 0
+        if cls.is_criminal(player):
+            daily = cls.system_bounty_daily_accrual(player)
+            cap = cls.system_bounty_pot_cap(player)
+            current = cls.get_system_bounty_pot(player)
+            if daily > 0 and current < cap:
+                new_value = min(cap, current + daily)
+                added = new_value - current
+                cls._set_system_bounty_pot(player, new_value)
+
+        # Advance the durable anchor to this period regardless of whether credits
+        # were added (a criminal at cap, or a player who lapsed out of criminal
+        # status, still moves the anchor forward so a single period is never
+        # re-evaluated). flag_modified covers both the pot and the anchor.
+        if player.settings is None:
+            player.settings = {}
+        player.settings[SYSTEM_BOUNTY_POT_PERIOD_KEY] = int(period)
+        flag_modified(player, "settings")
+        return added
 
     def place_bounty(
         self, placer_id: uuid.UUID, target_id: uuid.UUID, amount: int
@@ -241,10 +393,14 @@ class BountyService:
         player_bounties = self._get_bounties(target)
         system_bounties = self._get_system_bounties(target)
 
-        # had_bounty: did the target carry ANY bounty at all at call time,
-        # evaluated BEFORE the anti-faucet dedup below? Combat uses this to
-        # distinguish "killed an innocent" (no bounty ever) from "killed a known
-        # criminal whose head I'd already turned in" (bounty exists but deduped).
+        # had_bounty: did the target carry ANY bounty at all at call time? A
+        # non-empty player-placed list, or a non-zero stored system pot, both
+        # count. Combat uses this to distinguish "killed an innocent" (no bounty)
+        # from "killed a wanted criminal" (paid out). Under WO-BN there is no
+        # longer a deduped-but-present case for the SYSTEM pot — a zeroed pot
+        # simply returns [] from _get_system_bounties, so an already-collected
+        # criminal whose pot hasn't re-accrued reads as had_bounty False (no
+        # bounty currently on the head), which is the correct player-facing truth.
         had_bounty = bool(player_bounties) or bool(system_bounties)
 
         now = datetime.now(UTC)
@@ -264,42 +420,43 @@ class BountyService:
                 resolved_at=now,
             )
 
-        # --- System bounty: ledger-based dedup closes the collusion faucet ---
-        # The system bounty is recomputed from reputation on EVERY kill and is
-        # never "cleared", so without a ledger a hunter could farm it by
-        # repeat-killing the same deep-negative-rep accomplice. We make a
-        # criminal's head collectible ONCE per (hunter, target) for ANY system
-        # tier: if this hunter already has a PAID system claim against this
-        # target we skip — this also closes the residual "deepen rep across tier
-        # boundaries to mint a fresh bounty_ref" harvest (5k→25k→100k). A
-        # DIFFERENT hunter can still collect once. The precise re-collection
-        # policy (once-forever vs once-per-rep-recovery-cycle) is NO-CANON and
-        # filed for ratification in DECISIONS.md (system-bounty-anti-faucet).
+        # --- System bounty: STORED POT, paid-then-ZEROED (WO-BN) -------------
+        # The system bounty is now a STORED pot per criminal (grown over time by
+        # the npc_scheduler accrual sweep, capped per tier). The kill+collect
+        # pays out whatever the pot currently holds and then RESETS it to 0 — and
+        # that reset IS the anti-double-collect: an emptied pot pays nothing until
+        # it re-accrues, so the old per-(hunter,target) BountyClaim dedup
+        # (_has_paid_system_claim) is gone for SYSTEM bounties. The target row is
+        # already with_for_update-locked above, so two hunters can't both drain a
+        # full pot — the kill that zeroes it first wins; the second reads 0. We
+        # still record a PAID claim row for provenance (audit trail of who turned
+        # in this head), but the claim no longer GATES payout.
         total_system = 0
-        already_claimed_system = self._has_paid_system_claim(collector_id, target_id)
         for b in system_bounties:
-            if already_claimed_system:
-                # This hunter already turned in this criminal — no second payout.
-                continue
-            bounty_ref = str(b.get("id"))  # f"system_{threshold}"
             amount = b.get("amount", 0)
+            if amount <= 0:
+                continue
             total_system += amount
             self._write_claim(
                 claimant_id=collector_id,
                 target_id=target_id,
                 amount=amount,
-                bounty_ref=bounty_ref,
+                bounty_ref=str(b.get("id")),  # "system_pot"
                 resolved_at=now,
             )
+        if total_system > 0:
+            # Empty the pot under the target lock — the reset is the dedup.
+            self._set_system_bounty_pot(target, 0)
 
         total = total_player + total_system
 
         if total == 0:
-            # No NEW payout. This is reached either because there was never a
-            # bounty (had_bounty False) or because every bounty was already
-            # claimed by this hunter (had_bounty True). Combat needs the
-            # distinction, so return success-ish with had_bounty rather than a
-            # bare failure when the target genuinely had a (deduped) bounty.
+            # No payout. Under the stored-pot model this is normally the
+            # "no bounty on this head" case (had_bounty False — pot 0 and no
+            # player-placed entries). The had_bounty-True-but-total-0 branch is
+            # now only reachable defensively (a malformed 0-credit player-placed
+            # entry); we preserve the distinction so combat can still tell an
+            # innocent kill from a degenerate-but-present bounty.
             if not had_bounty:
                 return {
                     "success": False,
@@ -310,7 +467,7 @@ class BountyService:
                     "total_collected": 0,
                 }
             logger.info(
-                "Bounty collect: %s killed %s but all bounties already claimed (faucet deduped)",
+                "Bounty collect: %s killed %s — bounty present but zero net payout",
                 collector_id, target_id,
             )
             return {
@@ -327,7 +484,8 @@ class BountyService:
         # Award credits
         collector.credits += total
 
-        # Clear player bounties (system bounties are not stored; dedup is ledger)
+        # Clear player-placed bounties (clearing the JSONB list IS their dedup).
+        # The system pot was already zeroed above (its reset is ITS dedup).
         self._set_bounties(target, [])
 
         # Flush within the caller's locked transaction (caller owns the commit).
@@ -356,50 +514,53 @@ class BountyService:
         num_participants: int,
         claim_player_pot: bool,
     ) -> Dict[str, Any]:
-        """Award ONE fleet member's even share of a kill's bounty, resolved
-        entirely through THAT MEMBER'S OWN ledger (WO-C2, fleet-kill-attribution
-        option (b)).
+        """Award ONE fleet member's even share of a kill's bounty (WO-C2 fleet-
+        kill-attribution; updated for the WO-BN stored-pot model).
 
-        Canon (DECISIONS.md fleet-kill-attribution): "each contributing member's
-        share is bounded by their own unclaimed entitlement, reconciling with the
-        once-per-(hunter,target) bounty_claims dedup from system-bounty-anti-
-        faucet." This is the per-member resolver the fleet helper calls once per
-        DISTINCT participating player. It deliberately does NOT pay a whole pot to
-        a single collector and shuffle credits (that reopens the alt-farm faucet:
-        rotating the collector role across colluding alts would re-mint the full
-        system bounty because the non-collectors never burned their own claim).
-        Here every member burns their OWN claim or is paid ZERO — collector
-        rotation is impossible because each alt is bounded by its own ledger.
+        The fleet helper calls this once per DISTINCT participating player of the
+        killing fleet. A fleet kill is ONE kill, so — exactly like the solo path
+        — the system pot is paid out ONCE and then RESET to 0; the pot-reset is
+        the anti-double-collect (the old per-(hunter,target) ledger dedup is
+        gone). Each member receives an even-split share ``pot // n`` of the
+        STORED system pot, and the designated member (``claim_player_pot`` True)
+        ZEROES the pot after all shares are read.
 
-        Two pots, two dedup mechanisms:
+        Anti-faucet under the stored pot: the target row is locked ONCE by the
+        caller for the whole loop, and the pot is zeroed exactly once by the
+        designated member — so a concurrent second kill on the same criminal
+        serializes behind that lock and reads a 0 pot. Collector rotation across
+        alts can no longer re-mint the bounty: the pot is a single shared value
+        that empties on this kill, not a per-hunter entitlement that each alt
+        re-earns. The integer-floor even split means the fleet total is at most
+        the pot (the floor remainder is dropped, never minted) — and may be a
+        hair LESS than a solo single-kill, which is acceptable, not a bug to
+        "top up".
 
-        * SYSTEM bounty — deduped per-(hunter, target) by the bounty_claims
-          ledger. This member is paid their even share of the system pot ONLY IF
-          they have no PAID system claim against this target (``_has_paid_system_
-          claim``). When paid, we write THIS member's own PAID system claim row,
-          so a member who already turned in this criminal (solo, or in a prior
-          fleet kill) gets ZERO. The total handed out across the fleet may
-          therefore be LESS than a solo single-kill — that is the canon-correct
-          outcome, not a bug to "top up".
+        ORDERING CONTRACT (caller-enforced): the designated member
+        (``claim_player_pot=True``) must be processed LAST, so every other member
+        reads the full pre-zero pot for its share before the designated member
+        zeroes it. The fleet helper designates ``idx == n - 1`` for exactly this
+        reason. A defensive guard still computes the designated member's OWN share
+        from the pot value BEFORE zeroing, so even a mis-ordered caller never
+        shorts the designated member itself.
 
-        * PLAYER-placed bounty — pay-once-then-cleared (clearing the JSONB list
-          IS the dedup; there is no per-member ledger for it). It cannot be
-          per-member ledger-bounded, so exactly ONE member (``claim_player_pot``
-          True, chosen by the caller) claims the whole player-placed pot as an
-          even-split share and the pot is cleared; the other members get a 0
-          player-placed share. Each member who is paid records a PAID player-pot
-          claim row for provenance.
+        Two pots:
+
+        * SYSTEM pot — STORED, even-split per member, zeroed once (above).
+        * PLAYER-placed pot — pay-once-then-cleared (clearing the JSONB list IS
+          its dedup). Exactly ONE member (``claim_player_pot`` True) claims the
+          whole player-placed pot as an even-split share and clears it; the
+          others get a 0 player-placed share. Each paid member records a PAID
+          claim row for provenance (the claim no longer GATES payout).
 
         Locks ONLY this member's Player row (``with_for_update``) before
-        crediting, closing the lost-update window the prior whole-pot-shuffle had.
-        The target row is locked once by the caller (the fleet helper) for the
-        first member so the JSONB clear + reputation reads are serialized.
+        crediting. The target row is locked once by the caller (the fleet helper).
 
         Returns ``{paid, system_paid, player_paid, had_bounty, new_credits}``.
-        ``paid`` > 0 ⇒ this member is a "heroic bounty kill" (caller awards the
-        +100 rep); ``had_bounty`` reflects whether the target carried ANY bounty
-        at call time (so the caller can distinguish innocent-slaughter from a
-        deduped criminal exactly as the solo path does).
+        ``paid`` > 0 ⇒ heroic bounty kill (caller awards the +100 rep);
+        ``had_bounty`` reflects whether the target carried ANY bounty at call
+        time (so the caller can distinguish innocent-slaughter from a clean kill
+        of a criminal whose pot is empty, exactly as the solo path does).
         """
         n = max(1, int(num_participants))
 
@@ -410,8 +571,9 @@ class BountyService:
             .with_for_update()
             .first()
         )
-        # Target is read (and, on the player-pot claim, mutated). The caller has
-        # already locked the target row; re-query without a redundant lock.
+        # Target is read (and, on the pot zero / player-pot clear, mutated). The
+        # caller has already locked the target row; re-query without a redundant
+        # lock.
         target = self.db.query(Player).filter(Player.id == target_id).first()
 
         if not hunter or not target:
@@ -430,25 +592,30 @@ class BountyService:
 
         now = datetime.now(UTC)
 
-        # --- SYSTEM pot: this member's even share, bounded by their OWN ledger --
+        # --- SYSTEM pot: this member's even share of the STORED pot ------------
+        # Read the pot value (same for every member until the designated member
+        # zeroes it LAST). Pay pot // n; record a provenance claim row.
         system_paid = 0
-        if system_bounties and not self._has_paid_system_claim(hunter_id, target_id):
-            for b in system_bounties:
-                amount = b.get("amount", 0)
-                # Even split per distinct participating player. Integer floor;
-                # we do NOT chase the remainder across members (no top-up to
-                # match solo — the canon total is entitlement-bounded).
-                share = amount // n
-                if share <= 0:
-                    continue
-                system_paid += share
-                self._write_claim(
-                    claimant_id=hunter_id,
-                    target_id=target_id,
-                    amount=share,
-                    bounty_ref=str(b.get("id")),  # f"system_{threshold}"
-                    resolved_at=now,
-                )
+        for b in system_bounties:
+            amount = b.get("amount", 0)
+            # Even split per distinct participating player. Integer floor; we do
+            # NOT chase the remainder across members (no top-up to match solo —
+            # the floor remainder stays in nobody's pocket, never minted).
+            share = amount // n
+            if share <= 0:
+                continue
+            system_paid += share
+            self._write_claim(
+                claimant_id=hunter_id,
+                target_id=target_id,
+                amount=share,
+                bounty_ref=str(b.get("id")),  # "system_pot"
+                resolved_at=now,
+            )
+        # The designated member ZEROES the stored system pot once, AFTER reading
+        # its own share above — the reset is the anti-double-collect.
+        if claim_player_pot and system_bounties:
+            self._set_system_bounty_pot(target, 0)
 
         # --- PLAYER-placed pot: claimed once by the designated member only ------
         player_paid = 0
@@ -494,25 +661,12 @@ class BountyService:
             "new_credits": hunter.credits,
         }
 
-    def _has_paid_system_claim(
-        self, claimant_id: uuid.UUID, target_id: uuid.UUID
-    ) -> bool:
-        """True if this claimant already has ANY PAID *system* bounty claim
-        against this target (bounty_ref starts with 'system_'). This is the
-        anti-faucet guard: a criminal's head pays each hunter once, regardless of
-        how deep the target's reputation later sinks. Purely ledger-based — no
-        time window, no magic numbers."""
-        return (
-            self.db.query(BountyClaim.id)
-            .filter(
-                BountyClaim.claimant_id == claimant_id,
-                BountyClaim.target_id == target_id,
-                BountyClaim.bounty_ref.like("system_%"),
-                BountyClaim.status == BountyClaimStatus.PAID,
-            )
-            .first()
-            is not None
-        )
+    # NOTE (WO-BN): the former ``_has_paid_system_claim`` per-(hunter,target)
+    # SYSTEM-bounty dedup is GONE — the stored-pot RESET (collect zeroes the pot;
+    # an emptied pot pays nothing until it re-accrues) replaces it. ``_write_claim``
+    # below is retained: it still records PAID provenance rows for both system and
+    # player-placed payouts (audit trail of who turned in which head), but a claim
+    # row no longer GATES any payout.
 
     def _write_claim(
         self,
@@ -542,26 +696,35 @@ class BountyService:
             self.db.flush()
 
     def _get_system_bounties(self, target: Player) -> List[Dict[str, Any]]:
-        """Generate the system bounty based on the target's personal reputation.
+        """Return the criminal's CURRENT system bounty from the STORED, GROWING
+        pot (WO-BN) — no longer recomputed on demand from reputation.
 
-        Canon (FEATURES/gameplay/bounties.md#system-bounty-tiers): only the
-        single HIGHEST matched tier is active — the deepest pit pays out,
-        lower-tier bounties don't stack on top of it. (Appending every
-        matched tier let a -1000 rep player carry 5k+25k+100k = 130k.)
+        The pot is grown over time by the npc_scheduler accrual sweep
+        (``accrue_system_bounty_pot``, scaled by severity, capped per tier) and
+        ZEROED on a successful kill+collect. So this read reflects exactly what
+        the Federation currently owes on this head: a freshly-claimed (zeroed)
+        pot returns NOTHING until it re-accrues, and that pot-reset — not a
+        per-(hunter,target) ledger — is now the anti-double-collect (collect
+        pays the pot, then empties it).
+
+        Returns a single-entry list (mirroring the prior shape so every caller —
+        get_bounties_on_player / collect_bounty / collect_bounty_share /
+        get_available_bounties — keeps working unchanged) ONLY when the stored
+        pot is > 0; an empty pot returns [] exactly as a non-criminal used to.
+        The entry ``id`` is the STABLE per-criminal ``system_<id>`` (used as the
+        BountyClaim.bounty_ref provenance tag), no longer the tier-threshold
+        string — the pot, not the tier, is now the unit of payout.
         """
-        score = target.personal_reputation
-        matched = [t for t in SYSTEM_BOUNTY_TIERS if score <= t]
-        if not matched:
+        pot = self.get_system_bounty_pot(target)
+        if pot <= 0:
             return []
-        # Deepest matched threshold == highest-tier (largest) bounty
-        threshold = min(matched)
         return [{
-            "id": f"system_{threshold}",
+            "id": "system_pot",
             "placed_by": "SYSTEM",
             "placed_by_name": "Federation Bounty Board",
-            "amount": SYSTEM_BOUNTY_TIERS[threshold],
+            "amount": pot,
             "type": "system",
-            "reason": f"Criminal reputation ({score})",
+            "reason": f"Criminal reputation ({target.personal_reputation})",
         }]
 
     def get_available_bounties(self, limit: int = 20) -> Dict[str, Any]:

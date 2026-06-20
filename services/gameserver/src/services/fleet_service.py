@@ -1138,15 +1138,17 @@ class FleetService:
             ).with_for_update().first()
 
             had_bounty = False
-            # Designate the FIRST participant to claim the pay-once-then-cleared
-            # player-placed pot (it has no per-member ledger). The system pot is
-            # always per-member ledger-bounded inside collect_bounty_share.
+            # Designate the LAST participant to claim the pay-once-then-cleared
+            # player-placed pot AND to ZERO the stored system pot (WO-BN). The
+            # designated member must be LAST so every other member reads the full
+            # pre-zero system pot for its even-split share before it is emptied —
+            # collect_bounty_share documents this ordering contract.
             for idx, pid in enumerate(participant_ids):
                 share_result = bounty_service.collect_bounty_share(
                     hunter_id=pid,
                     target_id=killed_player_id,
                     num_participants=n,
-                    claim_player_pot=(idx == 0),
+                    claim_player_pot=(idx == n - 1),
                 )
                 if share_result.get("had_bounty"):
                     had_bounty = True

@@ -280,6 +280,34 @@ DAILY_STIPEND_CHECK_SECONDS = int(
     os.environ.get("DAILY_STIPEND_CHECK_SECONDS", str(35 * 60))
 )
 
+# System-bounty pot accrual pre-filter (WO-BN). The SYSTEM bounty is now a STORED
+# pot per criminal (Player.settings JSONB) that GROWS over time and RESETS to 0
+# on a kill+collect. This sweep is the GROWTH engine: once per canonical DAY it
+# bumps every criminal's pot by a per-tier daily accrual (BountyService.
+# accrue_system_bounty_pot — base rate scaled by negative-rep severity, capped at
+# the tier figure). Like the idle-income / daily-stipend faucets, the cadence is
+# a COARSE elapsed pre-filter (so we don't take the advisory lock + scan players
+# every 60s); the once-per-canonical-day-per-criminal guarantee + restart-proofing
+# come from a DURABLE per-player anchor — the canonical-day index stored in
+# Player.settings[system_bounty_pot_period] inside accrue_system_bounty_pot. The
+# accrual keys off the CANONICAL day (canonical_day_number) so it is observable on
+# dev (GAME_TIME_SCALE=144 → a canonical day elapses every ~10 wall-clock min) and
+# self-consistent with the scheduler's canonical clock; a restart or re-run within
+# the same canonical day re-reads the anchor and skips, so the pot NEVER double-
+# accrues. Additive JSONB only; NO migration, NO new table. Offset from the other
+# coarse probes (decay 15m / faucet 20m / snapshot 25m / idle 30m / stipend 35m)
+# by landing at 40m so the coarse probes don't all hit Postgres on the same wake.
+#
+# CADENCE + the base accrual rate + per-tier dastardly multipliers + the per-tier
+# caps are NO-CANON (bounties.md gives the tier FIGURES but is silent on growth);
+# the figures live in bounty_service (SYSTEM_BOUNTY_BASE_ACCRUAL_PER_DAY,
+# SYSTEM_BOUNTY_ACCRUAL_MULTIPLIER, SYSTEM_BOUNTY_TIERS) — flagged for a
+# DECISIONS.md ruling. ECONOMY-SENSITIVE: the pot is a credit faucet (paid on
+# kill), so the idempotency anchor and the per-tier caps are load-bearing.
+BOUNTY_ACCRUAL_CHECK_SECONDS = int(
+    os.environ.get("BOUNTY_ACCRUAL_CHECK_SECONDS", str(40 * 60))
+)
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -2630,6 +2658,136 @@ def _run_daily_stipend_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_bounty_accrual_sweep_sync() -> Dict[str, int]:
+    """Grow every criminal's STORED system-bounty pot once per canonical day
+    (WO-BN). This is the GROWTH half of the stored-pot model — bounty_service's
+    collect_bounty / collect_bounty_share are the PAYOUT-then-RESET half.
+
+    A criminal (personal_reputation <= the shallowest tier threshold, -500 — the
+    SAME proxy the old on-demand model used to decide WHO carried a bounty) has
+    its pot bumped by a per-tier daily accrual (base rate × the deeper-pit
+    dastardly multiplier), capped at the deepest-matched tier figure. The actual
+    accrual + idempotency live in BountyService.accrue_system_bounty_pot; this
+    sweep is the scheduler shell that DRIVES it under the standard discipline.
+
+    DISCIPLINE — mirrors _run_idle_income_sweep_sync / _run_daily_stipend_sweep_
+    sync EXACTLY:
+      * own SessionLocal (never the request session, never the async engine);
+      * xact-level advisory lock so a second gameserver instance skips instead
+        of double-accruing (the lock auto-releases on the first commit), then
+        commit immediately to claim the sweep without pinning the lock;
+      * a candidate-id query, then a per-row with_for_update re-read so a
+        concurrent kill (collect_bounty zeroes the pot under the SAME row lock) or
+        a reputation change can't race the accrual;
+      * per-row commit and per-row try/except — one bad criminal cannot abort the
+        batch or roll back already-accrued criminals.
+
+    IDEMPOTENCY ACROSS RESTARTS (mandatory — the pot is a CREDIT FAUCET): the
+    durable per-player anchor is the canonical-day index under
+    Player.settings[system_bounty_pot_period], advanced in the SAME per-row
+    transaction as the accrual by accrue_system_bounty_pot. A criminal accrues at
+    most ONE period's worth per call and only when the anchor is BEHIND today's
+    canonical day; a restart, duplicate wake, or re-run within the same canonical
+    day re-reads it and skips — NEVER a double-accrual. Additive JSONB only; NO
+    migration, NO new table.
+
+    CONCURRENCY vs PAYOUT (anti-faucet): the accrual locks the criminal's Player
+    row (with_for_update) before reading+writing the pot, exactly as collect_
+    bounty locks it before zeroing. So an accrual and a kill can never interleave
+    on the same criminal — whichever takes the row lock first runs to its commit
+    first; the other sees the post-state. An accrual that lands just after a kill
+    re-grows the pot from 0 (correct: the bounty re-accrues over time).
+
+    CANDIDATE GATE: only criminals are candidates — personal_reputation <=
+    SYSTEM_BOUNTY_CRIMINAL_THRESHOLD AND is_active. A non-criminal never enters
+    the set (so its pot stays 0 and its anchor is never written). The per-row
+    re-read re-confirms criminal status on the locked row (a concurrent rep
+    recovery could have lifted them out of criminal range since the candidate
+    query — accrue_system_bounty_pot adds 0 in that case but still advances the
+    anchor so the period isn't re-evaluated).
+
+    Returns {"criminals": n_accrued, "credits": total_cr_added}; all zero on the
+    lock-held / nothing-due no-op paths. ``criminals`` counts rows that received a
+    NONZERO accrual (a criminal already at cap, anchored-but-unbumped, is not
+    counted)."""
+    from src.core.database import SessionLocal
+    from src.models.player import Player
+    from src.services.bounty_service import (
+        BountyService,
+        SYSTEM_BOUNTY_CRIMINAL_THRESHOLD,
+    )
+
+    result = {"criminals": 0, "credits": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        # Release the lock-acquiring transaction before per-row work (same
+        # rationale as the idle-income / stipend sweeps): claim the sweep, then
+        # iterate.
+        db.commit()
+
+        # Canonical-day index drives both the per-period accrual and the durable
+        # idempotency anchor — self-consistent with the scheduler's canonical
+        # clock and observable on dev.
+        period = canonical_day_number()
+
+        # Candidate criminals: active accounts deep enough in negative rep to be
+        # wanted. The per-row re-read re-confirms on the locked row.
+        candidate_ids = (
+            db.query(Player.id)
+            .filter(
+                Player.is_active.is_(True),
+                Player.personal_reputation <= SYSTEM_BOUNTY_CRIMINAL_THRESHOLD,
+            )
+            .all()
+        )
+
+        for (player_id,) in candidate_ids:
+            try:
+                player = (
+                    db.query(Player)
+                    .filter(Player.id == player_id)
+                    .with_for_update()
+                    .first()
+                )
+                if player is None or not player.is_active:
+                    db.rollback()  # release row lock; nothing to do
+                    continue
+
+                added = BountyService.accrue_system_bounty_pot(player, period)
+
+                db.commit()  # accrual + anchor advance commit atomically
+                if added > 0:
+                    result["criminals"] += 1
+                    result["credits"] += added
+            except Exception:
+                logger.exception(
+                    "Bounty-accrual sweep: accrual failed for player %s",
+                    player_id,
+                )
+                db.rollback()
+
+        if result["criminals"]:
+            logger.info(
+                "Bounty-accrual sweep: canonical-day %d — grew %d criminal "
+                "pot(s) by %d cr total",
+                period, result["criminals"], result["credits"],
+            )
+        return result
+    except Exception:
+        logger.exception("Bounty-accrual sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
@@ -3301,3 +3459,28 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: daily rep-stipend faucet crashed (loop continues)")
+
+        # System-bounty pot accrual (WO-BN) — grow each criminal's STORED system-
+        # bounty pot once per canonical day (base rate scaled by negative-rep
+        # severity, capped per tier). The pot is paid-then-reset on a kill+collect
+        # in bounty_service; this is its GROWTH engine. Coarse elapsed pre-filter
+        # (40 min) so we don't scan players every 60s; the once-per-canonical-day
+        # guarantee + restart-proofing come from the durable per-player canonical-
+        # day anchor in Player.settings inside the sweep. Own session, own advisory
+        # lock, per-criminal failure isolated — same discipline as the idle-income
+        # / daily-stipend / genesis / planetary / governance / snapshot sweeps.
+        # NO-CANON cadence + accrual rate/multipliers/caps (flagged for the
+        # orchestrator).
+        if elapsed % BOUNTY_ACCRUAL_CHECK_SECONDS == 0:
+            try:
+                accrued = await asyncio.to_thread(_run_bounty_accrual_sweep_sync)
+                if accrued.get("criminals"):
+                    logger.info(
+                        "NPC scheduler: system-bounty accrual — grew %d criminal "
+                        "pot(s) by %d cr total",
+                        accrued.get("criminals", 0), accrued.get("credits", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: system-bounty accrual crashed (loop continues)")
