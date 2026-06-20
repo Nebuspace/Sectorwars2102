@@ -29,12 +29,86 @@ SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
 DEFENSE_UPGRADE_COST = 1000     # Credits per defense level
 DEFENSE_MAX_LEVEL = 10          # Maximum defense level
-# Per-unit credit cost to ADD planetary defense units, mirroring the price the
-# player-client DefenseConfiguration UI already shows and gates affordability on
-# (DEFENSE_TYPES: turrets 500, shields 1000, drones/fighters 2000). The server
-# must charge these or the UI's "you can afford this" is a lie and defenses are
-# free (an economic faucet). Reducing units is free (no refund).
-DEFENSE_UNIT_COST = {"turrets": 500, "shields": 1000, "fighters": 2000}
+# Per-unit credit cost to ADD planetary defense units (ADR-0076 "Scaled defense
+# pricing", Accepted). The price is no longer flat: it scales with citadel level
+# and planet type so that fortified, hostile-terrain worlds cost meaningfully
+# more to garrison. The server MUST charge the scaled price or the UI's "you can
+# afford this" gate is a lie and defenses are an economic faucet. Reducing units
+# is free (no refund); Genesis pre-installed defenses stay free (they are seeded
+# directly, never routed through update_defenses).
+#
+#   per-unit price = round_to_nearest_10(
+#       BASE[unit] x CITADEL_MULT[citadel_level] x PLANET_MOD[planet_type]
+#   )
+#
+# Worked examples (ADR-0076):
+#   L1 turret  Terran     = round(500 x 1.0 x 0.75) = 380   (375 -> 380, half-up)
+#   L5 turret  Gas Giant  =       500 x 3.0 x 1.5   = 2250
+#   L5 fighter Gas Giant  =      2000 x 3.0 x 1.5   = 9000
+DEFENSE_UNIT_BASE_COST = {"turrets": 500, "shields": 1000, "fighters": 2000}
+
+# Citadel-level price multiplier (ADR-0076). citadel_level <= 1 or null -> 1.0;
+# anything above 5 clamps to the L5 multiplier.
+DEFENSE_CITADEL_MULT = {1: 1.0, 2: 1.25, 3: 1.6, 4: 2.2, 5: 3.0}
+
+# Planet-type price multiplier (ADR-0076), keyed by PlanetType enum.
+# Terran/Oceanic 0.75 (hospitable) · Mountainous/Arctic 1.0 · Desert/Volcanic
+# 1.25 · Gas Giant/Barren 1.5 (most hostile). Any PlanetType NOT listed here
+# falls back to 1.0 — this default is NO-CANON (ADR-0076 names only the eight
+# types above), so it is FLAGGED: ICE, JUNGLE, TROPICAL, ARTIFICIAL currently
+# resolve to the 1.0 tier by this fallback rather than by an explicit canon rule.
+DEFENSE_PLANET_MOD = {
+    PlanetType.TERRAN: 0.75,
+    PlanetType.OCEANIC: 0.75,
+    PlanetType.MOUNTAINOUS: 1.0,
+    PlanetType.ARCTIC: 1.0,
+    PlanetType.DESERT: 1.25,
+    PlanetType.VOLCANIC: 1.25,
+    PlanetType.GAS_GIANT: 1.5,
+    PlanetType.BARREN: 1.5,
+}
+# NO-CANON fallback for any PlanetType not in DEFENSE_PLANET_MOD (see note above).
+DEFENSE_PLANET_MOD_DEFAULT = 1.0
+
+
+def defense_unit_price(unit_type: str, citadel_level: Optional[int], planet_type) -> int:
+    """ADR-0076 scaled per-unit price for adding one planetary defense unit.
+
+        price = round_to_nearest_10(BASE x CITADEL_MULT x PLANET_MOD)
+
+    citadel_level <= 1 or None -> the L1 (1.0) multiplier; > 5 clamps to L5 (3.0).
+    planet_type accepts a PlanetType enum member (resolved directly) or its
+    string value/name (resolved leniently); unrecognized types use the NO-CANON
+    1.0 default. Rounding is HALF-UP to the nearest 10 (e.g. 375 -> 380).
+    """
+    base = DEFENSE_UNIT_BASE_COST[unit_type]
+
+    # Citadel multiplier: clamp the level into the 1..5 table.
+    level = citadel_level or 0
+    if level <= 1:
+        citadel_mult = DEFENSE_CITADEL_MULT[1]
+    elif level >= 5:
+        citadel_mult = DEFENSE_CITADEL_MULT[5]
+    else:
+        citadel_mult = DEFENSE_CITADEL_MULT[level]
+
+    # Planet-type multiplier: accept the enum directly, else resolve a string.
+    planet_mod = None
+    if isinstance(planet_type, PlanetType):
+        planet_mod = DEFENSE_PLANET_MOD.get(planet_type)
+    elif planet_type is not None:
+        key = str(planet_type).upper().replace(" ", "_").replace("-", "_")
+        for member in PlanetType:
+            if member.value == key or member.name == key:
+                planet_mod = DEFENSE_PLANET_MOD.get(member)
+                break
+    if planet_mod is None:
+        planet_mod = DEFENSE_PLANET_MOD_DEFAULT
+
+    raw = base * citadel_mult * planet_mod
+    # Round HALF-UP to the nearest 10 using integer arithmetic (avoids the
+    # banker's-rounding surprise the stdlib round() would give on a *.5 boundary).
+    return int((raw + 5) // 10) * 10
 # Canon: DOCS/API/v1/sectors-planets.aispec — siege morale loss is
 # "mitigated by 0.05 × defense_level", i.e. 5% damage reduction per level
 DEFENSE_DAMAGE_REDUCTION_PER_LEVEL = 0.05
@@ -660,15 +734,20 @@ class PlanetaryService:
         ).with_for_update().first()
 
         # Price the upgrade: only ADDED units cost credits (decreases are free,
-        # no refund). Mirrors the client DefenseConfiguration cost so the UI's
-        # affordability gate is honest. Without this, defenses are free.
+        # no refund). ADR-0076 scaled pricing — each added unit is charged the
+        # citadel- and planet-type-scaled per-unit price (defense_unit_price),
+        # not a flat rate. Mirrors the client DefenseConfiguration cost so the
+        # UI's affordability gate is honest. Without this, defenses are free.
         new_turrets = max(0, turrets) if turrets is not None else planet.defense_turrets
         new_shields = max(0, shields) if shields is not None else planet.defense_shields
         new_fighters = max(0, fighters) if fighters is not None else planet.defense_fighters
         cost = (
-            DEFENSE_UNIT_COST["turrets"] * max(0, new_turrets - (planet.defense_turrets or 0))
-            + DEFENSE_UNIT_COST["shields"] * max(0, new_shields - (planet.defense_shields or 0))
-            + DEFENSE_UNIT_COST["fighters"] * max(0, new_fighters - (planet.defense_fighters or 0))
+            defense_unit_price("turrets", planet.citadel_level, planet.type)
+            * max(0, new_turrets - (planet.defense_turrets or 0))
+            + defense_unit_price("shields", planet.citadel_level, planet.type)
+            * max(0, new_shields - (planet.defense_shields or 0))
+            + defense_unit_price("fighters", planet.citadel_level, planet.type)
+            * max(0, new_fighters - (planet.defense_fighters or 0))
         )
 
         if cost > 0:
