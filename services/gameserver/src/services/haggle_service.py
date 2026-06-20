@@ -86,14 +86,16 @@ REENTRY_COOLDOWN_SECONDS = 5 * 60
 # only; per-player memory pruning uses this uniform value.
 HAGGLE_MEMORY_DAYS = 90
 
-# ── Orange-Cat Society leniency (NO-CANON — proposed, flagged) ────────────────
+# ── Orange-Cat Society leniency (WO-CG: PUBLISHED +15%, EXEMPT from the cap) ───
 # Holders of the Orange Cat Society badge (medal special.orange_cat_society) get a
-# more lenient NPC. ADR-0079 sets no number. PROPOSED: a flat ×0.95 on the band
-# multiplier (a 5% easing — same magnitude as a friendly personal-rep step), the
-# smallest intervention that is felt without rewriting the negotiation. Flagged
-# for Max's bless; trivially tunable here.
+# more lenient NPC. FINAL spec (medal-effects-spec.md:251, Max ruling): the
+# PUBLISHED +15% haggle ease, EXEMPT from the +0.08 medal cap, applied through
+# THIS dedicated lever (NOT the capped generic get_active_medal_bonuses fold — its
+# catalog effect is kind "special" precisely so the generic folder never
+# double-applies it). A +15% band ease = a band multiplier of 0.85 (M < 1.0 =
+# EASIER; band width shrinks 15%). Trivially tunable here.
 ORANGE_CAT_MEDAL_ID = "special.orange_cat_society"
-ORANGE_CAT_BAND_FACTOR = 0.95
+ORANGE_CAT_BAND_FACTOR = 0.85
 
 # ── Trust accrual (Max #7 step D) ────────────────────────────────────────────
 # trust_level lives on the [-1000, 1000] scale (jsonb-schema). Successful trades
@@ -302,6 +304,31 @@ def _orange_cat_band_factor(db: Session, player: Player) -> float:
         return 1.0
 
 
+def _medal_band_factor(db: Session, player: Player) -> float:
+    """WO-CG — the generic, capped medal ``haggle_band`` ease folded into the band
+    multiplier (Ambassador's Star, Peacemaker, Honorary Tabby, …).
+
+    ``get_active_medal_bonuses`` returns a per-hook EASE magnitude (positive =
+    more lenient), summed across the holder's passive haggle medals and clamped
+    to the blessed +0.08 cap. The band axis is "higher = harder, lower = easier",
+    so an ease of ``b`` maps to a factor of ``1.0 - b`` (e.g. +0.05 ease → ×0.95).
+
+    Orange Cat is EXEMPT and handled by :func:`_orange_cat_band_factor` (its
+    catalog effect kind is "special", so it is NOT in this summed bonus) — the two
+    factors multiply independently, never double-applying. Returns 1.0 (neutral)
+    if the player holds no haggle medal or on any lookup failure (defensive)."""
+    try:
+        from src.services.medal_service import get_active_medal_bonuses
+
+        bonuses = get_active_medal_bonuses(db, player.id) or {}
+        ease = float(bonuses.get("haggle_band", 0.0) or 0.0)
+        ease = max(0.0, ease)  # ease never tightens the band
+        return max(0.01, 1.0 - ease)
+    except Exception:
+        logger.warning("medal haggle-band factor lookup failed; using neutral", exc_info=True)
+        return 1.0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Core band computation
 # ──────────────────────────────────────────────────────────────────────────────
@@ -327,6 +354,9 @@ def _aggregate_band_multiplier(
     m *= _personal_band_factor(player)
     m *= _trust_band_factor(trust)
     m *= _orange_cat_band_factor(db, player)
+    # WO-CG: generic capped medal haggle_band ease (excludes Orange Cat, which is
+    # the dedicated cap-exempt lever above). The two multiply independently.
+    m *= _medal_band_factor(db, player)
     return m
 
 

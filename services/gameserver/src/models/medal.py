@@ -47,6 +47,14 @@ class Medal(Base):
     tier = Column(String(50), nullable=True)
     # Award trigger / unlock conditions (catalog-defined, structured).
     criteria = Column(JSONB, nullable=False, default=dict)
+    # Bespoke gameplay effect (WO-CG, DECISIONS.md:479 medal-effects-model).
+    # Nullable JSONB — NULL ⇒ cosmetic-only (no resolver read). Shape (see
+    # medal_catalog._effect):
+    #   {"kind": "passive"|"one_time", "hook": <stack>, "scope": <scope>,
+    #    "magnitude": <float>, "grants": {"credits": int, "turns": int}, "notes": str}
+    # Passive effects fold into get_active_medal_bonuses() per-hook under the
+    # blessed caps; one_time grants fire once on the medal-award INSERT.
+    effect = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(

@@ -124,8 +124,161 @@ def award_medal(
         )
         return False
 
+    # WO-CG one-time grants (FINAL spec): fire ONLY on the genuine INSERT path
+    # (we reach here only when the award row was created — both idempotency
+    # layers already short-circuited a re-award), so the grant is idempotent —
+    # a re-award is a no-op and can never double-mint. Applied inline in the
+    # caller's open transaction (combat/trade/exploration unit of work), inside
+    # the same flush. Defensive: a grant hiccup is logged and swallowed — it
+    # must never roll back an already-recorded award or break the caller.
+    _apply_one_time_grant(db, player_id, resolved_id)
+
     logger.info("Medal awarded: %s -> player %s (via=%s)", resolved_id, player_id, awarded_via)
     return True
+
+
+# ---------------------------------------------------------------------------
+# WO-CG — bespoke effect layer (DECISIONS.md:479; blessed
+# audit/design-briefs/medal-effects-spec.md FINAL section).
+# ---------------------------------------------------------------------------
+
+# Blessed HARD caps on the summed PASSIVE medal contribution per hook (FINAL):
+# the flat per-hook cap is the hard ceiling — the redundant diminishing-returns
+# rule is dropped. Units match each resolver's native term (see the per-hook
+# notes below and in medal_catalog).
+MEDAL_BONUS_CAPS: Dict[str, float] = {
+    "combat_damage": 3.0,       # ≤ +3% combat damage (percent; folds into attacker_damage_mult)
+    "trading_discount": 2.0,    # ≤ −2% buy / +2% sell (percent; folds into rank_rate)
+    "turn_regen": 0.05,         # ≤ +0.05 added to the aria/turn-regen multiplier (additive delta)
+    "haggle_band": 0.08,        # ≤ +0.08 haggle band ease (band-factor delta)
+}
+
+
+def _apply_one_time_grant(db: Session, player_id: uuid.UUID, medal_id: str) -> None:
+    """Apply a medal's one_time credit/turn grant ONCE on award (FINAL table).
+
+    Idempotent by construction: award_medal only calls this on the genuine
+    INSERT path, and the UNIQUE(player_id, medal_id) row is the guard — a
+    re-award never reaches here. Mints credits/turns ONLY for medals carrying a
+    one_time grant; never mints outside this blessed table. Defensive: any
+    failure is logged and swallowed so a grant hiccup cannot roll back the
+    recorded award or break the combat/trade/exploration unit of work.
+    """
+    try:
+        entry = get_catalog_entry(medal_id)
+        effect = (entry or {}).get("effect") or {}
+        if effect.get("kind") != "one_time":
+            return
+        grants = effect.get("grants") or {}
+        credits = int(grants.get("credits", 0) or 0)
+        turns = int(grants.get("turns", 0) or 0)
+        if credits <= 0 and turns <= 0:
+            return
+
+        player = db.query(Player).filter(Player.id == player_id).first()
+        if player is None:
+            return
+
+        if credits > 0:
+            player.credits = (player.credits or 0) + credits
+        if turns > 0:
+            # Top up the turn balance, never above the player's cap (mirrors the
+            # ADR-0004 no-overflow rule). max_turns is the persisted ceiling.
+            cap = getattr(player, "max_turns", None)
+            new_turns = (player.turns or 0) + turns
+            if cap is not None:
+                new_turns = min(new_turns, cap)
+            player.turns = new_turns
+        db.flush()
+        logger.info(
+            "Medal one-time grant: %s -> player %s (+%dcr, +%dt)",
+            medal_id, player_id, credits, turns,
+        )
+    except Exception as e:  # never break the award / caller's transaction
+        logger.error("one-time medal grant failed for %s/%s: %s", medal_id, player_id, e)
+
+
+def get_active_medal_bonuses(db: Session, player_id: uuid.UUID) -> Dict[str, float]:
+    """Sum a held player's PASSIVE medal effects PER HOOK, clamped to the blessed
+    hard caps (FINAL spec). The single read path resolvers call.
+
+    Returns ``{"combat_damage", "trading_discount", "turn_regen", "haggle_band"}``
+    (always all four keys; 0.0 when the player holds no passive medal for a hook).
+
+    Folding rules (FINAL — the diminishing-returns rule is dropped; the flat
+    per-hook cap is the hard ceiling):
+
+      1. **Tier-supersession within (category, hook)**: when a player holds
+         multiple passive medals hooking the SAME stack in the SAME category
+         (e.g. Bronze Star + Silver Star → combat_damage in Combat), only the
+         single HIGHEST magnitude applies — progressing a track UPGRADES the
+         effect, it does not stack a pile of slivers.
+      2. **Cross-category same-hook sums** (rare by design, since hook is
+         loop-scoped), then is clamped to the cap.
+      3. **Clamp** the per-hook total to MEDAL_BONUS_CAPS — the hard guarantee.
+
+    EXCLUDED from this fold (handled elsewhere, by design):
+      * Orange Cat Society (effect kind "special") — applied through
+        haggle_service's dedicated lever and EXEMPT from the haggle_band cap;
+        folding it here would double-apply it and wrongly subject it to the cap.
+      * one_time grants — applied in :func:`_apply_one_time_grant` on award.
+
+    Defensive: any failure returns the neutral all-zero dict so a resolver is
+    never broken by a medal lookup.
+    """
+    neutral = {hook: 0.0 for hook in MEDAL_BONUS_CAPS}
+    try:
+        rows = (
+            db.query(Medal.category, Medal.effect)
+            .join(PlayerMedal, PlayerMedal.medal_id == Medal.id)
+            .filter(PlayerMedal.player_id == player_id)
+            .all()
+        )
+        if not rows:
+            return neutral
+
+        # (category, hook) -> highest passive magnitude in that bucket (rule 1).
+        per_bucket: Dict[tuple, float] = {}
+        for category, effect in rows:
+            if not effect or not isinstance(effect, dict):
+                continue
+            kind = effect.get("kind")
+            # Collect every passive (hook, magnitude) this effect contributes —
+            # a plain passive, plus the Genesis-style hybrid's passive_extra.
+            contributions = []
+            if kind == "passive":
+                contributions.append((effect.get("hook"), effect.get("magnitude")))
+            # Hybrid (e.g. Genesis Award): a one_time grant carrying a passive_extra.
+            extra = effect.get("passive_extra")
+            if isinstance(extra, dict):
+                contributions.append((extra.get("hook"), extra.get("magnitude")))
+            # kind "special" (Orange Cat) is intentionally NOT folded here.
+
+            for hook, magnitude in contributions:
+                if hook not in MEDAL_BONUS_CAPS or magnitude is None:
+                    continue
+                try:
+                    mag = float(magnitude)
+                except (TypeError, ValueError):
+                    continue
+                key = (category, hook)
+                # Rule 1: keep only the highest magnitude per (category, hook).
+                if mag > per_bucket.get(key, 0.0):
+                    per_bucket[key] = mag
+
+        # Rule 2: sum the surviving per-bucket magnitudes across categories per hook.
+        totals = dict(neutral)
+        for (category, hook), mag in per_bucket.items():
+            totals[hook] += mag
+
+        # Rule 3: clamp each hook to its blessed hard cap.
+        for hook, cap in MEDAL_BONUS_CAPS.items():
+            if totals[hook] > cap:
+                totals[hook] = cap
+        return totals
+    except Exception as e:
+        logger.error("get_active_medal_bonuses failed for %s: %s", player_id, e)
+        return neutral
 
 
 # ---------------------------------------------------------------------------
@@ -477,4 +630,6 @@ __all__ = [
     "check_and_award_combat_medals",
     "check_and_award_trade_medals",
     "check_and_award_exploration_medals",
+    "get_active_medal_bonuses",
+    "MEDAL_BONUS_CAPS",
 ]

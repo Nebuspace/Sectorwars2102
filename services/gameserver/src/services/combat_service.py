@@ -47,6 +47,30 @@ def _regen_turns(db: Session, player: Player) -> None:
         logger.error("Turn regen hook failed (continuing with current balance): %s", e)
 
 
+def _medal_combat_damage_bonus(db: Session, player: Player) -> float:
+    """WO-CG — the summed, capped medal ``combat_damage`` bonus (percent) for a
+    player, folded into the combat damage multiplier alongside the rank term.
+
+    Defensive on every axis (mirrors ``_dispatch_combat_medals``): the medals
+    lane read path is resolved by ``getattr`` (may be absent in a deployment
+    where the medals lane hasn't landed), and any failure returns 0.0 — a medal
+    hiccup must NEVER alter or break combat resolution. The result is already
+    clamped to the blessed +3% cap by ``get_active_medal_bonuses``. Returns a
+    PERCENT (e.g. 2.0 = +2%); the caller divides by 100.0."""
+    try:
+        if player is None or getattr(player, "id", None) is None:
+            return 0.0
+        import src.services.medal_service as _medal_service
+        hook = getattr(_medal_service, "get_active_medal_bonuses", None)
+        if not callable(hook):
+            return 0.0
+        bonuses = hook(db, player.id) or {}
+        return float(bonuses.get("combat_damage", 0.0) or 0.0)
+    except Exception as e:  # never let a medal read break combat
+        logger.error("Medal combat-damage bonus read failed (continuing without): %s", e)
+        return 0.0
+
+
 def _dispatch_combat_medals(db: Session, killer: Player, context: Dict[str, Any]) -> None:
     """Fire the medals-lane frozen hook
     ``medal_service.check_and_award_combat_medals(db, killer_player, context)``
@@ -1891,7 +1915,12 @@ class CombatService:
             defender_name = defender.username
             defender_drones = defender.defense_drones
             defender_bonuses = RankingService.get_rank_bonuses(defender.military_rank)
-            defender_damage_mult = 1.0 + (defender_bonuses["combat_damage_bonus_percent"] / 100.0)
+            # WO-CG: fold the defender's summed, capped medal combat_damage bonus
+            # into their return-fire damage multiplier alongside the rank term.
+            defender_medal_pct = _medal_combat_damage_bonus(self.db, defender)
+            defender_damage_mult = 1.0 + (
+                (defender_bonuses["combat_damage_bonus_percent"] + defender_medal_pct) / 100.0
+            )
         else:
             if defender_ship is None:
                 raise ValueError("NPC combat requires a defender_ship")
@@ -1901,7 +1930,12 @@ class CombatService:
 
         # Get rank combat bonus for the attacker
         attacker_bonuses = RankingService.get_rank_bonuses(attacker.military_rank)
-        attacker_damage_mult = 1.0 + (attacker_bonuses["combat_damage_bonus_percent"] / 100.0)
+        # WO-CG: fold the attacker's summed, capped medal combat_damage bonus into
+        # the damage multiplier alongside the rank term (≤ +3% from all medals).
+        attacker_medal_pct = _medal_combat_damage_bonus(self.db, attacker)
+        attacker_damage_mult = 1.0 + (
+            (attacker_bonuses["combat_damage_bonus_percent"] + attacker_medal_pct) / 100.0
+        )
 
         # Combat parameters
         attacker_drones = attacker.defense_drones

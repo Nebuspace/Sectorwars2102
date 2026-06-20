@@ -134,6 +134,24 @@ def _reprice_after_trade(
         return False
 
 
+def _medal_trading_discount_rate(db: Session, player: Player) -> float:
+    """WO-CG — the summed, capped medal ``trading_discount`` bonus as a RATE
+    (i.e. percent / 100.0) to add into ``rank_rate``.
+
+    Defensive: resolved by import-on-call and degrading to 0.0 on any failure so
+    the price computation is never broken by a medal lookup. The result is
+    already clamped to the blessed +2% cap by ``get_active_medal_bonuses``."""
+    try:
+        if player is None or getattr(player, "id", None) is None:
+            return 0.0
+        from src.services.medal_service import get_active_medal_bonuses
+        bonuses = get_active_medal_bonuses(db, player.id) or {}
+        return float(bonuses.get("trading_discount", 0.0) or 0.0) / 100.0
+    except Exception:
+        logger.warning("medal trading-discount read failed; using neutral", exc_info=True)
+        return 0.0
+
+
 def compute_effective_unit_price(
     db: Session,
     player: Player,
@@ -166,7 +184,14 @@ def compute_effective_unit_price(
     failure, so this never raises."""
     side = side.lower()
     bonuses = RankingService.get_rank_bonuses(player.military_rank)
+    # WO-CG: extend the rank_rate term with the summed, capped medal
+    # trading_discount bonus (≤ −2% buy / +2% sell from all medals combined),
+    # still inside the ADR-0062 price chain — it joins as part of rank_rate, it
+    # does not multiply outside it. Positive magnitude = buy discount / sell
+    # uplift, the same direction as rank_rate. Defensive: a medal-read failure
+    # degrades to the neutral rank-only rate.
     rank_rate = bonuses["trading_discount_percent"] / 100.0
+    rank_rate += _medal_trading_discount_rate(db, player)
     player_mult = compute_player_price_multiplier(db, player, station)
     tariff_mult, _ = compute_region_tariff_multiplier(db, station)
     lever_mult, _ = compute_station_lever_multiplier(db, player, station)

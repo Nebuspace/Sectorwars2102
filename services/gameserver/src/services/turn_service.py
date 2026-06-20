@@ -55,6 +55,38 @@ def _aria_bonus_multiplier(player: Player) -> float:
     return max(1.0, min(1.5, multiplier))
 
 
+def _medal_turn_regen_bonus(db: Session, player: Player) -> float:
+    """WO-CG — the summed, capped medal ``turn_regen`` bonus (additive delta to
+    the regen multiplier) for a player.
+
+    Composed into the ``aria_multiplier`` term in :func:`regenerate_turns` — the
+    REGEN RATE ONLY. It must NEVER reach ``_calculate_max_turns`` /
+    ``RankingService.calculate_max_turns``: per ADR-0004 the turn CAP deliberately
+    excludes the aria/regen multiplier, and the medal regen follows the identical
+    exclusion (folding it into the cap would stretch the turn ceiling). The
+    combined ``aria + medal`` multiplier is still hard-clamped to 1.5 at the call
+    site, so medal regen can never push past the ADR-0004 ceiling.
+
+    Defensive: resolved by ``getattr`` (the medals lane may be absent in some
+    deployments) and degrading to 0.0 on any failure so regen is never broken by
+    a medal lookup. Already clamped to the blessed +0.05 cap by
+    ``get_active_medal_bonuses``."""
+    try:
+        if player is None or getattr(player, "id", None) is None:
+            return 0.0
+        import src.services.medal_service as _medal_service
+        hook = getattr(_medal_service, "get_active_medal_bonuses", None)
+        if not callable(hook):
+            return 0.0
+        bonuses = hook(db, player.id) or {}
+        bonus = float(bonuses.get("turn_regen", 0.0) or 0.0)
+        # Never negative (regen is a faucet, never a sink).
+        return max(0.0, bonus)
+    except Exception as e:  # never let a medal read break turn regen
+        logger.error("Medal turn-regen bonus read failed (continuing without): %s", e)
+        return 0.0
+
+
 def regenerate_turns(db: Session, player: Player) -> Dict[str, Any]:
     """Lazily advance ``Player.turns`` for real time elapsed (ADR-0004).
 
@@ -131,7 +163,13 @@ def regenerate_turns(db: Session, player: Player) -> Dict[str, Any]:
             "max_turns": max_turns,
         }
 
+    # WO-CG: compose the summed, capped medal turn_regen bonus into the
+    # aria_multiplier term — the REGEN RATE ONLY (never the cap; see
+    # _medal_turn_regen_bonus + ADR-0004). The combined multiplier is hard-clamped
+    # to 1.5 so medal regen can never push past the ADR-0004 ceiling.
     aria_multiplier = _aria_bonus_multiplier(player)
+    medal_regen_bonus = _medal_turn_regen_bonus(db, player)
+    aria_multiplier = min(1.5, aria_multiplier + medal_regen_bonus)
     rate = BASE_REGEN_RATE * aria_multiplier  # turns per second
     turns_added = int(elapsed_seconds * rate)  # floor toward zero (rate >= 0)
 
