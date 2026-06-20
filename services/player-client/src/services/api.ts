@@ -451,14 +451,21 @@ export const shipAPI = {
       body: JSON.stringify({ tier })
     }),
 
+  // Ship upgrade/equipment calls live on shipUpgradeAPI (below), which matches
+  // the real /upgrades, /upgrades/purchase and /equipment/* endpoint shapes.
+  // Prefer shipUpgradeAPI for any new upgrade UI; this alias delegates to it so
+  // a stale POST-to-the-GET-URL contract is never reintroduced here.
   getUpgrades: (shipId: string) =>
-    apiRequest(`/api/v1/ships/${shipId}/upgrades`),
+    shipUpgradeAPI.getUpgrades(shipId),
 
-  installUpgrade: (shipId: string, upgradeId: string) =>
-    apiRequest(`/api/v1/ships/${shipId}/upgrades`, {
-      method: 'POST',
-      body: JSON.stringify({ upgradeId })
-    })
+  purchaseUpgrade: (shipId: string, upgradeType: string) =>
+    shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType),
+
+  // Back-compat alias: the old name posted to the wrong URL with the wrong body
+  // shape. Delegates to the correct purchase endpoint so any lingering caller
+  // works instead of 404-ing. `upgradeType` is the UpgradeType enum value.
+  installUpgrade: (shipId: string, upgradeType: string) =>
+    shipUpgradeAPI.purchaseUpgrade(shipId, upgradeType)
 };
 
 // Ranking & Reputation APIs

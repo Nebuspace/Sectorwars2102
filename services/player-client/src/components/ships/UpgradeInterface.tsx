@@ -1,5 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Ship } from '../../types/game';
+import React, { useState, useEffect, useCallback } from 'react';
 import { shipUpgradeAPI } from '../../services/api';
 import './upgrade-interface.css';
 
@@ -32,15 +31,11 @@ interface UpgradeData {
   player_credits: number;
 }
 
+// The component only ever reads `ship.id`; it fetches all upgrade/equipment/
+// credit data itself from the live ship-upgrades endpoints. Keep the prop
+// surface to exactly what is used so any caller with an `{ id }` can mount it.
 interface UpgradeInterfaceProps {
-  ship: Ship;
-  playerCredits: number;
-  playerLevel: number;
-  installedUpgrades?: any[];
-  availableSlots?: any[];
-  onInstallUpgrade?: (upgrade: any, slotId: string) => void;
-  onRemoveUpgrade?: (slotId: string) => void;
-  onPreviewUpgrade?: (upgrade: any) => void;
+  ship: { id: string };
 }
 
 const UPGRADE_ICONS: Record<string, string> = {

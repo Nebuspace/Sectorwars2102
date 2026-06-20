@@ -4,7 +4,7 @@ import type { Station } from '../../contexts/GameContext';
 import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
-import { InsuranceManager, MaintenanceManager } from '../ships';
+import { InsuranceManager, MaintenanceManager, UpgradeInterface } from '../ships';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -812,6 +812,7 @@ const SpaceDockInterface: React.FC = () => {
 
   const [showInsurance, setShowInsurance] = useState(false);
   const [showMaintenance, setShowMaintenance] = useState(false);
+  const [showUpgrades, setShowUpgrades] = useState(false);
 
   const fetchShipData = useCallback(async () => {
     const token = getToken();
@@ -2578,18 +2579,38 @@ const SpaceDockInterface: React.FC = () => {
               </div>
             </div>
 
-            <div className="service-card unavailable">
-              <div className="service-icon">📈</div>
-              <h3>Ship Upgrades</h3>
-              <p>Hull, shield, and cargo refits</p>
-              <div className="service-unavailable-note">
-                Upgrade bays are not yet operational at this station. New hulls
-                can be commissioned at the Shipyard.
+            {stationServices.ship_upgrades ? (
+              <div className="service-card">
+                <div className="service-icon">📈</div>
+                <h3>Ship Upgrades</h3>
+                <p>{shipData ? `Refit ${shipData.name}: hull, shield, cargo & equipment` : 'Hull, shield, and cargo refits'}</p>
+                <div className="service-status">
+                  Spend credits to raise ship subsystem levels or fit specialist equipment.
+                </div>
+                <div className="service-action">
+                  <button
+                    className="service-btn"
+                    onClick={() => setShowUpgrades(true)}
+                    disabled={!shipData}
+                  >
+                    Manage Upgrades
+                  </button>
+                </div>
               </div>
-              <div className="service-action">
-                <span className="service-unavailable-badge">NOT AVAILABLE</span>
+            ) : (
+              <div className="service-card unavailable">
+                <div className="service-icon">📈</div>
+                <h3>Ship Upgrades</h3>
+                <p>Hull, shield, and cargo refits</p>
+                <div className="service-unavailable-note">
+                  Upgrade bays are not operational at this station. New hulls
+                  can be commissioned at the Shipyard.
+                </div>
+                <div className="service-action">
+                  <span className="service-unavailable-badge">NOT AVAILABLE</span>
+                </div>
               </div>
-            </div>
+            )}
 
             {stationServices.insurance ? (
               <div className="service-card">
@@ -2646,6 +2667,25 @@ const SpaceDockInterface: React.FC = () => {
                   onChanged={() => { refreshPlayerState(); fetchShipData(); }}
                   onClose={() => setShowMaintenance(false)}
                 />
+              </div>
+            </div>
+          )}
+
+          {showUpgrades && shipData && (
+            <div
+              className="insurance-overlay"
+              onClick={() => { setShowUpgrades(false); refreshPlayerState(); fetchShipData(); }}
+            >
+              <div className="insurance-overlay-panel" style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+                <button
+                  className="ins-close"
+                  style={{ position: 'absolute', top: 12, right: 12, zIndex: 1 }}
+                  onClick={() => { setShowUpgrades(false); refreshPlayerState(); fetchShipData(); }}
+                  aria-label="Close ship upgrades"
+                >
+                  ✕
+                </button>
+                <UpgradeInterface ship={{ id: shipData.id }} />
               </div>
             </div>
           )}
