@@ -1,4 +1,5 @@
 import logging
+import random
 import uuid
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -84,6 +85,73 @@ class MovementService:
         except Exception as e:
             logger.error("Failed to count unique sectors visited for %s: %s", player_id, e)
             return 0
+
+    # Mechanical-failure model (WO-AB; blessed base_rate 2%/jump — DECISIONS
+    # Pending). Each successful jump rolls for a mechanical failure; the
+    # MAINTENANCE_SYSTEM upgrade's banked failure_rate_reduction (stored in
+    # ship.maintenance) lowers the effective rate. On a failure one installed
+    # upgrade drops a level (see ship_upgrade_service.degrade_random_system).
+    MECHANICAL_FAILURE_BASE_RATE = 0.02
+
+    def _roll_mechanical_failure(self, player: Player, result: Dict[str, Any]) -> None:
+        """Roll for a mechanical failure after a SUCCESSFUL jump (WO-AB).
+
+        effective = base_rate * (1 - failure_rate_reduction), clamped to
+        [0, base_rate] (failure_rate_reduction read from ship.maintenance,
+        default 0). On ``random() < effective`` a random installed upgrade drops
+        one level via ship_upgrade_service.degrade_random_system, which reverses
+        that level's stat bonus so ship stats stay consistent. A failure on a
+        ship with no installed upgrades is a harmless no-op.
+
+        Surfaces a ``mechanical_failure`` note into ``result`` only when a real
+        degrade occurred — the existing move return contract is otherwise
+        untouched. Best-effort: a roll/degrade hiccup must NEVER strand the move
+        (mirrors the ARIA / medal hooks), and the degrade is folded into the
+        move's already-committed transaction by an explicit commit here so a
+        post-commit failure on a freshly-committed move still persists.
+        """
+        try:
+            ship = player.current_ship
+            if not ship:
+                return
+
+            maintenance = ship.maintenance if isinstance(ship.maintenance, dict) else {}
+            try:
+                reduction = float(maintenance.get("failure_rate_reduction", 0) or 0)
+            except (TypeError, ValueError):
+                reduction = 0.0
+
+            effective = self.MECHANICAL_FAILURE_BASE_RATE * (1.0 - reduction)
+            # Clamp to [0, base_rate]: reduction>1 (defensive) can't make it
+            # negative, and it can never exceed the base rate.
+            effective = max(0.0, min(effective, self.MECHANICAL_FAILURE_BASE_RATE))
+
+            if random.random() >= effective:
+                return  # no failure this jump
+
+            from src.services.ship_upgrade_service import ShipUpgradeService
+            outcome = ShipUpgradeService(self.db).degrade_random_system(ship)
+
+            if outcome.get("degraded"):
+                # The move was already committed in _execute_movement; persist the
+                # degrade's ship mutations in their own commit.
+                self.db.commit()
+                result["mechanical_failure"] = {
+                    "upgrade_type": outcome.get("upgrade_type"),
+                    "old_level": outcome.get("old_level"),
+                    "new_level": outcome.get("new_level"),
+                    "message": (
+                        f"Mechanical failure: {outcome.get('upgrade_type')} dropped to "
+                        f"level {outcome.get('new_level')} — re-purchase to restore it"
+                    ),
+                }
+        except Exception as e:
+            logger.error("Mechanical-failure roll failed during movement: %s", e)
+            # Don't let a failed roll poison the (already-committed) move.
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
 
     def move_player_to_sector(self, player_id: uuid.UUID, destination_sector_id: int) -> Dict[str, Any]:
         """
@@ -176,6 +244,11 @@ class MovementService:
 
             # Combine results
             result.update({"encounters": encounters})
+
+            # WO-AB: a successful direct warp counts as a jump — roll for a
+            # mechanical failure (best-effort; only fires on a real move success).
+            if result.get("success"):
+                self._roll_mechanical_failure(player, result)
             return result
 
         # Check if warp tunnel exists
@@ -196,11 +269,16 @@ class MovementService:
             
             # Check for encounters
             encounters = self._check_for_encounters(player, destination_sector_id)
-            
+
             # Combine results
             result.update({"tunnel_events": tunnel_events, "encounters": encounters})
+
+            # WO-AB: a successful warp-tunnel jump counts as a jump — roll for a
+            # mechanical failure (best-effort; only fires on a real move success).
+            if result.get("success"):
+                self._roll_mechanical_failure(player, result)
             return result
-        
+
         # If we get here, no valid path was found
         return {"success": False, "message": "No valid path to destination sector", "turn_cost": 0}
     

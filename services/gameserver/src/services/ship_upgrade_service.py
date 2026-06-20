@@ -4,6 +4,7 @@ Handles ship upgrades (engine, cargo, shields, etc.) and equipment installation.
 """
 
 import logging
+import random
 import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional, List
@@ -445,6 +446,173 @@ class ShipUpgradeService:
             updated["failure_rate_reduction"] = maintenance["failure_rate_reduction"]
 
         return updated
+
+    def _reverse_upgrade_effects(self, ship: Ship, upgrade_type: UpgradeType, effects: Dict[str, Any]) -> Dict[str, Any]:
+        """Reverse the stat changes ONE level of an upgrade contributed — the exact
+        inverse of ``_apply_upgrade_effects`` for a single level.
+
+        Used by ``degrade_random_system`` when a mechanical failure drops an
+        installed upgrade by one level (WO-AB). Because every effect in
+        ``_apply_upgrade_effects`` is applied ADDITIVELY per level (``+=`` on a
+        column, or ``+ bonus`` into a JSONB key), reversing exactly one level is
+        the symmetric subtraction of that level's ``effect_per_level`` figure.
+        Returns a summary dict of the new (post-reversal) stat values, mirroring
+        the apply path's return contract.
+
+        Defensive clamps: current shields/hull never exceed their (now lowered)
+        max, and no derived stat is driven below 0 — a degrade must leave ship
+        stats consistent, never negative.
+        """
+        updated: Dict[str, Any] = {}
+
+        if upgrade_type == UpgradeType.ENGINE:
+            speed_bonus = effects["speed_bonus"]
+            # Floor at base_speed so a degrade can't push speed below the hull's
+            # native floor (the move-cost path penalises current_speed < base_speed).
+            ship.current_speed = max(ship.base_speed, ship.current_speed - speed_bonus)
+            updated["current_speed"] = ship.current_speed
+
+        elif upgrade_type == UpgradeType.CARGO_HOLD:
+            if not ship.cargo or not isinstance(ship.cargo, dict):
+                ship.cargo = {}
+            current_bonus = ship.cargo.get("_capacity_bonus_percent", 0)
+            ship.cargo["_capacity_bonus_percent"] = max(0, current_bonus - effects["cargo_bonus_percent"])
+            flag_modified(ship, 'cargo')
+            updated["cargo_capacity_bonus_percent"] = ship.cargo["_capacity_bonus_percent"]
+
+        elif upgrade_type == UpgradeType.SHIELD:
+            combat = ship.combat if isinstance(ship.combat, dict) else {}
+            shield_bonus = effects["shield_bonus"]
+            combat["max_shields"] = max(0, combat.get("max_shields", 0) - shield_bonus)
+            # Current shields can't exceed the lowered max, and never go negative.
+            combat["shields"] = max(0, min(combat.get("shields", 0) - shield_bonus, combat["max_shields"]))
+            ship.combat = combat
+            flag_modified(ship, 'combat')
+            updated["max_shields"] = combat["max_shields"]
+            updated["shields"] = combat["shields"]
+
+        elif upgrade_type == UpgradeType.HULL:
+            combat = ship.combat if isinstance(ship.combat, dict) else {}
+            hull_bonus = effects["hull_bonus"]
+            combat["max_hull"] = max(0, combat.get("max_hull", 0) - hull_bonus)
+            # Current hull can't exceed the lowered max; floor at 1 so a degrade
+            # never destroys the ship (consistent with the mine-detonation floor).
+            new_hull = min(combat.get("hull", 0) - hull_bonus, combat["max_hull"])
+            combat["hull"] = max(1, new_hull) if combat["max_hull"] >= 1 else max(0, new_hull)
+            ship.combat = combat
+            flag_modified(ship, 'combat')
+            updated["max_hull"] = combat["max_hull"]
+            updated["hull"] = combat["hull"]
+
+        elif upgrade_type == UpgradeType.SENSOR:
+            combat = ship.combat if isinstance(ship.combat, dict) else {}
+            evasion_bonus = effects["evasion_bonus_percent"]
+            combat["evasion"] = max(0, combat.get("evasion", 0) - evasion_bonus)
+            ship.combat = combat
+            flag_modified(ship, 'combat')
+            updated["evasion"] = combat["evasion"]
+            # Scanner range is DERIVED from the (already-decremented) Sensor level
+            # via effective_scanner_range(), so no per-instance column to reverse —
+            # report the recomputed effective value for parity with the apply path.
+            spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == ship.type
+            ).first()
+            base_scanner_range = spec.scanner_range if spec and spec.scanner_range is not None else 0
+            updated["scanner_range"] = self.effective_scanner_range(ship, base_scanner_range)
+
+        elif upgrade_type == UpgradeType.DRONE_BAY:
+            # Drone capacity is derived from spec + the upgrades JSONB level
+            # (no stored column), so decrementing the level — done by the caller —
+            # IS the reversal. Report the per-level figure for symmetry.
+            updated["drone_capacity_bonus"] = -effects["drone_capacity_bonus"]
+
+        elif upgrade_type == UpgradeType.GENESIS_CONTAINMENT:
+            genesis_bonus = effects["genesis_capacity_bonus"]
+            ship.max_genesis_devices = max(0, ship.max_genesis_devices - genesis_bonus)
+            updated["max_genesis_devices"] = ship.max_genesis_devices
+
+        elif upgrade_type == UpgradeType.MAINTENANCE_SYSTEM:
+            maintenance = ship.maintenance if isinstance(ship.maintenance, dict) else {}
+            reduction = effects["failure_rate_reduction"]
+            current_reduction = maintenance.get("failure_rate_reduction", 0)
+            maintenance["failure_rate_reduction"] = max(0.0, current_reduction - reduction)
+            ship.maintenance = maintenance
+            flag_modified(ship, 'maintenance')
+            updated["failure_rate_reduction"] = maintenance["failure_rate_reduction"]
+
+        return updated
+
+    def degrade_random_system(self, ship: Ship) -> Dict[str, Any]:
+        """Mechanical-failure consequence (WO-AB): pick ONE random installed
+        upgrade (level >= 1) on ``ship`` and drop it by one level, REVERSING that
+        level's stat contribution so ship stats stay consistent.
+
+        Failure-roll model (blessed, base_rate 2%/jump — DECISIONS Pending):
+        ``movement_service`` fires this on a roll after a SUCCESSFUL jump. The
+        player re-buys the lost level through the existing ``purchase_upgrade``
+        flow — there is no repair endpoint.
+
+        No-op contract: if the ship has no installed upgrades (``ship.upgrades``
+        empty or every entry at level 0), nothing is degraded and
+        ``{"degraded": False}`` is returned — a failed roll on an un-upgraded ship
+        is a harmless miss. The caller is responsible for the surrounding
+        transaction; this helper mutates the ship and flags JSONB but does NOT
+        commit or flush.
+
+        Returns ``{"degraded": True, "upgrade_type", "old_level", "new_level",
+        "updated_stats"}`` on a real degrade, else ``{"degraded": False}``.
+        """
+        upgrades = ship.upgrades if isinstance(ship.upgrades, dict) else {}
+
+        # Candidate upgrade-type strings with an installed level >= 1 that map to
+        # a known UpgradeType (defensive against stray JSONB keys).
+        candidates: List[UpgradeType] = []
+        for type_value, level in upgrades.items():
+            try:
+                lvl = int(level)
+            except (TypeError, ValueError):
+                continue
+            if lvl < 1:
+                continue
+            try:
+                upgrade_type = UpgradeType(type_value)
+            except ValueError:
+                continue  # unknown key in the JSONB — skip, don't crash
+            if upgrade_type not in self.UPGRADE_DEFINITIONS:
+                continue
+            candidates.append(upgrade_type)
+
+        if not candidates:
+            return {"degraded": False}
+
+        chosen = random.choice(candidates)
+        old_level = int(upgrades[chosen.value])
+        new_level = old_level - 1
+
+        # Reverse exactly the degraded level's stat contribution BEFORE/at the
+        # same time as decrementing the counter — never leave the bonus applied.
+        definition = self.UPGRADE_DEFINITIONS[chosen]
+        updated_stats = self._reverse_upgrade_effects(ship, chosen, definition["effect_per_level"])
+
+        # Decrement (or remove) the level in the upgrades JSONB.
+        if new_level <= 0:
+            del ship.upgrades[chosen.value]
+        else:
+            ship.upgrades[chosen.value] = new_level
+        flag_modified(ship, 'upgrades')
+
+        logger.info(
+            "Mechanical failure on ship %s: %s degraded %d -> %d",
+            getattr(ship, "id", "?"), chosen.value, old_level, new_level,
+        )
+
+        return {
+            "degraded": True,
+            "upgrade_type": chosen.value,
+            "old_level": old_level,
+            "new_level": new_level,
+            "updated_stats": updated_stats,
+        }
 
     def install_equipment(self, ship_id: uuid.UUID, player_id: uuid.UUID, equipment_key: str) -> Dict[str, Any]:
         """
