@@ -168,6 +168,16 @@ class Station(Base):
     service_prices = Column(JSONB, nullable=False, default={})  # Prices for services
     
     # Defense - comprehensive defensive capabilities
+    #
+    # WO-BP-a (station-defense kernel): the trailing keys (hull_armor,
+    # shield_pool, defensive_fire, point_defense_rating) make a station a
+    # FORMIDABLE deterrent — Max: "stations are really really powerful" =
+    # DEFENSE + DETERRENCE, not capture. These are read by
+    # combat_service._resolve_port_combat to shred an attacker's drone swarm
+    # and repel the assault decisively. Magnitudes are NO-CANON, deliberately
+    # STRONG (orchestrator-blessed pending). Additive JSONB default only — NO
+    # migration; existing rows fall back to the .get() defaults in the
+    # resolver, so legacy stations are equally formidable.
     defenses = Column(JSONB, nullable=False, default={
         "defense_drones": 0,
         "max_defense_drones": 50,
@@ -175,7 +185,13 @@ class Station(Base):
         "defense_grid": False,
         "shield_strength": 50,
         "patrol_ships": 0,
-        "military_contract": False
+        "military_contract": False,
+        # --- station-defense kernel (WO-BP-a) ---
+        "hull_armor": 5000,          # station structural HP — must be ground down to 0 to "capture"; astronomically high vs any realistic ship
+        "shield_pool": 4000,         # regenerating barrier absorbed before hull_armor takes damage
+        "shield_regen": 200,         # shield_pool restored per round (a sustained siege barely dents it)
+        "defensive_fire": 120,       # raw defensive-fire strength per round — heavily attrites the attacker drone swarm
+        "point_defense_rating": 30   # extra drones swatted per round by dedicated point-defense (anti-swarm)
     })
     
     # Ownership and Management

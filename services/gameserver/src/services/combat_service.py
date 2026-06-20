@@ -2771,171 +2771,225 @@ class CombatService:
             "combat_details": combat_details
         }
     
-    def _resolve_port_combat(self, attacker: Player, port: Station, 
+    def _resolve_port_combat(self, attacker: Player, port: Station,
                             port_owner: Optional[Player]) -> Dict[str, Any]:
-        """Resolve combat between a ship and a station."""
-        # Similar to planet combat but with port-specific parameters
-        # Get attacker ship and equipment
+        """Resolve combat between an attacking ship+drone-swarm and a station.
+
+        WO-BP-a — STATION-DEFENSE KERNEL (gated). Max: "stations are really
+        really powerful" = DEFENSE + DETERRENCE, NOT capture. A station is a
+        FORMIDABLE fixed installation: a huge regenerating shield_pool over a
+        deep hull_armor, plus STRONG defensive fire and dedicated point-defense
+        that SHRED the attacker's drone swarm every round. A drone count that
+        would wreck a ship gets ground to nothing here; the station repels the
+        assault decisively and survives.
+
+        Defense stats are read from the EXISTING ``defenses`` JSONB (no new
+        columns / no migration); ``.get`` defaults match the additive JSONB
+        default in models/station.py so legacy rows are equally formidable.
+
+        GATING: ``port_captured`` is still *computed* (so a future, Max-blessed
+        takeover design can build on a true value rather than a hard-coded
+        lie), but capture requires grinding ``hull_armor`` (default 5000) to
+        zero, and a per-round damage CEILING (150) combined with the 8-round
+        limit caps total reachable hull damage at ~1200 << 5000 — so capture is
+        mathematically unreachable here regardless of drone count. The ONLY
+        caller, attack_port, is DISABLED/unwired; this resolver does not
+        transfer ownership and is unreachable from any route. Making the
+        defense formidable + fixing the AttributeError crash must NOT make a
+        station capturable or the path live — and it does not.
+        """
+        # --- Attacker ---
         attacker_ship = attacker.current_ship
-        attacker_drones = attacker.defense_drones
-        
-        # Station defenses
-        port_defense_level = port.defense_level or 0
-        port_shields = port.shields or 0
-        port_weapons = port.defense_weapons or 0
-        
-        # Combat parameters
+        attacker_drones = attacker.defense_drones or 0
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
-        port_attack = port_weapons * 2 + port_defense_level * 2
-        port_defense = port_shields * 2 + port_defense_level * 4
-        
-        # Track combat details
+
+        # --- Station defenses (from the existing `defenses` JSONB) ---
+        # Magnitudes are deliberately FORMIDABLE (NO-CANON, orchestrator-bless
+        # pending). The .get defaults match the additive JSONB default in
+        # models/station.py so legacy rows (no new keys) are equally powerful.
+        defenses = port.defenses or {}
+        hull_armor = int(defenses.get("hull_armor", 5000) or 0)
+        shield_pool = int(defenses.get("shield_pool", 4000) or 0)
+        shield_max = shield_pool
+        shield_regen = int(defenses.get("shield_regen", 200) or 0)
+        defensive_fire = int(defenses.get("defensive_fire", 120) or 0)
+        point_defense = int(defenses.get("point_defense_rating", 30) or 0)
+        # Legacy fields still flavour the station's offensive output.
+        station_drones = int(defenses.get("defense_drones", 0) or 0)
+        patrol_ships = int(defenses.get("patrol_ships", 0) or 0)
+
+        # Per-round damage CEILING the attacker can ever deliver to the station
+        # (after shields). This is the deterrent linchpin: even an absurd drone
+        # swarm cannot grind a 5000-hull station to zero within the 8-round
+        # limit, because a single round can chip at most this much hull. With
+        # the ceiling at 150 and an 8-round cap, max theoretical hull damage is
+        # ~1200 << 5000 — capture is mathematically unreachable here. Computed,
+        # never tripped; the only caller (attack_port) is disabled regardless.
+        per_round_damage_ceiling = 150
+
+        # Station's combined anti-swarm output per round. Strong enough to gut a
+        # large swarm in a couple of rounds.
+        station_fire_power = defensive_fire + station_drones * 3 + patrol_ships * 8
+
+        # Track combat details (contract preserved for the dormant caller).
         round_number = 0
         attacker_drones_lost = 0
-        port_damage = 0
+        port_damage = 0           # cumulative damage that has reached hull_armor
         attacker_ship_destroyed = False
         port_captured = False
         combat_details = []
-        
-        # Combat continues until one side is defeated or retreats
-        while (not attacker_ship_destroyed and not port_captured):
+
+        # Combat continues until the attacker is repelled/destroyed, the
+        # (effectively unreachable) capture threshold is crossed, or the round
+        # limit forces the attacker to withdraw.
+        while not attacker_ship_destroyed and not port_captured:
             round_number += 1
-            
-            # Add round header
+
             combat_details.append({
                 "round": round_number,
                 "message": f"Combat Round {round_number}"
             })
-            
-            # Attacker's turn
-            if not attacker_ship_destroyed:
-                # Calculate chance to hit
-                hit_chance = min(0.8, attacker_attack / (port_defense * 1.1) * 0.6)
-                
-                # Random element
-                if random.random() < hit_chance:
-                    # Successful hit - damage port defenses
-                    damage = random.randint(1, 5)
-                    port_damage += damage
-                    
-                    # Update port defense parameters for subsequent rounds
-                    effective_defense_left = max(0, port_defense_level - port_damage)
-                    port_defense = effective_defense_left * 4 + port_shields * 2
-                    
-                    combat_details.append({
-                        "round": round_number,
-                        "actor": "attacker",
-                        "action": "port_attack",
-                        "message": f"{attacker.username}'s ship damaged port defenses for {damage} points",
-                        "damage": damage
-                    })
-                    
-                    # Check if port captured
-                    if port_damage >= port_defense_level:
-                        port_captured = True
-                        combat_details.append({
-                            "round": round_number,
-                            "actor": "attacker",
-                            "action": "port_captured",
-                            "message": f"{attacker.username} has overcome port defenses and captured the port"
-                        })
-                else:
-                    # Miss
-                    combat_details.append({
-                        "round": round_number,
-                        "actor": "attacker",
-                        "action": "miss",
-                        "message": f"{attacker.username}'s attack missed port defenses"
-                    })
-            
-            # Check if combat is over
-            if port_captured:
-                break
-            
-            # Station's turn
-            # Calculate chance to hit
-            port_hit_chance = min(0.7, port_attack / (attacker_attack * 1.3) * 0.5)
-            
-            # Random element
-            if random.random() < port_hit_chance:
-                # Successful hit
-                # Determine if attacking drones or ship
-                if attacker_drones > 0:
-                    # Attack attacker's drones first
-                    drones_destroyed = random.randint(1, min(3, attacker_drones))
-                    attacker_drones -= drones_destroyed
-                    attacker_drones_lost += drones_destroyed
-                    combat_details.append({
-                        "round": round_number,
-                        "actor": "defender",
-                        "action": "drone_attack",
-                        "message": f"Station defenses destroyed {drones_destroyed} of {attacker.username}'s drones",
-                        "drones_destroyed": drones_destroyed
-                    })
-                else:
-                    # Attack ship - calculate ship damage
-                    damage = random.randint(1, 6)
-                    
-                    # Check if attacker ship destroyed
-                    ship_destruction_chance = damage / 50
-                    if random.random() < ship_destruction_chance:
-                        attacker_ship_destroyed = True
-                        combat_details.append({
-                            "round": round_number,
-                            "actor": "defender",
-                            "action": "ship_destroyed",
-                            "message": f"Station defenses critically damaged {attacker.username}'s ship, forcing ejection"
-                        })
-                    else:
-                        combat_details.append({
-                            "round": round_number,
-                            "actor": "defender",
-                            "action": "ship_attack",
-                            "message": f"Station defenses hit {attacker.username}'s ship for {damage} damage"
-                        })
-            else:
-                # Miss
+
+            # --- Station fires FIRST: a fixed fortress engages on contact, so
+            # the swarm is attrited BEFORE it can land its volley. SHRED the
+            # drone swarm; once the screen is gone, maul the exposed ship. ---
+            if attacker_drones > 0:
+                # Defensive fire converts to drones killed; point-defense adds a
+                # flat anti-swarm bonus. A station out-guns any realistic swarm.
+                drones_destroyed = min(
+                    attacker_drones,
+                    max(1, station_fire_power // 4) + point_defense
+                )
+                attacker_drones -= drones_destroyed
+                attacker_drones_lost += drones_destroyed
                 combat_details.append({
                     "round": round_number,
                     "actor": "defender",
-                    "action": "miss",
-                    "message": f"Station defense systems' attack missed {attacker.username}'s ship"
+                    "action": "drone_attack",
+                    "message": (
+                        f"Station defensive fire SHREDDED {drones_destroyed} of "
+                        f"{attacker.username}'s drones ({attacker_drones} remain)"
+                    ),
+                    "drones_destroyed": drones_destroyed
                 })
-            
-            # Check if combat ends due to round limit
+            else:
+                # Swarm gone — defensive fire turns on the hull of the ship.
+                # With no drone screen the attacker is critically exposed.
+                damage = defensive_fire // 2 + station_drones + patrol_ships * 3
+                ship_destruction_chance = min(0.95, damage / 60)
+                if random.random() < ship_destruction_chance:
+                    attacker_ship_destroyed = True
+                    combat_details.append({
+                        "round": round_number,
+                        "actor": "defender",
+                        "action": "ship_destroyed",
+                        "message": (
+                            f"With its drone screen gone, station fire critically "
+                            f"crippled {attacker.username}'s ship, forcing ejection"
+                        )
+                    })
+                else:
+                    combat_details.append({
+                        "round": round_number,
+                        "actor": "defender",
+                        "action": "ship_attack",
+                        "message": f"Station fire raked {attacker.username}'s unscreened ship for {damage} damage"
+                    })
+
+            if attacker_ship_destroyed:
+                break
+
+            # --- Attacker's turn: the SURVIVING swarm chips at shields, then
+            # hull. Per-round damage is hard-capped (per_round_damage_ceiling)
+            # AND scales with the swarm the station hasn't shredded yet, so the
+            # attacker's output decays fast as drones are lost. ---
+            drone_factor = attacker_drones / max(1, (attacker.defense_drones or 1))
+            raw = int(attacker_attack * (0.3 + 0.7 * drone_factor))
+            incoming = max(0, min(per_round_damage_ceiling, raw))
+
+            absorbed = min(shield_pool, incoming)
+            shield_pool -= absorbed
+            hull_hit = incoming - absorbed
+            if hull_hit > 0:
+                hull_armor = max(0, hull_armor - hull_hit)
+                port_damage += hull_hit
+
+            if incoming > 0:
+                combat_details.append({
+                    "round": round_number,
+                    "actor": "attacker",
+                    "action": "port_attack",
+                    "message": (
+                        f"{attacker.username}'s assault hit the station for {incoming} "
+                        f"(shields absorbed {absorbed}, hull took {hull_hit}); "
+                        f"shields {shield_pool}/{shield_max}, hull {hull_armor}"
+                    ),
+                    "damage": incoming
+                })
+            else:
+                combat_details.append({
+                    "round": round_number,
+                    "actor": "attacker",
+                    "action": "miss",
+                    "message": f"{attacker.username}'s drone swarm is too depleted to scratch the station"
+                })
+
+            # Capture requires the hull ground fully to zero — mathematically
+            # unreachable within the round limit given the per-round ceiling.
+            # Computed (so a future Max-blessed takeover can build on a true
+            # value), never tripped here; the caller (attack_port) is disabled.
+            if hull_armor <= 0:
+                port_captured = True
+                combat_details.append({
+                    "round": round_number,
+                    "actor": "attacker",
+                    "action": "port_captured",
+                    "message": f"{attacker.username} has overcome the station's structure"
+                })
+                break
+
+            # Shields regenerate — a sustained siege barely dents the station.
+            if shield_pool < shield_max:
+                shield_pool = min(shield_max, shield_pool + shield_regen)
+
+            # Round limit: the attacker is forced to withdraw (station repels).
             if round_number >= 8:
                 combat_details.append({
                     "round": round_number,
                     "action": "stalemate",
-                    "message": "Combat ends as attacker withdraws after 8 rounds"
+                    "message": "The station's defenses hold; the attacker withdraws after 8 rounds"
                 })
                 break
-        
-        # Determine result
-        if attacker_ship_destroyed:
-            result = CombatResult.DEFENDER_VICTORY
-            message = f"Station defenses defeated {attacker.username}"
-        elif port_captured:
+
+        # --- Determine result ---
+        # Any realistic assault ends here: the swarm is shredded and the
+        # attacker is either destroyed or driven off — the station is repelled
+        # decisively and is NOT captured.
+        if port_captured:
             result = CombatResult.ATTACKER_VICTORY
-            message = f"{attacker.username} captured port {port.name}"
+            message = f"{attacker.username} captured station {port.name}"
+        elif attacker_ship_destroyed:
+            result = CombatResult.DEFENDER_VICTORY
+            message = f"Station {port.name} destroyed {attacker.username}'s ship and repelled the assault"
         else:
-            result = CombatResult.DRAW
-            message = "Combat ended in a stalemate"
-        
-        # Finalize results
+            # Withdrawal after the round limit with the station intact is a
+            # defender win — the station held and the attacker fled.
+            result = CombatResult.DEFENDER_VICTORY
+            message = f"Station {port.name} repelled {attacker.username}'s assault"
+
         combat_details.append({
             "round": round_number,
             "action": "combat_end",
             "result": result.name,
             "message": message
         })
-        
+
         return {
             "result": result,
             "message": message,
             "rounds": round_number,
             "attacker_drones_lost": attacker_drones_lost,
-            "defender_drones_lost": 0,  # Ports don't have drones like players
+            "defender_drones_lost": 0,  # the station's drones are a fire stat, not a depletable pool here
             "attacker_ship_destroyed": attacker_ship_destroyed,
             "port_damage": port_damage,
             "port_captured": port_captured,
