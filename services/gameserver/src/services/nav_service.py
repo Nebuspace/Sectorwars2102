@@ -31,7 +31,7 @@ from __future__ import annotations
 import heapq
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import text
@@ -49,13 +49,26 @@ logger = logging.getLogger(__name__)
 # known-graph cannot run indefinitely.
 MAX_HOPS = 200
 
+# Per-hop turn penalty applied to a hop's edge cost under the MIN_RISK
+# objective, scaled by how *unsafe* the destination hop is.  A hop with
+# safety_rating 1.0 (perfectly safe) adds no penalty; a hop with safety_rating
+# 0.0 (most dangerous) adds the full RISK_WEIGHT to its turn cost.  The penalty
+# rides on top of the real turn cost so a MIN_RISK route is still a physically
+# sensible walk — a safer-but-longer path wins only when its accumulated safety
+# savings outweigh the extra turns.  RISK_WEIGHT is the "turn-equivalents" a
+# player is willing to spend to avoid one maximally-dangerous hop.
+RISK_WEIGHT = 5.0
 
-@dataclass(order=True)
-class _PQEntry:
-    """Priority-queue entry for Dijkstra (cost-ordered)."""
+# Neutral safety used for hops the player has not personally visited (no
+# visit-derived intelligence).  Mirrors ARIAExplorationMap.safety_rating's own
+# default of 0.5 — charted/corp-shared-only hops carry no safety signal, so
+# they are treated as neither safe nor dangerous under MIN_RISK weighting.
+NEUTRAL_SAFETY = 0.5
 
-    cost: int
-    sector_id: int = field(compare=False)
+# Routing objectives understood by NavService.  MIN_TIME is the default
+# (Dijkstra by turn cost); MIN_RISK additionally penalises low-safety hops.
+OBJECTIVE_MIN_TIME = "min_time"
+OBJECTIVE_MIN_RISK = "min_risk"
 
 
 @dataclass
@@ -131,9 +144,51 @@ class NavService:
 
         return known
 
-    def plot(self, player: Player, target_sector_id: int) -> Dict:
+    def _build_safety_by_sid(self, player: Player) -> Dict[int, Optional[float]]:
+        """
+        Map numeric ``Sector.sector_id`` -> the player's OWN visit-derived
+        ``ARIAExplorationMap.safety_rating`` for every sector the player has
+        personally flown.
+
+        This is the single source of visit-derived safety used both to weight
+        the MIN_RISK Dijkstra and to annotate hops in the response.  Sectors
+        absent from this map are sectors the player has not personally visited
+        (charted/corp-shared-only hops carry no safety intelligence — visit-
+        gated intelligence stays visit-gated).  A present key whose value is
+        None means a visited sector whose rating column is null.
+        """
+        rows = (
+            self.db.query(Sector.sector_id, ARIAExplorationMap.safety_rating)
+            .join(ARIAExplorationMap, ARIAExplorationMap.sector_id == Sector.id)
+            .filter(ARIAExplorationMap.player_id == player.id)
+            .all()
+        )
+        return {sid: safety for (sid, safety) in rows}
+
+    def plot(
+        self,
+        player: Player,
+        target_sector_id: int,
+        objective: str = OBJECTIVE_MIN_TIME,
+    ) -> Dict:
         """
         Compute a course from the player's current sector to *target_sector_id*.
+
+        *objective* selects the routing semantics, mirroring RouteOptimizer's
+        objective-weighted Dijkstra (see ADR-0072 consciousness tiers):
+
+          - ``"min_time"`` (default): shortest path by turn cost — turn cost is
+            physics, priced identically for every plottable hop.
+          - ``"min_risk"``: the Awakened-tier alternative built from the
+            player's visit-derived ``ARIAExplorationMap.safety_rating``.  Each
+            hop's edge cost is penalised in proportion to how dangerous its
+            destination is, so a safer-but-longer path is preferred when its
+            accumulated safety savings outweigh the extra turns.  Hops the
+            player has not personally flown carry no safety intelligence and
+            are weighted with the neutral default (visit-gated intelligence
+            stays visit-gated).
+
+        Any unrecognised objective falls back to ``"min_time"``.
 
         Returns a dict matching the frozen contract:
           Reachable:
@@ -192,9 +247,28 @@ class NavService:
                 "nearest_known": nearest,
             }
 
+        # Per-hop visit-derived safety, keyed by numeric sector_id, for the
+        # player's OWN exploration map.  Built once here so it can both weight
+        # the MIN_RISK Dijkstra and annotate the response without a re-query.
+        sid_safety = self._build_safety_by_sid(player)
+
+        # Select the edge-weight function for this plot's objective.  MIN_RISK
+        # penalises a hop by how dangerous its *destination* is; everything
+        # else (including unrecognised objectives) falls back to pure turn cost
+        # (MIN_TIME).  Mirrors RouteOptimizer._dijkstra_path's weight_fn hook.
+        if objective == OBJECTIVE_MIN_RISK:
+            def weight_fn(neighbour_sid: int, edge_cost: int, _via_tunnel: bool) -> float:
+                safety = sid_safety.get(neighbour_sid, NEUTRAL_SAFETY)
+                if safety is None:
+                    safety = NEUTRAL_SAFETY
+                # safety 1.0 -> no penalty; safety 0.0 -> full RISK_WEIGHT
+                return edge_cost + RISK_WEIGHT * (1.0 - safety)
+        else:
+            weight_fn = None  # default: weight == edge turn cost (MIN_TIME)
+
         # Run Dijkstra over the known graph
         path_sids, costs, via_tunnel_flags = self._dijkstra(
-            graph, edge_meta, start_sid, target_sector_id
+            graph, edge_meta, start_sid, target_sector_id, weight_fn=weight_fn
         )
 
         if path_sids is None:
@@ -229,24 +303,10 @@ class NavService:
         )
         sector_map: Dict[int, Sector] = {s.sector_id: s for s in hop_sectors}
 
-        # Build set of sector UUIDs in the player's OWN exploration map
-        own_visited_uuids: Set[str] = {
-            str(row.sector_id)
-            for row in self.db.query(ARIAExplorationMap.sector_id)
-            .filter(ARIAExplorationMap.player_id == player.id)
-            .all()
-        }
-
-        # Build safety-rating lookup: sector UUID -> safety_rating
-        safety_map: Dict[str, Optional[float]] = {}
-        own_exploration_rows = (
-            self.db.query(ARIAExplorationMap)
-            .filter(ARIAExplorationMap.player_id == player.id)
-            .all()
-        )
-        for row in own_exploration_rows:
-            safety_map[str(row.sector_id)] = row.safety_rating
-
+        # A hop is "visited" iff it appears in the player's OWN visit-derived
+        # safety map (same ARIAExplorationMap rows as sid_safety, built above);
+        # safety_rating is reported only for visited hops — charted/corp-shared
+        # hops never carry safety intelligence (visit-gated stays visit-gated).
         hops: List[Dict] = []
         for i, sid in enumerate(hops_sids):
             sec = sector_map.get(sid)
@@ -255,9 +315,8 @@ class NavService:
                 logger.warning("nav_service: sector %d missing from db during hop assembly", sid)
                 continue
 
-            sec_uuid_str = str(sec.id)
-            visited = sec_uuid_str in own_visited_uuids
-            sr = safety_map.get(sec_uuid_str) if visited else None
+            visited = sid in sid_safety
+            sr = sid_safety.get(sid) if visited else None
             via_tun = via_tunnel_flags[i] if i < len(via_tunnel_flags) else False
 
             hops.append({
@@ -386,23 +445,37 @@ class NavService:
         _edge_meta: Dict,
         src: int,
         dst: int,
+        weight_fn=None,
     ) -> Tuple[Optional[List[int]], List[int], List[bool]]:
         """
-        Standard Dijkstra returning (path_sids, per_hop_costs, per_hop_via_tunnel).
+        Standard cost-ordered Dijkstra returning
+        (path_sids, per_hop_turn_costs, per_hop_via_tunnel).
 
-        path_sids includes src.  per_hop_costs[i] is the edge cost arriving at
-        path_sids[i+1].  Returns (None, [], []) when dst is unreachable.
+        path_sids includes src.  per_hop_turn_costs[i] is the *real turn cost*
+        of the edge arriving at path_sids[i+1] — turn cost is physics and is
+        always reported to the player regardless of objective.  Returns
+        (None, [], []) when dst is unreachable.
+
+        *weight_fn* maps ``(neighbour_sid, edge_turn_cost, via_tunnel)`` to the
+        numeric cost used to *order* the search (mirrors
+        RouteOptimizer._dijkstra_path's weight_fn hook).  When None, the search
+        is ordered by raw turn cost (MIN_TIME).  The priority-queue ordering and
+        relaxation use this weighted cost, but the per-hop turn cost recorded
+        for the response is always the real ``edge_turn_cost``.
         """
-        dist: Dict[int, int] = {src: 0}
+        if weight_fn is None:
+            def weight_fn(_neighbour_sid, edge_turn_cost, _via_tunnel):  # noqa: E306
+                return edge_turn_cost
+
+        # dist tracks the *weighted* cost-to-reach used for Dijkstra ordering.
+        dist: Dict[int, float] = {src: 0.0}
         prev: Dict[int, Optional[int]] = {src: None}
-        prev_cost: Dict[int, int] = {src: 0}
+        prev_cost: Dict[int, int] = {src: 0}          # real turn cost of arriving edge
         prev_via_tunnel: Dict[int, bool] = {src: False}
-        pq: List[_PQEntry] = [_PQEntry(cost=0, sector_id=src)]
+        pq: List[Tuple[float, int]] = [(0.0, src)]
 
         while pq:
-            entry = heapq.heappop(pq)
-            node = entry.sector_id
-            cost = entry.cost
+            cost, node = heapq.heappop(pq)
 
             if node == dst:
                 break
@@ -410,13 +483,14 @@ class NavService:
                 continue  # stale entry
 
             for (neighbour, edge_cost, via_tunnel) in graph.get(node, []):
-                new_cost = cost + edge_cost
+                w = weight_fn(neighbour, edge_cost, via_tunnel)
+                new_cost = cost + w
                 if new_cost < dist.get(neighbour, math.inf):
                     dist[neighbour] = new_cost
                     prev[neighbour] = node
                     prev_cost[neighbour] = edge_cost
                     prev_via_tunnel[neighbour] = via_tunnel
-                    heapq.heappush(pq, _PQEntry(cost=new_cost, sector_id=neighbour))
+                    heapq.heappush(pq, (new_cost, neighbour))
 
         if dst not in prev:
             return None, [], []

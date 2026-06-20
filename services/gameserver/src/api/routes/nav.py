@@ -59,10 +59,15 @@ async def plot_course(
     Runaway guard (> 200 hops):
       {"success": false, "message": "..."}
 
-    Note: objective is accepted for forward-compatibility with ADR-0072
-    consciousness tiers (Awakened: MIN_RISK, Transcendent: re-plot) but is
-    not yet differentiated — all plots use Dijkstra by turn-cost (min_time).
+    Note: objective selects the routing semantics (ADR-0072 consciousness
+    tiers). "min_time" (default) plots by turn-cost; "min_risk" penalizes
+    low-safety hops using visit-derived safety ratings. Any unrecognised
+    objective falls back to min_time.
     """
     nav = NavService(db)
-    result = nav.plot(current_player, plot_request.target_sector_id)
+    result = nav.plot(
+        current_player,
+        plot_request.target_sector_id,
+        objective=plot_request.objective,
+    )
     return result
