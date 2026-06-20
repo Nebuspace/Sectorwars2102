@@ -48,6 +48,7 @@ canon's separate patrol-route registry is Design-only):
 
 import asyncio
 import logging
+import os
 import random
 import uuid
 from datetime import datetime, timedelta, UTC
@@ -186,6 +187,39 @@ FAUCET_CHECK_SECONDS = 20 * 60
 # Offset 25 minutes from the faucet/decay pre-filters so the three coarse probes
 # don't all hit Postgres on the same scheduler wake.
 ECONOMY_SNAPSHOT_CHECK_SECONDS = 25 * 60
+
+# Idle passive-income faucet pre-filter. The quantum_harvester equipment grants
+# {"passive_income": N} (ship_upgrade_service.EQUIPMENT_DEFINITIONS) but, before
+# this sweep, NOTHING ever credited it — the purchased effect was inert
+# (ship-systems.md §passive_income: "applied per-tick by an idle-income job").
+# This sweep credits each player who owns a passive-income-equipped ship once
+# per UTC day. Like the economy snapshot, the cadence is a COARSE elapsed
+# pre-filter (so we don't take the advisory lock + scan equipment_slots every
+# 60s); the once-per-day-per-ship guarantee comes from a DURABLE per-ship anchor
+# — the UTC date string stored in the ship's equipment_slots JSONB under the
+# reserved _passive_income meta key (additive, NO migration; mirrors the
+# cargo['_capacity_bonus_percent'] meta-key convention). A 30-minute pre-filter
+# is far finer than a day, so a day's grant is never missed even across restarts
+# (the process-relative elapsed counter resets, but the durable per-ship date
+# does not — a restart or a re-run within the same UTC day re-reads the anchor
+# and skips, so the faucet NEVER double-credits). Offset from the other coarse
+# probes (decay 15m / faucet 20m / snapshot 25m) by landing at 30m so the
+# four coarse probes don't all hit Postgres on the same scheduler wake.
+#
+# CADENCE + MAGNITUDE ARE NO-CANON: ship-systems.md §passive_income is 📐
+# Design-only — it specifies neither the per-period figure (EQUIPMENT_DEFINITIONS
+# carries 100, the only concrete number) nor the period. Daily was chosen to
+# match the other daily faucet/snapshot sweeps and to keep the credit faucet
+# conservative. Both are flagged for the orchestrator / a DECISIONS.md ruling.
+IDLE_INCOME_CHECK_SECONDS = int(
+    os.environ.get("IDLE_INCOME_CHECK_SECONDS", str(30 * 60))
+)
+# Reserved meta key inside Ship.equipment_slots JSONB holding the UTC date
+# (YYYY-MM-DD) of the last passive-income grant for that ship — the durable
+# per-ship idempotency anchor. Leading underscore namespaces it apart from real
+# equipment slot keys (quantum_harvester/mining_laser/…), exactly as
+# cargo['_capacity_bonus_percent'] is kept apart from cargo commodity keys.
+_PASSIVE_INCOME_ANCHOR_KEY = "_passive_income_last_utc_date"
 
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
@@ -2094,6 +2128,176 @@ def _run_economic_metrics_snapshot_sync() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Idle passive-income faucet — daily credit grant for harvester-equipped ships
+# ---------------------------------------------------------------------------
+
+def _run_idle_income_sweep_sync() -> Dict[str, int]:
+    """Credit each ship's owner the passive_income its installed equipment grants,
+    once per UTC day.
+
+    The quantum_harvester equipment carries {"passive_income": 100}
+    (ship_upgrade_service.EQUIPMENT_DEFINITIONS), but nothing ever credited it —
+    the purchased effect was inert. ship-systems.md §passive_income: "applied
+    per-tick by an idle-income job (periodic credit grant scheduler)". This is
+    that job.
+
+    DISCIPLINE — mirrors the genesis/planetary/governance/snapshot sweeps:
+      * own SessionLocal (never the request session, never the async engine);
+      * xact-level advisory lock so a second gameserver instance skips instead
+        of double-crediting (and the lock auto-releases on commit/rollback);
+      * a candidate-id query, then a per-row with_for_update re-read so a
+        concurrent install/uninstall/equip mutation can't race the credit;
+      * per-row commit and per-row try/except — one bad ship cannot abort the
+        batch or roll back already-credited ships.
+
+    IDEMPOTENCY ACROSS RESTARTS (this is a CREDIT FAUCET, so this is mandatory):
+    the durable per-ship anchor is the UTC date string under
+    Ship.equipment_slots[_PASSIVE_INCOME_ANCHOR_KEY]. A ship is credited only
+    when that anchor is BEHIND today's UTC date; the anchor is then advanced to
+    today in the SAME per-row transaction as the credit. A restart, a duplicate
+    wake, or a re-run within the same UTC day re-reads the anchor and skips —
+    NEVER a double-credit. Additive JSONB only; NO migration, NO new table.
+
+    ELIGIBILITY — a real player's living ship that carries passive_income:
+    owner_id NOT NULL (player-owned), is_npc False, is_destroyed False, and
+    ShipUpgradeService.get_passive_income(ship) > 0 (the authoritative amount,
+    read from EQUIPMENT_DEFINITIONS and summed across multiple sources). The
+    owning player's row is locked (with_for_update) before its credits are
+    mutated, ordered ship-row-then-player-row to match the upgrade-service lock
+    discipline (player before ship there; here the ship is the candidate driver,
+    so we lock the ship first, then its owner — both ships and players, so no
+    cross-sweep lock-order conflict with the single-row sweeps above).
+
+    CADENCE + MAGNITUDE ARE NO-CANON (ship-systems.md §passive_income is
+    📐 Design-only) — daily + the EQUIPMENT_DEFINITIONS figure of 100; flagged
+    for a DECISIONS.md ruling.
+
+    Returns {"ships": n_credited, "players": n_distinct_players, "credits":
+    total_cr_granted}; all zero on the lock-held / nothing-due no-op paths.
+    """
+    from src.core.database import SessionLocal
+    from src.models.player import Player
+    from src.models.ship import Ship
+    from src.services.ship_upgrade_service import ShipUpgradeService
+
+    result = {"ships": 0, "players": 0, "credits": 0}
+    credited_players: set = set()
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        # Release the lock-acquiring transaction before per-row work: each
+        # per-row commit below would otherwise release the xact lock on the
+        # first commit anyway, so we keep the lock only long enough to claim the
+        # sweep, then proceed (a second instance that lost the race has already
+        # returned above). Commit here so the lock isn't pinned to a long-open
+        # transaction while we iterate candidates.
+        db.commit()
+
+        # Durable per-ship anchor key: today's UTC date string. A ship whose
+        # stored anchor already equals (or is ahead of) today is skipped.
+        today = datetime.now(UTC).date()
+        today_str = today.isoformat()
+
+        # Candidate ships: player-owned, living, real (non-NPC). We cannot
+        # cheaply filter "carries passive_income" in SQL (it lives in the
+        # equipment_slots JSONB as an effect of an arbitrary equipment key), so
+        # the candidate set is intentionally broad and get_passive_income()
+        # below is the authoritative gate. equipment_slots is non-empty for any
+        # ship that could qualify, so we prefilter on that to keep the candidate
+        # list small on a galaxy of mostly-unequipped hulls.
+        candidate_ids = (
+            db.query(Ship.id)
+            .filter(
+                Ship.owner_id.isnot(None),
+                Ship.is_npc.is_(False),
+                Ship.is_destroyed.is_(False),
+                Ship.equipment_slots != text("'{}'::jsonb"),
+            )
+            .all()
+        )
+
+        for (ship_id,) in candidate_ids:
+            try:
+                ship = (
+                    db.query(Ship)
+                    .filter(Ship.id == ship_id)
+                    .with_for_update()
+                    .first()
+                )
+                if ship is None or ship.is_destroyed or ship.owner_id is None:
+                    db.rollback()  # release row lock; nothing to do
+                    continue
+
+                amount = ShipUpgradeService.get_passive_income(ship)
+                if amount <= 0:
+                    db.rollback()
+                    continue
+
+                # Durable idempotency gate: only credit when the per-ship anchor
+                # is behind today's UTC date. A restart/re-run within the same
+                # day re-reads this and skips — never a double-credit.
+                slots = ship.equipment_slots if isinstance(ship.equipment_slots, dict) else {}
+                last_str = slots.get(_PASSIVE_INCOME_ANCHOR_KEY)
+                if isinstance(last_str, str) and last_str >= today_str:
+                    # ISO date strings compare lexicographically == chronologically.
+                    db.rollback()
+                    continue
+
+                # Lock the owning player row before mutating its credits, so a
+                # concurrent purchase/grant can't lose this increment.
+                player = (
+                    db.query(Player)
+                    .filter(Player.id == ship.owner_id)
+                    .with_for_update()
+                    .first()
+                )
+                if player is None:
+                    db.rollback()  # orphaned owner_id — skip
+                    continue
+
+                player.credits = int(player.credits or 0) + amount
+
+                # Advance the durable per-ship anchor in the SAME transaction as
+                # the credit, so the grant and the idempotency mark commit (or
+                # roll back) atomically.
+                new_slots = dict(slots)
+                new_slots[_PASSIVE_INCOME_ANCHOR_KEY] = today_str
+                ship.equipment_slots = new_slots
+                flag_modified(ship, "equipment_slots")
+
+                db.commit()
+                result["ships"] += 1
+                result["credits"] += amount
+                credited_players.add(str(player.id))
+            except Exception:
+                logger.exception(
+                    "Idle-income sweep: grant failed for ship %s", ship_id
+                )
+                db.rollback()
+
+        result["players"] = len(credited_players)
+        if result["ships"]:
+            logger.info(
+                "Idle-income sweep: %s — credited %d ship(s) across %d player(s), "
+                "%d cr granted",
+                today_str, result["ships"], result["players"], result["credits"],
+            )
+        return result
+    except Exception:
+        logger.exception("Idle-income sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
 
@@ -2690,3 +2894,28 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: economy snapshot crashed (loop continues)")
+
+        # Idle passive-income faucet — credit each player who owns a
+        # passive-income-equipped ship (quantum_harvester) once per UTC day, so
+        # the purchased effect is no longer inert (ship-systems.md
+        # §passive_income: "applied per-tick by an idle-income job"). Coarse
+        # elapsed pre-filter (30 min) so we don't scan equipment_slots every
+        # 60s; the once-per-day-per-ship guarantee + restart-proofing come from
+        # the durable per-ship UTC-date anchor inside the sweep. Own session,
+        # own advisory lock, per-ship failure isolated — same discipline as the
+        # genesis/planetary/governance/snapshot sweeps. NO-CANON cadence +
+        # magnitude (flagged for the orchestrator).
+        if elapsed % IDLE_INCOME_CHECK_SECONDS == 0:
+            try:
+                idle = await asyncio.to_thread(_run_idle_income_sweep_sync)
+                if idle.get("ships"):
+                    logger.info(
+                        "NPC scheduler: idle-income faucet — credited %d ship(s) "
+                        "across %d player(s), %d cr granted",
+                        idle.get("ships", 0), idle.get("players", 0),
+                        idle.get("credits", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: idle-income faucet crashed (loop continues)")

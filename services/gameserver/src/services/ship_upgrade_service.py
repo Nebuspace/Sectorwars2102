@@ -141,6 +141,36 @@ class ShipUpgradeService:
         return int(base_scanner_range) + bonus
 
     @staticmethod
+    def get_passive_income(ship) -> int:
+        """Total per-period passive_income a ship's installed equipment grants.
+
+        Read-only. Authoritative source is EQUIPMENT_DEFINITIONS keyed by the
+        equipment actually installed in the ship's equipment_slots JSONB — NOT
+        the effects snapshot stored on the slot at install time — so a future
+        re-tuning of the canonical passive_income figure (e.g. a DECISIONS.md
+        ruling) takes effect for already-equipped ships without a backfill. If a
+        ship carries the effect via MULTIPLE equipment sources, their
+        passive_income values are SUMMED. Returns 0 when the ship carries no
+        passive_income equipment (the common case), so the idle-income sweep
+        skips it cleanly.
+
+        Used by npc_scheduler_service's daily idle-income credit-grant sweep
+        (ship-systems.md §passive_income: "applied per-tick by an idle-income
+        job"). Magnitude/cadence are NO-CANON (the doc marks the effect
+        📐 Design-only) — flagged for the orchestrator.
+        """
+        equipment_slots = getattr(ship, "equipment_slots", None) or {}
+        total = 0
+        for eq_key in equipment_slots.keys():
+            eq_def = ShipUpgradeService.EQUIPMENT_DEFINITIONS.get(eq_key)
+            if not eq_def:
+                continue
+            value = eq_def.get("effects", {}).get("passive_income")
+            if isinstance(value, (int, float)):
+                total += int(value)
+        return total
+
+    @staticmethod
     def get_equipment_effects(ship) -> Dict[str, Any]:
         """Read equipment_slots JSONB and return a merged dict of all active effects.
 
