@@ -171,6 +171,22 @@ WEEKLY_DECAY_CHECK_SECONDS = 15 * 60
 # the same scheduler wake.
 FAUCET_CHECK_SECONDS = 20 * 60
 
+# Economy-metrics snapshot pre-filter. The EconomicMetrics table is READ by
+# economy_analytics_service (admin economy dashboard "latest metrics" panel)
+# but, before this sweep, NOTHING ever WROTE a row — so the dashboard showed
+# 0/empty forever. This writes one daily snapshot of galaxy-wide economic state
+# (total credits in circulation, market trade volume, active traders, credit
+# velocity). Like the genesis/planetary/governance sweeps, the cadence is a
+# COARSE elapsed pre-filter (so we don't take the advisory lock + probe the DB
+# every 60s); the once-per-day guarantee comes from a DURABLE anchor — the
+# unique, midnight-truncated EconomicMetrics.date column (a same-day row already
+# present → the sweep is a clean no-op). A 1-hour pre-filter is far finer than a
+# day, so the day's snapshot is never missed even across restarts (the
+# process-relative elapsed counter resets, but the durable date row does not).
+# Offset 25 minutes from the faucet/decay pre-filters so the three coarse probes
+# don't all hit Postgres on the same scheduler wake.
+ECONOMY_SNAPSHOT_CHECK_SECONDS = 25 * 60
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -1889,6 +1905,195 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Economy-metrics snapshot — daily galaxy-wide economic state writer
+# ---------------------------------------------------------------------------
+
+def _run_economic_metrics_snapshot_sync() -> Dict[str, Any]:
+    """Write ONE daily EconomicMetrics row so the admin economy dashboard has
+    real data instead of zeros.
+
+    economy_analytics_service.get_economic_metrics() reads the most-recent
+    EconomicMetrics row (``order_by(date.desc()).first()``) and surfaces four
+    fields in the dashboard's "latest metrics" panel:
+      - total_credits_in_circulation
+      - total_trade_volume        (shown as "total_resources")
+      - total_players_trading     (shown as "active_traders")
+      - credit_velocity           (shown as "market_liquidity")
+    Nothing ever WROTE an EconomicMetrics row, so that panel was permanently
+    0/empty. This sweep populates exactly those fields (plus the cheap
+    complementary columns) once per day.
+
+    DISCIPLINE — mirrors the genesis/planetary/governance sweeps exactly:
+      * own SessionLocal (never the request session, never the async engine);
+      * xact-level advisory lock so a second gameserver instance skips instead
+        of double-writing (and the lock auto-releases on commit/rollback);
+      * commit releases the lock; failure is isolated (rolled back, logged,
+        loop continues).
+
+    IDEMPOTENCY — at most one snapshot per calendar day. The durable anchor is
+    the unique, midnight-truncated ``EconomicMetrics.date`` column: we check for
+    an existing row dated today (>= midnight UTC) BEFORE computing/inserting and
+    no-op if present. The midnight truncation (rather than ``utcnow()``) is what
+    makes the daily guard robust — two wakes on the same day resolve to the same
+    ``date`` value, so the second is skipped (and, even if a race slipped past
+    the check, the UNIQUE constraint on ``date`` would reject the duplicate,
+    which the outer except rolls back without aborting the scheduler). This is
+    the same durable-per-row-anchor pattern the weekly decay uses, keyed off a
+    DB column instead of Galaxy.state.
+
+    CIRCULATION — total_credits_in_circulation sums every credit pool the game
+    actually tracks: active-player wallets (the analytics _calculate_money_supply
+    number), NPC trader wallets (TRADER NPCs are full market actors —
+    market_transaction.py), and the Region + Station treasuries (Integer credit
+    pools). credits_in_player_accounts / credits_in_npc_accounts break that out.
+
+    VOLUME — total_trade_volume / total_transactions / average_transaction_value
+    come from the trailing-24h MarketTransaction window (the same window the
+    analytics GDP/velocity calcs use), and credit_velocity = volume / money
+    supply (mirroring _calculate_market_velocity), so the snapshot is internally
+    consistent with the live-computed indicators on the same dashboard.
+
+    Returns {"written": bool, "date": iso|None, "total_credits": int,
+    "trade_volume": int, "active_traders": int}; written=False on the
+    already-snapshotted / lock-held / no-galaxy no-op paths.
+    """
+    from src.core.database import SessionLocal
+    from src.models.market_transaction import EconomicMetrics, MarketTransaction
+    from src.models.npc_character import NPCCharacter
+    from src.models.player import Player
+    from src.models.region import Region
+    from src.models.station import Station
+    from sqlalchemy import func as sa_func
+
+    not_written = {
+        "written": False, "date": None,
+        "total_credits": 0, "trade_volume": 0, "active_traders": 0,
+    }
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return not_written
+
+        # Durable daily anchor: midnight-truncated UTC. One row per calendar day.
+        now = datetime.utcnow()
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        existing = (
+            db.query(EconomicMetrics.id)
+            .filter(EconomicMetrics.date >= today_midnight)
+            .first()
+        )
+        if existing is not None:
+            # Already snapshotted today — clean no-op (release the lock).
+            db.commit()
+            return not_written
+
+        # --- Credit circulation -------------------------------------------
+        player_credits = int(
+            db.query(sa_func.coalesce(sa_func.sum(Player.credits), 0))
+            .filter(Player.is_active.is_(True))
+            .scalar() or 0
+        )
+        npc_credits = int(
+            db.query(sa_func.coalesce(sa_func.sum(NPCCharacter.credits), 0))
+            .scalar() or 0
+        )
+        region_treasury = int(
+            db.query(sa_func.coalesce(sa_func.sum(Region.treasury_balance), 0))
+            .scalar() or 0
+        )
+        station_treasury = int(
+            db.query(sa_func.coalesce(sa_func.sum(Station.treasury_balance), 0))
+            .scalar() or 0
+        )
+        total_credits = (
+            player_credits + npc_credits + region_treasury + station_treasury
+        )
+
+        # --- Market volume (trailing 24h, same window as the analytics GDP) -
+        window_start = now - timedelta(days=1)
+        vol_row = (
+            db.query(
+                sa_func.coalesce(sa_func.sum(MarketTransaction.total_value), 0),
+                sa_func.count(MarketTransaction.id),
+            )
+            .filter(MarketTransaction.timestamp >= window_start)
+            .first()
+        )
+        total_trade_volume = int(vol_row[0] or 0) if vol_row else 0
+        total_transactions = int(vol_row[1] or 0) if vol_row else 0
+        avg_transaction_value = (
+            float(total_trade_volume) / total_transactions
+            if total_transactions > 0 else 0.0
+        )
+
+        # Distinct players that traded in the window (the dashboard's
+        # "active_traders"); NPC trades carry npc_id, not player_id.
+        active_traders = int(
+            db.query(
+                sa_func.count(sa_func.distinct(MarketTransaction.player_id))
+            )
+            .filter(
+                MarketTransaction.timestamp >= window_start,
+                MarketTransaction.player_id.isnot(None),
+            )
+            .scalar() or 0
+        )
+
+        # Credit velocity = trailing-24h volume / money supply (active-player
+        # credits), mirroring _calculate_market_velocity so the stored value
+        # matches the live-computed one on the same dashboard.
+        credit_velocity = (
+            float(total_trade_volume) / player_credits
+            if player_credits > 0 else 0.0
+        )
+
+        snapshot = EconomicMetrics(
+            date=today_midnight,
+            metric_type="daily",
+            total_trade_volume=total_trade_volume,
+            total_transactions=total_transactions,
+            average_transaction_value=avg_transaction_value,
+            total_credits_in_circulation=total_credits,
+            credits_in_player_accounts=player_credits,
+            credits_in_npc_accounts=npc_credits,
+            credit_velocity=credit_velocity,
+            total_players_trading=active_traders,
+        )
+        db.add(snapshot)
+        db.commit()  # releases the xact lock
+
+        logger.info(
+            "Economy snapshot: %s — circulation=%d cr (player=%d npc=%d "
+            "region=%d station=%d), 24h volume=%d cr over %d txn, "
+            "active_traders=%d, velocity=%.4f",
+            today_midnight.date().isoformat(), total_credits, player_credits,
+            npc_credits, region_treasury, station_treasury, total_trade_volume,
+            total_transactions, active_traders, credit_velocity,
+        )
+        return {
+            "written": True,
+            "date": today_midnight.isoformat(),
+            "total_credits": total_credits,
+            "trade_volume": total_trade_volume,
+            "active_traders": active_traders,
+        }
+    except Exception:
+        # Includes the unique-constraint race on EconomicMetrics.date: roll back
+        # the duplicate insert; tomorrow's wake retries cleanly.
+        logger.exception("Economy snapshot sweep failed")
+        db.rollback()
+        return not_written
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
 
@@ -2463,3 +2668,25 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: economy faucet crashed (loop continues)")
+
+        # Economy-metrics snapshot — write ONE daily EconomicMetrics row so the
+        # admin economy dashboard reads real numbers instead of zeros (nothing
+        # else ever writes that table). Coarse elapsed pre-filter (25 min) so we
+        # don't probe the DB every 60s; the durable once-per-day guarantee comes
+        # from the unique, midnight-truncated EconomicMetrics.date anchor inside
+        # the sweep (restart-proof). Own session, own advisory lock, failure
+        # isolated — same discipline as the genesis/planetary/governance sweeps.
+        if elapsed % ECONOMY_SNAPSHOT_CHECK_SECONDS == 0:
+            try:
+                snap = await asyncio.to_thread(_run_economic_metrics_snapshot_sync)
+                if snap.get("written"):
+                    logger.info(
+                        "NPC scheduler: economy snapshot written (%s) — "
+                        "circulation=%d cr, 24h volume=%d cr, active_traders=%d",
+                        snap.get("date"), snap.get("total_credits", 0),
+                        snap.get("trade_volume", 0), snap.get("active_traders", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: economy snapshot crashed (loop continues)")
