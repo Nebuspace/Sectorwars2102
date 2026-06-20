@@ -629,12 +629,15 @@ class FleetService:
         battle.defender_damage_dealt = (battle.defender_damage_dealt or 0) + round_results["defender_damage"]
         battle.total_damage_dealt = (battle.attacker_damage_dealt or 0) + (battle.defender_damage_dealt or 0)
 
-        # DEPRECATED (WO-BS, reverts WO-AS): the per-round supply-driven morale
-        # decrement was removed. Fleet.morale no longer participates in combat —
-        # the combat-morale coupling (and the ADR-0061 S-I3 morale clause) was
-        # retired per Max — so nothing maintains a value that combat damage no
-        # longer reads. The Fleet.morale column is kept (non-destructive) for the
-        # cosmetic admin adjust helper / display only; see _calculate_ship_damage.
+        # FULLY INERT (WO-BS2, reverts WO-AS): the per-round supply-driven morale
+        # decrement was removed (WO-BS), and as of WO-BS2 EVERY remaining combat
+        # morale write/read is gone too — the flagship -30, the post-battle -20,
+        # and the < 20 morale-collapse battle-end check. Max ruled Fleet.morale
+        # has NO gameplay value at all: it participates in neither combat DAMAGE
+        # nor battle DURATION. The combat path now writes/reads Fleet.morale
+        # NOWHERE. The Fleet.morale COLUMN is kept (non-destructive, no migration)
+        # but is purely cosmetic — only the admin adjust helper (another file)
+        # touches it, for display. Do not re-introduce a combat-path morale write.
 
         # Append round to battle log (must reassign for JSONB change detection)
         updated_log = list(current_log)
@@ -767,15 +770,19 @@ class FleetService:
                     active.append(member.ship)
         return active
 
-    # DEPRECATED + REMOVED (WO-BS, reverts WO-AS): the former ``_morale_factor``
-    # helper mapped Fleet.morale to an outer ``(1 + morale_modifier)`` combat
-    # multiplier (ADR-0061 S-I3). Max ruled the combat-morale coupling CUT — the
-    # ADR-0061 morale clause is retired — so this helper and both of its damage-
-    # path applications (attack in _calculate_ship_damage, defense in
-    # _apply_damage_to_ship) were removed. Fleet combat damage no longer depends
-    # on Fleet.morale (identical damage at morale 100 / 50 / 0). The Fleet.morale
-    # COLUMN is intentionally kept (non-destructive, no migration) for the
-    # cosmetic admin adjust helper / display only.
+    # DEPRECATED + REMOVED — Fleet.morale is now FULLY INERT in combat
+    # (WO-BS2, reverts WO-AS). The former ``_morale_factor`` helper mapped
+    # Fleet.morale to an outer ``(1 + morale_modifier)`` combat multiplier
+    # (ADR-0061 S-I3). Max ruled the combat-morale coupling CUT entirely — the
+    # ADR-0061 morale clause is retired. WO-BS removed the damage coupling (this
+    # helper + its attack/defense applications) and the per-round attrition
+    # decrement; WO-BS2 removed the LAST residual coupling — the battle-DURATION
+    # path — by deleting the flagship -30, the post-battle -20, and the < 20
+    # morale-collapse battle-end check. The combat path now writes/reads
+    # Fleet.morale NOWHERE (identical battle outcome AND duration at morale
+    # 100 / 50 / 0). The Fleet.morale COLUMN is intentionally kept
+    # (non-destructive, no migration) but is cosmetic only — touched solely by
+    # the admin adjust helper (another file) for display.
 
     def _calculate_formation_bonus(self, fleet: Fleet) -> Dict[str, float]:
         """
@@ -984,15 +991,13 @@ class FleetService:
             else:
                 battle.defender_ships_retreated = (battle.defender_ships_retreated or 0) + 1
 
-        # Flagship destruction: one-shot -30 to the (DEPRECATED) Fleet.morale
-        # value. Per WO-BS (reverts WO-AS) the combat-morale DAMAGE coupling was
-        # retired — morale no longer affects combat damage, so this write only
-        # adjusts the cosmetic admin/display column. Kept for that display value;
-        # remove with the column if morale is ever fully dropped.
-        if destroyed and (member.role or "") == FleetRole.FLAGSHIP.value:
-            fleet = member.fleet
-            if fleet is not None:
-                fleet.morale = max(0, (fleet.morale or 100) - 30)
+        # Flagship destruction: the former one-shot -30 to Fleet.morale on
+        # flagship loss is REMOVED (WO-BS2, reverts WO-AS). Max ruled Fleet.morale
+        # has NO gameplay value at all — neither combat DAMAGE (cut in WO-BS) nor
+        # battle DURATION (this WO). Combat now writes Fleet.morale NOWHERE. The
+        # Fleet.morale COLUMN is intentionally kept (non-destructive, no migration)
+        # but is fully INERT/COSMETIC — only the admin adjust helper (another file)
+        # touches it, for display. Do not re-introduce any combat-path morale write.
 
         # Route the actual hull destruction through the SAME shared handler the
         # SOLO combat path uses (ShipService.destroy_ship). This is what gives
@@ -1218,15 +1223,14 @@ class FleetService:
         if not attacker_ships or not defender_ships:
             return True
 
-        # Morale collapsed (below 20%). Fleet.morale is DEPRECATED for combat
-        # DAMAGE (WO-BS, reverts WO-AS — that coupling is retired), but this
-        # battle-end check is left intact: it gates battle DURATION, not damage,
-        # and the WO scoped the cut to the damage multiplier + per-round
-        # attrition only. With the per-round decrement gone, the only writers
-        # that can trip this are the flagship -30 and post-battle -20 (both also
-        # deprecated-but-retained for the display column).
-        if (attacker.morale or 100) < 20 or (defender.morale or 100) < 20:
-            return True
+        # Morale-collapse battle-end check REMOVED (WO-BS2, reverts WO-AS). The
+        # former ``if (attacker.morale or 100) < 20 or (defender.morale ...) < 20``
+        # gated battle DURATION on Fleet.morale. Max ruled Fleet.morale fully
+        # inert — it no longer participates in combat damage OR duration — so this
+        # condition is gone. Termination is now guaranteed entirely by the
+        # morale-independent end conditions below: (1) side annihilation handled
+        # above (no active ships on a side), (2) > 70% casualties on either side,
+        # and (3) the 30-round timeout. No morale read remains in the combat path.
 
         # Too many casualties (> 70% losses)
         attacker_losses = (battle.attacker_ships_destroyed or 0) + (battle.attacker_ships_retreated or 0)
@@ -1297,20 +1301,18 @@ class FleetService:
             if loot > 0:
                 attacker.team.treasury_credits = (attacker.team.treasury_credits or 0) - loot
 
-        # Update fleet statuses. The post-battle -20 writes to the (DEPRECATED)
-        # Fleet.morale value only — morale no longer affects combat damage
-        # (WO-BS, reverts WO-AS — combat-morale damage coupling retired). Kept
-        # for the cosmetic admin/display column; remove with the column if morale
-        # is ever fully dropped.
+        # Update fleet statuses. The former post-battle -20 to Fleet.morale is
+        # REMOVED (WO-BS2, reverts WO-AS). Max ruled Fleet.morale fully inert —
+        # it participates in neither combat damage nor battle duration — so the
+        # combat path writes Fleet.morale NOWHERE. The column is kept
+        # (non-destructive, no migration) but is cosmetic only (admin display).
         if attacker:
             attacker.status = FleetStatus.READY.value
             attacker.last_battle = datetime.utcnow()
-            attacker.morale = max(10, (attacker.morale or 100) - 20)
 
         if defender:
             defender.status = FleetStatus.READY.value
             defender.last_battle = datetime.utcnow()
-            defender.morale = max(10, (defender.morale or 100) - 20)
 
         # Append aftermath entry to battle log
         current_log = list(battle.battle_log) if isinstance(battle.battle_log, list) else []
