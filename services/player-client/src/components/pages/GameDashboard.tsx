@@ -1931,6 +1931,29 @@ const GameDashboard: React.FC = () => {
                 </HudChip>
               )}
 
+              {currentSector.special_formations && currentSector.special_formations.length > 0 && (
+                <HudChip
+                  id="formations"
+                  className="bottom-left formations"
+                  pill={<>🌀 {currentSector.special_formations.length}</>}
+                >
+                  <div className="hud-label">🌀 FORMATIONS</div>
+                  <div className="hud-features">
+                    {currentSector.special_formations.map(f => (
+                      <span
+                        key={f.id}
+                        className={`hud-badge${f.is_discovered ? '' : ' undiscovered'}`}
+                        title={f.is_discovered ? f.type?.replace(/_/g, ' ') : 'Unidentified anomaly — scan or explore to reveal'}
+                      >
+                        {f.is_discovered
+                          ? `${(f.name || 'UNNAMED').toUpperCase()}${f.type ? ` · ${f.type.replace(/_/g, ' ').toUpperCase()}` : ''}`
+                          : '❔ UNKNOWN ANOMALY'}
+                      </span>
+                    ))}
+                  </div>
+                </HudChip>
+              )}
+
               {currentSector.special_features && currentSector.special_features.length > 0 && (
                 <div className="hud-overlay bottom-left features" style={{ display: 'none' }}>
                   <div className="hud-label">ANOMALIES</div>

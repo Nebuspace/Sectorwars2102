@@ -1125,6 +1125,19 @@ class MovementService:
         except Exception as e:
             logger.error("Failed ARIA exploration-map hook during movement: %s", e)
 
+        # Special-formation discovery hook (WO-CA). Arriving in a sector that is
+        # a formation's anchor — or one of its interior sectors — first-observes
+        # that formation: flips is_discovered False→True and back-fills its public
+        # name. Mirrors the planet/feature discovery pattern (discovery_service),
+        # and like the ARIA/medal hooks above it is best-effort and flush-only, so
+        # a formation hiccup never strands the move and the flip rides this
+        # method's single commit below.
+        try:
+            from src.services.special_formation_service import flip_formation_discovery
+            flip_formation_discovery(self.db, player, destination_sector)
+        except Exception as e:
+            logger.error("Special-formation discovery hook failed during movement: %s", e)
+
         # Exploration medal dispatch hook (ADR-0028 / medals lane). The
         # ARIAExplorationMap table above is the canonical unique-sector visit
         # record — one row per (player, sector) — so its DISTINCT-sector count

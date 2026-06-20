@@ -72,6 +72,20 @@ class RepairShipResponse(BaseModel):
     max_hull: float = 0
     max_shields: float = 0
 
+class FormationResponse(BaseModel):
+    """A special-formation present in (or anchored at) the sector. The
+    formation's identity (name + type) is disclosed ONLY once discovered;
+    an undiscovered formation surfaces as a generic anomaly with no name or
+    type, mirroring how undiscovered planets are withheld (WO-CA)."""
+    id: str
+    is_discovered: bool
+    is_anchor: bool
+    # name + type are populated ONLY when is_discovered is True; withheld
+    # (None) before discovery so the client renders the unknown-anomaly
+    # placeholder instead of leaking the formation's identity.
+    name: str | None = None
+    type: str | None = None
+
 class SectorResponse(BaseModel):
     id: str
     sector_id: int
@@ -87,6 +101,9 @@ class SectorResponse(BaseModel):
     x_coord: int
     y_coord: int
     z_coord: int
+    # Special formations present in this sector (anchor or interior). Identity
+    # disclosed only after discovery; see FormationResponse (WO-CA).
+    special_formations: List[FormationResponse] = []
 
 class MoveResponse(BaseModel):
     success: bool
@@ -405,6 +422,31 @@ async def get_current_sector(
             enriched.append(e)
         present = enriched
 
+    # Special-formation discovery + disclosure (WO-CA). Viewing the current
+    # sector scans it: any formation anchored here or whose interior includes
+    # this sector is first-observed (is_discovered False→True, name back-filled),
+    # mirroring how GET /sectors/{id}/system discovers planets on view. Then
+    # serialize — identity (name+type) is disclosed ONLY for discovered
+    # formations; undiscovered ones surface as a generic, identity-less anomaly.
+    from src.services.special_formation_service import (
+        flip_formation_discovery,
+        find_formations_for_sector,
+    )
+    flip_formation_discovery(db, player, sector)
+    db.commit()  # persist the discovery flip (mirrors /system)
+
+    formation_responses = []
+    for f in find_formations_for_sector(db, sector):
+        discovered = bool(f.is_discovered)
+        formation_responses.append(FormationResponse(
+            id=str(f.id),
+            is_discovered=discovered,
+            is_anchor=(f.anchor_sector_id == sector.id),
+            # Withhold identity until discovered (omit name+type pre-discovery).
+            name=f.name if discovered else None,
+            type=(f.type.value if hasattr(f.type, 'value') else str(f.type)) if discovered else None,
+        ))
+
     return SectorResponse(
         id=str(sector.id),
         sector_id=sector.sector_id,
@@ -419,7 +461,8 @@ async def get_current_sector(
         players_present=present,
         x_coord=sector.x_coord,
         y_coord=sector.y_coord,
-        z_coord=sector.z_coord
+        z_coord=sector.z_coord,
+        special_formations=formation_responses
     )
 
 @router.post("/move/{sector_id}", response_model=MoveResponse)

@@ -21,6 +21,18 @@ export interface Ship {
   max_genesis_devices: number;
 }
 
+// A special-formation present in (or anchored at) the current sector. The
+// identity (name + type) is disclosed by the server ONLY once discovered;
+// before discovery both are absent and the client shows an unknown-anomaly
+// placeholder (WO-CA).
+export interface SpecialFormationSummary {
+  id: string;
+  is_discovered: boolean;
+  is_anchor: boolean;
+  name?: string | null;
+  type?: string | null;
+}
+
 export interface Sector {
   id: number;
   sector_id: number;
@@ -34,6 +46,7 @@ export interface Sector {
   resources: Record<string, any>;
   players_present: any[];
   special_features?: string[];
+  special_formations?: SpecialFormationSummary[];
   description?: string;
 }
 
