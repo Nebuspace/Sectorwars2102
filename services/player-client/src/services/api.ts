@@ -563,6 +563,21 @@ export const registryAPI = {
 };
 
 // Export all APIs
+// Regional governance APIs (member-facing). The owner-scoped /my-region/*
+// endpoints live in the admin surface; these are the player-facing reads/writes.
+export const governanceAPI = {
+  // The calling player's own citizenship status in a region. PATH A: an in-region
+  // colony owner is reported as a citizen on the voter roll.
+  getMyMembership: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/membership/me`),
+
+  // Explicit on-ramp: claim citizenship on the strength of owning a colony here.
+  claimColonyCitizenship: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/citizenship/colony-claim`, {
+      method: 'POST',
+    }),
+};
+
 export const gameAPI = {
   combat: combatAPI,
   planetary: planetaryAPI,
@@ -576,4 +591,5 @@ export const gameAPI = {
   bounty: bountyAPI,
   citadel: citadelAPI,
   shipUpgrade: shipUpgradeAPI,
+  governance: governanceAPI,
 };

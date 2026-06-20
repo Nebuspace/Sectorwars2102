@@ -16,10 +16,12 @@ import logging
 from src.models.region import (
     Region, RegionalMembership, RegionalPolicy, RegionalElection,
     RegionalVote, RegionalTreaty, RegionalPolicyVote, RegionalTreasuryEntry,
-    GovernanceType, PolicyStatus, ElectionStatus
+    GovernanceType, PolicyStatus, ElectionStatus, MembershipType
 )
 from src.models.player import Player
 from src.models.user import User
+from src.models.planet import Planet, player_planets
+from src.models.sector import Sector
 
 logger = logging.getLogger(__name__)
 
@@ -715,12 +717,197 @@ class RegionalGovernanceService:
         )
         return result.scalar_one_or_none()
 
+    # -----------------------------------------------------------------
+    # Region-citizenship colony on-ramp (WO-CF, PATH A).
+    #
+    # Canon (sw2102-docs SYSTEMS/regional-governance.md "Membership
+    # lifecycle"): "Citizenship is granted by policy / owner / time-in-region
+    # threshold." Owning a colony in a region is the on-ramp under the "owner"
+    # umbrella — a player who has put down a planet in region R has a tangible
+    # stake there and is enrolled in R's voter roll as a citizen. The literal
+    # "colony ⇒ citizenship" trigger is filed Pending in sw2102-docs/DECISIONS.md
+    # (the precise tier + voting_power are Max-gated canon); this builds the
+    # unambiguous kernel: ≥1 owned colony whose sector is in R ⇒ citizen in R.
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    async def owns_colony_in_region(
+        db: AsyncSession,
+        player_id: uuid.UUID,
+        region_id: uuid.UUID,
+    ) -> bool:
+        """True iff the player owns at least one planet (colony) whose sector is
+        in this region.
+
+        Resolves region membership through the planet's SECTOR — Planet.region_id
+        is unreliable (genesis/colonized planets historically left it NULL), so we
+        join Planet -> Sector(region_id) exactly as genesis_service's anti-monopoly
+        gate does. Ownership is the player_planets M2M association (the authoritative
+        owner table — Planet.owner_id has no FK and is not maintained for
+        genesis-formed planets)."""
+        count = await db.scalar(
+            select(func.count(Planet.id))
+            .select_from(Planet)
+            .join(Sector, Planet.sector_uuid == Sector.id)
+            .join(player_planets, Planet.id == player_planets.c.planet_id)
+            .where(
+                and_(
+                    Sector.region_id == region_id,
+                    player_planets.c.player_id == player_id,
+                )
+            )
+        )
+        return int(count or 0) > 0
+
+    @staticmethod
+    async def _player_ids_owning_colony_in_region(
+        db: AsyncSession,
+        region_id: uuid.UUID,
+    ) -> set:
+        """The set of player_ids that own ≥1 colony in this region (via the
+        reliable Planet -> Sector -> player_planets join). Used to fold colony
+        owners into the eligible-voter roll even if their membership row has not
+        yet been upgraded to citizen."""
+        rows = await db.execute(
+            select(player_planets.c.player_id)
+            .select_from(Planet)
+            .join(Sector, Planet.sector_uuid == Sector.id)
+            .join(player_planets, Planet.id == player_planets.c.planet_id)
+            .where(Sector.region_id == region_id)
+            .distinct()
+        )
+        return {r[0] for r in rows.all()}
+
+    @staticmethod
+    async def grant_citizenship_for_colony(
+        db: AsyncSession,
+        player_id: uuid.UUID,
+        region_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Grant (or confirm) region citizenship to a player on the strength of
+        owning a colony in that region (WO-CF PATH A).
+
+        Verifies in-region colony ownership via the reliable Planet -> Sector
+        join, then UPSERTs the player's RegionalMembership row to
+        membership_type='citizen' with voting_power >= 1.0 (the
+        UNIQUE(player_id, region_id) constraint means an existing visitor/resident
+        row is promoted in place rather than duplicated). Idempotent: re-running
+        for an already-citizen colony owner is a no-op success. Returns
+        {ok, code, ...}."""
+        owns = await RegionalGovernanceService.owns_colony_in_region(
+            db, player_id, region_id
+        )
+        if not owns:
+            return {"ok": False, "code": "ERR_NO_COLONY_IN_REGION"}
+
+        membership = await RegionalGovernanceService._get_voting_membership(
+            db, region_id, player_id
+        )
+        if membership is None:
+            # Enroll directly at citizen tier (the player joined the region by
+            # planting a colony there; default voting_power 1.0).
+            membership = RegionalMembership(
+                player_id=player_id,
+                region_id=region_id,
+                membership_type=MembershipType.CITIZEN.value,
+                voting_power=Decimal("1.0"),
+            )
+            db.add(membership)
+            try:
+                await db.commit()
+            except IntegrityError:
+                # Lost the race to a concurrent enroll/upsert; reload and promote.
+                await db.rollback()
+                membership = await RegionalGovernanceService._get_voting_membership(
+                    db, region_id, player_id
+                )
+                if membership is None:
+                    return {"ok": False, "code": "ERR_MEMBERSHIP_UPSERT_FAILED"}
+        promoted = False
+        if membership.membership_type != MembershipType.CITIZEN.value:
+            membership.membership_type = MembershipType.CITIZEN.value
+            promoted = True
+        # A colony owner must carry voting weight; a 0.0 power row would silently
+        # drop them from the roll despite the citizen tier.
+        if (membership.voting_power or Decimal("0")) <= 0:
+            membership.voting_power = Decimal("1.0")
+            promoted = True
+        if promoted:
+            await db.commit()
+        return {
+            "ok": True,
+            "code": "CITIZENSHIP_GRANTED" if promoted else "CITIZENSHIP_CONFIRMED",
+            "membership_type": membership.membership_type,
+            "voting_power": float(membership.voting_power),
+        }
+
+    @staticmethod
+    async def get_membership_status(
+        db: AsyncSession,
+        region_id: uuid.UUID,
+        player_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Read the calling player's own citizenship status in a region.
+
+        Reflects PATH A: a player who owns a colony in the region is reported as a
+        citizen on the voter roll even if their stored membership row has not yet
+        been upgraded (the colony IS the qualifying stake). Returns the effective
+        membership_type, whether they own a colony here, and whether they are on
+        the eligible-voter roll (can_vote)."""
+        membership = await RegionalGovernanceService._get_voting_membership(
+            db, region_id, player_id
+        )
+        owns_colony = await RegionalGovernanceService.owns_colony_in_region(
+            db, player_id, region_id
+        )
+
+        stored_type = membership.membership_type if membership else None
+        stored_power = (
+            float(membership.voting_power) if membership and membership.voting_power is not None
+            else 0.0
+        )
+        # Effective citizenship: stored citizen tier OR an in-region colony owner.
+        effective_type = stored_type
+        if owns_colony:
+            effective_type = MembershipType.CITIZEN.value
+        # Effective voter eligibility mirrors _count_eligible_voters: stored
+        # can_vote, OR a colony owner (whose voting weight floors at 1.0).
+        stored_can_vote = bool(membership.can_vote) if membership else False
+        can_vote = stored_can_vote or owns_colony
+        effective_power = stored_power
+        if owns_colony and effective_power <= 0:
+            effective_power = 1.0
+
+        return {
+            "region_id": str(region_id),
+            "is_member": membership is not None or owns_colony,
+            "membership_type": effective_type,
+            "stored_membership_type": stored_type,
+            "owns_colony_in_region": owns_colony,
+            "can_vote": can_vote,
+            "voting_power": effective_power,
+            "citizenship_source": (
+                "colony" if owns_colony and stored_type != MembershipType.CITIZEN.value
+                else ("membership" if stored_type == MembershipType.CITIZEN.value else None)
+            ),
+        }
+
     @staticmethod
     async def _count_eligible_voters(db: AsyncSession, region_id: uuid.UUID) -> int:
-        """Count memberships eligible to vote (can_vote == true): citizen or
-        resident with voting_power > 0. Drives the quorum denominator."""
-        result = await db.scalar(
-            select(func.count(RegionalMembership.id)).where(
+        """Count distinct players eligible to vote in a region (drives the quorum
+        denominator).
+
+        Two roads to the roll (canon "policy / owner / time-in-region" — the
+        owner road includes the WO-CF colony on-ramp):
+        - a stored membership with can_vote == true (citizen/resident,
+          voting_power > 0), OR
+        - ownership of ≥1 colony in the region (PATH A), regardless of whether
+          the membership row has been upgraded yet.
+
+        Counted as DISTINCT players so a colony owner who already has an eligible
+        membership row is not double-counted."""
+        membership_rows = await db.execute(
+            select(RegionalMembership.player_id).where(
                 and_(
                     RegionalMembership.region_id == region_id,
                     RegionalMembership.membership_type.in_(["citizen", "resident"]),
@@ -728,7 +915,11 @@ class RegionalGovernanceService:
                 )
             )
         )
-        return int(result or 0)
+        eligible = {r[0] for r in membership_rows.all()}
+        eligible |= await RegionalGovernanceService._player_ids_owning_colony_in_region(
+            db, region_id
+        )
+        return len(eligible)
 
     @staticmethod
     async def cast_election_vote(
@@ -764,6 +955,17 @@ class RegionalGovernanceService:
         membership = await RegionalGovernanceService._get_voting_membership(
             db, region.id, voter.id
         )
+        # WO-CF PATH A: a player who owns a colony in this region is a citizen on
+        # the voter roll — enroll/promote their membership row to citizen so the
+        # snapshot voting_power and the can_vote gate below see the truth.
+        if (membership is None) or (not membership.can_vote):
+            grant = await RegionalGovernanceService.grant_citizenship_for_colony(
+                db, voter.id, region.id
+            )
+            if grant.get("ok"):
+                membership = await RegionalGovernanceService._get_voting_membership(
+                    db, region.id, voter.id
+                )
         if membership is None:
             return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
         if not membership.can_vote:
@@ -847,6 +1049,17 @@ class RegionalGovernanceService:
         membership = await RegionalGovernanceService._get_voting_membership(
             db, region.id, voter.id
         )
+        # WO-CF PATH A: an in-region colony owner is a citizen on the voter roll —
+        # enroll/promote before the eligibility gate (the grant commits its own
+        # membership write before we take the policy row lock below).
+        if (membership is None) or (not membership.can_vote):
+            grant = await RegionalGovernanceService.grant_citizenship_for_colony(
+                db, voter.id, region.id
+            )
+            if grant.get("ok"):
+                membership = await RegionalGovernanceService._get_voting_membership(
+                    db, region.id, voter.id
+                )
         if membership is None:
             return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
         if not membership.can_vote:

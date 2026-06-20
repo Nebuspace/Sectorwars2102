@@ -1770,6 +1770,8 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
         RegionalPolicyVote, RegionalTreasuryEntry,
         RegionalMembership, ElectionStatus, PolicyStatus,
     )
+    from src.models.planet import Planet, player_planets
+    from src.models.sector import Sector
     from src.services.regional_governance_service import (
         compute_quorum, quorum_pct_for_region, threshold_for_policy,
         determine_election_winner, enact_changes_onto_region,
@@ -1927,15 +1929,31 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
                     db.rollback()
                     continue
 
-                eligible = (
-                    db.query(sa_func.count(RegionalMembership.id))
+                # Eligible-voter roll (quorum denominator), colony-aware per WO-CF
+                # PATH A — mirrors the async _count_eligible_voters: a player is
+                # eligible if they have a can_vote membership row OR own ≥1 colony
+                # in the region (resolved through the planet's SECTOR, since
+                # Planet.region_id is unreliable). Counted as DISTINCT players so a
+                # colony owner with an eligible membership row is not double-counted.
+                eligible_member_ids = {
+                    pid for (pid,) in db.query(RegionalMembership.player_id)
                     .filter(
                         RegionalMembership.region_id == region.id,
                         RegionalMembership.membership_type.in_(["citizen", "resident"]),
                         RegionalMembership.voting_power > 0,
                     )
-                    .scalar()
-                ) or 0
+                    .all()
+                }
+                colony_owner_ids = {
+                    pid for (pid,) in db.query(player_planets.c.player_id)
+                    .select_from(Planet)
+                    .join(Sector, Planet.sector_uuid == Sector.id)
+                    .join(player_planets, Planet.id == player_planets.c.planet_id)
+                    .filter(Sector.region_id == region.id)
+                    .distinct()
+                    .all()
+                }
+                eligible = len(eligible_member_ids | colony_owner_ids)
                 quorum = compute_quorum(int(eligible), quorum_pct_for_region(region))
 
                 # Quorum denominator: number of distinct voters who actually

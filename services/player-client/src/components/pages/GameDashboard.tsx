@@ -17,6 +17,7 @@ import NavigationMap from '../tactical/NavigationMap';
 import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
+import CitizenshipBadge from '../governance/CitizenshipBadge';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
@@ -1887,6 +1888,10 @@ const GameDashboard: React.FC = () => {
                     {currentSector.region_name}
                   </div>
                 )}
+                <CitizenshipBadge
+                  regionId={currentSector.region_id}
+                  regionName={currentSector.region_name}
+                />
                 <div className="hud-value-secondary">
                   {currentSector.type ? currentSector.type.replace(/_/g, ' ').toUpperCase() : 'STANDARD'}
                 </div>

@@ -44,6 +44,8 @@ _VOTE_ERROR_STATUS = {
     "ERR_POLICY_NOT_VOTING": 409,
     "ERR_VOTING_WINDOW_CLOSED": 409,
     "ERR_UNKNOWN_CANDIDATE": 400,
+    "ERR_NO_COLONY_IN_REGION": 403,
+    "ERR_MEMBERSHIP_UPSERT_FAILED": 409,
 }
 
 
@@ -638,6 +640,55 @@ async def cast_policy_vote(
     )
     if not result.get("ok"):
         code = result.get("code", "ERR_VOTE_REJECTED")
+        raise HTTPException(
+            status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return result
+
+
+@router.get("/{region_id}/membership/me")
+async def get_my_membership(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Read the calling player's own citizenship status in a region (WO-CF).
+
+    Reflects PATH A: a player who owns a colony in the region is reported as a
+    citizen on the voter roll (`can_vote: true`, `citizenship_source: "colony"`)
+    even if their stored membership row has not yet been upgraded. A player with
+    no colony and no qualifying membership is reported as not on the roll. This
+    is the player-facing read that backs the governance panel's citizenship
+    badge — it is NOT owner-scoped (any authenticated player may read their own
+    status)."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    return await RegionalGovernanceService.get_membership_status(
+        db, region.id, player.id
+    )
+
+
+@router.post("/{region_id}/citizenship/colony-claim")
+async def claim_colony_citizenship(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Claim region citizenship on the strength of owning a colony here (WO-CF
+    PATH A).
+
+    Verifies the caller owns ≥1 colony whose sector is in this region, then
+    upserts their RegionalMembership to citizen. Idempotent — confirming an
+    already-citizen colony owner succeeds. Rejects with 403 ERR_NO_COLONY_IN_REGION
+    if the player owns no colony in the region. (Voting also auto-enrolls a colony
+    owner, so this endpoint is the explicit on-ramp; it is not required to vote.)"""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    result = await RegionalGovernanceService.grant_citizenship_for_colony(
+        db, player.id, region.id
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_CITIZENSHIP_DENIED")
         raise HTTPException(
             status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
         )

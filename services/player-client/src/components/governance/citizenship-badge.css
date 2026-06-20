@@ -1,0 +1,43 @@
+/* WO-CF — region-citizenship badge in the cockpit HUD.
+   CRT design language: thin uppercase label, faint glow, no heavy chrome. */
+.citizenship-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  margin-top: 0.25em;
+  padding: 0.1em 0.5em;
+  font-size: 0.62em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0.92;
+}
+
+.citizenship-badge-icon {
+  font-size: 0.9em;
+}
+
+.citizenship-badge-label {
+  font-weight: 600;
+}
+
+/* On the voter roll as a citizen — the affirming state. */
+.citizenship-badge.citizen {
+  color: #45f3a0;
+  text-shadow: 0 0 4px rgba(69, 243, 160, 0.5);
+}
+
+/* On the roll (resident/voter) but not full citizen. */
+.citizenship-badge.voter {
+  color: #6fd0ff;
+  text-shadow: 0 0 4px rgba(111, 208, 255, 0.4);
+}
+
+/* Not on the roll — muted, no glow. */
+.citizenship-badge.visitor {
+  color: #9aa3ad;
+  opacity: 0.7;
+}

@@ -7,7 +7,7 @@ import pytest
 import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.services.regional_governance_service import RegionalGovernanceService
 from src.models.region import (
@@ -545,3 +545,128 @@ class TestRegionalElectionModel:
         assert active_election.status == ElectionStatus.ACTIVE
         assert pending_election.status == ElectionStatus.PENDING
         assert completed_election.status == ElectionStatus.COMPLETED
+
+
+class TestColonyCitizenshipOnRamp:
+    """WO-CF PATH A: owning a colony in region R grants voting-citizenship in R.
+
+    Acceptance: a player who owns a colony in R is on R's voter roll (can_vote);
+    a player with no colony in R is not. These tests exercise the eligibility
+    logic in isolation by stubbing the colony-ownership and membership-row reads
+    so the rule itself is what is under test.
+    """
+
+    @pytest.fixture
+    def mock_db(self):
+        return AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_colony_owner_is_on_voter_roll(self, mock_db):
+        """A player who owns a colony in R is reported as a citizen on the roll,
+        even with NO stored membership row (the colony is the qualifying stake)."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        with patch.object(
+            RegionalGovernanceService, "owns_colony_in_region",
+            new=AsyncMock(return_value=True),
+        ), patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=None),
+        ):
+            status = await RegionalGovernanceService.get_membership_status(
+                mock_db, region_id, player_id
+            )
+        assert status["owns_colony_in_region"] is True
+        assert status["membership_type"] == MembershipType.CITIZEN.value
+        assert status["can_vote"] is True
+        assert status["voting_power"] >= 1.0
+        assert status["citizenship_source"] == "colony"
+        assert status["is_member"] is True
+
+    @pytest.mark.asyncio
+    async def test_non_colony_owner_not_on_voter_roll(self, mock_db):
+        """A player with no colony in R and only a visitor row is NOT on the roll."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        visitor = RegionalMembership(
+            player_id=player_id,
+            region_id=region_id,
+            membership_type=MembershipType.VISITOR.value,
+            voting_power=Decimal("1.0"),
+        )
+        with patch.object(
+            RegionalGovernanceService, "owns_colony_in_region",
+            new=AsyncMock(return_value=False),
+        ), patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=visitor),
+        ):
+            status = await RegionalGovernanceService.get_membership_status(
+                mock_db, region_id, player_id
+            )
+        assert status["owns_colony_in_region"] is False
+        assert status["can_vote"] is False
+        assert status["membership_type"] == MembershipType.VISITOR.value
+        assert status["citizenship_source"] is None
+
+    @pytest.mark.asyncio
+    async def test_non_member_no_colony_not_on_roll(self, mock_db):
+        """A player with neither a membership row nor a colony is not a member
+        and not on the roll."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        with patch.object(
+            RegionalGovernanceService, "owns_colony_in_region",
+            new=AsyncMock(return_value=False),
+        ), patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=None),
+        ):
+            status = await RegionalGovernanceService.get_membership_status(
+                mock_db, region_id, player_id
+            )
+        assert status["is_member"] is False
+        assert status["can_vote"] is False
+        assert status["membership_type"] is None
+
+    @pytest.mark.asyncio
+    async def test_grant_citizenship_rejected_without_colony(self, mock_db):
+        """grant_citizenship_for_colony refuses a player who owns no colony in R."""
+        with patch.object(
+            RegionalGovernanceService, "owns_colony_in_region",
+            new=AsyncMock(return_value=False),
+        ):
+            result = await RegionalGovernanceService.grant_citizenship_for_colony(
+                mock_db, uuid.uuid4(), uuid.uuid4()
+            )
+        assert result["ok"] is False
+        assert result["code"] == "ERR_NO_COLONY_IN_REGION"
+
+    @pytest.mark.asyncio
+    async def test_grant_citizenship_promotes_visitor_for_colony_owner(self, mock_db):
+        """A colony owner whose row is a visitor is promoted in place to citizen
+        with voting weight (no duplicate row — the UNIQUE constraint upsert)."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        visitor = RegionalMembership(
+            player_id=player_id,
+            region_id=region_id,
+            membership_type=MembershipType.VISITOR.value,
+            voting_power=Decimal("1.0"),
+        )
+        with patch.object(
+            RegionalGovernanceService, "owns_colony_in_region",
+            new=AsyncMock(return_value=True),
+        ), patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=visitor),
+        ):
+            result = await RegionalGovernanceService.grant_citizenship_for_colony(
+                mock_db, player_id, region_id
+            )
+        assert result["ok"] is True
+        assert result["code"] == "CITIZENSHIP_GRANTED"
+        assert visitor.membership_type == MembershipType.CITIZEN.value
+        assert float(visitor.voting_power) >= 1.0
+        assert visitor.can_vote is True
+        mock_db.commit.assert_awaited()
