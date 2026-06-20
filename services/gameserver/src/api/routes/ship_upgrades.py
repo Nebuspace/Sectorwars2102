@@ -30,12 +30,17 @@ router = APIRouter(prefix="/ships", tags=["ship-upgrades"])
 # Request/Response Models
 
 class UpgradeRequest(BaseModel):
-    ship_id: str
+    # ship_id is the URL path param (the route ignores any body ship_id), so it is
+    # OPTIONAL in the body — a required body ship_id 422s the client, which sends
+    # only {upgrade_type} per the path-carries-the-id REST convention. (WO-CC live
+    # browser proof: the mounted upgrade UI 422'd on every purchase because of this.)
+    ship_id: Optional[str] = None
     upgrade_type: str = Field(..., description="One of: ENGINE, CARGO_HOLD, SHIELD, HULL, SENSOR, DRONE_BAY, GENESIS_CONTAINMENT")
 
 
 class EquipmentRequest(BaseModel):
-    ship_id: str
+    # ship_id is the URL path param (see UpgradeRequest) — optional in the body.
+    ship_id: Optional[str] = None
     equipment_key: str = Field(..., description="One of: quantum_harvester, mining_laser, planetary_lander")
 
 
