@@ -50,7 +50,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.LIGHT_FREIGHTER: {
-        "base_cost": 10000,
+        "base_cost": 80000,
         "speed": 1.0,
         "turn_cost": 1,
         "attack_turn_cost": 12,  # Light combat vessel
@@ -88,7 +88,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.CARGO_HAULER: {
-        "base_cost": 50000,
+        "base_cost": 250000,
         "speed": 0.5,
         "turn_cost": 2,
         "attack_turn_cost": 20,  # Slow, heavy hauler
@@ -126,7 +126,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.FAST_COURIER: {
-        "base_cost": 30000,
+        "base_cost": 50000,
         "speed": 2.0,
         "turn_cost": 1,
         "attack_turn_cost": 8,  # Fast but light combat
@@ -164,7 +164,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.SCOUT_SHIP: {
-        "base_cost": 25000,
+        "base_cost": 30000,
         "speed": 2.5,
         "turn_cost": 1,
         "attack_turn_cost": 5,  # Fast strike capability
@@ -202,7 +202,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.COLONY_SHIP: {
-        "base_cost": 100000,
+        "base_cost": 500000,
         "speed": 0.4,
         "turn_cost": 3,
         "attack_turn_cost": 35,  # Not meant for combat
@@ -240,7 +240,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.DEFENDER: {
-        "base_cost": 70000,
+        "base_cost": 300000,
         "speed": 1.0,
         "turn_cost": 1,
         "attack_turn_cost": 18,  # Primary combat vessel
@@ -316,7 +316,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": {"military_faction": "TRUSTED"}
     },
     ShipType.WARP_JUMPER: {
-        "base_cost": 500000,
+        "base_cost": 1000000,
         "speed": 0.0,  # Uses quantum jump instead
         "turn_cost": 1,
         "attack_turn_cost": 100,  # Specialized vessel, poor combat
