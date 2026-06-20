@@ -433,6 +433,10 @@ services:
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - JWT_SECRET=${JWT_SECRET}
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8080}
+      # src-layout fix: the dev image launches `uvicorn src.main:app` with PYTHONPATH=/app,
+      # but src/main.py uses bare sibling imports (region_provisioner/monitoring/config/models),
+      # which need /app/src on sys.path. Without this the service ModuleNotFound-crashes on boot.
+      - PYTHONPATH=/app/src:/app
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./services/region-manager/templates:/app/templates
