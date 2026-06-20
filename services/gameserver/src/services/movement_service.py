@@ -30,12 +30,61 @@ def _is_player_gate(tunnel: WarpTunnel) -> bool:
     )
 
 
+def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str, Any]) -> None:
+    """Fire the medals-lane frozen hook
+    ``medal_service.check_and_award_exploration_medals(db, player, context)``
+    after an exploration event (ADR-0028 medal storage). Mirrors the wired
+    combat dispatcher (``combat_service._dispatch_combat_medals``).
+
+    ``context`` carries the player's current exploration statistics (here
+    ``{sectors_visited}``). The hook is idempotent on the medals-lane side
+    (UNIQUE(player_id, medal_id) + threshold gating); this dispatcher is
+    defensive: resolved by ``getattr`` (the hook may be absent in a deployment
+    where the medals lane hasn't landed), and any failure is logged and
+    swallowed — a medal hiccup must NEVER break movement. py_compile-safe: no
+    parse-time reference to a not-yet-existing symbol."""
+    try:
+        import src.services.medal_service as _medal_module
+        module_hook = getattr(_medal_module, "check_and_award_exploration_medals", None)
+        if callable(module_hook):
+            module_hook(db, player, context)
+    except Exception as e:  # never let a medal hiccup break movement
+        logger.error("Exploration medal dispatch hook failed: %s", e)
+
+
 class MovementService:
     """Service for managing player movement through the galaxy."""
     
     def __init__(self, db: Session):
         self.db = db
-    
+
+    def _count_unique_sectors_visited(self, player_id: uuid.UUID) -> int:
+        """Count the distinct sectors this player has ever visited.
+
+        The ARIAExplorationMap table holds exactly one row per (player, sector)
+        — it is the canonical unique-sector visit ledger written by
+        ``_execute_movement`` — so the row count for a player IS the player's
+        ``sectors_visited`` statistic (the Explorer's Badge threshold). This is
+        called after the current move's visit row has been added/flushed, so a
+        first visit to sector #500 is counted at the moment it crosses the
+        threshold. Defensive (returns 0 on any error) so it can never break a
+        move: the exploration model is imported lazily to mirror the
+        best-effort, deployment-tolerant pattern of the ARIA hooks."""
+        try:
+            from src.models.aria_personal_intelligence import ARIAExplorationMap
+            # autoflush is off — flush the just-added visit row for THIS move so it
+            # is included in the count; without this the 500th unique visit would be
+            # missed and the Explorer's Badge would award one move late (review fix).
+            self.db.flush()
+            return (
+                self.db.query(ARIAExplorationMap)
+                .filter(ARIAExplorationMap.player_id == player_id)
+                .count()
+            )
+        except Exception as e:
+            logger.error("Failed to count unique sectors visited for %s: %s", player_id, e)
+            return 0
+
     def move_player_to_sector(self, player_id: uuid.UUID, destination_sector_id: int) -> Dict[str, Any]:
         """
         Move a player to a destination sector.
@@ -701,9 +750,29 @@ class MovementService:
         except Exception as e:
             logger.error("Failed ARIA exploration-map hook during movement: %s", e)
 
+        # Exploration medal dispatch hook (ADR-0028 / medals lane). The
+        # ARIAExplorationMap table above is the canonical unique-sector visit
+        # record — one row per (player, sector) — so its DISTINCT-sector count
+        # for this player IS the player's sectors_visited statistic. We dispatch
+        # here, AFTER the visit row is added/incremented but BEFORE this method's
+        # single commit, so the medal-award SAVEPOINT folds into the same commit
+        # exactly like the combat medal hook. Best-effort: a medal hiccup must
+        # never strand the move (mirrors the ARIA hooks above). The medals-lane
+        # hook is idempotent (UNIQUE(player_id, medal_id) + threshold gating), so
+        # it no-ops on every move except the one that first crosses 500 sectors —
+        # never re-awards.
+        try:
+            _dispatch_exploration_medals(
+                self.db,
+                player,
+                {"sectors_visited": self._count_unique_sectors_visited(player.id)},
+            )
+        except Exception as e:
+            logger.error("Exploration medal dispatch hook failed during movement: %s", e)
+
         # Updates player's presence in sector records
         self._update_player_presence(player, old_sector_id, destination_sector_id)
-        
+
         # Commit changes
         self.db.commit()
 

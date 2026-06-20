@@ -23,6 +23,28 @@ from src.models.region import Region
 
 logger = logging.getLogger(__name__)
 
+
+def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str, Any]) -> None:
+    """Fire the medals-lane frozen hook
+    ``medal_service.check_and_award_exploration_medals(db, player, context)``
+    after a genesis deploy (ADR-0028 medal storage). Mirrors the wired combat
+    dispatcher (``combat_service._dispatch_combat_medals``).
+
+    ``context`` carries the player's current exploration statistics (here
+    ``{planets_created}``). The hook is idempotent on the medals-lane side
+    (UNIQUE(player_id, medal_id) + threshold gating); this dispatcher is
+    defensive: resolved by ``getattr`` (the hook may be absent in a deployment
+    where the medals lane hasn't landed), and any failure is logged and
+    swallowed — a medal hiccup must NEVER break a genesis deploy. py_compile-safe:
+    no parse-time reference to a not-yet-existing symbol."""
+    try:
+        import src.services.medal_service as _medal_module
+        module_hook = getattr(_medal_module, "check_and_award_exploration_medals", None)
+        if callable(module_hook):
+            module_hook(db, player, context)
+    except Exception as e:  # never let a medal hiccup break genesis
+        logger.error("Exploration medal dispatch hook failed: %s", e)
+
 # --- Genesis deploy restrictions (ADR-0088, ratified 2026-06-16) ------------
 # Federation reputation gate. ADR-0088 said "level >= 8"; Max set the bar at the
 # Heroic tier (personal_reputation >= 250) so it is reachable through normal play
@@ -566,6 +588,35 @@ class GenesisService:
                 planet_id=planet.id,
             )
         )
+
+        # Exploration medal dispatch hook (ADR-0028 / medals lane): a successful
+        # genesis-device deploy is the trigger for the Genesis Award
+        # (planets_created >= 25, where "created" means genesis-created). The
+        # count of this player's genesis_created planets (counted AFTER the
+        # planet above is added/flushed) is the player's planets_created
+        # statistic. We dispatch BEFORE db.commit() below so the medal-award
+        # SAVEPOINT folds into this method's single commit, exactly like the
+        # combat medal hook. Best-effort + idempotent on the medals-lane side
+        # (UNIQUE(player_id, medal_id) + threshold gating) — a medal hiccup must
+        # never break a genesis deploy, and the hook no-ops on every deploy
+        # except the one that first reaches 25 planets.
+        try:
+            genesis_planet_count = (
+                self.db.query(func.count(Planet.id))
+                .filter(
+                    Planet.owner_id == player.id,
+                    Planet.genesis_created.is_(True),
+                )
+                .scalar()
+                or 0
+            )
+            _dispatch_exploration_medals(
+                self.db,
+                player,
+                {"planets_created": genesis_planet_count},
+            )
+        except Exception as e:
+            logger.error("Exploration medal dispatch failed on genesis deploy: %s", e)
 
         self.db.commit()
         self.db.refresh(planet)

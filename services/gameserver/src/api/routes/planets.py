@@ -11,7 +11,7 @@ from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text
+from sqlalchemy import func, text, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel, Field
@@ -372,6 +372,28 @@ async def claim_planet(
             planet_id=planet.id
         )
     )
+
+    # Exploration medal dispatch hook (ADR-0028 / medals lane): a colony
+    # founding is the trigger for the Colonizer medal (planets_colonized >= 1).
+    # The player_planets association table is the canonical owned-planet ledger,
+    # so its row count for this player (counted AFTER the insert above) is the
+    # player's planets_colonized statistic. We dispatch BEFORE db.commit() below
+    # so the medal-award SAVEPOINT folds into this route's single commit, exactly
+    # like the combat medal hook. Best-effort + idempotent on the medals-lane
+    # side (UNIQUE(player_id, medal_id) + threshold gating) — a medal hiccup must
+    # never block a colony founding, and the hook no-ops once the medal is held.
+    try:
+        from src.services.medal_service import check_and_award_exploration_medals
+        colonized_count = db.execute(
+            select(func.count()).select_from(player_planets).where(
+                player_planets.c.player_id == player.id
+            )
+        ).scalar() or 0
+        check_and_award_exploration_medals(
+            db, player, {"planets_colonized": colonized_count}
+        )
+    except Exception:
+        logger.exception("Exploration medal dispatch failed on colony founding")
 
     # Auto-land the player on the newly claimed planet
     player.is_landed = True
