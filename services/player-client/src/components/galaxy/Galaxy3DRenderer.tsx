@@ -33,7 +33,7 @@ const LOD_CONFIG: Record<string, LODLevel> = {
 // Galaxy visualization component
 function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => void }) {
   const { camera } = useThree();
-  const { currentSector, availableMoves } = useGame();
+  const { currentSector, availableMoves, isLoading } = useGame();
   const { sectorPlayers, isConnected } = useWebSocket();
   
   const [selectedSector, setSelectedSector] = useState<Sector | null>(null);
@@ -77,7 +77,11 @@ function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => 
           radiation_level: 0,
           resources: {},
           players_present: [],
-          special_features: []
+          special_features: [],
+          // Neighbour anomaly markers (WO-SFM): the move option carries the
+          // formations that include this sector, identity withheld until
+          // discovered. May be absent on older API responses → default [].
+          special_formations: warp.special_formations ?? []
         });
       }
     });
@@ -93,7 +97,8 @@ function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => 
           radiation_level: 0,
           resources: {},
           players_present: [],
-          special_features: []
+          special_features: [],
+          special_formations: tunnel.special_formations ?? []
         });
       }
     });

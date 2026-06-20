@@ -113,6 +113,11 @@ export interface MoveOption {
   can_afford: boolean;
   tunnel_type?: string;
   stability?: number;
+  // Special formations present in (or anchored at) this neighbour sector,
+  // surfaced read-only so the galaxy map can mark anomalies on adjacent nodes
+  // (WO-SFM). Undiscovered ones are identity-less (name/type withheld) exactly
+  // as on the current sector (WO-CA).
+  special_formations?: SpecialFormationSummary[];
 }
 
 export interface MarketInfo {

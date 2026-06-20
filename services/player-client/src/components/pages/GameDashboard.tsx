@@ -1297,6 +1297,50 @@ const GameDashboard: React.FC = () => {
     return () => clearTimeout(timer);
   }, [claimCelebration]);
 
+  // --- Special-formation discovery beat (WO-SFM) ---------------------------
+  // When the current-sector poll/move returns a formation that has just flipped
+  // is_discovered False→True (i.e. an ID we have never seen as discovered), fire
+  // a brief celebration. We track previously-discovered IDs in a ref so the beat
+  // fires ONCE on the flip, not on every 5 s poll that re-returns the same
+  // discovered formation. The first render seeds the ref silently so revisiting
+  // an already-known formation never celebrates.
+  const seenDiscoveredFormationIdsRef = useRef<Set<string> | null>(null);
+  const [formationDiscovery, setFormationDiscovery] = useState<{
+    name: string;
+    type?: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    const formations = currentSector?.special_formations || [];
+    const discoveredIds = formations.filter(f => f.is_discovered).map(f => f.id);
+
+    // First observation: seed silently, no celebration for pre-known formations.
+    if (seenDiscoveredFormationIdsRef.current === null) {
+      seenDiscoveredFormationIdsRef.current = new Set(discoveredIds);
+      return;
+    }
+
+    const seen = seenDiscoveredFormationIdsRef.current;
+    const newlyDiscovered = formations.find(
+      f => f.is_discovered && !seen.has(f.id)
+    );
+    // Record every currently-discovered id so we never re-fire for the same one.
+    discoveredIds.forEach(id => seen.add(id));
+
+    if (newlyDiscovered) {
+      setFormationDiscovery({
+        name: newlyDiscovered.name || 'UNNAMED FORMATION',
+        type: newlyDiscovered.type,
+      });
+    }
+  }, [currentSector?.special_formations]);
+
+  useEffect(() => {
+    if (!formationDiscovery) return;
+    const timer = setTimeout(() => setFormationDiscovery(null), 7000);
+    return () => clearTimeout(timer);
+  }, [formationDiscovery]);
+
   useEffect(() => {
     if (!claimNotice) return;
     const timer = setTimeout(() => setClaimNotice(null), 10000);
@@ -1692,6 +1736,25 @@ const GameDashboard: React.FC = () => {
               <span>🌍 {landingResult.planet_name}</span>
               <span>🏷️ {landingResult.planet_type?.toUpperCase()}</span>
               <span>👥 Pop: {landingResult.population?.toLocaleString()}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Special-formation discovery beat (WO-SFM): fires once when a formation
+            in the current sector flips to discovered. Click anywhere on the
+            alert to dismiss early; auto-clears after 7 s. */}
+        {formationDiscovery && (
+          <div
+            className="cockpit-alert success"
+            role="status"
+            onClick={() => setFormationDiscovery(null)}
+          >
+            <div className="alert-header">🌀 FORMATION DISCOVERED</div>
+            <div className="alert-message">
+              {formationDiscovery.name.toUpperCase()}
+              {formationDiscovery.type
+                ? ` · ${formationDiscovery.type.replace(/_/g, ' ').toUpperCase()}`
+                : ''}
             </div>
           </div>
         )}

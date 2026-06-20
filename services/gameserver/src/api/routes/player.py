@@ -131,6 +131,14 @@ class MoveOption(BaseModel):
     # Player warp gates are strictly one-way (tunnel_type "warp_gate",
     # turn_cost 0); natural tunnels report False, direct warps omit it.
     one_way: bool | None = None
+    # Special formations present in (or anchored at) this neighbour sector, so
+    # the galaxy map can mark anomalies on adjacent nodes (WO-SFM). Surfaced
+    # read-only: viewing the move list does NOT discover anything (discovery is
+    # the act of *visiting* a sector — flip_formation_discovery), so an
+    # undiscovered formation here is withheld to a generic, identity-less anomaly
+    # exactly as on the current sector (WO-CA). is_discovered is a global row
+    # flag, so this leaks nothing a current-sector view wouldn't already.
+    special_formations: List[FormationResponse] = []
 
 class AvailableMovesResponse(BaseModel):
     warps: List[MoveOption]
@@ -506,7 +514,32 @@ async def get_available_moves(
     # Use MovementService to get properly calculated moves
     movement_service = MovementService(db)
     available_moves = movement_service.get_available_moves(player.id)
-    
+
+    # Read-only neighbour-formation surfacing (WO-SFM): serialize the formations
+    # that include a neighbour sector WITHOUT discovering them. We deliberately
+    # call find_formations_for_sector (the read-only lookup) and NOT
+    # flip_formation_discovery — listing a move is not visiting it, so identity
+    # stays withheld until the player actually travels there (WO-CA rule).
+    from src.services.special_formation_service import find_formations_for_sector
+
+    def _serialize_neighbour_formations(neighbour_sector) -> List[FormationResponse]:
+        if neighbour_sector is None:
+            return []
+        out = []
+        for f in find_formations_for_sector(db, neighbour_sector):
+            discovered = bool(f.is_discovered)
+            out.append(FormationResponse(
+                id=str(f.id),
+                is_discovered=discovered,
+                is_anchor=(f.anchor_sector_id == neighbour_sector.id),
+                # Withhold identity until discovered — same rule as the current
+                # sector serializer; an unvisited neighbour reveals only that an
+                # anomaly exists, never its name/type.
+                name=f.name if discovered else None,
+                type=(f.type.value if hasattr(f.type, 'value') else str(f.type)) if discovered else None,
+            ))
+        return out
+
     # Convert the response to match our model, enriching with region data
     warps = []
     tunnels = []
@@ -525,7 +558,8 @@ async def get_available_moves(
             region_id=str(sector.region_id) if sector and sector.region_id else None,
             region_name=region_name,
             turn_cost=warp["turn_cost"],
-            can_afford=warp["can_afford"]
+            can_afford=warp["can_afford"],
+            special_formations=_serialize_neighbour_formations(sector)
         ))
 
     # Process warp tunnels
@@ -545,7 +579,8 @@ async def get_available_moves(
             can_afford=tunnel["can_afford"],
             tunnel_type=tunnel.get("tunnel_type"),
             stability=tunnel.get("stability"),
-            one_way=tunnel.get("one_way")
+            one_way=tunnel.get("one_way"),
+            special_formations=_serialize_neighbour_formations(sector)
         ))
 
     return AvailableMovesResponse(warps=warps, tunnels=tunnels)
