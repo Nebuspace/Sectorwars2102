@@ -15,7 +15,8 @@ from src.models.station import Station, StationClass, StationType, StationStatus
 from src.models.galaxy import Galaxy
 from src.models.region import (
     Region, RegionType, RegionStatus,
-    RegionalMembership, RegionalPolicy, RegionalElection, RegionalVote, RegionalTreaty, InterRegionalTravel
+    RegionalMembership, RegionalPolicy, RegionalElection, RegionalVote, RegionalTreaty, InterRegionalTravel,
+    RegionalPolicyVote, RegionalTreasuryEntry
 )
 from src.models.zone import Zone
 from src.models.cluster import Cluster, ClusterType

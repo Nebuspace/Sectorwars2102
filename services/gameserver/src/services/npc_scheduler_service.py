@@ -1602,32 +1602,41 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
       1. OPEN due elections: PENDING elections whose voting_opens_at has passed
          become ACTIVE (so voting can begin).
       2. CLOSE + TALLY elections past voting_closes_at: ACTIVE -> COMPLETED with
-         the winner persisted to results. A COMPLETED election is never re-
-         tallied (the status filter excludes it).
+         the winner persisted to results, RegionalElection.winner_id AND the
+         single-seat Region.{position}_id column (governor_id / ambassador_id)
+         per SYSTEMS step 3 — exactly as the async tally_election does (a
+         voided/inconclusive election leaves the seat untouched). A COMPLETED
+         election is never re-tallied (the status filter excludes it).
       3. FINALIZE policies past voting_closes_at: VOTING -> {IMPLEMENTED |
          REJECTED}, applying a passed policy's effect onto the region CLAMPED to
-         the CHECK bounds. A non-VOTING policy is never re-finalized.
+         the CHECK bounds. Quorum/tally count distinct voters from the real
+         regional_policy_votes ledger (migration c5a8e2f1b9d3), and a
+         treasury-touching enactment writes a RegionalTreasuryEntry in the same
+         per-row transaction — mirroring the async finalize_policy. A non-VOTING
+         policy is never re-finalized.
 
     All logic is reimplemented SYNCHRONOUSLY here against the sync session and
     reuses the PURE, session-agnostic helpers in regional_governance_service
     (compute_quorum / quorum_pct_for_region / determine_election_winner /
-    enact_changes_onto_region / threshold_for_policy) so the sweep applies
-    IDENTICAL canon to the async vote-time path. We cannot await the async
-    service methods here without poisoning the shared async engine pool — the
-    same constraint that forces the faction/ARIA decay to be reimplemented in
-    sync (see _apply_faction_decay_sync). Idempotent + a clean no-op when
-    nothing is due.
+    enact_changes_onto_region / threshold_for_policy /
+    compute_treasury_adjustment) so the sweep applies IDENTICAL canon to the
+    async vote-time path. We cannot await the async service methods here without
+    poisoning the shared async engine pool — the same constraint that forces the
+    faction/ARIA decay to be reimplemented in sync (see
+    _apply_faction_decay_sync). Idempotent + a clean no-op when nothing is due.
 
     Returns {opened, tallied, enacted, rejected}.
     """
     from src.core.database import SessionLocal
     from src.models.region import (
         Region, RegionalElection, RegionalPolicy, RegionalVote,
+        RegionalPolicyVote, RegionalTreasuryEntry,
         RegionalMembership, ElectionStatus, PolicyStatus,
     )
     from src.services.regional_governance_service import (
         compute_quorum, quorum_pct_for_region, threshold_for_policy,
         determine_election_winner, enact_changes_onto_region,
+        compute_treasury_adjustment,
         ELECTION_TALLYING, POLICY_VOTERS_KEY,
     )
     from sqlalchemy import func as sa_func
@@ -1714,11 +1723,35 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
                     .all()
                 )
                 tallies = {str(cid): float(total) for cid, total in rows}
-                _winner, payload = determine_election_winner(region, election, tallies)
+                winner, payload = determine_election_winner(region, election, tallies)
                 if not tallies:
                     payload["inconclusive"] = True
                 election.results = payload
                 flag_modified(election, "results")
+
+                # Persist the winner (SYSTEMS step 3), mirroring
+                # tally_election: winner_id is the winning candidate's player_id,
+                # or None when voided/inconclusive (no candidate cleared the
+                # supermajority gate / no votes cast). A voided/inconclusive
+                # election leaves the incumbent Region.{position}_id untouched
+                # (a failed election does not vacate the seat).
+                winner_uuid: Optional[uuid.UUID] = None
+                if winner is not None:
+                    try:
+                        winner_uuid = uuid.UUID(str(winner))
+                    except (TypeError, ValueError):
+                        winner_uuid = None
+                election.winner_id = winner_uuid
+                if winner_uuid is not None:
+                    # Region.{position}_id for single-seat positions
+                    # (governor_id / ambassador_id). council_member is multi-seat
+                    # and has no single-occupant column — it persists to the
+                    # election row only.
+                    position_column = f"{election.position}_id"
+                    if hasattr(region, position_column):
+                        setattr(region, position_column, winner_uuid)
+                        region.updated_at = now
+
                 election.status = ElectionStatus.COMPLETED
                 db.commit()
                 result["tallied"] += 1
@@ -1768,12 +1801,25 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
                 ) or 0
                 quorum = compute_quorum(int(eligible), quorum_pct_for_region(region))
 
-                changes = dict(policy.proposed_changes or {})
-                voters = changes.get(POLICY_VOTERS_KEY)
-                votes_cast = (
-                    len(voters) if isinstance(voters, list)
-                    else (1 if (policy.votes_for or 0) + (policy.votes_against or 0) > 0 else 0)
+                # Quorum denominator: number of distinct voters who actually
+                # voted, counted from the real regional_policy_votes ledger
+                # (migration c5a8e2f1b9d3), mirroring finalize_policy. Falls back
+                # to the legacy proposed_changes['_voters'] list (then raw tally
+                # presence) ONLY for legacy/manual rows predating the table —
+                # strictly a backward-compat read; nothing writes _voters now.
+                votes_cast = int(
+                    db.query(sa_func.count(RegionalPolicyVote.id))
+                    .filter(RegionalPolicyVote.policy_id == policy.id)
+                    .scalar()
+                    or 0
                 )
+                changes = dict(policy.proposed_changes or {})
+                if votes_cast == 0:
+                    legacy_voters = changes.get(POLICY_VOTERS_KEY)
+                    votes_cast = (
+                        len(legacy_voters) if isinstance(legacy_voters, list)
+                        else (1 if (policy.votes_for or 0) + (policy.votes_against or 0) > 0 else 0)
+                    )
 
                 threshold = threshold_for_policy(region, policy.policy_type)
                 total_weight = int(policy.votes_for or 0) + int(policy.votes_against or 0)
@@ -1790,6 +1836,31 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
                     policy.status = PolicyStatus.PASSED
                     enact_changes_onto_region(region, policy.proposed_changes)
                     region.updated_at = now
+
+                    # Treasury-touching enactment (ADR-0059 N-I4), mirroring
+                    # finalize_policy: if the policy carries a treasury
+                    # adjustment, mutate Region.treasury_balance and write a
+                    # RegionalTreasuryEntry row in THIS SAME per-row transaction
+                    # so the running balance stays reconcilable
+                    # (SUM(delta) == treasury_balance). No current canon policy
+                    # type carries it, so existing policies are unaffected.
+                    treasury_delta = compute_treasury_adjustment(
+                        region, policy.proposed_changes
+                    )
+                    if treasury_delta is not None:
+                        before = int(region.treasury_balance or 0)
+                        after = before + treasury_delta
+                        region.treasury_balance = after
+                        db.add(RegionalTreasuryEntry(
+                            region_id=region.id,
+                            before_balance=before,
+                            after_balance=after,
+                            delta=treasury_delta,
+                            cause_type=RegionalTreasuryEntry.CAUSE_POLICY_ENACTMENT,
+                            cause_id=policy.id,
+                            reason=f"Policy enacted: {policy.title}",
+                        ))
+
                     cleaned = dict(policy.proposed_changes or {})
                     cleaned.pop(POLICY_VOTERS_KEY, None)
                     policy.proposed_changes = cleaned

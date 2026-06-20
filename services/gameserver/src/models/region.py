@@ -93,8 +93,18 @@ class Region(Base):
     # Governance Configuration
     governance_type = Column(String(50), nullable=False, default=GovernanceType.AUTOCRACY)
     voting_threshold = Column(DECIMAL(3,2), nullable=False, default=0.51)
+    # ADR-0059 N-D5: region-owner-configurable quorum participation threshold,
+    # Decimal(3,2) clamped to [0.25, 0.60] (CHECK), default 0.33. Replaces the
+    # legacy getattr stop-gap; quorum_pct_for_region reads this column directly.
+    governance_quorum_pct = Column(DECIMAL(3,2), nullable=True, server_default="0.33", default=0.33)
     election_frequency_days = Column(Integer, nullable=False, default=90)
     constitutional_text = Column(Text, nullable=True)
+    # Election-winner persistence (SYSTEMS/regional-governance.md step 3):
+    # the elected occupant of each single-seat position. Generic Region.{position}_id
+    # columns the governance winner is written to on election COMPLETED.
+    # (council_member is multi-seat — no column; persists to RegionalElection only.)
+    governor_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    ambassador_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
     
     # Economic Configuration
     tax_rate = Column(DECIMAL(5,4), nullable=False, default=0.10)
@@ -349,8 +359,12 @@ class RegionalElection(Base):
     voting_opens_at = Column(TIMESTAMP, nullable=False)
     voting_closes_at = Column(TIMESTAMP, nullable=False)
     results = Column(JSONB, nullable=True)
+    # Persisted election winner (the winning candidate's player_id), set on
+    # COMPLETED per SYSTEMS/regional-governance.md step 3. Null while ACTIVE and
+    # for voided/inconclusive elections.
+    winner_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(50), nullable=False, default=ElectionStatus.PENDING)
-    
+
     # Relationships
     region = relationship("Region", back_populates="elections")
     votes = relationship("RegionalVote", back_populates="election", cascade="all, delete-orphan")
@@ -418,7 +432,10 @@ class RegionalPolicy(Base):
     # Relationships
     region = relationship("Region", back_populates="policies")
     proposer = relationship("Player")
-    
+    policy_votes = relationship(
+        "RegionalPolicyVote", back_populates="policy", cascade="all, delete-orphan"
+    )
+
     # Constraints
     __table_args__ = (
         CheckConstraint('voting_closes_at > proposed_at', name='valid_voting_period'),
@@ -449,3 +466,73 @@ class RegionalPolicy(Base):
         approval_rate = self.votes_for / self.total_votes
         # Use region's voting threshold
         return approval_rate >= float(self.region.voting_threshold)
+
+
+class RegionalPolicyVote(Base):
+    """Individual yes/no votes on a regional policy referendum.
+
+    The real backing store for per-policy vote dedup + weighted tally (ADR-0059
+    N-F5). Replaces the legacy RegionalPolicy.proposed_changes['_voters'] JSONB
+    stop-gap. Mirrors RegionalVote (election votes) but carries a yes/no support
+    flag instead of a candidate_id. One vote per (policy, voter) — the UNIQUE
+    constraint is the first-vote-sticks backstop against a concurrent double-cast.
+    """
+    __tablename__ = "regional_policy_votes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    policy_id = Column(UUID(as_uuid=True), ForeignKey("regional_policies.id"), nullable=False)
+    voter_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
+    support = Column(Boolean, nullable=False)  # True = yes/for, False = no/against
+    # Snapshot of membership.voting_power at cast time; immutable (ADR-0059 N-F5).
+    weight = Column(DECIMAL(5, 4), nullable=False, default=1.0)
+    created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
+
+    # Relationships
+    policy = relationship("RegionalPolicy", back_populates="policy_votes")
+    voter = relationship("Player", foreign_keys=[voter_id])
+
+    # Constraints
+    __table_args__ = (
+        UniqueConstraint('policy_id', 'voter_id', name='one_vote_per_policy'),
+        CheckConstraint('weight >= 0.0 AND weight <= 5.0', name='valid_policy_vote_weight'),
+    )
+
+    def __repr__(self):
+        return f"<RegionalPolicyVote(policy_id='{self.policy_id}', voter_id='{self.voter_id}', support={self.support})>"
+
+
+class RegionalTreasuryEntry(Base):
+    """Append-only ledger of every Region.treasury_balance-affecting event
+    (ADR-0059 N-I4). Captures the before/after balance and the signed delta so
+    the running balance is auditable and the daily reconciliation sweep can
+    verify SUM(delta) == Region.treasury_balance. Replaces the design-only /
+    JSONB treasury stop-gap.
+    """
+    __tablename__ = "regional_treasury_entries"
+
+    # Canon cause-type taxonomy (ADR-0059 N-I4 / DATA_MODELS/gameplay.md).
+    CAUSE_POLICY_ENACTMENT = "policy_enactment"
+    CAUSE_TAX_COLLECTION = "tax_collection"
+    CAUSE_EXPENDITURE = "expenditure"
+    CAUSE_TRANSFER_IN = "transfer_in"
+    CAUSE_TRANSFER_OUT = "transfer_out"
+    CAUSE_MANUAL_ADMIN_ADJUSTMENT = "manual_admin_adjustment"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    region_id = Column(UUID(as_uuid=True), ForeignKey("regions.id"), nullable=False)
+    before_balance = Column(Integer, nullable=False)
+    after_balance = Column(Integer, nullable=False)
+    delta = Column(Integer, nullable=False)  # after_balance - before_balance (signed)
+    # Postgres enum region_treasury_cause_type; stored as a plain String column
+    # on the model side (the DB enforces the enum) to avoid coupling the model
+    # to the enum type creation order.
+    cause_type = Column(String(50), nullable=False)
+    cause_id = Column(UUID(as_uuid=True), nullable=True)  # RegionalPolicy.id, Tax.id, ...
+    reason = Column(String(500), nullable=True)
+    at = Column(TIMESTAMP, nullable=False, server_default=func.now())
+
+    # Relationships
+    region = relationship("Region")
+
+    def __repr__(self):
+        return f"<RegionalTreasuryEntry(region_id='{self.region_id}', delta={self.delta}, cause='{self.cause_type}')>"

@@ -15,7 +15,8 @@ import logging
 
 from src.models.region import (
     Region, RegionalMembership, RegionalPolicy, RegionalElection,
-    RegionalVote, RegionalTreaty, GovernanceType, PolicyStatus, ElectionStatus
+    RegionalVote, RegionalTreaty, RegionalPolicyVote, RegionalTreasuryEntry,
+    GovernanceType, PolicyStatus, ElectionStatus
 )
 from src.models.player import Player
 from src.models.user import User
@@ -29,10 +30,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # ADR-0059 N-D5: region-owner-configurable quorum, Decimal(3,2), clamped
-# [0.25, 0.60], default 0.33. The `Region.governance_quorum_pct` COLUMN is
-# ADR-Accepted but NOT yet in the live model (alembic head is branched / no
-# migration in scope) — so we read it via getattr and fall back to the canon
-# default. Flagged NO-CANON-INFRA in the run report.
+# [0.25, 0.60], default 0.33. The `Region.governance_quorum_pct` COLUMN now
+# exists (migration c5a8e2f1b9d3) and is read directly; the canon default below
+# is the fallback only for legacy rows whose column is NULL.
 QUORUM_PCT_DEFAULT = Decimal("0.33")
 QUORUM_PCT_MIN = Decimal("0.25")
 QUORUM_PCT_MAX = Decimal("0.60")
@@ -54,13 +54,12 @@ CONSTITUTIONAL_POLICY_TYPES = frozenset({"governance_change", "voting_threshold"
 # ACTIVE -> TALLYING -> COMPLETED.
 ELECTION_TALLYING = "tallying"
 
-# Reserved key inside RegionalPolicy.proposed_changes that holds the per-policy
-# voter ledger (list of voter_id strings) used for one-vote-per-policy dedup.
-# RegionalVote is ELECTION-only (election_id + candidate_id, both NOT NULL) and
-# there is no RegionalPolicyVote table in scope (no migration) — so policy-vote
-# dedup has no dedicated storage. We track voters here and STRIP this key before
-# applying proposed_changes to the region at enactment, so it never reaches a
-# Region column. Flagged NO-CANON-INFRA in the run report.
+# LEGACY reserved key that USED to hold the per-policy voter ledger inside
+# RegionalPolicy.proposed_changes (a stop-gap when no RegionalPolicyVote table
+# existed). The real `regional_policy_votes` table (migration c5a8e2f1b9d3) now
+# backs per-policy vote dedup + weighted tally. This key is retained ONLY so any
+# legacy row that still carries it gets it stripped on read/enactment — it is
+# never written again.
 POLICY_VOTERS_KEY = "_voters"
 
 
@@ -77,8 +76,9 @@ POLICY_VOTERS_KEY = "_voters"
 
 def quorum_pct_for_region(region: Region) -> Decimal:
     """ADR-0059 N-D5 participation threshold for a region, clamped to the
-    canon [0.25, 0.60] band with the 0.33 default. Reads the (ADR-Accepted,
-    not-yet-migrated) governance_quorum_pct column when present."""
+    canon [0.25, 0.60] band with the 0.33 default. Reads the real
+    governance_quorum_pct column (migration c5a8e2f1b9d3); falls back to the
+    canon default for a legacy row whose column is NULL."""
     raw = getattr(region, "governance_quorum_pct", None)
     if raw is None:
         return QUORUM_PCT_DEFAULT
@@ -126,10 +126,12 @@ def enact_changes_onto_region(region: Region, proposed_changes: Dict[str, Any]) 
     Canon policy-type -> region-field map (FEATURES …/regional-governance.md
     "Policy types"). Only fields with an existing CHECK-bounded column are
     enacted here; design-only types (starting_credits beyond floor,
-    economic_specialization modifiers, immigration_policy) and any treasury-
-    touching effect are NOT auto-enacted (no RegionalTreasuryEntry table in
-    scope) — they are reported as skipped. The reserved POLICY_VOTERS_KEY ledger
-    is stripped so it never reaches a column.
+    economic_specialization modifiers, immigration_policy) are reported as
+    skipped. Treasury-touching enactment is handled separately in
+    finalize_policy (it must write a RegionalTreasuryEntry row in the same
+    transaction as the balance mutation, which a pure helper cannot do) — see
+    compute_treasury_adjustment / finalize_policy. The legacy POLICY_VOTERS_KEY
+    ledger is stripped so it never reaches a column.
     """
     changes = dict(proposed_changes or {})
     changes.pop(POLICY_VOTERS_KEY, None)
@@ -217,6 +219,37 @@ def enact_changes_onto_region(region: Region, proposed_changes: Dict[str, Any]) 
             applied["trade_bonuses"] = touched
 
     return applied
+
+
+# Reserved proposed_changes key for a treasury-touching policy: a signed integer
+# credit adjustment to Region.treasury_balance (positive = inflow, negative =
+# outflow). No current canon policy type carries it, so existing policies enact
+# byte-for-byte as before; when present it drives the ADR-0059 N-I4 treasury
+# ledger write in finalize_policy. Balance floored at 0 (no negative treasury).
+POLICY_TREASURY_KEY = "treasury_adjustment"
+
+
+def compute_treasury_adjustment(region: Region, proposed_changes: Dict[str, Any]) -> Optional[int]:
+    """If a PASSED policy carries the reserved POLICY_TREASURY_KEY, return the
+    signed integer credit delta that should be applied to Region.treasury_balance
+    (clamped so the resulting balance never goes negative). Returns None when the
+    policy does not touch the treasury — in which case no RegionalTreasuryEntry
+    is written. Pure helper: it computes the delta but does NOT mutate the row
+    (the mutation + ledger write happen together in finalize_policy)."""
+    changes = proposed_changes or {}
+    if POLICY_TREASURY_KEY not in changes:
+        return None
+    try:
+        requested = int(changes[POLICY_TREASURY_KEY])
+    except (TypeError, ValueError):
+        logger.warning("Policy enact: non-integer treasury_adjustment ignored")
+        return None
+    before = int(region.treasury_balance or 0)
+    after = max(0, before + requested)
+    delta = after - before
+    if delta == 0:
+        return None
+    return delta
 
 
 def determine_election_winner(
@@ -795,17 +828,14 @@ class RegionalGovernanceService:
         """Cast (or reject) a yes/no vote on a policy in the VOTING state.
 
         Each vote adds the voter's voting_power to votes_for or votes_against
-        (FEATURES weighted tally). One vote per (policy, voter): RegionalVote is
-        ELECTION-only and there is no RegionalPolicyVote table in scope, so the
-        per-policy voter ledger is kept in a reserved key inside
-        proposed_changes (POLICY_VOTERS_KEY) and STRIPPED at enactment so it
-        never reaches a region column. Flagged NO-CANON-INFRA.
+        (FEATURES weighted tally) AND inserts a RegionalPolicyVote row — the real
+        per-policy ledger (migration c5a8e2f1b9d3). One vote per (policy, voter):
+        the UNIQUE(policy_id, voter_id) constraint is the first-vote-sticks
+        backstop against a concurrent double-cast (mirrors cast_election_vote).
 
         Vote weight is snapshot at cast time (ADR-0059 N-F5). Returns
         {ok, code, ...}.
         """
-        from sqlalchemy.orm.attributes import flag_modified
-
         now = datetime.utcnow()
         if policy.region_id != region.id:
             return {"ok": False, "code": "ERR_POLICY_NOT_IN_REGION"}
@@ -823,7 +853,7 @@ class RegionalGovernanceService:
             return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
 
         # Re-read the policy under a row lock so the read-modify-write of the
-        # tallies + voter ledger is atomic against a concurrent vote.
+        # tallies is atomic against a concurrent vote on the same policy.
         locked = await db.execute(
             select(RegionalPolicy)
             .where(RegionalPolicy.id == policy.id)
@@ -840,9 +870,18 @@ class RegionalGovernanceService:
             await db.rollback()
             return {"ok": False, "code": "ERR_VOTING_WINDOW_CLOSED"}
 
-        changes = dict(policy.proposed_changes or {})
-        voters = list(changes.get(POLICY_VOTERS_KEY) or [])
-        if str(voter.id) in voters:
+        # Pre-check for an existing policy vote (fast path); the UNIQUE
+        # constraint is the authoritative backstop against a concurrent
+        # double-cast.
+        existing = await db.scalar(
+            select(RegionalPolicyVote.id).where(
+                and_(
+                    RegionalPolicyVote.policy_id == policy.id,
+                    RegionalPolicyVote.voter_id == voter.id,
+                )
+            )
+        )
+        if existing is not None:
             await db.rollback()  # release the row lock; nothing changed
             return {"ok": False, "code": "ERR_ALREADY_VOTED"}
 
@@ -855,12 +894,22 @@ class RegionalGovernanceService:
         else:
             policy.votes_against = int(policy.votes_against or 0) + weight
 
-        voters.append(str(voter.id))
-        changes[POLICY_VOTERS_KEY] = voters
-        policy.proposed_changes = changes
-        flag_modified(policy, "proposed_changes")
-
-        await db.commit()
+        # Record the individual vote in the real ledger (snapshot weight is the
+        # raw voting_power per ADR-0059 N-F5; the aggregate columns above carry
+        # the integer-rounded tally).
+        db.add(RegionalPolicyVote(
+            policy_id=policy.id,
+            voter_id=voter.id,
+            support=support,
+            weight=membership.voting_power,
+            created_at=now,
+        ))
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Concurrent double-cast lost the race to the UNIQUE constraint.
+            await db.rollback()
+            return {"ok": False, "code": "ERR_ALREADY_VOTED"}
         return {
             "ok": True,
             "code": "VOTE_RECORDED",
@@ -879,8 +928,11 @@ class RegionalGovernanceService:
 
         Transitions ACTIVE -> (TALLYING) -> COMPLETED, aggregates vote weight
         per candidate, determines the winner per canon, writes the results
-        JSONB. A COMPLETED election is NEVER re-tallied. Locks the election row
-        so a concurrent sweep + manual close cannot double-tally.
+        JSONB, AND persists the winner to RegionalElection.winner_id + the
+        single-seat Region.{position}_id column (governor_id / ambassador_id)
+        per SYSTEMS/regional-governance.md step 3. A COMPLETED election is NEVER
+        re-tallied. Locks the election row so a concurrent sweep + manual close
+        cannot double-tally.
         """
         locked = await db.execute(
             select(RegionalElection)
@@ -923,6 +975,28 @@ class RegionalGovernanceService:
             payload["inconclusive"] = True
 
         election.results = payload
+
+        # Persist the winner (SYSTEMS step 3). winner is the winning candidate's
+        # player_id, or None when voided/inconclusive (no winner cleared the
+        # supermajority gate / no votes cast). A voided election leaves the
+        # incumbent Region.{position}_id untouched (a failed election does not
+        # vacate the seat).
+        winner_uuid: Optional[uuid.UUID] = None
+        if winner is not None:
+            try:
+                winner_uuid = uuid.UUID(str(winner))
+            except (TypeError, ValueError):
+                winner_uuid = None
+        election.winner_id = winner_uuid
+        if winner_uuid is not None:
+            # Region.{position}_id for single-seat positions. council_member is
+            # multi-seat and has no single-occupant column — it persists to the
+            # election row only.
+            position_column = f"{election.position}_id"
+            if hasattr(region, position_column):
+                setattr(region, position_column, winner_uuid)
+                region.updated_at = datetime.utcnow()
+
         election.status = ElectionStatus.COMPLETED
         await db.commit()
         return {
@@ -971,15 +1045,23 @@ class RegionalGovernanceService:
         )
         quorum = compute_quorum(eligible, quorum_pct_for_region(region))
 
-        # Quorum denominator: number of distinct voters who actually voted
-        # (tracked in the reserved ledger). Falls back to raw tally count when
-        # the ledger is absent (legacy/manual rows).
+        # Quorum denominator: number of distinct voters who actually voted,
+        # counted from the real regional_policy_votes ledger (migration
+        # c5a8e2f1b9d3). Falls back to the legacy proposed_changes['_voters']
+        # list (then raw tally presence) for legacy/manual rows predating the
+        # table — strictly a backward-compat read; nothing writes _voters now.
+        votes_cast = int(await db.scalar(
+            select(func.count(RegionalPolicyVote.id)).where(
+                RegionalPolicyVote.policy_id == policy.id
+            )
+        ) or 0)
         changes = dict(policy.proposed_changes or {})
-        voters = changes.get(POLICY_VOTERS_KEY)
-        votes_cast = (
-            len(voters) if isinstance(voters, list)
-            else (1 if (policy.votes_for or 0) + (policy.votes_against or 0) > 0 else 0)
-        )
+        if votes_cast == 0:
+            legacy_voters = changes.get(POLICY_VOTERS_KEY)
+            votes_cast = (
+                len(legacy_voters) if isinstance(legacy_voters, list)
+                else (1 if (policy.votes_for or 0) + (policy.votes_against or 0) > 0 else 0)
+            )
 
         threshold = threshold_for_policy(region, policy.policy_type)
         total_weight = int(policy.votes_for or 0) + int(policy.votes_against or 0)
@@ -1005,13 +1087,38 @@ class RegionalGovernanceService:
             policy.status = PolicyStatus.PASSED
             applied = enact_changes_onto_region(region, policy.proposed_changes)
             region.updated_at = datetime.utcnow()
-            # Strip the voter ledger from the stored policy now that it's
-            # resolved (it was only needed during the voting window).
+
+            # Treasury-touching enactment (ADR-0059 N-I4): if the policy carries
+            # a treasury adjustment, mutate Region.treasury_balance and write a
+            # RegionalTreasuryEntry row in THIS SAME transaction so the running
+            # balance stays reconcilable (SUM(delta) == treasury_balance). No
+            # current canon policy type carries it, so existing policies are
+            # unaffected.
+            treasury_delta = compute_treasury_adjustment(region, policy.proposed_changes)
+            if treasury_delta is not None:
+                before = int(region.treasury_balance or 0)
+                after = before + treasury_delta
+                region.treasury_balance = after
+                db.add(RegionalTreasuryEntry(
+                    region_id=region.id,
+                    before_balance=before,
+                    after_balance=after,
+                    delta=treasury_delta,
+                    cause_type=RegionalTreasuryEntry.CAUSE_POLICY_ENACTMENT,
+                    cause_id=policy.id,
+                    reason=f"Policy enacted: {policy.title}",
+                ))
+                applied["treasury_balance"] = {"old": before, "new": after, "delta": treasury_delta}
+
+            # Strip any legacy voter ledger from the stored policy now that it's
+            # resolved (it was only needed during the voting window; nothing
+            # writes it anymore, but legacy rows may still carry it).
             cleaned = dict(policy.proposed_changes or {})
-            cleaned.pop(POLICY_VOTERS_KEY, None)
-            policy.proposed_changes = cleaned
-            from sqlalchemy.orm.attributes import flag_modified
-            flag_modified(policy, "proposed_changes")
+            if POLICY_VOTERS_KEY in cleaned:
+                cleaned.pop(POLICY_VOTERS_KEY, None)
+                policy.proposed_changes = cleaned
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(policy, "proposed_changes")
             policy.status = PolicyStatus.IMPLEMENTED
             result.update(code="POLICY_ENACTED", applied=applied)
             await db.commit()
