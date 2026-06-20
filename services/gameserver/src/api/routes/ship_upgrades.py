@@ -20,6 +20,7 @@ from src.models.station import Station, StationType
 from src.services.ship_service import ShipService
 from src.services.ship_upgrade_service import ShipUpgradeService
 from src.services import maintenance_service
+from src.services.emergent_reputation_service import apply_emergent_action
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,28 @@ INSURANCE_NET_PAYOUT_PCT = {"BASIC": 0.45, "STANDARD": 0.65, "PREMIUM": 0.75}
 INSURANCE_TIER_ORDER = ["NONE", "BASIC", "STANDARD", "PREMIUM"]
 # Non-insurable hulls: no policy is ever written (ADR-0029).
 NON_INSURABLE_TYPES = {ShipType.WARP_JUMPER, ShipType.ESCAPE_POD}
+
+# Mercantile-Guild emergent-rep rewards for buying ship insurance
+# (factions-and-teams.md MG table: BASIC +2 / STANDARD +5 / PREMIUM +10, each
+# "one-time per hull"). The emergent dispatcher (emergent_reputation_service.py)
+# owns the magnitudes; here we map a purchased tier to its canon action key.
+# Tracked per-hull in ship.insurance["mg_rep_awarded"] (additive JSONB, no
+# migration) so a repurchase/downgrade attempt never re-awards.
+#
+# NO-CANON (flagged in WO-AX): canon lists each tier as its own "+N one-time per
+# hull" row but is silent on whether an UPGRADE (e.g. BASIC -> PREMIUM) grants
+# the new tier's FULL value or only the delta over the already-awarded tier. We
+# grant the NEW TIER'S FULL VALUE on first reach of each tier — the most faithful
+# reading of the per-tier "one-time per hull" canon rows (each tier is an
+# independently earnable milestone). A given tier is awarded at most once per
+# hull; reaching PREMIUM directly grants +10 once, while a BASIC->PREMIUM path
+# grants +2 (at BASIC) then +10 (at PREMIUM) = +12 total. (If canon later
+# specifies delta-only, change this to subtract the highest already-awarded tier.)
+INSURANCE_REP_ACTION = {
+    "BASIC": "BUY_INSURANCE_BASIC",
+    "STANDARD": "BUY_INSURANCE_STANDARD",
+    "PREMIUM": "BUY_INSURANCE_PREMIUM",
+}
 
 
 # Helpers
@@ -451,8 +474,35 @@ async def purchase_ship_insurance(
         )
 
     locked_player.credits -= cost
-    ship.insurance = {"type": tier}
+
+    # Carry forward the per-hull MG-rep award ledger so re-writing the policy
+    # dict doesn't lose which tiers were already rewarded. Stored on the same
+    # insurance JSONB (additive — no migration).
+    prior_awarded = (ship.insurance or {}).get("mg_rep_awarded")
+    awarded = list(prior_awarded) if isinstance(prior_awarded, list) else []
+    ship.insurance = {"type": tier, "mg_rep_awarded": awarded}
     flag_modified(ship, "insurance")
+
+    # Mercantile-Guild emergent rep: award the purchased tier's reward ONCE per
+    # hull (factions-and-teams.md MG table). Fires inside the existing locked
+    # txn (FLUSH-ONLY dispatcher — we own the single db.commit below), so the
+    # rep delta is atomic with the policy + credit write and never double-fires:
+    # a repurchase/downgrade can't reach a strictly-higher unawarded tier (the
+    # downgrade guard above), and the ledger blocks re-award of a seen tier.
+    rep_action = INSURANCE_REP_ACTION.get(tier)
+    if rep_action and tier not in awarded:
+        apply_emergent_action(
+            db,
+            locked_player,
+            rep_action,
+            {"ship_id": str(ship.id), "sector_id": locked_player.current_sector_id},
+        )
+        awarded.append(tier)
+        # Re-assign so SQLAlchemy sees the mutated list and the UPDATE rides the
+        # caller's commit.
+        ship.insurance = {"type": tier, "mg_rep_awarded": awarded}
+        flag_modified(ship, "insurance")
+
     db.commit()
     db.refresh(ship)
 
