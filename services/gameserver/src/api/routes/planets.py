@@ -614,19 +614,48 @@ async def transfer_colonists(
                 )
             )
 
-        contents['colonists'] = ship_colonists - quantity
-        cargo['used'] = max(0, cargo_used - quantity)
-        planet.colonists = planet_colonists + quantity
+        # planetary_lander throughput bonus (WO-AL-disembark). MIRRORS the
+        # claim_planet deposit hook exactly so both colonist-deposit paths
+        # behave identically: a planetary_lander-equipped ship lands ~25% MORE
+        # colonists per cargo pod at the disembark, STILL clamped to the
+        # workforce ceiling; cargo and the migration ledger move by the BASE
+        # (pre-bonus) pod count, 1:1 with the physical pods unloaded. See the
+        # claim path (~:329-382) for the full canon/NO-CANON rationale.
+        landing_factor = 1.0
+        try:
+            from src.services.ship_upgrade_service import ShipUpgradeService
+            raw_factor = ShipUpgradeService.get_equipment_effects(ship).get("landing_bonus")
+            if isinstance(raw_factor, (int, float)) and raw_factor > 0:
+                landing_factor = float(raw_factor)
+        except Exception:
+            logger.exception("landing_bonus lookup failed on disembark; defaulting to 1.0")
+
+        # base_settled is the requested/validated pod count — exactly the cargo
+        # consumed. The bonus amplifies how many decant into the workforce,
+        # clamped to the BINDING ceiling (the lower of citadel/habitability
+        # caps) that the validation above already enforced for the base amount.
+        # When at/near the cap the bonus is PARTIALLY ABSORBED by the clamp —
+        # accepted per WO (the ceiling is never exceeded).
+        base_settled = quantity
+        free_cap = max(0, min(citadel_cap, habitability_cap) - planet_colonists)
+        colonists_settled = min(round(base_settled * landing_factor), free_cap)
+
+        contents['colonists'] = ship_colonists - base_settled
+        cargo['used'] = max(0, cargo_used - base_settled)
+        planet.colonists = planet_colonists + colonists_settled
         # Simplification: total demographic tracks the workforce floor
         planet.population = max(planet.population or 0, planet.colonists)
         # Migration-contract ledger: settling pioneers advances `delivered`
-        # on the player's open contracts FIFO. Best-effort.
+        # on the player's open contracts FIFO. Best-effort. Attribute by
+        # base_settled (the PHYSICAL pods unloaded), NOT the bonus-amplified
+        # count: the landing_bonus is in-situ throughput, not extra contracted
+        # pioneers; the ledger moves `loaded` -> `delivered` 1:1 with cargo.
         try:
             from src.services import pioneer_service
-            pioneer_service.attribute_settlement(db, player.id, quantity)
+            pioneer_service.attribute_settlement(db, player.id, base_settled)
         except Exception:
             logger.exception("Migration-contract attribution failed on disembark")
-        message = f"{quantity:,} colonists disembarked onto {planet.name}"
+        message = f"{colonists_settled:,} colonists disembarked onto {planet.name}"
     else:  # embark
         if planet_colonists < quantity:
             raise HTTPException(
