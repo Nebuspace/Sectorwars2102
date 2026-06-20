@@ -253,6 +253,33 @@ IDLE_INCOME_CHECK_SECONDS = int(
 # cargo['_capacity_bonus_percent'] is kept apart from cargo commodity keys.
 _PASSIVE_INCOME_ANCHOR_KEY = "_passive_income_last_utc_date"
 
+# Daily rep-stipend faucet pre-filter. Max's 2026-06-20 ruling SPLIT the old
+# weekly economy faucet: the galactic-citizen subscription perk stays WEEKLY
+# (run_weekly_faucet_sync, above), but the reputation-tier stipend moved to this
+# DAILY, ACTIVE-GATED sweep — each player who logged in THAT UTC day receives a
+# per-reputation-tier stipend once per day (idle day = 0). Like the idle-income
+# faucet, the cadence is a COARSE elapsed pre-filter (so we don't take the
+# advisory lock + scan players every 60s); the once-per-day-per-player guarantee
+# + restart-proofing come from a DURABLE per-player UTC-date anchor in
+# Player.settings JSONB (additive, NO migration; mirrors the per-ship
+# _passive_income anchor and the cargo['_capacity_bonus_percent'] convention). A
+# 30-minute pre-filter is far finer than a day, so a day's grant is never missed
+# even across restarts (the process-relative elapsed counter resets, but the
+# durable per-player date does not — a restart or a re-run within the same UTC
+# day re-reads the anchor and skips, so the faucet NEVER double-credits). Offset
+# from the other coarse probes (decay 15m / faucet 20m / snapshot 25m / idle
+# 30m) by landing at 35m so the coarse probes don't all hit Postgres on the same
+# scheduler wake.
+#
+# CADENCE + the per-faction daily MAGNITUDES + the global cap + the good-standing
+# threshold are NO-CANON (economy_faucet_service.PER_FACTION_DAILY_BY_LEVEL,
+# GLOBAL_DAILY_STIPEND_CAP, and _GOOD_STANDING_MIN_NUMERIC_LEVEL carry the
+# figures — summed per good-standing faction, capped under the weekly citizen
+# perk) — flagged for the orchestrator / a DECISIONS.md ruling.
+DAILY_STIPEND_CHECK_SECONDS = int(
+    os.environ.get("DAILY_STIPEND_CHECK_SECONDS", str(35 * 60))
+)
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -2462,6 +2489,147 @@ def _run_idle_income_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_daily_stipend_sweep_sync() -> Dict[str, int]:
+    """Credit each ACTIVE-TODAY player their PER-FACTION guild stipend, once per
+    UTC day (Max's final per-faction ruling 2026-06-20).
+
+    The reputation stipend used to ride the weekly economy faucet (paid to every
+    active player on the citizen-perk cadence). It is now DAILY and gated on the
+    player having actually logged in THAT UTC day — engagement is rewarded, an
+    idle day pays 0. The amount is the SUM of each good-standing faction's
+    level-scaled contribution (economy_faucet_service.PER_FACTION_DAILY_BY_LEVEL),
+    clamped to GLOBAL_DAILY_STIPEND_CAP so a multi-faction-favored player can
+    never out-earn the paid weekly citizen perk. The per-faction reputations are
+    read by apply_daily_rep_stipend_for_player through the player's OWN (locked)
+    session — this sweep opens no extra session for them.
+
+    DISCIPLINE — mirrors _run_idle_income_sweep_sync EXACTLY:
+      * own SessionLocal (never the request session, never the async engine);
+      * xact-level advisory lock so a second gameserver instance skips instead
+        of double-crediting (the lock auto-releases on the first commit), then
+        commit immediately to claim the sweep without pinning the lock;
+      * a candidate-id query, then a per-row with_for_update re-read so a
+        concurrent login/credit mutation can't race the grant;
+      * per-row commit and per-row try/except — one bad player cannot abort the
+        batch or roll back already-credited players.
+
+    ACTIVE-THAT-DAY GATE: a player is a candidate iff their User.last_login's
+    UTC date == today's UTC date. This is a WALL-CLOCK UTC comparison (not the
+    canonical clock) so it matches the durable UTC-date anchor and the everyday
+    meaning of "logged in today". Idle players are simply not candidates → 0.
+
+    IDEMPOTENCY ACROSS RESTARTS (mandatory — this is a CREDIT FAUCET): the
+    durable per-player anchor is the UTC date string under
+    Player.settings[_daily_stipend_last_utc_date], advanced in the SAME per-row
+    transaction as the credit by apply_daily_rep_stipend_for_player. A player is
+    credited only when that anchor is BEHIND today; a restart, duplicate wake, or
+    re-run within the same UTC day re-reads it and skips — NEVER a double-credit.
+    Additive JSONB only; NO migration, NO new table. A player with NO good-
+    standing faction is still anchored for today (0 credits) so subsequent
+    same-day wakes short-circuit cheaply.
+
+    CADENCE + per-faction MAGNITUDES + global cap + good-standing threshold are
+    NO-CANON (PER_FACTION_DAILY_BY_LEVEL, GLOBAL_DAILY_STIPEND_CAP,
+    _GOOD_STANDING_MIN_NUMERIC_LEVEL) — flagged for a DECISIONS.md ruling.
+
+    Returns {"players": n_credited, "credits": total_cr_granted}; all zero on the
+    lock-held / nothing-due no-op paths. ``players`` counts rows that received a
+    NONZERO grant (a 0-tier player anchored-but-unpaid is not counted)."""
+    from src.core.database import SessionLocal
+    from src.models.player import Player
+    from src.models.user import User
+    from src.services.economy_faucet_service import (
+        apply_daily_rep_stipend_for_player,
+    )
+
+    result = {"players": 0, "credits": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        # Release the lock-acquiring transaction before per-row work (same
+        # rationale as the idle-income sweep): claim the sweep, then iterate.
+        db.commit()
+
+        today = datetime.now(UTC).date()
+        today_str = today.isoformat()
+
+        # Candidate players: active accounts whose USER logged in today (UTC).
+        # The durable login timestamp is User.last_login, written on every login
+        # by user_service.update_user_last_login / authenticate_player (auth
+        # flow). NOTE: Player has no last_login column (it was renamed to
+        # last_game_login), and last_game_login is NOT written by the live auth
+        # path (track_login is called without a db arg) — so User.last_login is
+        # the only reliable active-that-day signal. Filter on the
+        # [today 00:00 UTC, tomorrow 00:00 UTC) half-open window in SQL (join
+        # Player->User) so the gate is cheap and idle players never enter the set.
+        day_start = datetime(today.year, today.month, today.day, tzinfo=UTC)
+        day_end = day_start + timedelta(days=1)
+        candidate_ids = (
+            db.query(Player.id)
+            .join(User, User.id == Player.user_id)
+            .filter(
+                Player.is_active.is_(True),
+                User.last_login.isnot(None),
+                User.last_login >= day_start,
+                User.last_login < day_end,
+            )
+            .all()
+        )
+
+        for (player_id,) in candidate_ids:
+            try:
+                player = (
+                    db.query(Player)
+                    .filter(Player.id == player_id)
+                    .with_for_update()
+                    .first()
+                )
+                if player is None or not player.is_active:
+                    db.rollback()  # release row lock; nothing to do
+                    continue
+
+                # Re-confirm the active-that-day gate on the locked row via the
+                # player's User.last_login (a concurrent re-login could have
+                # moved it since the candidate query; the gate must hold on the
+                # row we credit). player.user lazy-loads the User (read-only).
+                last_login = player.user.last_login if player.user else None
+                if last_login is None or not (day_start <= last_login < day_end):
+                    db.rollback()
+                    continue
+
+                granted = apply_daily_rep_stipend_for_player(player, today_str)
+
+                db.commit()  # grant + anchor advance commit atomically
+                if granted:
+                    result["players"] += 1
+                    result["credits"] += granted
+            except Exception:
+                logger.exception(
+                    "Daily-stipend sweep: grant failed for player %s", player_id
+                )
+                db.rollback()
+
+        if result["players"]:
+            logger.info(
+                "Daily-stipend sweep: %s — credited %d active player(s), "
+                "%d cr granted",
+                today_str, result["players"], result["credits"],
+            )
+        return result
+    except Exception:
+        logger.exception("Daily-stipend sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
@@ -3040,22 +3208,23 @@ async def npc_scheduler_loop() -> None:
             except Exception:
                 logger.exception("NPC scheduler: weekly decay crashed (loop continues)")
 
-        # Economy faucets — reputation stipend + galactic-citizen subscription
-        # perk.  Same coarse pre-filter / durable-anchor pattern as the weekly
-        # decay; intentionally on a separate cadence (20 min) to avoid
-        # colliding with the decay wake.  run_weekly_faucet_sync is fully
-        # synchronous and self-gated on the shared advisory lock.
+        # Economy faucet (WEEKLY) — galactic-citizen subscription perk ONLY.
+        # Max's 2026-06-20 split moved the rep stipend to the DAILY sweep below;
+        # this weekly path now pays only the paid citizen perk. Same coarse
+        # pre-filter / durable-anchor pattern as the weekly decay; intentionally
+        # on a separate cadence (20 min) to avoid colliding with the decay wake.
+        # run_weekly_faucet_sync is fully synchronous and self-gated on the
+        # shared advisory lock.
         if elapsed % FAUCET_CHECK_SECONDS == 0:
             try:
                 from src.services.economy_faucet_service import run_weekly_faucet_sync
                 faucet = await asyncio.to_thread(run_weekly_faucet_sync)
                 if faucet.get("week", -1) >= 0:
                     logger.info(
-                        "NPC scheduler: economy faucet fired (week %d) — "
-                        "stipend=%d player(s), citizen_perk=%d citizen(s), "
-                        "total=%d cr injected",
-                        faucet["week"], faucet["stipend_grants"],
-                        faucet["citizen_grants"], faucet["total_credits"],
+                        "NPC scheduler: weekly economy faucet fired (week %d) — "
+                        "citizen_perk=%d citizen(s), total=%d cr injected",
+                        faucet["week"], faucet["citizen_grants"],
+                        faucet["total_credits"],
                     )
             except asyncio.CancelledError:
                 raise
@@ -3108,3 +3277,27 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: idle-income faucet crashed (loop continues)")
+
+        # Daily rep-stipend faucet — credit each player who logged in THIS UTC
+        # day their per-reputation-tier stipend, once per day (idle day = 0).
+        # Max's 2026-06-20 split moved the rep stipend off the weekly faucet onto
+        # this DAILY, active-gated cadence. Coarse elapsed pre-filter (35 min) so
+        # we don't scan players every 60s; the once-per-day-per-player guarantee
+        # + restart-proofing come from the durable per-player UTC-date anchor in
+        # Player.settings inside the sweep. Own session, own advisory lock,
+        # per-player failure isolated — same discipline as the idle-income /
+        # genesis / planetary / governance / snapshot sweeps. NO-CANON cadence +
+        # per-tier magnitudes (flagged for the orchestrator).
+        if elapsed % DAILY_STIPEND_CHECK_SECONDS == 0:
+            try:
+                stipend = await asyncio.to_thread(_run_daily_stipend_sweep_sync)
+                if stipend.get("players"):
+                    logger.info(
+                        "NPC scheduler: daily rep-stipend faucet — credited %d "
+                        "active player(s), %d cr granted",
+                        stipend.get("players", 0), stipend.get("credits", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: daily rep-stipend faucet crashed (loop continues)")
