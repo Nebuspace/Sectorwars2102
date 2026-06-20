@@ -18,6 +18,8 @@ import QuantumDriveConsole from '../quantum/QuantumDriveConsole';
 import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
 import CitizenshipBadge from '../governance/CitizenshipBadge';
+import RegionInvitePanel from '../governance/RegionInvitePanel';
+import { regionOwnerAPI } from '../../services/api';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
@@ -661,6 +663,38 @@ const GameDashboard: React.FC = () => {
   const isWarpJumper = currentShip?.type === 'WARP_JUMPER';
   const [navMode, setNavMode] = useState<'graph' | 'quantum'>('graph');
   const [showGatewright, setShowGatewright] = useState(false);
+
+  // Region-owner invite control (WO-IL4). There is no ownership flag on
+  // PlayerState, so probe GET /api/v1/regions/my-region once on mount: 200 =>
+  // this player owns a region (trigger + panel render); 404 => not an owner
+  // (one quiet probe per session, no trigger ever shown). The owned region id
+  // is taken from the probe response and handed to the invite panel.
+  const [ownedRegionId, setOwnedRegionId] = useState<string | null>(null);
+  const [ownedRegionName, setOwnedRegionName] = useState<string | null>(null);
+  const [showRegionInvites, setShowRegionInvites] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const region = await regionOwnerAPI.getMyRegion();
+        if (cancelled || !region?.id) return;
+        setOwnedRegionId(String(region.id));
+        setOwnedRegionName(region.display_name || region.name || null);
+      } catch {
+        // 404 (not an owner) or transient error — leave the trigger hidden.
+        if (!cancelled) {
+          setOwnedRegionId(null);
+          setOwnedRegionName(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const isRegionOwner = ownedRegionId !== null;
 
   // Swapping off the Warp Jumper drops back to the warp graph and closes
   // the Gatewright panel — neither exists without the quantum drive.
@@ -1892,6 +1926,16 @@ const GameDashboard: React.FC = () => {
                   regionId={currentSector.region_id}
                   regionName={currentSector.region_name}
                 />
+                {isRegionOwner && (
+                  <button
+                    type="button"
+                    className="hud-region-invite-btn"
+                    onClick={() => setShowRegionInvites(true)}
+                    title="Manage region invites"
+                  >
+                    ◆ INVITE CONTROL
+                  </button>
+                )}
                 <div className="hud-value-secondary">
                   {currentSector.type ? currentSector.type.replace(/_/g, ' ').toUpperCase() : 'STANDARD'}
                 </div>
@@ -3207,6 +3251,24 @@ const GameDashboard: React.FC = () => {
           >
             <div className="quantum-gatewright-shell" onClick={(e) => e.stopPropagation()}>
               <GatewrightPanel onClose={() => setShowGatewright(false)} />
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Region-owner invite control — portal overlay, same shell pattern as
+            the Gatewright panel above. Gated on confirmed region ownership. */}
+        {showRegionInvites && isRegionOwner && ownedRegionId && createPortal(
+          <div
+            className="region-invite-overlay"
+            onClick={() => setShowRegionInvites(false)}
+          >
+            <div className="region-invite-shell" onClick={(e) => e.stopPropagation()}>
+              <RegionInvitePanel
+                regionId={ownedRegionId}
+                regionName={ownedRegionName}
+                onClose={() => setShowRegionInvites(false)}
+              />
             </div>
           </div>,
           document.body

@@ -578,6 +578,43 @@ export const governanceAPI = {
     }),
 };
 
+// Region-OWNER-facing APIs (distinct from the member-facing governanceAPI above).
+// These are gated server-side to the verified owner of the region. They live in
+// the player client because region ownership is a player property — the panel
+// probes getMyRegion() on open (200 = owner, 404 = not an owner) and uses the
+// returned region id for the invite endpoints.
+//
+// Invite lifecycle (WO-IL4 → IL3 endpoints in regional_governance.py):
+//   POST   /api/v1/regions/{region_id}/invites              — mint (201)
+//   GET    /api/v1/regions/{region_id}/invites              — list owner's invites
+//   POST   /api/v1/regions/{region_id}/invites/{id}/revoke  — revoke (idempotent)
+export const regionOwnerAPI = {
+  // Probe region ownership + load the owned region. Throws on 404 (not an owner).
+  getMyRegion: () => apiRequest('/api/v1/regions/my-region'),
+
+  // List the caller's invites for a region (newest first), owner-scoped.
+  listInvites: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/invites`),
+
+  // Mint a new invite. Both fields optional: max_uses defaults to 1 (max 10),
+  // expiresAt defaults to now + 7 days. expiresAt is an ISO8601 string.
+  createInvite: (regionId: string, opts?: { max_uses?: number; expires_at?: string }) => {
+    const body: Record<string, unknown> = {};
+    if (opts?.max_uses !== undefined) body.max_uses = opts.max_uses;
+    if (opts?.expires_at !== undefined) body.expires_at = opts.expires_at;
+    return apiRequest(`/api/v1/regions/${regionId}/invites`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  // Revoke an invite. Idempotent server-side (already-terminal → success).
+  revokeInvite: (regionId: string, inviteId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/invites/${inviteId}/revoke`, {
+      method: 'POST',
+    }),
+};
+
 export const gameAPI = {
   combat: combatAPI,
   planetary: planetaryAPI,
@@ -592,4 +629,5 @@ export const gameAPI = {
   citadel: citadelAPI,
   shipUpgrade: shipUpgradeAPI,
   governance: governanceAPI,
+  regionOwner: regionOwnerAPI,
 };
