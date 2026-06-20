@@ -46,7 +46,9 @@ class MarketSnapshot:
     price_change_percent: float
     last_transaction: datetime
     bid_ask_spread: float
-    market_depth: Dict[str, List[Tuple[float, int]]]  # {"bids": [(price, qty)], "asks": [(price, qty)]}
+    # No real order-book mechanic exists; always emitted empty {"bids": [], "asks": []}.
+    # Retained only because enhanced_websocket_service reads this field.
+    market_depth: Dict[str, List[Tuple[float, int]]]
     sector_prices: Dict[int, float]  # sector_id -> local price
     ai_prediction: Optional[Dict[str, Any]] = None
     
@@ -168,9 +170,12 @@ class RealTimeMarketService:
             price_change_24h = current_price - oldest_price
             price_change_percent = (price_change_24h / oldest_price * 100) if oldest_price > 0 else 0
             
-            # Market depth (simplified - would need order book in production)
-            market_depth = await self._calculate_market_depth(commodity, current_price, db)
-            
+            # Market depth: there is NO real order-book mechanic in the game, so
+            # we no longer fabricate a synthetic bid/ask book. Emit an empty book.
+            # (The field is retained because enhanced_websocket_service reads it;
+            #  it now carries real-but-empty data instead of mock orders.)
+            market_depth: Dict[str, List[Tuple[float, int]]] = {"bids": [], "asks": []}
+
             # Sector-specific prices
             sector_prices = await self._get_sector_prices(commodity, db)
             
@@ -228,35 +233,6 @@ class RealTimeMarketService:
             commodity: snapshot 
             for commodity, snapshot in zip(valid_commodities, snapshots)
         }
-    
-    async def _calculate_market_depth(self, commodity: str, current_price: float, 
-                                    db: AsyncSession) -> Dict[str, List[Tuple[float, int]]]:
-        """
-        Calculate market depth (order book simulation)
-        In production, this would come from actual buy/sell orders
-        """
-        # For now, simulate based on recent transactions
-        price_ranges = [
-            (current_price * 0.95, current_price * 0.98),  # Buy orders
-            (current_price * 1.02, current_price * 1.05)   # Sell orders
-        ]
-        
-        bids = []
-        asks = []
-        
-        # Simulate bid orders (buyers)
-        for i in range(5):
-            price = current_price * (0.99 - i * 0.01)
-            quantity = 1000 * (5 - i)  # More quantity at lower prices
-            bids.append((round(price, 2), quantity))
-        
-        # Simulate ask orders (sellers)
-        for i in range(5):
-            price = current_price * (1.01 + i * 0.01)
-            quantity = 1000 * (5 - i)  # More quantity at lower prices
-            asks.append((round(price, 2), quantity))
-        
-        return {"bids": bids, "asks": asks}
     
     async def _get_sector_prices(self, commodity: str, db: AsyncSession) -> Dict[int, float]:
         """

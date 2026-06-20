@@ -56,20 +56,13 @@ from src.models.team import Team
 try:
     from src.utils.validation import validate_uuid
 except ImportError:
-    def validate_uuid(value): 
+    def validate_uuid(value):
         import uuid
         try:
             uuid.UUID(value)
             return True
         except ValueError:
             return False
-
-try:
-    from src.core.security import get_current_player_id
-except ImportError:
-    def get_current_player_id():
-        # Placeholder - in production this would come from JWT/session
-        return None
 
 
 logger = logging.getLogger(__name__)
