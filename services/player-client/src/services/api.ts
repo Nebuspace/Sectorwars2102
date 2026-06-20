@@ -615,6 +615,47 @@ export const regionOwnerAPI = {
     }),
 };
 
+// Haggle APIs (ADR-0079 — numerical price negotiation)
+//
+// `commodity` MUST be the exact resource_type key the matching buy/sell call
+// uses (e.g. 'Ore', 'Tech') — the agreed price is keyed by
+// `${station}:${commodity}:${side}` and consumed by POST /trading/{buy|sell}
+// when that route forwards the same resource_type. `side` is the PLAYER's
+// direction: 'buy' = player buying from the station, 'sell' = player selling.
+//
+//   POST /api/v1/haggle/open    → opening card { round, band, price_clamp, ... }
+//   POST /api/v1/haggle/offer   → round result { verdict, agreed_price?, counter_price?, ... }
+//   GET  /api/v1/haggle/status  → { locked, cooldown_remaining_seconds, session }
+export const haggleAPI = {
+  open: (
+    stationId: string,
+    commodity: string,
+    side: 'buy' | 'sell',
+    quantity: number
+  ) =>
+    apiRequest('/api/v1/haggle/open', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId, commodity, side, quantity }),
+    }),
+
+  offer: (
+    stationId: string,
+    commodity: string,
+    side: 'buy' | 'sell',
+    offer: number
+  ) =>
+    apiRequest('/api/v1/haggle/offer', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId, commodity, side, offer }),
+    }),
+
+  status: (stationId: string, commodity: string, side: 'buy' | 'sell') =>
+    apiRequest(
+      `/api/v1/haggle/status?station_id=${encodeURIComponent(stationId)}` +
+        `&commodity=${encodeURIComponent(commodity)}&side=${encodeURIComponent(side)}`
+    ),
+};
+
 export const gameAPI = {
   combat: combatAPI,
   planetary: planetaryAPI,
@@ -630,4 +671,5 @@ export const gameAPI = {
   shipUpgrade: shipUpgradeAPI,
   governance: governanceAPI,
   regionOwner: regionOwnerAPI,
+  haggle: haggleAPI,
 };

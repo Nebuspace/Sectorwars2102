@@ -1,0 +1,426 @@
+/* =============================================================================
+   HAGGLE DESK (ADR-0079) — numerical price negotiation
+   Mirrors the trade-modal CRT design language: same CSS vars, amber/gold band
+   accents, green accept / red reject pills. Lives INSIDE the trade-modal-body
+   portal, so no Scroll-Law impact on the docked buy/sell grid.
+============================================================================= */
+
+.haggle-desk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.haggle-status-line {
+  color: var(--text-color);
+  opacity: 0.75;
+  font-size: var(--text-sm);
+  text-align: center;
+  padding: var(--space-lg) 0;
+}
+
+/* ── Header: title + side chip + personality + round pill ── */
+.haggle-desk-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.haggle-title-block {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.haggle-title {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-size: var(--text-sm);
+  color: #fbbf24; /* amber/gold — the haggle desk's signature accent */
+  text-transform: uppercase;
+}
+
+.haggle-side-chip,
+.haggle-personality-chip {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+.haggle-personality-chip {
+  font-style: italic;
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+.haggle-round-pill {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  white-space: nowrap;
+}
+
+/* ── Intro (pre-open) ── */
+.haggle-intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.haggle-intro-copy {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-color);
+  opacity: 0.85;
+  line-height: 1.5;
+}
+
+.haggle-open-btn {
+  padding: var(--space-md);
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border: none;
+  border-radius: 10px;
+  color: #1a1205;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all var(--transition-normal, 0.2s);
+}
+
+.haggle-open-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
+.haggle-open-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Band visualizer ── */
+.haggle-band-card {
+  background: var(--bg-color);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 12px;
+  padding: var(--space-md) var(--space-lg);
+}
+
+.haggle-band-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-sm) 0;
+  font-size: var(--text-sm);
+}
+
+.haggle-band-row span:first-child {
+  color: var(--text-color);
+  opacity: 0.8;
+}
+
+.haggle-band-val {
+  font-weight: 700;
+  color: #fbbf24;
+}
+
+.haggle-band-val.accept {
+  color: var(--accent-color, #10b981);
+}
+
+.haggle-band-val.reject {
+  color: #ef4444;
+}
+
+.haggle-clamp-note {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border-color);
+  font-size: 0.72rem;
+  opacity: 0.7;
+  text-align: center;
+}
+
+/* ── Trader counter line ── */
+.haggle-counter-line {
+  font-size: var(--text-sm);
+  color: var(--text-color);
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 8px;
+  padding: var(--space-sm) var(--space-md);
+}
+
+.haggle-counter-line strong {
+  color: #fbbf24;
+}
+
+/* ── Offer input ── */
+.haggle-offer-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.haggle-offer-section label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--primary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.haggle-offer-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.haggle-offer-input {
+  flex: 1;
+  padding: var(--space-md);
+  background: var(--bg-color);
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-color);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  text-align: right;
+}
+
+.haggle-offer-input:focus {
+  outline: none;
+  border-color: #f59e0b;
+}
+
+.haggle-offer-input.out-of-range {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.haggle-offer-unit {
+  font-size: var(--text-sm);
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.haggle-offer-warn {
+  font-size: 0.72rem;
+  color: #ef4444;
+}
+
+.haggle-offer-total {
+  font-size: var(--text-sm);
+  opacity: 0.85;
+}
+
+.haggle-offer-total strong {
+  color: #fbbf24;
+}
+
+.haggle-submit-btn {
+  margin-top: var(--space-xs, 4px);
+  padding: var(--space-md);
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border: none;
+  border-radius: 10px;
+  color: #1a1205;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all var(--transition-normal, 0.2s);
+}
+
+.haggle-submit-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
+.haggle-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* ── Gates (locked / cooldown) ── */
+.haggle-gate {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-color);
+}
+
+.haggle-gate-icon {
+  font-size: 1.4rem;
+  flex-shrink: 0;
+}
+
+.haggle-gate strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.haggle-gate p {
+  margin: 0;
+  font-size: var(--text-sm);
+  opacity: 0.85;
+  line-height: 1.4;
+}
+
+.haggle-gate-locked {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.haggle-gate-cooldown {
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+/* ── Outcome cards (accept / reject / timeout) ── */
+.haggle-outcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-color);
+}
+
+.haggle-outcome-icon {
+  font-size: 2rem;
+}
+
+.haggle-outcome h4 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.haggle-outcome p {
+  margin: 0;
+  font-size: var(--text-sm);
+  opacity: 0.85;
+  line-height: 1.5;
+}
+
+.haggle-outcome-accept {
+  border-color: var(--accent-color, #10b981);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25) inset;
+}
+
+.haggle-outcome-accept h4 {
+  color: var(--accent-color, #10b981);
+}
+
+.haggle-agreed strong {
+  color: var(--accent-color, #10b981);
+}
+
+.haggle-agreed-note {
+  font-size: 0.72rem !important;
+  opacity: 0.7 !important;
+}
+
+.haggle-outcome-reject {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.haggle-outcome-reject h4 {
+  color: #ef4444;
+}
+
+.haggle-outcome-timeout {
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+.haggle-outcome-timeout h4 {
+  color: #fbbf24;
+}
+
+.haggle-confirm-trade-btn {
+  margin-top: var(--space-sm);
+  padding: var(--space-md) var(--space-xl);
+  background: linear-gradient(135deg, var(--accent-color, #10b981), #0d9488);
+  border: none;
+  border-radius: 10px;
+  color: white;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all var(--transition-normal, 0.2s);
+}
+
+.haggle-confirm-trade-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0d9488, #0f766e);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+.haggle-confirm-trade-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.haggle-back-btn {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-lg);
+  background: transparent;
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-color);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-normal, 0.2s);
+}
+
+.haggle-back-btn:hover {
+  border-color: var(--primary-color);
+}
+
+/* ── Error + back link ── */
+.haggle-error {
+  font-size: var(--text-sm);
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  padding: var(--space-sm) var(--space-md);
+}
+
+.haggle-back-link {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--text-color);
+  opacity: 0.7;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: var(--space-xs, 4px) 0;
+}
+
+.haggle-back-link:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--primary-color);
+}
+
+.haggle-back-link:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

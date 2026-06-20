@@ -5,6 +5,7 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
+import HaggleDesk from './HaggleDesk';
 import './trading-interface.css';
 
 /* TRADE LEDGER shell (Law 3) — module-level so the frame keeps its
@@ -103,6 +104,11 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   const [tradeMode, setTradeMode] = useState<'buy' | 'sell'>('buy');
   const [tradeCalculation, setTradeCalculation] = useState<TradeCalculation | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  // ADR-0079: when true, the trade modal shows the numerical haggle desk in
+  // place of the quantity/summary body. Quantity is FROZEN while haggling (the
+  // session is opened against a fixed quantity), so we capture it on entry.
+  const [haggleMode, setHaggleMode] = useState(false);
+  const [haggleQuantity, setHaggleQuantity] = useState<number>(1);
   const [dockingStationId, setDockingStationId] = useState<string | null>(null);
 
   // Transient slip availability per station (lazy, fetched when the
@@ -382,6 +388,9 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   const handleResourceChange = (resourceType: string) => {
     setSelectedResource(resourceType);
     setTradeQuantity(1);
+    // A fresh commodity opens the standard quantity/summary view, never the
+    // haggle desk carried over from a prior selection.
+    setHaggleMode(false);
     // Directly open the trade modal so the player can immediately buy/sell
     setShowConfirmDialog(true);
   };
@@ -392,7 +401,15 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     // from the other mode must not carry across the buy/sell switch
     setSelectedResource('');
     setShowConfirmDialog(false);
+    setHaggleMode(false);
     setTradeQuantity(1);
+  };
+
+  // Close the trade modal AND reset haggle state in one place — used by the
+  // overlay click, the × button, Cancel, and on a successful trade.
+  const closeTradeModal = () => {
+    setShowConfirmDialog(false);
+    setHaggleMode(false);
   };
 
   const getMaxQuantity = (): number => {
@@ -424,46 +441,51 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     setTradeQuantity(maxQty);
   };
 
-  const canExecuteTrade = (): boolean => {
+  const canExecuteTrade = (qty: number = tradeQuantity): boolean => {
     if (!tradeCalculation || !playerState?.is_docked) return false;
 
     const resource = marketInfo?.resources[selectedResource];
     if (!resource) return false;
 
     if (tradeMode === 'buy') {
-      return resource.station_sells && tradeCalculation.isAffordable && tradeCalculation.fitsInCargo && tradeQuantity <= resource.quantity;
+      return resource.station_sells && tradeCalculation.isAffordable && tradeCalculation.fitsInCargo && qty <= resource.quantity;
     } else {
       const playerHas = getPlayerResourceAmount(selectedResource);
-      return resource.station_buys && tradeQuantity <= playerHas;
+      return resource.station_buys && qty <= playerHas;
     }
   };
 
-  const executeTrade = async () => {
-    if (isExecuting || !canExecuteTrade() || !selectedPort || !selectedResource) return;
+  // `qtyOverride` is supplied by the haggle accept path so the trade fires at
+  // the exact quantity the session was opened against, independent of React's
+  // async state flush (the slider is hidden during haggling, so they match —
+  // this is belt-and-braces against a stale closure).
+  const executeTrade = async (qtyOverride?: number) => {
+    const qty = qtyOverride ?? tradeQuantity;
+    if (isExecuting || !canExecuteTrade(qty) || !selectedPort || !selectedResource) return;
     setIsExecuting(true);
 
     try {
       let result;
       if (tradeMode === 'buy') {
-        result = await buyResource(selectedPort, selectedResource, tradeQuantity);
+        result = await buyResource(selectedPort, selectedResource, qty);
       } else {
-        result = await sellResource(selectedPort, selectedResource, tradeQuantity);
+        result = await sellResource(selectedPort, selectedResource, qty);
       }
 
       // Show success notification
       const defaultMsg = tradeMode === 'buy'
-        ? `Bought ${tradeQuantity} ${selectedResource}`
-        : `Sold ${tradeQuantity} ${selectedResource}`;
+        ? `Bought ${qty} ${selectedResource}`
+        : `Sold ${qty} ${selectedResource}`;
       addNotification({
         title: 'Trade Successful',
         content: result?.message || defaultMsg,
         level: 'success'
       });
 
-      // Reset form
+      // Reset form (also drops out of haggle mode if we got here via accept)
       setTradeQuantity(1);
-      setShowConfirmDialog(false);
-      
+      closeTradeModal();
+
     } catch (error: any) {
       const serverMessage: string = error.response?.data?.detail || error.response?.data?.message || '';
       let content = serverMessage || 'Failed to execute trade';
@@ -899,7 +921,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
 
       {/* Trade Modal - Rendered via Portal to escape stacking context */}
       {showConfirmDialog && selectedResource && marketInfo && createPortal(
-        <div className="modal-overlay" onClick={() => setShowConfirmDialog(false)}>
+        <div className="modal-overlay" onClick={closeTradeModal}>
           <div className="trade-modal" onClick={(e) => e.stopPropagation()}>
             <div className="trade-modal-header">
               <div className="modal-resource-info">
@@ -909,9 +931,30 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                   {formatName(selectedResource)}
                 </h3>
               </div>
-              <button className="modal-close" onClick={() => setShowConfirmDialog(false)}>×</button>
+              <button className="modal-close" onClick={closeTradeModal}>×</button>
             </div>
 
+            {haggleMode ? (
+              <div className="trade-modal-body">
+                <HaggleDesk
+                  stationId={selectedPort}
+                  commodity={selectedResource}
+                  side={tradeMode}
+                  quantity={haggleQuantity}
+                  commodityLabel={formatName(selectedResource)}
+                  personalityLabel={traderPersonality?.label ?? null}
+                  onBack={() => setHaggleMode(false)}
+                  onAccepted={() => {
+                    // The agreed price is already stored server-side keyed by
+                    // (station, commodity, side); firing the normal buy/sell at
+                    // the haggled quantity consumes it transparently. Pass the
+                    // frozen quantity explicitly so the trade matches the
+                    // negotiated count regardless of state-flush timing.
+                    executeTrade(haggleQuantity);
+                  }}
+                />
+              </div>
+            ) : (
             <div className="trade-modal-body">
               {/* Quantity Slider */}
               <div className="quantity-section">
@@ -1037,19 +1080,36 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                 )}
               </div>
             </div>
+            )}
 
-            <div className="trade-modal-footer">
-              <button className="cancel-btn" onClick={() => setShowConfirmDialog(false)}>
-                Cancel
-              </button>
-              <button
-                className="confirm-trade-btn"
-                onClick={executeTrade}
-                disabled={!canExecuteTrade() || isExecuting}
-              >
-                {isExecuting ? 'Processing...' : `Confirm ${tradeMode === 'buy' ? 'Purchase' : 'Sale'}`}
-              </button>
-            </div>
+            {/* The standard footer (Cancel / Haggle / Confirm) is hidden while
+                the haggle desk is mounted — the desk carries its own actions. */}
+            {!haggleMode && (
+              <div className="trade-modal-footer">
+                <button className="cancel-btn" onClick={closeTradeModal}>
+                  Cancel
+                </button>
+                <button
+                  className="haggle-launch-btn"
+                  onClick={() => {
+                    // Freeze the quantity the negotiation is opened against.
+                    setHaggleQuantity(Math.max(1, tradeQuantity));
+                    setHaggleMode(true);
+                  }}
+                  disabled={!canExecuteTrade() || isExecuting}
+                  title="Negotiate a per-unit price over up to 4 rounds"
+                >
+                  Haggle
+                </button>
+                <button
+                  className="confirm-trade-btn"
+                  onClick={() => executeTrade()}
+                  disabled={!canExecuteTrade() || isExecuting}
+                >
+                  {isExecuting ? 'Processing...' : `Confirm ${tradeMode === 'buy' ? 'Purchase' : 'Sale'}`}
+                </button>
+              </div>
+            )}
           </div>
         </div>,
         document.body

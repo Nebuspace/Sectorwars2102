@@ -1468,6 +1468,32 @@
   background: rgba(59, 130, 246, 0.1);
 }
 
+/* ADR-0079: launch the numerical haggle desk from the trade modal footer.
+   Amber/gold to read as a distinct negotiate affordance between Cancel and
+   the green Confirm. */
+.haggle-launch-btn {
+  flex: 1;
+  padding: var(--space-md);
+  background: transparent;
+  border: 2px solid rgba(245, 158, 11, 0.6);
+  border-radius: 10px;
+  color: #fbbf24;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.haggle-launch-btn:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: #fbbf24;
+}
+
+.haggle-launch-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .confirm-trade-btn {
   flex: 2;
   padding: var(--space-md);
