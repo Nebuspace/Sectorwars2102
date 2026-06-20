@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import os
 import redis.asyncio as redis
 import psycopg2
@@ -232,7 +232,7 @@ async def scale_region(
 
 
 @app.get("/metrics")
-async def get_metrics() -> Dict[str, any]:
+async def get_metrics() -> Dict[str, Any]:
     """Get platform-wide metrics"""
     try:
         total_regions = len(active_regions)
@@ -372,7 +372,7 @@ async def monitor_regions_loop():
             logger.error(f"Error in monitoring loop: {e}")
 
 
-async def check_auto_scaling(region_name: str, stats: Dict[str, any]):
+async def check_auto_scaling(region_name: str, stats: Dict[str, Any]):
     """Check if a region needs auto-scaling"""
     try:
         cpu_usage = stats.get("cpu_percent", 0)
