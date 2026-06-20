@@ -161,7 +161,13 @@ def slip_capacity_for(station: Station) -> int:
     if getattr(station, "is_spacedock", False):
         return 30
     cls = station.station_class.value if station.station_class is not None else None
-    if cls == 0:        # CLASS_0 capital
+    if cls == 0:        # CLASS_0 capital — Starport Prime vs regional Capital
+        # Canon (docking-slips §Per-station-class slip counts):
+        #   Central Nexus Starport Prime → 200 transient
+        #   regional Capital station     →  80 transient
+        # Both are CLASS_0; the is_starport_prime flag is the discriminator.
+        if getattr(station, "is_starport_prime", False):
+            return 200
         return 80
     if cls in (1, 2):
         return 8
@@ -191,8 +197,15 @@ def long_term_capacity_for(station: Station) -> int:
     if getattr(station, "is_spacedock", False):
         return 10
     cls = station.station_class.value if station.station_class is not None else None
-    if cls == 0:        # CLASS_0 capital (Central Nexus Starport Prime equiv)
-        return 50
+    if cls == 0:        # CLASS_0 capital — Starport Prime vs regional Capital
+        # Canon (docking-slips §Per-station-class slip counts):
+        #   Central Nexus Starport Prime → 50 long-term
+        #   regional Capital station     → 30 long-term
+        # Both are CLASS_0; the is_starport_prime flag is the discriminator.
+        # (Fixes the prior bug where every CLASS_0 station returned 50.)
+        if getattr(station, "is_starport_prime", False):
+            return 50
+        return 30
     if cls in (1, 2):
         return 2
     if cls is not None and 3 <= cls <= 6:

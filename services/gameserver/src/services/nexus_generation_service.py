@@ -371,7 +371,12 @@ class NexusGenerationService:
                 "station_class": StationClass.CLASS_0,  # Highest quality
                 "type": StationType.TRADING,
                 "status": StationStatus.OPERATIONAL,
-                "size": 10  # Maximum size
+                "size": 10,  # Maximum size
+                # Starport Prime discriminator (FEATURES/economy/docking-slips):
+                # this is THE Central Nexus Starport Prime — 200 transient / 50
+                # long-term docking slips, distinct from a regional Capital
+                # (also CLASS_0, but 80 / 30). docking_service reads this flag.
+                "is_starport_prime": True,
             }
 
         # Random port types for other sectors

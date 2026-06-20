@@ -194,6 +194,13 @@ class Station(Base):
     # too because StarDock-special-location hosts also get this flag for queries
     # that don't load the parent sector's special_features array).
     is_spacedock = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Central Nexus Starport Prime discriminator (FEATURES/economy/docking-slips
+    # §Per-station-class slip counts). Both Starport Prime and a regional Capital
+    # are StationClass.CLASS_0, but their docking-slip pools differ: Starport
+    # Prime carries 200 transient / 50 long-term, a regional Capital 80 / 30.
+    # This flag lets docking_service tell them apart. Set ONLY on the single
+    # Central Nexus Starport Prime station (see nexus_generation_service).
+    is_starport_prime = Column(Boolean, nullable=False, default=False, server_default="false")
     # TradeDock tier (FEATURES/economy/tradedock-shipyard): 'A' = Warp-Jumper-
     # capable (specialized construction slips), 'B' = standard construction.
     # NULL = not a TradeDock. TradeDocks are NPC-neutral, never ownable.
