@@ -845,6 +845,9 @@ def advance_gate(db: Session, gate: WarpGate, now: Optional[datetime] = None) ->
         beacon.invulnerable_until = None
 
     gate.status = WarpGateStatus.ACTIVE
+    # warp-gates.md:167/230/333 + ADR-0011: the harmonized merged gate has its
+    # own 10,000-HP pool (the beacon/focus stay at their 5,000 default).
+    gate.hp = 10_000
     db.flush()
     logger.info("Warp gate %s harmonization completed — gate is ACTIVE", gate.id)
     return gate

@@ -83,6 +83,11 @@ class WarpGate(Base):
         nullable=False,
         default=WarpGateStatus.HARMONIZING,
     )
+    # warp-gates.md "Combat & destruction" + ADR-0011: the focus structure soaks
+    # at 5,000 HP while HARMONIZING; once the gate harmonizes ACTIVE the merged
+    # gate has its own 10,000-HP pool (set in warp_gate_service.advance_gate).
+    # The beacon/focus 5,000-HP default stays on WarpGateBeacon.hp above.
+    hp = Column(Integer, nullable=False, default=5000)
     harmonization_completes_at = Column(DateTime(timezone=True), nullable=True)
     # The Warp Jumper consumed at harmonization completion (ADR-0029).
     anchor_ship_id = Column(UUID(as_uuid=True), ForeignKey("ships.id", ondelete="SET NULL"), nullable=True)
