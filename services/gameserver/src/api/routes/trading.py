@@ -436,6 +436,30 @@ async def buy_resource(
         except Exception:
             logger.warning("complete_trade reputation nudge failed (buy)", exc_info=True)
 
+        # WO-CD-2 — emergent FACTION rep for trade volume at a faction-flagged
+        # port (CONCRETE-CANON, factions-and-teams.md): "Trade at a
+        # Federation/Guild/Frontier/Fringe-flagged port | +1 / 5,000 cr". This
+        # is the GENERIC trade trigger (TF/MG/FC/FA) — it fires on BUY as well
+        # as SELL. The accumulator awards +1 per completed 5,000-cr block of
+        # total_cost and carries the remainder forward (no over/under-pay). AM
+        # is NOT here — its canon trigger is SELL ore to a refinery only (sell
+        # path). Faction rep is DISJOINT from the +1 personal rep above
+        # (ADR-0056 N-D1). Under the trade transaction (flush-only, pre-commit),
+        # idempotent (one completed buy), defensive — never fails the trade.
+        try:
+            from src.services.emergent_reputation_service import (
+                apply_trade_volume_rep,
+                trade_volume_action_for_faction_name,
+            )
+            tv_action = trade_volume_action_for_faction_name(station.faction_affiliation)
+            if tv_action is not None:
+                apply_trade_volume_rep(
+                    db, current_player, tv_action, total_cost,
+                    {"sector_id": current_player.current_sector_id},
+                )
+        except Exception:
+            logger.warning("emergent trade-volume faction rep failed (buy)", exc_info=True)
+
         # Award rank points for trading volume
         rank_awarded = None
         try:
@@ -727,6 +751,45 @@ async def sell_resource(
             PersonalReputationService(db).adjust_reputation(current_player.id, 1, "complete_trade")
         except Exception:
             logger.warning("complete_trade reputation nudge failed (sell)", exc_info=True)
+
+        # WO-CD-2 — emergent FACTION rep for trade volume at a faction-flagged
+        # port (CONCRETE-CANON, factions-and-teams.md). Two distinct canon
+        # triggers can fire on a SELL:
+        #   1) The GENERIC trade trigger (TF/MG/FC/FA): "Trade at a
+        #      Federation/Guild/Frontier/Fringe-flagged port | +1 / 5,000 cr"
+        #      — accrues total_earnings toward 5,000-cr blocks (+1 / block).
+        #   2) AM ore→refinery: "Sell raw ore to an AM-flagged refinery |
+        #      +2 / 5,000 cr" (double-weighted) — fires ONLY when this is an ORE
+        #      sell at an Astral-Mining-flagged station whose
+        #      services['refining_facility'] is true (the canon "refinery"
+        #      qualifier). +2 / block.
+        # A station is flagged for at most one faction, so at most one of these
+        # branches fires on any given sell. Faction rep is DISJOINT from the +1
+        # personal rep above (ADR-0056 N-D1). Under the trade transaction
+        # (flush-only, pre-commit), idempotent (one completed sell), defensive.
+        try:
+            from src.services.emergent_reputation_service import (
+                apply_trade_volume_rep,
+                trade_volume_action_for_faction_name,
+            )
+            tv_ctx = {"sector_id": current_player.current_sector_id}
+            tv_action = trade_volume_action_for_faction_name(station.faction_affiliation)
+            if tv_action is not None:
+                apply_trade_volume_rep(
+                    db, current_player, tv_action, total_earnings, tv_ctx
+                )
+            elif (
+                trade_request.resource_type == "ore"
+                and station.faction_affiliation == "Astral Mining Consortium"
+                and (station.services or {}).get("refining_facility", False)
+            ):
+                # AM ore→refinery (+2 / 5,000 cr). The faction match uses the
+                # same Faction.name convention as the rest of the trade stack.
+                apply_trade_volume_rep(
+                    db, current_player, "TRADE_VOLUME_AM_ORE", total_earnings, tv_ctx
+                )
+        except Exception:
+            logger.warning("emergent trade-volume faction rep failed (sell)", exc_info=True)
 
         # Award rank points for trading volume
         rank_awarded = None

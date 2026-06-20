@@ -850,6 +850,44 @@ def advance_gate(db: Session, gate: WarpGate, now: Optional[datetime] = None) ->
     gate.hp = 10_000
     db.flush()
     logger.info("Warp gate %s harmonization completed — gate is ACTIVE", gate.id)
+
+    # WO-CD-2 — emergent FACTION rep for building a PUBLIC toll warp gate
+    # (CONCRETE-CANON, factions-and-teams.md anti-symmetric matrix: "Build a
+    # public toll warp gate | MG +30 | FC +5 | NS +5"; TF/AM/FA/SS/PI 0). This
+    # is the single, once-only gate-completion point — the function returns
+    # early on every failure / already-completed path above, so reaching here
+    # means a real first-time activation (idempotent). Gated on the tunnel being
+    # PUBLIC; the private/whitelist matrix row is PARKED (no private-gate build
+    # path exists yet — is_public is always True at creation). Flush-only
+    # (caller owns the commit), defensive — a rep hiccup never breaks gate
+    # completion. The private/whitelist build path, when it lands, should fire a
+    # BUILD_PRIVATE_WARP_GATE action (not registered — its row is parked).
+    try:
+        from src.services.emergent_reputation_service import apply_emergent_action
+
+        tunnel_is_public = True
+        if gate.warp_tunnel_id:
+            built_tunnel = (
+                db.query(WarpTunnel)
+                .filter(WarpTunnel.id == gate.warp_tunnel_id)
+                .first()
+            )
+            if built_tunnel is not None:
+                tunnel_is_public = bool(built_tunnel.is_public)
+
+        if tunnel_is_public:
+            builder = db.query(Player).filter(Player.id == gate.player_id).first()
+            if builder is not None:
+                apply_emergent_action(
+                    db, builder, "BUILD_PUBLIC_WARP_GATE",
+                    {"gate_id": str(gate.id)},
+                )
+    except Exception:
+        logger.warning(
+            "emergent public-gate faction rep failed for gate %s", gate.id,
+            exc_info=True,
+        )
+
     return gate
 
 

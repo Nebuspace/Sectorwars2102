@@ -412,7 +412,248 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "ANOMALY / WARP_STORM sector (+15) — NEBULA/BLACK_HOLE subset wired"
         ),
     ),
+    # -----------------------------------------------------------------------
+    # WO-CD-2: PER-BLOCK trade-volume actions (one whole rep point per earned
+    # 5,000-cr block — see apply_trade_volume_rep below, which owns the
+    # accumulation and dispatches THIS action once per earned block).
+    #
+    # CONCRETE-CANON (factions-and-teams.md per-faction trigger tables):
+    #   TF line 79:  "Trade at a Federation-flagged port | +1 / 5,000 cr"
+    #   MG line 90:  "Trade at any Guild-flagged station | +1 / 5,000 cr"
+    #   FC line 107: "Trade at a Frontier outpost | +1 / 5,000 cr"
+    #   FA line 144: "Trade at a Fringe-controlled port (legal goods) | +1 / 5,000 cr"
+    #   AM line 117: "Sell raw ore to an AM-flagged refinery | +2 / 5,000 cr"
+    #                (double-weighted — registered as +2 per block; the caller
+    #                 only awards this action on an ORE SELL at a station whose
+    #                 services['refining_facility'] is true, per the canon
+    #                 "refinery" qualifier)
+    #
+    # The per-block magnitude (NOT the per-5,000-cr rate) is what lands here:
+    # one earned block = +1 for TF/MG/FC/FA, +2 for AM. The accumulator awards
+    # this action N times when N whole blocks were crossed by a single trade.
+    "TRADE_VOLUME_TF": EmergentAction(
+        name="TRADE_VOLUME_TF",
+        deltas=[FactionDelta(FactionType.FEDERATION, 1)],
+        doc_source="factions-and-teams.md TF: Trade at a Federation-flagged port (+1 / 5,000 cr)",
+    ),
+    "TRADE_VOLUME_MG": EmergentAction(
+        name="TRADE_VOLUME_MG",
+        deltas=[FactionDelta(FactionType.MERCHANTS, 1)],
+        doc_source="factions-and-teams.md MG: Trade at any Guild-flagged station (+1 / 5,000 cr)",
+    ),
+    "TRADE_VOLUME_FC": EmergentAction(
+        name="TRADE_VOLUME_FC",
+        deltas=[FactionDelta(FactionType.INDEPENDENTS, 1)],
+        doc_source="factions-and-teams.md FC: Trade at a Frontier outpost (+1 / 5,000 cr)",
+    ),
+    "TRADE_VOLUME_FA": EmergentAction(
+        name="TRADE_VOLUME_FA",
+        deltas=[FactionDelta(FactionType.OUTLAWS, 1)],
+        doc_source="factions-and-teams.md FA: Trade at a Fringe-controlled port legal goods (+1 / 5,000 cr)",
+    ),
+    "TRADE_VOLUME_AM_ORE": EmergentAction(
+        name="TRADE_VOLUME_AM_ORE",
+        deltas=[FactionDelta(FactionType.MINING, 2)],
+        doc_source="factions-and-teams.md AM: Sell raw ore to an AM-flagged refinery (+2 / 5,000 cr)",
+    ),
+    # -----------------------------------------------------------------------
+    # WO-CD-2: Build a PUBLIC toll warp gate — anti-symmetric matrix
+    # (factions-and-teams.md line 213): "Build a public toll warp gate |
+    # TF 0 | MG +30 | FC +5 | AM 0 | NS +5 | FA 0 | SS 0 | PI 0".
+    #
+    # CONCRETE-CANON multi-faction fan-out: only the three NON-ZERO deltas are
+    # registered (MG +30, FC +5, NS +5); the zero columns are no-ops. The
+    # EmergentAction.deltas list already supports a multi-faction event, and the
+    # dispatcher fans out each delta (with its own throttle/cap/cascade) in one
+    # transaction. Wired at gate-activation (advance_gate) ONLY for a public
+    # tunnel (WarpTunnel.is_public). The private/whitelist row (line 214) is
+    # PARKED — the private-gate build path does not exist (is_public is always
+    # True at creation), so no caller can reach it.
+    "BUILD_PUBLIC_WARP_GATE": EmergentAction(
+        name="BUILD_PUBLIC_WARP_GATE",
+        deltas=[
+            FactionDelta(FactionType.MERCHANTS, 30),
+            FactionDelta(FactionType.INDEPENDENTS, 5),
+            FactionDelta(FactionType.EXPLORERS, 5),
+        ],
+        doc_source=(
+            "factions-and-teams.md anti-symmetric matrix: Build a public toll "
+            "warp gate (MG +30, FC +5, NS +5; TF/AM/FA/SS/PI 0)"
+        ),
+    ),
 }
+
+
+# ---------------------------------------------------------------------------
+# WO-CD-2: trade-volume accumulator (CONCRETE-CANON "+N / 5,000 cr").
+#
+# Canon expresses the faction trade-volume triggers as a RATE — "+1 / 5,000 cr"
+# (TF/MG/FC/FA) or "+2 / 5,000 cr" (AM ore→refinery), NOT a flat per-trade
+# award. A single sub-5,000-cr trade must award 0 BUT count toward the next
+# block; a large trade awards one rep point (or +2 for AM) per completed
+# 5,000-cr block and carries the remainder forward. Awarding the flat magnitude
+# on every trade would over-pay; ignoring sub-block trades would under-pay.
+#
+# This helper owns that accumulation. Per (player, faction) cumulative traded
+# credits live in player.settings JSONB under ``emergent_trade_volume`` (no
+# migration — mirrors the throttle bucket). On each completed trade the caller
+# passes the trade's gross credit value + the resolved EMERGENT_ACTIONS key for
+# that faction; we add to the running total, compute how many whole 5,000-cr
+# blocks were newly crossed, keep the remainder, and dispatch the per-block
+# action that many times through the SAME dispatcher (so the award inherits the
+# canon throttle, combined-rep cap, global pool, and rivalry cascade). The
+# action's registered delta magnitude IS the per-block award (+1 TF/MG/FC/FA,
+# +2 AM), so the dispatcher applies the correct per-block value automatically.
+#
+# Idempotent / safe: only the CALLER (a completed buy/sell, under the trade
+# transaction, never on a failed trade) invokes this; flush-only; never raises.
+# ---------------------------------------------------------------------------
+TRADE_VOLUME_SETTINGS_KEY = "emergent_trade_volume"
+TRADE_VOLUME_CREDITS_PER_BLOCK = 5_000  # CONCRETE-CANON: "/ 5,000 cr"
+
+
+def apply_trade_volume_rep(
+    db: Session,
+    player: Player,
+    action: str,
+    credits_traded: int,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Accrue a completed trade's credit value toward the canon 5,000-cr
+    trade-volume blocks for ``action``'s faction, and award the per-block
+    emergent action once per newly-crossed block.
+
+    Args:
+        db: the caller's SYNC session (flush-only; caller owns the commit).
+        player: the trading Player.
+        action: one of the ``TRADE_VOLUME_*`` keys in EMERGENT_ACTIONS.
+        credits_traded: the trade's gross credit value (total_cost on a buy,
+            total_earnings on a sell) — MUST be the value of a COMPLETED trade.
+        context: optional event metadata (sector_id) for the rep-history reason.
+
+    Returns ``{"success", "action", "blocks_awarded", "carry_over", "applied"}``.
+    Never raises — a rep hiccup must never break the trade that triggered it.
+
+    Accumulation: running per-(player, faction) cumulative credits live in
+    ``player.settings['emergent_trade_volume'][<faction_code>]``. After adding
+    this trade's value, ``blocks = total // 5,000`` whole blocks are due; we
+    dispatch ``action`` that many times (each award is one per-block magnitude,
+    routed through ``apply_emergent_action`` so throttle/cap/pool/cascade all
+    apply) and store ``total % 5,000`` as the carry-over for the next trade.
+    """
+    context = context or {}
+    spec = EMERGENT_ACTIONS.get(action)
+    if spec is None or not spec.deltas:
+        logger.warning(
+            "apply_trade_volume_rep: unknown/empty action %r — no rep applied",
+            action,
+        )
+        return {"success": False, "action": action, "reason": "unknown_action"}
+    if player is None or getattr(player, "id", None) is None:
+        logger.warning(
+            "apply_trade_volume_rep(%s): no valid player — no rep applied",
+            action,
+        )
+        return {"success": False, "action": action, "reason": "no_player"}
+    try:
+        credits_traded = int(credits_traded)
+    except (TypeError, ValueError):
+        credits_traded = 0
+    if credits_traded <= 0:
+        # A zero/negative-value trade contributes nothing and is not a block.
+        return {
+            "success": True, "action": action,
+            "blocks_awarded": 0, "carry_over": None, "applied": [],
+        }
+
+    # The faction is the single primary delta's faction; key the running total
+    # by its stable roster code (survives any FactionType enum reordering).
+    faction = spec.deltas[0].faction
+    fcode = _faction_code(faction)
+
+    try:
+        # Load (and normalise) the per-(player, faction) cumulative bucket.
+        settings = player.settings if isinstance(player.settings, dict) else {}
+        ledger = settings.get(TRADE_VOLUME_SETTINGS_KEY)
+        if not isinstance(ledger, dict):
+            ledger = {}
+        try:
+            running = int(ledger.get(fcode, 0))
+        except (TypeError, ValueError):
+            running = 0
+        if running < 0:
+            running = 0
+
+        running += credits_traded
+        blocks = running // TRADE_VOLUME_CREDITS_PER_BLOCK
+        carry_over = running % TRADE_VOLUME_CREDITS_PER_BLOCK
+
+        # Persist the carry-over BEFORE awarding so a mid-loop hiccup can never
+        # double-count the same credits on a retry (the credits are "spent" the
+        # moment they convert to blocks; only whole blocks pay out).
+        ledger[fcode] = int(carry_over)
+        new_settings = dict(settings)
+        new_settings[TRADE_VOLUME_SETTINGS_KEY] = ledger
+        player.settings = new_settings
+        flag_modified(player, "settings")
+
+        applied: List[Dict[str, Any]] = []
+        if blocks > 0:
+            # One emergent action per newly-crossed block; each carries the
+            # per-block magnitude registered on the action (the dispatcher
+            # applies throttle/cap/pool/cascade per award). A very large trade
+            # crossing many blocks is naturally bounded by the dispatcher's
+            # daily per-faction event cap and global rep pool.
+            for _ in range(int(blocks)):
+                result = EmergentReputationService(db).apply_emergent_action(
+                    player, action, context
+                )
+                applied.append(result)
+        return {
+            "success": True,
+            "action": action,
+            "blocks_awarded": int(blocks),
+            "carry_over": int(carry_over),
+            "applied": applied,
+        }
+    except Exception as e:  # never raise into the trade path
+        logger.error(
+            "apply_trade_volume_rep(%s) for player %s failed: %s",
+            action, getattr(player, "id", None), e,
+        )
+        return {"success": False, "action": action, "reason": "exception"}
+
+
+# ---------------------------------------------------------------------------
+# WO-CD-2: faction-name → TRADE_VOLUME action-key resolver.
+#
+# A station's controlling faction is carried as ``Station.faction_affiliation``
+# — the faction DISPLAY NAME (matched against ``Faction.name`` everywhere in
+# the trade stack: docking_service, construction_service, trading_service). We
+# map that name to the right per-faction TRADE_VOLUME_* action key. Only the
+# four factions canon gives a GENERIC trade-volume trigger (TF/MG/FC/FA) are
+# resolved here; AM's ore-to-refinery trigger is commodity- and venue-specific
+# and is resolved separately at the sell site (it is NOT a generic trade entry).
+#
+# Returns None for an unaffiliated station, an unknown name, or any faction
+# without a canon generic trade-volume trigger (no award fires — never a guess).
+# ---------------------------------------------------------------------------
+_FACTION_NAME_TO_TRADE_VOLUME_ACTION: Dict[str, str] = {
+    "Terran Federation": "TRADE_VOLUME_TF",
+    "Mercantile Guild": "TRADE_VOLUME_MG",
+    "Frontier Coalition": "TRADE_VOLUME_FC",
+    "Fringe Alliance": "TRADE_VOLUME_FA",
+}
+
+
+def trade_volume_action_for_faction_name(faction_name: Optional[str]) -> Optional[str]:
+    """Resolve a station's ``faction_affiliation`` display name to its generic
+    TRADE_VOLUME_* action key, or None when the faction has no canon generic
+    trade-volume trigger (TF/MG/FC/FA only). AM is intentionally absent here —
+    its ore-to-refinery trigger is handled separately at the sell site."""
+    if not faction_name:
+        return None
+    return _FACTION_NAME_TO_TRADE_VOLUME_ACTION.get(faction_name)
 
 
 class EmergentReputationService:
