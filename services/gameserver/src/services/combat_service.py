@@ -674,6 +674,37 @@ class CombatService:
                             attacker.id, dead_npc.display_name,
                             SENTINEL_KILL_CONCORD_PENALTY,
                         )
+                elif dead_npc.faction_code == "pirates":
+                    # Emergent faction-rep (ADR-0032): "Kill a Pirate or Cabal
+                    # NPC | +5 Terran Federation". Routed through the ADR-0032
+                    # dispatcher — the single canon entry point for emergent
+                    # faction reputation — NOT a raw apply_faction_rep_delta
+                    # call, so the trigger table stays the one tuning surface.
+                    #
+                    # DOUBLE-FIRE SAFE: this is a genuinely NEW hook. Before
+                    # this WO no faction-rep was awarded for a pirate kill (the
+                    # only faction-rep at this site was the LAW_ENFORCEMENT
+                    # penalty branch above — a different action, faction, and
+                    # sign). The personal-rep hooks elsewhere in this method
+                    # (attack_innocent / defeat_bounty_target / etc.) are the
+                    # DISJOINT personal-reputation signal (ADR-0056 N-D1) and
+                    # are untouched. The dispatcher is flush-only (it delegates
+                    # to apply_faction_rep_delta) and folds into this method's
+                    # single commit, exactly like the police-kill hook above.
+                    try:
+                        from src.services.emergent_reputation_service import (
+                            apply_emergent_action,
+                        )
+                        apply_emergent_action(
+                            self.db,
+                            attacker,
+                            "KILL_PIRATE_NPC",
+                            {"sector_id": sector.sector_id},
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed KILL_PIRATE_NPC emergent-rep hook: %s", e
+                        )
 
             # Medal dispatch hook (ADR-0028 / medals lane) for a resolved NPC
             # kill. defender_id is NULL on NPC combat logs (no Player behind
