@@ -28,7 +28,7 @@ import base64
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, update
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, Session
 
 from src.models.player import Player
 from src.models.sector import Sector
@@ -290,6 +290,95 @@ class ARIAPersonalIntelligenceService:
         except Exception as e:
             logger.warning(
                 "Failed to record combat memory for player %s: %s",
+                player_id, e,
+            )
+
+    def record_combat_memory_sync(self, player_id: str, combat_data: dict,
+                                  db: Session) -> None:
+        """Synchronous twin of ``record_combat_memory`` for sync-Session callers.
+
+        ``combat_service`` runs entirely on a synchronous SQLAlchemy ``Session``
+        (it never awaits), so it cannot call the async ``record_combat_memory``.
+        This method records the exact same ``combat_encounter`` memory shape via
+        the sync session: it reuses the identical encryption, content schema, and
+        dedup-by-hash logic — only the DB calls differ (sync ``query``/``add``
+        instead of ``await db.execute``/``select``).
+
+        FLUSH-FREE: like the async ``_create_memory``, it only ``db.add``s the
+        memory; the CALLER owns the commit (so it folds into combat's single
+        commit). Never raises — an ARIA memory hiccup must never break combat.
+
+        Args:
+            player_id: the player whose ARIA should remember this combat.
+            combat_data: same keys as ``record_combat_memory`` — ``outcome``,
+                ``opponent_name``, ``sector_id``, ``attacker_ship``,
+                ``defender_ship``, ``cargo_stolen``, ``reputation_change``, plus
+                an optional ``event`` override (defaults ``combat_encounter``).
+            db: synchronous database session (caller commits).
+        """
+        try:
+            outcome = combat_data.get("outcome", "unknown")
+            opponent = combat_data.get("opponent_name", "Unknown")
+
+            # Higher importance for victories and first-time encounters
+            importance = 0.8 if outcome == "victory" else 0.7
+
+            content = {
+                "event": combat_data.get("event", "combat_encounter"),
+                "opponent_name": str(opponent),
+                "outcome": str(outcome),
+                "sector_id": combat_data.get("sector_id"),
+                "attacker_ship": combat_data.get("attacker_ship"),
+                "defender_ship": combat_data.get("defender_ship"),
+                "cargo_stolen": combat_data.get("cargo_stolen"),
+                "reputation_change": combat_data.get("reputation_change"),
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            # Preserve any extra structured detail the caller supplies (e.g.
+            # planet_id / planet_name on a capture) without colliding with the
+            # canonical keys above.
+            for k, v in combat_data.items():
+                if k not in content and k not in (
+                    "event", "opponent_name", "outcome", "sector_id",
+                    "attacker_ship", "defender_ship", "cargo_stolen",
+                    "reputation_change",
+                ):
+                    content[k] = v
+
+            encrypted_content = self._encrypt_memory(content)
+            content_str = json.dumps(content, sort_keys=True)
+            memory_hash = hashlib.sha256(content_str.encode()).hexdigest()
+
+            existing = (
+                db.query(ARIAPersonalMemory)
+                .filter(
+                    ARIAPersonalMemory.player_id == player_id,
+                    ARIAPersonalMemory.memory_hash == memory_hash,
+                )
+                .first()
+            )
+            if existing is not None:
+                return  # Memory already exists (dedup — also our double-fire guard)
+
+            memory = ARIAPersonalMemory(
+                player_id=player_id,
+                memory_type="combat",
+                importance_score=importance,
+                memory_content={"encrypted": encrypted_content},
+                memory_hash=memory_hash,
+                confidence_level=0.9,
+                decay_rate=self.MEMORY_DECAY_RATE,
+            )
+            db.add(memory)
+            self.memories_created += 1
+
+            logger.info(
+                "Recorded combat memory (sync) for player %s: %s vs %s",
+                player_id, outcome, opponent,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record combat memory (sync) for player %s: %s",
                 player_id, e,
             )
 

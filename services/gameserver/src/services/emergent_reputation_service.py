@@ -652,3 +652,74 @@ def apply_emergent_action(
     FLUSH-ONLY (caller owns the commit). Never raises.
     """
     return EmergentReputationService(db).apply_emergent_action(player, action, context)
+
+
+# ---------------------------------------------------------------------------
+# Planet-capture faction penalty (DECISIONS planet-assault-reward-model, Max
+# 2026-06-20 conditional (c)).
+#
+# Capturing a FACTION-OWNED planet earns the captor NEGATIVE reputation with
+# that owning faction. Unlike the static EMERGENT_ACTIONS table (fixed faction
+# per action), the owning faction here is DYNAMIC — it depends on which faction
+# held the planet — so this is expressed as a dynamic-faction penalty helper
+# wrapping the proven ``apply_faction_rep_delta`` primitive (the same layer the
+# dispatcher uses for its own negatives). Keeping the magnitude here makes
+# emergent_reputation_service the single tuning surface for capture rep, mirroring
+# how the EMERGENT_ACTIONS table is the single surface for fixed-faction rep.
+#
+# MAGNITUDE IS NO-CANON: −50 is PROPOSED, mirroring the canon
+# ``attacked_chartered_planet`` personal-rep penalty (−50). The factions canon
+# (factions-and-teams.md reputation-triggers / ADR-0032) does NOT list a
+# capture-a-faction-planet trigger, so this number is flagged for Max and is
+# the smallest sensible intervention until canon lands.
+#
+# WIRING REALITY: the Planet model has no faction-owner field (planets are owned
+# only by human Players via the player_planets join table, else unowned), so the
+# combat-side caller resolves no owning faction today and never invokes this. The
+# helper exists so the magnitude/behavior is fixed and ready the instant a
+# planet faction-owner signal lands — no double-fire risk because nothing calls
+# it yet (matching the EMERGENT_ACTIONS "defined-but-unwired" pattern).
+# ---------------------------------------------------------------------------
+PLANET_CAPTURE_FACTION_PENALTY = -50  # NO-CANON (proposed; mirrors chartered −50)
+
+
+def apply_planet_capture_faction_penalty(
+    db: Session,
+    player: Player,
+    owning_faction: FactionType,
+    context: Optional[Dict[str, Any]] = None,
+) -> Optional[Any]:
+    """Apply the capture-vs-owning-faction NEGATIVE reputation penalty.
+
+    Fires ONLY for a faction-owned planet (the caller passes the resolved
+    ``owning_faction``). FLUSH-ONLY (delegates to ``apply_faction_rep_delta``,
+    which flushes; the caller owns the commit). Never raises — a rep hiccup
+    must never break combat resolution.
+
+    Returns the updated Reputation row (or None when no faction row exists / on
+    error), matching ``apply_faction_rep_delta``.
+    """
+    context = context or {}
+    if player is None or getattr(player, "id", None) is None:
+        logger.warning(
+            "apply_planet_capture_faction_penalty: no valid player — skipped"
+        )
+        return None
+    sector_id = context.get("sector_id")
+    reason = "emergent:CAPTURE_FACTION_PLANET"
+    if sector_id is not None:
+        reason += f" @sector={sector_id}"
+    try:
+        return apply_faction_rep_delta(
+            db,
+            player.id,
+            owning_faction,
+            PLANET_CAPTURE_FACTION_PENALTY,
+            reason,
+        )
+    except Exception as e:  # pragma: no cover - defensive; never break combat
+        logger.error(
+            "apply_planet_capture_faction_penalty failed for player %s: %s",
+            getattr(player, "id", None), e,
+        )
+        return None

@@ -1137,9 +1137,19 @@ class CombatService:
         # Update planet defenses
         planet.defense_level = max(0, planet.defense_level - combat_result["planet_damage"])
         
-        # If planet was captured, transfer ownership
+        # If planet was captured, transfer ownership and deliver capture rewards.
         if combat_result["planet_captured"]:
             self._transfer_planet_ownership(planet, attacker)
+            # Capture rewards (DECISIONS planet-assault-reward-model, Max
+            # 2026-06-20): resources-to-captor (primary), ARIA memory (always),
+            # faction neg-rep (faction-owned only), find-planet bounty (if any).
+            # Fires EXACTLY ONCE per capture: attack_planet resolves combat in a
+            # single _resolve_planet_combat call (not an external per-round loop)
+            # and reaches this branch once, after the ownership swap is staged and
+            # before the single commit below. Best-effort — never breaks combat.
+            self._award_planet_capture_rewards(
+                attacker, planet, planet_owner, sector, combat_result
+            )
         
         # Update last_attacked timestamp for planet
         planet.last_attacked = datetime.now()
@@ -3337,6 +3347,132 @@ class CombatService:
             {"player_id": str(new_owner.id), "planet_id": str(planet.id)}
         )
         logger.info("Planet %s ownership transferred to player %s", planet.id, new_owner.id)
+
+    def _resolve_planet_owning_faction(self, planet: Planet):
+        """Resolve the FACTION that owns ``planet``, or None.
+
+        DECISIONS planet-assault-reward-model conditional (c): the capture
+        neg-rep penalty fires ONLY against a faction-owning planet. The Planet
+        model currently has NO faction-owner field — ownership is expressed only
+        via the ``player_planets`` join table (human players) or "unowned"
+        (``planet.owner`` empty). There is therefore no faction-owner signal to
+        read, so this returns None today and the (c) penalty branch never fires.
+
+        Isolated here so that the day a planet faction-owner field lands, the
+        faction is resolved in ONE place and the whole conditional activates
+        without touching the reward orchestration. Returns a ``FactionType`` or
+        None. Never raises.
+        """
+        # No faction-owner field exists on Planet yet (see docstring). When one
+        # lands (e.g. planet.faction_code / planet.npc_owner_id), map it to a
+        # FactionType here and return it.
+        return None
+
+    def _award_planet_capture_rewards(
+        self,
+        attacker: Player,
+        planet: Planet,
+        previous_owner: Optional[Player],
+        sector: Optional[Sector],
+        combat_result: Dict[str, Any],
+    ) -> None:
+        """Deliver the rewards for a successful planet capture (fires ONCE).
+
+        Per the Max ruling (DECISIONS planet-assault-reward-model, 2026-06-20):
+          (a) RESOURCES (PRIMARY): the planet's stored + producing resources
+              transfer to the captor (NOT razed). Stored stockpiles already
+              transfer implicitly with ownership (they are columns on the planet
+              the captor now owns); here we additionally REALIZE pending
+              production up to now so the captor receives the full, current
+              stockpile rather than a stale snapshot. Idempotent (the production
+              accrual is anchored on planet.last_production).
+          (b) ARIA MEMORY (ALWAYS): record a combat/event memory — ARIA learns
+              from everything the player does.
+          (c) FACTION NEG-REP (CONDITIONAL): only if the planet is faction-owned,
+              apply a negative rep delta vs the owning faction. No faction-owner
+              field exists on Planet today, so this never fires yet (the branch
+              is wired and correct for the moment the schema lands).
+          (d) FIND-PLANET BOUNTY (CONDITIONAL): only if such a bounty exists, pay
+              it. No find-planet bounty schema exists (bounties are player-kill
+              only), so this is a no-op today.
+
+        Called exactly once per capture, after _transfer_planet_ownership and
+        before attack_planet's single commit. Each leg is independently
+        best-effort: a failure in one never aborts the others or the combat
+        commit. The CALLER owns the commit (this method only stages mutations).
+        """
+        # --- (a) RESOURCES (PRIMARY) — realize pending production to the captor.
+        # The stored stockpiles already moved with ownership (planet columns);
+        # realize_production advances accrued-but-unbanked production so the
+        # captor inherits the up-to-date totals. Idempotent — re-running accrues
+        # exactly elapsed×rate once (anchored on planet.last_production).
+        try:
+            from src.services.planetary_service import PlanetaryService
+            PlanetaryService(self.db).realize_production(planet)
+        except Exception as e:
+            logger.error(
+                "Planet-capture resource realization failed for planet %s: %s",
+                planet.id, e,
+            )
+
+        # --- (b) ARIA MEMORY (ALWAYS) — record the capture as a combat memory.
+        # combat_service is sync; use the sync ARIA recorder (flush-free, dedup
+        # by content hash — which also guards against a double memory if this
+        # method were ever reached twice for the same capture).
+        try:
+            from src.services.aria_personal_intelligence_service import (
+                get_aria_intelligence_service,
+            )
+            attacker_ship = attacker.current_ship
+            planet_label = getattr(planet, "custom_name", None) or \
+                getattr(planet, "auto_name", None) or planet.name
+            get_aria_intelligence_service().record_combat_memory_sync(
+                str(attacker.id),
+                {
+                    "event": "planet_captured",
+                    "outcome": "victory",
+                    "opponent_name": planet_label,
+                    "sector_id": sector.sector_id if sector else None,
+                    "attacker_ship": attacker_ship.type.value if attacker_ship else None,
+                    "defender_ship": None,
+                    "planet_id": str(planet.id),
+                    "previous_owner_id": str(previous_owner.id) if previous_owner else None,
+                },
+                self.db,
+            )
+        except Exception as e:
+            logger.error(
+                "Planet-capture ARIA memory hook failed for player %s: %s",
+                attacker.id, e,
+            )
+
+        # --- (c) FACTION NEG-REP (CONDITIONAL) — only when faction-owned.
+        # Resolves to None today (no planet faction-owner field), so this is a
+        # no-op until the schema lands. Routed through the emergent_reputation
+        # module (the single tuning surface; magnitude is NO-CANON −50).
+        try:
+            owning_faction = self._resolve_planet_owning_faction(planet)
+            if owning_faction is not None:
+                from src.services.emergent_reputation_service import (
+                    apply_planet_capture_faction_penalty,
+                )
+                apply_planet_capture_faction_penalty(
+                    self.db,
+                    attacker,
+                    owning_faction,
+                    {"sector_id": sector.sector_id if sector else None},
+                )
+        except Exception as e:
+            logger.error(
+                "Planet-capture faction neg-rep hook failed for player %s: %s",
+                attacker.id, e,
+            )
+
+        # --- (d) FIND-PLANET BOUNTY (CONDITIONAL) — pay only if one exists.
+        # The bounty system is player-kill only (no planet-indexed bounty schema:
+        # no planet bounty table, no collect_planet_bounty). There is no
+        # find-planet bounty to collect, so this is a documented no-op. When a
+        # planet-bounty schema lands, the payout call belongs here.
 
     def _transfer_port_ownership(self, port: Station, new_owner: Player) -> None:
         """Transfer ownership of a port to a new player."""
