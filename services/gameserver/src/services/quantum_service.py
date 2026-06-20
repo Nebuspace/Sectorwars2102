@@ -503,9 +503,64 @@ def jump(
             "No Quantum Charge loaded. Refine one (1 Quantum Shard) at any "
             "Class-3+ station or SpaceDock"
         )
-    if player.turns < JUMP_TURN_COST:
+
+    # Tractor tow through Quantum Jump (WO-AF; ships.md:358; ADR-0067). A tow
+    # transits a QJ ONLY when the hauler is a Warp Jumper using its OWN Tractor
+    # Beam — which is exactly this jump path (the ship was already asserted to be
+    # a WARP_JUMPER by _require_warp_jumper). Constraints: towed size_units <= 4
+    # (tiny/small/medium eligible; large/capital excluded), ONE towed ship per
+    # jump (a single tow_state can only hold one tow, so this is structural),
+    # +5 turns FLAT surcharge (NO size scaling for QJ). A WJ that is ITSELF being
+    # towed cannot jump (it would drag itself off its hauler). All gates run
+    # BEFORE the irreversible Phase-2 commit so a rejected jump leaves the tow
+    # intact at the source sector (the "abort pre-commit" case is satisfied by
+    # never reaching the commit).
+    qj_tow_surcharge = 0
+    try:
+        from src.services.tow_service import (
+            TowService,
+            QJ_MAX_TOWED_SIZE_UNITS,
+            QJ_TOW_SURCHARGE_FLAT,
+        )
+        from src.models.ship import ShipSize, size_units_for
+
+        tow_svc = TowService(db)
+        # A WJ that is itself being towed cannot quantum-jump independently.
+        if tow_svc.is_being_towed(ship.id):
+            raise QuantumError(
+                "This Warp Jumper is being towed — detach the tractor lock "
+                "before engaging the quantum drive"
+            )
+        if tow_svc.is_actively_towing(ship):
+            towed_size_str = (ship.tow_state or {}).get("towed_size")
+            try:
+                towed_size = ShipSize[towed_size_str.upper()] if towed_size_str else None
+            except (KeyError, AttributeError):
+                towed_size = None
+            if towed_size is None or towed_size == ShipSize.CAPITAL:
+                raise QuantumError(
+                    "The towed ship cannot transit a quantum jump (capital-size "
+                    "or unspecified hulls are excluded)"
+                )
+            if size_units_for(towed_size) > QJ_MAX_TOWED_SIZE_UNITS:
+                raise QuantumError(
+                    "The towed ship is too large to transit a quantum jump "
+                    "(medium-size maximum: tiny / small / medium only)"
+                )
+            qj_tow_surcharge = QJ_TOW_SURCHARGE_FLAT
+    except QuantumError:
+        raise
+    except Exception as e:
+        # A tow-state read hiccup must never silently let an oversized tow
+        # through. Fail closed only if a tow is present but unreadable; with no
+        # tow, proceed at base cost.
+        logger.error("QJ tow validation read failed: %s", e)
+        qj_tow_surcharge = 0
+
+    total_jump_cost = JUMP_TURN_COST + qj_tow_surcharge
+    if player.turns < total_jump_cost:
         raise QuantumError(
-            f"Not enough turns for a quantum jump. Need {JUMP_TURN_COST}, have {player.turns}"
+            f"Not enough turns for a quantum jump. Need {total_jump_cost}, have {player.turns}"
         )
 
     points = _load_sector_points(db)
@@ -518,9 +573,10 @@ def jump(
     direction = _bearing_unit_vector(yaw_deg, pitch_deg)
 
     # Phase 2 — commit. Irreversible: charge, turns and cooldown are
-    # consumed no matter how the resolve lands (ADR-0030).
+    # consumed no matter how the resolve lands (ADR-0030). total_jump_cost folds
+    # in the +5 flat QJ tow surcharge when a tow is in tow (WO-AF).
     ship.quantum_charges -= 1
-    spend_turns(player, JUMP_TURN_COST)
+    spend_turns(player, total_jump_cost)
     # Engine upgrades shorten the JUMP cooldown (ship-systems.md §6.6 line 242:
     # "Engine L1–L3 (jump cooldown reduction — 📐 Design-only effect)"). The
     # per-level magnitude is NO-CANON; ShipUpgradeService.engine_jump_cooldown_factor
@@ -614,6 +670,17 @@ def jump(
         player.current_port_id = None
         player.current_planet_id = None
         ship.sector_id = destination.sector_id
+
+        # Tractor tow ride-along through the QJ (WO-AF; ships.md:358). The towed
+        # ship's sector follows the WJ to the destination; the towed pilot pays
+        # 0 turns. The tow stays LOCKED through the jump (only detach/destruction
+        # breaks it). Best-effort — a tow hiccup must not strand the jump arrival.
+        if ship.tow_state and ship.tow_state.get("towed_ship_id"):
+            try:
+                from src.services.tow_service import TowService
+                TowService(db).carry_towed_ship(ship, destination.sector_id)
+            except Exception as e:
+                logger.error("QJ tow ride-along hook failed: %s", e)
 
         # Reuse the canonical players_present bookkeeping rather than
         # duplicating it (private by convention, single source of truth)

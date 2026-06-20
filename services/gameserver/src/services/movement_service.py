@@ -56,7 +56,13 @@ def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str,
 
 class MovementService:
     """Service for managing player movement through the galaxy."""
-    
+
+    # Player warp gate tow surcharge: +2 turns FLAT regardless of towed size
+    # (FEATURES/gameplay/ships.md:357; WO-AF). Distinct from the size-based
+    # surcharge_per_move cached on Ship.tow_state, which applies to natural warps
+    # and tunnels.
+    GATE_TOW_SURCHARGE_FLAT = 2
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -414,19 +420,59 @@ class MovementService:
         except Exception as e:
             logger.error("Hangar passenger move-guard failed: %s", e)
 
+        # Tractor tow (WO-AF; ships.md:359): a ship currently BEING TOWED by some
+        # hauler cannot move independently — it rides along when the hauler moves,
+        # or must detach first. Reject before any turn charge. The HAULER's own
+        # move is allowed (and pays the surcharge in _execute_movement below).
+        try:
+            from src.services.tow_service import TowService
+            if TowService(self.db).is_being_towed(player.current_ship_id):
+                return {
+                    "success": False,
+                    "message": "Your ship is being towed — detach the tractor lock to "
+                               "move under your own power",
+                    "turn_cost": 0,
+                }
+        except Exception as e:
+            logger.error("Tow passenger move-guard failed: %s", e)
+
         current_sector_id = player.current_sector_id
-        
+
         # Return early if already in the destination sector
         if current_sector_id == destination_sector_id:
             return {"success": True, "message": "Already in this sector", "turn_cost": 0}
-        
+
+        # Tractor tow (WO-AF; ships.md:354-357): if THIS ship is actively towing
+        # another, the hauler pays its full move cost PLUS a tow surcharge. The
+        # surcharge is size-based on warps/tunnels (the cached surcharge_per_move:
+        # tiny+1/small+2/medium+3/large+5), but a PLAYER WARP GATE costs +2 turns
+        # FLAT regardless of towed size (ships.md:357). The towed ship rides along
+        # (its sector follows the hauler, towed pilot pays 0) — applied in
+        # _execute_movement. Best-effort read: a tow-state hiccup must not break
+        # the player's own move; absent tow => surcharge 0 (unchanged behavior).
+        tow_size_surcharge = 0
+        try:
+            from src.services.tow_service import TowService
+            if TowService(self.db).is_actively_towing(player.current_ship):
+                tow_size_surcharge = int(
+                    (player.current_ship.tow_state or {}).get("surcharge_per_move", 0)
+                )
+        except Exception as e:
+            logger.error("Tow surcharge read failed (continuing at base cost): %s", e)
+            tow_size_surcharge = 0
+
         # Prefer a 0-turn ACTIVE player-built warp gate over a parallel direct
         # warp (FIX 7). The available-moves listing advertises the gate at 0
         # turns; if a direct warp ALSO connects origin -> destination, charging
         # the direct-warp cost here would contradict the advertised 0. Take the
         # gate first so the charged cost matches what the player was shown.
         if self._has_player_gate(current_sector_id, destination_sector_id):
-            result = self._execute_movement(player, destination_sector_id, 0)
+            # Gate is 0 turns normally; while towing it is +2 turns FLAT
+            # (ships.md:357 — flat, not the size surcharge).
+            gate_cost = 0 + (self.GATE_TOW_SURCHARGE_FLAT if tow_size_surcharge else 0)
+            if player.turns < gate_cost:
+                return {"success": False, "message": "Not enough turns for this gate transit while towing", "turn_cost": gate_cost}
+            result = self._execute_movement(player, destination_sector_id, gate_cost)
             tunnel_events = self._check_for_tunnel_events(
                 player, current_sector_id, destination_sector_id
             )
@@ -444,6 +490,8 @@ class MovementService:
         )
 
         if can_warp:
+            # Add the size-based tow surcharge to the base warp cost.
+            warp_cost = warp_cost + tow_size_surcharge
             # Check if player has enough turns
             if player.turns < warp_cost:
                 return {"success": False, "message": "Not enough turns for this movement", "turn_cost": warp_cost}
@@ -469,12 +517,17 @@ class MovementService:
         can_tunnel, tunnel_cost, tunnel_message = self._check_warp_tunnel(
             current_sector_id, destination_sector_id, player.current_ship
         )
-        
+
         if can_tunnel:
+            # Add the size-based tow surcharge to the base tunnel cost. (A
+            # NATURAL warp tunnel is the size-surcharge path; player gates are
+            # the +2-flat path handled above. _check_warp_tunnel never returns a
+            # player gate — those are matched by _has_player_gate first.)
+            tunnel_cost = tunnel_cost + tow_size_surcharge
             # Check if player has enough turns
             if player.turns < tunnel_cost:
                 return {"success": False, "message": "Not enough turns for this warp tunnel jump", "turn_cost": tunnel_cost}
-            
+
             # Execute the move
             result = self._execute_movement(player, destination_sector_id, tunnel_cost)
             
@@ -1006,6 +1059,20 @@ class MovementService:
                     )
                 except Exception as e:
                     logger.error("Carrier hangar ride-along hook failed: %s", e)
+
+            # Tractor tow ride-along (WO-AF; ships.md:354). When a HAULER moves,
+            # the towed ship's sector follows and the towed pilot pays 0 turns.
+            # The surcharge the hauler pays for this is already folded into
+            # turn_cost by the caller. Best-effort — a tow hiccup must not strand
+            # the hauler's own move; it rides this method's single commit below.
+            if player.current_ship.tow_state and player.current_ship.tow_state.get("towed_ship_id"):
+                try:
+                    from src.services.tow_service import TowService
+                    TowService(self.db).carry_towed_ship(
+                        player.current_ship, destination_sector_id
+                    )
+                except Exception as e:
+                    logger.error("Tractor tow ride-along hook failed: %s", e)
 
         # Mine detonation: hostile armored mines in the destination detonate
         # against the entering ship (combat.md "mines damage hostile entrants";

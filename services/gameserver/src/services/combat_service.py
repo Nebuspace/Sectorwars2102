@@ -1806,6 +1806,15 @@ class CombatService:
             if attacker_ship is not None:
                 attacker_effects = ShipUpgradeService.get_equipment_effects(attacker_ship)
                 attacker_has_tractor = attacker_effects.get("weapon_mode") == "tractor"
+                # WO-AF tow mutual-exclusion (ships.md:365): the Tractor Beam
+                # slot is mutually exclusive with weapon-mode firing while a tow
+                # is active — a hauler cannot tow AND tractor-attack at once. If
+                # the attacker is actively towing a ship, the tractor weapon mode
+                # is unavailable: the escape-suppression lock does NOT apply.
+                if attacker_has_tractor and getattr(attacker_ship, "tow_state", None):
+                    from src.services.tow_service import TowService
+                    if TowService(self.db).is_actively_towing(attacker_ship):
+                        attacker_has_tractor = False
         except Exception as e:  # never let an equipment-read break combat
             logger.error("Tractor equipment read failed (continuing without lock): %s", e)
             attacker_has_tractor = False

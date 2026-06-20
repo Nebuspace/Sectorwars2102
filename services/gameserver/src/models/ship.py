@@ -82,6 +82,37 @@ def size_units_for(size: "ShipSize") -> int:
     return SIZE_UNITS[size]
 
 
+# Canonical Tractor Beam tow per-move turn SURCHARGE by towed size
+# (FEATURES/gameplay/ships.md "Ship size axis" surcharge column + WO-AF order:
+# tiny +1 / small +2 / medium +3 / large +5). This is a DISTINCT mapping from
+# SIZE_UNITS above (1/2/4/8) — the surcharge does NOT equal the hangar size-unit
+# weight. CAPITAL is deliberately absent: a capital-size hull cannot be towed
+# (its mass exceeds the Tractor Beam's structural rating), so it has no
+# surcharge. Use tow_surcharge_for() for a safe accessor that raises on CAPITAL.
+TOW_SURCHARGE: Dict["ShipSize", int] = {
+    ShipSize.TINY: 1,
+    ShipSize.SMALL: 2,
+    ShipSize.MEDIUM: 3,
+    ShipSize.LARGE: 5,
+    # ShipSize.CAPITAL intentionally omitted — not-towable.
+}
+
+
+def tow_surcharge_for(size: "ShipSize") -> int:
+    """Per-move turn surcharge a hauler pays to tow a ship of ``size``.
+
+    Raises ValueError for CAPITAL (not-towable — its mass exceeds the Tractor
+    Beam's structural rating; callers must branch on capital explicitly via the
+    size axis BEFORE calling this, never fall through to a number).
+    """
+    if size not in TOW_SURCHARGE:
+        raise ValueError(
+            f"{size} has no tow surcharge — capital-size hulls cannot be towed "
+            f"(FEATURES/gameplay/ships.md ship-size-axis; ADR-0067)."
+        )
+    return TOW_SURCHARGE[size]
+
+
 class FailureType(enum.Enum):
     NONE = "NONE"
     MINOR = "MINOR"
@@ -199,6 +230,23 @@ class Ship(Base):
     # Managed exclusively by hangar_service (the single source of truth for
     # dock / undock / disembark / jettison-on-destruction).
     hangar = Column(JSONB, nullable=True)
+
+    # Tractor Beam tow state (WO-AF; DATA_MODELS/ships.md#ship-tow-state).
+    # Set on the HAULER (the ship doing the towing) while a Tractor Beam tow
+    # operation is active; NULL otherwise (the default for every ship). Shape:
+    #   {"towed_ship_id", "towed_owner_id", "towed_size",
+    #    "surcharge_per_move", "locked_at", "lock_sector_id"}
+    # surcharge_per_move is cached at lock-on from towed_size via the canon
+    # tow-surcharge table (tiny+1 / small+2 / medium+3 / large+5 — DISTINCT
+    # from the SIZE_UNITS hangar weights) so movement_service never re-traverses
+    # ShipSpecification per move. A ship with tow_state != NULL cannot itself be
+    # towed (no nesting), cannot dock into a Carrier hangar, and cannot fire its
+    # Tractor Beam in weapon mode (mutual exclusion). The towed ship's own row
+    # is unmodified — its current_pilot stays set, but movement_service /
+    # quantum_service reject independent move/jump attempts while it's towed.
+    # Managed exclusively by tow_service (the single source of truth for
+    # lock-on / detach / tow-along / detach-on-destruction).
+    tow_state = Column(JSONB, nullable=True)
 
     # Insurance
     insurance = Column(JSONB, nullable=True)

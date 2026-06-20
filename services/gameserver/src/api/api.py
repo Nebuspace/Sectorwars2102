@@ -44,6 +44,7 @@ from src.api.routes.gambling import router as gambling_router
 from src.api.routes.genesis import router as genesis_router
 from src.api.routes.ship_upgrades import router as ship_upgrades_router
 from src.api.routes.hangar import router as hangar_router
+from src.api.routes.tow import router as tow_router
 from src.api.routes.armory import router as armory_router
 from src.api.routes.registry import router as registry_router
 from src.api.routes.bang_galaxy import router as bang_galaxy_router
@@ -113,6 +114,10 @@ api_router.include_router(ship_upgrades_router, tags=["ship-upgrades"])
 # Carrier ship-hangar (WO-AE): dock-request/accept/undock/disembark consent flow
 # (router carries its own /hangar prefix)
 api_router.include_router(hangar_router, tags=["hangar"])
+# Tractor Beam tow (WO-AF): request/accept/cancel/detach consent flow
+# (router carries its own /tow prefix; the per-move surcharge rides the normal
+# movement / quantum endpoints via MovementService / quantum_service)
+api_router.include_router(tow_router, tags=["tow"])
 api_router.include_router(armory_router, tags=["armory"])
 # Black-market planet registry lookup (router carries its own /registry prefix)
 api_router.include_router(registry_router, tags=["registry"])

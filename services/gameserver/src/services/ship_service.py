@@ -145,6 +145,24 @@ class ShipService:
             except Exception as e:
                 logger.error("Hangar jettison-on-destruction failed for Carrier %s: %s", ship.id, e)
 
+        # Tractor tow auto-detach (WO-AF; ships.md:362-364; ADR-0067). Covers
+        # this hull in BOTH tow roles, uniformly across combat / genesis /
+        # warp-gate-anchor destruction (every destroy path funnels here):
+        #   - HAULER destroyed mid-tow -> tow detaches; the TOWED ship is left
+        #     INTACT where it sits and its pilot stays aboard (destroy_ship runs
+        #     on the HAULER, never the towed hull, so the towed pilot is never
+        #     ejected — no wreck, no insurance, cargo preserved). The WJ Phase-3
+        #     anchor-sacrifice (cause warp_gate_anchor) lands here too: the towed
+        #     ship already rode along to the destination and survives intact.
+        #   - TOWED ship destroyed -> clear its hauler's tow_state so the hauler
+        #     continues at base cost; the towed hull runs the standard wreck flow
+        #     below. Best-effort — a tow hiccup must never block the kill.
+        try:
+            from src.services.tow_service import TowService
+            TowService(self.db).detach_on_destruction(ship)
+        except Exception as e:
+            logger.error("Tow detach-on-destruction failed for ship %s: %s", ship.id, e)
+
         is_planned_dismantle = cause == "warp_gate_anchor"
         # A voluntary genesis sacrifice (advanced tier) behaves like the planned
         # dismantle for property handling: ALL non-bound cargo transfers to the
