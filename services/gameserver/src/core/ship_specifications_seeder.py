@@ -313,7 +313,8 @@ SHIP_SPECIFICATIONS = {
         "special_abilities": ["fleet_coordination"],
         "description": "These massive vessels serve as mobile headquarters for large operations, housing multiple drone squadrons and providing logistical support across vast distances.",
         "acquisition_methods": ["purchase"],
-        "faction_requirements": {"military_faction": "TRUSTED"}
+        # Canon ship-roster.md:51 — Carrier requires terran_federation ≥ TRUSTED
+        "faction_requirements": {"terran_federation": "TRUSTED"}
     },
     ShipType.WARP_JUMPER: {
         "base_cost": 1000000,
@@ -351,7 +352,8 @@ SHIP_SPECIFICATIONS = {
         "special_abilities": ["quantum_jump", "warp_gate_creation"],
         "description": "A highly specialized vessel containing modified warp gate technology that allows it to make directed quantum jumps across multiple sectors. The Warp Jumper is specifically designed to establish warp gates in distant sectors.",
         "acquisition_methods": ["special_construction"],
-        "faction_requirements": {"tech_guild": "HONORED", "quantum_research": "RESPECTED"}
+        # Canon ship-roster.md:52 — Warp Jumper requires nova_scientific_institute ≥ HONORED ONLY
+        "faction_requirements": {"nova_scientific_institute": "HONORED"}
     },
     # ------------------------------------------------------------------
     # NPC-only police hulls (police-forces.md "Interdictor hulls").
