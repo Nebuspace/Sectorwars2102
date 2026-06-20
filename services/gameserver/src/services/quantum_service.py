@@ -521,7 +521,14 @@ def jump(
     # consumed no matter how the resolve lands (ADR-0030).
     ship.quantum_charges -= 1
     spend_turns(player, JUMP_TURN_COST)
-    ship.quantum_jump_cooldown_until = scaled_deadline(JUMP_COOLDOWN_HOURS)
+    # Engine upgrades shorten the JUMP cooldown (ship-systems.md §6.6 line 242:
+    # "Engine L1–L3 (jump cooldown reduction — 📐 Design-only effect)"). The
+    # per-level magnitude is NO-CANON; ShipUpgradeService.engine_jump_cooldown_factor
+    # returns a multiplier in [floor, 1.0] (1.0 at Engine L0, ~10%/level reduction,
+    # floored at half). Only the JUMP cooldown is affected — the 4h SCAN cooldown
+    # (SCAN_COOLDOWN_HOURS) is decoupled and untouched, as is Engine's speed_bonus.
+    engine_factor = ShipUpgradeService.engine_jump_cooldown_factor(ship)
+    ship.quantum_jump_cooldown_until = scaled_deadline(JUMP_COOLDOWN_HOURS * engine_factor)
 
     # Phase 3 — resolve. Project the bearing to the band midpoint.
     committed_range = band_max * spacing

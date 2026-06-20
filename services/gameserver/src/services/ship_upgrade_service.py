@@ -116,6 +116,47 @@ class ShipUpgradeService:
     # Pending ruling on the exact per-level figure.
     SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL = 1
 
+    # NO-CANON kernel (ship-systems.md §6.6 line 242 marks the Engine
+    # jump-cooldown-reduction effect "📐 Design-only" with no per-level figure):
+    # each Engine upgrade level shortens the Warp Jumper's post-jump quantum
+    # cooldown by 10% (multiplicative), floored so the cumulative reduction can
+    # never drive the cooldown below half its base. Engine's existing speed_bonus
+    # (Ship.current_speed) effect is UNCHANGED — this is the second, previously
+    # unbuilt half of the upgrade. Flagged for a DECISIONS.md Pending ruling on
+    # the exact per-level magnitude and floor.
+    ENGINE_JUMP_COOLDOWN_REDUCTION_PER_LEVEL = 0.10
+    ENGINE_JUMP_COOLDOWN_FACTOR_FLOOR = 0.5
+
+    @staticmethod
+    def get_engine_level(ship) -> int:
+        """Read the ship's current Engine upgrade level from its upgrades JSONB."""
+        upgrades = getattr(ship, "upgrades", None)
+        if not isinstance(upgrades, dict):
+            return 0
+        try:
+            return int(upgrades.get(UpgradeType.ENGINE.value, 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def engine_jump_cooldown_factor(ship) -> float:
+        """Multiplier in [FLOOR, 1.0] applied to the base quantum-jump cooldown
+        duration, scaled by the ship's installed Engine level.
+
+        Returns 1.0 at Engine L0 (no reduction) and decreases ~10% per level
+        (``(1 - 0.10) ** level``), clamped at ``ENGINE_JUMP_COOLDOWN_FACTOR_FLOOR``
+        so no amount of upgrading can collapse the cooldown to zero. e.g. L0=1.0,
+        L1=0.90, L2=0.81, L3=0.729 — an Engine-L3 Warp Jumper's post-jump cooldown
+        is ~27% shorter than an un-upgraded hull's. NO-CANON magnitude (see the
+        class-level constants); the canonical effect is documented but the
+        per-level figure is 📐 Design-only.
+        """
+        level = ShipUpgradeService.get_engine_level(ship)
+        if level <= 0:
+            return 1.0
+        factor = (1.0 - ShipUpgradeService.ENGINE_JUMP_COOLDOWN_REDUCTION_PER_LEVEL) ** level
+        return max(ShipUpgradeService.ENGINE_JUMP_COOLDOWN_FACTOR_FLOOR, factor)
+
     @staticmethod
     def get_sensor_level(ship) -> int:
         """Read the ship's current Sensor upgrade level from its upgrades JSONB."""
