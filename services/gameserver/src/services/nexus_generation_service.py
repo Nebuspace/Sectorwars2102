@@ -429,7 +429,8 @@ class NexusGenerationService:
                 "habitability_score": 100,
                 "resource_richness": 2.0,
                 "resources": ["water", "minerals", "agriculture", "technology"],
-                "max_population": 10000000
+                # Canon (colonization.md:147 / ADR-0035): max_population = habitability_score × 1,000
+                "max_population": 100 * 1000
             }
 
         # Random planet type
@@ -460,9 +461,11 @@ class NexusGenerationService:
         habitability_score = habitability_map.get(planet_type, 50)
         status = PlanetStatus.HABITABLE if habitability_score > 50 else PlanetStatus.UNINHABITABLE
 
-        # Determine max population based on size and habitability
+        # Determine planet size (visual/resource scale only — not a population factor)
         size = random.randint(4, 9)
-        max_population = int((size * habitability_score * 100000) / 10)
+        # Canon (colonization.md:147 / ADR-0035): max_population = habitability_score × 1,000
+        # (habitability_score is on the 0-100 scale, matching genesis_service)
+        max_population = habitability_score * 1000
 
         # Generate resources
         resources = ["standard_resources"]
