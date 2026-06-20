@@ -555,8 +555,9 @@ class FleetService:
         Each round: every active ship in both fleets fires at a random
         enemy ship. Damage is based on attack_rating from the ship's
         combat JSONB, modified by the firing fleet's formation/supply
-        multiplier and the independent outer coordination and morale
-        factors (ADR-0061 S-I3). Ships whose hull drops to 0 are destroyed.
+        multiplier and the outer coordination bonus (ADR-0061 S-I3). Morale
+        was removed from the damage stack (WO-BS, reverts WO-AS — combat-morale
+        coupling retired per Max). Ships whose hull drops to 0 are destroyed.
         Ships below 30% hull may retreat.
 
         Returns a dict with round results including damage dealt,
@@ -628,14 +629,12 @@ class FleetService:
         battle.defender_damage_dealt = (battle.defender_damage_dealt or 0) + round_results["defender_damage"]
         battle.total_damage_dealt = (battle.attacker_damage_dealt or 0) + (battle.defender_damage_dealt or 0)
 
-        # Supply-driven morale decay (fleet-tactics.md Supply, marked 🚧 Partial):
-        # a fleet below 25 supply loses 1 morale. Canon places this on the 5-min
-        # GAME TICK; we apply it per battle round as a deliberate stand-in until a
-        # fleet-supply tick worker exists. NOTE: if/when that worker is added, this
-        # in-battle decay must be removed to avoid double-counting.
-        for fl in (attacker, defender):
-            if (fl.supply_level or 0) < 25:
-                fl.morale = max(0, (fl.morale or 100) - 1)
+        # DEPRECATED (WO-BS, reverts WO-AS): the per-round supply-driven morale
+        # decrement was removed. Fleet.morale no longer participates in combat —
+        # the combat-morale coupling (and the ADR-0061 S-I3 morale clause) was
+        # retired per Max — so nothing maintains a value that combat damage no
+        # longer reads. The Fleet.morale column is kept (non-destructive) for the
+        # cosmetic admin adjust helper / display only; see _calculate_ship_damage.
 
         # Append round to battle log (must reassign for JSONB change detection)
         updated_log = list(current_log)
@@ -768,42 +767,15 @@ class FleetService:
                     active.append(member.ship)
         return active
 
-    @staticmethod
-    def _morale_factor(fleet: Fleet) -> float:
-        """Map a fleet's morale (0-100) to the canon OUTER ``(1 + morale_modifier)``
-        damage/defense factor per ADR-0061 S-I3.
-
-        ADR-0061 S-I3 + SYSTEMS/combat-resolver.md compose the power stack as
-        independent outer factors:
-
-            final = base × (1 + combat_bonus) × (1 + coordination_bonus)
-                         × (1 + morale_modifier_round)
-
-        Morale is therefore its OWN outer ``(1 + x)`` factor — NOT folded into the
-        formation multiplier (the FLAGGED ``formation × (morale / 100)`` form in
-        SYSTEMS/fleet-coordination.md / FEATURES/gameplay/fleet-tactics.md, which
-        those docs carry under the "⚠︎ contains code↔spec divergence" banner). The
-        ADR is the ACCEPTED source and wins.
-
-        Mapping (baseline-preserving recomposition, not a global buff/nerf):
-
-            morale_modifier = (morale / 100) - 1     # the canon (1+x) term
-            factor          = 1 + morale_modifier = morale / 100
-
-        - NEUTRAL/baseline morale is the model default ``Fleet.morale = 100`` →
-          ``morale_modifier = 0`` → factor ``1.0`` (UNCHANGED from a baseline
-          fleet, so this is a recomposition, not a global rebalance).
-        - At morale 50 → factor 0.5; at morale 0 → factor 0.0. These numeric
-          values are identical to the old folded ``morale / 100`` term — what
-          changes is WHERE it is applied: morale now multiplies the FULL outer
-          stack (including the coordination bonus) instead of being baked into
-          the formation multiplier before coordination layered on. At neutral
-          morale the two compositions coincide exactly; off-neutral they differ
-          by design, which is the canon correction ADR-0061 S-I3 mandates.
-        """
-        morale = fleet.morale if fleet.morale is not None else 100
-        morale_modifier = (morale / 100.0) - 1.0
-        return 1.0 + morale_modifier
+    # DEPRECATED + REMOVED (WO-BS, reverts WO-AS): the former ``_morale_factor``
+    # helper mapped Fleet.morale to an outer ``(1 + morale_modifier)`` combat
+    # multiplier (ADR-0061 S-I3). Max ruled the combat-morale coupling CUT — the
+    # ADR-0061 morale clause is retired — so this helper and both of its damage-
+    # path applications (attack in _calculate_ship_damage, defense in
+    # _apply_damage_to_ship) were removed. Fleet combat damage no longer depends
+    # on Fleet.morale (identical damage at morale 100 / 50 / 0). The Fleet.morale
+    # COLUMN is intentionally kept (non-destructive, no migration) for the
+    # cosmetic admin adjust helper / display only.
 
     def _calculate_formation_bonus(self, fleet: Fleet) -> Dict[str, float]:
         """
@@ -816,12 +788,11 @@ class FleetService:
           - turtle:     -40% attack, +40% defense
           - standard:   no modifier
 
-        MORALE IS NOT APPLIED HERE. Per ADR-0061 S-I3 morale is an INDEPENDENT
-        outer ``(1 + morale_modifier)`` factor (see ``_morale_factor``), applied
-        in ``_calculate_ship_damage`` / ``_apply_damage_to_ship`` at the SAME
-        level as the coordination bonus — NOT folded into the formation
-        multiplier. The supply penalty is a separate fleet-tactics.md factor and
-        stays here (it is unrelated to morale).
+        MORALE IS NOT APPLIED ANYWHERE in combat. The combat-morale coupling was
+        retired per Max (WO-BS, reverts WO-AS; ADR-0061 S-I3 morale clause
+        retired) — fleet combat damage no longer depends on Fleet.morale. The
+        supply penalty below is a separate fleet-tactics.md factor and is
+        unaffected by that removal.
         """
         bonuses = {
             "standard":   {"attack": 1.0,  "defense": 1.0},
@@ -836,8 +807,8 @@ class FleetService:
 
         # Supply penalty (fleet-tactics.md Supply): above 50 no penalty, 25-50
         # -5%, below 25 -15% — to BOTH attack and defense. supply_level defaults
-        # to 100 (full) if unset. This is a separate fleet factor; morale is
-        # applied as its own outer factor elsewhere (ADR-0061 S-I3).
+        # to 100 (full) if unset. This is the only fleet-level combat factor that
+        # remains here; morale was removed from combat entirely (WO-BS).
         supply = fleet.supply_level if fleet.supply_level is not None else 100
         if supply < 25:
             supply_factor = 0.85
@@ -863,35 +834,28 @@ class FleetService:
         Each gun-equivalent deals 10 base damage, scaled by formation attack bonus
         and a random variance of +/- 20%.
 
-        Per ADR-0061 S-I3 + SYSTEMS/combat-resolver.md, the coordination bonus
-        and morale are INDEPENDENT outer attack multipliers in the damage stack:
+        The coordination bonus is the only outer attack multiplier in the damage
+        stack:
             final = base
                   × formation_attack          # formation + supply only
                   × (1 + coordination_bonus)   # static, ADR-0061 S-I3
-                  × (1 + morale_modifier)      # per-round, ADR-0061 S-I3
                   × variance
-        Morale is NO LONGER folded into the formation multiplier — it is applied
-        here as its own outer ``(1 + morale_modifier)`` factor at the SAME level
-        as the coordination bonus (``_morale_factor``). With coordination = 0.0
-        (≤ 2 ships) and morale = 100 (the baseline default → factor 1.0) both
-        outer multipliers are 1.0 and the result is identical to a baseline
-        fleet — this is a recomposition to canon, not a global buff/nerf.
+        MORALE WAS REMOVED from this stack (WO-BS, reverts WO-AS; ADR-0061 S-I3
+        morale clause retired per Max): combat damage no longer depends on
+        Fleet.morale, so damage is identical at morale 100 / 50 / 0.
         """
         attack_rating = self._get_ship_combat_stat(ship, "attack_rating", 1)
         base_damage = attack_rating * 10
         damage = int(base_damage * fleet_bonus["attack"])
 
         # Static coordination bonus (outer attack multiplier, ADR-0061 S-I3).
-        # Read the cached value off the live fleet; clamp defensively.
+        # Read the cached value off the live fleet; clamp defensively. Morale is
+        # NO LONGER a factor here (WO-BS, reverts WO-AS — combat-morale coupling
+        # retired per Max): damage is independent of Fleet.morale.
         coordination_bonus = 0.0
-        morale_factor = 1.0
         if fleet is not None:
             coordination_bonus = max(0.0, fleet.coordination_bonus or 0.0)
-            # Morale as its OWN independent outer (1 + morale_modifier) factor,
-            # at the same level as coordination (ADR-0061 S-I3). At neutral
-            # morale (100) this is 1.0 → baseline unchanged.
-            morale_factor = self._morale_factor(fleet)
-        damage = int(damage * (1 + coordination_bonus) * morale_factor)
+        damage = int(damage * (1 + coordination_bonus))
 
         # Random variance +/- 20%
         damage = int(damage * random.uniform(0.8, 1.2))
@@ -913,20 +877,14 @@ class FleetService:
 
         if member:
             fleet = member.fleet
-            # Formation (+ supply) defense multiplier — morale is NO LONGER
-            # folded in here (ADR-0061 S-I3).
+            # Formation (+ supply) defense multiplier ONLY. Morale was removed
+            # from the defense math (WO-BS, reverts WO-AS — combat-morale
+            # coupling retired per Max): incoming damage no longer depends on
+            # Fleet.morale.
             defense_bonus = self._calculate_formation_bonus(fleet)["defense"]
-            # Morale as its OWN independent outer (1 + morale_modifier) factor on
-            # the defender's defense, at the same level as the formation/supply
-            # multiplier (mirrors the attack-side recomposition). At neutral
-            # morale (100) the factor is 1.0 → incoming damage unchanged from a
-            # baseline fleet. Below that, low morale weakens defense exactly as
-            # the old folded ``formation × morale/100`` form did at the same
-            # numeric value — just expressed as an independent outer term.
-            defense_bonus *= self._morale_factor(fleet)
-            # Higher defense = less damage taken. Guard against a 0 multiplier
-            # (e.g. morale 0) so we never divide by zero — at/near-zero defense
-            # the target takes full incoming damage.
+            # Higher defense = less damage taken. Guard against a 0 multiplier so
+            # we never divide by zero — at/near-zero defense the target takes
+            # full incoming damage.
             if defense_bonus > 0:
                 damage = max(1, int(damage / defense_bonus))
             # Defender role: +10% damage absorption when targeted
@@ -1026,8 +984,11 @@ class FleetService:
             else:
                 battle.defender_ships_retreated = (battle.defender_ships_retreated or 0) + 1
 
-        # Flagship destruction: one-shot -30 fleet morale (fleet-tactics.md
-        # Morale). Applied BEFORE the member is removed below.
+        # Flagship destruction: one-shot -30 to the (DEPRECATED) Fleet.morale
+        # value. Per WO-BS (reverts WO-AS) the combat-morale DAMAGE coupling was
+        # retired — morale no longer affects combat damage, so this write only
+        # adjusts the cosmetic admin/display column. Kept for that display value;
+        # remove with the column if morale is ever fully dropped.
         if destroyed and (member.role or "") == FleetRole.FLAGSHIP.value:
             fleet = member.fleet
             if fleet is not None:
@@ -1257,7 +1218,13 @@ class FleetService:
         if not attacker_ships or not defender_ships:
             return True
 
-        # Morale collapsed (below 20%)
+        # Morale collapsed (below 20%). Fleet.morale is DEPRECATED for combat
+        # DAMAGE (WO-BS, reverts WO-AS — that coupling is retired), but this
+        # battle-end check is left intact: it gates battle DURATION, not damage,
+        # and the WO scoped the cut to the damage multiplier + per-round
+        # attrition only. With the per-round decrement gone, the only writers
+        # that can trip this are the flagship -30 and post-battle -20 (both also
+        # deprecated-but-retained for the display column).
         if (attacker.morale or 100) < 20 or (defender.morale or 100) < 20:
             return True
 
@@ -1330,7 +1297,11 @@ class FleetService:
             if loot > 0:
                 attacker.team.treasury_credits = (attacker.team.treasury_credits or 0) - loot
 
-        # Update fleet statuses
+        # Update fleet statuses. The post-battle -20 writes to the (DEPRECATED)
+        # Fleet.morale value only — morale no longer affects combat damage
+        # (WO-BS, reverts WO-AS — combat-morale damage coupling retired). Kept
+        # for the cosmetic admin/display column; remove with the column if morale
+        # is ever fully dropped.
         if attacker:
             attacker.status = FleetStatus.READY.value
             attacker.last_battle = datetime.utcnow()
