@@ -37,15 +37,99 @@ logged and swallowed, never raised into the calling gameplay path.
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
-from src.models.faction import FactionType
+from src.models.faction import Faction, FactionType
 from src.models.player import Player
-from src.services.faction_service import apply_faction_rep_delta
+from src.models.reputation import Reputation
+from src.services.faction_service import FACTION_RIVALRIES, apply_faction_rep_delta
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Anti-farm throttle constants (ADR-0032 #per-day-throttle + ADR-0056 N-V1).
+#
+# Without this layer the dispatcher is un-throttled: a player could grind
+# pirate NPCs for unbounded Terran Federation rep. Two independent limits:
+#
+#   * PER-(player, faction) EVENT cap   — ADR-0032: "each (player, faction)
+#     pair caps at 10 events/day". At the cap, the dispatcher SKIPS that
+#     faction's award entirely (we apply the simple full-stop variant of the
+#     canon "subsequent events at half-rate" — never awarding beyond the cap).
+#   * GLOBAL daily REP pool             — ADR-0056 N-V1: a single
+#     daily_faction_rep_pool of 100 rep/day applies to the SUM of POSITIVE
+#     faction-rep deltas across all factions. When the pool is exhausted the
+#     positive award is CLAMPED to the remaining pool (the in-game action
+#     still resolved — kill happened — but the rep delta drops, per N-V1).
+#
+# Negative deltas (the rivalry cascade negatives, any penalty) are NEVER
+# throttled (ADR-0056 N-V1: "Negative deltas (rep losses) are not throttled")
+# and never consume the global pool or a per-faction event count.
+#
+# The counters live in an existing JSONB column — ``player.settings`` — under
+# the ``emergent_rep_throttle`` key, so this layer needs NO migration. The
+# bucket carries the UTC date it was opened; a stored date != today resets it.
+# ---------------------------------------------------------------------------
+THROTTLE_SETTINGS_KEY = "emergent_rep_throttle"
+PER_FACTION_EVENT_CAP_PER_DAY = 10      # ADR-0032
+GLOBAL_REP_POOL_PER_DAY = 100           # ADR-0056 N-V1
+
+
+def _today_utc_str() -> str:
+    """Today's date (UTC) as ``YYYY-MM-DD`` — the throttle bucket's key."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _get_throttle_bucket(player: Player) -> Dict[str, Any]:
+    """Return the player's emergent-rep throttle bucket, resetting it on a
+    new UTC day.
+
+    Shape::
+
+        {"date": "YYYY-MM-DD",
+         "per_faction": {faction_code: event_count, ...},
+         "global_rep": int}
+
+    The bucket is read off ``player.settings`` (a non-null JSONB column). When
+    the stored date is missing or != today, the WHOLE bucket is reset — counts
+    and the global pool both roll over together. The caller must persist the
+    bucket back via ``_store_throttle_bucket`` and ``flag_modified``.
+    """
+    settings = player.settings if isinstance(player.settings, dict) else {}
+    bucket = settings.get(THROTTLE_SETTINGS_KEY)
+    today = _today_utc_str()
+    if not isinstance(bucket, dict) or bucket.get("date") != today:
+        bucket = {"date": today, "per_faction": {}, "global_rep": 0}
+    else:
+        # Defensive: normalise sub-structures that may have been corrupted.
+        if not isinstance(bucket.get("per_faction"), dict):
+            bucket["per_faction"] = {}
+        if not isinstance(bucket.get("global_rep"), int):
+            try:
+                bucket["global_rep"] = int(bucket.get("global_rep") or 0)
+            except (TypeError, ValueError):
+                bucket["global_rep"] = 0
+    return bucket
+
+
+def _store_throttle_bucket(player: Player, bucket: Dict[str, Any]) -> None:
+    """Write the throttle bucket back onto ``player.settings`` and mark the
+    JSONB column dirty so SQLAlchemy emits the UPDATE on the caller's flush.
+
+    Reassigns ``player.settings`` to a fresh dict (not an in-place mutation of
+    the existing reference) AND calls ``flag_modified`` — belt-and-braces JSONB
+    change tracking, matching the pattern in ``apply_faction_rep_delta`` /
+    ``trading.py``. No commit: the caller owns the transaction.
+    """
+    settings = dict(player.settings) if isinstance(player.settings, dict) else {}
+    settings[THROTTLE_SETTINGS_KEY] = bucket
+    player.settings = settings
+    flag_modified(player, "settings")
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +154,13 @@ FACTION_CODE_TO_TYPE: Dict[str, FactionType] = {
     "pirates": FactionType.PIRATES,
     "galactic_concord": FactionType.CONCORD,
 }
+
+
+def _build_type_to_code() -> None:
+    """Populate the FactionType -> faction_code reverse map from the canonical
+    forward map. First code wins on the (theoretical) duplicate-type case."""
+    for code, ftype in FACTION_CODE_TO_TYPE.items():
+        _TYPE_TO_FACTION_CODE.setdefault(ftype, code)
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +196,128 @@ def _register_rivalry(a: FactionType, b: FactionType, fraction: float) -> None:
 
 _register_rivalry(FactionType.FEDERATION, FactionType.OUTLAWS, 0.5)  # TF ↔ FA
 _register_rivalry(FactionType.MERCHANTS, FactionType.SYNDICATE, 0.5)  # MG ↔ SS
+
+
+# ---------------------------------------------------------------------------
+# FactionType → roster faction_code (reverse of FACTION_CODE_TO_TYPE).
+#
+# Per-faction throttle counts are keyed by the stable lowercase roster code so
+# the JSONB bucket survives any future FactionType enum reordering. Built once
+# from the canonical forward map below (after FACTION_CODE_TO_TYPE is defined).
+# ---------------------------------------------------------------------------
+_TYPE_TO_FACTION_CODE: Dict[FactionType, str] = {}
+
+
+def _faction_code(faction: FactionType) -> str:
+    """Stable JSONB key for a faction's throttle count (roster code, else
+    the enum name lowercased as a defensive fallback)."""
+    return _TYPE_TO_FACTION_CODE.get(faction, faction.name.lower())
+
+
+# ---------------------------------------------------------------------------
+# Combined-rep cap (ADR-0032 rivalry table "Combined-rep cap" column /
+# factions-and-teams.md#rivalry-cascade).
+#
+# The async ``FactionService.update_reputation`` enforces this via
+# ``_apply_rivalry_cap``: for a faction with a canonical rival, a POSITIVE
+# gain is reduced so ``current + change + rival_value <= max_combined``, but
+# ONLY when the rival's standing is itself positive (rival_value > 0). The sync
+# ``apply_faction_rep_delta`` primitive does NOT apply this cap (its docstring
+# says route positive gains through update_reputation) — so the DISPATCHER must
+# replicate the cap before it calls the sync primitive, or it could exceed the
+# combined cap that the async path guarantees.
+#
+# We replicate ``_apply_rivalry_cap`` faithfully but resolve the rival by
+# FactionType (the dispatcher's native key) instead of by Faction.name, so no
+# async/await is needed in the sync dispatch path. The cap source-of-truth is
+# the SAME ``FACTION_RIVALRIES`` table the async method reads (imported above),
+# so the two stay in lock-step automatically.
+# ---------------------------------------------------------------------------
+# faction_code -> FactionType, restricted to the rivalry-capped factions, so we
+# can map FACTION_RIVALRIES (code-keyed) onto the dispatcher's FactionType keys.
+_RIVALRY_CODE_TO_TYPE: Dict[str, FactionType] = {
+    "terran_federation": FactionType.FEDERATION,
+    "fringe_alliance": FactionType.OUTLAWS,
+    "mercantile_guild": FactionType.MERCHANTS,
+    "shadow_syndicate": FactionType.SYNDICATE,
+}
+
+# Build the FactionType -> code reverse map now that both maps are defined.
+_build_type_to_code()
+
+
+def _apply_combined_rep_cap(
+    db: Session,
+    player_id: uuid.UUID,
+    faction: FactionType,
+    change: int,
+) -> int:
+    """Clamp a POSITIVE faction-rep gain to the combined-rep cap (ADR-0032).
+
+    Mirrors ``FactionService._apply_rivalry_cap`` synchronously, resolving the
+    rival by ``FactionType`` so no await is required. Returns the (possibly
+    reduced) ``change``. Only positive ``change`` is capped; negatives pass
+    through untouched (the cap only constrains gains — same as the async path).
+    """
+    if change <= 0:
+        return change
+
+    # Resolve this faction's roster code, then its rivalry config (the SAME
+    # FACTION_RIVALRIES table FactionService._apply_rivalry_cap consults).
+    faction_code = _faction_code(faction)
+    rivalry = FACTION_RIVALRIES.get(faction_code)
+    if not rivalry:
+        return change
+
+    rival_code = rivalry["rival"]
+    max_combined = rivalry["max_combined"]
+    rival_type = _RIVALRY_CODE_TO_TYPE.get(rival_code)
+    if rival_type is None:
+        return change
+
+    # Current standing with THIS faction (0 if no row yet).
+    cur_rep = _current_rep_value(db, player_id, faction)
+    # Current standing with the RIVAL (0 if no row yet).
+    rival_value = _current_rep_value(db, player_id, rival_type)
+
+    # Only cap when the rival's standing is itself positive (matches the async
+    # method: a hostile/neutral rival imposes no combined ceiling).
+    if rival_value <= 0:
+        return change
+
+    projected = cur_rep + change
+    if projected + rival_value > max_combined:
+        allowed = max(0, max_combined - rival_value - cur_rep)
+        if allowed < change:
+            logger.info(
+                "Combined-rep cap (%s<->%s, max %d) limits emergent gain for "
+                "player %s: requested +%d, allowed +%d",
+                faction_code, rival_code, max_combined, player_id, change, allowed,
+            )
+            return allowed
+
+    return change
+
+
+def _current_rep_value(
+    db: Session, player_id: uuid.UUID, faction: FactionType
+) -> int:
+    """Current ``Reputation.current_value`` for (player, faction-type), or 0
+    when no faction row or no reputation row exists. Read-only, no flush."""
+    faction_row = (
+        db.query(Faction).filter(Faction.faction_type == faction).first()
+    )
+    if faction_row is None:
+        return 0
+    rep = (
+        db.query(Reputation)
+        .filter(
+            Reputation.player_id == player_id,
+            Reputation.faction_id == faction_row.id,
+        )
+        .first()
+    )
+    return rep.current_value if rep is not None else 0
 
 
 @dataclass(frozen=True)
@@ -214,6 +427,15 @@ class EmergentReputationService:
 
         FLUSH-ONLY: delegates to ``apply_faction_rep_delta`` which flushes; the
         caller owns the commit.
+
+        ANTI-FARM (ADR-0032 #per-day-throttle + ADR-0056 N-V1): before awarding
+        a POSITIVE direct delta the dispatcher (a) skips it if this
+        (player, faction) pair has already hit ``PER_FACTION_EVENT_CAP_PER_DAY``
+        events today, (b) clamps it to the combined-rep cap, and (c) clamps it
+        to the remaining ``GLOBAL_REP_POOL_PER_DAY`` pool. Counters live in
+        ``player.settings['emergent_rep_throttle']`` (no migration) and reset on
+        a new UTC day. Negative deltas (incl. the rivalry cascade) are never
+        throttled and never consume the pool or an event count.
         """
         context = context or {}
         spec = EMERGENT_ACTIONS.get(action)
@@ -239,47 +461,137 @@ class EmergentReputationService:
             reason_suffix = f" @sector={sector_id}"
 
         applied: List[Dict[str, Any]] = []
+        # Load (and roll-over if stale) the per-player daily throttle bucket.
+        bucket = _get_throttle_bucket(player)
+        bucket_dirty = False
         try:
             # 1) Direct per-faction deltas from the canon table.
             for fd in spec.deltas:
                 reason = f"emergent:{action}{reason_suffix}"
-                rep = apply_faction_rep_delta(
-                    self.db, player_id, fd.faction, fd.delta, reason
-                )
-                applied.append(
-                    {
+
+                # --- Anti-farm throttle (POSITIVE direct deltas only) -------
+                if fd.delta > 0:
+                    fcode = _faction_code(fd.faction)
+                    per_faction = bucket["per_faction"]
+                    events_today = int(per_faction.get(fcode, 0))
+
+                    # (a) PER-(player, faction) EVENT cap — ADR-0032.
+                    if events_today >= PER_FACTION_EVENT_CAP_PER_DAY:
+                        logger.info(
+                            "Throttle: %s hit %d-event/day cap for player %s "
+                            "(faction %s) — skipping award",
+                            action, PER_FACTION_EVENT_CAP_PER_DAY,
+                            player_id, fcode,
+                        )
+                        applied.append({
+                            "faction": fd.faction.name,
+                            "delta": 0,
+                            "requested": fd.delta,
+                            "applied": False,
+                            "direct": True,
+                            "throttled": "per_faction_event_cap",
+                        })
+                        continue
+
+                    # This positive direct delta is a counted EVENT regardless
+                    # of how much rep ultimately lands (the player acted).
+                    per_faction[fcode] = events_today + 1
+                    bucket_dirty = True
+
+                    # (b) Combined-rep cap — ADR-0032 (the dispatcher must
+                    #     enforce what the sync primitive does NOT).
+                    award = _apply_combined_rep_cap(
+                        self.db, player_id, fd.faction, fd.delta
+                    )
+                    cap_clamped = award < fd.delta
+
+                    # (c) GLOBAL daily rep pool — ADR-0056 N-V1. Clamp the
+                    #     positive award to the pool that remains today.
+                    remaining = GLOBAL_REP_POOL_PER_DAY - int(bucket["global_rep"])
+                    if remaining < 0:
+                        remaining = 0
+                    pool_clamped = award > remaining
+                    if pool_clamped:
+                        award = remaining
+
+                    if award <= 0:
+                        # Event happened (cargo delivered / NPC killed) but the
+                        # rep delta drops to 0 (N-V1) or the cap left no room.
+                        logger.info(
+                            "Throttle: %s rep award for player %s faction %s "
+                            "clamped to 0 (cap=%s pool=%s; pool used %d/%d)",
+                            action, player_id, fcode, cap_clamped, pool_clamped,
+                            int(bucket["global_rep"]), GLOBAL_REP_POOL_PER_DAY,
+                        )
+                        applied.append({
+                            "faction": fd.faction.name,
+                            "delta": 0,
+                            "requested": fd.delta,
+                            "applied": False,
+                            "direct": True,
+                            "throttled": (
+                                "global_pool" if pool_clamped else "combined_cap"
+                            ),
+                        })
+                        continue
+
+                    rep = apply_faction_rep_delta(
+                        self.db, player_id, fd.faction, award, reason
+                    )
+                    bucket["global_rep"] = int(bucket["global_rep"]) + award
+                    applied.append({
                         "faction": fd.faction.name,
-                        "delta": fd.delta,
+                        "delta": award,
+                        "requested": fd.delta,
                         "applied": rep is not None,
                         "direct": True,
-                    }
-                )
+                        "cap_clamped": cap_clamped,
+                        "pool_clamped": pool_clamped,
+                    })
 
-                # 2) Rivalry cascade — POSITIVE deltas only (negative deltas
-                #    do not reward rivals; that path is farmable).
-                if fd.delta > 0:
-                    cascade = RIVALRY_CASCADE.get(fd.faction)
-                    if cascade is not None:
-                        # Round the fractional cascade toward zero so it never
-                        # exceeds canon, and skip a zeroed cascade.
-                        cascade_delta = -int(fd.delta * cascade.fraction)
-                        if cascade_delta != 0:
-                            crep = apply_faction_rep_delta(
-                                self.db,
-                                player_id,
-                                cascade.rival,
-                                cascade_delta,
-                                f"emergent:{action}:cascade<-{fd.faction.name}",
-                            )
-                            applied.append(
-                                {
+                    # 2) Rivalry cascade — fires on an actually-awarded
+                    #    POSITIVE delta (negative deltas do not reward rivals;
+                    #    that path is farmable). The cascade NEGATIVE is itself
+                    #    never throttled and never consumes the pool. Scale the
+                    #    cascade off the AWARDED magnitude so a clamped award
+                    #    yields a proportionally smaller (never larger) penalty.
+                    if rep is not None:
+                        cascade = RIVALRY_CASCADE.get(fd.faction)
+                        if cascade is not None:
+                            cascade_delta = -int(award * cascade.fraction)
+                            if cascade_delta != 0:
+                                crep = apply_faction_rep_delta(
+                                    self.db,
+                                    player_id,
+                                    cascade.rival,
+                                    cascade_delta,
+                                    f"emergent:{action}:cascade<-{fd.faction.name}",
+                                )
+                                applied.append({
                                     "faction": cascade.rival.name,
                                     "delta": cascade_delta,
                                     "applied": crep is not None,
                                     "direct": False,
                                     "cascade_from": fd.faction.name,
-                                }
-                            )
+                                })
+                    continue
+
+                # --- Negative (or zero) direct delta: never throttled --------
+                rep = apply_faction_rep_delta(
+                    self.db, player_id, fd.faction, fd.delta, reason
+                )
+                applied.append({
+                    "faction": fd.faction.name,
+                    "delta": fd.delta,
+                    "applied": rep is not None,
+                    "direct": True,
+                })
+
+            # Persist the throttle bucket on the caller's transaction (flush
+            # only — apply_faction_rep_delta already flushed; we just mark the
+            # JSONB dirty so the UPDATE rides the caller's commit).
+            if bucket_dirty:
+                _store_throttle_bucket(player, bucket)
         except Exception as e:  # never raise into the gameplay path
             logger.error(
                 "apply_emergent_action(%s) for player %s failed: %s",
