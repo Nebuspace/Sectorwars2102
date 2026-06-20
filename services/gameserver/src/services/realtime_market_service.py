@@ -46,9 +46,6 @@ class MarketSnapshot:
     price_change_percent: float
     last_transaction: datetime
     bid_ask_spread: float
-    # No real order-book mechanic exists; always emitted empty {"bids": [], "asks": []}.
-    # Retained only because enhanced_websocket_service reads this field.
-    market_depth: Dict[str, List[Tuple[float, int]]]
     sector_prices: Dict[int, float]  # sector_id -> local price
     ai_prediction: Optional[Dict[str, Any]] = None
     
@@ -64,10 +61,6 @@ class MarketSnapshot:
             "price_change_percent": self.price_change_percent,
             "last_transaction": self.last_transaction.isoformat(),
             "bid_ask_spread": self.bid_ask_spread,
-            "market_depth": {
-                "bids": self.market_depth.get("bids", []),
-                "asks": self.market_depth.get("asks", [])
-            },
             "sector_prices": self.sector_prices,
             "ai_prediction": self.ai_prediction
         }
@@ -169,12 +162,6 @@ class RealTimeMarketService:
             oldest_price = float(transactions[-1].price)
             price_change_24h = current_price - oldest_price
             price_change_percent = (price_change_24h / oldest_price * 100) if oldest_price > 0 else 0
-            
-            # Market depth: there is NO real order-book mechanic in the game, so
-            # we no longer fabricate a synthetic bid/ask book. Emit an empty book.
-            # (The field is retained because enhanced_websocket_service reads it;
-            #  it now carries real-but-empty data instead of mock orders.)
-            market_depth: Dict[str, List[Tuple[float, int]]] = {"bids": [], "asks": []}
 
             # Sector-specific prices
             sector_prices = await self._get_sector_prices(commodity, db)
@@ -195,7 +182,6 @@ class RealTimeMarketService:
                 price_change_percent=price_change_percent,
                 last_transaction=transactions[0].timestamp,
                 bid_ask_spread=bid_ask_spread,
-                market_depth=market_depth,
                 sector_prices=sector_prices,
                 ai_prediction=ai_prediction
             )
@@ -500,7 +486,6 @@ class RealTimeMarketService:
             price_change_percent=0.0,
             last_transaction=datetime.now(UTC),
             bid_ask_spread=0.0,
-            market_depth={"bids": [], "asks": []},
             sector_prices={},
             ai_prediction=None
         )

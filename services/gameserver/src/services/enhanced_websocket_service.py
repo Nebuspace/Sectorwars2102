@@ -374,7 +374,6 @@ class EnhancedWebSocketService:
                     "price_change_24h": snapshot.price_change_24h,
                     "price_change_percent": snapshot.price_change_percent,
                     "bid_ask_spread": snapshot.bid_ask_spread,
-                    "market_depth": snapshot.market_depth,
                     "sector_prices": snapshot.sector_prices,
                     "last_transaction": snapshot.last_transaction.isoformat(),
                     "prediction": snapshot.ai_prediction
