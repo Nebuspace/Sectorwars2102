@@ -115,6 +115,18 @@ RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
 DAILY_GROWTH_BASE = 0.01
 SECONDS_PER_DAY = 86400.0
 
+# Per-tick elapsed cap. CANON: SYSTEMS/planetary-production-tick.md "Failure
+# modes" — "Tick scheduler runs late (huge elapsed) | Cap elapsed at 24 hours
+# per tick to prevent runaway growth." The lazy advance-on-read realization of
+# the tick must honor the same cap: a planet idle for days credits at most 24h
+# of production/growth on the next tick. Combined with invariant 4
+# (`last_production` monotonically non-decreasing) the canon semantics are:
+# advance the durable anchor by ONLY the consumed elapsed (min(elapsed, cap)),
+# NOT to now — so the backlog naturally drains 24h per subsequent tick rather
+# than being silently forfeited. Applies to both production accrual and
+# population growth so the two anchors behave identically.
+MAX_TICK_ELAPSED_SECONDS = 86400.0  # 24 hours
+
 # Per-PlanetType production-efficiency multipliers. CANON: the planet-type
 # efficiency table in FEATURES/planets/production.md ("Planet-type efficiency
 # table") and the matching column block in FEATURES/planets/colonization.md
@@ -308,6 +320,15 @@ class PlanetaryService:
         if elapsed_seconds <= 0:
             return False
 
+        # 24h per-tick elapsed cap (CANON: planetary-production-tick.md "Failure
+        # modes"). A planet idle for days credits at most 24h of growth per tick;
+        # the growth branch below advances the anchor by only the consumed
+        # (capped) window so any > 24h backlog drains 24h per subsequent read
+        # rather than producing a runaway jump. The short-circuit branches
+        # (siege / nothing-to-grow / at-ceiling) advance straight to `now`
+        # because they produce nothing — there is no backlog worth draining.
+        capped_elapsed = min(elapsed_seconds, MAX_TICK_ELAPSED_SECONDS)
+
         # Siege halts population growth (colonization.md "Other growth
         # modifiers"); besieged time yields nothing, so advance the anchor.
         if planet.under_siege:
@@ -338,7 +359,7 @@ class PlanetaryService:
             return True
 
         rate_per_second = rate_per_day / SECONDS_PER_DAY
-        gained = int(rate_per_second * elapsed_seconds)
+        gained = int(rate_per_second * capped_elapsed)
         if gained <= 0:
             # Not enough elapsed time for a whole colonist yet — leave the
             # anchor untouched so the remainder keeps accruing.
@@ -403,6 +424,17 @@ class PlanetaryService:
         if elapsed_seconds <= 0:
             return False
 
+        # 24h per-tick elapsed cap (CANON: planetary-production-tick.md "Failure
+        # modes" — "Cap elapsed at 24 hours per tick to prevent runaway growth").
+        # A planet idle for days accrues at most 24h of production on this tick;
+        # crucially the anchor advances by ONLY the consumed window (anchor +
+        # capped_elapsed), NOT to now — so a 72h-idle planet yields 24h now and
+        # the remaining backlog drains 24h per subsequent tick (invariant 4:
+        # last_production monotonically non-decreasing). Advancing to now would
+        # silently forfeit the excess. The production_carry fractional bank below
+        # is preserved unchanged and reflects exactly this 24h window.
+        capped_elapsed = min(elapsed_seconds, MAX_TICK_ELAPSED_SECONDS)
+
         rates = self._calculate_production_rates(planet)
         # Map production-rate keys to stockpile columns.
         resource_cols = (("fuel", "fuel_ore"), ("organics", "organics"), ("equipment", "equipment"))
@@ -411,7 +443,8 @@ class PlanetaryService:
         if all((rates.get(key, 0) or 0) <= 0 for key, _ in resource_cols) and research_rate <= 0:
             # Nothing producing (no commodity allocation AND no research lab);
             # keep the anchor current so a later allocation doesn't accrue
-            # retroactively.
+            # retroactively. No backlog to drain when nothing is produced, so
+            # advancing fully to now is correct here (no runaway risk).
             planet.last_production = now
             return True
 
@@ -421,13 +454,13 @@ class PlanetaryService:
         gains = {}
         for key, col in resource_cols:
             rate_per_day = rates.get(key, 0) or 0
-            produced = carry.get(col, 0.0) + rate_per_day * (elapsed_seconds / SECONDS_PER_DAY)
+            produced = carry.get(col, 0.0) + rate_per_day * (capped_elapsed / SECONDS_PER_DAY)
             gained = int(produced)
             gains[col] = (gained, produced - gained)
 
         # Research points accrue into a running active_events counter (no column);
         # the fractional remainder shares the production_carry dict under 'research'.
-        research_produced = carry.get("research", 0.0) + research_rate * (elapsed_seconds / SECONDS_PER_DAY)
+        research_produced = carry.get("research", 0.0) + research_rate * (capped_elapsed / SECONDS_PER_DAY)
         research_gained = int(research_produced)
 
         if sum(g for g, _ in gains.values()) + research_gained <= 0:
@@ -450,7 +483,13 @@ class PlanetaryService:
         if research_gained > 0 or "research_points" in events:
             new_events["research_points"] = int(events.get("research_points", 0) or 0) + research_gained
         planet.active_events = new_events
-        planet.last_production = now
+        # Advance the anchor by ONLY the consumed (capped) window, not to now, so
+        # a backlog > 24h drains 24h per subsequent tick rather than being
+        # silently forfeited (CANON: ≤24h production per tick; invariant 4:
+        # last_production monotonically non-decreasing). When elapsed ≤ 24h this
+        # is exactly `now` (anchor + elapsed_seconds), preserving the prior
+        # behavior for the common case.
+        planet.last_production = anchor + timedelta(seconds=capped_elapsed)
 
         logger.debug(
             f"Lazy production on planet {planet.id}: "
