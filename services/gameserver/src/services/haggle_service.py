@@ -136,34 +136,39 @@ def seed_trader_personalities(db: Session, batch_size: int = 500) -> Dict[str, i
     scanned = 0
     reseeded = 0
     try:
-        q = db.query(Station).yield_per(batch_size)
-        pending = 0
-        for station in q:
-            scanned += 1
-            try:
-                class_value = (
-                    station.station_class.value
-                    if station.station_class is not None
-                    else 5
-                )
-                if tp.needs_reseed(station.trader_personality, class_value):
-                    station.trader_personality = tp.reseed_personality(
-                        station.trader_personality, class_value
+        # Materialize all station IDs up front, then re-query each batch fresh.
+        # Do NOT iterate a yield_per() server-side cursor while committing per
+        # batch — committing mid-iteration invalidates the psycopg2 named cursor
+        # ("named cursor isn't valid anymore") and the loop dies after batch 1,
+        # leaving later stations un-reconciled. IDs in memory are cheap.
+        station_ids = [row[0] for row in db.query(Station.id).all()]
+        for start in range(0, len(station_ids), batch_size):
+            batch_ids = station_ids[start:start + batch_size]
+            stations = db.query(Station).filter(Station.id.in_(batch_ids)).all()
+            pending = 0
+            for station in stations:
+                scanned += 1
+                try:
+                    class_value = (
+                        station.station_class.value
+                        if station.station_class is not None
+                        else 5
                     )
-                    flag_modified(station, "trader_personality")
-                    reseeded += 1
-                    pending += 1
-                    if pending >= batch_size:
-                        db.commit()
-                        pending = 0
-            except Exception:
-                logger.warning(
-                    "trader-personality reseed failed for station %s",
-                    getattr(station, "id", "?"),
-                    exc_info=True,
-                )
-        if pending:
-            db.commit()
+                    if tp.needs_reseed(station.trader_personality, class_value):
+                        station.trader_personality = tp.reseed_personality(
+                            station.trader_personality, class_value
+                        )
+                        flag_modified(station, "trader_personality")
+                        reseeded += 1
+                        pending += 1
+                except Exception:
+                    logger.warning(
+                        "trader-personality reseed failed for station %s",
+                        getattr(station, "id", "?"),
+                        exc_info=True,
+                    )
+            if pending:
+                db.commit()
     except Exception:
         db.rollback()
         logger.error("trader-personality seeding pass failed", exc_info=True)
