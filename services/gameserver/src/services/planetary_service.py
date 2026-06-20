@@ -190,6 +190,34 @@ RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
 DAILY_GROWTH_BASE = 0.01
 SECONDS_PER_DAY = 86400.0
 
+# Habitability ZERO-CROSSING for natural population growth (WO-AH, Max-ruled:
+# "growth is a function of habitability — ABOVE a threshold → GROW, BELOW it →
+# DECLINE"). CANON anchor: FEATURES/planets/colonization.md line 95 — "BARREN and
+# ICE planets have negative natural growth … the colony shrinks" — and the same
+# doc's design note (line 186): "the production tick needs an explicit decline
+# branch when habitability_score < threshold (e.g., < 20)."
+#
+# HABITABILITY_GROWTH_THRESHOLD is that crossing point. AT or ABOVE it the
+# colony grows on the unchanged canon formula (so genesis worlds, hab 40–90, and
+# every other habitable world grow EXACTLY as before — no behavioral change for
+# them). BELOW it the colony declines. THRESHOLD = 20 is the value the canon
+# design note literally suggests; it makes the harsh worlds shrink (nexus
+# generation: BARREN 10–40, VOLCANIC 10–30, low-end ICE) while keeping genesis
+# worlds and every DESERT-or-better world firmly positive.
+#
+# DAILY_DECLINE_BASE is the per-day decline slope: the rate scales with how far
+# BELOW the threshold a world sits, so a near-uninhabitable hab-0 BARREN shrinks
+# faster than a hab-19 marginal world, and a freshly-terraformed world hovering
+# just under the threshold barely loses anyone before crossing into growth.
+# Daily decline = -colonists × DAILY_DECLINE_BASE × (THRESHOLD − habitability)/100.
+# Worst case (hab 0, BARREN): -colonists × 0.01 × 20/100 = -0.2%/day — exactly the
+# canon-table magnitude for ICE (line 89) and twice the BARREN figure (line 88);
+# the slope keeps decline gentle and recoverable, never a cliff. NO-CANON: the
+# exact THRESHOLD (20) and DECLINE_BASE (0.01) values are flagged for DECISIONS;
+# they are bounded by, and consistent with, the canon decline note above.
+HABITABILITY_GROWTH_THRESHOLD = 20
+DAILY_DECLINE_BASE = 0.01
+
 # Per-tick elapsed cap. CANON: SYSTEMS/planetary-production-tick.md "Failure
 # modes" — "Tick scheduler runs late (huge elapsed) | Cap elapsed at 24 hours
 # per tick to prevent runaway growth." The lazy advance-on-read realization of
@@ -360,11 +388,25 @@ class PlanetaryService:
         return self._format_planet_data(planet)
 
     def apply_population_growth(self, planet: Planet) -> bool:
-        """Lazily apply canon colonist growth since planet.last_growth_at.
+        """Lazily apply canon colonist growth/decline since planet.last_growth_at.
 
         Canon daily formula (FEATURES/planets/colonization.md "Population
         growth"): colonist_rate = colonists × 0.01 × (habitability_score/100),
         pro-rated here by elapsed wall-clock time.
+
+        Habitability ZERO-CROSSING (WO-AH, Max-ruled): growth is a function of
+        habitability with a crossing point at HABITABILITY_GROWTH_THRESHOLD.
+        At/above the threshold the colony GROWS on the unchanged canon formula
+        (habitable worlds behave exactly as before). Below it the colony
+        DECLINES — colonists are lost at -colonists × DAILY_DECLINE_BASE ×
+        (THRESHOLD − habitability)/100 per day, realizing the canon promise
+        (colonization.md line 95) that BARREN/ICE worlds shrink without
+        immigration or terraforming. Terraforming a harsh world past the
+        threshold flips the same colony from decline back into growth.
+
+        Decline floors `colonists` at 0 — a colony can shrink toward
+        abandonment but never goes negative, and the planet row is never
+        deleted here (a future abandonment/claimable pass owns that).
 
         Ceilings enforced per ADR-0035 ("Runtime invariants"):
           - colonists ≤ max_colonists (citadel cap)
@@ -412,10 +454,63 @@ class PlanetaryService:
 
         colonists = planet.colonists or 0
         habitability = max(planet.habitability_score or 0, 0)
+
+        if colonists <= 0:
+            # No colonists to grow or lose; keep the anchor current so future
+            # colonists don't grow (or decline) retroactively.
+            planet.last_growth_at = now
+            return True
+
+        # ── Habitability zero-crossing (WO-AH) ─────────────────────────────
+        # Below the threshold the colony DECLINES; the harsh world cannot
+        # sustain its population until terraforming raises habitability past
+        # the crossing point. This branch fully owns the below-threshold case
+        # (its own anchor banking + floor-at-0) and returns; the growth path
+        # below runs only for at/above-threshold worlds, unchanged.
+        if habitability < HABITABILITY_GROWTH_THRESHOLD:
+            decline_per_day = (
+                colonists
+                * DAILY_DECLINE_BASE
+                * ((HABITABILITY_GROWTH_THRESHOLD - habitability) / 100.0)
+            )
+            decline_per_second = decline_per_day / SECONDS_PER_DAY
+            # capped_elapsed already honors the 24h per-tick cap so a colony
+            # idle for days loses at most one capped window per read, draining
+            # any backlog 24h per subsequent read (mirrors the growth path).
+            lost = int(decline_per_second * capped_elapsed)
+            if lost <= 0:
+                # Not enough elapsed time to lose a whole colonist yet — leave
+                # the anchor untouched so the remainder keeps accruing.
+                return False
+
+            # Floor at 0: a colony shrinks toward abandonment but never goes
+            # negative, and the planet row is never deleted here.
+            if lost >= colonists:
+                lost = colonists
+                planet.last_growth_at = now
+            else:
+                # Consume only the whole-colonist time; bank the remainder so a
+                # slow decline is never robbed of sub-colonist progress.
+                seconds_consumed = lost / decline_per_second
+                planet.last_growth_at = anchor + timedelta(seconds=seconds_consumed)
+
+            planet.colonists = colonists - lost
+            # Mirror the loss in the demographic total so a declining colony
+            # actually shrinks on screen; keep population >= colonists (the
+            # working-age subset never exceeds the total).
+            planet.population = max(planet.colonists, (planet.population or 0) - lost)
+            logger.debug(
+                f"Lazy decline on planet {planet.id}: -{lost} colonists "
+                f"(now {planet.colonists}, habitability {habitability} "
+                f"< threshold {HABITABILITY_GROWTH_THRESHOLD})"
+            )
+            return True
+        # ───────────────────────────────────────────────────────────────────
+
         rate_per_day = colonists * DAILY_GROWTH_BASE * (habitability / 100.0)
         if rate_per_day <= 0:
-            # Nothing can grow (no colonists or zero habitability); keep the
-            # anchor current so future colonists don't grow retroactively.
+            # Nothing can grow (zero habitability at/above threshold is
+            # impossible, but guard anyway); keep the anchor current.
             planet.last_growth_at = now
             return True
 
