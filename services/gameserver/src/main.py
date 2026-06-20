@@ -64,6 +64,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.error(f"Admin user initialization failed: {e}")
         # Don't crash the server if admin creation fails
 
+    # WO-BO / ADR-0079: backfill archetype-driven trader personalities onto
+    # existing stations (the BORDER model-default makes haggling difficulty a
+    # no-op). Idempotent + boot-safe — never raises; rows already class-correct
+    # are skipped, real per-player haggle memory is preserved.
+    try:
+        from src.core.database import SessionLocal
+        from src.services.haggle_service import seed_trader_personalities
+
+        db = SessionLocal()
+        try:
+            summary = seed_trader_personalities(db)
+            logger.info(
+                "Trader-personality seed: scanned=%s reseeded=%s",
+                summary.get("scanned"), summary.get("reseeded"),
+            )
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Trader-personality seeding failed (non-fatal): {e}")
+
     # i18n auto-seed: ensure default languages/namespaces exist and load any
     # JSON translation bundles shipped with the gameserver image. Files live
     # at /app/i18n/{lng}/{ns}.json. Re-runs are no-ops (overwrite=False), so

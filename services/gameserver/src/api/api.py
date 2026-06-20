@@ -55,6 +55,7 @@ from src.api.routes.quantum import router as quantum_router
 from src.api.routes.warp_gates import router as warp_gates_router
 from src.api.routes.nav import router as nav_router
 from src.api.routes.medals import router as medals_router
+from src.api.routes.haggle import router as haggle_router
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -81,6 +82,7 @@ api_router.include_router(player_combat_router, tags=["player-combat"])
 api_router.include_router(events_router, tags=["events"])
 api_router.include_router(websocket_router, tags=["websocket"])
 api_router.include_router(trading_router, tags=["trading"])
+api_router.include_router(haggle_router, tags=["haggle"])  # ADR-0079 numerical haggling (router carries /haggle prefix)
 api_router.include_router(player_router, tags=["player"])
 api_router.include_router(sectors_router, tags=["sectors"])
 api_router.include_router(ai_router, tags=["ai-trading"])

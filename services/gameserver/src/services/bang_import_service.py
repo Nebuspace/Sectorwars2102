@@ -300,6 +300,10 @@ class StationSpec:
     description: Optional[str] = None
     # 'A' | 'B' | None — ADR-0041 Phase 10.5 TradeDock seeding
     tradedock_tier: Optional[str] = None
+    # WO-BO: archetype-driven trader personality (ADR-0079 prerequisite). Built
+    # at creation from the station class so haggling difficulty is real, not the
+    # BORDER model-default no-op. None falls through to the model default.
+    trader_personality: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -1377,7 +1381,7 @@ class BangImportService:
 
         created_stations: List[Station] = []
         for stsp in region_plan.stations:
-            station = Station(
+            station_kwargs = dict(
                 name=stsp.name,
                 sector_id=stsp.sector_int_id,
                 sector_uuid=sector_uuid_by_int[stsp.sector_int_id],
@@ -1391,6 +1395,11 @@ class BangImportService:
                 tradedock_tier=stsp.tradedock_tier,
                 description=stsp.description,
             )
+            # WO-BO: seed archetype trader_personality at creation when present
+            # (None falls through to the model's BORDER default).
+            if stsp.trader_personality is not None:
+                station_kwargs["trader_personality"] = stsp.trader_personality
+            station = Station(**station_kwargs)
             session.add(station)
             created_stations.append(station)
 
@@ -2147,6 +2156,11 @@ class BangImportService:
             random.Random(f"{universe_seed}:{sector_id}:{name}"),
         )
         services = _build_default_services(is_spacedock)
+        # WO-BO / ADR-0079: derive the archetype-driven trader personality from
+        # the station class at creation (Max #7: personality generated at creation
+        # + persistent). Single source of truth: core/trader_personalities.py.
+        from src.core.trader_personalities import build_personality_for_class
+        trader_personality = build_personality_for_class(station_class.value)
         return StationSpec(
             sector_int_id=sector_id,
             name=name,
@@ -2156,6 +2170,7 @@ class BangImportService:
             commodities=commodities,
             services=services,
             is_spacedock=is_spacedock,
+            trader_personality=trader_personality,
         )
 
     def _build_planet_spec(self, sector_id: int, p: Dict[str, Any]) -> PlanetSpec:

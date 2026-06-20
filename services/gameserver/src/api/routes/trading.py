@@ -134,6 +134,61 @@ def _reprice_after_trade(
         return False
 
 
+def compute_effective_unit_price(
+    db: Session,
+    player: Player,
+    station: Station,
+    commodity: str,
+    side: str,
+    base_price: int,
+) -> int:
+    """Compute the POSTED per-unit price this player would pay/receive un-haggled.
+
+    This is the single source of truth for the trading.md price stack — the exact
+    per-unit price the buy/sell route charges this player BEFORE any haggle:
+
+        BUY  : base_sell_price × (1 − rank_discount) × player_mult × tariff × lever
+        SELL : base_buy_price  × (1 + rank_bonus)    ÷ player_mult ÷ tariff ÷ lever
+
+    then clamped LAST to the commodity hard [min, max] band. ``base_price`` is the
+    station's prevailing per-unit price for the side (BUY → station sell_price,
+    SELL → station buy_price) — i.e. ``calculate_dynamic_price`` for that side.
+
+    ADR-0079 point 6: the numerical haggle engine negotiates off THIS posted
+    price (haggling.md:13/:70 — the haggle outcome MULTIPLIES the posted price),
+    so haggle ``fair_price`` == this value. The engine's band modifiers (rank /
+    faction / personal / difficulty) adjust the ACCEPTANCE BAND only and are NOT
+    re-baked into the price here — that is the genuine point-6 rule. Reusing this
+    helper guarantees haggle == route on the price, preserving the player's
+    rank/rep discount through a haggle.
+
+    Defensive: each modifier helper already degrades to neutral on lookup
+    failure, so this never raises."""
+    side = side.lower()
+    bonuses = RankingService.get_rank_bonuses(player.military_rank)
+    rank_rate = bonuses["trading_discount_percent"] / 100.0
+    player_mult = compute_player_price_multiplier(db, player, station)
+    tariff_mult, _ = compute_region_tariff_multiplier(db, station)
+    lever_mult, _ = compute_station_lever_multiplier(db, player, station)
+
+    if side == "buy":
+        # Player BUYS from the station → pays the station sell price; a discount
+        # (rank / favoured rep) LOWERS what the player pays.
+        price = base_price * (1 - rank_rate)
+        price *= player_mult * tariff_mult * lever_mult
+    else:  # sell — player is PAID the station buy price; a favoured player is
+        # paid MORE (the relationship flips → divide).
+        price = base_price * (1 + rank_rate)
+        if player_mult > 0:
+            price /= player_mult
+        if tariff_mult > 0:
+            price /= tariff_mult
+        if lever_mult > 0:
+            price /= lever_mult
+
+    return clamp_to_commodity_band(commodity, int(price))
+
+
 async def _publish_trade_tick(
     station_id: str, commodity: str, market_price: MarketPrice
 ) -> None:
@@ -229,32 +284,41 @@ async def buy_resource(
     # Players purchasing FROM the station pay sell_price (what the station
     # charges players). Charging buy_price here created a same-station
     # buy-low/sell-high arbitrage loop.
+    #
+    # Canon (trading.md#price-stacking-order, Max-blessed): the full per-unit
+    # stack is rank discount × faction-rep × personal-rep × first-login × region
+    # tariff × station lever, then the commodity hard [min, max] band as the
+    # FINAL clamp. compute_effective_unit_price is the single source of truth for
+    # this stack (shared with the haggle engine so haggle fair == posted price —
+    # ADR-0079 point 6). The tariff/lever EFFECTIVE rates are surfaced in the
+    # response below, so we still read them here.
     bonuses = RankingService.get_rank_bonuses(current_player.military_rank)
-    discount_pct = bonuses["trading_discount_percent"] / 100.0
-    discounted_price = market_price.sell_price * (1 - discount_pct)
-    # ADR-0062 E-D3 player-relationship layers: faction reputation, personal
-    # reputation, and the permanent first-login +10% trade bonus. The helper
-    # returns a "player-pays" multiplier (< 1.0 = better deal); on a BUY the
-    # player pays it directly. Defensive — degrades to neutral (1.0) on any
-    # lookup failure, so it can never block a trade.
-    price_multiplier = compute_player_price_multiplier(db, current_player, station)
-    discounted_price *= price_multiplier
-    # ADR-0062 E-D3 canonical tail factors, in order: region tariff then the
-    # station marketing lever (E-F1 skips the lever for same-owner/team
-    # buyers). Both are "player-pays" multipliers applied directly on a BUY.
-    # Both degrade to neutral (1.0) on any failure — never block a trade.
-    tariff_mult, tariff_rate_eff = compute_region_tariff_multiplier(db, station)
-    lever_mult, lever_eff = compute_station_lever_multiplier(db, current_player, station)
-    discounted_price *= tariff_mult * lever_mult
-    # Canon (trading.md#price-stacking-order, Max-blessed): the commodity hard
-    # [min, max] band is the FINAL clamp — applied AFTER every multiplicative
-    # modifier (rank × faction-rep × personal-rep × tariff × lever). The
-    # persisted sell_price was already band-clamped, but the modifiers above can
-    # re-escape it (a max-rep+rank stack could undercut the floor / exceed the
-    # ceiling), so re-clamp the final per-unit price LAST. Floors at 1 internally.
-    effective_buy_price = clamp_to_commodity_band(
-        trade_request.resource_type, int(discounted_price)
+    _, tariff_rate_eff = compute_region_tariff_multiplier(db, station)
+    _, lever_eff = compute_station_lever_multiplier(db, current_player, station)
+    effective_buy_price = compute_effective_unit_price(
+        db, current_player, station, trade_request.resource_type, "buy",
+        market_price.sell_price,
     )
+
+    # ADR-0079 haggling: if the player just ACCEPTED a numerical haggle for this
+    # (station, commodity, BUY), the agreed per-unit price replaces the posted
+    # price for THIS transaction (single-use; consumed so it can't be reused).
+    # The agreed price was already clamped to [0.80, 1.20] x fair in the engine
+    # (point 7); re-clamp to the commodity hard band for defence-in-depth. Point
+    # 6: the haggle modifiers adjusted the acceptance BAND only — the fair price
+    # the engine negotiated off already carried the trading.md stack, so we do NOT
+    # re-apply the rank/rep modifiers above on top of the haggled price.
+    try:
+        from src.services.haggle_service import HaggleService
+        haggled = HaggleService(db).consume_agreed_price(
+            current_player, station.id, trade_request.resource_type, "buy"
+        )
+        if haggled is not None:
+            effective_buy_price = clamp_to_commodity_band(
+                trade_request.resource_type, int(round(haggled))
+            )
+    except Exception:
+        logger.warning("haggle price consume failed (buy); using posted price", exc_info=True)
 
     # Calculate total cost
     total_cost = effective_buy_price * trade_request.quantity
@@ -537,34 +601,37 @@ async def sell_resource(
     # Players selling TO the station receive buy_price (what the station
     # pays players). Paying out sell_price here was the other half of the
     # same-station arbitrage loop.
+    #
+    # Canon (trading.md#price-stacking-order, Max-blessed): the full per-unit
+    # payout stack flips the relationship direction (a favoured trader is paid
+    # MORE) — rank bonus, then divide by player-rep/tariff/lever, then the
+    # commodity hard band as the FINAL clamp. compute_effective_unit_price owns
+    # this stack (shared with the haggle engine → haggle fair == posted payout,
+    # ADR-0079 point 6). The tariff/lever EFFECTIVE rates feed the response below.
     bonuses = RankingService.get_rank_bonuses(current_player.military_rank)
-    bonus_pct = bonuses["trading_discount_percent"] / 100.0
-    boosted_price = market_price.buy_price * (1 + bonus_pct)
-    # ADR-0062 E-D3 player-relationship layers (see buy path). The helper's
-    # "player-pays" multiplier flips direction on a SELL: a favoured trader
-    # (multiplier < 1.0) is paid MORE, so we divide. Defensive — degrades to
-    # neutral (1.0) on any failure.
-    price_multiplier = compute_player_price_multiplier(db, current_player, station)
-    if price_multiplier > 0:
-        boosted_price /= price_multiplier
-    # ADR-0062 E-D3 tail factors. On a SELL the relationship flips (a worse
-    # "player-pays" multiplier means a LOWER payout), so divide — symmetric
-    # with the rep layers above. E-F1 still skips the lever for same-owner/team.
-    tariff_mult, tariff_rate_eff = compute_region_tariff_multiplier(db, station)
-    lever_mult, lever_eff = compute_station_lever_multiplier(db, current_player, station)
-    if tariff_mult > 0:
-        boosted_price /= tariff_mult
-    if lever_mult > 0:
-        boosted_price /= lever_mult
-    # Canon (trading.md#price-stacking-order, Max-blessed): the commodity hard
-    # [min, max] band is the FINAL clamp — applied AFTER every multiplicative
-    # modifier (rank × faction-rep × personal-rep × tariff × lever). The
-    # persisted buy_price was already band-clamped, but the modifiers above can
-    # re-escape it (a max-rep+rank stack could push the payout above the ceiling),
-    # so re-clamp the final per-unit price LAST. Floors at 1 internally.
-    effective_sell_price = clamp_to_commodity_band(
-        trade_request.resource_type, int(boosted_price)
+    _, tariff_rate_eff = compute_region_tariff_multiplier(db, station)
+    _, lever_eff = compute_station_lever_multiplier(db, current_player, station)
+    effective_sell_price = compute_effective_unit_price(
+        db, current_player, station, trade_request.resource_type, "sell",
+        market_price.buy_price,
     )
+
+    # ADR-0079 haggling: if the player just ACCEPTED a numerical haggle for this
+    # (station, commodity, SELL), the agreed per-unit payout replaces the posted
+    # payout for THIS transaction (single-use). Already clamped to [0.80, 1.20] x
+    # fair in the engine; re-clamp to the commodity hard band. Point 6: do NOT
+    # re-apply the rank/rep modifiers above on top of the haggled payout.
+    try:
+        from src.services.haggle_service import HaggleService
+        haggled = HaggleService(db).consume_agreed_price(
+            current_player, station.id, trade_request.resource_type, "sell"
+        )
+        if haggled is not None:
+            effective_sell_price = clamp_to_commodity_band(
+                trade_request.resource_type, int(round(haggled))
+            )
+    except Exception:
+        logger.warning("haggle price consume failed (sell); using posted price", exc_info=True)
 
     # Calculate total earnings (gross, before station trade tax)
     total_earnings = effective_sell_price * trade_request.quantity
@@ -997,6 +1064,16 @@ async def undock_from_port(
         # Update player status
         current_player.is_docked = False
         current_player.current_port_id = None
+
+        # ADR-0079 haggling: a REJECT hard-locks a commodity "for the docking
+        # session", and in-flight sessions don't carry across visits — clear both
+        # on undock (re-entry cooldowns are real-time and intentionally persist).
+        # Defensive: a haggle-state hiccup must never fail an undock.
+        try:
+            from src.services.haggle_service import clear_docking_session_haggles
+            clear_docking_session_haggles(current_player)
+        except Exception:
+            logger.warning("clearing docking-session haggle state failed", exc_info=True)
 
         # Deduct turns for undocking
         spend_turns(current_player, UNDOCKING_TURN_COST)

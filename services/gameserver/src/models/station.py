@@ -132,14 +132,29 @@ class Station(Base):
         }
     })
     
-    # AI Trader Personality for haggling system
+    # AI Trader Personality for haggling system.
+    #
+    # SHAPE RECONCILED to DATA_MODELS/jsonb-schema.md § Station.trader_personality
+    # (ADR-0079 schema-reconcile, WO-BO step A): `memory_duration_days` (NOT the
+    # legacy `memory_duration`); `trust_level` defaults to 0 on the [-1000, 1000]
+    # scale (NOT the meaningless legacy 50); appeal types drawn from the canonical
+    # vocabulary. This Border default matches the jsonb-schema Border row
+    # (difficulty 5, [economic, personal], 30 days). The additive `player_memory`
+    # sub-doc holds per-player haggle history + trust for the 90-day memory
+    # contract (Max #7). Single source of truth: core/trader_personalities.py.
+    #
+    # NB: this default only applies to NEW rows whose creator omits the column.
+    # Existing rows carry the OLD shape and are normalized on read by the haggle
+    # engine + reconciled in bulk by the startup personality-seeding backfill.
+    # JSONB column → no migration (the shape change is data, not DDL).
     trader_personality = Column(JSONB, nullable=False, default={
         "type": "BORDER",
         "haggling_difficulty": 5,
-        "preferred_appeal_types": ["survival", "logical"],
-        "memory_duration": 7,
-        "trust_level": 50,
-        "quirks": []
+        "preferred_appeal_types": ["economic", "personal"],
+        "memory_duration_days": 30,
+        "trust_level": 0,
+        "quirks": [],
+        "player_memory": {},
     })
     
     # Owner-set price adjustments. Also carries the ADR-0062 E-D3 station
