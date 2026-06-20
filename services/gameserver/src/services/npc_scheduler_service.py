@@ -136,6 +136,38 @@ PLANETARY_ADVANCE_SECONDS = 5 * 60
 # no-op when nothing is due.
 GOVERNANCE_SWEEP_SECONDS = 5 * 60
 
+# TradeDock SHIPYARD construction-advance sweep cadence. construction_service.
+# _advance_station — the whole shipyard berth pipeline (hold-expiry forfeiture
+# with the 50% deposit split, queue→slip promotions, phase progression, rent
+# and claim-window expiry) — was written as advance-on-READ only: it ran ONLY
+# when a player synchronously touched the station via the construction API
+# (quote/status/deliver/pay/claim/cancel). A build whose owner stopped logging
+# in would freeze mid-pipeline — an expired hold never forfeits its slip, the
+# next-in-queue reservation never gets promoted, a finished hull never enters
+# its claim window. This sweep makes the canonical clock authoritative for ALL
+# stations with a live (non-terminal) reservation, mirroring the planetary /
+# governance sweeps. _advance_station is the AUTHORITY on what is due (it gates
+# every transition on timers/states), so the sweep merely DRIVES it: it is
+# time-accurate (settles exactly the windows that elapsed) and idempotent (a
+# caught-up station, or a station already settled by an interleaved API read, is
+# a clean no-op) — re-runs are safe. Construction phases are SLOW (canonical
+# hours/days), so a coarse cadence is plenty; keyed off durable per-reservation
+# timestamps (hold_expires_at / phase_deadline / rent_paid_until /
+# claim_expires_at), so a missed boundary on restart is just settled by the next
+# sweep (nothing is lost). xact-advisory-lock-gated so a second instance skips
+# instead of double-advancing; per-station with_for_update + per-station commit;
+# per-station failure isolated so one bad station cannot abort the batch.
+#
+# CADENCE IS NO-CANON: tradedock-shipyard / ADR-0039 specify the pipeline TIMERS
+# but not how often a background worker should DRIVE them. 600s (10 min) is far
+# finer than the smallest construction window (the 24 canonical-hour slip hold,
+# which at GAME_TIME_SCALE=144 is still 10 wall-clock minutes), so no transition
+# visibly lags, while keeping DB churn low. Env-overridable; flagged for the
+# orchestrator / a DECISIONS.md ruling.
+CONSTRUCTION_ADVANCE_CHECK_SECONDS = int(
+    os.environ.get("CONSTRUCTION_ADVANCE_CHECK_SECONDS", str(10 * 60))
+)
+
 # Weekly maintenance (reputation/relationship decay). Unlike Loops A/B/C, a
 # weekly job CANNOT key off the process-relative ``elapsed_seconds`` clock —
 # that counter resets on every restart, so an ``elapsed % week == 0`` guard
@@ -1939,6 +1971,139 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# TradeDock SHIPYARD construction-advance sweep — drive the berth pipeline
+# ---------------------------------------------------------------------------
+
+def _run_construction_advance_sync() -> Dict[str, int]:
+    """Drive the TradeDock shipyard construction pipeline forward on the
+    canonical clock for every station with a live build.
+
+    Before this sweep, construction_service._advance_station — hold-expiry
+    forfeiture (with the 50% deposit split to the next-in-queue reservation),
+    queue→slip promotions, build phase progression, slip-rent forfeiture, and
+    claim-window expiry — ran ONLY when a player synchronously touched the
+    station through the construction API (quote/status/deliver/pay/claim/cancel,
+    all of which lazily settle the station first). A build whose owner stopped
+    logging in simply froze: an expired hold never released its slip, the next
+    reservation in the queue never got promoted, a finished hull never entered
+    (or aged out of) its 7-day claim window. This sweep makes the canonical
+    clock authoritative for ALL stations with a non-terminal reservation,
+    mirroring the planetary / governance sweeps' discipline.
+
+    _advance_station is the AUTHORITY on what is due — it gates every transition
+    on the durable per-reservation timestamps/states (hold_expires_at,
+    phase_deadline, rent_paid_until, claim_expires_at). The sweep merely DRIVES
+    it, so it is time-accurate (settles exactly the windows that elapsed since
+    each durable anchor) and idempotent: a caught-up station — or one already
+    settled by an interleaved API read between sweeps — is a clean no-op, so a
+    re-run (including after a restart) never double-applies a forfeiture or
+    double-promotes a slip.
+
+    Candidate set: DISTINCT station ids that have a NON-TERMINAL
+    ConstructionReservation (state NOT IN claimed/cancelled/forfeited). A station
+    with nothing but terminal rows is skipped without a lock — we never scan
+    every station. xact-advisory-lock-gated so a second instance skips instead
+    of double-advancing. Per station: with_for_update lock on the Station row
+    (the per-station serialization point _advance_station expects its caller to
+    hold), then _advance_station + a per-station commit; per-station try/except
+    so one bad station cannot abort the batch.
+
+    Returns {stations} — the count of stations whose pipeline actually advanced
+    (a transition was logged); a no-op station does not increment it.
+    """
+    from src.core.database import SessionLocal
+    from src.models.construction import ConstructionReservation
+    from src.models.station import Station
+    from src.services import construction_service
+
+    result = {"stations": 0}
+    now = datetime.now(UTC)
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+
+        # Distinct stations carrying at least one live (non-terminal) build.
+        # Querying the indexed reservation set — not every station — keeps the
+        # sweep cheap on a steady galaxy with few in-flight builds.
+        station_rows = (
+            db.query(ConstructionReservation.station_id)
+            .filter(
+                ConstructionReservation.state.notin_(
+                    list(construction_service.TERMINAL_STATES)
+                )
+            )
+            .distinct()
+            .all()
+        )
+
+        for (station_id,) in station_rows:
+            try:
+                station = (
+                    db.query(Station)
+                    .filter(Station.id == station_id)
+                    .with_for_update()
+                    .first()
+                )
+                if station is None:
+                    db.rollback()  # release any open txn; station gone
+                    continue
+                # _advance_station settles the whole pipeline under the held
+                # station lock and flushes; it leaves the commit to the caller.
+                # We always commit (it may have advanced phases, granted holds,
+                # or surfaced rent markers without logging a discrete event), but
+                # only count stations that actually transitioned a reservation.
+                snapshot = _construction_state_snapshot(db, station_id)
+                construction_service._advance_station(db, station, now)
+                changed = _construction_state_snapshot(db, station_id) != snapshot
+                db.commit()
+                if changed:
+                    result["stations"] += 1
+            except Exception:
+                logger.exception(
+                    "Construction advance: pipeline failed for station %s",
+                    station_id,
+                )
+                db.rollback()
+
+        # Final commit closes out any open (no-op) transaction so the advisory
+        # lock is not held on the pooled connection.
+        db.commit()
+        return result
+    except Exception:
+        logger.exception("Construction advance sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
+def _construction_state_snapshot(db: Session, station_id) -> tuple:
+    """A cheap (reservation_id, state) fingerprint of a station's non-terminal
+    builds, used only to detect whether _advance_station moved anything this
+    pass (so the sweep's count reflects real transitions, not no-op passes).
+    Read-only; ordered for stable comparison."""
+    from src.models.construction import ConstructionReservation
+
+    rows = (
+        db.query(ConstructionReservation.id, ConstructionReservation.state)
+        .filter(
+            ConstructionReservation.station_id == station_id,
+            ConstructionReservation.state.notin_(
+                ["claimed", "cancelled", "forfeited"]
+            ),
+        )
+        .order_by(ConstructionReservation.id)
+        .all()
+    )
+    return tuple((str(rid), state) for rid, state in rows)
+
+
+# ---------------------------------------------------------------------------
 # Economy-metrics snapshot — daily galaxy-wide economic state writer
 # ---------------------------------------------------------------------------
 
@@ -2827,6 +2992,30 @@ async def npc_scheduler_loop() -> None:
             except Exception:
                 logger.exception(
                     "NPC scheduler: governance sweep crashed (loop continues)"
+                )
+
+        # TradeDock shipyard construction-advance sweep (hold-expiry forfeiture
+        # + 50% deposit split, queue→slip promotions, phase progression, rent
+        # and claim-window expiry). Drives construction_service._advance_station
+        # for every station with a live build so the berth pipeline no longer
+        # depends on a player synchronously touching the station — runs in the
+        # worker thread, own session, own advisory lock. Idempotent + a no-op
+        # when nothing is due. Coarse cadence (construction phases are slow);
+        # NO-CANON, env-overridable.
+        if elapsed % CONSTRUCTION_ADVANCE_CHECK_SECONDS == 0:
+            try:
+                built = await asyncio.to_thread(_run_construction_advance_sync)
+                if built.get("stations"):
+                    logger.info(
+                        "NPC scheduler: construction advance — %d station "
+                        "shipyard pipeline(s) progressed",
+                        built.get("stations", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: construction advance sweep crashed (loop continues)"
                 )
 
         # Weekly reputation/relationship decay (fully synchronous). Gated by a
