@@ -2700,10 +2700,15 @@ class CombatService:
         planet_shields = planet.shields or 0
         planet_weapons = planet.weapon_batteries or 0
 
-        # Calculate planetary defense reduction (shields, defense level, generators)
+        # Calculate planetary defense reduction (shields, defense level, generators,
+        # and the citadel-built turret_network / orbital_platform contributions — WO-CT1).
         planetary_def = self._calculate_planetary_defense_reduction(planet)
         damage_reduction = planetary_def["damage_reduction"]
         remaining_shield_hp = planetary_def["shield_hp"]
+        # Turret networks are automated point-defense: they shred attacking drones
+        # every round (CANON: each turret destroys 1-3 drones/round). 0 for legacy
+        # planets / planets without turret networks (no behaviour change).
+        anti_drone_kills_per_round = planetary_def.get("anti_drone_kills_per_round", 0)
 
         # Combat parameters
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
@@ -2737,6 +2742,23 @@ class CombatService:
                 "round": round_number,
                 "message": f"Combat Round {round_number}"
             })
+
+            # Automated turret-network point-defense (WO-CT1): turret networks fire
+            # every round independent of the planet's main-weapon hit roll, shredding
+            # the attacker's drone swarm. CANON (defense.md): each turret destroys
+            # 1-3 drones/round; the kill band scales with the turret_network count.
+            # No turret networks -> ceiling is 0 -> this block is a no-op (legacy safe).
+            if anti_drone_kills_per_round > 0 and attacker_drones > 0:
+                turret_kills = random.randint(1, min(anti_drone_kills_per_round, attacker_drones))
+                attacker_drones -= turret_kills
+                attacker_drones_lost += turret_kills
+                combat_details.append({
+                    "round": round_number,
+                    "actor": "defender",
+                    "action": "turret_defense",
+                    "message": f"Automated turret network destroyed {turret_kills} of {attacker.username}'s drones",
+                    "drones_destroyed": turret_kills
+                })
 
             # Attacker's turn
             if not attacker_ship_destroyed:
@@ -3162,29 +3184,74 @@ class CombatService:
         # Clamp to 10-90%
         return max(10, min(90, chance))
 
+    def _read_defense_buildings(self, planet: Planet) -> Dict[str, int]:
+        """Read the citadel-built defense buildings off the planet's active_events JSONB.
+
+        Mirrors citadel_service._get_defense_buildings: the operational building
+        counts live under ``active_events["defense_buildings"]`` as a
+        ``{building_type: count}`` mapping. This combat-side reader is fully
+        defensive so a malformed or missing JSONB never crashes a fight:
+
+          * active_events absent / None / not a dict (legacy list form) -> {}
+          * defense_buildings absent / not a dict                        -> {}
+          * individual counts that are non-int or negative                -> coerced to 0
+
+        Legacy planets that pre-date the defense_buildings sub-dict therefore
+        contribute exactly zero from this path (treated as 0 — no behaviour change).
+        """
+        events = getattr(planet, "active_events", None)
+        if not isinstance(events, dict):
+            return {}
+        raw = events.get("defense_buildings", {})
+        if not isinstance(raw, dict):
+            return {}
+        clean: Dict[str, int] = {}
+        for btype, count in raw.items():
+            try:
+                n = int(count)
+            except (TypeError, ValueError):
+                n = 0
+            clean[str(btype)] = max(0, n)
+        return clean
+
     def _calculate_planetary_defense_reduction(self, planet: Planet) -> Dict[str, Any]:
         """Calculate how much planetary defenses reduce incoming attack damage.
 
-        Reads the planet's defense_level (0-10), shields, and defense_shields
-        (shield generator level) to produce a damage reduction factor and a
-        shield HP pool that must be depleted before hull damage is dealt.
+        Reads the planet's defense_level (0-10), shields, defense_shields (shield
+        generator level), AND the citadel-built defense_buildings stored in the
+        active_events JSONB (turret_network + orbital_platform counts) to produce
+        a damage-reduction factor, a shield HP pool that must be depleted before
+        hull damage is dealt, and a per-round anti-drone kill contribution.
+
+        WO-CT1: until this, defense_buildings were dead wiring — players could
+        build turret networks and orbital platforms and they had ZERO combat
+        effect. This folds them in alongside the existing defense_level / shield
+        terms so built defenses actually defend.
 
         Returns:
             Dict with:
                 damage_reduction: float 0.0-0.9 — multiplicative reduction on
                     incoming damage (e.g. 0.35 means 35% less damage).
-                shield_hp: int — flat shield hit-points from shield generators
-                    that must be burned through before planet hull takes damage.
+                shield_hp: int — flat shield hit-points (shield generators +
+                    orbital-platform armour) that must be burned through before
+                    planet hull takes damage.
+                anti_drone_kills_per_round: int — max attacking drones the turret
+                    networks shred each round (turret_network count -> kill band).
                 description: str — human-readable summary.
         """
         defense_level = getattr(planet, "defense_level", 0) or 0
         shield_gen_level = getattr(planet, "defense_shields", 0) or 0
         shields = getattr(planet, "shields", 0) or 0
 
+        # Citadel-built defense buildings (JSONB, defensive read — never crashes).
+        buildings = self._read_defense_buildings(planet)
+        turret_networks = buildings.get("turret_network", 0)
+        orbital_platforms = buildings.get("orbital_platform", 0)
+
         # Colony-specialization defense multiplier (ADR-0087): Military planets get
         # +50% effective defense (×1.5); Research/Agricultural are softer (×0.8/0.9);
-        # Balanced ×1.1. Scales both the damage-reduction and the shield HP pool —
-        # the planet's whole defensive contribution.
+        # Balanced ×1.1. Scales the damage-reduction, the shield HP pool, and the
+        # building contributions — the planet's whole defensive contribution.
         from src.services.planetary_service import SPECIALIZATION_BONUSES
         spec = getattr(planet, "specialization", None)
         defense_mult = SPECIALIZATION_BONUSES.get(spec, {}).get("defense", 1.0) if spec else 1.0
@@ -3194,26 +3261,62 @@ class CombatService:
 
         # Shield generators add a flat shield HP pool (500 HP per generator level,
         # plus any existing shield value on the planet), scaled by specialization.
-        shield_hp = int(((shield_gen_level * 500) + (shields * 100)) * defense_mult)
+        shield_hp_base = (shield_gen_level * 500) + (shields * 100)
 
         # Total damage_reduction also includes a small bonus from shield generators
         # (each gen level adds 4% reduction, up to 40% at level 10)
         gen_reduction = min(shield_gen_level * 0.04, 0.40)
 
+        # --- WO-CT1: defense-building contributions ----------------------------
+        # NO-CANON per-round magnitudes (orchestrator to bless): chosen CONSERVATIVE
+        # and on the resolver's existing toy scale. defense.md gives orbital base
+        # damage 500/burst and turrets 1-3 drone-kills/round, but the resolver runs
+        # on a raw-damage scale of 1-5/round with capture at planet_defense_level
+        # (max 10) — injecting raw 500 damage would end every fight in round 1, so
+        # orbital platforms contribute MITIGATION + ARMOUR (shield HP) here rather
+        # than raw burst damage. The full off-scale orbital combat model (500-1500
+        # burst, ship-class multipliers, 2-sector range phase, platform health,
+        # EMP suppression) is a larger, separately-scoped redesign left for Max.
+        #
+        #   turret_network    -> +3% damage reduction each (cap +18% over the band)
+        #   orbital_platform   -> +6% damage reduction each (cap +18%)
+        #                         + 250 shield HP each (armoured installation)
+        turret_reduction = min(turret_networks * 0.03, 0.18)
+        orbital_reduction = min(orbital_platforms * 0.06, 0.18)
+        building_reduction = turret_reduction + orbital_reduction
+        orbital_shield_hp = orbital_platforms * 250
+
+        # turret anti-drone kills: CANON (defense.md "each turret destroys 1-3
+        # drones/round"). The per-round CEILING the resolver may apply, scaled by
+        # the network count (the actual count rolled is randint(1, ceiling) in the
+        # counterattack so a single turret still respects the 1-3 band).
+        anti_drone_kills_per_round = min(turret_networks * 3, 18)
+        # ----------------------------------------------------------------------
+
+        shield_hp = int((shield_hp_base + orbital_shield_hp) * defense_mult)
+
         # Apply the specialization multiplier to the combined reduction, then cap
         # at 0.9 so planets are never invincible.
-        damage_reduction = min((level_reduction + gen_reduction) * defense_mult, 0.90)
+        damage_reduction = min(
+            (level_reduction + gen_reduction + building_reduction) * defense_mult,
+            0.90,
+        )
 
         parts = []
         if defense_level > 0:
             parts.append(f"Level {defense_level} defenses ({level_reduction:.0%} reduction)")
         if shield_gen_level > 0:
             parts.append(f"Level {shield_gen_level} shield generators ({gen_reduction:.0%} reduction, {shield_hp} shield HP)")
+        if turret_networks > 0:
+            parts.append(f"{turret_networks} turret network(s) ({turret_reduction:.0%} reduction, {anti_drone_kills_per_round} drone-kills/round)")
+        if orbital_platforms > 0:
+            parts.append(f"{orbital_platforms} orbital platform(s) ({orbital_reduction:.0%} reduction, {orbital_shield_hp} armour HP)")
         description = " + ".join(parts) if parts else "No planetary defenses"
 
         return {
             "damage_reduction": round(damage_reduction, 2),
             "shield_hp": shield_hp,
+            "anti_drone_kills_per_round": anti_drone_kills_per_round,
             "description": description
         }
 
