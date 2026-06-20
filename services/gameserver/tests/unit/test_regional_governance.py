@@ -670,3 +670,255 @@ class TestColonyCitizenshipOnRamp:
         assert float(visitor.voting_power) >= 1.0
         assert visitor.can_vote is True
         mock_db.commit.assert_awaited()
+
+
+class TestGrantRegionCitizenshipPrimitive:
+    """WO-IL2: grant_region_citizenship is the ONE citizenship-grant primitive
+    shared by the colony onramp and the invite-link onramp.
+
+    These exercise the upsert/idempotency/monotonicity rules directly (no colony
+    precondition — that lives in grant_citizenship_for_colony, which delegates
+    here). The membership read is stubbed so the grant logic itself is under test.
+    """
+
+    @pytest.fixture
+    def mock_db(self):
+        return AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_inserts_citizen_row_when_no_membership(self, mock_db):
+        """No existing row -> a fresh citizen RegionalMembership is added at
+        voting_power 1.0 and committed."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        with patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await RegionalGovernanceService.grant_region_citizenship(
+                mock_db, player_id, region_id
+            )
+        assert result["ok"] is True
+        # A freshly-INSERTED row is born at the citizen tier with weight, so the
+        # promote checks are no-ops -> CONFIRMED (the insert IS the grant; this
+        # matches the original colony-path behavior).
+        assert result["code"] == "CITIZENSHIP_CONFIRMED"
+        assert result["membership_type"] == MembershipType.CITIZEN.value
+        assert result["voting_power"] >= 1.0
+        mock_db.add.assert_called_once()
+        added = mock_db.add.call_args[0][0]
+        assert isinstance(added, RegionalMembership)
+        assert added.membership_type == MembershipType.CITIZEN.value
+        assert float(added.voting_power) >= 1.0
+        mock_db.commit.assert_awaited()  # the INSERT was committed
+
+    @pytest.mark.asyncio
+    async def test_promotes_visitor_to_citizen(self, mock_db):
+        """An existing lower-tier (visitor) row is PROMOTED in place — never a
+        duplicate row, and citizenship is never downgraded."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        visitor = RegionalMembership(
+            player_id=player_id,
+            region_id=region_id,
+            membership_type=MembershipType.VISITOR.value,
+            voting_power=Decimal("1.0"),
+        )
+        with patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=visitor),
+        ):
+            result = await RegionalGovernanceService.grant_region_citizenship(
+                mock_db, player_id, region_id
+            )
+        assert result["ok"] is True
+        assert result["code"] == "CITIZENSHIP_GRANTED"
+        assert visitor.membership_type == MembershipType.CITIZEN.value
+        assert visitor.can_vote is True
+        mock_db.add.assert_not_called()  # promoted in place, not re-inserted
+        mock_db.commit.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_floors_zero_power_citizen_to_one(self, mock_db):
+        """A citizen row stuck at voting_power 0.0 is floored to 1.0 so it is not
+        silently dropped from the roll despite the citizen tier."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        zero_power = RegionalMembership(
+            player_id=player_id,
+            region_id=region_id,
+            membership_type=MembershipType.CITIZEN.value,
+            voting_power=Decimal("0.0"),
+        )
+        with patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=zero_power),
+        ):
+            result = await RegionalGovernanceService.grant_region_citizenship(
+                mock_db, player_id, region_id
+            )
+        assert result["ok"] is True
+        assert result["code"] == "CITIZENSHIP_GRANTED"
+        assert float(zero_power.voting_power) >= 1.0
+        assert zero_power.can_vote is True
+
+    @pytest.mark.asyncio
+    async def test_idempotent_noop_for_existing_citizen(self, mock_db):
+        """Re-calling for an already-citizen-with-weight player is a no-op
+        success (CITIZENSHIP_CONFIRMED) — does not downgrade or re-insert."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        citizen = RegionalMembership(
+            player_id=player_id,
+            region_id=region_id,
+            membership_type=MembershipType.CITIZEN.value,
+            voting_power=Decimal("2.5"),
+        )
+        with patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=citizen),
+        ):
+            result = await RegionalGovernanceService.grant_region_citizenship(
+                mock_db, player_id, region_id
+            )
+        assert result["ok"] is True
+        assert result["code"] == "CITIZENSHIP_CONFIRMED"
+        assert citizen.membership_type == MembershipType.CITIZEN.value
+        assert float(citizen.voting_power) == 2.5  # weight preserved, not floored
+        mock_db.add.assert_not_called()
+        mock_db.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_colony_onramp_delegates_to_primitive(self, mock_db):
+        """grant_citizenship_for_colony keeps the colony precondition then
+        delegates the grant to the shared primitive (single source of truth)."""
+        region_id = uuid.uuid4()
+        player_id = uuid.uuid4()
+        with patch.object(
+            RegionalGovernanceService, "owns_colony_in_region",
+            new=AsyncMock(return_value=True),
+        ), patch.object(
+            RegionalGovernanceService, "grant_region_citizenship",
+            new=AsyncMock(return_value={"ok": True, "code": "CITIZENSHIP_GRANTED",
+                                        "membership_type": "citizen",
+                                        "voting_power": 1.0}),
+        ) as mock_grant:
+            result = await RegionalGovernanceService.grant_citizenship_for_colony(
+                mock_db, player_id, region_id
+            )
+        assert result["ok"] is True
+        mock_grant.assert_awaited_once_with(mock_db, player_id, region_id)
+
+
+class TestAccountAgeVoteGate:
+    """WO-IL5 / ADR-0056 N-V3 / Max-D5: a citizen cannot VOTE until their account
+    is ≥ 60 days old. Citizenship/presence is granted immediately; only the
+    franchise waits. Migration-backfilled citizens (old accounts) must still pass.
+    """
+
+    @pytest.fixture
+    def mock_db(self):
+        return AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_fresh_account_is_ineligible(self, mock_db):
+        """An account created today is under the 60-day window -> ineligible."""
+        from datetime import timezone as _tz
+        mock_db.scalar = AsyncMock(return_value=datetime.now(_tz.utc))
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is False
+
+    @pytest.mark.asyncio
+    async def test_old_account_is_eligible(self, mock_db):
+        """A 90-day-old account clears the 60-day window -> eligible. This is the
+        migration-backfilled-citizen case (real historical created_at)."""
+        from datetime import timezone as _tz
+        mock_db.scalar = AsyncMock(
+            return_value=datetime.now(_tz.utc) - timedelta(days=90)
+        )
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is True
+
+    @pytest.mark.asyncio
+    async def test_exactly_60_days_is_eligible(self, mock_db):
+        """The boundary is inclusive: an account exactly 60 days old can vote."""
+        from datetime import timezone as _tz
+        mock_db.scalar = AsyncMock(
+            return_value=datetime.now(_tz.utc) - timedelta(days=60, seconds=1)
+        )
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is True
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_account_fails_closed(self, mock_db):
+        """No resolvable account (orphaned player / missing user) -> ineligible
+        (never hand a vote to an account of unknown age)."""
+        mock_db.scalar = AsyncMock(return_value=None)
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is False
+
+    @pytest.mark.asyncio
+    async def test_naive_created_at_treated_as_utc(self, mock_db):
+        """A naive created_at (defensive: hand-built/legacy row) is treated as
+        UTC and does not raise a naive/aware TypeError."""
+        mock_db.scalar = AsyncMock(
+            return_value=datetime.utcnow() - timedelta(days=90)
+        )
+        eligible = await RegionalGovernanceService._is_account_vote_eligible(
+            mock_db, uuid.uuid4()
+        )
+        assert eligible is True
+
+    @pytest.mark.asyncio
+    async def test_cast_election_vote_rejects_too_new_account(self, mock_db):
+        """A citizen with a fresh account is rejected with ERR_ACCOUNT_TOO_NEW —
+        the can_vote model gate passes but the age gate does not."""
+        now = datetime.utcnow()
+        region = Region(id=uuid.uuid4())
+        election = RegionalElection(
+            id=uuid.uuid4(),
+            region_id=region.id,
+            status=ElectionStatus.ACTIVE,
+            voting_opens_at=now - timedelta(hours=1),
+            voting_closes_at=now + timedelta(hours=1),
+            candidates=[],
+        )
+        # cast_election_vote only reads voter.id; Player.username is a read-only
+        # property (no setter), so construct the minimal voter.
+        voter = Player(id=uuid.uuid4(), user_id=uuid.uuid4())
+        citizen = RegionalMembership(
+            player_id=voter.id,
+            region_id=region.id,
+            membership_type=MembershipType.CITIZEN.value,
+            voting_power=Decimal("1.0"),
+        )
+        assert citizen.can_vote is True  # model gate would let them through
+        with patch.object(
+            RegionalGovernanceService, "_get_voting_membership",
+            new=AsyncMock(return_value=citizen),
+        ), patch.object(
+            RegionalGovernanceService, "_is_account_vote_eligible",
+            new=AsyncMock(return_value=False),
+        ):
+            result = await RegionalGovernanceService.cast_election_vote(
+                mock_db, region, election, voter, str(uuid.uuid4())
+            )
+        assert result["ok"] is False
+        assert result["code"] == "ERR_ACCOUNT_TOO_NEW"
+        mock_db.commit.assert_not_awaited()  # no vote written
+
+    @pytest.mark.asyncio
+    async def test_age_eligible_player_ids_empty_set(self, mock_db):
+        """The batch quorum helper short-circuits on an empty input (no query)."""
+        result = await RegionalGovernanceService._age_eligible_player_ids(
+            mock_db, set()
+        )
+        assert result == set()

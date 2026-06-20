@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func, and_, or_
 from sqlalchemy.exc import IntegrityError
 from typing import List, Dict, Optional, Any, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from math import ceil
 import uuid
@@ -38,6 +38,22 @@ logger = logging.getLogger(__name__)
 QUORUM_PCT_DEFAULT = Decimal("0.33")
 QUORUM_PCT_MIN = Decimal("0.25")
 QUORUM_PCT_MAX = Decimal("0.60")
+
+# ADR-0056 N-V3 / Max D5 (region-citizenship-onramp): a citizen cannot VOTE
+# until their ACCOUNT is at least this old. Citizenship/presence is granted
+# immediately; the franchise is what waits. This is the anti-alt-ring fence for
+# the invite-link onramp (sized for the "spin up alts for two weeks" horizon) —
+# the only ADR-0056 vote gate built today. The companion gates (personal_rep ≥
+# neutral; not multi_account_flag.blocks_vote) are NOT wired here:
+#   - personal_rep ≥ neutral is a no-op at the default (new players start at
+#     score 0 = Neutral), so it adds zero anti-abuse value alone — follow-up.
+#   - multi_account_flag is ENTIRELY UNBUILT (no column/model/service). See the
+#     TODO in _is_account_vote_eligible — do NOT fake it.
+# Account age is measured from User.created_at (the account, not the player game
+# record). Migration-backfilled citizens (create_default_memberships) carry
+# their real historical creation dates, which predate any 60-day window, so they
+# are NEVER disenfranchised by this gate.
+VOTE_ACCOUNT_AGE_MIN = timedelta(days=60)
 
 # Constitutional changes require a fixed supermajority regardless of the
 # region default (FEATURES …/regional-governance.md "Supermajority").
@@ -779,33 +795,42 @@ class RegionalGovernanceService:
         return {r[0] for r in rows.all()}
 
     @staticmethod
-    async def grant_citizenship_for_colony(
+    async def grant_region_citizenship(
         db: AsyncSession,
         player_id: uuid.UUID,
         region_id: uuid.UUID,
     ) -> Dict[str, Any]:
-        """Grant (or confirm) region citizenship to a player on the strength of
-        owning a colony in that region (WO-CF PATH A).
+        """The ONE region-citizenship-grant primitive (WO-IL2).
 
-        Verifies in-region colony ownership via the reliable Planet -> Sector
-        join, then UPSERTs the player's RegionalMembership row to
-        membership_type='citizen' with voting_power >= 1.0 (the
-        UNIQUE(player_id, region_id) constraint means an existing visitor/resident
-        row is promoted in place rather than duplicated). Idempotent: re-running
-        for an already-citizen colony owner is a no-op success. Returns
-        {ok, code, ...}."""
-        owns = await RegionalGovernanceService.owns_colony_in_region(
-            db, player_id, region_id
-        )
-        if not owns:
-            return {"ok": False, "code": "ERR_NO_COLONY_IN_REGION"}
+        Inserts (or upserts) the player's RegionalMembership row to
+        membership_type='citizen' with voting_power >= 1.0, honoring the
+        UNIQUE(player_id, region_id) constraint. This is the single source of
+        truth for "becomes a citizen" — both onramps call it: the colony path
+        (grant_citizenship_for_colony, after its colony-ownership check) and the
+        invite-link path (which imports it after validating the invite). It does
+        NOT itself decide WHETHER the player qualifies — the caller owns the
+        precondition (a colony in R, a valid invite) — this just performs the
+        grant. It does NOT touch auth/account-creation, so it is safe to build
+        and unit-test against an existing player.
 
+        Idempotency + monotonicity (mirrors migration_service.create_default_memberships):
+        - No row yet  -> INSERT a citizen row at voting_power 1.0; on the
+          concurrent-insert race (IntegrityError) roll back, reload, and promote.
+        - Row exists at a LOWER tier (visitor/resident) -> PROMOTE in place to
+          citizen. Citizenship is NEVER downgraded by this helper, and a
+          voting_power floored at 1.0 (a 0.0-power citizen row would silently
+          drop the player from the roll despite the citizen tier).
+        - Already a citizen with weight -> no-op success (re-call is safe).
+
+        Returns {ok, code, membership_type, voting_power}; code is
+        CITIZENSHIP_GRANTED when a row was inserted/promoted, CITIZENSHIP_CONFIRMED
+        when already a citizen.
+        """
         membership = await RegionalGovernanceService._get_voting_membership(
             db, region_id, player_id
         )
         if membership is None:
-            # Enroll directly at citizen tier (the player joined the region by
-            # planting a colony there; default voting_power 1.0).
+            # Enroll directly at citizen tier (default voting_power 1.0).
             membership = RegionalMembership(
                 player_id=player_id,
                 region_id=region_id,
@@ -816,7 +841,11 @@ class RegionalGovernanceService:
             try:
                 await db.commit()
             except IntegrityError:
-                # Lost the race to a concurrent enroll/upsert; reload and promote.
+                # Lost the race to a concurrent enroll/upsert (e.g. a turn-spend
+                # visitor row created between our read and insert). Roll back the
+                # aborted transaction BEFORE re-reading (PostgreSQL forbids any
+                # query on an aborted tx), then promote the surviving row so
+                # citizenship still wins / is never downgraded.
                 await db.rollback()
                 membership = await RegionalGovernanceService._get_voting_membership(
                     db, region_id, player_id
@@ -827,8 +856,9 @@ class RegionalGovernanceService:
         if membership.membership_type != MembershipType.CITIZEN.value:
             membership.membership_type = MembershipType.CITIZEN.value
             promoted = True
-        # A colony owner must carry voting weight; a 0.0 power row would silently
-        # drop them from the roll despite the citizen tier.
+        # A citizen must carry voting weight; a 0.0 power row would silently
+        # drop them from the roll despite the citizen tier. Floor at 1.0, never
+        # downgrade an already-higher power.
         if (membership.voting_power or Decimal("0")) <= 0:
             membership.voting_power = Decimal("1.0")
             promoted = True
@@ -840,6 +870,31 @@ class RegionalGovernanceService:
             "membership_type": membership.membership_type,
             "voting_power": float(membership.voting_power),
         }
+
+    @staticmethod
+    async def grant_citizenship_for_colony(
+        db: AsyncSession,
+        player_id: uuid.UUID,
+        region_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Grant (or confirm) region citizenship to a player on the strength of
+        owning a colony in that region (WO-CF PATH A).
+
+        This is the colony ONRAMP: it owns one precondition — in-region colony
+        ownership, verified via the reliable Planet -> Sector join — and then
+        delegates the actual membership upsert to the shared
+        grant_region_citizenship primitive (WO-IL2) so there is exactly ONE
+        citizenship-grant code path. Idempotent: re-running for an already-citizen
+        colony owner is a no-op success. Returns {ok, code, ...}."""
+        owns = await RegionalGovernanceService.owns_colony_in_region(
+            db, player_id, region_id
+        )
+        if not owns:
+            return {"ok": False, "code": "ERR_NO_COLONY_IN_REGION"}
+
+        return await RegionalGovernanceService.grant_region_citizenship(
+            db, player_id, region_id
+        )
 
     @staticmethod
     async def get_membership_status(
@@ -893,6 +948,77 @@ class RegionalGovernanceService:
         }
 
     @staticmethod
+    async def _is_account_vote_eligible(
+        db: AsyncSession,
+        player_id: uuid.UUID,
+    ) -> bool:
+        """True iff this player's ACCOUNT is at least VOTE_ACCOUNT_AGE_MIN old —
+        the ADR-0056 N-V3 / Max-D5 anti-alt-ring vote gate.
+
+        Joins Player -> User and compares now() against User.created_at (the
+        account-creation timestamp; the User row is created before the Player
+        row). Citizenship/presence is granted immediately elsewhere — this gate
+        only governs the FRANCHISE. Returns False (ineligible) if the account
+        cannot be resolved (defence-in-depth: an orphaned player should never
+        silently acquire a vote). Migration-backfilled citizens predate any
+        60-day window, so they always pass.
+
+        TODO(multi-account): ADR-0056 N-V3 also specifies a
+        not-multi_account_flag.blocks_vote gate and a personal_rep ≥ neutral
+        gate. multi_account_flag is entirely unbuilt (no column/model/service);
+        do NOT fake it — when the MultiAccountDetectionService /
+        participation_weight machinery ships, AND its check in here. personal_rep
+        ≥ neutral is a no-op at the default-0 (Neutral) starting score, so it
+        adds no anti-abuse value alone and is deferred as a follow-up.
+        """
+        created_at = await db.scalar(
+            select(User.created_at)
+            .select_from(User)
+            .join(Player, Player.user_id == User.id)
+            .where(Player.id == player_id)
+        )
+        if created_at is None:
+            # No resolvable account (orphaned player / missing user) — fail
+            # closed: never hand a vote to a player whose account age is unknown.
+            return False
+        # User.created_at is timezone-aware (DateTime(timezone=True)); compare in
+        # UTC. A naive value (defensive — e.g. a hand-built test row) is treated
+        # as UTC so the subtraction never raises a naive/aware TypeError.
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - created_at) >= VOTE_ACCOUNT_AGE_MIN
+
+    @staticmethod
+    async def _age_eligible_player_ids(
+        db: AsyncSession,
+        player_ids: set,
+    ) -> set:
+        """Subset of player_ids whose accounts are ≥ VOTE_ACCOUNT_AGE_MIN old.
+
+        One batched Player -> User join (no N+1) so the quorum denominator in
+        _count_eligible_voters applies the same 60-day account-age gate as
+        cast_election_vote / cast_policy_vote — keeping quorum representative of
+        only age-eligible voters (an under-age citizen is on the roll for
+        presence but not for the franchise, so must not inflate the denominator
+        they cannot help reach). Returns an empty set for an empty input.
+        """
+        if not player_ids:
+            return set()
+        cutoff = datetime.now(timezone.utc) - VOTE_ACCOUNT_AGE_MIN
+        rows = await db.execute(
+            select(Player.id)
+            .select_from(Player)
+            .join(User, Player.user_id == User.id)
+            .where(
+                and_(
+                    Player.id.in_(player_ids),
+                    User.created_at <= cutoff,
+                )
+            )
+        )
+        return {r[0] for r in rows.all()}
+
+    @staticmethod
     async def _count_eligible_voters(db: AsyncSession, region_id: uuid.UUID) -> int:
         """Count distinct players eligible to vote in a region (drives the quorum
         denominator).
@@ -903,6 +1029,12 @@ class RegionalGovernanceService:
           voting_power > 0), OR
         - ownership of ≥1 colony in the region (PATH A), regardless of whether
           the membership row has been upgraded yet.
+
+        Then the ADR-0056 N-V3 / Max-D5 60-day ACCOUNT-AGE gate is applied to the
+        union: an under-age citizen is on the roll for presence but cannot vote,
+        so must not inflate the quorum denominator (cast_election_vote /
+        cast_policy_vote reject them at the same threshold). Migration-backfilled
+        citizens predate any 60-day window and are retained.
 
         Counted as DISTINCT players so a colony owner who already has an eligible
         membership row is not double-counted."""
@@ -918,6 +1050,10 @@ class RegionalGovernanceService:
         eligible = {r[0] for r in membership_rows.all()}
         eligible |= await RegionalGovernanceService._player_ids_owning_colony_in_region(
             db, region_id
+        )
+        # Exclude citizens whose accounts are younger than the 60-day vote gate.
+        eligible = await RegionalGovernanceService._age_eligible_player_ids(
+            db, eligible
         )
         return len(eligible)
 
@@ -970,6 +1106,14 @@ class RegionalGovernanceService:
             return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
         if not membership.can_vote:
             return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
+        # ADR-0056 N-V3 / Max-D5: a citizen cannot vote until their account is
+        # ≥ 60 days old (anti-alt-ring fence). Citizenship/presence was granted
+        # immediately; the franchise waits. Backfilled citizens predate the
+        # window and pass.
+        if not await RegionalGovernanceService._is_account_vote_eligible(
+            db, voter.id
+        ):
+            return {"ok": False, "code": "ERR_ACCOUNT_TOO_NEW"}
 
         # Candidate must be one of the registered candidates.
         candidate_ids = {
@@ -1064,6 +1208,13 @@ class RegionalGovernanceService:
             return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
         if not membership.can_vote:
             return {"ok": False, "code": "ERR_NOT_ELIGIBLE"}
+        # ADR-0056 N-V3 / Max-D5 60-day account-age vote gate (checked before the
+        # row lock so an ineligible voter never holds the policy lock). Mirrors
+        # cast_election_vote.
+        if not await RegionalGovernanceService._is_account_vote_eligible(
+            db, voter.id
+        ):
+            return {"ok": False, "code": "ERR_ACCOUNT_TOO_NEW"}
 
         # Re-read the policy under a row lock so the read-modify-write of the
         # tallies is atomic against a concurrent vote on the same policy.
