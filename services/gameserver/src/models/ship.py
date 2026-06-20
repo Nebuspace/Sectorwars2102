@@ -32,6 +32,56 @@ class ShipType(enum.Enum):
     NPC_SENTINEL_INTERDICTOR = "NPC_SENTINEL_INTERDICTOR"
 
 
+class ShipSize(enum.Enum):
+    """Canonical ship-size axis (FEATURES/gameplay/ships.md "Ship size axis";
+    DATA_MODELS/ships.md ShipSpecification `size` enum).
+
+    The size axis is consumed by exactly two systems — the Carrier ship-hangar
+    fit check (WO-AE) and the Tractor Beam tow per-move turn surcharge (WO-AF).
+    Each finite size carries a `size_units` weight used by both:
+
+        tiny=1, small=2, medium=4, large=8
+
+    A `capital`-size hull (only the Carrier at launch) has NO finite
+    size_units: it can be neither hangared nor towed (its mass exceeds both
+    the Carrier hangar's structural rating and the Tractor Beam's). Querying
+    SIZE_UNITS for CAPITAL therefore raises — callers must treat capital as
+    not-dockable / not-towable, never as "some large number".
+    """
+    TINY = "TINY"
+    SMALL = "SMALL"
+    MEDIUM = "MEDIUM"
+    LARGE = "LARGE"
+    CAPITAL = "CAPITAL"
+
+
+# Canonical size-unit weights (FEATURES/gameplay/ships.md:324-328). CAPITAL is
+# deliberately absent: it is not-dockable and not-towable, so it has no finite
+# hangar/tow size-unit cost. Use size_units_for() for a safe accessor.
+SIZE_UNITS: Dict["ShipSize", int] = {
+    ShipSize.TINY: 1,
+    ShipSize.SMALL: 2,
+    ShipSize.MEDIUM: 4,
+    ShipSize.LARGE: 8,
+    # ShipSize.CAPITAL intentionally omitted — not-dockable / not-towable.
+}
+
+
+def size_units_for(size: "ShipSize") -> int:
+    """Finite hangar/tow size-unit cost for a ship size.
+
+    Raises ValueError for CAPITAL (not-dockable / not-towable — it has no
+    finite size-unit cost; callers must branch on capital explicitly rather
+    than fall through to a number).
+    """
+    if size not in SIZE_UNITS:
+        raise ValueError(
+            f"{size} has no finite size_units — capital-size hulls cannot be "
+            f"hangared or towed (FEATURES/gameplay/ships.md ship-size-axis)."
+        )
+    return SIZE_UNITS[size]
+
+
 class FailureType(enum.Enum):
     NONE = "NONE"
     MINOR = "MINOR"
@@ -183,6 +233,16 @@ class ShipSpecification(Base):
     # capture, salvage, or claim these — ownership-transfer paths reject
     # with ERR_NPC_ONLY_HULL and player-facing catalogs filter them out.
     is_npc_only = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # Canonical ship-size axis (FEATURES/gameplay/ships.md "Ship size axis";
+    # DATA_MODELS/ships.md ShipSpecification `size`). Drives the Carrier
+    # ship-hangar fit check (WO-AE) and the Tractor Beam tow surcharge
+    # (WO-AF). Stored as a native Postgres enum, MIRRORING how `type`
+    # (ShipType) is stored on this model. Nullable for additive rollout:
+    # existing rows are valid pre-seed, and the idempotent boot seeder
+    # upserts the canonical size onto every player ShipType. NPC-only
+    # Interdictor hulls carry NULL — canon assigns them no size (they are
+    # never hangared or towed; ERR_NPC_ONLY_HULL blocks player transfer).
+    ship_size = Column(Enum(ShipSize, name="ship_size"), nullable=True)
     base_cost = Column(Integer, nullable=False)
     speed = Column(Float, nullable=False)
     turn_cost = Column(Integer, nullable=False)

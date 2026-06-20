@@ -4,7 +4,7 @@ Seeds the database with ship specification data based on SHIP_TYPES.md documenta
 """
 
 from sqlalchemy.orm import Session
-from src.models.ship import ShipSpecification, ShipType
+from src.models.ship import ShipSpecification, ShipType, ShipSize
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 # Ship specifications based on DOCS/FEATURES/SHIP_TYPES.md
 SHIP_SPECIFICATIONS = {
     ShipType.ESCAPE_POD: {
+        "ship_size": ShipSize.TINY,  # canon ships.md:324
         "base_cost": 0,
         "speed": 0.25,
         "turn_cost": 10,  # Very high turn cost - escape pods are not meant for travel
@@ -50,6 +51,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.LIGHT_FREIGHTER: {
+        "ship_size": ShipSize.MEDIUM,  # canon ships.md:326
         "base_cost": 80000,
         "speed": 1.0,
         "turn_cost": 1,
@@ -88,6 +90,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.CARGO_HAULER: {
+        "ship_size": ShipSize.LARGE,  # canon ships.md:327
         "base_cost": 250000,
         "speed": 0.5,
         "turn_cost": 2,
@@ -126,6 +129,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.FAST_COURIER: {
+        "ship_size": ShipSize.SMALL,  # canon ships.md:325
         "base_cost": 50000,
         "speed": 2.0,
         "turn_cost": 1,
@@ -164,6 +168,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.SCOUT_SHIP: {
+        "ship_size": ShipSize.SMALL,  # canon ships.md:325
         "base_cost": 30000,
         "speed": 2.5,
         "turn_cost": 1,
@@ -202,6 +207,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.COLONY_SHIP: {
+        "ship_size": ShipSize.LARGE,  # canon ships.md:327
         "base_cost": 500000,
         "speed": 0.4,
         "turn_cost": 3,
@@ -240,6 +246,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.DEFENDER: {
+        "ship_size": ShipSize.MEDIUM,  # canon ships.md:326
         "base_cost": 300000,
         "speed": 1.0,
         "turn_cost": 1,
@@ -278,6 +285,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": None
     },
     ShipType.CARRIER: {
+        "ship_size": ShipSize.CAPITAL,  # canon ships.md:328 — only capital hull; not-dockable / not-towable
         "base_cost": 1500000,
         "speed": 0.75,
         "turn_cost": 2,
@@ -317,6 +325,7 @@ SHIP_SPECIFICATIONS = {
         "faction_requirements": {"terran_federation": "TRUSTED"}
     },
     ShipType.WARP_JUMPER: {
+        "ship_size": ShipSize.LARGE,  # canon ships.md:327
         "base_cost": 1000000,
         "speed": 0.0,  # Uses quantum jump instead
         "turn_cost": 1,
@@ -367,6 +376,13 @@ SHIP_SPECIFICATIONS = {
     # ------------------------------------------------------------------
     ShipType.NPC_MARSHAL_INTERDICTOR: {
         "is_npc_only": True,
+        # NO-CANON: the ship-size axis (FEATURES/gameplay/ships.md:318-330) and
+        # police-forces.md "Interdictor hulls" assign NO size to the NPC-only
+        # Interdictor hulls. They are never hangared or towed (those are
+        # player mechanics; ERR_NPC_ONLY_HULL blocks transfer), so leaving
+        # ship_size NULL is correct and non-inventive. Explicit None keeps the
+        # spec covered without fabricating canon.
+        "ship_size": None,
         "base_cost": 0,  # NPC special-issue — never sold, no market price to invent
         "speed": 1.5,  # canon police-forces.md
         # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
@@ -418,6 +434,10 @@ SHIP_SPECIFICATIONS = {
     },
     ShipType.NPC_SENTINEL_INTERDICTOR: {
         "is_npc_only": True,
+        # NO-CANON: see NPC_MARSHAL_INTERDICTOR above — canon assigns the
+        # NPC-only Interdictor hulls no ship-size; ship_size stays NULL
+        # (never hangared/towed; ERR_NPC_ONLY_HULL blocks transfer).
+        "ship_size": None,
         "base_cost": 0,  # NPC special-issue — never sold, no market price to invent
         "speed": 1.5,  # canon police-forces.md
         # PLACEHOLDER: canon silent (police-forces.md gives combat stats only) — mirrors DEFENDER; pending DECISIONS
