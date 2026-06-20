@@ -22,7 +22,13 @@ from src.models.sector import Sector
 from src.models.planet import Planet
 from src.models.station import Station
 from src.models.ship import Ship
+from src.models.region_invite import RegionInvite
 from src.services.regional_governance_service import RegionalGovernanceService
+from src.services.region_invite_service import (
+    RegionInviteService,
+    DEFAULT_MAX_USES,
+    MAX_MAX_USES,
+)
 from pydantic import BaseModel, Field
 
 
@@ -46,6 +52,21 @@ _VOTE_ERROR_STATUS = {
     "ERR_UNKNOWN_CANDIDATE": 400,
     "ERR_NO_COLONY_IN_REGION": 403,
     "ERR_MEMBERSHIP_UPSERT_FAILED": 409,
+}
+
+
+# Map region-invite service rejection codes to HTTP status (WO-IL3). A
+# non-owner trying to mint/list/revoke is 403 (the security-relevant denial);
+# validation failures are 400; cap hits are 409 (state conflict, retry later).
+_INVITE_ERROR_STATUS = {
+    "ERR_NOT_REGION_OWNER": 403,
+    "ERR_NOT_INVITE_OWNER": 403,
+    "ERR_INVITE_NOT_FOUND": 404,
+    "ERR_INVALID_MAX_USES": 400,
+    "ERR_INVALID_EXPIRY": 400,
+    "ERR_ACTIVE_INVITE_CAP": 409,
+    "ERR_REDEMPTION_CAP": 409,
+    "ERR_CODE_COLLISION": 500,
 }
 
 
@@ -110,6 +131,34 @@ class ElectionVoteCast(BaseModel):
 class PolicyVoteCast(BaseModel):
     # True = yes / for; False = no / against.
     support: bool
+
+
+class InviteCreate(BaseModel):
+    """Owner request to mint a region invite (WO-IL3).
+
+    ``max_uses`` defaults to one-time (D2) and is bounded by MAX_MAX_USES so an
+    owner cannot mint an infinitely-shareable link. ``expires_at`` is optional in
+    the request — the service applies the mandatory default TTL (7 days, D3) when
+    omitted; a supplied value must be in the future (enforced server-side)."""
+    max_uses: int = Field(default=DEFAULT_MAX_USES, ge=1, le=MAX_MAX_USES)
+    expires_at: Optional[datetime] = None
+
+
+def _serialize_invite(invite: RegionInvite) -> Dict[str, Any]:
+    """Shape a RegionInvite for the owner-facing API (includes the code — this
+    surface is owner-scoped, so returning the redeem key here is intended)."""
+    return {
+        "id": str(invite.id),
+        "code": invite.code,
+        "region_id": str(invite.region_id),
+        "created_by": str(invite.created_by) if invite.created_by else None,
+        "max_uses": invite.max_uses,
+        "uses": invite.uses,
+        "status": invite.status,
+        "expires_at": invite.expires_at.isoformat() if invite.expires_at else None,
+        "created_at": invite.created_at.isoformat() if invite.created_at else None,
+        "revoked_at": invite.revoked_at.isoformat() if invite.revoked_at else None,
+    }
 
 
 async def get_user_region(db: AsyncSession, user_id: uuid.UUID) -> Optional[Region]:
@@ -717,4 +766,105 @@ async def get_election_results(
         "voting_opens_at": election.voting_opens_at.isoformat(),
         "voting_closes_at": election.voting_closes_at.isoformat(),
         "results": election.results,
+    }
+
+
+# =====================================================================
+# Region invite onramp — owner-gated mint / list / revoke (WO-IL3).
+# Brief: audit/design-briefs/invite-link-onramp.md §4.2.
+#
+# AUTH-FREE infrastructure: these endpoints manage invite CODES; they do NOT
+# create accounts (that is WO-IL6, Max-gated). Every endpoint is owner-scoped:
+# ownership of THIS region_id is re-checked SERVER-SIDE on every call via the
+# NEW region_id-keyed RegionInviteService.owns_region (NOT the single-region
+# verify_region_owner above). The client-supplied region_id is never trusted —
+# a non-owner gets 403, never another owner's region.
+# =====================================================================
+
+@router.post("/{region_id}/invites", status_code=201)
+async def create_region_invite(
+    region_id: uuid.UUID,
+    invite_data: InviteCreate,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Mint a region invite for ``region_id`` (region OWNER only).
+
+    Returns 201 with the high-entropy invite ``code``. The caller must own
+    ``region_id`` (re-checked server-side); a non-owner gets 403. ``max_uses``
+    defaults to 1 (one-time, D2); ``expires_at`` defaults to now + 7 days (D3)."""
+    result = await RegionInviteService.mint_invite(
+        db,
+        owner_user_id=current_user.id,
+        region_id=region_id,
+        max_uses=invite_data.max_uses,
+        expires_at=invite_data.expires_at,
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_INVITE_MINT_FAILED")
+        raise HTTPException(
+            status_code=_INVITE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return {
+        "message": "Invite created successfully",
+        "invite": _serialize_invite(result["invite"]),
+    }
+
+
+@router.get("/{region_id}/invites")
+async def list_region_invites(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List the invites the calling owner has minted for ``region_id``.
+
+    Owner-scoped (403 if the caller does not own ``region_id``). Returns newest
+    first, each with its current usage/status (the code is included — this is the
+    owner's own management surface)."""
+    result = await RegionInviteService.list_invites(
+        db, owner_user_id=current_user.id, region_id=region_id
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_INVITE_LIST_FAILED")
+        raise HTTPException(
+            status_code=_INVITE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return {"invites": [_serialize_invite(inv) for inv in result["invites"]]}
+
+
+@router.post("/{region_id}/invites/{invite_id}/revoke")
+async def revoke_region_invite(
+    region_id: uuid.UUID,
+    invite_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Revoke an invite the calling owner minted (owner-only).
+
+    Owner-scoped on BOTH the invite's minter and current ownership of
+    ``region_id`` (re-checked server-side). Sets status -> 'revoked' and stamps
+    ``revoked_at``; revoking an already-revoked invite is an idempotent success.
+    The ``region_id`` in the path is validated against the invite's region so an
+    owner cannot revoke via a region they own but the invite does not belong to."""
+    # Guard: the invite must belong to the region named in the path. This is a
+    # defence-in-depth scoping check on top of the service's owner checks — a
+    # mismatched path/invite is a 404 (the invite is not "in this region").
+    invite_row = await db.scalar(
+        select(RegionInvite).where(RegionInvite.id == invite_id)
+    )
+    if invite_row is None or invite_row.region_id != region_id:
+        raise HTTPException(status_code=404, detail="ERR_INVITE_NOT_FOUND")
+
+    result = await RegionInviteService.revoke_invite(
+        db, owner_user_id=current_user.id, invite_id=invite_id
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_INVITE_REVOKE_FAILED")
+        raise HTTPException(
+            status_code=_INVITE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return {
+        "message": "Invite revoked successfully",
+        "invite": _serialize_invite(result["invite"]),
     }
