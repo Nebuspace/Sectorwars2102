@@ -544,11 +544,20 @@ class CombatService:
             # An UNSCRUPULOUS / NOTORIOUS trader (notoriety ≥ threshold) is a
             # lawful target — no penalty. Raiders are always fair game;
             # marshals carry their own faction penalty further below.
-            if looted_npc is not None:
+            # Gate BOTH the penalty and the notorious-trader reward on the
+            # actual destruction of the NPC ship. For NPC ships ATTACKER_VICTORY
+            # already implies destruction (no escape pods — see the resolver at
+            # _resolve_*; result == ATTACKER_VICTORY iff defender_ship_destroyed),
+            # but we assert the flag explicitly so the consequence is provably
+            # ONE-TIME and non-farmable: it fires only when the trader is gone,
+            # never on a survived/fled NPC or a per-round tick.
+            if looted_npc is not None and combat_result["defender_ship_destroyed"]:
                 from src.models.npc_character import NPCArchetype as _Arch
                 from src.services.npc_spawn_service import LAWFUL_TARGET_THRESHOLD
                 if (looted_npc.archetype == _Arch.TRADER
                         and (looted_npc.notoriety or 0) < LAWFUL_TARGET_THRESHOLD):
+                    # Reputable / standard merchant — gunning them down is a
+                    # crime (canon attack_innocent −100 personal rep, ADR-0042).
                     try:
                         from src.services.personal_reputation_service import (
                             PersonalReputationService,
@@ -562,6 +571,46 @@ class CombatService:
                     # DECISIONS.md "combat-suspect-wanted-triggers". The Suspect/
                     # Wanted SET off combat signals is withheld pending Max's
                     # ruling; the rep penalty above is canon and stays.
+                elif looted_npc.archetype == _Arch.TRADER:
+                    # Notorious / unscrupulous trader (notoriety ≥ threshold) —
+                    # a LAWFUL target (ADR-0074 §10). Killing one is not merely
+                    # penalty-free: canon says it "yields a positive incentive
+                    # (bounty / faction approval)". We grant a modest positive
+                    # personal-reputation reward, mirroring the penalty form so
+                    # it folds into THIS method's single locked commit (the
+                    # adjust_reputation helper only flush()es — it never commits
+                    # mid-transaction, so no second lock and no second commit).
+                    #
+                    # Non-farmable by construction: the NPC ship is destroyed in
+                    # the same block below (and the destruction flag is asserted
+                    # above), so a notorious trader can be killed — and thus
+                    # rewarded — exactly once.
+                    #
+                    # ⚠️ NO-CANON NUMBER — FLAG FOR MAX / DECISIONS: ADR-0074 §10
+                    # specifies the positive incentive but gives NO magnitude.
+                    # +25 is a deliberately modest placeholder — well under the
+                    # −100 attack_innocent penalty so bounty-hunting notorious
+                    # traders is a net-positive nudge, not a reputation-farming
+                    # treadmill. Tune once Max sets canon.
+                    NOTORIOUS_TRADER_KILL_REWARD = 25  # NO-CANON, flagged
+                    try:
+                        from src.services.personal_reputation_service import (
+                            PersonalReputationService,
+                        )
+                        PersonalReputationService(self.db).adjust_reputation(
+                            attacker.id,
+                            NOTORIOUS_TRADER_KILL_REWARD,
+                            "killed_notorious_trader",
+                        )
+                        logger.info(
+                            "Notorious-trader kill by player %s (%s, notoriety=%s) "
+                            "— personal rep %+d applied (NO-CANON magnitude, "
+                            "ADR-0074 §10; flagged for Max)",
+                            attacker.id, looted_npc.name,
+                            looted_npc.notoriety, NOTORIOUS_TRADER_KILL_REWARD,
+                        )
+                    except Exception as e:
+                        logger.error("Failed notorious-trader reward hook: %s", e)
 
         # Create combat log — defender_id stays NULL (no Player behind the
         # ship); name/type snapshots preserve who was fought
