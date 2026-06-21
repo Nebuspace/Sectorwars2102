@@ -27,6 +27,17 @@ TERRAFORMING_BASE_INCREMENT = 1       # Minimum habitability gain per tick
 TERRAFORMING_MAX_INCREMENT = 3        # Maximum habitability gain per tick
 TERRAFORMING_POPULATION_SCALE = 1000  # Population per additional increment point
 
+# Habitability-banded credit-cost scaling (terraforming.md "cost scaling at high
+# habitability"). The legacy spec scaled the level's credit cost by the current
+# habitability_score: x1.25 above 40, x1.5 above 70 (the x2.0-above-90 band is
+# moot — the skip threshold at TERRAFORMING_MIN_TARGET=90 forbids starting there).
+# Bands are inclusive-exclusive: "above N" means strictly greater than N.
+TERRAFORMING_COST_SCALE_THRESHOLD_LOW = 40    # habitability above this -> LOW multiplier
+TERRAFORMING_COST_SCALE_THRESHOLD_HIGH = 70   # habitability above this -> HIGH multiplier
+TERRAFORMING_COST_SCALE_BASE = 1.0            # at or below the low threshold
+TERRAFORMING_COST_SCALE_LOW = 1.25            # above 40 (and at or below 70)
+TERRAFORMING_COST_SCALE_HIGH = 1.5            # above 70
+
 # 5-level terraforming system with escalating costs and rewards
 TERRAFORMING_LEVELS = {
     1: {"name": "Basic Atmospheric", "cost": 100000, "duration_hours": 72, "habitability_boost": 10, "organics_cost": 500, "equipment_cost": 200},
@@ -139,7 +150,14 @@ class TerraformingService:
         if not player:
             raise ValueError("Player not found")
 
-        credit_cost = level_config["cost"]
+        # Habitability-banded cost scaling (terraforming.md "cost scaling at high
+        # habitability"): the harder a planet is to lift, the pricier the project.
+        # Scale the level's flat credit cost by the factor derived from the
+        # planet's CURRENT habitability_score, BEFORE the affordability check and
+        # debit, so the scaled figure is what gets validated, charged, and
+        # recorded in the project metadata (cancel refunds 50% of this value).
+        scaling_factor = self._cost_scaling_factor(planet.habitability_score)
+        credit_cost = int(level_config["cost"] * scaling_factor)
         if player.credits < credit_cost:
             raise ValueError(
                 f"Insufficient credits. Level {level} ({level_config['name']}) "
@@ -490,6 +508,28 @@ class TerraformingService:
         }
 
     # --- Private helpers ---
+
+    @staticmethod
+    def _cost_scaling_factor(habitability_score: int) -> float:
+        """Credit-cost multiplier for the planet's current habitability band.
+
+        Per terraforming.md ("cost scaling at high habitability"): lifting an
+        already-decent world costs more. Bands keyed on the CURRENT
+        habitability_score, "above N" being strictly greater than N:
+
+          * > TERRAFORMING_COST_SCALE_THRESHOLD_HIGH (70) -> x1.5
+          * > TERRAFORMING_COST_SCALE_THRESHOLD_LOW  (40) -> x1.25
+          * otherwise                                     -> x1.0
+
+        The legacy x2.0-above-90 band is intentionally omitted: the skip
+        threshold (TERRAFORMING_MIN_TARGET = 90) already forbids starting a
+        project at habitability >= 90, so that band is unreachable.
+        """
+        if habitability_score > TERRAFORMING_COST_SCALE_THRESHOLD_HIGH:
+            return TERRAFORMING_COST_SCALE_HIGH
+        if habitability_score > TERRAFORMING_COST_SCALE_THRESHOLD_LOW:
+            return TERRAFORMING_COST_SCALE_LOW
+        return TERRAFORMING_COST_SCALE_BASE
 
     def _recompute_max_population(self, planet: Planet) -> None:
         """Re-evaluate the habitability-derived demographic ceiling (ADR-0035).
