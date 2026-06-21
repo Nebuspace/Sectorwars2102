@@ -3177,6 +3177,11 @@ class CombatService:
         # every round (CANON: each turret destroys 1-3 drones/round). 0 for legacy
         # planets / planets without turret networks (no behaviour change).
         anti_drone_kills_per_round = planetary_def.get("anti_drone_kills_per_round", 0)
+        # WO-F3: the planetary_defense_grid drone-damage modifier — a multiplicative
+        # buff (+15% L1, +25% L2) on the planet's DEFENDING-drone damage output (the
+        # main-weapon drone-kill roll below). 0.0 for planets without a grid (legacy
+        # planets / no grid -> no behaviour change).
+        drone_damage_bonus = planetary_def.get("drone_damage_bonus", 0.0)
 
         # Combat parameters
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
@@ -3309,14 +3314,34 @@ class CombatService:
                 # Determine if attacking drones or ship
                 if attacker_drones > 0:
                     # Attack attacker's drones first
-                    drones_destroyed = random.randint(1, min(3, attacker_drones))
+                    base_drones_destroyed = random.randint(1, min(3, attacker_drones))
+                    # WO-F3: a planetary_defense_grid multiplies the planet's
+                    # defending-drone damage by (1 + bonus) — +15% (L1) / +25% (L2)
+                    # per defense.md. The kill count is a small integer (1-3), so
+                    # rounding up/down deterministically would massively over- or
+                    # under-shoot the intended %; STOCHASTIC rounding keeps the
+                    # EXPECTED kills exactly base*(1+bonus), landing the buff at the
+                    # canon ~15%/~25% in aggregate while still yielding integers and
+                    # giving a small swarm a real chance to lose an extra drone.
+                    # bonus 0.0 -> scaled == base -> floor == base, frac == 0.0 ->
+                    # base_drones_destroyed unchanged (legacy-safe, no extra kill).
+                    scaled = base_drones_destroyed * (1.0 + drone_damage_bonus)
+                    drones_destroyed = int(scaled)
+                    if random.random() < (scaled - drones_destroyed):
+                        drones_destroyed += 1
+                    # Never destroy more drones than the attacker actually has, and
+                    # never fewer than the unbuffed base would have (a guard for any
+                    # pathological negative bonus — bonus is always >= 0 today).
+                    drones_destroyed = max(base_drones_destroyed, drones_destroyed)
+                    drones_destroyed = min(drones_destroyed, attacker_drones)
                     attacker_drones -= drones_destroyed
                     attacker_drones_lost += drones_destroyed
+                    grid_note = f" (+{drone_damage_bonus:.0%} defense-grid bonus)" if drone_damage_bonus > 0 else ""
                     combat_details.append({
                         "round": round_number,
                         "actor": "defender",
                         "action": "drone_attack",
-                        "message": f"Planetary defenses destroyed {drones_destroyed} of {attacker.username}'s drones",
+                        "message": f"Planetary defenses destroyed {drones_destroyed} of {attacker.username}'s drones{grid_note}",
                         "drones_destroyed": drones_destroyed
                     })
                 else:
@@ -3734,6 +3759,15 @@ class CombatService:
         buildings = self._read_defense_buildings(planet)
         turret_networks = buildings.get("turret_network", 0)
         orbital_platforms = buildings.get("orbital_platform", 0)
+        # WO-F3: planetary_defense_grid is a DRONE-DAMAGE modifier (defense.md
+        # §"Defense grid", encoded in citadel_service.DEFENSE_BUILDINGS): the L1
+        # install grants +15% defending-drone damage & accuracy, the L2 upgrade
+        # +25% total. The building's max_count is 1/level so the operational
+        # `count` doubles as the grid level here — the only level signal present
+        # in defense_buildings today (no separate grid-level field, no migration).
+        # count 0 -> no grid (legacy-safe no-op); count 1 -> L1 (+15%); count >=2
+        # -> L2 (+25%). CANON matches the WO's +15%/+25% exactly (defense.md).
+        defense_grids = buildings.get("planetary_defense_grid", 0)
 
         # Colony-specialization defense multiplier (ADR-0087): Military planets get
         # +50% effective defense (×1.5); Research/Agricultural are softer (×0.8/0.9);
@@ -3778,6 +3812,18 @@ class CombatService:
         # the network count (the actual count rolled is randint(1, ceiling) in the
         # counterattack so a single turret still respects the 1-3 band).
         anti_drone_kills_per_round = min(turret_networks * 3, 18)
+
+        # WO-F3 defense-grid drone-damage bonus: a multiplicative buff applied to
+        # the planet's defending-drone damage output (the per-round drone-kill
+        # roll against the attacker's swarm in _resolve_planet_combat). CANON
+        # (defense.md): L1 = +15%, L2 = +25% total (NOT additive). Capped at +25%
+        # so a malformed count >= 2 never over-buffs. 0 grids -> 0.0 (no-op).
+        if defense_grids >= 2:
+            drone_damage_bonus = 0.25
+        elif defense_grids == 1:
+            drone_damage_bonus = 0.15
+        else:
+            drone_damage_bonus = 0.0
         # ----------------------------------------------------------------------
 
         shield_hp = int((shield_hp_base + orbital_shield_hp) * defense_mult)
@@ -3798,12 +3844,16 @@ class CombatService:
             parts.append(f"{turret_networks} turret network(s) ({turret_reduction:.0%} reduction, {anti_drone_kills_per_round} drone-kills/round)")
         if orbital_platforms > 0:
             parts.append(f"{orbital_platforms} orbital platform(s) ({orbital_reduction:.0%} reduction, {orbital_shield_hp} armour HP)")
+        if drone_damage_bonus > 0:
+            grid_level = 2 if defense_grids >= 2 else 1
+            parts.append(f"defense grid L{grid_level} (+{drone_damage_bonus:.0%} defending-drone damage)")
         description = " + ".join(parts) if parts else "No planetary defenses"
 
         return {
             "damage_reduction": round(damage_reduction, 2),
             "shield_hp": shield_hp,
             "anti_drone_kills_per_round": anti_drone_kills_per_round,
+            "drone_damage_bonus": drone_damage_bonus,
             "description": description
         }
 
