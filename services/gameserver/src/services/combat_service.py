@@ -25,6 +25,27 @@ from src.services.turn_service import spend_turns
 
 logger = logging.getLogger(__name__)
 
+# ── NPC-kill loot faucet (WO-DBB-EC2 / economy lifecycle §1.2) ──────────────
+# Canon (FEATURES/economy/lifecycle.md:29-31): destroying an NPC ship mints
+# NEW credits into the economy — a TRUE FAUCET, ≈ 5–15% of the NPC ship's
+# current_value, "capped per encounter to discourage farm loops". PvP kills
+# stay strictly ZERO-SUM (they redistribute existing credits, never mint), so
+# this faucet lives ONLY in attack_npc_ship and is gated on a genuine NPC-hull
+# destruction.
+#
+# ⚠️ NO-CANON NUMBERS — FLAGGED FOR MAX (lifecycle.md marks loot tables /
+# per-region scaling "📐 Design-only" with no committed magnitudes):
+#   * the 5–15% band endpoints, and
+#   * the per-encounter credit ceiling,
+# are conservative placeholders chosen to seed the documented faucet without
+# enabling a farm loop. The band matches the canon "≈ 5–15%" wording; the cap
+# is deliberately low (one weak-NPC kill yields little, and even a fat-hull
+# kill cannot exceed the ceiling), so repeatedly grinding weak NPCs hits a
+# hard credit ceiling per encounter. Tune once Max sets canon.
+NPC_KILL_LOOT_MINT_MIN_PCT = 0.05  # NO-CANON, flagged — lifecycle.md "≈ 5%"
+NPC_KILL_LOOT_MINT_MAX_PCT = 0.15  # NO-CANON, flagged — lifecycle.md "≈ 15%"
+NPC_KILL_LOOT_MINT_CAP = 5000      # NO-CANON, flagged — per-encounter ceiling
+
 
 def _regen_turns(db: Session, player: Player) -> None:
     """Bring a player's turn balance current (lazy ADR-0004 regen) before an
@@ -626,6 +647,7 @@ class CombatService:
         # trader spawn seed is deliberately small, so this loots genuinely-earned
         # profit rather than minting a large seed into the economy.
         looted_credits = 0
+        minted_loot = 0
         if combat_result["result"] == CombatResult.ATTACKER_VICTORY:
             full_contents = (npc_ship.cargo or {}).get("contents") or {}
             combat_result["cargo_stolen"] = {
@@ -644,6 +666,59 @@ class CombatService:
                 looted_credits = int(looted_npc.credits)
                 attacker.credits = (attacker.credits or 0) + looted_credits
                 looted_npc.credits = 0
+
+            # ── NPC-kill loot faucet (WO-DBB-EC2 / lifecycle.md §1.2) ──────
+            # On a genuine NPC-SHIP DESTRUCTION, mint NEW credits = a band of
+            # the hull's current_value, ON TOP of the wallet-seed loot above.
+            # This is the documented true faucet (lifecycle.md:29). It is
+            # deliberately scoped to attack_npc_ship ONLY, so PvP combat stays
+            # zero-sum (attack_player never reaches this code).
+            #
+            # Triple-gated so nothing else can trip the faucet:
+            #   1. ATTACKER_VICTORY (the enclosing branch),
+            #   2. defender_ship_destroyed — for an NPC hull, ATTACKER_VICTORY
+            #      already implies destruction (no escape pods; the resolver
+            #      sets result == ATTACKER_VICTORY iff defender_ship_destroyed),
+            #      but we assert it explicitly so the mint is provably ONE-TIME
+            #      and never fires on a fled/survived NPC or a per-round tick,
+            #   3. npc_ship.is_npc — defence-in-depth that this really is an
+            #      NPC-piloted hull (owner_id NULL / is_npc True), so a drone
+            #      kill (a different method entirely) or any non-NPC hull can
+            #      never mint.
+            # No double-mint on multi-round resolution: this block runs exactly
+            # once per resolved attack_npc_ship call (combat is fully resolved
+            # by _resolve_ship_combat before we get here), and the attacker /
+            # npc_ship / looted_npc rows are already locked above (with_for_update),
+            # in the canonical NPC-row-then-player-row order — no new lock taken.
+            if (combat_result["defender_ship_destroyed"]
+                    and getattr(npc_ship, "is_npc", False)):
+                # Hull-value basis: NPC ships spawn with current_value=0 (npc_spawn
+                # sets only Reputation.current_value), so fall back to the ship
+                # SPEC's catalog base_cost (defender_spec already queried above for
+                # turn_cost). Without this fallback the faucet is inert. The
+                # per-encounter cap below still binds on fat hulls.
+                hull_value = (int(npc_ship.current_value or 0)
+                              or int(getattr(defender_spec, "base_cost", 0) or 0))
+                if hull_value > 0:
+                    loot_pct = random.uniform(
+                        NPC_KILL_LOOT_MINT_MIN_PCT, NPC_KILL_LOOT_MINT_MAX_PCT
+                    )
+                    # Per-encounter cap is the anti-farm ceiling: grinding weak
+                    # NPCs hits a hard credit limit, and even a high-value hull
+                    # cannot mint above NPC_KILL_LOOT_MINT_CAP per kill.
+                    minted_loot = min(
+                        int(hull_value * loot_pct), NPC_KILL_LOOT_MINT_CAP
+                    )
+                    if minted_loot > 0:
+                        attacker.credits = (attacker.credits or 0) + minted_loot
+                        logger.info(
+                            "NPC-kill loot faucet: minted %d cr (%.1f%% of hull "
+                            "value %d, capped at %d) to player %s for destroying "
+                            "NPC ship %s (NO-CANON band/cap, lifecycle.md §1.2; "
+                            "flagged for Max)",
+                            minted_loot, loot_pct * 100, hull_value,
+                            NPC_KILL_LOOT_MINT_CAP, attacker.id, npc_ship.id,
+                        )
 
             # Notoriety consequence: gunning down a REPUTABLE merchant is a
             # crime — the canon attack_innocent penalty (−100, mirroring PvP).
@@ -934,6 +1009,7 @@ class CombatService:
             "turns_remaining": attacker.turns,
             "combat_log_id": str(combat_log.id),
             "credits_looted": looted_credits,
+            "credits_minted": minted_loot,
             "cargo_looted": combat_result["cargo_stolen"] or {},
         }
         if police_response:
