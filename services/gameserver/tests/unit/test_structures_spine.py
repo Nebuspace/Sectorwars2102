@@ -181,6 +181,70 @@ def test_derive_unbuilt_building_does_not_count():
     assert S.derive_citadel_level(g) == 0  # MINE not yet operational -> no economy -> not even L1
 
 
+def _tgrid(plots, buildings=None, instability=0):
+    return {"v": 1, "grid": {"cols": 8, "rows": 8}, "plots": plots,
+            "buildings": buildings or [], "instability": instability}
+
+
+def _plot(x, y, thermal, hydro):
+    return {"x": x, "y": y, "terrain": "FLAT", "hazard": None,
+            "axes": {"thermal": thermal, "hydro": hydro}, "axes_at": None,
+            "cleared": True, "surveyed": False, "building_id": None}
+
+
+def test_terraform_decay_toward_natural_band():
+    # OCEANIC natural_band thermal=65 hydro=75; an un-fed plot below band decays UP toward it
+    g = _tgrid([_plot(0, 0, 50, 40)])
+    S.terraform_grid_tick(g, "OCEANIC")
+    ax = g["plots"][0]["axes"]
+    assert ax["thermal"] == 52 and ax["hydro"] == 42  # +DECAY_RATE(2) toward 65/75
+
+
+def test_terraform_decay_down_toward_band():
+    # VOLCANIC band thermal=25; a plot ABOVE band decays DOWN
+    g = _tgrid([_plot(0, 0, 90, 30)])
+    S.terraform_grid_tick(g, "VOLCANIC")
+    assert g["plots"][0]["axes"]["thermal"] == 88  # -2 toward 25
+
+
+def test_terraform_rig_pushes_own_plot_flat():
+    rig = {"id": "r_1", "domain": "terraform", "kind": "THERMAL_RIG", "x": 0, "y": 0,
+           "level": 2, "push_base": 5.0, "axis": "thermal", "complete_at": None}
+    g = _tgrid([_plot(0, 0, 50, 40), _plot(1, 0, 50, 40)], buildings=[rig])
+    S.terraform_grid_tick(g, "OCEANIC", intensity="standard")
+    idx = S._plot_index(g)
+    assert idx[(0, 0)]["axes"]["thermal"] == 60   # fed: 50 + 5*2*1.0 = 60
+    assert idx[(0, 0)]["axes"]["hydro"] == 40      # fed plot doesn't decay
+    assert idx[(1, 0)]["axes"]["thermal"] == 52    # un-fed neighbor decays toward 65 (NO falloff push)
+
+
+def test_terraform_instability_penalises_habitability():
+    rig = {"id": "r_1", "domain": "terraform", "kind": "THERMAL_RIG", "x": 0, "y": 0,
+           "level": 4, "push_base": 5.0, "axis": "thermal", "complete_at": None}
+    g = _tgrid([_plot(0, 0, 50, 50)], buildings=[rig])
+    hab = S.terraform_grid_tick(g, "OCEANIC", intensity="aggressive")
+    assert g["instability"] > 0  # aggressive push destabilises
+    # hab = floor(area-weighted mean) - instability//5 ; mean over 1 plot = (thermal+hydro)/2
+    ax = g["plots"][0]["axes"]
+    expect = int((ax["thermal"] + ax["hydro"]) / 2) - (g["instability"] // 5)
+    assert hab == max(0, expect)
+
+
+def test_terraform_unfed_rig_pushes_at_floor():
+    rig = {"id": "r_1", "domain": "terraform", "kind": "THERMAL_RIG", "x": 0, "y": 0,
+           "level": 1, "push_base": 10.0, "axis": "thermal", "complete_at": None, "browned_out": True}
+    g = _tgrid([_plot(0, 0, 50, 50)], buildings=[rig])
+    S.terraform_grid_tick(g, "OCEANIC", intensity="standard")
+    # browned-out rig pushes at 40% floor: 50 + 10*1*1.0*0.4 = 54
+    assert g["plots"][0]["axes"]["thermal"] == 54
+
+
+def test_terraform_rigless_planet_returns_natural_habitability():
+    g = _tgrid([_plot(0, 0, 65, 75), _plot(1, 0, 65, 75)])  # already at OCEANIC band
+    hab = S.terraform_grid_tick(g, "OCEANIC")
+    assert hab == 70  # mean of (65+75)/2 = 70, no instability
+
+
 def test_i4_grep_gate_no_stray_clock_callers():
     """I4 (grep-gate): after the cutover, the clock bodies must have ZERO call-sites outside
     structures.settle() — the sole allowed exception is realize_production's pass-through to

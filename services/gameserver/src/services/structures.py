@@ -584,6 +584,99 @@ def derive_citadel_level(structures: dict) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Terraform field model on the grid (K1b-2, own-plot-flat kernel). SHADOW: advances the per-plot
+# axes + instability and RETURNS the grid-derived habitability; the CALLER logs divergence vs the
+# shipped habitability_score and does NOT write it (habitability-from-grid is a Max-gated ADR-0002
+# amendment — same staging as the citadel button→derived cutover). NOT wired into settle() yet.
+# ---------------------------------------------------------------------------
+# natural_band decay targets per planet type, {thermal, hydro}. Canon gives one habitability band
+# per type (colonization.md: BARREN 0 · VOLCANIC 10-25 · OCEANIC 60-75 · ICE 35-50); the per-AXIS
+# split is NO-CANON (conservative). Propose for bless.
+NATURAL_BAND = {
+    "BARREN": {"thermal": 0, "hydro": 0},
+    "VOLCANIC": {"thermal": 25, "hydro": 10},
+    "OCEANIC": {"thermal": 65, "hydro": 75},
+    "ICE": {"thermal": 35, "hydro": 50},
+    "DESERT": {"thermal": 60, "hydro": 10},
+    "TERRAN": {"thermal": 55, "hydro": 55},
+    "MOUNTAINOUS": {"thermal": 45, "hydro": 40},
+}
+_DEFAULT_NATURAL_BAND = {"thermal": 30, "hydro": 30}
+TERRA_DECAY_RATE = 2                       # NO-CANON: axis points/tick toward natural_band when unfed
+TERRA_INTENSITY_MULT = {"conservative": 0.5, "standard": 1.0, "aggressive": 1.5}  # NO-CANON
+TERRA_UNFED_FLOOR = 0.4                    # NO-CANON: an unfed/browned-out rig pushes at 40% → net decay
+TERRA_INSTAB_PEN_DIVISOR = 5              # NO-CANON: instability_penalty = instability // 5
+TERRA_INSTAB_ACCRUAL = 0.5               # NO-CANON: aggressive instability += Σ(push) × this
+TERRA_AXES = ("thermal", "hydro")        # the kernel's two axes (atmo/biosphere are T2)
+
+
+def _natural_band(planet_type: Optional[str], axis: str) -> int:
+    pt = (planet_type or "").upper()
+    for key, bands in NATURAL_BAND.items():
+        if key in pt:
+            return int(bands.get(axis, _DEFAULT_NATURAL_BAND[axis]))
+    return int(_DEFAULT_NATURAL_BAND[axis])
+
+
+def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity: str = "standard") -> int:
+    """One terraform field tick over the grid (K1b-2 own-plot-flat kernel, spec §2.2/§2.3/§2.6):
+      * each operational ``domain:"terraform"`` rig pushes ITS OWN plot's axis, FLAT (no falloff) —
+        an unfed/browned rig pushes at the floor;
+      * every other plot's axes DECAY toward the type's natural_band (the loop-maker);
+      * ``instability`` accrues with aggressive push, penalising habitability;
+      * RETURNS grid habitability = floor(area-weighted mean of per-plot axes) − instability_penalty.
+
+    Mutates structures.plots[].axes + structures.instability (the terraform field advancing — the
+    grid is terraform's to write). SHADOW: does NOT write the shipped habitability_score column; the
+    caller logs the divergence (Max-gated cutover). Idempotent shape: a rig-less planet simply decays
+    toward natural_band each tick."""
+    plots = {(p["x"], p["y"]): p for p in structures.get("plots", []) if isinstance(p, dict)}
+    if not plots:
+        return 0
+    imult = float(TERRA_INTENSITY_MULT.get(intensity, 1.0))
+    fed_plots = set()
+    push_total = 0.0
+    for b in structures.get("buildings", []):
+        if not (isinstance(b, dict) and b.get("domain") == "terraform" and _operational(b)):
+            continue
+        cell = (b.get("x"), b.get("y"))
+        plot = plots.get(cell)
+        if plot is None:
+            continue
+        axis = b.get("axis", "thermal")
+        factor = TERRA_UNFED_FLOOR if b.get("browned_out") else 1.0
+        push = float(b.get("push_base", 1.0)) * int(b.get("level", 1)) * imult * factor
+        ax = dict(plot.get("axes") or {})
+        ax[axis] = max(0, min(100, int(round(ax.get(axis, 0) + push))))
+        plot["axes"] = ax
+        fed_plots.add(cell)
+        push_total += push
+    # decay unfed plots toward natural_band
+    for cell, plot in plots.items():
+        if cell in fed_plots:
+            continue
+        ax = dict(plot.get("axes") or {})
+        for axis in TERRA_AXES:
+            cur = int(ax.get(axis, 0))
+            target = _natural_band(planet_type, axis)
+            if cur != target:
+                step = min(TERRA_DECAY_RATE, abs(cur - target))
+                ax[axis] = cur - step if cur > target else cur + step
+        plot["axes"] = ax
+    # instability (aggressive pushing destabilises)
+    instab = float(structures.get("instability", 0) or 0)
+    if intensity == "aggressive":
+        instab += push_total * TERRA_INSTAB_ACCRUAL
+    instab = max(0.0, min(100.0, instab))
+    structures["instability"] = int(instab)
+    # grid habitability = floor(area-weighted mean of axes, flat 50/50) − instability_penalty
+    mean = sum((int(p.get("axes", {}).get("thermal", 0)) + int(p.get("axes", {}).get("hydro", 0))) / 2.0
+               for p in plots.values()) / len(plots)
+    penalty = int(instab) // TERRA_INSTAB_PEN_DIVISOR
+    return max(0, int(mean) - penalty)
+
+
 def decommission(structures: dict, building_id: str) -> Optional[dict]:
     """Tear down a building and RECLAIM its plots (§2.3/§6.1 step 1). Returns the removed building
     dict, or None if not found. PURE grid op (no hab revert, no refund — the caller applies the
