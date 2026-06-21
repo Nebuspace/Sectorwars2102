@@ -141,6 +141,151 @@ def _dispatch_bounty_medals(db: Session, collector_id) -> None:
         logger.error("Bounty medal dispatch hook failed: %s", e)
 
 
+def _combat_round_deltas(combat_details: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+    """Group a fight's ``combat_details`` action log by round number (WO-DBB-RT3).
+
+    ``_resolve_ship_combat`` appends one entry per action (drone hit, ship hit,
+    miss, escape, …), each tagged with a ``round`` key; this collapses them into
+    an ordered ``{round_number: [actions…]}`` map so the granular ``combat_round``
+    WS events can carry that round's deltas. Header rows (``{round, message}``
+    with no ``actor``/``action``) and the trailing ``combat_end`` summary row are
+    excluded — they are bookkeeping, not deltas. Pure / read-only: it never
+    mutates ``combat_details`` and never raises on a well-formed log (a missing
+    ``round`` key simply skips that entry)."""
+    by_round: Dict[int, List[Dict[str, Any]]] = {}
+    for entry in combat_details or []:
+        if not isinstance(entry, dict):
+            continue
+        rnd = entry.get("round")
+        action = entry.get("action")
+        # Skip per-round header rows (no actor/action) and the final summary.
+        if rnd is None or action in (None, "combat_end"):
+            continue
+        by_round.setdefault(int(rnd), []).append(entry)
+    return by_round
+
+
+def _emit_combat_phase_events(
+    combat_id: str,
+    attacker_user_id: Optional[str],
+    defender_user_id: Optional[str],
+    sector_id: Optional[int],
+    attacker_label: str,
+    defender_label: str,
+    combat_result: Dict[str, Any],
+) -> None:
+    """Best-effort granular combat phase WS push (WO-DBB-RT3 / combat-resolver.md
+    "Events emitted": ``combat_started`` → ``combat_round`` (one per round) →
+    ``combat_resolved``).
+
+    Canon (SYSTEMS/combat-resolver.md:163-166):
+      * ``combat_started``  — broadcast to both participants AND the sector.
+      * ``combat_round``    — round-by-round delta, for spectators in the sector.
+      * ``combat_resolved`` — final result.
+    Each event carries the WO-required envelope
+    ``{combat_id, attacker, defender, round, deltas, result}``.
+
+    Transport reuses the EXISTING realtime idiom verbatim — no new transport:
+      * ``connection_manager.send_combat_update(combat_id, data, participants)``
+        delivers the personal copy to the affected players ONLY (no cross-player
+        leak — the participant list is exactly attacker±defender), and
+      * ``connection_manager.broadcast_to_sector(sector_id, frame)`` adds the
+        sector spectator copy (the sector-scoped helper that exists today).
+
+    Mirrors turn_service._emit_turn_pool_update / movement_service's hostile push:
+    import inside the function, grab the running loop, schedule each coroutine via
+    ``loop.create_task`` so the sends run AFTER the caller's row-locked
+    transaction has committed and yielded — never blocking, never able to roll
+    back the fight — and swallow every failure (no loop, no socket, a quiet
+    client) so a WS hiccup can never break combat resolution or its commit.
+
+    Defensive on every axis: a None loop, a missing socket, or a malformed
+    ``combat_result`` is logged at debug and dropped. py_compile-safe (no
+    parse-time reference to a not-yet-existing symbol)."""
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+
+        result_name = None
+        try:
+            _res = combat_result.get("result")
+            result_name = _res.name if _res is not None else None
+        except Exception:
+            result_name = None
+
+        rounds = int(combat_result.get("rounds") or 0)
+        by_round = _combat_round_deltas(combat_result.get("combat_details") or [])
+
+        # The personal-copy recipient list — affected players ONLY. Drop any
+        # None (NPC defenders have no user_id) and de-dupe.
+        participants = [
+            uid for uid in (attacker_user_id, defender_user_id) if uid
+        ]
+
+        def _envelope(round_no: Optional[int], deltas: Any, result: Optional[str]) -> Dict[str, Any]:
+            return {
+                "attacker": attacker_label,
+                "defender": defender_label,
+                "round": round_no,
+                "deltas": deltas,
+                "result": result,
+            }
+
+        def _dispatch(round_no: Optional[int], deltas: Any, result: Optional[str],
+                      to_sector: bool) -> None:
+            envelope = _envelope(round_no, deltas, result)
+            # Personal copy to the affected players (no cross-player leak).
+            if participants:
+                loop.create_task(connection_manager.send_combat_update(
+                    combat_id, dict(envelope), participants
+                ))
+            # Sector spectator copy via the existing sector-scoped helper.
+            if to_sector and sector_id is not None:
+                frame = {
+                    "type": "combat_update",
+                    "combat_id": combat_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    **envelope,
+                }
+                loop.create_task(connection_manager.broadcast_to_sector(
+                    int(sector_id), frame
+                ))
+
+        # 1. combat_started — participants + sector (canon :164).
+        _dispatch(0, {"phase": "started", "rounds": rounds}, None, to_sector=True)
+
+        # 2. combat_round — one per resolved round, carrying that round's deltas;
+        #    sent to the sector spectators (canon :165) and the participants.
+        for round_no in sorted(by_round.keys()):
+            _dispatch(round_no, by_round[round_no], None, to_sector=True)
+
+        # 3. combat_resolved — final result; participants + sector (canon :166).
+        #    Carries the closing-state deltas the clients need to settle the HUD.
+        _dispatch(
+            rounds,
+            {
+                "phase": "resolved",
+                "attacker_damage_dealt": combat_result.get("attacker_damage_dealt"),
+                "defender_damage_dealt": combat_result.get("defender_damage_dealt"),
+                "attacker_drones_lost": combat_result.get("attacker_drones_lost"),
+                "defender_drones_lost": combat_result.get("defender_drones_lost"),
+                "attacker_ship_destroyed": combat_result.get("attacker_ship_destroyed"),
+                "defender_ship_destroyed": combat_result.get("defender_ship_destroyed"),
+                "attacker_ship_state": combat_result.get("attacker_ship_state"),
+                "defender_ship_state": combat_result.get("defender_ship_state"),
+                "message": combat_result.get("message"),
+            },
+            result_name,
+            to_sector=True,
+        )
+    except Exception:
+        logger.debug(
+            "Skipped combat phase WS events (no loop or socket)", exc_info=True
+        )
+
+
 # Map the engine's CombatResult enum onto the outcome strings the combat_logs
 # table actually stores (see CombatOutcome / migration c138b33baec4). The
 # outcome column only has 5 values, so fled results collapse to "escaped" and
@@ -585,6 +730,21 @@ class CombatService:
         # Commit changes
         self.db.commit()
 
+        # Granular phase WS events (WO-DBB-RT3 / combat-resolver.md "Events
+        # emitted"): combat_started → combat_round(s) → combat_resolved, to the
+        # two PvP participants and the sector spectators. POST-COMMIT and fully
+        # try/except-isolated inside the emitter — a WS hiccup can never roll
+        # back or break the fight (the commit above already landed).
+        _emit_combat_phase_events(
+            combat_id=str(combat_log.id),
+            attacker_user_id=str(attacker.user_id) if attacker.user_id else None,
+            defender_user_id=str(defender.user_id) if defender.user_id else None,
+            sector_id=sector.sector_id if sector else None,
+            attacker_label=attacker.username,
+            defender_label=defender.username,
+            combat_result=combat_result,
+        )
+
         result_dict = {
             "success": True,
             "message": combat_result["message"],
@@ -1024,6 +1184,22 @@ class CombatService:
 
         # Commit changes
         self.db.commit()
+
+        # Granular phase WS events (WO-DBB-RT3 / combat-resolver.md "Events
+        # emitted"): combat_started → combat_round(s) → combat_resolved. The
+        # NPC defender has no owning Player, so the defender personal copy is
+        # absent (defender_user_id=None) — only the attacker gets the personal
+        # frame; the sector spectator copy still goes out. POST-COMMIT and
+        # try/except-isolated — a WS hiccup can never break the fight.
+        _emit_combat_phase_events(
+            combat_id=str(combat_log.id),
+            attacker_user_id=str(attacker.user_id) if attacker.user_id else None,
+            defender_user_id=None,
+            sector_id=sector.sector_id if sector else None,
+            attacker_label=attacker.username,
+            defender_label=npc_ship.name,
+            combat_result=combat_result,
+        )
 
         result_dict = {
             "success": True,
