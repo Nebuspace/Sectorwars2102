@@ -501,6 +501,68 @@ def place(structures: dict, kind: str, x: int, y: int, *, level: int = 1,
 
 
 # ---------------------------------------------------------------------------
+# Research gate at placement (K1b-4) — the point-of-use tech_gate enforcement that
+# place()/can_place() leave to the caller ("the caller checks tech_gate (point-of-use)").
+#
+# GATE KEY RECONCILIATION: the grid catalog (building_catalog.py) carries the gate on each
+# row as ``tech_gate: str|None`` (e.g. SPACEPORT "t.prod.2", RAIL_GUN "t.def.railgun.1"). The
+# *separate* shipped DEFENSE_BUILDINGS dict in citadel_service.py uses ``research_node`` for its
+# own placement flow — a different catalog with a different schema. For GRID content the one
+# consistent key is the one these rows actually carry: ``tech_gate``. We read ``tech_gate`` here
+# and document the divergence rather than inventing a second key on the grid rows.
+#
+# The check gates UP (a kind whose gate isn't researched is rejected) and never changes WHAT
+# exists. ``place()``/``can_place()`` stay PURE — this is a SEPARATE helper the placement callers
+# invoke with the owning player's researched set; it does NOT couple structures.py to the Player
+# model (the caller resolves the set via research_service.ledger_of(player)["unlocked"]).
+# ---------------------------------------------------------------------------
+def kind_tech_gate(kind: str) -> Optional[str]:
+    """The research node a kind requires to be BUILT, or None if ungated. Reads the grid catalog's
+    ``tech_gate`` row key (NOT DEFENSE_BUILDINGS' ``research_node`` — that is a separate catalog).
+    Unknown kind → None (place()/can_place() own the unknown-kind rejection)."""
+    from src.services import building_catalog
+    spec = building_catalog.get(kind)
+    if not spec:
+        return None
+    return spec.get("tech_gate")
+
+
+def research_satisfied_for_kind(kind: str, researched: Optional[Set[str]]) -> tuple:
+    """(ok: bool, reason: str) — is the player's research sufficient to BUILD ``kind``? Gates UP:
+    a kind whose ``tech_gate`` is set is buildable ONLY if that node is in ``researched``; a kind
+    with ``tech_gate=None`` (or an unknown kind) is always research-satisfied. Pure read — does NOT
+    touch the grid. ``researched`` is the player's unlocked-node set (research_service.ledger_of
+    (player)["unlocked"]); a None/empty set means "nothing researched" (gates everything gated)."""
+    gate = kind_tech_gate(kind)
+    if gate is None:
+        return True, "ok"
+    if researched and gate in researched:
+        return True, "ok"
+    return False, f"requires research node {gate!r} to build {kind}"
+
+
+def can_place_gated(structures: dict, kind: str, x: int, y: int,
+                    researched: Optional[Set[str]]) -> tuple:
+    """(ok, reason) — the research-gated placement check the callers use instead of bare
+    ``can_place()``. Enforces the point-of-use tech_gate FIRST (gate UP), then the pure grid
+    invariants of ``can_place()``. ``can_place()`` itself stays pure; this is the thin gated wrapper
+    the placement callers invoke. ``researched`` = the owning player's unlocked-node set."""
+    ok, reason = research_satisfied_for_kind(kind, researched)
+    if not ok:
+        return False, reason
+    return can_place(structures, kind, x, y)
+
+
+def assert_research_for_kind(kind: str, researched: Optional[Set[str]]) -> None:
+    """Raise ValueError if the player's research does not gate-UP to BUILD ``kind``; no-op when
+    satisfied (gate met or ungated). The raise mirrors place()'s ValueError-on-invalid contract so a
+    placement caller can guard with this before calling place()."""
+    ok, reason = research_satisfied_for_kind(kind, researched)
+    if not ok:
+        raise ValueError(f"cannot place {kind}: {reason}")
+
+
+# ---------------------------------------------------------------------------
 # derive_citadel_level (K1b-1) — the SHADOW faucet (spec §2.1). A pure read of the
 # placed/powered/populated grid that reproduces the shipped CITADEL_LEVELS ladder.
 # DORMANT: not wired into settle() yet, and not yet calibrated against the live planet
