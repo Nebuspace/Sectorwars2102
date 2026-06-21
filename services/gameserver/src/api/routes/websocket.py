@@ -75,6 +75,8 @@ async def websocket_endpoint(
             "username": user.username,
             "player_id": str(player.id),
             "current_sector": player.current_sector_id,
+            # WO-DBB-RT4: pass the region so connect() joins the region room (broadcast_to_region).
+            "current_region_id": str(player.current_region_id) if getattr(player, "current_region_id", None) else None,
             "team_id": str(player.team_id) if player.team_id else None,
             "credits": player.credits,
             "turns": player.turns,
