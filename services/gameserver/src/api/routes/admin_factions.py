@@ -54,7 +54,6 @@ class MissionCreateRequest(BaseModel):
     description: str
     mission_type: str = Field(..., description="cargo_delivery, combat, exploration, etc.")
     credit_reward: int = Field(..., ge=0)
-    reputation_reward: int = Field(..., ge=-100, le=100)
     min_reputation: int = Field(default=-800, ge=-800, le=800)
     min_level: int = Field(default=1, ge=1)
     item_rewards: List[str] = Field(default_factory=list)
@@ -299,7 +298,9 @@ async def create_faction_mission(
         description=request.description,
         mission_type=request.mission_type,
         credit_reward=request.credit_reward,
-        reputation_reward=request.reputation_reward,
+        # ADR-0090: missions no longer promise reputation; persist the neutral
+        # default (0) into the still-required service param (service is out of scope).
+        reputation_reward=0,
         min_reputation=request.min_reputation,
         min_level=request.min_level,
         item_rewards=request.item_rewards,
@@ -374,7 +375,6 @@ async def list_all_missions(
             "title": mission.title,
             "mission_type": mission.mission_type,
             "credit_reward": mission.credit_reward,
-            "reputation_reward": mission.reputation_reward,
             "min_reputation": mission.min_reputation,
             "is_active": bool(mission.is_active),
             "expires_at": mission.expires_at,
