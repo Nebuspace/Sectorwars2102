@@ -1769,6 +1769,20 @@ class PlanetaryService:
             equipment_rate *= citadel_multiplier
             research_rate *= citadel_multiplier
 
+        # Colony cap-taper (CANON colonization.md:190-194, WO-CT2): population growth halts at the
+        # demographic ceiling and tapers linearly across the top 10% band. Keys on population vs
+        # max_population (the demographic ceiling), NOT the workforce colonist cap. No shrink below
+        # the cap — overcrowding stops growth, it does not decay the colony.
+        max_pop = planet.max_population or 0
+        pop = planet.population or 0
+        if max_pop > 0 and colonist_rate > 0:
+            if pop >= max_pop:
+                colonist_rate = 0.0
+            elif pop > 0.9 * max_pop:
+                # linear 100% → 0% across [0.9·max_pop, max_pop]
+                taper = (max_pop - pop) / (0.1 * max_pop)
+                colonist_rate *= max(0.0, min(1.0, taper))
+
         # Apply siege effects
         if planet.under_siege:
             # Production output reduced by 25%
