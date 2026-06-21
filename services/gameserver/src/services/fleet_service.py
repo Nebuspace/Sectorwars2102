@@ -5,7 +5,7 @@ This service handles fleet creation, management, battle simulation,
 and coordination between multiple ships in organized formations.
 """
 
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -23,6 +23,12 @@ from src.models.player import Player
 from src.models.team import Team
 from src.models.sector import Sector
 from src.models.combat_log import CombatLog, CombatOutcome
+
+if TYPE_CHECKING:
+    # Forward-ref-only imports for type annotations — resolved at runtime via
+    # local imports inside the methods that use them (no import-time cost).
+    from src.models.station import Station
+    from src.services.personal_reputation_service import PersonalReputationService
 
 logger = logging.getLogger(__name__)
 

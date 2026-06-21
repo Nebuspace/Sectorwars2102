@@ -155,9 +155,9 @@ class ARIAPersonalIntelligenceService:
         
         # Get port's sector
         station = await db.get(Station, station_id)
-        if not port:
+        if not station:
             return None
-        
+
         # Check existing intelligence
         stmt = select(ARIAMarketIntelligence).where(
             and_(
@@ -490,9 +490,9 @@ class ARIAPersonalIntelligenceService:
         """
         # Check if player has visited this port
         station = await db.get(Station, station_id)
-        if not port:
+        if not station:
             return None
-        
+
         exploration = await self._get_sector_exploration(player_id, station.sector_id, db)
         if not exploration:
             logger.info(f"Player {player_id} has never visited sector {station.sector_id}")

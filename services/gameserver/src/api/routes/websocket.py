@@ -243,7 +243,7 @@ async def broadcast_message(
     logger.info(
         "ADMIN_BROADCAST: admin_id=%s target=%s:%s content_length=%d",
         current_user.id, target_type, target_id or "all",
-        len(message_data.get("content", "")),
+        len(request.content),
     )
 
     return {"message": "Broadcast sent successfully", "target_type": target_type, "target_id": target_id}

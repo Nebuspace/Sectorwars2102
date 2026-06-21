@@ -948,45 +948,45 @@ async def get_ports_comprehensive(
         ports_data = []
         for port in ports:
             owner_name = None
-            if station.owner_id:
-                owner = db.query(Player).join(User).filter(Player.id == station.owner_id).first()
+            if port.owner_id:
+                owner = db.query(Player).join(User).filter(Player.id == port.owner_id).first()
                 if owner:
                     owner_name = owner.user.username
-            
+
             # Get sector name
             sector_name = None
-            if station.sector:
-                sector_name = station.sector.name
-            
+            if port.sector:
+                sector_name = port.sector.name
+
             # Extract information from JSONB fields with defaults
-            defenses = station.defenses or {}
-            service_prices = station.service_prices or {}
-            commodities_data = station.commodities or {}
-            
+            defenses = port.defenses or {}
+            service_prices = port.service_prices or {}
+            commodities_data = port.commodities or {}
+
             # Calculate values for frontend display
-            trade_volume = station.trade_volume or 0
+            trade_volume = port.trade_volume or 0
             # Calculate max capacity from commodities
             max_capacity = sum(commodity.get("capacity", 1000) for commodity in commodities_data.values()) if commodities_data else 10000
             security_level = defenses.get("defense_drones", 0) + defenses.get("patrol_ships", 0)
             docking_fee = service_prices.get("docking_fee", 100)
-            
+
             # Extract commodities from commodities data
             commodities = list(commodities_data.keys()) if commodities_data else []
-            
+
             ports_data.append(StationManagementResponse(
-                id=str(station.id),
-                name=station.name,
-                sector_id=str(station.sector_id),
+                id=str(port.id),
+                name=port.name,
+                sector_id=str(port.sector_id),
                 sector_name=sector_name,
-                port_class=station.station_class.name,
+                port_class=port.station_class.name,
                 trade_volume=trade_volume,
                 max_capacity=max_capacity,
                 security_level=security_level,
                 docking_fee=docking_fee,
-                owner_id=str(station.owner_id) if station.owner_id else None,
+                owner_id=str(port.owner_id) if port.owner_id else None,
                 owner_name=owner_name,
-                created_at=station.created_at.isoformat() if station.created_at else "",
-                is_operational=station.status == StationStatus.OPERATIONAL,
+                created_at=port.created_at.isoformat() if port.created_at else "",
+                is_operational=port.status == StationStatus.OPERATIONAL,
                 commodities=commodities
             ))
         
@@ -1456,15 +1456,15 @@ async def update_all_port_stock_levels(
         
         for port in ports:
             # Store original stock levels for reporting
-            original_commodities = dict(station.commodities)
-            
+            original_commodities = dict(port.commodities)
+
             # Update trading flags and stock levels
-            station.update_commodity_trading_flags()
-            station.update_commodity_stock_levels()
-            
+            port.update_commodity_trading_flags()
+            port.update_commodity_stock_levels()
+
             # Track changes
             changes = {}
-            for commodity_name, commodity_data in station.commodities.items():
+            for commodity_name, commodity_data in port.commodities.items():
                 old_quantity = original_commodities.get(commodity_name, {}).get("quantity", 0)
                 new_quantity = commodity_data.get("quantity", 0)
                 if old_quantity != new_quantity:
@@ -1472,14 +1472,14 @@ async def update_all_port_stock_levels(
                         "old_quantity": old_quantity,
                         "new_quantity": new_quantity
                     }
-            
+
             if changes:
                 updated_ports.append({
-                    "station_id": str(station.id),
-                    "station_name": station.name,
-                    "station_class": station.station_class.value,
-                    "station_type": station.type.value,
-                    "sector_id": station.sector_id,
+                    "station_id": str(port.id),
+                    "station_name": port.name,
+                    "station_class": port.station_class.value,
+                    "station_type": port.type.value,
+                    "sector_id": port.sector_id,
                     "changes": changes
                 })
         

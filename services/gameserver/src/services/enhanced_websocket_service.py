@@ -27,7 +27,7 @@ from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 import jwt as jose_jwt
 from jwt import PyJWTError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, func
 import redis.asyncio as redis
 
 # Import existing services
@@ -492,7 +492,7 @@ class EnhancedWebSocketService:
                     return {"success": False, "error": "Station ID required or ship must be docked"}
             
             station = await db.get(Station, station_id)
-            if not port:
+            if not station:
                 return {"success": False, "error": "Station not found"}
             
             # Verify player is in the same sector as the port
