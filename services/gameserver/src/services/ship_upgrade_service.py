@@ -730,6 +730,10 @@ class ShipUpgradeService:
         }
         flag_modified(ship, 'equipment_slots')
 
+        # WO-DBB-QR1: the Quantum Harvester flips the dedicated slot flag (prereq for QR2).
+        if equipment_key == "quantum_harvester":
+            ship.quantum_harvester_slot = True
+
         self.db.flush()
 
         logger.info(
@@ -769,6 +773,10 @@ class ShipUpgradeService:
         # Remove from equipment_slots JSONB
         del ship.equipment_slots[equipment_key]
         flag_modified(ship, 'equipment_slots')
+
+        # WO-DBB-QR1: removing the Quantum Harvester clears the slot flag.
+        if equipment_key == "quantum_harvester":
+            ship.quantum_harvester_slot = False
 
         self.db.flush()
 

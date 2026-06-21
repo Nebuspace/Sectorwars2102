@@ -190,6 +190,8 @@ class Ship(Base):
     mines = Column(Integer, nullable=False, default=0)
     max_mines = Column(Integer, nullable=False, default=0)
     has_automated_maintenance = Column(Boolean, nullable=False, default=False)
+    # WO-DBB-QR1: set when a Quantum Harvester is installed (equip flips it); prereq for QR2.
+    quantum_harvester_slot = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     # Quantum Drive (ADR-0030) — Warp Jumper only. Charges are refined
     # 1-Shard-to-1-Charge at any Class-3+ station or SpaceDock and sit in
