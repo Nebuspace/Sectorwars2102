@@ -770,6 +770,12 @@ class ConnectionManager:
 
         for user_id in stale_users:
             logger.info(f"Disconnecting stale WebSocket: user {user_id} (heartbeat timeout)")
+            # Snapshot the user's prior location + name BEFORE disconnect, which
+            # deletes connection_metadata[user_id]. We emit presence_updated
+            # AFTER the drop using this snapshot (WO-G1).
+            stale_meta = self.connection_metadata.get(user_id, {})
+            prior_sector = stale_meta.get("current_sector")
+            prior_username = stale_meta.get("user_data", {}).get("username")
             ws = self.active_connections.get(user_id)
             if ws:
                 try:
@@ -777,6 +783,35 @@ class ConnectionManager:
                 except Exception:
                     pass
             await self.disconnect(user_id)
+
+            # WO-G1: announce that a stale socket was dropped. disconnect()
+            # already fans a player_left_sector frame to co-sector peers; this
+            # adds an explicit presence_updated event naming the dropped user so
+            # presence consumers (co-sector subscribers + admins) converge after
+            # the sweep. POST-drop + best-effort: a WS hiccup here must never
+            # break the sweep loop, so each emit is isolated in its own try.
+            presence_event = {
+                "type": "presence_updated",
+                "event": "dropped",
+                "reason": "heartbeat_timeout",
+                "user_id": user_id,
+                "username": prior_username,
+                "sector_id": prior_sector,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            if prior_sector:
+                try:
+                    await self.broadcast_to_sector(prior_sector, dict(presence_event))
+                except Exception as e:
+                    logger.warning(
+                        f"presence_updated sector emit failed for dropped user {user_id}: {e}"
+                    )
+            try:
+                await self.broadcast_to_admins(dict(presence_event))
+            except Exception as e:
+                logger.warning(
+                    f"presence_updated admin emit failed for dropped user {user_id}: {e}"
+                )
 
         # Also clean stale admins
         stale_admins = []
