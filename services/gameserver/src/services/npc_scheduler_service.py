@@ -209,6 +209,17 @@ CANONICAL_WEEK_DAYS = 7
 # Galaxy.state JSONB key holding the canonical-week index of the last completed
 # weekly-decay run (durable across restarts → no skipped/double weeks).
 _WEEKLY_DECAY_STATE_KEY = "weekly_decay_last_week"
+# Galaxy.state JSONB key holding the canonical-DAY index of the last
+# Region.active_players_30d recompute (WO-G18). The recompute rides the
+# governance sweep (every GOVERNANCE_SWEEP_SECONDS), but the COUNT(DISTINCT)
+# aggregate over the 30-day activity window is heavy, so a durable per-day
+# anchor — mirroring _WEEKLY_DECAY_STATE_KEY's discipline — gates it to run at
+# most ONCE per canonical day (nightly) regardless of process restarts.
+_ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY = "active_players_30d_last_day"
+# Rolling activity window for the Region.active_players_30d metric (canon: a
+# player counts as "active in this region" if they logged any PlayerActivity in
+# one of the region's sectors within the trailing 30 days).
+_ACTIVE_PLAYERS_WINDOW_DAYS = 30
 # Coarse CHEAP pre-filter cadence for the weekly-decay check. The durable
 # canonical-week anchor is what actually guarantees once-per-week; this only
 # keeps us from taking the advisory lock + querying Galaxy.state every 60s. A
@@ -1992,7 +2003,11 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     faction/ARIA decay to be reimplemented in sync (see
     _apply_faction_decay_sync). Idempotent + a clean no-op when nothing is due.
 
-    Returns {opened, tallied, enacted, rejected}.
+    Phase 4 additionally recomputes Region.active_players_30d (WO-G18) —
+    self-gated to once per canonical day by a durable Galaxy.state anchor — so
+    the region dashboard's activity figure is no longer permanently zero.
+
+    Returns {opened, tallied, enacted, rejected, regions_recomputed}.
     """
     from src.core.database import SessionLocal
     from src.models.region import (
@@ -2002,6 +2017,8 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     )
     from src.models.planet import Planet, player_planets
     from src.models.sector import Sector
+    from src.models.galaxy import Galaxy
+    from src.models.player_analytics import PlayerActivity
     from src.services.regional_governance_service import (
         compute_quorum, quorum_pct_for_region, threshold_for_policy,
         determine_election_winner, enact_changes_onto_region,
@@ -2011,7 +2028,8 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     from sqlalchemy import func as sa_func
     from sqlalchemy.orm.attributes import flag_modified
 
-    result = {"opened": 0, "tallied": 0, "enacted": 0, "rejected": 0}
+    result = {"opened": 0, "tallied": 0, "enacted": 0, "rejected": 0,
+              "regions_recomputed": 0}
     now = datetime.utcnow()
 
     db = SessionLocal()
@@ -2266,6 +2284,102 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
             except Exception:
                 logger.exception("Governance sweep: finalize failed for policy %s", pid)
                 db.rollback()
+
+        # --- Phase 4: recompute Region.active_players_30d (WO-G18) ------------
+        # Region.active_players_30d was always 0 (nothing ever wrote it), so the
+        # region dashboard's activity figure was dead. Recompute it here, gated
+        # to once per canonical DAY by a durable Galaxy.state anchor (the
+        # COUNT(DISTINCT) aggregate over a 30-day window is too heavy to run on
+        # every 5-minute governance sweep). A player counts as "active in a
+        # region" if they logged any PlayerActivity in one of that region's
+        # SECTORS within the trailing 30 days — the activity's recorded
+        # sector_id (the GLOBAL human-readable Sector.sector_id integer, NOT the
+        # Sector.id UUID) resolves to the region it happened in, the same
+        # sector→region path the quorum roll above uses because object-level
+        # region_id is unreliable. Per-region write + per-region commit with
+        # per-region failure isolation, mirroring the sweep's discipline above;
+        # always defensive, never fatal to the governance sweep.
+        try:
+            # No-arg → canonical_day_number defaults to an aware datetime.now(UTC);
+            # passing the sweep's naive datetime.utcnow() would make .timestamp()
+            # interpret it as LOCAL time and shift the day anchor. Mirrors
+            # _run_weekly_decay_sync's this_week = canonical_week_number().
+            this_day = canonical_day_number()
+            galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+            gstate = dict(galaxy.state or {}) if galaxy is not None else {}
+            last_day = gstate.get(_ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY)
+            already_today = (
+                galaxy is not None
+                and last_day is not None
+                and int(last_day) >= this_day
+            )
+            if not already_today:
+                window_start = now - timedelta(days=_ACTIVE_PLAYERS_WINDOW_DAYS)
+                # DISTINCT-player count per region in one grouped aggregate:
+                #   COUNT(DISTINCT player_id) of activities in the last 30 days,
+                #   joined activity.sector_id (global int) -> Sector.sector_id
+                #   -> Sector.region_id.
+                counts = dict(
+                    db.query(
+                        Sector.region_id,
+                        sa_func.count(sa_func.distinct(PlayerActivity.player_id)),
+                    )
+                    .select_from(PlayerActivity)
+                    .join(Sector, PlayerActivity.sector_id == Sector.sector_id)
+                    .filter(
+                        PlayerActivity.timestamp >= window_start,
+                        Sector.region_id.isnot(None),
+                    )
+                    .group_by(Sector.region_id)
+                    .all()
+                )
+                # Iterate ALL regions (not just those with activity) so a region
+                # that went quiet is reset to 0 rather than left stale. Per-row
+                # commit + per-row isolation: one region's error never aborts the
+                # rest.
+                region_ids = [rid for (rid,) in db.query(Region.id).all()]
+                for rid in region_ids:
+                    try:
+                        new_count = int(counts.get(rid, 0))
+                        updated = (
+                            db.query(Region)
+                            .filter(Region.id == rid)
+                            .update(
+                                {Region.active_players_30d: new_count},
+                                synchronize_session=False,
+                            )
+                        )
+                        db.commit()
+                        if updated:
+                            result["regions_recomputed"] += 1
+                    except Exception:
+                        logger.exception(
+                            "Governance sweep: active_players_30d recompute "
+                            "failed for region %s", rid,
+                        )
+                        db.rollback()
+                # Advance the durable per-day anchor (best-effort; a failure here
+                # just means a harmless re-run next sweep — the recompute is
+                # idempotent).
+                if galaxy is not None:
+                    try:
+                        gstate = dict(galaxy.state or {})
+                        gstate[_ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY] = this_day
+                        galaxy.state = gstate
+                        flag_modified(galaxy, "state")
+                        db.commit()
+                    except Exception:
+                        logger.exception(
+                            "Governance sweep: active_players_30d day-anchor "
+                            "advance failed (recompute will re-run next sweep)"
+                        )
+                        db.rollback()
+        except Exception:
+            # The recompute must NEVER break the governance sweep proper.
+            logger.exception(
+                "Governance sweep: active_players_30d recompute phase failed"
+            )
+            db.rollback()
 
         # Final commit closes out any open (no-op) transaction so the advisory
         # lock is not held on the pooled connection.
