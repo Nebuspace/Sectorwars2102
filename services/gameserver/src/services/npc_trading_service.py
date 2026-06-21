@@ -53,7 +53,7 @@ from src.models.market_transaction import MarketPrice, MarketTransaction, Transa
 from src.models.npc_character import NPCCharacter
 from src.models.sector import Sector
 from src.models.ship import Ship
-from src.models.station import Station
+from src.models.station import Station, StationType
 from src.services.trading_service import TradingService
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,26 @@ SURPLUS_RATIO = 0.5          # sells + stock above this = surplus seller
 DEFICIT_RATIO = 0.5          # buys + stock below this = deficit buyer
 DEMAND_SCORE_MIN = 0.0
 DEMAND_SCORE_MAX = 2.0
+
+# --- Notoriety drift (npc-traders.md § Notoriety) --------------------------
+# Canon: "Notoriety drifts dynamically: a trader caught smuggling rises toward
+# notorious, while honest trade decays it back toward reputable." The 0–100
+# scruples axis, the ≥ 50 lawful-target threshold, and the −100 attack_innocent
+# penalty are already shipped; this is the dynamic-drift step the doc lists as
+# 📐 Design-only. Illicit trade is read from in-data signal — a trade stop at a
+# BLACK_MARKET-type station (black-market.md: smugglers move illegal goods at
+# black-market venues). Any other station type is honest trade.
+#
+# ⚠️ NO-CANON MAGNITUDES — FLAG FOR MAX / DECISIONS. npc-traders.md prescribes
+# the DIRECTION of drift but gives NO per-trade magnitude. Both deltas are
+# deliberately small so a captain's standing shifts over many legs rather than
+# flipping on a single stop: a trader needs ~10 illicit stops to cross a 24→50
+# band boundary, and honest trade erodes notoriety roughly half as fast (a
+# reputation is easier to lose than to rebuild). Tune once Max sets canon.
+NOTORIETY_AXIS_MIN = 0
+NOTORIETY_AXIS_MAX = 100
+NOTORIETY_ILLICIT_DRIFT = 3   # NO-CANON: per illicit (black-market) trade stop, toward 100
+NOTORIETY_HONEST_DECAY = 1    # NO-CANON: per honest trade stop, toward 0
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +265,25 @@ def _bump_npc_restock_demand(
 
 
 # ---------------------------------------------------------------------------
+# Notoriety drift (npc-traders.md § Notoriety)
+# ---------------------------------------------------------------------------
+
+def _drift_notoriety(npc: NPCCharacter, station: Station) -> None:
+    """Drift a trader's notoriety on a completed trade stop: illicit
+    (black-market) trade rises toward NOTORIOUS, honest trade decays
+    toward REPUTABLE. Bounded to the 0–100 axis. The caller holds the
+    NPC row in the same transaction (it is a live, in-session NPCCharacter);
+    no separate lock is taken — notoriety is the NPC's own scruples axis,
+    never read mid-flight by another locked actor in this path."""
+    current = npc.notoriety or 0
+    illicit = getattr(station, "type", None) == StationType.BLACK_MARKET
+    delta = NOTORIETY_ILLICIT_DRIFT if illicit else -NOTORIETY_HONEST_DECAY
+    npc.notoriety = max(
+        NOTORIETY_AXIS_MIN, min(NOTORIETY_AXIS_MAX, current + delta)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Trade execution
 # ---------------------------------------------------------------------------
 
@@ -401,6 +440,12 @@ def run_trade_stop(
 
     if not traded:
         return []
+
+    # Notoriety drift on a completed trade stop (npc-traders.md § Notoriety):
+    # smuggling at a black-market venue raises notoriety toward NOTORIOUS;
+    # honest trade decays it back toward REPUTABLE. Folded into this method's
+    # single flush — same transaction, no extra lock.
+    _drift_notoriety(npc, station)
 
     cargo["contents"] = contents
     ship.cargo = cargo
