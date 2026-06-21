@@ -55,6 +55,83 @@ def test_via_settle_guard_warns_but_does_not_raise_by_default():
     S._via_settle_guard("apply_resource_production", False)  # WARN-logs a stray; never crashes prod
 
 
+def _cleared_grid(cols=4, rows=4):
+    plots = [{"x": i % cols, "y": i // cols, "terrain": "FLAT", "hazard": None,
+              "axes": {"thermal": 50, "hydro": 10}, "axes_at": None, "cleared": True,
+              "surveyed": False, "building_id": None} for i in range(cols * rows)]
+    return {"v": 1, "grid": {"cols": cols, "rows": rows}, "plots": plots,
+            "buildings": [], "instability": 0}
+
+
+def test_grid_dims_clamped_and_box_covers_count():
+    for size, exp_count in [(1, 6), (3, 10), (5, 14), (10, 24), (50, 30)]:
+        cols, rows, count = S._grid_dims_for(size)
+        assert count == exp_count, f"size {size} → plots {count} (expected {exp_count})"
+        assert cols * rows >= count  # bounding box covers the plot count
+
+
+def test_seed_builds_grid_and_keeps_spine_anchor():
+    p = _planet(size=5, temperature=10.0, water_coverage=40.0)
+    s = S.seed(p)
+    assert s["grid"]["cols"] * s["grid"]["rows"] >= len(s["plots"])
+    assert len(s["plots"]) == S._grid_dims_for(5)[2]
+    assert s["buildings"] == [] and s["instability"] == 0
+    assert s["terraform_meta"]["last_settle_at"]  # spine anchor preserved
+    # axes seeded from dormant columns (NO-CANON mapping): thermal 50+10=60, hydro=40
+    assert s["plots"][0]["axes"] == {"thermal": 60, "hydro": 40}
+
+
+def test_seed_radiation_makes_uncleared_hazard_plots():
+    p = _planet(size=2, radiation_level=0.9)
+    s = S.seed(p)
+    assert all(pl["hazard"] and pl["hazard"]["kind"] == "radiation" for pl in s["plots"])
+    assert all(pl["cleared"] is False for pl in s["plots"])
+
+
+def test_place_occupies_footprint_and_returns_building():
+    st = _cleared_grid()
+    b = S.place(st, "MINE", 0, 0)
+    assert b["kind"] == "MINE" and b["domain"] == "economy" and b["id"] == "b_1"
+    assert S._plot_index(st)[(0, 0)]["building_id"] == "b_1"
+    assert len(st["buildings"]) == 1
+
+
+def test_place_multicell_spaceport_occupies_two_cells():
+    st = _cleared_grid()
+    b = S.place(st, "SPACEPORT", 1, 0)  # 2x1
+    occ = S._plot_index(st)
+    assert occ[(1, 0)]["building_id"] == b["id"] and occ[(2, 0)]["building_id"] == b["id"]
+
+
+def test_can_place_rejects_occupied_offgrid_and_hazard():
+    st = _cleared_grid()
+    S.place(st, "MINE", 0, 0)
+    assert S.can_place(st, "FARM", 0, 0)[0] is False         # occupied
+    assert S.can_place(st, "FARM", 99, 99)[0] is False        # off-grid
+    st["plots"][5]["hazard"] = {"kind": "radiation", "sev": 1}
+    st["plots"][5]["cleared"] = False
+    x, y = st["plots"][5]["x"], st["plots"][5]["y"]
+    assert S.can_place(st, "FARM", x, y)[0] is False          # hazard/uncleared
+
+
+def test_decommission_reclaims_plot_for_reuse():
+    st = _cleared_grid()
+    b = S.place(st, "MINE", 0, 0)
+    removed = S.decommission(st, b["id"])
+    assert removed["id"] == b["id"]
+    assert S._plot_index(st)[(0, 0)]["building_id"] is None
+    assert len(st["buildings"]) == 0
+    # plot accepts a new building after reclaim (the K1b-3 acceptance shape)
+    b2 = S.place(st, "FARM", 0, 0)
+    assert S._plot_index(st)[(0, 0)]["building_id"] == b2["id"]
+
+
+def test_place_unknown_kind_raises():
+    st = _cleared_grid()
+    with pytest.raises(ValueError):
+        S.place(st, "NOT_A_KIND", 0, 0)
+
+
 def test_i4_grep_gate_no_stray_clock_callers():
     """I4 (grep-gate): after the cutover, the clock bodies must have ZERO call-sites outside
     structures.settle() — the sole allowed exception is realize_production's pass-through to

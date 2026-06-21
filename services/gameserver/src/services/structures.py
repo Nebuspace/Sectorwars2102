@@ -40,6 +40,7 @@ NO call-site is flipped to it yet (the cutover is Max-gated, spec §8).
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, UTC
 from typing import Optional, Set
@@ -235,11 +236,17 @@ def seed(planet, *, db=None) -> dict:
     if the spine anchor is already present, returns the existing dict unchanged (never re-seeds).
 
     Seeds: ``version``; ``terraform_meta.last_settle_at`` = the domain-consistent ``max()`` of the
-    existing inner anchors (spec §6.2, computed ONCE, atomic with the first settle, I8); and a
-    forward-metadata ``legacy_seed`` snapshot for K1b. Touches NO derived field
-    (citadel_level/habitability/max_population/etc. stay exactly as stored) → reproduce-exactly
-    (I10). Caller commits. Genesis creation routes through here so every new planet owns a
-    structures column from birth."""
+    existing inner anchors (spec §6.2, computed ONCE, atomic with the first settle, I8); the grid
+    (``grid``/``plots`` sized from ``Planet.size``, axes/hazard seeded from the dormant
+    temperature/water_coverage/radiation_level columns — read-only mirrors thereafter); an empty
+    ``buildings`` list + ``instability``; and a forward-metadata ``legacy_seed`` snapshot. Touches
+    NO derived field (citadel_level/habitability/max_population/etc. stay exactly as stored) →
+    reproduce-exactly (I10). Caller commits. Genesis creation routes through here so every new
+    planet owns a structures column from birth.
+
+    K1b-1: this builds the structural grid (plots placement can occupy) but does NOT yet seed
+    buildings from legacy levels — that calibration (so derive_citadel_level == shipped) lands with
+    the shadow-derive wiring."""
     if isinstance(planet.structures, dict) and _read_settle_anchor(planet) is not None:
         return planet.structures
     base = dict(planet.structures) if isinstance(planet.structures, dict) else {}
@@ -247,10 +254,179 @@ def seed(planet, *, db=None) -> dict:
     tmeta = dict(base.get("terraform_meta")) if isinstance(base.get("terraform_meta"), dict) else {}
     tmeta["last_settle_at"] = _seed_anchor_value(planet).isoformat()
     base["terraform_meta"] = tmeta
+    if not isinstance(base.get("grid"), dict) or not isinstance(base.get("plots"), list):
+        cols, rows, count = _grid_dims_for(getattr(planet, "size", 5) or 5)
+        base["grid"] = {"cols": cols, "rows": rows}
+        base["plots"] = _seed_plots(planet, cols, rows, count)
+    base.setdefault("buildings", [])
+    base.setdefault("instability", 0)
     base["legacy_seed"] = _legacy_layout_map(planet)
     planet.structures = base
     flag_modified(planet, "structures")
     return base
+
+
+# ---------------------------------------------------------------------------
+# Grid construction (K1b-1) — sized by Planet.size; plots are the scarce resource
+# ---------------------------------------------------------------------------
+def _grid_dims_for(size: int) -> tuple:
+    """(cols, rows, plot_count) from Planet.size (1-10): plot_count = clamp(4 + 2·size, 6, 30)
+    (CRT-MASTER §1.4, NO-CANON), laid out in a near-square cols×rows bounding box."""
+    plot_count = max(6, min(30, 4 + 2 * int(size or 5)))
+    cols = int(math.ceil(math.sqrt(plot_count)))
+    rows = int(math.ceil(plot_count / cols))
+    return cols, rows, plot_count
+
+
+def _seed_terrain(planet) -> str:
+    """Map the planet type to an initial plot terrain (a modifier, not a wall — §2.3). Conservative
+    default FLAT; refined per-plot by terraform in T2."""
+    t = (getattr(planet, "planet_type", None) or "").upper()
+    mapping = {
+        "VOLCANIC": "VOLCANIC_VENT", "OCEANIC": "COASTAL", "ICE": "FROZEN",
+        "TERRAN": "FERTILE", "TERRA": "FERTILE", "DESERT": "ARID",
+        "BARREN": "BARREN", "GAS": "FLAT", "ROCKY": "HIGHLAND",
+    }
+    for key, terrain in mapping.items():
+        if key in t:
+            return terrain
+    return "FLAT"
+
+
+def _seed_plots(planet, cols: int, rows: int, count: int) -> list:
+    """Build the plot list (row-major, first `count` cells). Axes seeded from the dormant
+    temperature/water_coverage columns (NO-CANON mapping — K1b-2 terraform owns the dynamics
+    thereafter); a hazard from radiation_level makes a plot uncleared until cleared (§2.3)."""
+    temperature = getattr(planet, "temperature", 0.0) or 0.0
+    water = getattr(planet, "water_coverage", 0.0) or 0.0
+    radiation = getattr(planet, "radiation_level", 0.0) or 0.0
+    thermal = max(0, min(100, int(round(50 + temperature))))   # 0°C→50, ±50°C→0/100 (NO-CANON)
+    hydro = max(0, min(100, int(round(water))))
+    terrain = _seed_terrain(planet)
+    # radiation_level (0-1) → hazard severity 1-3 above a threshold; hazardous plots start uncleared.
+    hazard = None
+    if radiation >= 0.34:
+        hazard = {"kind": "radiation", "sev": min(3, max(1, int(round(radiation * 3))))}
+    plots = []
+    for i in range(count):
+        x, y = i % cols, i // cols
+        plots.append({
+            "x": x, "y": y,
+            "terrain": terrain,
+            "hazard": dict(hazard) if hazard else None,
+            "axes": {"thermal": thermal, "hydro": hydro},
+            "axes_at": None,
+            "cleared": hazard is None,
+            "surveyed": False,
+            "building_id": None,
+        })
+    return plots
+
+
+# ---------------------------------------------------------------------------
+# place() / decommission() — the grid-mutation API (K1b-1). PURE grid ops on the
+# structures dict; the CALLER owns tech_gate/cost/lock checks + commit.
+# ---------------------------------------------------------------------------
+def _plot_index(structures: dict) -> dict:
+    return {(p["x"], p["y"]): p for p in structures.get("plots", []) if isinstance(p, dict)}
+
+
+def _footprint_cells(x: int, y: int, kind: str) -> list:
+    from src.services import building_catalog
+    spec = building_catalog.get(kind)
+    if not spec:
+        return []
+    w, h = spec["footprint"]
+    return [(x + dx, y + dy) for dy in range(int(h)) for dx in range(int(w))]
+
+
+def can_place(structures: dict, kind: str, x: int, y: int) -> tuple:
+    """Validate a placement (§2.2 invariants). Returns (ok: bool, reason: str). Pure read."""
+    from src.services import building_catalog
+    spec = building_catalog.get(kind)
+    if not spec:
+        return False, f"unknown building kind {kind!r}"
+    cells = _footprint_cells(x, y, kind)
+    if not cells:
+        return False, "empty footprint"
+    plots = _plot_index(structures)
+    for (cx, cy) in cells:
+        plot = plots.get((cx, cy))
+        if plot is None:
+            return False, f"cell ({cx},{cy}) off-grid"
+        if not plot.get("cleared") or plot.get("hazard") is not None:
+            return False, f"cell ({cx},{cy}) not cleared (hazard/blocked)"
+        if plot.get("building_id") is not None:
+            return False, f"cell ({cx},{cy}) already occupied"
+    # prereqs: each prereq KIND must already exist on the planet
+    present = {b.get("kind") for b in structures.get("buildings", []) if isinstance(b, dict)}
+    for pre in spec.get("prereqs", []):
+        if pre not in present:
+            return False, f"missing prerequisite building {pre}"
+    return True, "ok"
+
+
+def _next_building_id(structures: dict) -> str:
+    existing = [b.get("id", "") for b in structures.get("buildings", []) if isinstance(b, dict)]
+    n = 0
+    for bid in existing:
+        if isinstance(bid, str) and bid.startswith("b_"):
+            try:
+                n = max(n, int(bid[2:]))
+            except ValueError:
+                pass
+    return f"b_{n + 1}"
+
+
+def place(structures: dict, kind: str, x: int, y: int, *, level: int = 1,
+          now_iso: Optional[str] = None, complete_at: Optional[str] = None) -> dict:
+    """Place a building on the grid (validates §2.2; raises ValueError if invalid). PURE grid op —
+    the caller checks tech_gate (point-of-use), debits cost (planet-then-player lock order), and
+    commits. Mutates ``structures`` in place; the caller flag_modifies + persists. Returns the new
+    building dict. The building is enqueued (``complete_at`` set) and goes operational in settle()
+    step 1 when ``now >= complete_at``."""
+    from src.services import building_catalog
+    ok, reason = can_place(structures, kind, x, y)
+    if not ok:
+        raise ValueError(f"cannot place {kind} at ({x},{y}): {reason}")
+    spec = building_catalog.get(kind)
+    bid = _next_building_id(structures)
+    building = {
+        "id": bid,
+        "domain": spec["domain"],
+        "kind": kind,
+        "x": x, "y": y,
+        "level": int(level),
+        "crew": spec["crew"].get(level, 0),
+        "power_draw": spec["power_draw"].get(level, 0),
+        "condition": 100,
+        "built_at": now_iso,
+        "complete_at": complete_at,   # None == already operational
+    }
+    structures.setdefault("buildings", []).append(building)
+    plots = _plot_index(structures)
+    for (cx, cy) in _footprint_cells(x, y, kind):
+        plots[(cx, cy)]["building_id"] = bid
+    return building
+
+
+def decommission(structures: dict, building_id: str) -> Optional[dict]:
+    """Tear down a building and RECLAIM its plots (§2.3/§6.1 step 1). Returns the removed building
+    dict, or None if not found. PURE grid op (no hab revert, no refund — the caller applies the
+    partial refund per the rig-decommission rules). Caller commits."""
+    buildings = structures.get("buildings", [])
+    removed = None
+    for b in buildings:
+        if isinstance(b, dict) and b.get("id") == building_id:
+            removed = b
+            break
+    if removed is None:
+        return None
+    structures["buildings"] = [b for b in buildings if b is not removed]
+    for p in structures.get("plots", []):
+        if isinstance(p, dict) and p.get("building_id") == building_id:
+            p["building_id"] = None
+    return removed
 
 
 # ---------------------------------------------------------------------------
