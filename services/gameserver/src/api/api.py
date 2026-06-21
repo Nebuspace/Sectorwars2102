@@ -17,6 +17,8 @@ from src.api.routes.player import router as player_router
 from src.api.routes.sectors import router as sectors_router
 from src.api.routes.ai import router as ai_router
 from src.api.routes.enhanced_ai import router as enhanced_ai_router
+from src.api.routes.route_optimizer import router as route_optimizer_router  # WO-RO1
+from src.api.routes.market_prediction import router as market_prediction_router  # WO-MP1
 from src.api.routes.audit import router as audit_router
 from src.api.routes.messages import router as messages_router
 from src.api.routes.admin_messages import router as admin_messages_router
@@ -87,6 +89,8 @@ api_router.include_router(player_router, tags=["player"])
 api_router.include_router(sectors_router, tags=["sectors"])
 api_router.include_router(ai_router, tags=["ai-trading"])
 api_router.include_router(enhanced_ai_router, tags=["enhanced-ai"])
+api_router.include_router(route_optimizer_router, tags=["routes"])  # WO-RO1 (router carries /routes prefix)
+api_router.include_router(market_prediction_router, tags=["market"])  # WO-MP1 (router carries /market-prediction prefix)
 api_router.include_router(audit_router, tags=["audit"])
 api_router.include_router(messages_router, tags=["messages"])
 api_router.include_router(admin_messages_router, tags=["admin-messages"])
