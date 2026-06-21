@@ -85,7 +85,6 @@ class MissionResponse(BaseModel):
     description: Optional[str]
     mission_type: str
     credit_reward: int
-    reputation_reward: int
     item_rewards: List[str]
     target_sector_id: Optional[str]
     cargo_type: Optional[str]
@@ -105,7 +104,6 @@ class MissionResponse(BaseModel):
             description=mission.description,
             mission_type=mission.mission_type,
             credit_reward=mission.credit_reward,
-            reputation_reward=mission.reputation_reward,
             item_rewards=mission.item_rewards or [],
             target_sector_id=str(mission.target_sector_id) if mission.target_sector_id else None,
             cargo_type=mission.cargo_type,
@@ -275,7 +273,6 @@ async def accept_mission(
         "status": "active",
         "accepted_at": datetime.utcnow().isoformat(),
         "credit_reward": mission.credit_reward,
-        "reputation_reward": mission.reputation_reward,
         "target_sector_id": str(mission.target_sector_id) if mission.target_sector_id else None,
         "cargo_type": mission.cargo_type,
         "cargo_quantity": mission.cargo_quantity,
