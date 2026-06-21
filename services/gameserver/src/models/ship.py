@@ -223,6 +223,20 @@ class Ship(Base):
     # Equipment slots
     equipment_slots = Column(JSONB, nullable=False, default={})
 
+    # SHIP-MODS slot grid — per-instance installed modules (SHIP-MODS-MASTER §9.1;
+    # WO-SM-1). A FRESH column beside equipment_slots — the grid never reads,
+    # writes, or deletes the ADR-0030 sensor/slipdrive/special_equipment keys
+    # that live in equipment_slots. Shape:
+    #   {"v":1, "installed": { "<slot_i_as_str>": {"class":str, "tier":int,
+    #     "super_at_install":bool, "installed_at":isoZ} } }
+    # null / {} → no modules (defensive getattr(ship,'modules',None) or {}).
+    # Only class+tier+super_at_install are stored; effect magnitudes resolve from
+    # MODULE_DEFINITIONS at bake time (re-tune-safe). super_at_install is
+    # snapshotted at install so a later slot-layout re-tune never silently
+    # changes a fielded ship. Written ONLY by _apply_module_effects (SM-2/SM-3);
+    # this column stays null on every ship until the first install.
+    modules = Column(JSONB, nullable=True)
+
     # Carrier ship-hangar (WO-AE; DATA_MODELS/ships.md#carrier-ship-hangar).
     # Only populated on capital-size hulls (the Carrier at launch); NULL on
     # every other ship. Holds whole player ships in transit, SEPARATE from the
@@ -342,6 +356,21 @@ class ShipSpecification(Base):
     
     # Upgrades
     max_upgrade_levels = Column(JSONB, nullable=False)
+
+    # SHIP-MODS slot grid — per-type slot lattice (SHIP-MODS-MASTER §9.2;
+    # WO-SM-1). Authored once and seeded per ShipType by the idempotent boot
+    # upserter in ship_specifications_seeder.py (conflict key on `type`). Shape:
+    #   {"v":1, "cols":int, "rows":int,
+    #    "slots":[ {"i":int, "x":int, "y":int, "super":bool,
+    #               "class":str|null, "requires":str|null} ]}
+    # Slot COUNT keys off ship_size via the literal table {small:3, medium:4,
+    # large:6}; CAPITAL hand-set 8; tiny/Escape-Pod 0; NULL ship_size
+    # (NPC-only Interdictor hulls) → 0. WHICH slot indices are
+    # supercharged / class-locked is hand-authored per hull for distinct
+    # identity (§3). (x,y) are stored FROM DAY ONE even though adjacency is
+    # Phase B — so adjacency becomes a behaviour toggle, never a re-migration.
+    # null module_slots → hull predates the feature → "no grid yet."
+    module_slots = Column(JSONB, nullable=True)
     
     # Special abilities and metadata
     special_abilities = Column(JSONB, nullable=False, default=[])

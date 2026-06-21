@@ -493,19 +493,143 @@ SHIP_SPECIFICATIONS = {
 }
 
 
+# ----------------------------------------------------------------------------
+# SHIP-MODS slot grid — per-hull module_slots layouts (SHIP-MODS-MASTER §3;
+# WO-SM-1). Slot COUNT keys off ShipSpecification.ship_size via a LITERAL table
+# {small:3, medium:4, large:6}; CAPITAL is hand-set 8; tiny/Escape-Pod 0; NULL
+# ship_size (NPC-only Interdictor hulls) → 0. WHICH slot indices are
+# supercharged / class-locked is hand-authored per hull for distinct identity.
+# (x,y) are authored as a sensible grid FROM DAY ONE even though adjacency is
+# Phase B (§9.2) — so adjacency becomes a behaviour toggle, never a re-migration.
+# requires=null for every kernel slot (the Citizen `requires` seam ships as data,
+# default-open; SHIP-MODS-MASTER §10 / §9.2 example shows the seam but the kernel
+# leaves it null).
+# ----------------------------------------------------------------------------
+
+# Literal size→count table (§3). NEVER computed from size_units (size_units_for()
+# raises on CAPITAL by design — fact 2); CAPITAL/tiny/None are handled explicitly
+# in _build_module_slots, never falling through this table.
+_SLOT_COUNT_BY_SIZE = {
+    ShipSize.SMALL: 3,
+    ShipSize.MEDIUM: 4,
+    ShipSize.LARGE: 6,
+}
+
+# Hand-authored per-hull super-slot indices + the single class-locked slot
+# (index → class) per §3. A hull absent here = no class-lock. Super indices are
+# placed first / spread across the grid for future adjacency.
+_SHIP_MODS_LAYOUT = {
+    # tiny / Escape Pod → 0 slots (not a customization target — anti-grief).
+    ShipType.ESCAPE_POD:    {"super": [],        "locked": {}},
+    # small → 3 slots (cols 3, rows 1), 1 super.
+    ShipType.SCOUT_SHIP:    {"super": [0],       "locked": {}},
+    ShipType.FAST_COURIER:  {"super": [0],       "locked": {}},
+    # medium → 4 slots (cols 2, rows 2), 1 super.
+    ShipType.LIGHT_FREIGHTER: {"super": [0],     "locked": {}},
+    # Defender: 4 slots, 1 super, 1 class-locked "combat".
+    ShipType.DEFENDER:      {"super": [0],       "locked": {3: "combat"}},
+    # large → 6 slots (cols 3, rows 2), 2 super (spread: i0 + i4).
+    ShipType.CARGO_HAULER:  {"super": [0, 4],    "locked": {}},
+    ShipType.COLONY_SHIP:   {"super": [0, 4],    "locked": {}},
+    ShipType.WARP_JUMPER:   {"super": [0, 4],    "locked": {}},
+    # capital → 8 slots (cols 4, rows 2, hand-set), 3 super (spread: i0/i2/i5),
+    # 1 class-locked "fleet".
+    ShipType.CARRIER:       {"super": [0, 2, 5], "locked": {7: "fleet"}},
+}
+
+
+def _build_module_slots(ship_type: ShipType, ship_size) -> dict:
+    """Build the §9.2 module_slots lattice for a ShipType.
+
+    Slot count from the §3 literal size table (CAPITAL hand-set 8; tiny / NULL
+    ship_size → 0). Grid dimensions chosen sensibly (3→3x1, 4→2x2, 6→3x2,
+    8→4x2). Super / class-lock indices are hand-authored in _SHIP_MODS_LAYOUT;
+    requires stays null for the kernel.
+    """
+    layout = _SHIP_MODS_LAYOUT.get(ship_type, {"super": [], "locked": {}})
+
+    # Resolve slot count — explicit per-tier branches, never falling through the
+    # literal table for capital/tiny/None (fact 2: size_units_for() raises on
+    # CAPITAL by design).
+    if ship_size == ShipSize.CAPITAL:
+        count = 8  # hand-set (no size_unit)
+    elif ship_size is None or ship_size == ShipSize.TINY:
+        count = 0  # NPC-only hulls + Escape Pod → zero slots
+    else:
+        count = _SLOT_COUNT_BY_SIZE.get(ship_size, 0)
+
+    # Sensible grid dimensions per count.
+    cols_by_count = {0: 0, 3: 3, 4: 2, 6: 3, 8: 4}
+    cols = cols_by_count.get(count, 0)
+    rows = (count + cols - 1) // cols if cols else 0
+
+    super_idx = set(layout["super"])
+    locked = layout["locked"]
+
+    slots = []
+    for i in range(count):
+        slots.append({
+            "i": i,
+            "x": (i % cols) if cols else 0,
+            "y": (i // cols) if cols else 0,
+            "super": i in super_idx,
+            "class": locked.get(i),   # None unless this index is class-locked
+            "requires": None,         # Citizen seam ships as data, default open
+        })
+
+    return {"v": 1, "cols": cols, "rows": rows, "slots": slots}
+
+
+def seed_ship_module_slots(db: Session) -> None:
+    """Idempotent boot upserter for SHIP-MODS module_slots (SHIP-MODS-MASTER §3).
+
+    Per ShipType, build the §9.2 slot lattice (count/super/class-lock per the §3
+    roster, with hand-authored (x,y)) and UPSERT it onto the matching
+    ShipSpecification row. Match/conflict key is ShipType (ship_specifications.type
+    is UNIQUE). Safe to re-run: re-authors module_slots in place every boot, so a
+    layout re-tune in code lands on the next restart. Specs missing entirely are
+    skipped here (seed_ship_specifications creates them first; this runs after).
+    NPC-only / NULL ship_size + Escape Pod resolve to a zero-slot grid.
+    """
+    logger.info("Starting SHIP-MODS module_slots seeding...")
+    upserted = 0
+
+    for ship_type in ShipType:
+        spec = db.query(ShipSpecification).filter(
+            ShipSpecification.type == ship_type
+        ).first()
+        if spec is None:
+            # Spec row absent — seed_ship_specifications owns creation; skip.
+            logger.warning(
+                "No ShipSpecification for %s — skipping module_slots upsert",
+                ship_type.value,
+            )
+            continue
+        spec.module_slots = _build_module_slots(ship_type, spec.ship_size)
+        upserted += 1
+        logger.info(
+            "Upserted module_slots for %s (%d slots)",
+            ship_type.value,
+            len(spec.module_slots["slots"]),
+        )
+
+    db.commit()
+    logger.info("SHIP-MODS module_slots seeding complete: %d upserted", upserted)
+
+
 def seed_ship_specifications(db: Session) -> None:
     """Seed ship specifications into the database"""
     logger.info("Starting ship specifications seeding...")
-    
+
     seeded_count = 0
     updated_count = 0
-    
+
     for ship_type, spec_data in SHIP_SPECIFICATIONS.items():
         # Check if specification already exists
         existing_spec = db.query(ShipSpecification).filter(
             ShipSpecification.type == ship_type
         ).first()
-        
+
         if existing_spec:
             # Update existing specification
             for key, value in spec_data.items():
@@ -522,11 +646,15 @@ def seed_ship_specifications(db: Session) -> None:
             db.add(new_spec)
             seeded_count += 1
             logger.info(f"Created ship specification for {ship_type.value}")
-    
+
     # Commit all changes
     db.commit()
-    
+
     logger.info(f"Ship specifications seeding complete: {seeded_count} created, {updated_count} updated")
+
+    # SHIP-MODS slot grid (WO-SM-1): seed module_slots per ShipType after the
+    # specs exist. Idempotent — safe to re-run every boot.
+    seed_ship_module_slots(db)
 
 
 def validate_ship_specifications(db: Session) -> bool:
