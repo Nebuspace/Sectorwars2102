@@ -784,6 +784,24 @@ watcher** (run in the background; re-arm each time it wakes you):
 /Users/mrathbone/github/Nebuspace/.claude/watch-coordination.sh \
   /Users/mrathbone/github/Nebuspace/ROSTER.md ./CROSS-CLAUDE.md
 ```
+…and **also arm a 💓 heartbeat** (idle-wake — so neither instance sits wedged for hours if the mailbox goes quiet; `run_in_background`, `dangerouslyDisableSandbox: true`):
+```bash
+/Users/mrathbone/github/Nebuspace/.claude/heartbeat.sh ./CROSS-CLAUDE.md IMPLEMENTER 20 300
+```
+If the mailbox is idle ≥ 20 min it appends a `💓 HEARTBEAT` line that trips the Orchestrator's watcher (and the Orchestrator's heartbeat wakes you the same way). **On a 💓 HEARTBEAT wake: if you're mid-task, CONTINUE where you left off — never idle between steps on an autonomous run; if your queue is genuinely empty, re-arm watcher + heartbeat and stand by** (no reply needed). Re-arm BOTH (watcher + heartbeat) each session and each time they self-cap (~6h). This directly fixes the "idle between steps for hours" stalls.
+
+**💡 You're invited to improve this process.** If you spot a way to make the two-Claude coordination more efficient — a recurring friction, a better cadence, a missing signal, a clunky handoff — post a `💡 PROCESS-NOTE` to `./CROSS-CLAUDE.md`. The Orchestrator collects these and relays the worthwhile ones to Max. Coordination is a shared, evolving system; flag what's clunky rather than just living with it.
+
+> **Lane note — this is explicitly IN your lane (read carefully).** *Using* the coordination
+> protocol is your job: at startup **arm the watcher AND the heartbeat** (runtime actions, like
+> any boot step — `run_in_background`), read/post the mailbox (STATUS, ACK, HANDOFF replies,
+> PROCESS-NOTE), and follow the 5 rules. What is the **Orchestrator's** lane is *authoring and
+> committing the protocol DOCS themselves* (this `CLAUDE.md`, the root spec, the mailbox/ROSTER
+> format) — so you never edit or commit a protocol change; you **propose** it via a
+> `💡 PROCESS-NOTE` and the Orchestrator makes + commits the edit. Concretely: the heartbeat +
+> PROCESS-NOTE additions here were authored + committed by the Orchestrator; **your only part is
+> to run the `heartbeat.sh` command above** (and post suggestions). Arming the heartbeat ≠
+> editing the protocol — it's a runtime step you own, exactly like arming the watcher.
 
 **The 5 rules that prevent disasters (full detail in the root spec):**
 1. **Commit only explicit paths** — `git commit -- <your/owned/paths>`. **NEVER `git add -A` / `git add .`** in this shared working tree (it sweeps the other instance's in-flight files — this has already happened once). `git pull --rebase --autostash` before every push.
