@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from src.core.commodity_economy import base_price as commodity_base_price
 from src.core.database import get_async_session
-from src.models.sector import Sector
+from src.models.sector import Sector, SectorType
 from src.models.planet import Planet
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType, WarpTunnelStatus
@@ -97,7 +97,8 @@ class NexusGenerationService:
                     str(cluster.id),
                     str(nexus_zone.id),  # Pass zone ID for sector assignment
                     start_sector,
-                    end_sector
+                    end_sector,
+                    cluster.type,  # WO-GX1: per-cluster-type seeding biases
                 )
 
                 # Update overall stats
@@ -286,7 +287,8 @@ class NexusGenerationService:
         cluster_id: str,
         zone_id: str,
         start_sector: int,
-        end_sector: int
+        end_sector: int,
+        cluster_type: ClusterType = ClusterType.STANDARD,
     ) -> Dict[str, int]:
         """Generate sectors, ports, and planets for a cluster with sparse density
 
@@ -294,8 +296,32 @@ class NexusGenerationService:
         - 5% station density (vs 15% standard)
         - 10% planet density (vs 25% standard)
         - Sector 1 ALWAYS has both station and planet
+
+        WO-GX1 — per-cluster-type seeding biases (NO-CANON magnitudes):
+        - STANDARD: 1.0 baseline (unbiased — byte-identical to the legacy path).
+        - RESOURCE_RICH: every sector gets asteroids with +50% yield (×1.5 base).
+        - FRONTIER_OUTPOST: ~50% station density (fewer ports); some sectors
+          become NEBULA (per-sector nebula_chance) — but NEVER the starter.
+        - MILITARY_ZONE: patrol_ships seeded into sector_data['defenses'].
+        - CONTESTED: multi-faction overlay (controlling_faction left null /
+          uncontrolled — the baseline already leaves it null; the bias is
+          explicit non-assignment, so port/planet generation is unchanged).
+        The biases only fire for non-STANDARD clusters; STANDARD clusters take
+        the exact same code path (and RNG-call sequence) as before this WO, so
+        an unbiased Nexus is byte-identical to today.
         """
         stats = {"sectors": 0, "ports": 0, "planets": 0}
+
+        # WO-GX1 bias parameters (NO-CANON magnitudes from the work order)
+        is_resource_rich = cluster_type == ClusterType.RESOURCE_RICH
+        is_frontier = cluster_type == ClusterType.FRONTIER_OUTPOST
+        is_military = cluster_type == ClusterType.MILITARY_ZONE
+        # FRONTIER_OUTPOST halves effective station density (fewer ports).
+        effective_port_density = (
+            self.port_density * 0.5 if is_frontier else self.port_density
+        )
+        # FRONTIER_OUTPOST scatters nebula sectors (more nebula on the edge).
+        nebula_chance = 0.15 if is_frontier else 0.0
 
         batch_sectors = []
         batch_ports = []
@@ -325,11 +351,54 @@ class NexusGenerationService:
                 "traffic_level": 2,  # Low traffic (sparse)
                 "created_at": datetime.utcnow()
             }
+            # WO-GX1: per-cluster-type seeding biases. These ONLY add keys for
+            # non-STANDARD clusters — STANDARD's sector_data is left byte-for-byte
+            # identical to the legacy path. Heterogeneous param-dict key-sets are
+            # SAFE for bulk insert (SQLAlchemy 2.0 groups dicts by key-set and
+            # applies column defaults per group), so keys are added conditionally
+            # rather than homogenized; absent keys fall back to the column default.
+            if is_resource_rich and sector_num != 1:
+                # +50% asteroid yield: has_asteroids + asteroid_yield ×1.5 off a
+                # sensible base (ore 1000 / precious_metals 400 / radioactives 200).
+                sector_data["resources"] = {
+                    "has_asteroids": True,
+                    "asteroid_yield": {
+                        "ore": int(1000 * 1.5),
+                        "precious_metals": int(400 * 1.5),
+                        "radioactives": int(200 * 1.5),
+                    },
+                    "gas_clouds": [],
+                    "has_scanned": False,
+                }
+
+            if is_military and sector_num != 1:
+                # More patrols: seed patrol_ships into the defenses blob.
+                # NO-CANON patrol count: 2-4 patrol ships per military sector.
+                patrol_count = random.randint(2, 4)
+                sector_data["defenses"] = {
+                    "defense_drones": 0,
+                    "owner_id": None,
+                    "owner_name": None,
+                    "team_id": None,
+                    "mines": 0,
+                    "mine_owner_id": None,
+                    "patrol_ships": [
+                        {"type": "nexus_patrol", "index": p}
+                        for p in range(patrol_count)
+                    ],
+                }
+
+            # FRONTIER_OUTPOST: more nebula. NEVER the starter (sector 1).
+            if is_frontier and sector_num != 1 and random.random() < nebula_chance:
+                sector_data["type"] = SectorType.NEBULA
+
             batch_sectors.append(sector_data)
             stats["sectors"] += 1
 
-            # Generate port - ALWAYS create for Sector 1 (starter sector), otherwise sparse (5%)
-            if sector_num == 1 or random.random() < self.port_density:
+            # Generate port - ALWAYS create for Sector 1 (starter sector), otherwise sparse.
+            # FRONTIER_OUTPOST halves effective station density (fewer ports);
+            # all other cluster types use the baseline 5% density unchanged.
+            if sector_num == 1 or random.random() < effective_port_density:
                 port_data = self._generate_port_for_sector(sector_num, region_id)
                 batch_ports.append(port_data)
                 stats["ports"] += 1
