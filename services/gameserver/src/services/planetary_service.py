@@ -29,6 +29,27 @@ logger = logging.getLogger(__name__)
 SIEGE_TURNS_THRESHOLD = 3       # Consecutive turns enemies must be present to trigger siege
 SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
+
+# Low-habitability resource-cost penalty (WO-F5; canon anchor
+# FEATURES/planets/colonization.md "Low-habitability resource cost penalty",
+# lines 211-213). A marginally habitable world spends extra on life support and
+# environmental control, so its NET output is lower than an identical hospitable
+# world. There is no separate consumption/upkeep ledger in this service — the
+# production-rate formula yields the per-day NET the colony banks — so the canon
+# "+20% resource costs" is realized here by netting the three commodity output
+# rates DOWN by the same fraction (the extra cost is paid out of output), applied
+# exactly like SIEGE_PRODUCTION_PENALTY's siege_multiplier just below it.
+#
+# NO-CANON: the doc marks this 📐 Design-only and the threshold/percentage are
+# given as a TARGET ("< 30", "+20%"), not a settled rule. LOW_HABITABILITY_
+# THRESHOLD = 30 and LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20 are the WO/doc
+# target values — FLAGGED for DECISIONS, not invented. Below the threshold the
+# colony already DECLINES in population (HABITABILITY_GROWTH_THRESHOLD = 20);
+# this penalty additionally taxes commodity output across the marginal band
+# (hab < 30), so a hab-20 world both shrinks AND nets ~20% less than a hab-50
+# world with identical allocations/buildings.
+LOW_HABITABILITY_THRESHOLD = 30           # NO-CANON: target threshold (doc line 213)
+LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20  # NO-CANON: target "+20% resource costs"
 # ADR-0076 retired the flat DEFENSE_UPGRADE_COST=1000/level path (upgrade_defense);
 # citadel level unlocks tiers and defense_unit_price (per added unit) prices them.
 DEFENSE_MAX_LEVEL = 10          # Maximum defense level
@@ -1213,7 +1234,7 @@ class PlanetaryService:
 
         return {
             "underSiege": planet.under_siege,
-            "changed": siege_info.get("state_changed", False) or siege_advanced,
+            "changed": siege_info.get("state_changed", False) or ("siege" in _settle_res.steps_changed),
             "morale": planet.morale,
             "isVulnerable": planet.morale <= 0
         }
@@ -1978,6 +1999,28 @@ class PlanetaryService:
                 # linear 100% → 0% across [0.9·max_pop, max_pop]
                 taper = (max_pop - pop) / (0.1 * max_pop)
                 colonist_rate *= max(0.0, min(1.0, taper))
+
+        # Low-habitability resource-cost penalty (WO-F5; colonization.md:211-213).
+        # A world below LOW_HABITABILITY_THRESHOLD pays extra for life support /
+        # environmental control, netting its commodity output DOWN by
+        # LOW_HABITABILITY_PRODUCTION_PENALTY. Mirrors the siege_multiplier shape
+        # just below — a single sub-1.0 multiplier on the three commodity rates.
+        # Wrapped defensively so a malformed habitability_score on a hot read
+        # path can never raise; on any hiccup the colony simply pays no penalty.
+        try:
+            low_hab_score = planet.habitability_score
+            if low_hab_score is not None and low_hab_score < LOW_HABITABILITY_THRESHOLD:
+                low_hab_multiplier = 1.0 - LOW_HABITABILITY_PRODUCTION_PENALTY
+                fuel_rate *= low_hab_multiplier
+                organics_rate *= low_hab_multiplier
+                equipment_rate *= low_hab_multiplier
+                research_rate *= low_hab_multiplier
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Low-habitability penalty skipped on planet "
+                f"{getattr(planet, 'id', '?')}: bad habitability_score "
+                f"{getattr(planet, 'habitability_score', None)!r}"
+            )
 
         # Apply siege effects
         if planet.under_siege:
