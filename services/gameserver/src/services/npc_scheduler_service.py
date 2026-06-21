@@ -356,6 +356,26 @@ PORT_OPERATING_COST_CHECK_SECONDS = int(
     os.environ.get("PORT_OPERATING_COST_CHECK_SECONDS", str(45 * 60))
 )
 
+# Station-recovery sweep cadence (WO-DBB-EC6). Rebuild any station whose
+# 24-CANONICAL-hour destroyed-recovery window has elapsed (FEATURES/economy/
+# trading.md § Destruction & recovery). Like the port-operating-cost / bounty /
+# idle-income / stipend sweeps, the cadence is a COARSE elapsed pre-filter (so
+# we don't take the advisory lock + scan stations every 60s); the actual
+# per-station eligibility comes from the DURABLE deadline (Station.recovery_time)
+# + the canonical-hours cross-check against ownership['destroyed_at'] inside
+# station_service.is_recovery_due, both of which survive a restart (the
+# process-relative elapsed counter resets; the stored timestamps do not). A
+# re-run finds is_destroyed False and no-ops — NO double-rebuild. The 24h window
+# + 50% rebuild fraction are CANON (reused from station_service, NOT reinvented);
+# only this background SWEEP cadence is NO-CANON. Offset to 50m so it does not
+# share a wake with the other coarse probes (decay 15m / faucet 20m / snapshot
+# 25m / idle 30m / stipend 35m / bounty 40m / port-costs 45m). On dev
+# (GAME_TIME_SCALE=144) a 24-canonical-hour window elapses in 10 wall-clock
+# minutes, so a coarse cadence keeps the rebuild within ~one sweep of due.
+STATION_RECOVERY_CHECK_SECONDS = int(
+    os.environ.get("STATION_RECOVERY_CHECK_SECONDS", str(50 * 60))
+)
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -3072,6 +3092,126 @@ def _run_port_operating_costs_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_station_recovery_sync() -> Dict[str, int]:
+    """Auto-rebuild every destroyed station whose 24-CANONICAL-hour recovery
+    window has elapsed (WO-DBB-EC6; FEATURES/economy/trading.md § Destruction
+    & recovery). This is the AUTONOMOUS half of the station destruction/recovery
+    engine — station_service holds the lazy, idempotent rebuild logic
+    (recover_station: rebuild commodities to 50% of the destruction-time
+    snapshot, clear the destroyed flag/timer, zero re-purchasable defenses).
+    This sweep is the scheduler shell that DRIVES that engine. It does NOT
+    reimplement the 24h window or the 50% rebuild fraction (both CANON, owned by
+    station_service) — it queries due stations and calls recover_station per row.
+
+    DISCIPLINE — mirrors _run_port_operating_costs_sync EXACTLY (runs on the
+    LIVE scheduler):
+      * own SessionLocal (never the request session, never the async engine);
+      * xact-level advisory lock so a second gameserver instance skips instead
+        of double-rebuilding, then commit IMMEDIATELY to claim the sweep without
+        pinning the lock across the iteration — MANDATORY: omitting this commit
+        lets the first per-station commit below release the lock mid-iteration
+        and a second instance enter concurrently;
+      * a candidate-id query (no batch lock) pre-filtered to destroyed stations
+        whose absolute deadline (recovery_time) has passed, then a per-station
+        with_for_update re-read so a concurrent path can't race the rebuild;
+      * per-station commit and per-station try/except — one bad station cannot
+        abort the batch or roll back already-rebuilt stations.
+
+    IDEMPOTENCY ACROSS RESTARTS: the durable per-station state is the existing
+    Station.is_destroyed flag + Station.recovery_time deadline + the
+    ownership['destroyed_at'] canonical-hours anchor. is_recovery_due re-checks
+    the canonical-hours window inside the row lock; recover_station re-checks the
+    destroyed flag. A re-run, duplicate wake, or restart finds is_destroyed False
+    (already rebuilt) or the window not yet elapsed and no-ops — NEVER a
+    double-rebuild. Additive JSONB only; NO migration, NO new column.
+
+    CANDIDATE GATE: is_destroyed = True AND recovery_time <= now (the absolute
+    wall-clock deadline encodes the scaled 24-canonical-hour window). The
+    per-station is_recovery_due() then confirms via the canonical-hours anchor
+    before recover_station runs (defensive against a stale deadline column).
+
+    Returns {"recovered": n_rebuilt}; counts stations actually rebuilt this
+    sweep. Zero on the lock-held / nothing-due no-op paths."""
+    from src.core.database import SessionLocal
+    from src.models.station import Station
+    from src.services import station_service
+
+    result = {"recovered": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        # Release the lock-acquiring transaction before per-row work (same
+        # rationale as the port-cost / bounty / idle-income sweeps): claim the
+        # sweep, then iterate. MANDATORY — see the docstring.
+        db.commit()
+
+        now = datetime.now(UTC)
+
+        # Candidate stations: destroyed + deadline elapsed. IDs only (no batch
+        # lock); the per-station re-read takes the row lock. is_recovery_due
+        # re-confirms via the canonical-hours anchor inside the lock.
+        candidate_ids = (
+            db.query(Station.id)
+            .filter(
+                Station.is_destroyed.is_(True),
+                Station.recovery_time.isnot(None),
+                Station.recovery_time <= now,
+            )
+            .all()
+        )
+
+        for (station_id,) in candidate_ids:
+            try:
+                station = (
+                    db.query(Station)
+                    .filter(Station.id == station_id)
+                    .with_for_update()
+                    .first()
+                )
+                if station is None or not station.is_destroyed:
+                    db.rollback()  # release row lock; nothing to do
+                    continue
+
+                # Re-confirm the canonical-hours window inside the row lock
+                # (restart-proof anchor); skip if not actually due yet.
+                if not station_service.is_recovery_due(station, now):
+                    db.rollback()
+                    continue
+
+                outcome = station_service.recover_station(db, station, now)
+
+                db.commit()  # rebuild + flag clear atomic
+
+                if outcome.get("status") == "recovered":
+                    result["recovered"] += 1
+            except Exception:
+                logger.exception(
+                    "Station recovery sweep: rebuild failed for station %s",
+                    station_id,
+                )
+                db.rollback()
+
+        if result["recovered"]:
+            logger.info(
+                "Station recovery sweep: rebuilt %d destroyed station(s) at "
+                "50%% inventory",
+                result["recovered"],
+            )
+        return result
+    except Exception:
+        logger.exception("Station recovery sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
@@ -3798,3 +3938,33 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: port operating-cost sweep crashed (loop continues)")
+
+        # Station recovery sweep (WO-DBB-EC6) — auto-rebuild any destroyed
+        # station whose 24-canonical-hour recovery window has elapsed
+        # (FEATURES/economy/trading.md § Destruction & recovery). Drives
+        # station_service.recover_station (rebuild commodities to 50% of the
+        # destruction-time snapshot, clear the destroyed flag/timer, zero
+        # re-purchasable defenses) on the scheduler so a destroyed station
+        # rebuilds autonomously without any player visit. Coarse elapsed
+        # pre-filter (50 min) so we don't scan stations every 60s; the
+        # once-per-window guarantee + restart-proofing come from the durable
+        # per-station deadline (recovery_time) + canonical-hours anchor
+        # (ownership['destroyed_at']) inside is_recovery_due — a re-run finds
+        # is_destroyed False and no-ops (NO double-rebuild). Own session, own
+        # advisory lock, per-station failure isolated — same discipline as the
+        # port operating-cost / bounty-accrual / idle-income sweeps. The 24h
+        # window + 50% rebuild fraction are CANON (reused, not reinvented); only
+        # the sweep cadence is NO-CANON.
+        if elapsed % STATION_RECOVERY_CHECK_SECONDS == 0:
+            try:
+                recov = await asyncio.to_thread(_run_station_recovery_sync)
+                if recov.get("recovered"):
+                    logger.info(
+                        "NPC scheduler: station recovery sweep — rebuilt %d "
+                        "destroyed station(s) at 50%% inventory",
+                        recov.get("recovered", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: station recovery sweep crashed (loop continues)")
