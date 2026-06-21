@@ -233,6 +233,49 @@ async def _publish_trade_tick(
         logger.debug("real-time trade tick publish skipped", exc_info=True)
 
 
+async def _emit_transaction_completed(
+    user_id: Any,
+    tx_id: Any,
+    station_id: str,
+    commodity: str,
+    units: int,
+    total: int,
+) -> None:
+    """Push the canonical personal ``transaction_completed`` frame to the
+    trading player after a buy/sell settles.
+
+    Canon (SYSTEMS/realtime-bus.md: ``transaction_completed`` | personal |
+    ``tx_id, station_id, commodity, units, total``; SYSTEMS/market-pricing.md:
+    "unicast to the player's session"). Reuses the existing connection-manager
+    ``send_personal_message`` idiom (the same personal-frame transport
+    send_turn_pool_update / send_ship_status_change ride on), routing on the
+    owning User's id — the key ``send_personal_message`` keys on.
+
+    PERSONAL ONLY: send_personal_message delivers exclusively to this user's
+    socket, so there is no cross-player leak. DEFENSIVE: the call site invokes
+    this POST-COMMIT inside its own try/except, and this body swallows any
+    failure — a WS hiccup (no socket, dead loop) must never disturb an
+    already-committed trade."""
+    try:
+        if user_id is None:
+            return
+        from src.services.websocket_service import connection_manager
+        await connection_manager.send_personal_message(
+            str(user_id),
+            {
+                "type": "transaction_completed",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "tx_id": str(tx_id),
+                "station_id": str(station_id),
+                "commodity": commodity,
+                "units": units,
+                "total": total,
+            },
+        )
+    except Exception:
+        logger.debug("transaction_completed WS push skipped", exc_info=True)
+
+
 @router.post("/buy")
 async def buy_resource(
     trade_request: TradeRequest,
@@ -538,6 +581,18 @@ async def buy_resource(
 
         # Real-time market broadcast (post-commit, batched, defensive).
         await _publish_trade_tick(station.id, trade_request.resource_type, market_price)
+
+        # Personal transaction_completed frame (post-commit, defensive — a WS
+        # hiccup must never fail an already-committed trade). Personal only:
+        # routes on the trading player's owning User id (no cross-player leak).
+        await _emit_transaction_completed(
+            current_player.user_id,
+            transaction.id,
+            trade_request.station_id,
+            trade_request.resource_type,
+            trade_request.quantity,
+            total_cost,
+        )
 
         response = {
             "message": f"Successfully bought {trade_request.quantity} units of {trade_request.resource_type}",
@@ -869,6 +924,20 @@ async def sell_resource(
 
         # Real-time market broadcast (post-commit, batched, defensive).
         await _publish_trade_tick(station.id, trade_request.resource_type, market_price)
+
+        # Personal transaction_completed frame (post-commit, defensive — a WS
+        # hiccup must never fail an already-committed trade). Personal only:
+        # routes on the trading player's owning User id (no cross-player leak).
+        # ``total`` carries the gross transaction value (MarketTransaction
+        # total_value), matching the buy side's total_cost.
+        await _emit_transaction_completed(
+            current_player.user_id,
+            transaction.id,
+            trade_request.station_id,
+            trade_request.resource_type,
+            trade_request.quantity,
+            total_earnings,
+        )
 
         remaining = current_ship.cargo.get('contents', {}).get(trade_request.resource_type, 0)
         response = {
