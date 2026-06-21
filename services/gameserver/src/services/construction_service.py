@@ -52,8 +52,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core import game_time
+from src.core.market_bootstrap import build_market_prices
 from src.models.construction import ConstructionReservation
 from src.models.faction import Faction
+from src.models.market_transaction import MarketPrice
 from src.models.player import Player
 from src.models.reputation import Reputation
 from src.models.ship import Ship, ShipType
@@ -683,6 +685,45 @@ def _require_tradedock(station: Station) -> Dict[str, int]:
     if pools is None:
         raise ConstructionError(400, f"{station.name} has no TradeDock shipyard")
     return pools
+
+
+def _seed_station_market_book(db: Session, station: Station) -> int:
+    """ADR-0053 WR14 — eager new-station market bootstrap.
+
+    Create MarketPrice rows for every commodity the station's class trades
+    (per the station's finalized ``commodities`` JSONB) IN THE CALLER'S
+    transaction, so a station brought into runtime existence here is born with
+    a populated market book — the trading endpoint reads market_prices, not
+    the commodities JSONB, so a station without rows is invisible to trade and
+    the first trader sees undefined prices.
+
+    Reuses the shared ``build_market_prices`` pricing helper (the exact pattern
+    bang_import uses for worldgen-seeded stations) so runtime and worldgen
+    stations are priced identically. Idempotent: a commodity that already has a
+    MarketPrice row (the ``(station_id, commodity)`` unique index) is skipped,
+    so re-seeding an already-booked station never duplicates or rewrites rows.
+
+    Returns the count of rows inserted. The caller MUST hold the station lock
+    and owns the commit; the flush here surfaces any insert failure to the
+    caller so the WHOLE transaction (including the station creation) rolls back
+    — WR14's atomicity contract (no partial station with no market book)."""
+    existing = {
+        row.commodity
+        for row in db.query(MarketPrice.commodity)
+        .filter(MarketPrice.station_id == station.id)
+        .all()
+    }
+    inserted = 0
+    for market_price in build_market_prices(station.id, station.commodities):
+        if market_price.commodity in existing:
+            continue
+        db.add(market_price)
+        inserted += 1
+    if inserted:
+        # Flush now so a failed MarketPrice insert raises here and rolls back
+        # the station creation in the same transaction (WR14 atomicity).
+        db.flush()
+    return inserted
 
 
 def _faction_rep_tier(db: Session, player_id, station: Station) -> int:
@@ -1515,10 +1556,18 @@ def create_region_funded_construction(
     db.add(reservation)
     db.flush()
 
+    # ADR-0053 WR14: a region-funded TradeDock is a runtime-created tradeable
+    # station — seed its MarketPrice book in THIS transaction so the first
+    # trader at the new dock sees defined prices (worldgen stations get this at
+    # Phase 10/11; runtime ones must get it here). Idempotent + atomic: a
+    # failed insert rolls back the whole construction, leaving no half-built
+    # TradeDock with no market book.
+    seeded = _seed_station_market_book(db, station)
+
     logger.info(
         "Region-funded TradeDock construction initiated: region=%s station=%s "
-        "initiator=%s cost=%d",
-        region_id, station.id, initiating_player.id, REGION_TRADEDOCK_COST,
+        "initiator=%s cost=%d market_rows_seeded=%d",
+        region_id, station.id, initiating_player.id, REGION_TRADEDOCK_COST, seeded,
     )
 
     return {

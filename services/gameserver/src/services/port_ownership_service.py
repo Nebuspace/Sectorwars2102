@@ -81,7 +81,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core import game_time
-from src.models.market_transaction import MarketTransaction, TransactionType
+from src.core.market_bootstrap import build_market_prices
+from src.models.market_transaction import MarketPrice, MarketTransaction, TransactionType
 from src.models.player import Player
 from src.models.port_ownership import PurchaseOffer, StationListing, TakeoverCampaign
 from src.models.station import Station, player_stations
@@ -462,6 +463,43 @@ def _lock_players_ascending(db: Session, player_ids: Iterable) -> Dict[uuid.UUID
     return out
 
 
+def _seed_station_market_book(db: Session, station: Station) -> int:
+    """ADR-0053 WR14 — eager station market bootstrap (shared with
+    construction_service._seed_station_market_book).
+
+    Create MarketPrice rows for every commodity the station's class trades
+    (per its finalized ``commodities`` JSONB) IN THE CALLER'S transaction, so a
+    station brought into a fresh tradeable/ownable runtime state here is
+    guaranteed a populated market book — the trading endpoint reads
+    market_prices, not the commodities JSONB, so a station without rows is
+    invisible to trade and the first trader sees undefined prices.
+
+    Reuses the shared ``build_market_prices`` helper (the exact pattern
+    bang_import uses for worldgen stations). Idempotent: a commodity that
+    already has a MarketPrice row (the ``(station_id, commodity)`` unique index)
+    is skipped, so seeding a station that already has a book never duplicates or
+    rewrites rows. Returns the count of rows inserted.
+
+    The caller MUST hold the station lock and owns the commit; the flush here
+    surfaces any insert failure so the WHOLE transaction rolls back (WR14
+    atomicity: never a tradeable station with a half-built market book)."""
+    existing = {
+        row.commodity
+        for row in db.query(MarketPrice.commodity)
+        .filter(MarketPrice.station_id == station.id)
+        .all()
+    }
+    inserted = 0
+    for market_price in build_market_prices(station.id, station.commodities):
+        if market_price.commodity in existing:
+            continue
+        db.add(market_price)
+        inserted += 1
+    if inserted:
+        db.flush()
+    return inserted
+
+
 def _wall_cutoff(days: float, now: Optional[datetime] = None) -> datetime:
     """Wall-clock instant `days` CANONICAL days in the past (scaled_deadline
     with negative hours walks backwards through the same scaling)."""
@@ -525,6 +563,14 @@ def _transfer_station(
         "acquisition_method": method,
     }
     flag_modified(station, "ownership")
+
+    # ADR-0053 WR14: guarantee the station's market book exists in THIS
+    # transaction — a station changing hands at runtime must never land in a
+    # new owner's portfolio invisible to trade. Idempotent (skips commodities
+    # that already have a MarketPrice row), so an already-booked station is
+    # untouched; a runtime-created station that reached this lane without a
+    # book is seeded atomically (a failed insert rolls back the transfer).
+    _seed_station_market_book(db, station)
 
     # Medal: economic.port_baron (ports_owned >= 5). Fires after the ownership
     # association rows are written, in the caller's locked transaction;
