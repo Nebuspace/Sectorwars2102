@@ -158,8 +158,98 @@ def award_medal(
     # caller's unit of work (combat/trade/first-login).
     _dispatch_medal_awarded_event(db, player_id, resolved_id, awarded_via)
 
+    # WO-F9 — offline notification durability (medals.md:201). The realtime toast
+    # above only lands if the player is connected; the canon's "Cross-session
+    # (offline-earned)" flow requires the award ALSO persist so it survives a
+    # logged-out earn: a `system`/`high` Message in the inbox PLUS the medal_id
+    # appended to Player.settings.medal_privacy.unviewed_awards (the login-splash
+    # queue). Written inline in the caller's open transaction (so it commits/rolls
+    # back atomically WITH the award row — never a phantom notice for a voided
+    # award), and fully defensive — a notification hiccup is logged and swallowed
+    # and can never roll back the recorded award or break the caller.
+    _persist_offline_award_notification(db, player_id, resolved_id)
+
     logger.info("Medal awarded: %s -> player %s (via=%s)", resolved_id, player_id, awarded_via)
     return True
+
+
+# WO-F9 — settings keys for the cross-session (offline-earned) notification flow
+# (medals.md:201). Award data itself is fully relational (ADR-0028); these JSONB
+# keys hold only the login-splash queue, mirroring the ephemeral-notice pattern
+# already used by `_MEDAL_PROGRESS_SETTINGS_KEY` above (read/modify/write +
+# flag_modified, no migration).
+_MEDAL_PRIVACY_SETTINGS_KEY = "medal_privacy"
+_UNVIEWED_AWARDS_KEY = "unviewed_awards"
+
+
+def _persist_offline_award_notification(
+    db: Session, player_id: uuid.UUID, medal_id: str
+) -> None:
+    """Persist the durable offline-earned award notice (medals.md:201).
+
+    Two writes, both in the caller's open transaction so they commit/roll back
+    atomically with the award row:
+
+    1. A persistent system inbox Message (``message_type="system"``,
+       ``priority="high"``) announcing the medal — so an offline earn is still
+       waiting in the inbox at next login. The Message model requires a non-null
+       ``sender_id`` (FK → players), and a medal has no human sender, so the
+       notice is self-addressed (``sender_id == recipient_id == player_id``):
+       the FK is guaranteed valid (the player exists) and it reads cleanly as a
+       system-to-you commendation.
+    2. Append ``medal_id`` to ``Player.settings['medal_privacy']['unviewed_awards']``
+       — the login-splash queue the client drains. Read/modify/write defensively
+       (settings may be absent/None or hold a non-list value) with
+       ``flag_modified`` so the JSONB mutation is flushed. The medal_id is not
+       re-appended if already queued (award_medal only reaches here on a genuine
+       first INSERT, but the de-dup keeps the list clean defensively).
+
+    Fully defensive end-to-end: any failure (player gone, JSONB hiccup, FK race)
+    is logged and swallowed — this is best-effort durability and must never roll
+    back the recorded award or break the caller's open transaction.
+    """
+    try:
+        from src.models.message import Message
+
+        player = db.query(Player).filter(Player.id == player_id).first()
+        if player is None:
+            return
+
+        entry = get_catalog_entry(medal_id) or {}
+        medal_name = entry.get("name") or "a commendation"
+
+        # 1) Persistent system inbox message (offline-survivable notice).
+        message = Message(
+            sender_id=player_id,      # self-addressed system notice (FK requires non-null)
+            recipient_id=player_id,
+            subject=f"Medal awarded: {medal_name}",
+            content=f"You have been awarded the {medal_name} medal. View it in your Trophy Room.",
+            message_type="system",
+            priority="high",
+        )
+        db.add(message)
+
+        # 2) Append to the login-splash unviewed-awards queue (defensive R/M/W).
+        settings = player.settings or {}
+        privacy = settings.get(_MEDAL_PRIVACY_SETTINGS_KEY)
+        if not isinstance(privacy, dict):
+            privacy = {}
+        unviewed = privacy.get(_UNVIEWED_AWARDS_KEY)
+        if not isinstance(unviewed, list):
+            unviewed = []
+        if medal_id not in unviewed:
+            unviewed.append(medal_id)
+        privacy[_UNVIEWED_AWARDS_KEY] = unviewed
+        settings[_MEDAL_PRIVACY_SETTINGS_KEY] = privacy
+        player.settings = settings
+        flag_modified(player, "settings")
+
+        db.flush()
+    except Exception as e:  # never break the award / caller's transaction
+        logger.error(
+            "offline award notification persist failed for %s/%s: %s",
+            medal_id, player_id, e,
+        )
 
 
 def _dispatch_medal_awarded_event(

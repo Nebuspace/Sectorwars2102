@@ -13,6 +13,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel
 
 from src.core.database import get_db
@@ -63,6 +64,10 @@ class PlayerMedalsResponse(BaseModel):
     total_available: int
 
 
+class UnviewedAwardsResponse(BaseModel):
+    unviewed: List[str]
+
+
 class AdminGrantRequest(BaseModel):
     player_id: uuid.UUID
     medal_id: str
@@ -106,6 +111,45 @@ async def get_my_medals(
         total_earned=result["total_earned"],
         total_available=result["total_available"],
     )
+
+
+@router.get("/unviewed", response_model=UnviewedAwardsResponse)
+async def get_unviewed_awards(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Return the current player's queued offline-earned award ids, clear-on-view.
+
+    WO-F9 / medals.md:201 — the "Cross-session (offline-earned)" login-splash
+    queue. Awards earned while offline are persisted into
+    ``Player.settings['medal_privacy']['unviewed_awards']`` (alongside a durable
+    system inbox message) by the award path. The client polls this on login to
+    drive the splash; *viewing clears the queue* so each offline award splashes
+    exactly once.
+
+    Defensive read/modify/write: ``settings`` (or the nested keys) may be absent
+    or hold a non-list value; we coerce to ``[]`` rather than raise. The clear is
+    written only when there is actually something to clear, and ``flag_modified``
+    flushes the JSONB mutation.
+    """
+    settings = player.settings or {}
+    privacy = settings.get("medal_privacy")
+    if not isinstance(privacy, dict):
+        privacy = {}
+    unviewed = privacy.get("unviewed_awards")
+    if not isinstance(unviewed, list):
+        unviewed = []
+
+    # Snapshot to return, then clear-on-view (only persist if non-empty).
+    result = [str(m) for m in unviewed]
+    if unviewed:
+        privacy["unviewed_awards"] = []
+        settings["medal_privacy"] = privacy
+        player.settings = settings
+        flag_modified(player, "settings")
+        db.commit()
+
+    return UnviewedAwardsResponse(unviewed=result)
 
 
 # ------------------------------------------------------------------
