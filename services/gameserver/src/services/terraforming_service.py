@@ -219,6 +219,22 @@ class TerraformingService:
         current_events.append(terraforming_meta)
         planet.active_events = current_events
 
+        # K1b-2: mirror the terraform investment onto the structures grid as a rig BUNDLE (additive —
+        # the grid is terraform-owned state; the legacy habitability_score path above stays the
+        # AUTHORITATIVE driver of habitability). The placed rigs feed the settle() step-2 SHADOW
+        # grid-habitability log (Max-gated ADR-0002 amendment). Fully defensive: a grid-placement
+        # hiccup must never break the terraform start (credits/resources already validated above).
+        try:
+            from src.services import structures as _struct
+            from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+            _struct.seed(planet, db=self.db)            # idempotent: builds the grid if absent
+            _struct.place_terraform_preset(planet.structures, level)
+            _flag_modified(planet, "structures")
+        except Exception:
+            logger.exception(
+                "K1b-2 grid preset placement failed (non-fatal) on planet %s", planet.id
+            )
+
         self.db.commit()
         self.db.refresh(planet)
         self.db.refresh(player)

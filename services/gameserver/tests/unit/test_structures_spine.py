@@ -239,6 +239,28 @@ def test_terraform_unfed_rig_pushes_at_floor():
     assert g["plots"][0]["axes"]["thermal"] == 54
 
 
+def test_grid_habitability_pure_read_no_mutation():
+    g = _tgrid([_plot(0, 0, 60, 40), _plot(1, 0, 80, 20)], instability=10)
+    before = [dict(p["axes"]) for p in g["plots"]]
+    h1 = S.grid_habitability(g)
+    h2 = S.grid_habitability(g)
+    # ((60+40)/2 + (80+20)/2)/2 = (50+50)/2 = 50; penalty = 10//5 = 2 → 48
+    assert h1 == 48 and h2 == 48
+    assert [dict(p["axes"]) for p in g["plots"]] == before  # READ-ONLY: no push/decay
+
+
+def test_grid_habitability_none_on_empty_grid():
+    assert S.grid_habitability({"plots": []}) is None
+    assert S.grid_habitability({}) is None
+
+
+def test_grid_habitability_matches_tick_return():
+    g = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    S.place_terraform_preset(g, 2)
+    ret = S.terraform_grid_tick(g, "OCEANIC", intensity="standard")
+    assert ret == S.grid_habitability(g)  # tick's return IS the post-tick grid_habitability
+
+
 def test_terraform_preset_places_bundle_and_pushes():
     g = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
     rigs = S.place_terraform_preset(g, 3)

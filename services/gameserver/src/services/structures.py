@@ -672,10 +672,22 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
         instab += push_total * TERRA_INSTAB_ACCRUAL
     instab = max(0.0, min(100.0, instab))
     structures["instability"] = int(instab)
-    # grid habitability = floor(area-weighted mean of axes, flat 50/50) − instability_penalty
+    return grid_habitability(structures) or 0
+
+
+def grid_habitability(structures: dict) -> Optional[int]:
+    """Pure READ of the current grid-derived habitability (K1b-2 SHADOW formula, spec §2.6):
+    floor(area-weighted mean of per-plot {thermal,hydro} axes, flat 50/50) − instability//5. Does
+    NOT mutate (no push/decay — unlike terraform_grid_tick, which calls this for its return) and
+    never touches the shipped habitability_score column. The settle() step-2 shadow logs this vs the
+    shipped column (habitability-from-grid is a Max-gated ADR-0002 amendment). Returns None when the
+    grid has no plots (nothing to derive)."""
+    plots = [p for p in structures.get("plots", []) if isinstance(p, dict)]
+    if not plots:
+        return None
     mean = sum((int(p.get("axes", {}).get("thermal", 0)) + int(p.get("axes", {}).get("hydro", 0))) / 2.0
-               for p in plots.values()) / len(plots)
-    penalty = int(instab) // TERRA_INSTAB_PEN_DIVISOR
+               for p in plots) / len(plots)
+    penalty = int(structures.get("instability", 0) or 0) // TERRA_INSTAB_PEN_DIVISOR
     return max(0, int(mean) - penalty)
 
 
@@ -733,10 +745,31 @@ def _step1_build_queue(planet, db) -> bool:
 
 
 def _step2_terraform(planet, ts) -> bool:
-    """CALLS _advance_terraforming UNCHANGED (own canonical inner anchor last_tick_at)."""
-    if not getattr(planet, "terraforming_active", False):
-        return False
-    return bool(ts._advance_terraforming(planet, _via_settle=True))
+    """CALLS _advance_terraforming UNCHANGED (own canonical inner anchor last_tick_at), then runs the
+    K1b-2 SHADOW: READ the grid-derived habitability and LOG it vs the shipped habitability_score.
+    READ-ONLY — it never writes the habitability column nor advances the grid field (the field-advance
+    + button→derived cutover is a SEPARATE Max-gated WO, like the citadel one). The shadow runs on
+    EVERY planet (not only active terraform) so we observe grid-vs-shipped across the world; a
+    divergence here is OBSERVATIONAL (grid-habitability is a new ADR-0002-amendment model, not a
+    reproduction of the legacy column), not a defect. Fully defensive: a shadow hiccup never breaks
+    the tick."""
+    changed = False
+    if getattr(planet, "terraforming_active", False):
+        changed = bool(ts._advance_terraforming(planet, _via_settle=True))
+    try:
+        derived = grid_habitability(planet.structures if isinstance(planet.structures, dict) else {})
+        if derived is not None:
+            shipped = int(getattr(planet, "habitability_score", 0) or 0)
+            if derived != shipped:
+                logger.info(
+                    "habitability SHADOW: planet %s grid=%s vs shipped=%s "
+                    "(shipped authoritative; grid-habitability is a Max-gated ADR-0002 amendment)",
+                    getattr(planet, "id", "?"), derived, shipped,
+                )
+    except Exception:
+        logger.exception("habitability shadow-derive failed (non-fatal) for planet %s",
+                         getattr(planet, "id", "?"))
+    return changed
 
 
 def _step3_power_siege(planet, ps) -> bool:
