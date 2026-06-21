@@ -5,12 +5,13 @@ Provides endpoints for regional owners to manage their territories, governance, 
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from sqlalchemy import select, update, func, and_, or_
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 import uuid
 
-from src.core.database import get_async_session
+from src.core.database import get_async_session, get_db
 from src.auth.dependencies import get_current_user, require_auth
 from src.models.user import User
 from src.models.region import (
@@ -24,6 +25,7 @@ from src.models.station import Station
 from src.models.ship import Ship
 from src.models.region_invite import RegionInvite
 from src.services.regional_governance_service import RegionalGovernanceService
+from src.services import trading_service
 from src.services.region_invite_service import (
     RegionInviteService,
     DEFAULT_MAX_USES,
@@ -142,6 +144,16 @@ class InviteCreate(BaseModel):
     omitted; a supplied value must be in the future (enforced server-side)."""
     max_uses: int = Field(default=DEFAULT_MAX_USES, ge=1, le=MAX_MAX_USES)
     expires_at: Optional[datetime] = None
+
+
+class TariffSet(BaseModel):
+    """Owner request to set the region COMMERCE tariff (WO-G9 / ADR-0062 E-F2).
+
+    ``rate`` is the requested per-trade tariff surcharge (0.0 = neutral). The
+    server CLAMPS it to the E-F2 sliding cap (by in-region station count) inside
+    ``trading_service.set_region_tariff`` and returns the persisted clamped value
+    — a request above the cap is accepted but stored at the cap, not rejected."""
+    rate: float = Field(..., description="Requested tariff rate (clamped to the E-F2 cap on write)")
 
 
 def _serialize_invite(invite: RegionInvite) -> Dict[str, Any]:
@@ -867,4 +879,50 @@ async def revoke_region_invite(
     return {
         "message": "Invite revoked successfully",
         "invite": _serialize_invite(result["invite"]),
+    }
+
+
+# =====================================================================
+# Region COMMERCE tariff — owner-gated WRITE lever (WO-G9 / ADR-0062 E-F2).
+#
+# The read/apply path (trading.py compute_region_tariff_multiplier) and the
+# clamp+persist (trading_service.set_region_tariff, with the E-F2 sliding cap)
+# were already shipped; only this WRITE endpoint was missing, leaving the region
+# revenue lever stuck at 0. Owner-scoped: ownership of THIS region_id is
+# re-checked SERVER-SIDE (id == region_id AND owner_id == caller) — the same
+# region_id-keyed guard the invite endpoints use, expressed in the sync session
+# this route runs on (set_region_tariff is a sync helper, so this route takes a
+# sync Session to call it verbatim — the cap lives entirely inside that helper,
+# never duplicated here). The tariff persists in the existing trade_bonuses
+# JSONB; no migration.
+# =====================================================================
+
+@router.post("/{region_id}/tariff")
+def set_region_tariff_endpoint(
+    region_id: uuid.UUID,
+    body: TariffSet,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Set the region COMMERCE tariff (region OWNER only).
+
+    404 if ``region_id`` does not exist; 403 if the caller does not own it. On
+    success the rate is clamped to the E-F2 sliding cap inside
+    ``trading_service.set_region_tariff`` (which persists
+    ``trade_bonuses['tariff_rate']``), committed, and the persisted CLAMPED rate
+    is returned — a request above the cap is stored at the cap, not rejected."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        raise HTTPException(status_code=404, detail="Region not found")
+    # Server-side ownership re-check, mirroring RegionInviteService.owns_region:
+    # the caller must own THIS specific region. A NULL owner_id (unowned hub
+    # region) never matches a real user id, so hubs are safely excluded.
+    if region.owner_id is None or region.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not the region owner")
+
+    clamped = trading_service.set_region_tariff(db, region, body.rate)
+    db.commit()
+    return {
+        "message": "Region tariff updated successfully",
+        "tariff_rate": clamped,
     }
