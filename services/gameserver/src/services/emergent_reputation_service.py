@@ -78,6 +78,7 @@ logger = logging.getLogger(__name__)
 THROTTLE_SETTINGS_KEY = "emergent_rep_throttle"
 PER_FACTION_EVENT_CAP_PER_DAY = 10      # ADR-0032
 GLOBAL_REP_POOL_PER_DAY = 100           # ADR-0056 N-V1
+RETURN_BOOST_MULT = 1.5                 # WO-RE1: ×rep on positive faction gains during the welcome-back window
 
 
 def _today_utc_str() -> str:
@@ -761,12 +762,23 @@ class EmergentReputationService:
                     per_faction[fcode] = events_today + 1
                     bucket_dirty = True
 
+                    # WO-RE1: returning-player ×1.5 boost on the AWARD magnitude while the
+                    # welcome-back window is open (return_boost_until). The event-count above +
+                    # the canon "requested" below stay fd.delta; the combined-rep cap + global
+                    # pool still bound the boosted award (boost composes inside the guards).
+                    effective_delta = fd.delta
+                    rbu = getattr(player, "return_boost_until", None)
+                    if rbu is not None:
+                        rbu = rbu if rbu.tzinfo else rbu.replace(tzinfo=timezone.utc)
+                        if datetime.now(timezone.utc) < rbu:
+                            effective_delta = int(round(fd.delta * RETURN_BOOST_MULT))
+
                     # (b) Combined-rep cap — ADR-0032 (the dispatcher must
                     #     enforce what the sync primitive does NOT).
                     award = _apply_combined_rep_cap(
-                        self.db, player_id, fd.faction, fd.delta
+                        self.db, player_id, fd.faction, effective_delta
                     )
-                    cap_clamped = award < fd.delta
+                    cap_clamped = award < effective_delta
 
                     # (c) GLOBAL daily rep pool — ADR-0056 N-V1. Clamp the
                     #     positive award to the pool that remains today.

@@ -73,6 +73,7 @@ class Player(Base):
     insurance = Column(JSONB, nullable=True)
     last_game_login = Column(DateTime(timezone=True), nullable=True)  # Renamed from last_login to avoid confusion
     turn_reset_at = Column(DateTime(timezone=True), nullable=True)
+    return_boost_until = Column(DateTime(timezone=True), nullable=True)  # WO-RE1: welcome-back ×1.5 emergent-rep window
     # ADR-0004: continuous turn regeneration anchor + stored cap.
     last_turn_regeneration = Column(DateTime(timezone=True), nullable=True)
     max_turns = Column(Integer, nullable=False, default=1000, server_default=text("1000"))

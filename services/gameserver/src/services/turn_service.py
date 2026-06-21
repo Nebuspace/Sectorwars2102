@@ -20,7 +20,7 @@ consciousness multiplier, capped at ``Player.max_turns``.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -293,6 +293,7 @@ def _calculate_max_turns(player: Player) -> int:
 WELCOME_BACK_THRESHOLD_DAYS = 7      # bonus only fires for absences strictly > 7 days
 WELCOME_BACK_PER_DAY = 50            # turns granted per full day inactive
 WELCOME_BACK_MAX = 500              # hard cap (anti-alt-abuse, per canon)
+RETURN_BOOST_DAYS = 1               # WO-RE1: a qualifying return opens a 1-day emergent-rep ×1.5 window
 
 
 def welcome_back(player: Player, prior_last_game_login: Optional[datetime]) -> Dict[str, Any]:
@@ -357,6 +358,11 @@ def welcome_back(player: Player, prior_last_game_login: Optional[datetime]) -> D
     # Bonus only for absences STRICTLY greater than the threshold.
     if days_inactive <= WELCOME_BACK_THRESHOLD_DAYS:
         return result
+
+    # WO-RE1: a qualifying return (>threshold days) opens a 1-day emergent-rep ×1.5 boost window
+    # (the rep half of welcome-back; apply_emergent_action reads return_boost_until). Set alongside
+    # the F4 turn bonus so one return-detection drives both.
+    player.return_boost_until = now + timedelta(days=RETURN_BOOST_DAYS)
 
     bonus = min(WELCOME_BACK_MAX, days_inactive * WELCOME_BACK_PER_DAY)
     if bonus <= 0:
