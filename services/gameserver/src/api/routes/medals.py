@@ -150,7 +150,11 @@ async def admin_revoke_medal(
 ):
     """Admin: revoke a medal from a player."""
     medal_service = MedalService(db)
-    changed = medal_service.admin_revoke(payload.player_id, payload.medal_id)
+    # WO-DBB-RT2: pass the revoking admin + reason so the medal_revoked WS frame carries them
+    # (mirrors the grant route). Without this the canonical reason/revoking_admin fields are null.
+    changed = medal_service.admin_revoke(
+        payload.player_id, payload.medal_id, admin.id, reason=payload.reason
+    )
     db.commit()
     return AdminMedalActionResponse(
         success=True,

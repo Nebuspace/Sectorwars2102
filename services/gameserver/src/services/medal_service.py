@@ -32,6 +32,7 @@ import uuid
 from typing import Dict, Any, Optional, List
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError
 
 from src.models.player import Player
@@ -49,6 +50,20 @@ from src.services.medal_catalog import (
 MEDAL_DEFINITIONS = MEDAL_CATALOG
 
 logger = logging.getLogger(__name__)
+
+# WO-DBB-RT2 — realtime progress bands (sw2102-docs/SYSTEMS/medal-service.md:290,
+# the `medal_progress` "Fired at 25%, 50%, 75%, 90%, 99% of threshold" row).
+# These percentages are CANON (not NO-CANON). A COUNT_THRESHOLD medal fires one
+# `medal_progress` frame the FIRST time its counter crosses each band — never a
+# re-emit. Crossing dedup is recorded in a dedicated Player.settings key
+# (Player award data stays fully relational; this is only ephemeral notification
+# bookkeeping, mirroring bounty_service's Player.settings usage — no migration).
+MEDAL_PROGRESS_BANDS = (25, 50, 75, 90, 99)
+
+# Dedicated, namespaced settings key for the per-medal highest-notified band.
+# Deliberately NOT `settings['medals']` (that JSONB award store was retired by
+# ADR-0028 — see the module docstring); this holds only progress-notice dedup.
+_MEDAL_PROGRESS_SETTINGS_KEY = "_medal_progress"
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +216,65 @@ def _dispatch_medal_awarded_event(
         # strictly best-effort and must never propagate.
         logger.debug(
             "Skipped medal_awarded WS notice for %s/%s (no loop or socket)",
+            medal_id, player_id, exc_info=True,
+        )
+
+
+def _dispatch_medal_revoked_event(
+    db: Session,
+    player_id: uuid.UUID,
+    medal_id: str,
+    revoking_user_id: Optional[uuid.UUID],
+    reason: Optional[str],
+) -> None:
+    """Schedule the async personal-only ``medal_revoked`` WS push (WO-DBB-RT2).
+
+    Mirrors :func:`_dispatch_medal_awarded_event`: resolve the affected player's
+    ``User.id`` from already-loaded relational state, build the canon payload
+    (sw2102-docs/SYSTEMS/medal-service.md: ``{medal_id, reason,
+    revoking_admin_username}``), grab the running loop, schedule the coroutine so
+    it lands AFTER the revoke's transaction commits and yields, and swallow EVERY
+    failure so a quiet socket can never break the revoke. The revoking admin's
+    username is resolved from ``User`` when ``revoking_user_id`` is supplied
+    (``None`` otherwise — backward-compatible with the current 2-arg route).
+    Routed via the base ``connection_manager.send_personal_message`` (the same
+    server-originated personal-unicast path ``send_medal_awarded`` uses).
+    """
+    try:
+        user_id = (
+            db.query(Player.user_id).filter(Player.id == player_id).scalar()
+        )
+        if not user_id:
+            return
+
+        revoking_admin_username = None
+        if revoking_user_id is not None:
+            from src.models.user import User
+            revoking_admin_username = (
+                db.query(User.username).filter(User.id == revoking_user_id).scalar()
+            )
+
+        message = {
+            "type": "medal_revoked",
+            "medal_id": medal_id,
+            "reason": reason,
+            "revoking_admin_username": revoking_admin_username,
+        }
+
+        import asyncio
+        from src.services.enhanced_websocket_service import (
+            get_enhanced_websocket_service,
+        )
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            get_enhanced_websocket_service().connection_manager.send_personal_message(
+                str(user_id), message
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Skipped medal_revoked WS notice for %s/%s (no loop or socket)",
             medal_id, player_id, exc_info=True,
         )
 
@@ -396,7 +470,136 @@ def _evaluate_and_award(
                 context_payload={"trigger": trigger_type, "value_at_award": current_value},
             ):
                 newly.append(entry["id"])
+        else:
+            # WO-DBB-RT2 — below threshold: fire a one-shot `medal_progress` frame
+            # the first time this counter crosses a band (25/50/75/90/99%). Only
+            # meaningful for COUNT_THRESHOLD medals (threshold > 1); a threshold-1
+            # FIRST_TIME medal has no progress arc. Fully defensive — a hiccup here
+            # can never break the caller's award unit of work.
+            if threshold > 1:
+                _maybe_emit_medal_progress(
+                    db, player_id, entry, trigger_type, current_value, threshold
+                )
     return newly
+
+
+def _maybe_emit_medal_progress(
+    db: Session,
+    player_id: uuid.UUID,
+    entry: Dict[str, Any],
+    counter_key: str,
+    current_value: int,
+    threshold: int,
+) -> None:
+    """Fire ONE ``medal_progress`` frame the first time a counter crosses a band.
+
+    Canon (sw2102-docs/SYSTEMS/medal-service.md): the dispatcher additionally
+    fires ``medal_progress`` at 25/50/75/90/99% of a COUNT_THRESHOLD medal's
+    threshold — personal-only. We persist the highest band already notified per
+    (player, medal) in a dedicated ``Player.settings`` key so the same band can
+    never re-emit across the many incremental dispatches that recompute the full
+    counter each earn event. Award data itself stays fully relational (ADR-0028);
+    this writes only ephemeral notice-dedup bookkeeping (mirrors bounty_service).
+
+    Defensive end-to-end: any failure (player gone, JSONB hiccup, no loop/socket)
+    is swallowed — a progress notice is strictly best-effort and must never roll
+    back or break the caller's open transaction.
+    """
+    try:
+        if threshold <= 0:
+            return
+        percent = (current_value / threshold) * 100.0
+        # Highest CANON band this value has reached (None below the first band).
+        reached = None
+        for band in MEDAL_PROGRESS_BANDS:
+            if percent >= band:
+                reached = band
+        if reached is None:
+            return  # not yet at the 25% mark — nothing to announce
+
+        player = db.query(Player).filter(Player.id == player_id).first()
+        if player is None:
+            return
+
+        settings = player.settings or {}
+        progress_map = settings.get(_MEDAL_PROGRESS_SETTINGS_KEY) or {}
+        already = progress_map.get(entry["id"], 0)
+        try:
+            already = int(already)
+        except (TypeError, ValueError):
+            already = 0
+        if reached <= already:
+            return  # this band (or a higher one) was already announced
+
+        # Record the new high-water band so this band never re-emits.
+        progress_map[entry["id"]] = reached
+        settings[_MEDAL_PROGRESS_SETTINGS_KEY] = progress_map
+        player.settings = settings
+        flag_modified(player, "settings")
+        db.flush()
+
+        _dispatch_medal_progress_event(
+            db, player_id, entry, counter_key, current_value, threshold, reached
+        )
+    except Exception as e:  # never break the caller's award unit of work
+        logger.debug(
+            "medal_progress check failed for %s/%s: %s",
+            entry.get("id"), player_id, e,
+        )
+
+
+def _dispatch_medal_progress_event(
+    db: Session,
+    player_id: uuid.UUID,
+    entry: Dict[str, Any],
+    counter_key: str,
+    current_value: int,
+    threshold: int,
+    percent_band: int,
+) -> None:
+    """Schedule the async personal-only ``medal_progress`` WS push.
+
+    Mirrors :func:`_dispatch_medal_awarded_event`: resolve the recipient
+    ``User.id`` from already-loaded relational state, build the canon payload
+    (sw2102-docs/SYSTEMS/medal-service.md: ``{medal_id, counter_key, current,
+    threshold, percent}``), grab the running loop, schedule the coroutine so it
+    lands AFTER the caller's transaction commits and yields, and swallow EVERY
+    failure (no loop, no socket) so a quiet socket can never break the caller.
+    Routed via the base ``connection_manager.send_personal_message`` (the same
+    server-originated personal-unicast path ``send_medal_awarded`` uses).
+    """
+    try:
+        user_id = (
+            db.query(Player.user_id).filter(Player.id == player_id).scalar()
+        )
+        if not user_id:
+            return
+
+        message = {
+            "type": "medal_progress",
+            "medal_id": entry["id"],
+            "counter_key": counter_key,
+            "current": int(current_value),
+            "threshold": int(threshold),
+            "percent": int(percent_band),
+        }
+
+        import asyncio
+        from src.services.enhanced_websocket_service import (
+            get_enhanced_websocket_service,
+        )
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            get_enhanced_websocket_service().connection_manager.send_personal_message(
+                str(user_id), message
+            )
+        )
+    except Exception:
+        logger.debug(
+            "Skipped medal_progress WS notice for %s/%s (no loop or socket)",
+            entry.get("id"), player_id, exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -953,8 +1156,21 @@ class MedalService:
             context_payload={"reason": reason} if reason else None,
         )
 
-    def admin_revoke(self, player_id: uuid.UUID, medal_id: str) -> bool:
-        """Admin revoke. Returns True if a row was removed, else False."""
+    def admin_revoke(
+        self,
+        player_id: uuid.UUID,
+        medal_id: str,
+        revoking_user_id: Optional[uuid.UUID] = None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Admin revoke. Returns True if a row was removed, else False.
+
+        ``revoking_user_id`` / ``reason`` are OPTIONAL (backward-compatible with
+        the existing 2-arg route caller). When a row is genuinely removed, a
+        personal ``medal_revoked`` frame is announced to the affected player
+        (WO-DBB-RT2). The emit is fully defensive — a WS hiccup never breaks the
+        revoke or its transaction.
+        """
         resolved_id = medal_id if medal_id in MEDAL_CATALOG else LEGACY_KEY_TO_ID.get(medal_id, medal_id)
         row = (
             self.db.query(PlayerMedal)
@@ -966,6 +1182,11 @@ class MedalService:
         self.db.delete(row)
         self.db.flush()
         logger.info("Medal revoked: %s from player %s", resolved_id, player_id)
+
+        # WO-DBB-RT2 — announce the GENUINE revoke to the affected player only.
+        # Reached only after a real row delete, so the frame fires exactly once
+        # per revoke (a no-op revoke returns above and never notifies).
+        _dispatch_medal_revoked_event(self.db, player_id, resolved_id, revoking_user_id, reason)
         return True
 
 
@@ -985,4 +1206,5 @@ __all__ = [
     "check_and_award_governance_medals",
     "get_active_medal_bonuses",
     "MEDAL_BONUS_CAPS",
+    "MEDAL_PROGRESS_BANDS",
 ]
