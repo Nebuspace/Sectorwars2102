@@ -18,6 +18,37 @@ from src.models.ship import Ship, ShipType, ShipSpecification, UpgradeType
 logger = logging.getLogger(__name__)
 
 
+# SHIP-MODS WO-SM-3 STEP 4 — the four EQUIPMENT-FAMILY module classes whose
+# legacy effects are consumed out of the equipment_slots JSONB (by their EXISTING
+# consumers), NOT from a scalar Ship column. Their effects ARE baked/tracked in
+# Ship.modules["_baked"] by _apply_module_effects, but persisting them into the
+# equipment_slots key each consumer reads is DEFERRED to a follow-up WO (see the
+# rationale in install_module). Until then a module of one of these classes is
+# fitted-and-baked but runtime-INERT — install_module/remove_module surface
+# ``consumer_inert: True`` so the UI can warn the player.
+#
+# WHY DEFERRED (not wired here) — flagged for the orchestrator/Max:
+#   * harvester (passive_income): get_passive_income() keys off the literal
+#     EQUIPMENT_DEFINITIONS slug ("quantum_harvester") and reads the CATALOG
+#     effect, not a stored slot value. A synthetic module key is unrecognized
+#     (silently 0); writing the literal "quantum_harvester" key COLLIDES with
+#     install_equipment's own slot, the npc_scheduler daily-credit anchor logic,
+#     and the legacy "is the equipment installed?" detection. Wiring it correctly
+#     needs a consumer change (a new module-aware passive-income source), which is
+#     out of SM-3's no-new-consumer scope.
+#   * lander/mining/tractor (landing_bonus / mining_efficiency / tow_capable /
+#     weapon_mode): get_equipment_effects() MERGES numeric effects ADDITIVELY
+#     across all equipment_slots entries, but each consumer reads landing_bonus /
+#     mining_efficiency as a SINGLE multiplicative factor and tow_capable /
+#     weapon_mode as a presence flag. A synthetic module slot would (a) double-
+#     count against a same-family legacy equipment a player also owns (1.25+1.25),
+#     and (b) deliver the UNTIERED/un-supercharged catalog value, not the baked
+#     tier value. Writing that key would make the module WORK WRONG — STEP 4 says
+#     do not write a wrong key. Correct wiring needs a module-aware effect source
+#     the consumers read (a follow-up WO).
+_EQUIPMENT_FAMILY_DEFERRED = frozenset({"harvester", "lander", "mining", "tractor"})
+
+
 class ShipUpgradeService:
     """Service for managing ship upgrades and equipment installations"""
 
@@ -166,6 +197,13 @@ class ShipUpgradeService:
     MODULE_TIER_EFFECT_MULT = 1.6   # Mk III effect = 2.56× base
     MODULE_TIER_COST_MULT = 2.2     # Mk III cost  = 4.84× base
     MODULE_MAX_TIER = 3             # Mk I / II / III
+
+    # §6.x SALVAGE — removing an installed module refunds this FRACTION of its
+    # (tier-scaled) catalog cost; the rest is the salvage haircut (you don't get
+    # the full price back for pulling a module). int-truncated on credit-back.
+    # [NO-CANON — Max-blessed launch value; flagged for a DECISIONS.md ruling on
+    # the exact refund fraction.]
+    SALVAGE_FRACTION = 0.25
 
     # Genesis hulls — the module-class hull gate for the `genesis` family, mirroring
     # how the legacy GENESIS_CONTAINMENT track is only buyable on genesis-capable
@@ -1261,6 +1299,296 @@ class ShipUpgradeService:
             "message": f"{eq_name} uninstalled (no credit refund)",
             "equipment": equipment_key,
         }
+
+    # ========================================================================
+    # SHIP-MODS (WO-SM-3): the install / remove ritual that DRIVES the SM-2 bake.
+    # ------------------------------------------------------------------------
+    # CRITICAL CONTRACT (proven in SM-2): _apply_module_effects is a _baked-delta
+    # REPLACE. So install_module / remove_module MUST mutate
+    # ``ship.modules["installed"]`` IN PLACE (read the dict → set/del the slot key
+    # → reassign the SAME dict, PRESERVING the "_baked" key) and THEN call
+    # _apply_module_effects + flag_modified. NEVER replace the whole modules dict —
+    # that wipes ``_baked`` and the re-bake double-adds the module delta.
+    # The None → {"v":1, "installed":{}} transition on first install mirrors how
+    # install_equipment seeds equipment_slots on first use.
+    # ========================================================================
+
+    def _resolve_docked_shipyard_station(self, player: Player):
+        """Return (station, error_dict). The player must be docked at a station
+        that offers shipyard services to fit/strip modules. Mirrors the shipyard
+        gate purchase_ship uses (_station_offers_shipyard).
+
+        Returns (None, error) if not docked or the docked station is not a
+        shipyard; (station, None) on success.
+        """
+        # Imported here to avoid a module-level import cycle (routes import this
+        # service; the gate helper lives beside the routes).
+        from src.models.station import Station
+        from src.api.routes.ship_upgrades import _station_offers_shipyard
+
+        if not getattr(player, "is_docked", False) or not player.current_port_id:
+            return None, {"success": False, "message": "You must be docked at a shipyard to fit modules"}
+        station = self.db.query(Station).filter(Station.id == player.current_port_id).first()
+        if not station:
+            return None, {"success": False, "message": "Docked station not found"}
+        if not _station_offers_shipyard(station):
+            return None, {"success": False, "message": "This station does not offer shipyard services"}
+        return station, None
+
+    @staticmethod
+    def _spec_slot(spec: ShipSpecification, slot_index: int) -> Optional[Dict[str, Any]]:
+        """Find the slot record with ``i == slot_index`` in a spec's module_slots
+        lattice, or None. module_slots shape:
+            {"v":1,"cols":int,"rows":int,"slots":[{"i","x","y","super","class","requires"}]}
+        """
+        ms = getattr(spec, "module_slots", None)
+        if not isinstance(ms, dict):
+            return None
+        for slot in ms.get("slots", []) or []:
+            if isinstance(slot, dict) and slot.get("i") == slot_index:
+                return slot
+        return None
+
+    def install_module(
+        self,
+        ship_id: uuid.UUID,
+        player_id: uuid.UUID,
+        slot_index: int,
+        module_class: str,
+        tier: int,
+    ) -> Dict[str, Any]:
+        """Fit a module of ``(module_class, tier)`` into ``slot_index`` on a ship,
+        then RE-BAKE the stat columns via _apply_module_effects.
+
+        Guards (reusing install_equipment's): ownership / not-destroyed / credits
+        via _get_ship_and_player; ADDED — shipyard gate (must be docked at a
+        shipyard), the slot must EXIST in the spec lattice and be EMPTY, the
+        module's slot_class must match the slot's class (a class-locked slot only
+        accepts its own class; an unlocked ``class:null`` slot accepts any), hull
+        compatibility (compatible_ships), and the (NO-CANON, currently open)
+        ``requires`` eligibility predicate.
+
+        The slot record is written IN PLACE into ``ship.modules["installed"]``
+        (None → {"v":1,"installed":{}} on first install, PRESERVING any "_baked"
+        key), then _apply_module_effects re-derives the baked columns. Returns the
+        baked deltas in ``updated_stats``.
+        """
+        ship, player, error = self._get_ship_and_player(ship_id, player_id)
+        if error:
+            return error
+
+        # --- catalog lookup ---
+        entry = self.MODULE_DEFINITIONS.get((module_class, tier))
+        if not entry:
+            return {"success": False, "message": f"Unknown module: {module_class} Mk{tier}"}
+
+        # --- deferred equipment-family guard (reviewer LOW#2 fix) ---
+        # harvester/lander/mining/tractor bake into Ship.modules["_baked"] but their
+        # effect is NOT yet wired to its equipment_slots consumer (the deferred MED) —
+        # so installing one would CHARGE 20-40k cr for a runtime-INERT module (a
+        # pay-for-nothing trap). Block install until the consumer-wiring follow-up
+        # lands; the family stays catalog-LISTED (get_ship_modules / the UI can show
+        # it as "coming soon") so it surfaces for when it's unblocked.
+        if module_class in _EQUIPMENT_FAMILY_DEFERRED:
+            return {
+                "success": False,
+                "message": (
+                    f"{entry['name']} is not yet installable — its runtime effect is "
+                    f"pending consumer wiring (it would be inert if fitted). Coming soon."
+                ),
+                "consumer_inert": True,
+            }
+
+        # --- shipyard gate ---
+        station, gate_error = self._resolve_docked_shipyard_station(player)
+        if gate_error:
+            return gate_error
+
+        # --- hull compatibility (None == open to all hulls) ---
+        compatible = entry.get("compatible_ships")
+        if compatible is not None and ship.type not in compatible:
+            compatible_names = [st.value for st in compatible]
+            return {
+                "success": False,
+                "message": (
+                    f"{entry['name']} is not compatible with {ship.type.value}. "
+                    f"Compatible hulls: {', '.join(compatible_names)}"
+                ),
+            }
+
+        # --- requires eligibility predicate (None == open; Citizen tier is DATA,
+        # not code — the seam is built, the predicate stays open until ruled). ---
+        requires = entry.get("requires")
+        if requires is not None:
+            # No predicate engine is wired yet; fail closed rather than silently
+            # grant a gated module (better a stuck fit than a free bypass).
+            return {
+                "success": False,
+                "message": f"{entry['name']} has an eligibility requirement ({requires}) not yet purchasable",
+            }
+
+        # --- resolve the spec slot lattice ---
+        spec = self.db.query(ShipSpecification).filter(
+            ShipSpecification.type == ship.type
+        ).first()
+        slot = self._spec_slot(spec, slot_index) if spec else None
+        if slot is None:
+            return {"success": False, "message": f"This hull has no module slot {slot_index}"}
+
+        # --- slot_class match: a class-locked slot only accepts its own class;
+        # an unlocked (class:null) slot accepts any module. ---
+        slot_class = slot.get("class")
+        module_slot_class = entry.get("slot_class")
+        if slot_class is not None and module_slot_class != slot_class:
+            return {
+                "success": False,
+                "message": (
+                    f"Slot {slot_index} is a '{slot_class}' slot; "
+                    f"{entry['name']} does not fit it"
+                ),
+            }
+
+        # --- slot must be EMPTY ---
+        modules = getattr(ship, "modules", None)
+        if not isinstance(modules, dict):
+            # None → first-ever install: seed the grid (preserve nothing — there is
+            # no prior _baked). Mirrors install_equipment's None → {} transition.
+            modules = {"v": 1, "installed": {}}
+        installed = modules.get("installed")
+        if not isinstance(installed, dict):
+            installed = {}
+            modules["installed"] = installed
+        slot_key = str(slot_index)
+        if slot_key in installed:
+            return {"success": False, "message": f"Module slot {slot_index} is already occupied"}
+
+        # --- credits ---
+        cost = entry["cost"]
+        if player.credits < cost:
+            return {
+                "success": False,
+                "message": f"Insufficient credits. Need {cost:,}, have {player.credits:,}",
+                "cost": cost,
+                "player_credits": player.credits,
+            }
+        player.credits -= cost
+
+        # --- write the slot record IN PLACE (preserve "_baked"); snapshot the
+        # slot's supercharge flag at install so a later lattice re-tune can't
+        # silently re-buff a fielded ship (§4.1). ---
+        installed[slot_key] = {
+            "class": module_class,
+            "tier": tier,
+            "super_at_install": bool(slot.get("super")),
+            "installed_at": datetime.utcnow().isoformat(),
+        }
+        # Reassign the SAME modules dict (carrying its "_baked" key untouched) so
+        # the bake's delta math stays correct.
+        ship.modules = modules
+
+        # --- re-bake: re-derive every baked stat column from the new installed set ---
+        updated_stats = self._apply_module_effects(ship)
+        flag_modified(ship, "modules")
+
+        self.db.flush()
+
+        logger.info(
+            "Player %s installed %s in slot %s on ship %s for %s credits",
+            player_id, entry["name"], slot_index, ship.name, f"{cost:,}",
+        )
+
+        result = {
+            "success": True,
+            "message": f"{entry['name']} installed in slot {slot_index}",
+            "module": {"class": module_class, "tier": tier, "slot_index": slot_index},
+            "supercharged": bool(slot.get("super")),
+            "cost_paid": cost,
+            "remaining_credits": player.credits,
+            "updated_stats": updated_stats,
+        }
+        # EQUIPMENT-FAMILY families (harvester/lander/mining/tractor) are baked but
+        # NOT yet wired to their equipment_slots consumers — see the class-level
+        # note + _apply_module_effects. Surface the deferral so the caller/UI can
+        # warn the player the module is install-but-inert.
+        if module_class in _EQUIPMENT_FAMILY_DEFERRED:
+            result["consumer_inert"] = True
+            result["consumer_note"] = (
+                f"The {module_class} module's runtime effect is not yet wired to its "
+                f"consumer (deferred follow-up); it is fitted and baked but inert."
+            )
+        return result
+
+    def remove_module(
+        self,
+        ship_id: uuid.UUID,
+        player_id: uuid.UUID,
+        slot_index: int,
+    ) -> Dict[str, Any]:
+        """Strip the module out of ``slot_index`` and RE-BAKE — the re-bake recomputes
+        the baked columns from the now-smaller installed set, restoring them exactly
+        to ``spec_base + legacy_upgrade_contribution`` (§7.1 reversibility).
+
+        Shipyard-gated. Refunds ``int(catalog_cost × SALVAGE_FRACTION)`` credits.
+        The slot is DROPPED IN PLACE from ``ship.modules["installed"]`` (preserving
+        "_baked"); _apply_module_effects then re-derives the columns. Returns the
+        refund + restored deltas.
+        """
+        ship, player, error = self._get_ship_and_player(ship_id, player_id)
+        if error:
+            return error
+
+        # --- shipyard gate ---
+        station, gate_error = self._resolve_docked_shipyard_station(player)
+        if gate_error:
+            return gate_error
+
+        modules = getattr(ship, "modules", None)
+        if not isinstance(modules, dict):
+            return {"success": False, "message": f"Module slot {slot_index} is empty"}
+        installed = modules.get("installed")
+        if not isinstance(installed, dict):
+            installed = {}
+            modules["installed"] = installed
+        slot_key = str(slot_index)
+        record = installed.get(slot_key)
+        if not isinstance(record, dict):
+            return {"success": False, "message": f"Module slot {slot_index} is empty"}
+
+        module_class = record.get("class")
+        tier = record.get("tier")
+        entry = self.MODULE_DEFINITIONS.get((module_class, tier))
+        # Refund the salvage fraction of the catalog cost (0 if the def vanished —
+        # never gift credits from a stray slot record).
+        cost = entry["cost"] if entry else 0
+        refund = int(cost * self.SALVAGE_FRACTION)
+
+        # --- drop the slot IN PLACE (preserve "_baked"), then re-bake ---
+        del installed[slot_key]
+        ship.modules = modules  # same dict, "_baked" intact
+        updated_stats = self._apply_module_effects(ship)
+        flag_modified(ship, "modules")
+
+        if refund > 0:
+            player.credits += refund
+
+        self.db.flush()
+
+        logger.info(
+            "Player %s removed module from slot %s on ship %s (refund %s credits)",
+            player_id, slot_index, ship.name, f"{refund:,}",
+        )
+
+        result = {
+            "success": True,
+            "message": f"Module removed from slot {slot_index} (salvage refund {refund:,} cr)",
+            "module": {"class": module_class, "tier": tier, "slot_index": slot_index},
+            "refund": refund,
+            "remaining_credits": player.credits,
+            "updated_stats": updated_stats,
+        }
+        if module_class in _EQUIPMENT_FAMILY_DEFERRED:
+            result["consumer_inert"] = True
+        return result
 
 
 # SHIP-MODS §5.1 — the tiered module catalog, keyed by (class, tier). Assigned

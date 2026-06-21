@@ -121,6 +121,19 @@ class EquipmentRequest(BaseModel):
     equipment_key: str = Field(..., description="One of: quantum_harvester, mining_laser, planetary_lander")
 
 
+class ModuleInstallRequest(BaseModel):
+    # ship_id is the URL path param (see UpgradeRequest) — optional in the body.
+    ship_id: Optional[str] = None
+    slot_index: int = Field(..., ge=0, description="Index of the ship's module slot to fit")
+    module_class: str = Field(..., description="Module class, e.g. shield, engine, hull, sensor")
+    tier: int = Field(..., ge=1, le=3, description="Module tier (1=Mk I, 2=Mk II, 3=Mk III)")
+
+
+class ModuleRemoveRequest(BaseModel):
+    ship_id: Optional[str] = None
+    slot_index: int = Field(..., ge=0, description="Index of the ship's module slot to strip")
+
+
 class ShipPurchaseRequest(BaseModel):
     ship_type: str = Field(..., description="Ship type to purchase, e.g. LIGHT_FREIGHTER or 'Light Freighter'")
     name: Optional[str] = Field(None, max_length=100, description="Optional custom name for the new ship")
@@ -691,6 +704,71 @@ async def uninstall_ship_equipment(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=result.get("message", "Equipment uninstall failed"),
+        )
+    db.commit()
+    return result
+
+
+# --- SHIP-MODS (WO-SM-3): module slot grid install / remove ---
+
+@router.get("/{ship_id}/modules")
+async def get_ship_modules(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """The ship's module slot lattice (from its spec) + the currently-installed
+    modules (from the ship's modules JSONB), so the shipyard UI can render the
+    grid and what's fitted."""
+    ship = _resolve_owned_ship(ship_id, player, db)
+    spec = db.query(ShipSpecification).filter(ShipSpecification.type == ship.type).first()
+    module_slots = (spec.module_slots if spec else None) or None
+    modules = ship.modules if isinstance(ship.modules, dict) else {}
+    installed = modules.get("installed") if isinstance(modules.get("installed"), dict) else {}
+    return {
+        "ship_id": str(ship.id),
+        "ship_name": ship.name,
+        "ship_type": ship.type.value if ship.type else None,
+        "module_slots": module_slots,
+        "installed": installed,
+    }
+
+
+@router.post("/{ship_id}/modules/install")
+async def install_ship_module(
+    ship_id: str,
+    request: ModuleInstallRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Fit a module into one of the ship's module slots at a shipyard."""
+    service = ShipUpgradeService(db)
+    result = service.install_module(
+        ship_id, player.id, request.slot_index, request.module_class, request.tier
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Module install failed"),
+        )
+    db.commit()
+    return result
+
+
+@router.post("/{ship_id}/modules/remove")
+async def remove_ship_module(
+    ship_id: str,
+    request: ModuleRemoveRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Strip a module out of one of the ship's module slots at a shipyard (salvage refund)."""
+    service = ShipUpgradeService(db)
+    result = service.remove_module(ship_id, player.id, request.slot_index)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Module remove failed"),
         )
     db.commit()
     return result
