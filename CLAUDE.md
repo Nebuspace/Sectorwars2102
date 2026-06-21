@@ -101,7 +101,7 @@ npx playwright test --reporter=html                          # Generate coverage
 **Git Workflow** (🔴 MANDATORY):
 ```bash
 git status && git diff                                # Review all changes
-git add -A && git commit -m "feat: descriptive msg"  # Commit with conventional format
+git commit -- <your/owned/paths> -m "feat: descriptive msg"  # multi-instance: scoped paths ONLY — never add -A (rule 1, end of file)
 git push origin master                                # Deploy changes
 ```
 
@@ -817,7 +817,3 @@ If the mailbox is idle ≥ 20 min it appends a `💓 HEARTBEAT` line that trips 
 3. **Stay in your lane; announce before crossing** — edit only your owned paths; to touch a shared file (`package.json`, `core/`, shared types) or the other lane, post intent and wait for `🤝 ACK`.
 4. **Read `./CROSS-CLAUDE.md` before any commit / push / deploy.**
 5. **`sw2102-docs` is PUBLIC** (auto-deploys to Cloudflare on push to `main`; `DECISIONS.md` is in the published nav). Never put coordination chatter, status, or **secrets** in any mailbox or doc — credentials live in `~/github/ServerSetup/`.
-
-> ⚠️ **This SUPERSEDES the Phase-6 `git add -A && git commit` instruction earlier in this
-> file.** In multi-instance mode that command is forbidden — always scope your commits with
-> `git commit -- <paths>`.
