@@ -47,6 +47,7 @@ canon's separate patrol-route registry is Design-only):
 """
 
 import asyncio
+import hashlib
 import logging
 import os
 import random
@@ -378,6 +379,38 @@ STATION_RECOVERY_CHECK_SECONDS = int(
 
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
+
+# Mask to a signed-63-bit non-negative range. pg_try_advisory_xact_lock(bigint)
+# takes a signed 64-bit key; staying inside the low 63 bits keeps the value
+# non-negative so a stable hash never overflows or collides with Postgres'
+# two-int32 lock-key overload.
+_LOCK_KEY_MASK_63 = (1 << 63) - 1
+
+
+def region_lock_key(region_id: Any) -> int:
+    """Derive a STABLE, deterministic per-region advisory-lock key from the
+    global base key and the region id, so disjoint regions can serialize
+    independently (a future regionalized sweep acquires
+    ``pg_try_advisory_xact_lock(region_lock_key(region_id))`` per region while
+    still serializing every worker WITHIN that region).
+
+    Determinism is load-bearing: every gameserver instance must compute the
+    SAME key for the SAME region_id, so this uses a content hash
+    (``hashlib.blake2b``) — NOT Python's built-in ``hash()``, whose str/bytes
+    hashing is per-process randomized (``PYTHONHASHSEED``) and would give two
+    instances DIFFERENT keys for the same region (defeating the lock). The
+    region id is XOR-folded against ``_ADVISORY_LOCK_KEY`` so per-region keys
+    stay in the same family as the global key, and the result is masked to a
+    non-negative signed-63-bit int safe for the Postgres ``bigint`` argument.
+
+    ``region_id`` of None falls back to the global ``_ADVISORY_LOCK_KEY`` so a
+    region-agnostic caller degenerates to the single global lock (the same
+    serialization the whole scheduler uses today)."""
+    if region_id is None:
+        return _ADVISORY_LOCK_KEY
+    digest = hashlib.blake2b(str(region_id).encode("utf-8"), digest_size=8).digest()
+    region_hash = int.from_bytes(digest, "big")
+    return (_ADVISORY_LOCK_KEY ^ region_hash) & _LOCK_KEY_MASK_63
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
