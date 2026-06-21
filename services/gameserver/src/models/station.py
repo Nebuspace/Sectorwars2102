@@ -68,6 +68,28 @@ class TraderPersonalityType(enum.Enum):
     BLACK_MARKET = "BLACK_MARKET"  # Suspicious, opportunistic
 
 
+# Station-protection security tiers, in ascending order of protection
+# (FEATURES/economy/station-protection.md § Security tiers). The integer RANK
+# drives comparisons (none < basic < standard < premium) so callers compare
+# ranks, never raw strings. An unknown/unconfigured tier ranks as "none" (0).
+SECURITY_TIER_RANK = {
+    "none": 0,
+    "basic": 1,
+    "standard": 2,
+    "premium": 3,
+}
+# Guarantee #1 threshold: protection engages at "basic" and above.
+SECURITY_TIER_PROTECTED_MIN_RANK = SECURITY_TIER_RANK["basic"]
+
+
+def security_tier_rank(tier: Optional[str]) -> int:
+    """Map a security-tier string to its ordered rank (none<basic<standard<premium).
+
+    An unknown or missing tier ranks as ``none`` (0) — the conservative default.
+    """
+    return SECURITY_TIER_RANK.get((tier or "none").lower(), 0)
+
+
 class Station(Base):
     __tablename__ = "stations"
 
@@ -219,6 +241,22 @@ class Station(Base):
         "point_defense_rating": 30   # extra drones swatted per round by dedicated point-defense (anti-swarm)
     })
     
+    # Station protection / security tier (FEATURES/economy/station-protection.md
+    # § Security tiers). Carries a security TIER under the "tier" key, one of
+    # four ordered levels: none(0) < basic(1) < standard(2) < premium(3). This is
+    # the FIRST slice of the station-protection system (WO-CB1, no-attack-on-
+    # docked-ships); tractor/guards/NPC-archetype/anti-theft/anti-board are
+    # separate WOs and DO NOT live here yet.
+    #
+    # NO-CANON micro-decision (orchestrator-blessed pending): an UNCONFIGURED
+    # station — security NULL, or a dict with no "tier" key — reads as tier
+    # "none". This is deliberately conservative so existing/populated rows get
+    # NO new protection until a station is explicitly seeded (no surprise
+    # behavior flip). Additive nullable JSONB → see the WO-CB1 migration.
+    # Canon DEFAULTS (player-owned→basic, operator-managed→standard/premium,
+    # frontier/lawless→none) are SEEDED by the larger system, NOT here.
+    security = Column(JSONB, nullable=True)
+
     # Ownership and Management
     ownership = Column(JSONB, nullable=True, default=None)  # Player ownership details
     
@@ -281,6 +319,29 @@ class Station(Base):
     def __repr__(self):
         return f"<Station {self.name} (Class {self.station_class.value}, {self.type.name}) - Sector: {self.sector_id}, Status: {self.status.name}>"
     
+    @property
+    def security_level(self) -> str:
+        """Station-protection security tier as a lowercased string
+        (FEATURES/economy/station-protection.md § Security tiers).
+
+        Reads the "tier" key from the ``security`` JSONB. Defaults to "none"
+        when ``security`` is NULL or has no/blank "tier" key — the conservative
+        NO-CANON default (WO-CB1): an unconfigured station grants NO protection
+        until explicitly seeded. Use :func:`security_tier_rank` to COMPARE tiers
+        (none<basic<standard<premium), never a raw string ``==``.
+
+        Defensive: a non-dict ``security`` value (a future seeder bug writing a
+        scalar/list) reads as "none" rather than raising inside attack_player."""
+        sec = self.security if isinstance(self.security, dict) else {}
+        tier = sec.get("tier")
+        return (tier or "none").lower()
+
+    @property
+    def security_rank(self) -> int:
+        """Ordered rank of this station's security tier (none=0<basic=1<
+        standard=2<premium=3). Convenience over ``security_tier_rank``."""
+        return security_tier_rank(self.security_level)
+
     @property
     def price_adjustment_lever(self) -> float:
         """ADR-0062 E-D3 station marketing lever (+/-10%), stored in the

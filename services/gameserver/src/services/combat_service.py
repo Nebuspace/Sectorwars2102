@@ -491,10 +491,38 @@ class CombatService:
                            "and is invulnerable",
             }
 
+        # Station protection — Guarantee #1 (FEATURES/economy/station-protection.md
+        # § Guarantees #1 + § Security tiers): "for any ship docked at a station
+        # with security_level >= basic, the combat-resolver rejects external
+        # attack attempts with ERR_DOCKED_SHIP_PROTECTED." Reject here, before any
+        # turn charge or damage roll — a rejected attack consumes nothing. The
+        # defender's docked station is resolved via Player.is_docked +
+        # Player.current_port_id (FK → stations.id). Compare by tier RANK
+        # (none<basic<standard<premium), never a string ==; an unconfigured
+        # station (security NULL / no "tier") reads as "none" → not protected.
+        # This is WO-CB1, the first slice of station-protection; tractor/guards/
+        # anti-theft/anti-board are separate WOs handled elsewhere.
+        if defender.is_docked and defender.current_port_id:
+            # Station is already imported at module level; only the rank
+            # threshold needs importing here.
+            from src.models.station import SECURITY_TIER_PROTECTED_MIN_RANK
+            defender_station = self.db.query(Station).filter(
+                Station.id == defender.current_port_id
+            ).first()
+            if (
+                defender_station is not None
+                and defender_station.security_rank >= SECURITY_TIER_PROTECTED_MIN_RANK
+            ):
+                return {
+                    "success": False,
+                    "message": "ERR_DOCKED_SHIP_PROTECTED",
+                    "error": "ERR_DOCKED_SHIP_PROTECTED",
+                }
+
         # Check if players are in the same sector
         if attacker.current_sector_id != defender.current_sector_id:
             return {"success": False, "message": "Target is not in your sector"}
-        
+
         # Look up attack turn cost from DEFENDER's ship specification
         # Cost reflects difficulty of attacking that ship type (e.g., escape pod = 10,000 turns)
         defender_spec = self.db.query(ShipSpecification).filter(
