@@ -176,8 +176,7 @@ class EnhancedAIService:
         self.trading_service = AITradingService()
         self.market_prediction = MarketPredictionEngine()
         self.route_optimizer = RouteOptimizer()
-        # Note: PlayerBehaviorAnalyzer will be implemented in future iteration
-        
+
         # Security configuration
         self.max_recommendations_per_request = 10
         self.max_conversation_length = 4000
