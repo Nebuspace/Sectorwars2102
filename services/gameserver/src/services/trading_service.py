@@ -590,6 +590,31 @@ class TradingService:
                 "quantity": quantity,
             }
 
+            # Fire any threshold-crossing price alerts for this commodity
+            # (canon "Price-alert evaluation cycle", market-pricing.md). The
+            # evaluator self-handles cooldown/idempotence and never raises on a
+            # delivery failure, but we still wrap defensively: a price-alert
+            # hiccup must NEVER break the market price update. Import locally to
+            # avoid any import cycle, mirroring the evaluator's own deferred
+            # websocket_service import.
+            try:
+                from src.services.price_alert_service import evaluate_price_alerts
+
+                evaluate_price_alerts(
+                    self.db,
+                    station_id,
+                    commodity_name,
+                    commodity_data["current_price"],
+                )
+            except Exception:
+                logger.warning(
+                    "Price-alert evaluation failed for station %s commodity %s "
+                    "(market update unaffected)",
+                    station_id,
+                    commodity_name,
+                    exc_info=True,
+                )
+
         # Mark station JSONB as modified so SQLAlchemy persists the change
         flag_modified(station, "commodities")
         station.last_market_update = datetime.now(UTC)
