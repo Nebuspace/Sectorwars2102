@@ -97,6 +97,16 @@ class Player(Base):
     rank_victory_at = Column(DateTime(timezone=True), nullable=True)
     settings = Column(JSONB, nullable=False, default={})
     first_login = Column(JSONB, nullable=False, default={"completed": False})
+    # CRT WO-K0-2: the research ledger. ONE additive NULLABLE JSONB column — the
+    # whole research kernel rides this single field (no per-system columns; the
+    # tree is read at point-of-use, never written onto buffed entities). NULL is
+    # the cold-start state and means rp:0 / unlocked:[t.root.0] — the lazy-seed
+    # contract lives in research_service (NOT a DB default), so the seed is
+    # deterministic and the WIPE+REFUND sweep can detect a never-swept player.
+    # Shape: {"rp": int, "insight": int, "doctrine": int, "unlocked": [node_id],
+    #         "swept_at": iso8601 | absent}. swept_at present == A.4 one-time
+    #         wipe+refund already applied (idempotency anchor).
+    research_ledger = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)  # When the player was created
     is_active = Column(Boolean, default=True, nullable=False)  # Player can be deactivated in-game
     

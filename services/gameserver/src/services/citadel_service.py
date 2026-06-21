@@ -45,6 +45,67 @@ DEFENSE_BUILDINGS = {
         "build_hours": 48,
         "effects": {"detection_range_sectors": 2},
     },
+    # CRT WO-K0-3: the two formerly Design-only DEFENSE_BUILDINGS, now cashed into
+    # reality. Each is RESEARCH-GATED — placeable through THIS existing flow only
+    # once the owning player has unlocked the matching tech node (point-of-use
+    # check below in build_defense_building). ``research_node`` names the gate;
+    # research_service.player_has_tech reads it.
+    #
+    # FIX 3 (orchestrator-ruled): magnitudes finalized CONSISTENT with
+    # FEATURES/planets/defense.md canon AND the shipped DEFENSE_BUILDINGS scale
+    # (scanner 75k/48h/L2 · turret 150k/72h/L3 · orbital 500k/168h/L4). Canon
+    # gives EXACT figures for both buildings, so these mirror canon rather than
+    # the earlier conservative guesses. Still NO-CANON-PROPOSED (the deploy is
+    # HELD until the orchestrator's bless): the only datum canon omits is the RP
+    # research-gate cost (a kernel-internal currency canon does not speak to) and
+    # the precise combat-effect encoding (the resolver's raw-burst injection is
+    # itself 📐 Design-only per defense.md §combat-resolver-integration).
+    #
+    # rail_gun (defense.md §"Fixed rail gun batteries"): citadel L4+; 4@L4 /
+    # 10@L5; 150,000 cr; 72h; PER-SHIP-SIZE-MULTIPLIER anti-capital weapon (base
+    # damage 1,000–3,000 before the ship-class multiplier table). ``effects``
+    # encodes the canon role: a base raw burst plus the per-ship-class multiplier
+    # table, so the eventual resolver wiring reads the canon numbers straight off
+    # the catalog without a reshape.
+    "rail_gun": {
+        "name": "Rail Gun Battery",
+        "min_citadel_level": 4,
+        "max_count": {4: 4, 5: 10},
+        "cost": 150000,
+        "build_hours": 72,
+        "effects": {
+            # Per-ship-size-multiplier weapon (defense.md §rail-gun damage table).
+            "weapon_kind": "anti_capital",
+            "base_damage_min": 1000,
+            "base_damage_max": 3000,
+            "ship_size_multiplier_pct": {
+                "CARRIER": 200, "COLONY_SHIP": 200, "CARGO_HAULER": 150,
+                "DEFENDER": 120, "LIGHT_FREIGHTER": 50, "WARP_JUMPER": 25,
+                "FAST_COURIER": 15, "SCOUT_SHIP": 10,
+            },
+        },
+        "research_node": "t.defense.railgun.1",
+    },
+    # planetary_defense_grid (defense.md §"Defense grid"): citadel L3+; 200,000 cr
+    # + 15,000 equipment; 96h; a DRONE-DAMAGE MODIFIER (+15% drone damage &
+    # accuracy, upgradable to L2 for +25% total). Key renamed defense_grid ->
+    # planetary_defense_grid (blessed rename) to avoid colliding with the
+    # unrelated Station.defense_grid boolean. ``effects`` encodes the canon
+    # drone-damage role; max_count 1 per level is the L1 install (the +25% L2
+    # upgrade is a later upgrade path, not a second building).
+    "planetary_defense_grid": {
+        "name": "Planetary Defense Grid",
+        "min_citadel_level": 3,
+        "max_count": {3: 1, 4: 1, 5: 1},
+        "cost": 200000,
+        "build_hours": 96,
+        "effects": {
+            # Drone-damage modifier (defense.md §defense-grid).
+            "drone_damage_bonus_pct": 15,
+            "drone_accuracy_bonus_pct": 15,
+        },
+        "research_node": "t.defense.grid.1",
+    },
 }
 
 CITADEL_LEVELS = {
@@ -883,6 +944,29 @@ class CitadelService:
         # Lazy advance-on-read: complete any finished builds before re-checking capacity.
         now = datetime.now(UTC)
         self._settle_build_queue(planet, now)
+
+        # --- Research gate (CRT WO-K0-3) ---
+        # A building type carrying a ``research_node`` is placeable through this
+        # existing flow ONLY if the owning player has unlocked that node. This is
+        # the point-of-use read (research is a leaf — citadel calls into research,
+        # never the reverse). No new placement path; one guard inserted into the
+        # existing one. The player is the owner (ownership checked above), read
+        # here without a lock (a pure ledger read); the credit-deduction lock is
+        # still acquired below.
+        gate_node = spec.get("research_node")
+        if gate_node:
+            from src.services import research_service
+            gate_player = self.db.query(Player).filter(Player.id == player_id).first()
+            if gate_player is None or not research_service.player_has_tech(gate_player, gate_node):
+                node = research_service.tech_tree.get_node(gate_node)
+                node_name = node["name"] if node else gate_node
+                return {
+                    "success": False,
+                    "message": (
+                        f"{spec['name']} requires the '{node_name}' research to be "
+                        f"unlocked first."
+                    ),
+                }
 
         # --- Citadel level check ---
         current_level = getattr(planet, "citadel_level", 0) or 0

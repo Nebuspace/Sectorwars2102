@@ -1025,7 +1025,7 @@ async def get_planet_defenses(
 
 class ConstructBuildingRequest(BaseModel):
     """Defense building construction request."""
-    buildingType: str = Field(..., pattern="^(orbital_platform|turret_network|scanner_array)$")
+    buildingType: str = Field(..., pattern="^(orbital_platform|turret_network|scanner_array|rail_gun|planetary_defense_grid)$")
 
 
 @router.get("/{planet_id}/buildings/available")

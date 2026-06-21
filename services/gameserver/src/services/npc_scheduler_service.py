@@ -1729,6 +1729,7 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
         # colonists > 0); an unowned or empty planet produces nothing and is
         # skipped without a row lock. Idempotent: a player read between sweeps
         # leaves the planet already current, so the sweep is a clean no-op.
+        from src.services import research_service
         production_planets = (
             db.query(Planet.id)
             .filter(
@@ -1747,7 +1748,15 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
                 )
                 if planet is None:
                     continue
-                if planetary.realize_production(planet):
+                # Drive commodity + research-point accrual first (writes
+                # active_events['research_points']), THEN drain the research
+                # faucet into the owner's ledger (CRT WO-K0-2). Both run inside
+                # the one per-planet transaction while the planet row is held;
+                # the sweep acquires the owner's player lock in the SAME
+                # transaction (planet-then-player order). Commit if EITHER moved.
+                produced = planetary.realize_production(planet)
+                swept = research_service.sweep_research_faucet(db, planet)
+                if produced or swept:
                     db.commit()
                     result["production"] += 1
                 else:
