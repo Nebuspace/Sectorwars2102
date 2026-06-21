@@ -26,7 +26,14 @@ This module provides three surfaces:
     (global lock order Player → Station → Ship → NPC → Sector), stock
     dual-written to Station.commodities JSONB AND the MarketPrice row,
     MarketTransaction rows recorded (npc_id set, player_id NULL), and
-    a TradingService reprice after the stop.
+    a TradingService reprice after the stop. Market participation
+    (npc-traders.md § Market participation): each leg carries the SAME
+    region tariff (trading_service.compute_region_tariff_multiplier) and
+    the SAME station owner tax (realized 40/30/30 via
+    port_ownership_service.realize_port_revenue) a player trade pays, and
+    accrues port-takeover hostility into a SEPARATE, CAPPED NPC sub-ledger
+    on Station.ownership — kept apart from the player-attributed takeover
+    path so an NPC route alone can never trigger a takeover cascade.
 
 ADR-0062 E-V4 demand split: NPC trades feed ONLY the per-commodity
 ``npc_restock_demand`` JSONB key — never ``player_demand_score`` (the
@@ -35,12 +42,16 @@ split (per-commodity JSONB keys here vs MarketPrice columns in
 DATA_MODELS/economy.md) is a flagged conflict, not silently resolved.
 
 Canon-silent choices (flagged for DECISIONS.md, not invented as canon):
-trader wallet seed amount, route hop budget, demand-bump formula,
-NPC trades exempt from station tax (tax is an owner lever aimed at
-players; canon silent on NPC liability).
+trader wallet seed amount, route hop budget, demand-bump formula, the
+NPC-driven port-takeover hostility per-trade weight + cap. NPC station-tax
+liability is NO LONGER canon-silent: npc-traders.md § Market participation
+now states a trader trade pays the same tariffs and hostility metrics as a
+player, so NPC trades pay the station owner tax exactly like players (an
+unowned station still levies none — the tax is an owner lever).
 """
 
 import logging
+import math
 import random
 import uuid
 from datetime import datetime, UTC
@@ -54,7 +65,10 @@ from src.models.npc_character import NPCCharacter
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station, StationType
-from src.services.trading_service import TradingService
+from src.services.trading_service import (
+    TradingService,
+    compute_region_tariff_multiplier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +111,43 @@ NOTORIETY_HONEST_DECAY = 1    # NO-CANON: per honest work block, toward 0
 # canonical day in a trader's route cycle, so a new day is a new block and drift
 # is permitted again. Stored here (not a new column) so no migration is needed.
 NOTORIETY_DRIFT_SENTINEL_KEY = "notoriety_drift_block"
+
+# --- Port-takeover hostility: NPC-driven contribution (npc-traders.md §
+#     Market participation) -------------------------------------------------
+# Canon: "Port-takeover hostility metrics accumulate from trader trades.
+# Anti-exploit guard: hostility accounting distinguishes NPC- from player-driven
+# contribution, so an NPC route can never trigger a takeover cascade a player
+# never caused."
+#
+# STRUCTURAL ISOLATION (already true, reinforced here): the economic-takeover
+# engine (port_ownership_service._month_stats / monthly_volume) measures a
+# challenger's share as ``MarketTransaction.player_id == challenger_id`` volume
+# over the station's BUY+SELL total. NPC trades are written with
+# ``player_id=None`` (npc_id set, see _record_transaction), so they can NEVER be
+# attributed to a player challenger — an NPC route therefore cannot satisfy the
+# >50%-of-volume takeover threshold for anyone. NPC volume only sits in the
+# DENOMINATOR (the station total), where it DILUTES a player's share rather than
+# advancing it. So no code change can make an NPC route trigger a cascade; this
+# block keeps the NPC-driven hostility metric in a SEPARATE, CAPPED station
+# sub-ledger that the takeover engine never reads, so the two contributions are
+# distinguishable and the NPC one is bounded.
+#
+# Storage: a namespaced key inside the existing Station.ownership JSONB —
+# ``npc_takeover_hostility`` — distinct from every key port_ownership_service
+# uses (defense_fund / operating_fund / insolvency_months / acquisition_cost /
+# player_id / acquired_at …), so the two ledgers never collide and no migration
+# is needed. The takeover engine reads MarketTransaction + monthly_history, never
+# this key, so this metric is purely an isolated, auditable NPC-side tally.
+NPC_HOSTILITY_LEDGER_KEY = "npc_takeover_hostility"
+
+# ⚠️ NO-CANON: the per-trade hostility weight and the cap are not specified by
+# npc-traders.md (canon gives the DIRECTION — "accumulate from trader trades" —
+# and the isolation REQUIREMENT, but no magnitude). A conservative, gross-value-
+# proportional weight with a hard cap keeps the NPC tally small and bounded so it
+# can never be mistaken for, or grow into, a player-scale takeover signal. Tune
+# once Max sets canon.
+NPC_HOSTILITY_PER_TRADE_WEIGHT = 0.001   # NO-CANON: hostility units per credit of NPC trade value
+NPC_HOSTILITY_CAP = 1000.0               # NO-CANON: hard ceiling on accumulated NPC-driven hostility per station
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +379,64 @@ def _drift_notoriety(npc: NPCCharacter, station: Station) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Market participation: region tariff + station tax + NPC-driven hostility
+# (npc-traders.md § Market participation — "A trader trade is treated
+#  identically to a player transaction wherever it touches the shared market.")
+# ---------------------------------------------------------------------------
+
+def _station_tax_rate(station: Station) -> float:
+    """Station owner trade tax, applied EXACTLY like the player path
+    (routes/trading.py): the tax is an OWNER lever, so an unowned (NPC-run)
+    station levies none. Defensive: a None/absent rate degrades to 0.0."""
+    if station.owner_id is None:
+        return 0.0
+    rate = getattr(station, "tax_rate", None)
+    return float(rate) if rate is not None else 0.0
+
+
+def _realize_station_tax(db: Session, station: Station, tax_amount: int) -> None:
+    """Route a withheld trade tax to the station per the canon 40/30/30 split
+    (port_ownership_service.realize_port_revenue) — the SAME realization the
+    player buy/sell path uses. The station row is already locked in this
+    transaction; realize_port_revenue re-grabs it (a no-wait re-grab of a row
+    this txn already holds). Imported lazily and DEFENSIVE: any error falls back
+    to the whole-tax-to-treasury behaviour the player path also falls back to,
+    so a revenue-split hiccup can never break an NPC trade."""
+    if tax_amount <= 0:
+        return
+    try:
+        from src.services import port_ownership_service
+        port_ownership_service.realize_port_revenue(db, station, tax_amount)
+    except Exception:
+        logger.warning(
+            "realize_port_revenue failed (npc trade); falling back to treasury",
+            exc_info=True,
+        )
+        station.treasury_balance = (station.treasury_balance or 0) + tax_amount
+
+
+def _accrue_npc_hostility(station: Station, trade_value: int) -> None:
+    """Accumulate NPC-DRIVEN port-takeover hostility in a separate, capped
+    sub-ledger on Station.ownership (npc-traders.md § Market participation).
+
+    Kept entirely apart from the player-attributed takeover path (which the
+    economic engine derives from MarketTransaction.player_id volume): this tally
+    lives under NPC_HOSTILITY_LEDGER_KEY, is proportional to the NPC trade's
+    gross value, and is hard-capped — so the NPC contribution is distinguishable
+    from the player one and can never grow into a player-scale takeover signal.
+    Caller holds the station lock and MUST flag_modified(station, 'ownership')."""
+    if trade_value <= 0:
+        return
+    ledger = station.ownership
+    if not isinstance(ledger, dict):
+        ledger = {}
+        station.ownership = ledger
+    current = float(ledger.get(NPC_HOSTILITY_LEDGER_KEY, 0.0) or 0.0)
+    accrued = current + trade_value * NPC_HOSTILITY_PER_TRADE_WEIGHT
+    ledger[NPC_HOSTILITY_LEDGER_KEY] = round(min(NPC_HOSTILITY_CAP, accrued), 4)
+
+
+# ---------------------------------------------------------------------------
 # Trade execution
 # ---------------------------------------------------------------------------
 
@@ -396,6 +505,23 @@ def run_trade_stop(
     contents: Dict[str, int] = dict(cargo.get("contents") or {})
     traded = False
 
+    # Market participation (npc-traders.md § Market participation): a trader
+    # trade is treated identically to a player transaction wherever it touches
+    # the shared market. Reuse the SAME region-tariff helper the player buy/sell
+    # path uses (routes/trading.py via trading_service.compute_region_tariff_
+    # multiplier) so an NPC trade carries the region tariff like a player trade.
+    # Read once per stop (the rate is per-region, not per-commodity); defensive —
+    # the helper degrades to a neutral (1.0, 0.0) on any lookup failure.
+    tariff_mult, _ = compute_region_tariff_multiplier(db, station)
+    tax_rate = _station_tax_rate(station)
+    # Tax is ACCUMULATED across all legs and realized ONCE at the end (after the
+    # main flush). realize_port_revenue re-locks the station with
+    # populate_existing(), which would discard this method's un-flushed
+    # commodities / ownership mutations if called mid-loop — so it must run only
+    # after those changes are persisted (see the realization site below).
+    total_tax = 0
+    npc_hostility_value = 0  # gross NPC trade value this stop (for the isolated ledger)
+
     # --- SELL: everything in the hold this station buys. ---
     for commodity_name in list(contents.keys()):
         held = int(contents.get(commodity_name, 0) or 0)
@@ -414,9 +540,27 @@ def run_trade_stop(
         )
         if market_price is None:
             continue
-        unit_price = max(1, int(market_price.buy_price))
+        # SELL: the trader is PAID the station's buy_price. The region tariff
+        # is a surcharge on the shared market, so it REDUCES the seller's payout
+        # — divide, exactly as the player sell path does
+        # (routes/trading.py: SELL = base_buy_price ÷ tariff). Floor at 1/unit.
+        base_unit_price = max(1, int(market_price.buy_price))
+        unit_price = (
+            max(1, int(base_unit_price / tariff_mult))
+            if tariff_mult > 0 else base_unit_price
+        )
 
-        npc.credits = (npc.credits or 0) + unit_price * held
+        gross_payout = unit_price * held
+        # Station tax (owner lever): withheld from the trader's proceeds and
+        # realized to the station's treasury per the 40/30/30 split — the SAME
+        # treatment a player sell receives (unowned stations levy none). The tax
+        # is accumulated and realized once after the main flush (see total_tax).
+        tax_amount = int(gross_payout * tax_rate)
+        net_payout = gross_payout - tax_amount
+
+        npc.credits = (npc.credits or 0) + net_payout
+        total_tax += tax_amount
+        npc_hostility_value += gross_payout
         contents.pop(commodity_name, None)
         cargo["used"] = max(0, int(cargo.get("used", 0)) - held)
 
@@ -454,17 +598,51 @@ def run_trade_stop(
         )
         if market_price is None or market_price.quantity <= 0:
             continue
-        unit_price = max(1, int(market_price.sell_price))
+        # BUY: the trader PAYS the station's sell_price. The region tariff is a
+        # surcharge that RAISES what the buyer pays — multiply, exactly as the
+        # player buy path does (routes/trading.py: BUY = base_sell_price ×
+        # tariff). Floor at 1/unit.
+        base_unit_price = max(1, int(market_price.sell_price))
+        unit_price = (
+            max(1, int(base_unit_price * tariff_mult))
+            if tariff_mult > 0 else base_unit_price
+        )
+        # Station tax (owner lever) is charged ON TOP of the goods cost — the
+        # SAME as a player buy (total_with_tax = total_cost + tax). The per-unit
+        # all-in cost gates affordability so the trader never overspends its
+        # wallet. Round the per-unit tax UP (ceil) so the bound is a CONSERVATIVE
+        # upper estimate: per-unit flooring could otherwise let the once-floored
+        # aggregate tax (int(total_cost*tax_rate)) exceed quantity*all_in_per_unit
+        # and edge the wallet negative. all_in_per_unit is used ONLY for the
+        # affordability bound, not the charged price.
+        per_unit_tax_ceil = math.ceil(unit_price * tax_rate) if tax_rate > 0 else 0
+        all_in_per_unit = max(1, unit_price + per_unit_tax_ceil)
 
         free_space = max(
             0, int(cargo.get("capacity", 0)) - int(cargo.get("used", 0))
         )
-        affordable = (npc.credits or 0) // unit_price
+        affordable = (npc.credits or 0) // all_in_per_unit
         quantity = min(free_space, affordable, int(market_price.quantity))
         if quantity <= 0:
             continue
 
-        npc.credits = (npc.credits or 0) - unit_price * quantity
+        total_cost = unit_price * quantity
+        tax_amount = int(total_cost * tax_rate)
+        total_with_tax = total_cost + tax_amount
+        # Final guard: never let rounding push the wallet negative (trim 1 unit
+        # if the aggregate all-in cost edged past the wallet). Defensive belt-and-
+        # suspenders on top of the conservative per-unit bound above.
+        while quantity > 0 and total_with_tax > (npc.credits or 0):
+            quantity -= 1
+            total_cost = unit_price * quantity
+            tax_amount = int(total_cost * tax_rate)
+            total_with_tax = total_cost + tax_amount
+        if quantity <= 0:
+            continue
+
+        npc.credits = (npc.credits or 0) - total_with_tax
+        total_tax += tax_amount
+        npc_hostility_value += total_cost
         contents[commodity_name] = contents.get(commodity_name, 0) + quantity
         cargo["used"] = int(cargo.get("used", 0)) + quantity
 
@@ -493,16 +671,44 @@ def run_trade_stop(
     # Folded into this method's single flush — same transaction, no extra lock.
     drifted = _drift_notoriety(npc, station)
 
+    # Port-takeover hostility from this trader trade (npc-traders.md § Market
+    # participation): accumulate the NPC-DRIVEN contribution in its OWN capped
+    # station sub-ledger, kept entirely apart from the player-attributed takeover
+    # path (which the engine derives from MarketTransaction.player_id volume).
+    # NPC trades write player_id=None, so they can never count toward a player's
+    # >50% takeover share — this isolated tally makes the NPC contribution
+    # distinguishable and bounded, so an NPC route alone can never feed a
+    # takeover cascade. Folded into this method's single flush — same txn, no
+    # extra lock (the station row is already held above).
+    if npc_hostility_value > 0:
+        _accrue_npc_hostility(station, npc_hostility_value)
+
     cargo["contents"] = contents
     ship.cargo = cargo
     flag_modified(ship, "cargo")
     flag_modified(station, "commodities")
+    # station.ownership now carries the NPC hostility sub-ledger; flag it so the
+    # write lands on this flush BEFORE the post-flush tax realization re-reads
+    # ownership via populate_existing (otherwise the hostility key would be lost
+    # when realize_port_revenue reloads the row).
+    flag_modified(station, "ownership")
     if drifted:
         # The drift stamped the block sentinel into the daily_schedule JSONB;
         # flag it so the change is persisted on this flush.
         flag_modified(npc, "daily_schedule")
     npc.last_seen_at = datetime.now(UTC)
     db.flush()
+
+    # Realize the accumulated station tax ONCE, AFTER the main flush. The 40/30/30
+    # split (realize_port_revenue) re-locks the station with populate_existing(),
+    # which reloads attributes from the DB — so it runs only now that this
+    # method's commodities / ownership / hostility mutations are persisted (a
+    # mid-loop call would have discarded un-flushed JSONB edits). Defensive: any
+    # error falls back to the whole-tax-to-treasury behaviour the player path
+    # also uses, so a split hiccup can never break the trade.
+    if total_tax > 0:
+        _realize_station_tax(db, station, total_tax)
+        db.flush()
 
     # Reprice from the post-trade stock (station row already locked in
     # this transaction — the reprice's own lock is a no-wait re-grab).
