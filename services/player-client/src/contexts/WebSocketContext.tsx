@@ -66,6 +66,36 @@ interface WebSocketContextType {
     preview: string;
     sent_at: string | null;
     priority: string;
+    // Canon delivery surfaces (messaging.md "Priority levels"): inbox-always,
+    // toast for normal+, push for high+, modal for urgent (admin senders).
+    delivery: string[];
+  } | null;
+
+  // Urgent hails: bumps once per inbound hail whose canon delivery list
+  // includes "modal" (priority=urgent from an admin sender). The cockpit's
+  // PriorityHailModal watches this to raise an action-interrupting modal;
+  // lastUrgentMessage carries the payload to render.
+  urgentMessageSignal: number;
+  lastUrgentMessage: {
+    message_id: string;
+    sender_name: string;
+    preview: string;
+    sent_at: string | null;
+  } | null;
+
+  // Medal awards: bumps once per inbound `medal_awarded` push
+  // (medal_service.award_medal → enhanced_websocket_service.send_medal_awarded).
+  // The MedalShowcase watches this counter to re-fetch its grid live, and a
+  // success toast surfaces the decoration. lastMedalAwarded carries the payload.
+  medalAwardedSignal: number;
+  lastMedalAwarded: {
+    medal_id: string;
+    medal_name: string | null;
+    medal_category: string | null;
+    medal_tier: string | null;
+    medal_description: string | null;
+    medal_icon: string | null;
+    awarded_via: string;
   } | null;
 
   // Connection management
@@ -123,6 +153,24 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     preview: string;
     sent_at: string | null;
     priority: string;
+    delivery: string[];
+  } | null>(null);
+  const [urgentMessageSignal, setUrgentMessageSignal] = useState(0);
+  const [lastUrgentMessage, setLastUrgentMessage] = useState<{
+    message_id: string;
+    sender_name: string;
+    preview: string;
+    sent_at: string | null;
+  } | null>(null);
+  const [medalAwardedSignal, setMedalAwardedSignal] = useState(0);
+  const [lastMedalAwarded, setLastMedalAwarded] = useState<{
+    medal_id: string;
+    medal_name: string | null;
+    medal_category: string | null;
+    medal_tier: string | null;
+    medal_description: string | null;
+    medal_icon: string | null;
+    awarded_via: string;
   } | null>(null);
 
   // Keep track of cleanup functions
@@ -334,25 +382,77 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           });
           break;
           
-        case 'new_message':
-          // Player-to-player hail (message_service._send_notification).
-          // Stash the payload + bump the signal so the COMMS mailbox can
-          // refresh its inbox, and surface a toast for pilots who aren't
-          // watching the COMMS monitor.
+        case 'new_message': {
+          // Player-to-player hail (message_service → notification_service).
+          // The backend resolves the canon delivery surfaces by priority
+          // (messaging.md "Priority levels") and sends them in `delivery`:
+          //   • inbox  — ALWAYS present: bump the signal so the COMMS mailbox
+          //              refreshes its inbox + unread badge (even `low`, which
+          //              is "inbox only" — no toast, but the badge stays live).
+          //   • toast  — normal/high/urgent: surface the in-cockpit toast.
+          //   • modal  — urgent (admin sender only): raise an interrupt modal.
+          // Default to the full normal-priority surface set if a legacy frame
+          // arrives without `delivery`, so older servers still toast.
+          const sender_name = String(message.sender_name || 'UNKNOWN');
+          const preview = String(message.preview || '');
+          const sent_at = message.sent_at || null;
+          const delivery: string[] = Array.isArray(message.delivery)
+            ? message.delivery.map((s: any) => String(s))
+            : ['inbox', 'toast'];
+
           setLastNewMessage({
             message_id: String(message.message_id || ''),
             sender_id: String(message.sender_id || ''),
-            sender_name: String(message.sender_name || 'UNKNOWN'),
-            preview: String(message.preview || ''),
-            sent_at: message.sent_at || null,
-            priority: String(message.priority || 'normal')
+            sender_name,
+            preview,
+            sent_at,
+            priority: String(message.priority || 'normal'),
+            delivery
           });
+          // Inbox refresh is unconditional — the persistent record always lands.
           setNewMessageSignal(prev => prev + 1);
-          addNotification({
-            title: `Incoming hail from ${message.sender_name || 'unknown contact'}`,
-            content: message.preview || 'New transmission received',
-            level: 'info'
+
+          if (delivery.includes('toast')) {
+            addNotification({
+              title: `Incoming hail from ${message.sender_name || 'unknown contact'}`,
+              content: preview || 'New transmission received',
+              // urgent reads as a warning-level toast even alongside its modal,
+              // so a dismissed modal still leaves a trace in the toast stack.
+              level: delivery.includes('modal') ? 'warning' : 'info'
+            });
+          }
+
+          if (delivery.includes('modal')) {
+            setLastUrgentMessage({
+              message_id: String(message.message_id || ''),
+              sender_name,
+              preview,
+              sent_at
+            });
+            setUrgentMessageSignal(prev => prev + 1);
+          }
+          break;
+        }
+
+        case 'medal_awarded':
+          // Medal earned through play (medal_service.award_medal). Stash the
+          // payload + bump the signal so the MedalShowcase re-fetches its grid,
+          // and surface a celebratory toast so the pilot sees the decoration the
+          // moment it lands — even when the ranking page isn't open.
+          setLastMedalAwarded({
+            medal_id: String(message.medal_id || ''),
+            medal_name: message.medal_name ?? null,
+            medal_category: message.medal_category ?? null,
+            medal_tier: message.medal_tier ?? null,
+            medal_description: message.medal_description ?? null,
+            medal_icon: message.medal_icon ?? null,
+            awarded_via: String(message.awarded_via || 'system')
           });
+          setMedalAwardedSignal(prev => prev + 1);
+          // NOTE: the dedicated gold MedalToast (driven by the signal above) is the
+          // medal-award surface — do NOT also push to the generic notifications queue
+          // (WO-B6's PriorityHailConsumer now renders that queue, which would double-
+          // toast every medal). The MedalToast is the single medal surface.
           break;
 
         case 'admin_broadcast':
@@ -383,7 +483,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // Only log truly unhandled message types, not ones handled by specific handlers
           // (aria_response is consumed by the dedicated ariaHandler above; the
           // generalHandler still sees it, so exclude it from the noise warning.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -455,6 +555,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     // Player-to-player hails
     newMessageSignal,
     lastNewMessage,
+    urgentMessageSignal,
+    lastUrgentMessage,
+
+    // Medal awards
+    medalAwardedSignal,
+    lastMedalAwarded,
 
     // Connection management
     connect,

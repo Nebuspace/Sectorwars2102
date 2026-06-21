@@ -1,0 +1,194 @@
+/* ============================================
+   PRIORITY HAIL CONSUMER — cockpit toast stack + urgent modal
+   Renders the canon priority-driven delivery surfaces
+   (messaging.md "Priority levels"): the in-game notification
+   toast (normal/high/urgent) and the action-interrupting modal
+   (urgent). Green-CRT design language, matched to .comms-* and
+   the cockpit chrome (cyan accents, mono type, scanline glow).
+   ============================================ */
+
+/* --- Toast stack: top-right, above the viewport, non-blocking --- */
+.phc-toast-stack {
+  position: fixed;
+  top: 4.5rem; /* clear of the game-header bar */
+  right: 1rem;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(360px, 32vw);
+  pointer-events: none; /* clicks pass through the gaps */
+}
+
+.phc-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  background: rgba(2, 12, 10, 0.92);
+  border: 1px solid rgba(0, 255, 65, 0.4);
+  border-left-width: 3px;
+  border-radius: 3px;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.6), inset 0 0 18px rgba(0, 255, 65, 0.05);
+  font-family: var(--font-monospace, 'Courier New', monospace);
+  color: var(--color-text, #d6ffe0);
+  animation: phc-toast-in 0.22s ease-out;
+}
+
+@keyframes phc-toast-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.phc-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.phc-toast-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.phc-toast-content {
+  font-size: 0.68rem;
+  opacity: 0.82;
+  line-height: 1.25;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.phc-toast-dismiss {
+  flex: none;
+  background: transparent;
+  border: none;
+  color: inherit;
+  opacity: 0.55;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.1rem;
+  transition: opacity 0.15s ease;
+}
+.phc-toast-dismiss:hover { opacity: 1; }
+
+/* Level accents (left rail + title glow) */
+.phc-toast--info    { border-left-color: var(--color-primary, #00d9ff); }
+.phc-toast--info    .phc-toast-title { color: var(--color-primary, #00d9ff); }
+.phc-toast--success { border-left-color: var(--color-success, #00ff41); }
+.phc-toast--success .phc-toast-title { color: var(--color-success, #00ff41); }
+.phc-toast--warning { border-left-color: var(--color-warning, #ffb000); }
+.phc-toast--warning .phc-toast-title {
+  color: var(--color-warning, #ffb000);
+  text-shadow: 0 0 8px rgba(255, 176, 0, 0.6);
+}
+.phc-toast--error   { border-left-color: var(--color-error, #ff3b3b); }
+.phc-toast--error   .phc-toast-title {
+  color: var(--color-error, #ff3b3b);
+  text-shadow: 0 0 8px rgba(255, 59, 59, 0.6);
+}
+
+/* --- Urgent interrupt modal --- */
+.phc-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(2px);
+  animation: phc-backdrop-in 0.18s ease-out;
+}
+
+@keyframes phc-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.phc-modal {
+  width: min(440px, 90vw);
+  background: rgba(8, 4, 4, 0.97);
+  border: 2px solid var(--color-warning, #ffb000);
+  border-radius: 5px;
+  box-shadow: 0 0 28px rgba(255, 176, 0, 0.35), inset 0 0 32px rgba(255, 176, 0, 0.06);
+  padding: 1.1rem 1.2rem 1.2rem;
+  font-family: var(--font-monospace, 'Courier New', monospace);
+  color: var(--color-text, #ffe9c2);
+  animation: phc-modal-in 0.2s ease-out;
+}
+
+@keyframes phc-modal-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.phc-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.7rem;
+}
+
+.phc-modal-flash {
+  font-size: 1.05rem;
+  color: var(--color-warning, #ffb000);
+  animation: phc-flash 1s steps(2, start) infinite;
+}
+
+@keyframes phc-flash {
+  0%, 50%  { opacity: 1; }
+  51%, 100% { opacity: 0.25; }
+}
+
+.phc-modal-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--color-warning, #ffb000);
+  text-shadow: 0 0 10px rgba(255, 176, 0, 0.6);
+  text-transform: uppercase;
+}
+
+.phc-modal-sender {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  opacity: 0.8;
+  margin-bottom: 0.5rem;
+}
+
+.phc-modal-preview {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0 0 1rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.phc-modal-ack {
+  display: block;
+  width: 100%;
+  padding: 0.5rem;
+  background: rgba(255, 176, 0, 0.12);
+  border: 1px solid var(--color-warning, #ffb000);
+  border-radius: 3px;
+  color: var(--color-warning, #ffb000);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.phc-modal-ack:hover {
+  background: rgba(255, 176, 0, 0.22);
+  box-shadow: 0 0 12px rgba(255, 176, 0, 0.4);
+}

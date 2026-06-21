@@ -44,6 +44,18 @@ export interface NotificationMessage {
   timestamp: string;
 }
 
+export interface MedalAwardedMessage {
+  type: 'medal_awarded';
+  medal_id: string;
+  medal_name: string | null;
+  medal_category: string | null;
+  medal_tier: string | null;
+  medal_description: string | null;
+  medal_icon: string | null;
+  awarded_via: string;
+  timestamp: string;
+}
+
 export interface ARIAChatMessage {
   type: 'aria_chat';
   content: string;
@@ -514,6 +526,17 @@ class WebSocketService {
     const handler = (message: WebSocketMessage) => {
       if (message.type === 'connection_status') {
         callback(message.connected, message);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // Medal-award realtime push (medal_service.award_medal → send_medal_awarded)
+  onMedalAwarded(callback: (message: MedalAwardedMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'medal_awarded') {
+        callback(message as MedalAwardedMessage);
       }
     };
     this.addMessageHandler(handler);

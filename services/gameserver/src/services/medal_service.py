@@ -133,8 +133,76 @@ def award_medal(
     # must never roll back an already-recorded award or break the caller.
     _apply_one_time_grant(db, player_id, resolved_id)
 
+    # WO-B7 — realtime: announce the GENUINE award to the player who earned it.
+    # We reach here only on the true INSERT path (both idempotency layers already
+    # short-circuit a re-award), so the toast fires exactly once per medal — never
+    # on a re-award no-op. The emit is scheduled (loop.create_task) so it lands
+    # AFTER the caller's transaction commits and yields, never broadcasting an
+    # award a later rollback would void; and it is fully defensive — a broadcast
+    # hiccup is swallowed and can never roll back the recorded award or break the
+    # caller's unit of work (combat/trade/first-login).
+    _dispatch_medal_awarded_event(db, player_id, resolved_id, awarded_via)
+
     logger.info("Medal awarded: %s -> player %s (via=%s)", resolved_id, player_id, awarded_via)
     return True
+
+
+def _dispatch_medal_awarded_event(
+    db: Session, player_id: uuid.UUID, medal_id: str, awarded_via: str
+) -> None:
+    """Schedule the async player-scoped ``medal_awarded`` WS push for a new award.
+
+    Mirrors ``movement_service._dispatch_hostile_detected`` /
+    ``turn_service._emit_turn_pool_update``: resolve the recipient + payload from
+    already-loaded relational state, grab the running loop, schedule the coroutine
+    with ``loop.create_task`` so it runs after this sync award's transaction
+    commits and yields (never blocking, never pre-commit), and swallow EVERY
+    failure (no loop, no socket, unknown medal) so a quiet socket can never break
+    the award or the caller's unit of work.
+
+    ``award_medal`` only ever has the ``Player.id``; the WS connection manager
+    routes on the ``User.id``, so we resolve ``player.user_id`` here with a single
+    scalar query. A player with no resolvable user (shouldn't happen) is silently
+    skipped — never raised.
+    """
+    try:
+        user_id = (
+            db.query(Player.user_id).filter(Player.id == player_id).scalar()
+        )
+        if not user_id:
+            return
+
+        entry = get_catalog_entry(medal_id) or {}
+        criteria = entry.get("criteria") or {}
+        medal_payload = {
+            "medal_id": medal_id,
+            "medal_name": entry.get("name"),
+            "medal_category": entry.get("category"),
+            "medal_tier": entry.get("tier"),
+            "medal_description": entry.get("description"),
+            "medal_icon": criteria.get("icon"),
+            "awarded_via": awarded_via,
+        }
+
+        import asyncio
+        from src.services.enhanced_websocket_service import (
+            get_enhanced_websocket_service,
+        )
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            get_enhanced_websocket_service().send_medal_awarded(
+                str(user_id), medal_payload
+            )
+        )
+    except Exception:
+        # No running loop (sync worker/scheduler context), no socket, or any
+        # other hiccup: the award is already recorded — the realtime notice is
+        # strictly best-effort and must never propagate.
+        logger.debug(
+            "Skipped medal_awarded WS notice for %s/%s (no loop or socket)",
+            medal_id, player_id, exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

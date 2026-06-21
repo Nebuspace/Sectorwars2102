@@ -10,6 +10,8 @@ import MFDScreen from '../mfd/MFDScreen';
 import { SIDEBAR_A, SIDEBAR_B } from '../mfd/sidebarScreens';
 import { ariaFeed } from '../mfd/ariaFeedStore';
 import RouteRail from '../mfd/RouteRail';
+import MedalToast from '../ranking/MedalToast';
+import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -151,6 +153,13 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   
   return (
     <div className="game-layout-wrapper">
+      {/* Cockpit-wide realtime medal toast: consumes the medal_awarded WS event
+          so a freshly-earned decoration pops on any /game route. */}
+      <MedalToast />
+      {/* Priority-driven hail surfaces (WO-B6): the in-game notification toast
+          stack (normal/high messages + other WS toasts) and the urgent
+          action-interrupting modal — per messaging.md "Priority levels". */}
+      <PriorityHailConsumer />
       <div className="game-layout">
         <header className="game-header hud-panel">
           <div className="game-header-left">

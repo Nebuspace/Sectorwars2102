@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { rankingAPI } from '../../services/api';
+import { useWebSocket } from '../../contexts/WebSocketContext';
 import './ranking.css';
 
 interface Medal {
@@ -53,21 +54,39 @@ const MedalShowcase: React.FC = () => {
   const [hoveredMedal, setHoveredMedal] = useState<Medal | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  useEffect(() => {
-    const fetchMedals = async () => {
-      try {
-        setLoading(true);
-        const data = await rankingAPI.getMedals();
-        setMedalData(data);
-        setError(null);
-      } catch (err: any) {
-        setError(err.message || 'Failed to load medals');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchMedals();
+  // Realtime: the WS context bumps medalAwardedSignal whenever a medal_awarded
+  // frame arrives (medal_service.award_medal → send_medal_awarded). MedalShowcase
+  // is otherwise pull-only, so it watches that counter to re-fetch its grid live.
+  const { medalAwardedSignal } = useWebSocket();
+
+  // showInitialSpinner: only the FIRST load shows the full-panel spinner. A
+  // realtime re-fetch refreshes in place so the existing grid never blanks out.
+  const fetchMedals = useCallback(async (showInitialSpinner: boolean) => {
+    try {
+      if (showInitialSpinner) setLoading(true);
+      const data = await rankingAPI.getMedals();
+      setMedalData(data);
+      setError(null);
+    } catch (err: any) {
+      // Only surface the error overlay on the initial load; a failed live
+      // re-fetch keeps the last-known grid rather than wiping it.
+      if (showInitialSpinner) setError(err.message || 'Failed to load medals');
+    } finally {
+      if (showInitialSpinner) setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchMedals(true);
+  }, [fetchMedals]);
+
+  // Re-fetch when a medal is awarded in realtime (skip the mount tick: the
+  // initial fetch above already covers signal 0).
+  useEffect(() => {
+    if (medalAwardedSignal > 0) {
+      fetchMedals(false);
+    }
+  }, [medalAwardedSignal, fetchMedals]);
 
   const filteredMedals = useMemo(() => {
     if (!medalData) return { earned: [], available: [] };

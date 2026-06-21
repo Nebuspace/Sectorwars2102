@@ -17,6 +17,7 @@ from src.models.message import Message
 from src.models.player import Player
 from src.models.team import Team
 from src.services.websocket_service import ConnectionManager
+from src.services.notification_service import NotificationService
 
 # Global manager instance
 manager = ConnectionManager()
@@ -156,37 +157,17 @@ class MessageService:
     
     @staticmethod
     async def _send_notification(db: Session, message: Message, sender: Player):
-        """Send WebSocket notification for new message"""
-        notification = {
-            "type": "new_message",
-            "message_id": str(message.id),
-            "sender_id": str(message.sender_id),
-            "sender_name": sender.nickname,
-            "preview": message.content[:100] if message.content else "",
-            "sent_at": message.sent_at.isoformat() if message.sent_at else None,
-            "priority": message.priority
-        }
+        """Dispatch the live notification for a new message.
 
-        # Notification failures must never fail an already-committed send.
-        # The manager keys connections by USER id, not player id — resolve.
-        try:
-            if message.recipient_id:
-                recipient = db.query(Player).filter(Player.id == message.recipient_id).first()
-                if recipient and recipient.user_id:
-                    await manager.send_personal_message(str(recipient.user_id), notification)
-            elif message.team_id:
-                # Send to all team members except the sender
-                team_members = db.query(Player).filter(
-                    Player.team_id == message.team_id,
-                    Player.id != message.sender_id,
-                    Player.is_active == True
-                ).all()
-                for member in team_members:
-                    if member.user_id:
-                        await manager.send_personal_message(str(member.user_id), notification)
-                logger.info(f"Team message notification sent to {len(team_members)} members of team {message.team_id}")
-        except Exception as notify_error:
-            logger.warning(f"Message {message.id} delivered but live notification failed: {notify_error}")
+        Priority-driven fan-out is owned by NotificationService (the module the
+        messaging canon names for this — see notification_service.py). It maps
+        the message's `priority` to a delivery-surface list (inbox / toast /
+        push / modal per messaging.md "Priority levels") and routes the WS frame
+        through the EXISTING ConnectionManager helper. Delivery failures there
+        are swallowed internally so they can never fail an already-committed
+        send.
+        """
+        await NotificationService.notify_new_message(db, message, sender, manager)
     
     @staticmethod
     async def get_inbox(

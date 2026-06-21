@@ -983,6 +983,35 @@ class EnhancedWebSocketService:
             "code": code,
             "message": error_message
         })
+
+    async def send_medal_awarded(self, user_id: str, medal_data: Dict[str, Any]):
+        """Push a player-scoped ``medal_awarded`` frame to a freshly-decorated pilot.
+
+        The single realtime helper for WO-B7: when ``medal_service.award_medal``
+        records a GENUINE new ``player_medals`` row, the player who earned the
+        medal should learn of it live (a toast + the MedalShowcase refresh). This
+        mirrors the existing player-scoped event helpers on the base
+        ``ConnectionManager`` (``send_turn_pool_update`` / ``send_hostile_detected``
+        / ``send_new_message_notification``): a typed message stamped with a
+        top-level ``timestamp``, flat-spread payload, delivered via
+        ``send_personal_message``.
+
+        ``user_id`` is the owning ``User.id`` string (the key
+        ``send_personal_message`` routes on — NOT the ``Player.id``); the caller
+        resolves ``player.user_id`` before invoking. ``medal_data`` carries the
+        catalog metadata (``medal_id``, ``medal_name``, ``medal_category``,
+        ``medal_tier``, ``medal_description``, ``medal_icon``, ``awarded_via``).
+
+        Routed through the base ``connection_manager`` rather than ``send_message``
+        because this is a server-originated push: it carries no inbound
+        session_id/signature handshake, exactly like the sibling event helpers.
+        """
+        message = {
+            "type": "medal_awarded",
+            "timestamp": datetime.now(UTC).isoformat(),
+            **medal_data,
+        }
+        await self.connection_manager.send_personal_message(user_id, message)
     
     async def _handle_heartbeat(self, player_id: str):
         """Handle heartbeat message"""
