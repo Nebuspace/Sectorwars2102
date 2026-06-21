@@ -77,15 +77,26 @@ DEMAND_SCORE_MAX = 2.0
 # black-market venues). Any other station type is honest trade.
 #
 # ⚠️ NO-CANON MAGNITUDES — FLAG FOR MAX / DECISIONS. npc-traders.md prescribes
-# the DIRECTION of drift but gives NO per-trade magnitude. Both deltas are
-# deliberately small so a captain's standing shifts over many legs rather than
-# flipping on a single stop: a trader needs ~10 illicit stops to cross a 24→50
-# band boundary, and honest trade erodes notoriety roughly half as fast (a
-# reputation is easier to lose than to rebuild). Tune once Max sets canon.
+# the DIRECTION of drift but gives NO per-trade magnitude OR cadence. Drift is
+# gated to AT MOST ONCE per work_station block (see _drift_notoriety): a single
+# trading-day visit to a both-buy+sell black-market station is re-driven by Loop
+# A on every pass through that block (~13h of canonical time), so an ungated
+# drift would over-count one captain's smuggling. Both deltas are deliberately
+# small so a captain's standing shifts over many legs rather than flipping on a
+# single block: a trader needs ~10 illicit blocks to cross a 24→50 band boundary,
+# and honest trade erodes notoriety roughly half as fast (a reputation is easier
+# to lose than to rebuild). Tune once Max sets canon.
 NOTORIETY_AXIS_MIN = 0
 NOTORIETY_AXIS_MAX = 100
-NOTORIETY_ILLICIT_DRIFT = 3   # NO-CANON: per illicit (black-market) trade stop, toward 100
-NOTORIETY_HONEST_DECAY = 1    # NO-CANON: per honest trade stop, toward 0
+NOTORIETY_ILLICIT_DRIFT = 3   # NO-CANON: per illicit (black-market) work block, toward 100
+NOTORIETY_HONEST_DECAY = 1    # NO-CANON: per honest work block, toward 0
+
+# Sentinel key in NPCCharacter.daily_schedule (JSONB) recording the last
+# work_station block this trader drifted notoriety on. A block is identified by
+# (canonical_day_number, station_id): the same station appears at most once per
+# canonical day in a trader's route cycle, so a new day is a new block and drift
+# is permitted again. Stored here (not a new column) so no migration is needed.
+NOTORIETY_DRIFT_SENTINEL_KEY = "notoriety_drift_block"
 
 
 # ---------------------------------------------------------------------------
@@ -268,19 +279,52 @@ def _bump_npc_restock_demand(
 # Notoriety drift (npc-traders.md § Notoriety)
 # ---------------------------------------------------------------------------
 
-def _drift_notoriety(npc: NPCCharacter, station: Station) -> None:
-    """Drift a trader's notoriety on a completed trade stop: illicit
-    (black-market) trade rises toward NOTORIOUS, honest trade decays
-    toward REPUTABLE. Bounded to the 0–100 axis. The caller holds the
-    NPC row in the same transaction (it is a live, in-session NPCCharacter);
-    no separate lock is taken — notoriety is the NPC's own scruples axis,
-    never read mid-flight by another locked actor in this path."""
+def _work_station_block_ref(station: Station) -> str:
+    """Stable identifier for the trader's CURRENT work_station block:
+    ``"<canonical_day_number>:<station_id>"``. A trader's route cycle places
+    a given station in at most one work_station block per canonical day, so
+    this string is unique to one trading-day visit — a fresh day yields a new
+    ref and re-permits drift. Imported lazily to avoid a module import cycle
+    (npc_scheduler_service imports npc_trading_service)."""
+    from src.services.npc_scheduler_service import canonical_day_number
+
+    return f"{canonical_day_number()}:{station.id}"
+
+
+def _drift_notoriety(npc: NPCCharacter, station: Station) -> bool:
+    """Drift a trader's notoriety on a completed work_station block: illicit
+    (black-market) trade rises toward NOTORIOUS, honest trade decays toward
+    REPUTABLE. Bounded to the 0–100 axis.
+
+    Gated to AT MOST ONCE per work_station block. Loop A re-drives the same
+    trading-day visit on every pass through the block (a both-buy+sell
+    black-market station re-trades on repeat passes), so without a gate one
+    captain's smuggling would drift more than once per block. The last block
+    that drifted is stamped in ``npc.daily_schedule[NOTORIETY_DRIFT_SENTINEL_KEY]``;
+    a repeat pass for the same block is a no-op. Returns True iff it drifted
+    (so the caller flags the daily_schedule JSONB as modified).
+
+    The caller holds the NPC row in the same transaction (it is a live,
+    in-session NPCCharacter); no separate lock is taken — notoriety is the
+    NPC's own scruples axis, never read mid-flight by another locked actor in
+    this path, and the sentinel lives on the same NPC row."""
+    block_ref = _work_station_block_ref(station)
+    schedule = npc.daily_schedule
+    if not isinstance(schedule, dict):
+        schedule = {}
+        npc.daily_schedule = schedule
+    if schedule.get(NOTORIETY_DRIFT_SENTINEL_KEY) == block_ref:
+        # This block already drifted notoriety on an earlier Loop-A pass.
+        return False
+
     current = npc.notoriety or 0
     illicit = getattr(station, "type", None) == StationType.BLACK_MARKET
     delta = NOTORIETY_ILLICIT_DRIFT if illicit else -NOTORIETY_HONEST_DECAY
     npc.notoriety = max(
         NOTORIETY_AXIS_MIN, min(NOTORIETY_AXIS_MAX, current + delta)
     )
+    schedule[NOTORIETY_DRIFT_SENTINEL_KEY] = block_ref
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -441,16 +485,22 @@ def run_trade_stop(
     if not traded:
         return []
 
-    # Notoriety drift on a completed trade stop (npc-traders.md § Notoriety):
-    # smuggling at a black-market venue raises notoriety toward NOTORIOUS;
-    # honest trade decays it back toward REPUTABLE. Folded into this method's
-    # single flush — same transaction, no extra lock.
-    _drift_notoriety(npc, station)
+    # Notoriety drift on a completed work_station block (npc-traders.md §
+    # Notoriety): smuggling at a black-market venue raises notoriety toward
+    # NOTORIOUS; honest trade decays it back toward REPUTABLE. Gated to AT MOST
+    # ONCE per work block — Loop A re-drives this trading-day visit on every
+    # pass, so a both-buy+sell black-market station would otherwise drift twice.
+    # Folded into this method's single flush — same transaction, no extra lock.
+    drifted = _drift_notoriety(npc, station)
 
     cargo["contents"] = contents
     ship.cargo = cargo
     flag_modified(ship, "cargo")
     flag_modified(station, "commodities")
+    if drifted:
+        # The drift stamped the block sentinel into the daily_schedule JSONB;
+        # flag it so the change is persisted on this flush.
+        flag_modified(npc, "daily_schedule")
     npc.last_seen_at = datetime.now(UTC)
     db.flush()
 
