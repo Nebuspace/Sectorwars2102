@@ -239,6 +239,24 @@ def test_terraform_unfed_rig_pushes_at_floor():
     assert g["plots"][0]["axes"]["thermal"] == 54
 
 
+def test_terraform_preset_places_bundle_and_pushes():
+    g = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    rigs = S.place_terraform_preset(g, 3)
+    assert len(rigs) == 3
+    assert all(r["domain"] == "terraform" and r["push_base"] > 0 and r["axis"] in ("thermal", "hydro")
+               for r in rigs)
+    S.terraform_grid_tick(g, "OCEANIC", intensity="standard")
+    idx = S._plot_index(g)
+    pushed = sum(1 for r in rigs if idx[(r["x"], r["y"])]["axes"][r["axis"]] > 40)
+    assert pushed == 3  # every rig plot's pushed axis rose above its start
+
+
+def test_terraform_preset_level_scales_rig_count():
+    g1 = S.place_terraform_preset(_tgrid([_plot(x, 0, 40, 40) for x in range(6)]), 1)
+    g5 = S.place_terraform_preset(_tgrid([_plot(x, y, 40, 40) for y in range(2) for x in range(6)]), 5)
+    assert len(g1) == 1 and len(g5) == 5  # N rigs for level N
+
+
 def test_terraform_rigless_planet_returns_natural_habitability():
     g = _tgrid([_plot(0, 0, 65, 75), _plot(1, 0, 65, 75)])  # already at OCEANIC band
     hab = S.terraform_grid_tick(g, "OCEANIC")

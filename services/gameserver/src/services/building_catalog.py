@@ -35,7 +35,7 @@ tiers/monument Wonders are T2+.
 
 from typing import Any, Dict, List, Optional
 
-DOMAINS = ("economy", "defense", "civic", "monument")
+DOMAINS = ("economy", "defense", "civic", "monument", "terraform")
 
 
 # --- The catalog. kind → spec. All numbers NO-CANON (conservative kernel). -----------------------
@@ -210,6 +210,35 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
         "min_citadel_level": 3, "terrain_bonus": {},
         "effect": {"kind": "ct1_defense", "ct1_kind": "planetary_defense_grid"},
         "signature": False, "prereqs": [],
+    },
+
+    # ===== TERRAFORM (domain:"terraform") — rigs that RE-SHAPE per-plot axes (K1b-2). Placed by the
+    # legacy start_terraforming presets; pushed by structures.terraform_grid_tick. NOT counted by
+    # derive_citadel_level (it sums only economy/civic floor-area). push_axis/push_base are stamped
+    # onto the placed rig by the preset so the field tick reads them.
+    "THERMAL_RIG": {
+        "kind": "THERMAL_RIG", "domain": "terraform", "name": "Thermal Rig",
+        "footprint": [1, 1], "max_level": 5,
+        "build_hours": {1: 24, 2: 36, 3: 54, 4: 81, 5: 120},
+        "cost": {1: {"credits": 40000, "organics": 200}, 2: {"credits": 80000, "organics": 400},
+                 3: {"credits": 160000, "organics": 800}, 4: {"credits": 320000, "organics": 1600},
+                 5: {"credits": 640000, "organics": 3200}},
+        "power_draw": {1: 30, 2: 42, 3: 56, 4: 74, 5: 96}, "crew": {1: 4, 2: 6, 3: 9, 4: 13, 5: 18},
+        "upkeep": {"credits": 300, "materials": {"equipment": 5}}, "tech_gate": None,
+        "terrain_bonus": {}, "effect": {"kind": "terra_push", "axis": "thermal"},
+        "push_axis": "thermal", "push_base": 2.0, "signature": False, "prereqs": [],
+    },
+    "HYDRO_PLANT": {
+        "kind": "HYDRO_PLANT", "domain": "terraform", "name": "Hydro Plant",
+        "footprint": [1, 1], "max_level": 5,
+        "build_hours": {1: 24, 2: 36, 3: 54, 4: 81, 5: 120},
+        "cost": {1: {"credits": 40000, "organics": 200}, 2: {"credits": 80000, "organics": 400},
+                 3: {"credits": 160000, "organics": 800}, 4: {"credits": 320000, "organics": 1600},
+                 5: {"credits": 640000, "organics": 3200}},
+        "power_draw": {1: 30, 2: 42, 3: 56, 4: 74, 5: 96}, "crew": {1: 4, 2: 6, 3: 9, 4: 13, 5: 18},
+        "upkeep": {"credits": 300, "materials": {"equipment": 5}}, "tech_gate": None,
+        "terrain_bonus": {}, "effect": {"kind": "terra_push", "axis": "hydro"},
+        "push_axis": "hydro", "push_base": 2.0, "signature": False, "prereqs": [],
     },
 }
 

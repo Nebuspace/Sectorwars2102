@@ -679,6 +679,32 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
     return max(0, int(mean) - penalty)
 
 
+def place_terraform_preset(structures: dict, level: int) -> list:
+    """Place the legacy terraforming level's rig BUNDLE on the grid (K1b-2 §1.3): the preserved
+    ``start_terraforming(level=N)`` API becomes a bundle of THERMAL_RIG/HYDRO_PLANT rigs (N rigs,
+    alternating axes, each at building-level N) that push the grid toward the legacy
+    habitability_boost (L1+10 … L5+30). Reuses place(); stamps ``axis``/``push_base`` from the
+    catalog onto each placed rig so terraform_grid_tick reads them. Returns the placed rigs (fewer
+    than N if the grid runs out of room). Caller commits. NO-CANON: the rig→hab calibration
+    (bundle composition vs the legacy boost ±2) is refined with the settle-wiring live-proof."""
+    from src.services import building_catalog
+    level = max(1, min(5, int(level)))
+    kinds = ["THERMAL_RIG", "HYDRO_PLANT"]
+    placed = []
+    for i in range(level):
+        kind = kinds[i % 2]
+        spot = _seed_find_spot(structures, kind)
+        if spot is None:
+            break
+        rig = place(structures, kind, spot[0], spot[1], level=level)
+        spec = building_catalog.get(kind) or {}
+        rig["axis"] = spec.get("push_axis", "thermal")
+        rig["push_base"] = float(spec.get("push_base", 2.0))
+        rig["intensity"] = "standard"
+        placed.append(rig)
+    return placed
+
+
 def decommission(structures: dict, building_id: str) -> Optional[dict]:
     """Tear down a building and RECLAIM its plots (§2.3/§6.1 step 1). Returns the removed building
     dict, or None if not found. PURE grid op (no hab revert, no refund — the caller applies the
