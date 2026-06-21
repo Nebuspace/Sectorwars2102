@@ -11,10 +11,15 @@ Canon anchors:
   - ADR-0060 G-V3: no quantum-jump pursuit — NPCs never use QJ here.
 
 Scope decisions (documented, not invented):
-  - NPCs do NOT traverse player-built warp gates (ARTIFICIAL tunnels
-    with created_by_player_id set) — canon is silent on NPC use of
-    player infrastructure, so the conservative reading applies; flagged
-    as a pending decision in the docs repo.
+  - NPCs traverse a player-built warp gate (ARTIFICIAL tunnel with
+    created_by_player_id set) ONLY when the gate owner has granted the
+    NPC's faction access (FEATURES/economy/npc-traders.md "Cross-region
+    routing and warp gates": per-faction permission surface on
+    WarpTunnel, default-DENY — "player infrastructure stays a player
+    advantage unless the owner deliberately opens it"). The grant is a
+    list of faction_codes under the access_requirements JSONB key
+    ``_NPC_FACTION_GRANT_KEY`` (default absent/empty = no NPC faction may
+    traverse). Natural / generator / un-owned tunnels are unrestricted.
 
 CONCURRENCY — lock order (global convention for NPC writers):
     Player → Station → Ship → NPCCharacter → Sector (ascending sector_id)
@@ -50,6 +55,36 @@ logger = logging.getLogger(__name__)
 # of NPC movement is ~86 seconds per turn at L1-equivalent regen pacing.
 SECONDS_PER_TURN_L1 = 86
 
+# FEATURES/economy/npc-traders.md "Cross-region routing and warp gates":
+# NPC movement may traverse a player-built gate ONLY when the gate owner has
+# granted the NPC's faction access — a per-faction permission surface on
+# WarpTunnel, default-DENY. Canon describes the model but not the literal JSONB
+# key name; this is the per-faction grant key the owner-side grant UI writes and
+# the only place NPC traversal reads. The value is a list of granted
+# faction_codes (absent / empty = no NPC faction may traverse).
+_NPC_FACTION_GRANT_KEY = "npc_factions"  # NO-CANON: grant key name (default-deny)
+
+
+def _npc_gate_access_granted(tunnel: WarpTunnel, faction_code: Optional[str]) -> bool:
+    """True iff the player-built ``tunnel``'s owner has granted ``faction_code``
+    access through its access_requirements grant key (default-DENY).
+
+    Mirrors warp_gate_service.check_traversal_access's access_requirements read
+    pattern (reqs = tunnel.access_requirements or {}, dict-guarded). Default-deny:
+    a tunnel with no grant key, a non-list value, or a faction not in the granted
+    list is denied; a faction with no code is always denied (it can hold no
+    grant). Natural/un-owned tunnels never reach here (callers gate on
+    _is_player_gate first)."""
+    if not faction_code:
+        return False
+    reqs = tunnel.access_requirements or {}
+    if not isinstance(reqs, dict):
+        return False
+    granted = reqs.get(_NPC_FACTION_GRANT_KEY)
+    if not isinstance(granted, list):
+        return False
+    return faction_code in {str(g) for g in granted}
+
 # Statuses that may never be moved by the scheduler.
 _UNMOVABLE_STATUSES = (
     NPCStatus.KIA,
@@ -60,13 +95,18 @@ _UNMOVABLE_STATUSES = (
 
 
 def hop_cost(db: Session, origin_sector_id: int, dest_sector_id: int,
-             ship: Optional[Ship]) -> Optional[int]:
+             ship: Optional[Ship],
+             faction_code: Optional[str] = None) -> Optional[int]:
     """Turn cost of a single legal hop origin → dest, or None when no
     NPC-traversable connection exists.
 
     Direct warps (including reverse traversal of bidirectional rows) and
-    natural warp tunnels qualify; player-built warp gates do not (see
-    module docstring).
+    natural warp tunnels always qualify. A player-built warp gate qualifies
+    ONLY when ``faction_code`` has been granted access by the gate owner
+    (default-DENY; see module docstring and ``_npc_gate_access_granted``).
+    When ``faction_code`` is None (no NPC faction context) player gates are
+    denied — preserving the prior "NPCs never use player infrastructure"
+    behaviour for any non-NPC caller.
     """
     ms = MovementService(db)
     can_warp, warp_cost, _ = ms._check_direct_warp(
@@ -100,8 +140,17 @@ def hop_cost(db: Session, origin_sector_id: int, dest_sector_id: int,
             )
             .first()
         )
-    if tunnel is None or _is_player_gate(tunnel):
+    if tunnel is None:
         return None
+
+    if _is_player_gate(tunnel):
+        # Player infrastructure: default-deny per-faction access gate.
+        if not _npc_gate_access_granted(tunnel, faction_code):
+            return None
+        # Granted: player gates are a flat turn_cost (canon 0-turn gates;
+        # warp_gate_service charges turn_cost as-is, no warp-capable multiplier
+        # and no max(1,…) clamp — a 0-turn gate must stay 0).
+        return max(0, tunnel.turn_cost or 0)
 
     cost = tunnel.turn_cost or 1
     if ship is not None and getattr(ship, "warp_capable", False):
@@ -186,7 +235,10 @@ def move_npc(
     if npc.status in _UNMOVABLE_STATUSES or npc.current_sector_id != origin_sector_id:
         return []
 
-    cost = hop_cost(db, origin_sector_id, dest_sector_id, ship)
+    # Pass the NPC's faction so a player-built gate is traversable iff the gate
+    # owner granted this faction access (FEATURES/economy/npc-traders.md).
+    cost = hop_cost(db, origin_sector_id, dest_sector_id, ship,
+                    faction_code=npc.faction_code)
     if cost is None:
         logger.warning(
             "NPC %s: no traversable connection %s -> %s",
