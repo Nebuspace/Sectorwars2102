@@ -638,7 +638,9 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
     fed_plots = set()
     push_total = 0.0
     for b in structures.get("buildings", []):
-        if not (isinstance(b, dict) and b.get("domain") == "terraform" and _operational(b)):
+        # A built terraform rig pushes even when browned-out (at the floor, below) — so gate on
+        # build-completion (complete_at is None), NOT _operational() (which excludes browned-out).
+        if not (isinstance(b, dict) and b.get("domain") == "terraform" and b.get("complete_at") is None):
             continue
         cell = (b.get("x"), b.get("y"))
         plot = plots.get(cell)
