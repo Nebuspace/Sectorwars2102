@@ -191,6 +191,30 @@ RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
 DAILY_GROWTH_BASE = 0.01
 SECONDS_PER_DAY = 86400.0
 
+# Surplus-pioneer faucet (FEATURES/economy/lifecycle.md §1.4 "Colonist sales"):
+# an owned, colonized planet produces SURPLUS PIONEERS over time (births,
+# retirees seeking transit, voluntary outbound migrants). These accrue into
+# planet.active_events['surplus_pioneers'] (a running integer counter; JSONB, no
+# migration) on the production tick, with sub-unit progress banked in
+# production_carry['surplus_pioneers']. The accrued surplus is sold at a Class-0
+# Pioneer Office (pioneer_service.sell_planet_surplus) at 30-80 cr/pioneer.
+#
+# Canon TARGET (lifecycle.md §1.4): "a fully-developed planet should yield
+# 1,000-5,000 cr/day in pioneer-export contracts." The accrual is proportional
+# to the colony's working population so a fresh 100-colonist outpost yields a
+# trickle while a developed L4/L5 colony (50,000-200,000 colonists) hits the
+# band. At a representative colonist-sale price of ~55 cr (midpoint of the 30-80
+# range), 1,000-5,000 cr/day == ~18-91 pioneers/day. The rate below puts a
+# 50,000-colonist developed world at 50,000 × 0.0005 = 25 pioneers/day ≈ ~1,375
+# cr/day — deliberately near the LOW edge of the canon band (easier to raise
+# than to claw back an over-minted faucet).
+#
+# NO-CANON: the exact per-colonist surplus rate is not specified — canon gives
+# only the cr/day TARGET band, not a pioneers/colonist coefficient. This value
+# is FLAGGED for DECISIONS; it is bounded by, and consistent with, the canon
+# target band above. See WO-PL3-v2 report.
+SURPLUS_PIONEER_RATE_PER_DAY = 0.0005  # NO-CANON: pioneers/colonist/day (faucet)
+
 # Habitability ZERO-CROSSING for natural population growth (WO-AH, Max-ruled:
 # "growth is a function of habitability — ABOVE a threshold → GROW, BELOW it →
 # DECLINE"). CANON anchor: FEATURES/planets/colonization.md line 95 — "BARREN and
@@ -617,11 +641,30 @@ class PlanetaryService:
         resource_cols = (("fuel", "fuel_ore"), ("organics", "organics"), ("equipment", "equipment"))
         research_rate = rates.get("research", 0) or 0  # ADR-0087 research-point yield
 
-        if all((rates.get(key, 0) or 0) <= 0 for key, _ in resource_cols) and research_rate <= 0:
-            # Nothing producing (no commodity allocation AND no research lab);
-            # keep the anchor current so a later allocation doesn't accrue
-            # retroactively. No backlog to drain when nothing is produced, so
-            # advancing fully to now is correct here (no runaway risk).
+        # Surplus-pioneer faucet (lifecycle.md §1.4): an OWNED, colonized colony
+        # produces surplus pioneers proportional to its working population. Gated
+        # on ownership (owner_id set), live colonists, and NOT under siege (a
+        # besieged colony exports no one — mirrors colonist_rate=0 under siege).
+        # Shares this method's idempotent anchor/carry so it can never
+        # double-accrue across a settle()+read on the same window.
+        surplus_rate = 0.0
+        if (
+            planet.owner_id is not None
+            and (planet.colonists or 0) > 0
+            and not planet.under_siege
+        ):
+            surplus_rate = (planet.colonists or 0) * SURPLUS_PIONEER_RATE_PER_DAY
+
+        if (
+            all((rates.get(key, 0) or 0) <= 0 for key, _ in resource_cols)
+            and research_rate <= 0
+            and surplus_rate <= 0
+        ):
+            # Nothing producing (no commodity allocation AND no research lab AND
+            # no surplus-pioneer faucet); keep the anchor current so a later
+            # allocation doesn't accrue retroactively. No backlog to drain when
+            # nothing is produced, so advancing fully to now is correct here (no
+            # runaway risk).
             planet.last_production = now
             return True
 
@@ -640,7 +683,13 @@ class PlanetaryService:
         research_produced = carry.get("research", 0.0) + research_rate * (capped_elapsed / SECONDS_PER_DAY)
         research_gained = int(research_produced)
 
-        if sum(g for g, _ in gains.values()) + research_gained <= 0:
+        # Surplus pioneers accrue into a running active_events counter (no column),
+        # exactly like research points; the fractional remainder shares the
+        # production_carry dict under 'surplus_pioneers'. (lifecycle.md §1.4)
+        surplus_produced = carry.get("surplus_pioneers", 0.0) + surplus_rate * (capped_elapsed / SECONDS_PER_DAY)
+        surplus_gained = int(surplus_produced)
+
+        if sum(g for g, _ in gains.values()) + research_gained + surplus_gained <= 0:
             # Not enough elapsed time for a whole unit of anything yet; leave the
             # anchor (and stored carry) untouched so fractions keep banking
             # against the growing elapsed window.
@@ -652,6 +701,11 @@ class PlanetaryService:
             carry[col] = remainder
 
         carry["research"] = research_produced - research_gained
+        # Bank the surplus-pioneer fractional remainder only when the faucet is
+        # active or already carrying — don't pollute every researching planet's
+        # carry dict with a 0.0 surplus key.
+        if surplus_rate > 0 or "surplus_pioneers" in carry:
+            carry["surplus_pioneers"] = surplus_produced - surplus_gained
 
         new_events = dict(events)
         new_events["production_carry"] = carry
@@ -659,6 +713,10 @@ class PlanetaryService:
         # carry the key) — don't pollute every producing planet's JSONB with a 0.
         if research_gained > 0 or "research_points" in events:
             new_events["research_points"] = int(events.get("research_points", 0) or 0) + research_gained
+        # Likewise stamp surplus_pioneers only when whole pioneers accrued or the
+        # counter already exists, so an empty/un-owned planet's JSONB stays clean.
+        if surplus_gained > 0 or "surplus_pioneers" in events:
+            new_events["surplus_pioneers"] = int(events.get("surplus_pioneers", 0) or 0) + surplus_gained
         planet.active_events = new_events
         # Advance the anchor by ONLY the consumed (capped) window, not to now, so
         # a backlog > 24h drains 24h per subsequent tick rather than being
@@ -672,6 +730,7 @@ class PlanetaryService:
             f"Lazy production on planet {planet.id}: "
             + ", ".join(f"+{g} {c}" for c, (g, _) in gains.items() if g > 0)
             + (f", +{research_gained} research" if research_gained > 0 else "")
+            + (f", +{surplus_gained} surplus_pioneers" if surplus_gained > 0 else "")
         )
         return True
 

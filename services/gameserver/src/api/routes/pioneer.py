@@ -29,11 +29,13 @@ from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.planet import Planet
 from src.models.ship import Ship
+from src.models.station import Station, StationClass
 from src.models.migration_contract import (
     MigrationContract,
     MigrationContractStatus,
 )
 from src.services import pioneer_service
+from src.services.pioneer_service import SurplusSaleError
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,22 @@ class OfficeOut(BaseModel):
     cargo_colonists: int
     cargo_free: int
     contracts: List[ContractOut]
+
+
+class SurplusSellRequest(BaseModel):
+    planet_id: str
+    # None / omitted = sell the planet's entire accrued surplus.
+    quantity: Optional[int] = Field(default=None, gt=0)
+
+
+class SurplusSellOut(BaseModel):
+    planet_id: str
+    planet_name: str
+    sold: int
+    price_per_pioneer: int
+    credits_earned: int
+    surplus_remaining: int
+    player_credits: int
 
 
 # ----------------------------------------------------------------------------
@@ -132,6 +150,27 @@ def _active_ship(player: Player, db: Session) -> Ship:
     if not ship:
         raise HTTPException(status_code=404, detail="No active ship found")
     return ship
+
+
+def _require_docked_at_class0(player: Player, db: Session) -> Station:
+    """Assert the player is docked at a Class-0 station (the canonical Pioneer
+    Office venue, lifecycle.md §1.4) and return it. The planet-surplus SALE
+    happens at the station — distinct from the population-hub LANDED hub-load
+    path above (which the existing endpoints gate on `is_landed`)."""
+    if not player.is_docked or not player.current_port_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be docked at a Class-0 station with a Pioneer Office.",
+        )
+    station = db.query(Station).filter(Station.id == player.current_port_id).first()
+    if station is None:
+        raise HTTPException(status_code=404, detail="Docked station not found")
+    if station.station_class != StationClass.CLASS_0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The Pioneer Office that buys planet surplus operates only at a Class-0 station.",
+        )
+    return station
 
 
 # ----------------------------------------------------------------------------
@@ -363,3 +402,43 @@ async def cancel_contract(
     db.commit()
     db.refresh(contract)
     return _contract_out(contract)
+
+
+@router.post("/surplus/sell", response_model=SurplusSellOut)
+async def sell_planet_surplus(
+    req: SurplusSellRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Sell an owned planet's accrued SURPLUS PIONEERS at a Class-0 Pioneer
+    Office (lifecycle.md §1.4 "Colonist sales").
+
+    Distinct from the hub-load / migration-contract ferry path: the surplus is
+    minted by the planet's production tick (planetary_service) into
+    active_events['surplus_pioneers']; here the docked Pioneer Office buys it out
+    at 30-80 cr/pioneer (COMMODITY_PRICE_RANGES['colonists']), DECREMENTING the
+    accrued surplus under the planet row lock in the same txn as the credit — so
+    the faucet is bounded (no infinite sale). Omit ``quantity`` to sell the whole
+    accrued surplus."""
+    station = _require_docked_at_class0(player, db)
+
+    try:
+        planet_id = UUID(req.planet_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Planet not found")
+
+    try:
+        result = pioneer_service.sell_planet_surplus(
+            db,
+            player_id=player.id,
+            planet_id=planet_id,
+            station=station,
+            quantity=req.quantity,
+        )
+    except SurplusSaleError as exc:
+        # No mutation occurred (the service raises before any state change).
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    db.commit()
+    return SurplusSellOut(**result)
