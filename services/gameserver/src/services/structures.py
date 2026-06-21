@@ -155,14 +155,27 @@ def _seed_anchor_value(planet) -> datetime:
     if lp is not None:
         candidates.append(lp)
 
-    events = planet.active_events if isinstance(planet.active_events, dict) else {}
-    tmeta = events.get("terraforming") if isinstance(events.get("terraforming"), dict) else {}
-    terra_raw = tmeta.get("last_tick_at") or tmeta.get("started_at")
-    if terra_raw:
-        try:
-            candidates.append(_aware(datetime.fromisoformat(terra_raw)))
-        except (TypeError, ValueError):
-            pass
+    # Terraform inner anchor lives in active_events. Canonical storage is a LIST of event dicts —
+    # the {type: "terraforming", last_tick_at, ...} item that
+    # terraforming_service._get_terraforming_meta reads; some paths instead store active_events as a
+    # dict keyed by "terraforming". Read BOTH shapes so the seed sees the same anchor the body does.
+    ae = planet.active_events
+    tmeta = None
+    if isinstance(ae, list):
+        for ev in ae:
+            if isinstance(ev, dict) and ev.get("type") == "terraforming":
+                tmeta = ev
+                break
+    elif isinstance(ae, dict):
+        t = ae.get("terraforming")
+        tmeta = t if isinstance(t, dict) else None
+    if tmeta:
+        terra_raw = tmeta.get("last_tick_at") or tmeta.get("started_at")
+        if terra_raw:
+            try:
+                candidates.append(_aware(datetime.fromisoformat(terra_raw)))
+            except (TypeError, ValueError):
+                pass
 
     if planet.under_siege and planet.siege_started_at:
         applied_turns = max(0, (planet.siege_turns or 0) - SIEGE_TURNS_THRESHOLD)
