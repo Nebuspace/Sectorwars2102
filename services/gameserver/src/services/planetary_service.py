@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func, text
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import OperationalError
 import logging
 
@@ -124,6 +125,31 @@ DEFENSE_DAMAGE_REDUCTION_PER_LEVEL = 0.05
 # 5/turn) becomes capture-vulnerable after ~20 canonical days under siege.
 # Runs through GAME_TIME_SCALE like every other duration.
 SIEGE_TURN_HOURS = 24.0
+
+# Siege stockpile plunder (FEATURES/planets/defense.md "Siege" → "Resource theft":
+# "a fraction of generated commodities should transfer to the besieger" — was
+# 📐 Design-only, "penalty is applied but no transfer". This is that transfer.
+# Each APPLIED siege turn skims a small fraction of the besieged planet's
+# stockpiles (fuel_ore / organics / equipment) into the besieger's hold. It runs
+# inside _apply_siege_turn, which fires EXACTLY ONCE per applied siege turn (the
+# advance_siege anchor — siege_turns — guarantees a turn is applied at most once),
+# so the skim is idempotent across Loop-A re-reads / scheduler sweeps: no
+# double-skim, no skim per Loop-A pass.
+#
+# NO-CANON: defense.md says "a fraction" but gives no number. SIEGE_STOCKPILE_
+# SKIM_FRACTION = 0.05 (5% of each stockpile commodity per applied siege turn) is
+# a deliberately CONSERVATIVE choice — at 5%/day a stockpile decays geometrically
+# (≈ half drained after ~14 siege turns), so a sustained siege meaningfully bleeds
+# the colony without instantly emptying it on the first applied turn. FLAGGED for
+# DECISIONS; easier to raise than to claw back an over-tuned plunder faucet.
+SIEGE_STOCKPILE_SKIM_FRACTION = 0.05  # NO-CANON: stockpile fraction skimmed per applied siege turn
+# The three plunderable planetary stockpile columns and the cargo-contents key
+# each maps to (matching combat_service._transfer_cargo's commodity contents).
+SIEGE_STOCKPILE_COMMODITIES = (
+    ("fuel_ore", "ore"),
+    ("organics", "organics"),
+    ("equipment", "equipment"),
+)
 
 # Shield Generator Levels (0-10)
 # Uses planet.defense_shields to track generator level, planet.shields for strength
@@ -1245,11 +1271,122 @@ class PlanetaryService:
                 f"planet is now vulnerable to capture"
             )
 
+        # 5. Resource theft (defense.md "Siege" → "Resource theft"): skim a small
+        # fraction of the besieged planet's stockpiles to the besieger this turn.
+        # This is the ONE per-applied-siege-turn path, so the skim happens exactly
+        # once per turn (idempotent across Loop-A re-reads — no double-skim).
+        plundered = self._skim_siege_stockpiles(planet)
+        if plundered:
+            effects_applied["stockpilePlunder"] = plundered
+
         # Increment siege turn counter
         planet.siege_turns = (planet.siege_turns or 0) + 1
         effects_applied["siegeTurns"] = planet.siege_turns
 
         return effects_applied
+
+    def _skim_siege_stockpiles(self, planet: Planet) -> Dict[str, int]:
+        """Transfer a conservative fraction of the besieged planet's stockpiles to
+        the besieger (defense.md "Siege" → "Resource theft").
+
+        Called from _apply_siege_turn — i.e. exactly ONCE per APPLIED siege turn
+        (siege_turns is the applied-turn marker; advance_siege only applies the
+        pending = elapsed - applied delta), so this is idempotent: no double-skim
+        across Loop-A re-reads or scheduler sweeps.
+
+        Skims SIEGE_STOCKPILE_SKIM_FRACTION of each plunderable stockpile column
+        (fuel_ore / organics / equipment) off the planet and deposits the looted
+        commodities into the besieger's current ship hold, clamped to the ship's
+        remaining cargo capacity (mirroring combat_service._transfer_cargo so the
+        plunder cannot overflow the besieger's hold). The planet row is already
+        held by the siege path (the caller's settle()/read lock); the besieger row
+        + ship row are locked here before any mutation. Nothing leaves the planet
+        unless it is accepted by the besieger's hold — credits/units are conserved.
+
+        Returns the per-commodity amounts actually moved (empty if nothing moved).
+        """
+        attacker_id = planet.siege_attacker_id
+        if not attacker_id:
+            return {}
+
+        # Compute the would-be skim per stockpile column FIRST; if the planet has
+        # nothing worth taking, do no work (and acquire no locks).
+        wanted: Dict[str, int] = {}  # cargo-contents key -> qty wanted off the planet
+        col_for_key: Dict[str, str] = {}  # cargo-contents key -> planet column name
+        for column, cargo_key in SIEGE_STOCKPILE_COMMODITIES:
+            stock = int(getattr(planet, column, 0) or 0)
+            if stock <= 0:
+                continue
+            take = int(stock * SIEGE_STOCKPILE_SKIM_FRACTION)
+            if take <= 0:
+                continue
+            wanted[cargo_key] = take
+            col_for_key[cargo_key] = column
+        if not wanted:
+            return {}
+
+        # Lock the besieger (player row) THEN the ship row before mutating — same
+        # lock order combat uses (planet row already held by the caller).
+        besieger = (
+            self.db.query(Player)
+            .filter(Player.id == attacker_id)
+            .with_for_update()
+            .first()
+        )
+        if not besieger or not besieger.current_ship_id:
+            # Besieger gone or in no ship to receive cargo — skim nothing this turn
+            # (defense.md says "transfer to the besieger"; with no hold, no transfer).
+            return {}
+
+        ship = (
+            self.db.query(Ship)
+            .filter(Ship.id == besieger.current_ship_id)
+            .with_for_update()
+            .first()
+        )
+        if not ship:
+            return {}
+
+        ship_cargo = ship.cargo or {}
+        contents: Dict[str, int] = dict(ship_cargo.get("contents") or {})
+        capacity = int(ship_cargo.get("capacity", 0) or 0)
+        used = sum(int(q) for q in contents.values() if isinstance(q, (int, float)))
+        remaining = max(0, capacity - used)
+        if remaining <= 0:
+            return {}
+
+        moved: Dict[str, int] = {}
+        for cargo_key, take in wanted.items():
+            if remaining <= 0:
+                break
+            move = min(take, remaining)
+            if move <= 0:
+                continue
+            column = col_for_key[cargo_key]
+            # Remove from the planet stockpile (never below zero) ...
+            current_stock = int(getattr(planet, column, 0) or 0)
+            move = min(move, current_stock)
+            if move <= 0:
+                continue
+            setattr(planet, column, current_stock - move)
+            # ... and add to the besieger's hold.
+            contents[cargo_key] = int(contents.get(cargo_key, 0)) + move
+            remaining -= move
+            moved[cargo_key] = move
+
+        if not moved:
+            return {}
+
+        ship_cargo["contents"] = contents
+        ship_cargo["used"] = sum(int(q) for q in contents.values())
+        ship.cargo = ship_cargo
+        flag_modified(ship, "cargo")
+
+        logger.info(
+            "Siege plunder: planet %s skimmed %s to besieger %s (ship %s)",
+            planet.id, moved, besieger.id, ship.id,
+        )
+        return moved
 
     def advance_siege(self, planet: Planet, *, _via_settle: bool = False) -> bool:
         """
