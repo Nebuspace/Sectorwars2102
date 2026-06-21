@@ -164,6 +164,84 @@ class RenameResponse(BaseModel):
     new_name: str
 
 
+# Landing-rights ACL (WO-G16; FEATURES/planets/colonization.md "Landing rights").
+_LANDING_MODES = ("public", "team_only", "private", "whitelist", "denylist")
+
+
+class LandingRightsRequest(BaseModel):
+    """Owner-only landing-rights configuration. ``whitelist``/``denylist`` are
+    only meaningful for the matching mode but are always accepted + stored so a
+    mode flip back-and-forth preserves the lists."""
+    mode: str = Field(..., pattern="^(public|team_only|private|whitelist|denylist)$")
+    # Bounded to keep the per-planet JSONB from unbounded owner-driven growth.
+    whitelist: List[str] = Field(default_factory=list, max_length=500)
+    denylist: List[str] = Field(default_factory=list, max_length=500)
+
+
+class LandingRightsResponse(BaseModel):
+    success: bool
+    message: str
+    planet_id: str
+    mode: str
+    whitelist: List[str]
+    denylist: List[str]
+
+
+def _check_landing_allowed(planet: Planet, player: Player, db: Session) -> Optional[str]:
+    """Landing-rights ACL gate (WO-G16). Returns ``None`` when the player may
+    land, else a human-readable denial reason. READ-ONLY.
+
+    Invariants (canon — colonization.md / warp-gates.md):
+      - The owner may ALWAYS land on their own planet (every mode).
+      - Population hubs are never gated (see [[population-hubs-are-landable]]) —
+        they are public welcome worlds.
+      - NULL/absent landing_rights ⇒ ``public`` (backward-compatible default).
+    """
+    # Owner always lands; hubs are always public.
+    if planet.owner_id is not None and planet.owner_id == player.id:
+        return None
+    is_hub = bool(planet.is_population_hub or (planet.population or 0) >= 1_000_000)
+    if is_hub:
+        return None
+
+    rights = planet.landing_rights or {}
+    mode = rights.get("mode", "public")
+    # Null/absent landing_rights already defaulted mode→"public" above (the canon
+    # backward-compatible default: anyone may land). But an EXPLICIT yet
+    # unrecognized mode means the stored ACL is corrupt/tampered — for an
+    # access-control gate the conservative default is fail-CLOSED: deny
+    # non-owners. The owner still always lands (early return) and can re-set a
+    # valid mode via the setter. (WO-G16 reviewer LOW: fail-closed on bad config.)
+    if mode not in _LANDING_MODES:
+        return "This planet's landing rules are misconfigured; contact the owner."
+
+    if mode == "public":
+        return None
+    if mode == "private":
+        return "This planet is private — only its owner may land."
+    if mode == "team_only":
+        # Owner + members of the owner's team. A teamless owner ⇒ owner-only.
+        if planet.owner_id is None:
+            return "This planet restricts landing to the owner's team."
+        owner = db.query(Player).filter(Player.id == planet.owner_id).first()
+        owner_team = owner.team_id if owner else None
+        if owner_team is not None and player.team_id is not None and player.team_id == owner_team:
+            return None
+        return "This planet restricts landing to the owner's team."
+    if mode == "whitelist":
+        allowed = {str(x) for x in (rights.get("whitelist") or [])}
+        if str(player.id) in allowed:
+            return None
+        return "You are not on this planet's landing whitelist."
+    if mode == "denylist":
+        denied = {str(x) for x in (rights.get("denylist") or [])}
+        if str(player.id) in denied:
+            return "You are barred from landing on this planet."
+        return None
+
+    return None  # unreachable; default-open
+
+
 # Planet Landing/Departure Endpoints
 
 @router.post("/{planet_id}/claim", response_model=ClaimResponse)
@@ -870,6 +948,65 @@ async def rename_planet(
     return _rename_planet_by_discoverer(planet_id, request, player, db)
 
 
+@router.put("/{planet_id}/landing-rights", response_model=LandingRightsResponse)
+async def set_landing_rights(
+    planet_id: str,
+    request: LandingRightsRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Set a planet's landing-rights ACL (WO-G16; colonization.md "Landing
+    rights"). Owner-only. Stores ``{mode, whitelist[], denylist[]}``; the lists
+    are validated as UUIDs and always persisted (so toggling modes is lossless).
+    Mode changes apply to subsequent landing attempts; ships already on-planet
+    are not evicted."""
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    # Lock the row to match the sibling owner-write convention (rename/claim).
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+    if planet.owner_id is None or planet.owner_id != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the planet's owner can set landing rights.",
+        )
+
+    def _norm_ids(raw: List[str]) -> List[str]:
+        out: List[str] = []
+        for x in raw:
+            try:
+                out.append(str(UUID(str(x))))
+            except (ValueError, AttributeError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid player ID in landing list: {x!r}",
+                )
+        return sorted(set(out))  # dedupe; order-insensitive for an ACL
+
+    whitelist = _norm_ids(request.whitelist)
+    denylist = _norm_ids(request.denylist)
+    planet.landing_rights = {
+        "mode": request.mode,
+        "whitelist": whitelist,
+        "denylist": denylist,
+    }
+    flag_modified(planet, "landing_rights")
+    db.commit()
+
+    return LandingRightsResponse(
+        success=True,
+        message=f"Landing rights for {planet.name} set to '{request.mode}'.",
+        planet_id=str(planet.id),
+        mode=request.mode,
+        whitelist=whitelist,
+        denylist=denylist,
+    )
+
+
 @router.post("/land", response_model=LandResponse)
 async def land_on_planet(
     request: LandRequest,
@@ -960,6 +1097,13 @@ async def land_on_planet(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This planet is unclaimed. You must claim it first before landing. Use POST /planets/{id}/claim"
         )
+
+    # Landing-rights ACL (WO-G16). Owner + hubs always pass; otherwise the
+    # planet's configured mode (public/team_only/private/whitelist/denylist)
+    # decides. 403 on a denial so the client distinguishes it from a bad request.
+    denial = _check_landing_allowed(planet, player, db)
+    if denial is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=denial)
 
     # Perform landing
     player.is_landed = True

@@ -147,8 +147,15 @@ class Planet(Base):
     # Holds terraform_meta.last_settle_at (the spine monotonic gate / event-window key) and, in
     # K1b, the grid layout (plots/economy/lab/defense/build-queue). NEVER an ALTER of active_events.
     structures = Column(JSONB, nullable=True)
+    # Landing-rights ACL (WO-G16; FEATURES/planets/colonization.md "Landing rights").
+    # Additive/nullable — null ⇒ public (anyone may land; backward-compatible default).
+    # Shape: {"mode": "public|team_only|private|whitelist|denylist",
+    #         "whitelist": [player_uuid,...], "denylist": [player_uuid,...]}.
+    # Enforced at land-time only (mode changes apply to subsequent landings; no
+    # eviction of ships already on-planet). tax_rate is a SEPARATE, Max-gated axis.
+    landing_rights = Column(JSONB, nullable=True)
     description = Column(String, nullable=True)
-    
+
     # Siege information
     under_siege = Column(Boolean, nullable=False, default=False)
     siege_started_at = Column(DateTime(timezone=True), nullable=True)
