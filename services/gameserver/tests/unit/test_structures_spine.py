@@ -13,6 +13,15 @@ import pytest
 import src.services.structures as S
 
 
+@pytest.fixture(autouse=True)
+def _noop_flag_modified(monkeypatch):
+    """These DB-free tests use SimpleNamespace planets; sqlalchemy.flag_modified requires a mapped
+    instance. The real flag_modified is exercised in the in-process dev proof against a real Planet
+    row. Reassigning planet.structures (which the code also does) is what actually marks the column
+    dirty on a mapped instance — flag_modified is belt-and-suspenders."""
+    monkeypatch.setattr(S, "flag_modified", lambda *a, **k: None)
+
+
 def _planet(**kw):
     p = types.SimpleNamespace()
     p.structures = kw.get("structures")
