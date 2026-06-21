@@ -152,14 +152,18 @@ class RealTimeMarketService:
                 # No recent transactions, return default snapshot
                 return self._create_default_snapshot(commodity)
             
-            # Calculate metrics
-            current_price = float(transactions[0].price)
+            # Calculate metrics. The enhanced model's price-per-unit column is
+            # unit_price (there is NO `price` attribute) — reading `.price` here
+            # raised AttributeError on every call, was swallowed by the broad
+            # except below, and silently returned a fabricated default snapshot
+            # (WO-RTM1 paired fix; same root cause as _get_sector_prices).
+            current_price = float(transactions[0].unit_price)
             volume_24h = sum(t.quantity for t in transactions)
-            high_24h = max(float(t.price) for t in transactions)
-            low_24h = min(float(t.price) for t in transactions)
-            
+            high_24h = max(float(t.unit_price) for t in transactions)
+            low_24h = min(float(t.unit_price) for t in transactions)
+
             # Price change calculation
-            oldest_price = float(transactions[-1].price)
+            oldest_price = float(transactions[-1].unit_price)
             price_change_24h = current_price - oldest_price
             price_change_percent = (price_change_24h / oldest_price * 100) if oldest_price > 0 else 0
 
@@ -225,19 +229,23 @@ class RealTimeMarketService:
         Get commodity prices by sector
         Shows regional price variations
         """
-        # Get recent transactions grouped by sector
+        # Get recent transactions grouped by sector.
+        # Reads enhanced_market_transactions (the live trade ledger). Its
+        # human-readable Integer sector_id column matches the Dict[int, float]
+        # contract directly, so no port/sector joins are needed. unit_price is
+        # the enhanced model's price-per-unit column (aliased back to avg_price
+        # so the downstream row shape is unchanged).
         stmt = text("""
-            SELECT 
-                s.id as sector_id,
-                AVG(mt.price) as avg_price,
+            SELECT
+                mt.sector_id as sector_id,
+                AVG(mt.unit_price) as avg_price,
                 COUNT(*) as transaction_count
-            FROM market_transactions mt
-            JOIN ports p ON mt.station_id = p.id
-            JOIN sectors s ON p.sector_id = s.id
-            WHERE 
+            FROM enhanced_market_transactions mt
+            WHERE
                 mt.commodity = :commodity
                 AND mt.timestamp > :cutoff_time
-            GROUP BY s.id
+                AND mt.sector_id IS NOT NULL
+            GROUP BY mt.sector_id
             HAVING COUNT(*) >= 5
             ORDER BY transaction_count DESC
             LIMIT 20
