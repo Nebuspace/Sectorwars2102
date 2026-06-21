@@ -100,7 +100,14 @@ def _ensure_market_prices(db: Session, station: Station) -> None:
         MarketPrice.station_id == station.id
     ).first()
     if not has_rows:
-        TradingService(db).update_market_prices(station.id)
+        # First-ever market read for this station: no MarketPrice rows exist
+        # yet, so this MUST produce rows. maybe_recompute_price (WO-DBB-EC4)
+        # rate-limits ONLY when last_price_recomputed_at is already set, and on
+        # a freshly-imported station it is NULL — so this first call always
+        # recomputes and creates the rows. Subsequent hot reads within the EC4
+        # wall-clock window are debounced (the station is flagged for the
+        # flush_pending_recomputes sweep) instead of repricing on every request.
+        TradingService(db).maybe_recompute_price(station.id)
         db.commit()
     elif TradingService(db).lazy_market_tick(station):
         db.commit()

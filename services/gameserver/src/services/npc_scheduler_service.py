@@ -377,6 +377,20 @@ STATION_RECOVERY_CHECK_SECONDS = int(
     os.environ.get("STATION_RECOVERY_CHECK_SECONDS", str(50 * 60))
 )
 
+# Price-recompute flush cadence (WO-DBB-EC4, ADR-0051 SK30). The hot
+# market-read path debounces full price recomputes to once per ~1 wall-clock
+# second per station (TradingService.maybe_recompute_price); a suppressed
+# recompute flags Station.pending_price_recomputation. This sweep DRIVES
+# TradingService.flush_pending_recomputes to settle those deferred reprices so
+# a flagged station does not stay stale. The durable per-station state is the
+# pending_price_recomputation flag (survives a restart; the process-relative
+# elapsed counter does not — a re-run just finds the flag cleared and no-ops).
+# A ~60s cadence keeps deferred reprices fresh without churn; it is fine for
+# this to coincide with the tick wake (the sweep is cheap and idempotent).
+PRICE_RECOMPUTE_FLUSH_SECONDS = int(
+    os.environ.get("PRICE_RECOMPUTE_FLUSH_SECONDS", str(60))
+)
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -3245,6 +3259,41 @@ def _run_station_recovery_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_price_recompute_flush_sync() -> int:
+    """Settle every station flagged pending_price_recomputation (WO-DBB-EC4,
+    ADR-0051 SK30) — the deferred half of the per-station 1s price-recompute
+    rate limit. The hot market-read path debounces full recomputes to once per
+    ~1 wall-clock second per station; a suppressed recompute sets
+    Station.pending_price_recomputation. This sweep DRIVES
+    TradingService.flush_pending_recomputes (which holds the per-station lock +
+    flag re-check + per-station try/except) so a flagged station does not stay
+    stale.
+
+    DISCIPLINE — own SessionLocal (never the request session, never the async
+    engine), commit after the flush, never reuse the request connection. The
+    durable per-station state is the pending_price_recomputation flag (survives
+    a restart; a re-run finds the flag cleared and no-ops). No advisory lock is
+    taken here: flush_pending_recomputes locks each station row individually, so
+    a second instance racing the sweep is serialized per-row by with_for_update
+    and the post-lock flag re-check makes a duplicate reprice a no-op.
+
+    Returns the count of stations recomputed (0 on the nothing-pending path)."""
+    from src.core.database import SessionLocal
+    from src.services.trading_service import TradingService
+
+    db = SessionLocal()
+    try:
+        flushed = TradingService(db).flush_pending_recomputes()
+        db.commit()
+        return flushed
+    except Exception:
+        logger.exception("Price-recompute flush sweep failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
@@ -4001,3 +4050,25 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: station recovery sweep crashed (loop continues)")
+
+        # Price-recompute flush sweep (WO-DBB-EC4, ADR-0051 SK30) — settle any
+        # station the hot read path deferred (pending_price_recomputation set
+        # when a recompute was rate-limited inside the ~1s wall-clock window)
+        # so a flagged station does not stay stale. Own session, per-station
+        # row-lock + flag re-check inside flush_pending_recomputes, per-station
+        # try/except — same isolation discipline as the other sweeps. A ~60s
+        # cadence keeps deferred reprices fresh; the flag is durable, so a
+        # restart just resumes from whatever is still flagged.
+        if elapsed % PRICE_RECOMPUTE_FLUSH_SECONDS == 0:
+            try:
+                flushed = await asyncio.to_thread(_run_price_recompute_flush_sync)
+                if flushed:
+                    logger.info(
+                        "NPC scheduler: price-recompute flush — repriced %d "
+                        "pending station(s)",
+                        flushed,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: price-recompute flush sweep crashed (loop continues)")

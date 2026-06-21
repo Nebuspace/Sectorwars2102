@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, Table, func
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, Table, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
@@ -78,6 +78,16 @@ class Station(Base):
     owner_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    # Per-station 1s price-recompute rate limit (ADR-0051 SK30, WO-DBB-EC4).
+    # last_price_recomputed_at is the wall-clock anchor of the most recent
+    # full price recompute via TradingService.maybe_recompute_price; a second
+    # recompute within EC4_RECOMPUTE_WINDOW_SECONDS is suppressed and instead
+    # flags pending_price_recomputation, which the npc_scheduler periodic
+    # flush_pending_recomputes sweep clears by repricing the deferred station.
+    # NOTE: this is a WALL-CLOCK debounce on the hot read path, ORTHOGONAL to
+    # the existing REGEN_TICK_HOURS canonical-hours lazy regen gate.
+    last_price_recomputed_at = Column(DateTime(timezone=True), nullable=True)
+    pending_price_recomputation = Column(Boolean, nullable=False, server_default=text("false"), default=False)
     
     # Station properties
     station_class = Column(Enum(StationClass, name="station_class"), nullable=False)

@@ -339,6 +339,16 @@ CLASS_9_SELL_PREMIUM = 1.25  # Nova charges players 25% more for what it sells
 # "once per game tick / hour" docstring. NO-CANON on the period itself.
 REGEN_TICK_HOURS = 1.0
 
+# Per-station wall-clock price-recompute debounce window, in SECONDS
+# (ADR-0051 SK30, WO-DBB-EC4). A full price recompute on the hot market-read
+# path is rate-limited to at most once per this window per station; a recompute
+# attempt inside the window is suppressed and instead flags the station for a
+# deferred reprice via flush_pending_recomputes (driven by the npc_scheduler).
+# This is a WALL-CLOCK debounce (real seconds), ORTHOGONAL to REGEN_TICK_HOURS
+# (which gates the canonical-hours lazy stock-regen tick). It exists to cap the
+# repricing churn when many players hammer the same station within a second.
+EC4_RECOMPUTE_WINDOW_SECONDS = 1.0
+
 
 class TradingService:
     """Service for handling all trading-related operations including
@@ -627,6 +637,126 @@ class TradingService:
             len(updated),
         )
         return updated
+
+    def maybe_recompute_price(self, station_id) -> Dict[str, Any]:
+        """Rate-limited price recompute on the hot market-read path
+        (ADR-0051 SK30, WO-DBB-EC4).
+
+        At most one full recompute per EC4_RECOMPUTE_WINDOW_SECONDS of
+        WALL-CLOCK time per station. The station row is locked first
+        (station-first lock order, matching update_market_prices and the trade
+        paths); update_market_prices re-locks the same row within this same
+        transaction, which is fine — re-entrant on one connection.
+
+        Behavior:
+          * If last_price_recomputed_at is set AND less than the window has
+            elapsed since it, set pending_price_recomputation=True and return
+            {} WITHOUT recomputing (rate-limited). The deferred reprice is
+            picked up later by flush_pending_recomputes (driven by the
+            npc_scheduler periodic sweep).
+          * Otherwise recompute via update_market_prices, stamp
+            last_price_recomputed_at=now and clear
+            pending_price_recomputation, then return the recompute result.
+
+        The caller owns the commit (the hot read path commits after this).
+        """
+        # Lock the station row first (same order as update_market_prices /
+        # trade paths). populate_existing refreshes the identity-map instance
+        # so the window check below reads the latest anchor under the lock.
+        station = (
+            self.db.query(Station)
+            .filter(Station.id == station_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not station:
+            logger.error(
+                "Station %s not found for rate-limited price recompute", station_id
+            )
+            return {}
+
+        now = datetime.now(UTC)
+        last = station.last_price_recomputed_at
+        if last is not None:
+            # last is stored timezone-aware (DateTime(timezone=True)); guard a
+            # naive value defensively so a stray naive row can't crash the
+            # subtraction with a tz-mismatch.
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=UTC)
+            if (now - last).total_seconds() < EC4_RECOMPUTE_WINDOW_SECONDS:
+                # Rate-limited: defer the recompute to the flush sweep.
+                station.pending_price_recomputation = True
+                return {}
+
+        # Window elapsed (or never recomputed): do the recompute. It re-locks
+        # this same row in-txn (re-entrant) and runs the lazy regen tick.
+        result = self.update_market_prices(station_id)
+        station.last_price_recomputed_at = now
+        station.pending_price_recomputation = False
+        return result
+
+    def flush_pending_recomputes(self) -> int:
+        """Reprice every station flagged pending_price_recomputation
+        (ADR-0051 SK30, WO-DBB-EC4) — the deferred half of the EC4 rate limit.
+
+        maybe_recompute_price sets pending_price_recomputation=True when a hot
+        read tried to recompute inside the wall-clock window; this sweep (wired
+        into the npc_scheduler periodic loop) settles those deferred reprices so
+        a flagged station does not stay stale indefinitely.
+
+        Per-station defensive try/except so one bad station cannot abort the
+        sweep. The caller owns the session lifecycle; update_market_prices
+        flushes its own changes. Returns the count of stations recomputed.
+        """
+        flushed = 0
+        pending_ids = (
+            self.db.query(Station.id)
+            .filter(Station.pending_price_recomputation.is_(True))
+            .all()
+        )
+        now = datetime.now(UTC)
+        for (station_id,) in pending_ids:
+            # Per-station SAVEPOINT isolation (WO-B1 pattern, sweep_pending_engagements 4dac148): a
+            # DB-level error (deadlock on the lock, MarketPrice upsert IntegrityError, flush) aborts
+            # the whole transaction — a bare try/except would catch the Python exception but leave the
+            # session poisoned, failing every later iteration + the caller's commit (discarding all
+            # earlier reprices). begin_nested() rolls back only this row, releasing its lock, so the
+            # sweep genuinely continues with earlier rows intact.
+            sp = self.db.begin_nested()
+            try:
+                # Re-read + lock the station so a concurrent recompute can't
+                # race us, and re-check the flag under the lock (a hot read may
+                # have already cleared it between the candidate query and here).
+                station = (
+                    self.db.query(Station)
+                    .filter(Station.id == station_id)
+                    .populate_existing()
+                    .with_for_update()
+                    .first()
+                )
+                if station is None or not station.pending_price_recomputation:
+                    sp.rollback()
+                    continue
+                self.update_market_prices(station_id)
+                station.last_price_recomputed_at = now
+                station.pending_price_recomputation = False
+                sp.commit()
+                flushed += 1
+            except Exception:
+                sp.rollback()
+                logger.warning(
+                    "flush_pending_recomputes: reprice failed for station %s "
+                    "(sweep continues)",
+                    station_id,
+                    exc_info=True,
+                )
+        if flushed:
+            logger.info(
+                "flush_pending_recomputes: recomputed %d pending station(s)",
+                flushed,
+            )
+        return flushed
 
     def lazy_market_tick(self, station: Station) -> bool:
         """Advance-on-read market tick (terraforming/citadel lazy pattern).
