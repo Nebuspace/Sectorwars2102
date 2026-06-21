@@ -14,6 +14,7 @@ from sqlalchemy.exc import OperationalError
 import logging
 
 from src.core.game_time import canonical_hours_since
+from src.services.structures import _via_settle_guard
 from src.models.player import Player
 from src.models.planet import Planet, PlanetType, player_planets
 from src.models.sector import Sector
@@ -558,7 +559,7 @@ class PlanetaryService:
         )
         return True
 
-    def apply_resource_production(self, planet: Planet) -> bool:
+    def apply_resource_production(self, planet: Planet, *, _via_settle: bool = False) -> bool:
         """Lazily accrue commodity production since planet.last_production.
 
         Mirrors apply_population_growth: production rates from
@@ -578,7 +579,13 @@ class PlanetaryService:
 
         Returns True if any state changed (whole units accrued, or the anchor
         was initialized/advanced) so callers know to commit.
+
+        ``_via_settle`` (CRT spine, WO-K1a): the structures.settle() spine passes True; any other
+        caller (direct/legacy, legit while DORMANT pre-cutover) leaves it False. Post-cutover a
+        False call is a stray surviving clock-writer — the guard makes it loud under tests (I5).
+        ``now`` is NOT a spine value here: this body reads its OWN wall-clock anchor as shipped.
         """
+        _via_settle_guard("apply_resource_production", _via_settle)
         now = datetime.now(UTC)
 
         if planet.last_production is None:
@@ -668,7 +675,7 @@ class PlanetaryService:
         )
         return True
 
-    def realize_production(self, planet: Planet) -> bool:
+    def realize_production(self, planet: Planet, *, _via_settle: bool = False) -> bool:
         """Force-advance one planet's commodity production to the canonical now.
 
         Scheduler/admin-facing alias for the lazy advance-on-read accrual
@@ -689,7 +696,9 @@ class PlanetaryService:
         Returns True if any state changed (units accrued, or the anchor was
         initialized/advanced) so the caller knows to commit.
         """
-        return self.apply_resource_production(planet)
+        # Thin force-alias: pass the spine token straight through to the engine (so a
+        # settle()-driven force-advance does not trip its own guard).
+        return self.apply_resource_production(planet, _via_settle=_via_settle)
 
     def allocate_colonists(
         self,
@@ -1181,7 +1190,7 @@ class PlanetaryService:
 
         return effects_applied
 
-    def advance_siege(self, planet: Planet) -> bool:
+    def advance_siege(self, planet: Planet, *, _via_settle: bool = False) -> bool:
         """
         Advance siege progression: apply every siege turn accrued since the
         siege began (same lazy advance-on-read pattern as colonist growth and
@@ -1200,7 +1209,11 @@ class PlanetaryService:
 
         Mutates the planet (morale, siege_turns); caller commits.
         Returns True if any turns were applied.
+
+        ``_via_settle`` (CRT spine): True from structures.settle()'s siege substep; reads its OWN
+        canonical anchor (siege_started_at) as shipped — no spine ``now`` threaded in.
         """
+        _via_settle_guard("advance_siege", _via_settle)
         if not planet.under_siege or not planet.siege_started_at:
             return False
 

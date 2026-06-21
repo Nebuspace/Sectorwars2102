@@ -13,6 +13,7 @@ from sqlalchemy import and_
 import logging
 
 from src.core.game_time import GAME_TIME_SCALE, canonical_hours_since, scaled_deadline
+from src.services.structures import _via_settle_guard
 from src.models.player import Player
 from src.models.planet import Planet, PlanetStatus, player_planets
 
@@ -333,7 +334,7 @@ class TerraformingService:
             "populationBonus": self._get_population_bonus_description(planet)
         }
 
-    def process_terraforming_tick(self, planet_id: UUID) -> Dict[str, Any]:
+    def process_terraforming_tick(self, planet_id: UUID, *, _via_settle: bool = False) -> Dict[str, Any]:
         """
         Advance terraforming progress by one tick.
 
@@ -343,7 +344,12 @@ class TerraformingService:
 
         Returns:
             Dict with tick processing results
+
+        ``_via_settle`` (CRT spine): this manual-tick verb has ZERO live call-sites today and is
+        slated for deletion in the Max-gated cutover (spec §3.3/§6.1 step 5). Guarded so any future
+        stray caller trips loudly under tests before the deletion lands.
         """
+        _via_settle_guard("process_terraforming_tick", _via_settle)
         planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
         if not planet:
             raise ValueError("Planet not found")
@@ -688,7 +694,7 @@ class TerraformingService:
             "status": planet.status.value
         }
 
-    def _advance_terraforming(self, planet: Planet) -> bool:
+    def _advance_terraforming(self, planet: Planet, *, _via_settle: bool = False) -> bool:
         """
         Lazily apply every population-scaled terraforming tick accrued since
         the project last advanced (advance-on-read — the codebase pattern
@@ -724,7 +730,11 @@ class TerraformingService:
         stays banked (mirrors the colonist-growth anchor pattern).
 
         Returns True if any state changed (caller commits).
+
+        ``_via_settle`` (CRT spine): True from structures.settle() step 2; reads its OWN canonical
+        anchor (active_events['terraforming']['last_tick_at']) as shipped — no spine ``now`` in.
         """
+        _via_settle_guard("_advance_terraforming", _via_settle)
         if not planet.terraforming_active or not planet.terraforming_start_time:
             return False
         if not planet.terraforming_target:

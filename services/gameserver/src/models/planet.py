@@ -142,6 +142,11 @@ class Planet(Base):
     last_attacked = Column(DateTime(timezone=True), nullable=True)
     last_production = Column(DateTime(timezone=True), nullable=True)
     active_events = Column(JSONB, nullable=False, default=[])
+    # CRT grid spine (WO-K1a): single-writer is structures.py. Nullable/additive — a planet with
+    # null structures is a legacy planet that structures.seed() cold-starts on first settle().
+    # Holds terraform_meta.last_settle_at (the spine monotonic gate / event-window key) and, in
+    # K1b, the grid layout (plots/economy/lab/defense/build-queue). NEVER an ALTER of active_events.
+    structures = Column(JSONB, nullable=True)
     description = Column(String, nullable=True)
     
     # Siege information

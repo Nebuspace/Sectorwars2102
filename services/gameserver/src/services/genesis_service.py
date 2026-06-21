@@ -526,6 +526,13 @@ class GenesisService:
         events["registration_status"] = registration
         planet.active_events = events
 
+        # --- Cold-start the CRT grid-spine structures column (WO-K1a-2) ---
+        # Every planet owns a structures column from birth: seeds terraform_meta.last_settle_at
+        # (the spine monotonic gate) + a forward legacy_seed snapshot for K1b. Touches no derived
+        # field, so genesis still derives citadel_level/max_population exactly as before.
+        from src.services.structures import seed as _seed_structures
+        _seed_structures(planet, db=self.db)
+
         # --- Deduct credits (tier sequence cost + registration fee) ---
         player.credits -= total_cost
 

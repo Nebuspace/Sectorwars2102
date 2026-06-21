@@ -38,6 +38,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.models.player import Player
 from src.models.planet import Planet
 from src.services import tech_tree
+from src.services.structures import _via_settle_guard
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +228,7 @@ def _zero_planet_faucet(planet: Planet) -> int:
     return rp
 
 
-def sweep_research_faucet(db: Session, planet: Planet) -> bool:
+def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = False) -> bool:
     """Drain one planet's research_points faucet into its owner's ledger.
 
     Called from inside ``_run_planetary_advance_sync`` AFTER
@@ -267,7 +268,12 @@ def sweep_research_faucet(db: Session, planet: Planet) -> bool:
     change, matching the realize_production/_advance_terraforming contract).
 
     The CALLER commits (per-planet commit/rollback isolation in the sweep loop).
+
+    ``_via_settle`` (CRT spine, WO-K1a): True from structures.settle() step 5 (the re-home target).
+    The scheduler's chained call (:1758) stays False until the Max-gated cutover removes it in the
+    SAME edit that flips the scheduler to settle(); guarded so a post-cutover stray trips loudly.
     """
+    _via_settle_guard("sweep_research_faucet", _via_settle)
     events = planet.active_events if isinstance(planet.active_events, dict) else {}
     this_planet_rp = int(events.get("research_points", 0) or 0)
 
