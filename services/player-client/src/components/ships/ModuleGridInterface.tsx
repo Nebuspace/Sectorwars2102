@@ -51,7 +51,19 @@ interface ModulesResponse {
   ship_type: string | null;
   module_slots: ModuleSlots | null;
   installed: Record<string, InstalledModule>;
+  // WO-GC-B: the Citizen cosmetic overlay (applied values, outside `installed`)
+  // + live membership status (greys the skin + label when lapsed).
+  cosmetics?: Record<string, string>;
+  is_galactic_citizen?: boolean;
 }
+
+// --- Galactic-Citizen L1 cosmetic catalog (mirrors server CITIZEN_COSMETICS) ---
+// Zero-stat overlays; the server is the source of truth + gates on membership.
+const CITIZEN_COSMETIC_CATALOG: { slot: string; label: string; values: string[] }[] = [
+  { slot: 'frame', label: 'Hull Frame', values: ['citizen_aurora', 'citizen_obsidian'] },
+  { slot: 'slot_glow', label: 'Slot-Glow', values: ['citizen_hue'] },
+  { slot: 'crest', label: 'Crest', values: ['citizen_sigil'] },
+];
 
 // --- client-side module catalog (mirrors ship_upgrade_service._MODULE_FAMILIES) ---
 interface ModuleFamily {
@@ -231,6 +243,27 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
     }
   };
 
+  // WO-GC-B: apply/clear a Citizen cosmetic overlay (server gates on membership).
+  const handleSetCosmetic = async (slot: string, value: string | null) => {
+    if (!canPerformAction() || actionLoading || !ship?.id) return;
+    try {
+      setActionLoading(true);
+      setActionMessage(null);
+      const result = await shipUpgradeAPI.setCosmetic(ship.id, slot, value);
+      if (result.success) {
+        setActionMessage(result.message || 'Cosmetic updated.');
+        await fetchModules();
+        onChanged?.();
+      } else {
+        setActionMessage(result.message || 'Cosmetic update failed');
+      }
+    } catch (err: any) {
+      setActionMessage(err?.message || 'Cosmetic update failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // CSS grid template from the lattice dimensions (cols×rows).
   const gridStyle = useMemo<React.CSSProperties>(() => {
     const cols = data?.module_slots?.cols ?? 0;
@@ -260,12 +293,31 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
 
   const slots = data.module_slots?.slots ?? [];
 
+  // WO-GC-B: cosmetic overlay + live membership. Cosmetics render as wrapper
+  // classes (CSS-driven skin/glow); a lapsed member's applied skin greys out.
+  const cosmetics = data.cosmetics ?? {};
+  const isCitizen = !!data.is_galactic_citizen;
+  const hasCosmetics = Object.keys(cosmetics).length > 0;
+  const wrapperClass = [
+    'module-grid-interface',
+    cosmetics.frame ? `gc-frame-${cosmetics.frame}` : '',
+    cosmetics.slot_glow ? `gc-glow-${cosmetics.slot_glow}` : '',
+    cosmetics.crest ? 'gc-has-crest' : '',
+    hasCosmetics && !isCitizen ? 'gc-lapsed' : '',
+  ].filter(Boolean).join(' ');
+
   return (
-    <div className="module-grid-interface">
+    <div className={wrapperClass} data-gc-citizen={isCitizen ? '1' : '0'}>
+      {cosmetics.crest && <div className="mgi-gc-crest" aria-hidden="true" title="Citizen crest" />}
       <div className="mgi-header">
         <h3>Module Bay</h3>
         <div className="mgi-ship-info">
           <span className="mgi-ship-name">{data.ship_name}</span>
+          {isCitizen && (
+            <span className="mgi-gc-badge" title="Galactic Citizen — cosmetic flair unlocked">
+              🌌 Galactic Citizen
+            </span>
+          )}
           <span className="mgi-credits">Credits: {credits.toLocaleString()}</span>
         </div>
       </div>
@@ -347,6 +399,45 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
           })}
         </div>
       )}
+
+      {/* WO-GC-B: Citizen cosmetic picker — BELOW the grid (secondary expression
+          affordance; keeps the primary slot grid above the fold — scroll-law).
+          Zero-stat flair, membership-gated; non-citizens see it disabled with a
+          tooltip (never a hidden control). */}
+      <div className="mgi-cosmetics">
+        <div className="mgi-cosmetics-head">
+          <span>🎨 Citizen Cosmetics</span>
+          {!isCitizen && <span className="mgi-cosmetics-locked">Galactic Citizen members only</span>}
+        </div>
+        <div className="mgi-cosmetics-rows">
+          {CITIZEN_COSMETIC_CATALOG.map((c) => (
+            <div className="mgi-cosmetic-row" key={c.slot}>
+              <span className="mgi-cosmetic-label">{c.label}</span>
+              <div className="mgi-cosmetic-options">
+                {c.values.map((v) => (
+                  <button
+                    key={v}
+                    className={`mgi-cosmetic-opt ${cosmetics[c.slot] === v ? 'is-selected' : ''}`}
+                    disabled={!isCitizen || actionLoading}
+                    onClick={() => handleSetCosmetic(c.slot, v)}
+                    title={isCitizen ? `Apply ${v.replace(/^citizen_/, '')}` : 'Requires Galactic Citizen membership'}
+                  >
+                    {v.replace(/^citizen_/, '')}
+                  </button>
+                ))}
+                <button
+                  className="mgi-cosmetic-opt is-clear"
+                  disabled={!isCitizen || actionLoading || !cosmetics[c.slot]}
+                  onClick={() => handleSetCosmetic(c.slot, null)}
+                  title="Clear this cosmetic"
+                >
+                  clear
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* --- catalog drawer (install) --- */}
       {action?.kind === 'install' && (

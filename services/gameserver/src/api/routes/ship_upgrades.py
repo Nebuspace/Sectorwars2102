@@ -20,7 +20,10 @@ from src.models.station import Station, StationType
 from src.models.faction import Faction
 from src.models.reputation import Reputation, ReputationLevel
 from src.services.ship_service import ShipService
-from src.services.ship_upgrade_service import ShipUpgradeService
+from src.services.ship_upgrade_service import (
+    ShipUpgradeService,
+    is_galactic_citizen as gc_is_galactic_citizen,
+)
 from src.services import maintenance_service
 from src.services.emergent_reputation_service import apply_emergent_action, FACTION_CODE_TO_TYPE
 
@@ -132,6 +135,12 @@ class ModuleInstallRequest(BaseModel):
 class ModuleRemoveRequest(BaseModel):
     ship_id: Optional[str] = None
     slot_index: int = Field(..., ge=0, description="Index of the ship's module slot to strip")
+
+
+class CosmeticRequest(BaseModel):
+    """WO-GC-B: apply (value set) or clear (value=null) a Citizen cosmetic."""
+    slot: str = Field(..., pattern="^(frame|slot_glow|crest)$")
+    value: Optional[str] = Field(None, max_length=64)
 
 
 class ShipPurchaseRequest(BaseModel):
@@ -725,12 +734,18 @@ async def get_ship_modules(
     module_slots = (spec.module_slots if spec else None) or None
     modules = ship.modules if isinstance(ship.modules, dict) else {}
     installed = modules.get("installed") if isinstance(modules.get("installed"), dict) else {}
+    cosmetics = modules.get("cosmetics") if isinstance(modules.get("cosmetics"), dict) else {}
     return {
         "ship_id": str(ship.id),
         "ship_name": ship.name,
         "ship_type": ship.type.value if ship.type else None,
         "module_slots": module_slots,
         "installed": installed,
+        # WO-GC-B: the Citizen cosmetic overlay + live membership status so the
+        # grid can render the skin/glow + the "Galactic Citizen" label (greyed
+        # when lapsed). cosmetics live OUTSIDE `installed` (never eat a slot).
+        "cosmetics": cosmetics,
+        "is_galactic_citizen": gc_is_galactic_citizen(db, player),
     }
 
 
@@ -771,6 +786,44 @@ async def remove_ship_module(
             detail=result.get("message", "Module remove failed"),
         )
     db.commit()
+    return result
+
+
+# --- Galactic-Citizen L1 cosmetics (WO-GC-B) -------------------------------
+
+@router.get("/{ship_id}/cosmetics")
+async def get_ship_cosmetics(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """The Citizen cosmetic catalog + the ship's applied overlay + the player's
+    live Citizen status. Owner-only; no mutation."""
+    service = ShipUpgradeService(db)
+    result = service.get_cosmetics(ship_id, player.id)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=result.get("message", "Could not read cosmetics"),
+        )
+    return result
+
+
+@router.post("/{ship_id}/cosmetics")
+async def set_ship_cosmetic(
+    ship_id: str,
+    request: CosmeticRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Apply or clear a Citizen cosmetic overlay (owner-only + Citizen-gated)."""
+    service = ShipUpgradeService(db)
+    result = service.set_cosmetic(ship_id, player.id, request.slot, request.value)
+    if not result.get("success"):
+        # 403 when the block is the membership gate; 400 otherwise.
+        code = status.HTTP_403_FORBIDDEN if result.get("requires_citizen") else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=code, detail=result.get("message", "Could not set cosmetic"))
+    db.commit()  # route owns the commit (service flushed) — matches install/remove
     return result
 
 

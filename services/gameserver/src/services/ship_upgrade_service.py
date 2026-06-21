@@ -48,6 +48,86 @@ logger = logging.getLogger(__name__)
 #     the consumers read (a follow-up WO).
 _EQUIPMENT_FAMILY_DEFERRED = frozenset({"harvester", "lander", "mining", "tractor"})
 
+# ============================================================================
+# GALACTIC-CITIZEN tier (WO-GC-B). The Citizen tier is DATA + an eligibility
+# predicate, never new power. Two pieces live here:
+#   1. requires_satisfied() — the shared eligibility resolver the kernel's
+#      `requires` seam dispatches on (None=open · "citizen"=membership ·
+#      {faction:tier}=reputation, deferred to GC-C/Exalted).
+#   2. CITIZEN_COSMETICS — the L1 zero-slot cosmetic catalog. EVERY entry is
+#      `effects: {}` (the P2W firewall: paid buys SHAPE/EXPRESSION, never power
+#      or income). Applied to Ship.modules.cosmetics (outside `installed`, so a
+#      skin never eats a finite slot). The income-fence CI test asserts this.
+# Canon: design-briefs/galactic-citizen-unified/03-spec.md §3.3/§4.1/§4.3/§4.4.
+# ============================================================================
+_CITIZEN_SUBSCRIPTION_TIER = "galactic_citizen"
+
+# Income effect-keys a Citizen surface may NEVER carry (the firewall, named at
+# the key level because income leaks through effects, not just classes).
+GC_INCOME_EFFECT_KEYS = frozenset({
+    "passive_income", "mining_efficiency", "cargo_bonus_percent",
+    "credit_bonus", "income_bonus", "trade_profit_bonus",
+})
+# Classes a Citizen-gated slot/module may never be (combat + income axes).
+GC_FORBIDDEN_CLASSES = frozenset({
+    "harvester", "mining", "weapon", "weapon_damage", "combat",
+})
+
+# L1 cosmetic catalog — zero-stat overlays keyed by cosmetic slot. Each carries
+# requires:"citizen" and effects:{} (firewall). Applying writes the chosen value
+# into Ship.modules.cosmetics[slot]; null clears it.
+CITIZEN_COSMETICS = {
+    "frame": {
+        "label": "Citizen Hull Frame",
+        "description": "A visible plating skin / silhouette accent on any owned ship.",
+        "requires": "citizen",
+        "effects": {},
+        "values": ["citizen_aurora", "citizen_obsidian"],
+    },
+    "slot_glow": {
+        "label": "Aurora Slot-Glow",
+        "description": "Installed-module slots render a Citizen hue (cosmetic glow).",
+        "requires": "citizen",
+        "effects": {},
+        "values": ["citizen_hue"],
+    },
+    "crest": {
+        "label": "Citizen Crest",
+        "description": "The SpaceDock build-card carries a Citizen sigil.",
+        "requires": "citizen",
+        "effects": {},
+        "values": ["citizen_sigil"],
+    },
+}
+
+
+def is_galactic_citizen(db: Session, player: Player) -> bool:
+    """The lapse-safe Citizen check — the EXACT double-check used by the weekly
+    perk (economy_faucet_service._apply_citizen_perks): the canonical
+    Player.is_galactic_citizen flag AND a live re-read of the User row's
+    subscription_tier (so a lapsed membership stops conferring at once)."""
+    from src.models.user import User
+    if not getattr(player, "is_galactic_citizen", False):
+        return False
+    user = db.query(User).filter(User.id == player.user_id).first()
+    return user is not None and user.subscription_tier == _CITIZEN_SUBSCRIPTION_TIER
+
+
+def requires_satisfied(db: Session, player: Player, requires) -> bool:
+    """Resolve a `requires` eligibility predicate (kernel seam, §4.1).
+
+    None       → open (any player)
+    "citizen"  → an active Galactic Citizen (lapse-safe double-check)
+    {fac:tier} → reputation gate (Exalted ships / faction_requirements) — NOT
+                 wired in GC-B; fails closed until GC-C/Exalted lands it.
+    """
+    if requires is None:
+        return True
+    if requires == "citizen":
+        return is_galactic_citizen(db, player)
+    # dict / faction-reputation predicate: deferred (fail closed, never bypass).
+    return False
+
 
 class ShipUpgradeService:
     """Service for managing ship upgrades and equipment installations"""
@@ -1419,12 +1499,13 @@ class ShipUpgradeService:
         # --- requires eligibility predicate (None == open; Citizen tier is DATA,
         # not code — the seam is built, the predicate stays open until ruled). ---
         requires = entry.get("requires")
-        if requires is not None:
-            # No predicate engine is wired yet; fail closed rather than silently
-            # grant a gated module (better a stuck fit than a free bypass).
+        if requires is not None and not requires_satisfied(self.db, player, requires):
+            # Eligibility not met — fail closed (never a silent bypass). The
+            # resolver handles "citizen" (membership) live; faction predicates
+            # fail closed until GC-C/Exalted wires them (WO-GC-B §4.1).
             return {
                 "success": False,
-                "message": f"{entry['name']} has an eligibility requirement ({requires}) not yet purchasable",
+                "message": f"{entry['name']} requires membership you don't currently hold ({requires})",
             }
 
         # --- resolve the spec slot lattice ---
@@ -1589,6 +1670,74 @@ class ShipUpgradeService:
         if module_class in _EQUIPMENT_FAMILY_DEFERRED:
             result["consumer_inert"] = True
         return result
+
+    # --- Galactic-Citizen L1 cosmetics (WO-GC-B) ----------------------------
+    def get_cosmetics(self, ship_id: uuid.UUID, player_id: uuid.UUID) -> Dict[str, Any]:
+        """Return the cosmetic catalog + the ship's applied overlay + the
+        player's live Citizen status (so the UI can render the skin + the
+        "Galactic Citizen" label, greying it when membership has lapsed).
+        Owner-only read; no mutation."""
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if not player:
+            return {"success": False, "message": "Player not found"}
+        ship = self.db.query(Ship).filter(Ship.id == ship_id).first()
+        if not ship:
+            return {"success": False, "message": "Ship not found"}
+        if ship.owner_id != player_id:
+            return {"success": False, "message": "You do not own this ship"}
+        modules = ship.modules if isinstance(ship.modules, dict) else {}
+        applied = modules.get("cosmetics") if isinstance(modules.get("cosmetics"), dict) else {}
+        return {
+            "success": True,
+            "ship_id": str(ship.id),
+            "catalog": CITIZEN_COSMETICS,
+            "applied": applied,
+            "is_galactic_citizen": is_galactic_citizen(self.db, player),
+        }
+
+    def set_cosmetic(
+        self, ship_id: uuid.UUID, player_id: uuid.UUID, slot: str, value: Optional[str]
+    ) -> Dict[str, Any]:
+        """Apply (or clear, value=None) a Citizen cosmetic overlay on a ship.
+        Owner-only + Citizen-gated (the resolver). Cosmetics live in
+        Ship.modules.cosmetics, OUTSIDE `installed`, so a skin never eats a
+        finite slot. Zero stat effect (firewall)."""
+        ship, player, error = self._get_ship_and_player(ship_id, player_id)
+        if error:
+            return error
+
+        entry = CITIZEN_COSMETICS.get(slot)
+        if entry is None:
+            return {"success": False, "message": f"Unknown cosmetic slot '{slot}'"}
+        if value is not None and value not in entry["values"]:
+            return {"success": False, "message": f"'{value}' is not a valid {slot} cosmetic"}
+
+        if not requires_satisfied(self.db, player, entry.get("requires")):
+            return {
+                "success": False,
+                "message": "Citizen cosmetics require an active Galactic Citizen membership.",
+                "requires_citizen": True,
+            }
+
+        # JSONB mutation discipline: copy → set/clear → reassign + flag_modified.
+        modules = dict(ship.modules) if isinstance(ship.modules, dict) else {"v": 1, "installed": {}}
+        cosmetics = dict(modules.get("cosmetics") or {})
+        if value is None:
+            cosmetics.pop(slot, None)
+        else:
+            cosmetics[slot] = value
+        modules["cosmetics"] = cosmetics
+        ship.modules = modules
+        flag_modified(ship, "modules")
+        self.db.flush()  # route owns the commit (matches install/remove_module)
+
+        return {
+            "success": True,
+            "message": (f"Cleared {slot} cosmetic" if value is None
+                        else f"Applied {entry['label']}: {value}"),
+            "ship_id": str(ship.id),
+            "cosmetics": cosmetics,
+        }
 
 
 # SHIP-MODS §5.1 — the tiered module catalog, keyed by (class, tier). Assigned

@@ -574,6 +574,19 @@ export const shipUpgradeAPI = {
       method: 'POST',
       body: JSON.stringify({ slot_index: slotIndex }),
     }),
+
+  // WO-GC-B: Galactic-Citizen L1 cosmetics (zero-stat overlay).
+  // getCosmetics → { success, catalog, applied, is_galactic_citizen }
+  getCosmetics: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/cosmetics`),
+
+  // setCosmetic → { success, message, cosmetics }. value=null clears the slot.
+  //   403 when the caller lacks an active Galactic Citizen membership.
+  setCosmetic: (shipId: string, slot: string, value: string | null) =>
+    apiRequest(`/api/v1/ships/${shipId}/cosmetics`, {
+      method: 'POST',
+      body: JSON.stringify({ slot, value }),
+    }),
 };
 
 // Planetary Registry APIs (shadow-broker lookup of another player's holdings).
