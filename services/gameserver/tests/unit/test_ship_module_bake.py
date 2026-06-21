@@ -211,10 +211,13 @@ def test_install_rejects_incompatible_hull(service):
     assert "not compatible" in res["message"].lower()
 
 
-def test_equipment_family_module_flagged_inert(service):
-    """A lander module installs + bakes its _baked total but is flagged
-    consumer_inert (STEP 4 deferral)."""
+def test_equipment_family_module_install_blocked(service):
+    """An equipment-family module (lander/harvester/mining/tractor) is BLOCKED
+    from install while its consumer wiring is deferred — it would be runtime-inert
+    if fitted, so install rejects (no pay-for-nothing) and flags consumer_inert.
+    The block fires right after the catalog lookup, before any charge."""
     svc, ship, player = service.svc, service.ship, service.player
     res = svc.install_module(ship.id, player.id, 0, "lander", 1)
-    assert res["success"], res
+    assert res["success"] is False, res
     assert res.get("consumer_inert") is True
+    assert "not yet installable" in res["message"].lower() or "coming soon" in res["message"].lower()
