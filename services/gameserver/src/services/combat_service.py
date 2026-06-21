@@ -4,7 +4,7 @@ import uuid
 import random
 import math
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import and_, or_
@@ -22,6 +22,7 @@ from src.services.ship_service import ShipService
 from src.services.ranking_service import RankingService
 from src.services.ship_upgrade_service import ShipUpgradeService
 from src.services.turn_service import spend_turns
+from src.core.game_time import canonical_hours_since
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,30 @@ class CombatService:
 
     # Ship types that get a bonus to escape chance due to speed/agility
     FAST_ESCAPE_SHIP_TYPES = {ShipType.FAST_COURIER, ShipType.SCOUT_SHIP}
+
+    # --- Between-battle shield regeneration (WO-SR1) ---------------------
+    # ShipSpecification.shield_recharge_rate seeds Ship.combat but nothing
+    # consumed it. Shields recover OUT OF COMBAT only, via an advance-on-read
+    # tick run when a ship's combat state is read at the START of a battle
+    # (i.e. for the idle gap since its last battle) — never mid-fight, since
+    # the resolver reads combat state exactly once per engagement. Hull is
+    # NEVER regenerated (hull = repair-only canon, combat.md:97).
+    #
+    # NO-CANON: combat.md:97 marks between-battle shield regen as deferred
+    # (📐, "no scheduler") and gives NO cadence, rate unit, or first-credit
+    # bound. Conservative interpretations, flagged for Max:
+    #   * RATE UNIT — shield_recharge_rate is read as shield-points PER
+    #     CANONICAL HOUR, mirroring the market stock-regen convention
+    #     (production_rate = units per canonical hour, trading_service).
+    #   * PER-CREDIT-WINDOW CAP — EVERY regen window (not just the first) is
+    #     capped at this many canonical hours, so a ship returning after weeks
+    #     doesn't full-regen in one jump and a legacy/absent anchor can't credit
+    #     unbounded; bounded above by max_shields regardless. NB: at high
+    #     GAME_TIME_SCALE this caps a long-idle ship's regen window (24 canonical
+    #     hrs ≈ 10 wall-min at scale 144) — NO-CANON tuning, flag for Max if
+    #     between-battle regen feels too slow on dev.
+    SHIELD_REGEN_ANCHOR_KEY = "shields_last_regen"  # NO-CANON (JSONB anchor name)
+    SHIELD_REGEN_MAX_CREDIT_HOURS = 24.0             # NO-CANON (per-credit-window cap)
 
     def __init__(self, db: Session):
         self.db = db
@@ -1867,7 +1892,81 @@ class CombatService:
 
         # Floors on entry — never operate on negative pools
         combat["shields"] = max(0, combat.get("shields") or 0)
+
+        # WO-SR1: out-of-combat shield regen for the idle gap since the last
+        # battle. Runs here because combat state is read exactly ONCE per
+        # engagement (at the start), so this credits time the ship spent
+        # NOT fighting and never fires mid-fight. Hull is untouched.
+        self._apply_shield_regen(combat)
         return combat
+
+    def _apply_shield_regen(self, combat: Dict[str, Any]) -> float:
+        """Regenerate a ship's shields toward its spec-max for the canonical
+        time elapsed since the last regen, advancing the anchor to "now".
+
+        Between-battle (out-of-combat) only — the single caller,
+        _ensure_combat_state, runs at the start of each engagement, so the
+        credited interval is the gap since the prior battle. Returns the
+        number of shield points credited (>= 0); 0 when already at cap, no
+        rate, or no positive elapsed time. NEVER touches hull (hull =
+        repair-only canon, combat.md:97) and never exceeds max_shields.
+
+        The anchor (SHIELD_REGEN_ANCHOR_KEY) is stored inside the combat
+        JSONB as an ISO-8601 UTC timestamp — no new column / migration. On a
+        ship that has never had the anchor (legacy / freshly seeded), the
+        baseline is set to "now" and NOTHING is credited this read; regen
+        accrues from the next read forward. flag_modified for the JSONB write
+        is the battle caller's responsibility (the same post-battle commit
+        that persists shield/hull attrition); when no battle damage follows,
+        the advanced anchor still rides along on that commit. A pure read
+        that never commits simply re-derives the same elapsed gap next time —
+        idempotent and safe.
+        """
+        now = datetime.now(timezone.utc)
+        anchor_raw = combat.get(self.SHIELD_REGEN_ANCHOR_KEY)
+
+        # First touch: establish the baseline, credit nothing. This prevents a
+        # legacy ship (no anchor) from retroactively regenerating from epoch.
+        if not anchor_raw:
+            combat[self.SHIELD_REGEN_ANCHOR_KEY] = now.isoformat()
+            return 0.0
+
+        try:
+            anchor = datetime.fromisoformat(anchor_raw)
+            if anchor.tzinfo is None:
+                anchor = anchor.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            # Corrupt anchor: reset baseline, credit nothing.
+            combat[self.SHIELD_REGEN_ANCHOR_KEY] = now.isoformat()
+            return 0.0
+
+        rate = combat.get("shield_recharge_rate")
+        max_shields = combat.get("max_shields") or 0
+        shields = max(0.0, float(combat.get("shields") or 0))
+
+        # Always advance the anchor so a no-op read doesn't bank elapsed time
+        # for a later credit when the rate/cap conditions later change.
+        combat[self.SHIELD_REGEN_ANCHOR_KEY] = now.isoformat()
+
+        if not rate or rate <= 0 or max_shields <= 0 or shields >= max_shields:
+            return 0.0
+
+        elapsed_hours = canonical_hours_since(anchor, now)
+        if elapsed_hours <= 0:
+            return 0.0
+
+        # First-credit cap: bound a large idle gap (anchor very old) so a
+        # long-dormant ship doesn't snap to full as if it had never moved.
+        elapsed_hours = min(elapsed_hours, self.SHIELD_REGEN_MAX_CREDIT_HOURS)
+
+        regen = float(rate) * elapsed_hours
+        new_shields = min(float(max_shields), shields + regen)
+        credited = round(new_shields - shields, 1)
+        if credited <= 0:
+            return 0.0
+
+        combat["shields"] = round(new_shields, 1)
+        return credited
 
     @staticmethod
     def _resistance_fraction(rating: Any) -> float:
@@ -2350,13 +2449,15 @@ class CombatService:
                 break
 
         # Persist post-battle attrition on BOTH hulls. Shields and hull stay
-        # damaged after the fight even when nobody dies — there is no
-        # automatic between-battle shield regeneration here (the seeded
-        # combat JSONB carries shield_recharge_rate for a future regen
-        # slice; restoring shields/hull is ShipService.repair_ship's job at
-        # repair facilities). The dicts were mutated in place, so
-        # flag_modified is required for the JSONB write; the caller's single
-        # post-battle commit (attack_player / attack_npc_ship) lands both.
+        # damaged after the fight even when nobody dies. Shields recover only
+        # OUT OF COMBAT via the advance-on-read regen in _ensure_combat_state
+        # (WO-SR1), which credits the idle gap before the NEXT battle and also
+        # advanced each side's regen anchor to "now" when this battle opened —
+        # that anchor advance rides along on this same JSONB write. Hull
+        # restores only via ShipService.repair_ship at repair facilities. The
+        # dicts were mutated in place, so flag_modified is required for the
+        # JSONB write; the caller's single post-battle commit (attack_player /
+        # attack_npc_ship) lands both.
         flag_modified(attacker_ship, "combat")
         flag_modified(defender_ship, "combat")
 
