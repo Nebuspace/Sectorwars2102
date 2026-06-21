@@ -931,12 +931,42 @@ class ShipUpgradeService:
         if not isinstance(installed, dict):
             installed = {}
 
+        # --- 0. WO-GC-C leg 4 — Citizen lapse-neutralization FIREWALL. -----------
+        # Resolve the spec's per-slot `requires` predicates ONCE. For non-citizen
+        # hulls (no gated slot) this is an empty map → zero per-bake overhead and the
+        # owner is never resolved. For the Citizen Clipper, slot 3 carries "citizen":
+        # if the ship's OWNER is not an active Galactic Citizen, that slot's module is
+        # SKIPPED below (contributes 0). Because the bake is a REPLACE (column =
+        # current − prev_baked + new_total), skipping the slot DROPS its contribution
+        # from the baked column while lapsed and a later re-bake (nightly sweep / on
+        # re-subscribe) RESTORES it — idempotent, and the install→remove _baked-delta
+        # contract (§7.1) is preserved (it just sees a smaller new_total this bake).
+        slot_requires: Dict[str, Any] = {}
+        spec = self.db.query(ShipSpecification).filter(
+            ShipSpecification.type == ship.type
+        ).first()
+        if spec is not None:
+            slot_requires = {
+                str(s["i"]): s.get("requires")
+                for s in (spec.module_slots or {}).get("slots", []) or []
+                if isinstance(s, dict) and "i" in s and s.get("requires")
+            }
+        # Lazy-resolve owner ONLY when a gated slot exists (the common path skips it).
+        owner = None
+        if slot_requires:
+            owner = self.db.query(Player).filter(Player.id == ship.owner_id).first()
+
         # --- 1. Accumulate per-effect contributions from every installed module. ---
         # ordering §4.4:  per-module base  →  ×adjacency (Phase B; 1.0 here)  →  ×supercharge
         by_effect: Dict[str, List[float]] = {}
         for slot_key, m in installed.items():  # slot_key is a STR (JSON keys) — never assume int
             if not isinstance(m, dict):
                 continue  # stray / malformed slot record
+            # WO-GC-C leg 4 firewall: a citizen-conditional slot contributes 0 while
+            # its owner's membership is lapsed (skip → dropped from the REPLACE bake).
+            req = slot_requires.get(slot_key)
+            if req and (owner is None or not requires_satisfied(self.db, owner, req)):
+                continue
             cls = m.get("class")
             tier = m.get("tier")
             entry = self.MODULE_DEFINITIONS.get((cls, tier))

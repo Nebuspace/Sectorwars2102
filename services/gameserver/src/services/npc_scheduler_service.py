@@ -255,6 +255,24 @@ _RETENTION_SWEEP_STATE_KEY = "retention_signal_sweep_last_day"
 RETENTION_SWEEP_CHECK_SECONDS = int(
     os.environ.get("RETENTION_SWEEP_CHECK_SECONDS", str(50 * 60))
 )
+# Citizen-conditional ship re-bake sweep (WO-GC-C leg 4). Durable canonical-day
+# anchor in Galaxy.state gates the re-bake of every hull carrying a
+# citizen-conditional slot (today: the Citizen Clipper's EXTRA slot) to run at
+# most ONCE per canonical day across restarts — the same once-per-day discipline
+# as the retention / ARIA-prune anchors. This is the FIREWALL trigger: re-baking
+# through the live resolver makes a lapsed Galactic-Citizen's citizen-conditional
+# slot contribute 0 stat (the hull persists + stays flyable; re-subscribe
+# restores), while an active citizen's slot is restored / left byte-identical
+# (idempotent). A ≤24h re-bake lag is firewall-safe because the perk is capped
+# utility, not power/income.
+_CITIZEN_REBAKE_STATE_KEY = "citizen_rebake_last_day"
+# Coarse CHEAP pre-filter cadence for the citizen re-bake sweep. The durable day
+# anchor is what guarantees once-per-canonical-day; this just keeps us from
+# opening a session + querying Galaxy.state on every 60s tick. 50m like the
+# retention sweep (the day anchor de-dupes a same-day collision to a no-op).
+CITIZEN_REBAKE_CHECK_SECONDS = int(
+    os.environ.get("CITIZEN_REBAKE_CHECK_SECONDS", str(50 * 60))
+)
 # Coarse CHEAP pre-filter cadence for the weekly-decay check. The durable
 # canonical-week anchor is what actually guarantees once-per-week; this only
 # keeps us from taking the advisory lock + querying Galaxy.state every 60s. A
@@ -439,6 +457,15 @@ PRICE_RECOMPUTE_FLUSH_SECONDS = int(
 
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
+
+# DISTINCT advisory-lock key for the citizen-conditional ship re-bake sweep
+# (WO-GC-C leg 4). Intentionally NOT the global _ADVISORY_LOCK_KEY: the re-bake
+# sweep mutates ship rows + stat columns and must serialize only against another
+# concurrent re-bake pass, not against the many unrelated sweeps that share the
+# global key — a distinct key lets it run without blocking (or being blocked by)
+# the retention / faucet / construction sweeps on the same wake. 'GCRB' =
+# Galactic-Citizen Re-Bake.
+_CITIZEN_REBAKE_LOCK_KEY = 0x47435242  # 'GCRB'
 
 # Mask to a signed-63-bit non-negative range. pg_try_advisory_xact_lock(bigint)
 # takes a signed 64-bit key; staying inside the low 63 bits keeps the value
@@ -4067,6 +4094,142 @@ def _run_retention_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_citizen_rebake_sweep_sync() -> Dict[str, int]:
+    """Nightly citizen-conditional ship RE-BAKE sweep (WO-GC-C leg 4) — FULLY
+    SYNCHRONOUS, day-gated on a durable canonical-day anchor in ``Galaxy.state``
+    (``_CITIZEN_REBAKE_STATE_KEY``), mirroring _run_retention_sweep_sync EXACTLY
+    in structure so the scan runs at most ONCE per canonical day across process
+    restarts. Run via ``asyncio.to_thread`` from the loop (a SYNC Session — no
+    AsyncSession, no event-loop bridge).
+
+    THE FIREWALL (WO-GC-C): a lapsed Galactic-Citizen's citizen-conditional ship
+    effects must go inert. The Citizen Clipper's slot 3 is a super, class-locked
+    "maintenance" slot — the citizen PERK is that EXTRA slot existing at all. Its
+    ``requires`` is now citizen-gated, and ``requires_satisfied`` evaluates the
+    "citizen" case live against the owner's subscription. Re-baking each hull
+    through the EXISTING bake path with the resolver live
+    (``ShipUpgradeService._apply_module_effects``) therefore re-derives the baked
+    stat columns: a LAPSED owner's citizen slot drops to a 0-stat contribution
+    (hull persists + stays flyable; re-subscribe restores it on the next bake),
+    while an ACTIVE citizen's slot is restored / left byte-identical (idempotent).
+    A ≤24h re-bake lag is firewall-safe — the perk is capped utility, not
+    power/income, so there is no exploit window worth a tighter trigger; this
+    nightly sweep is the PRIMARY trigger.
+
+    SCOPE (cheap): only hulls carrying a citizen-conditional slot. Today that is
+    ``Ship.type == ShipType.CITIZEN_CLIPPER`` (skip destroyed hulls). Future
+    citizen hulls get appended to this filter — the re-bake mechanism is hull-
+    agnostic.
+
+    The ONLY writes are to the re-baked ship rows: ``_apply_module_effects``
+    mutates ``Ship.modules`` / ``Ship.modules['_baked']`` + the baked stat columns
+    and does NOT commit — THIS sweep owns the commit. The baked-delta REPLACE
+    contract (SM-3 §7.1: column = current − prev_baked + new_total, store _baked)
+    is preserved untouched: re-baking with a now-inert slot simply re-runs that
+    same REPLACE, so install→remove reversibility is unaffected.
+
+    Per-ship failure isolation: each hull gets its OWN savepoint
+    (``db.begin_nested``); a bad ship is rolled back to that savepoint and skipped
+    — it NEVER aborts the sweep or corrupts another hull's bake (mirrors the
+    per-row savepoint discipline in _run_retention_sweep_sync / WO-B1). The outer
+    txn commits all surviving re-bakes + the day anchor together at the end.
+
+    Idempotent: re-running the same canonical day re-bakes byte-identically for an
+    active citizen (REPLACE with the same total is a no-op). The day anchor
+    short-circuits a second run in the same canonical day to a clean no-op.
+
+    DISTINCT advisory lock (``_CITIZEN_REBAKE_LOCK_KEY``, NOT the global
+    ``_ADVISORY_LOCK_KEY``) so this serializes only against another concurrent
+    re-bake pass.
+
+    Returns {ships_scanned, ships_rebaked, day} (day=-1 + all zero when not yet
+    due / lock held elsewhere)."""
+    from src.core.database import SessionLocal
+    from src.models.galaxy import Galaxy
+    from src.models.ship import Ship, ShipType
+    from src.services.ship_upgrade_service import ShipUpgradeService
+
+    this_day = canonical_day_number()
+    not_due = {"ships_scanned": 0, "ships_rebaked": 0, "day": -1}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _CITIZEN_REBAKE_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return not_due
+
+        galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+        if galaxy is None:
+            return not_due
+        state = dict(galaxy.state or {})
+        last_day = state.get(_CITIZEN_REBAKE_STATE_KEY)
+        if last_day is not None and int(last_day) >= this_day:
+            return not_due  # already re-baked this canonical day
+
+        svc = ShipUpgradeService(db)
+        # SCOPE: only hulls with a citizen-conditional slot. Append future
+        # citizen hulls to this filter (the re-bake mechanism is hull-agnostic).
+        ships = (
+            db.query(Ship)
+            .filter(
+                Ship.type == ShipType.CITIZEN_CLIPPER,
+                Ship.is_destroyed.is_(False),
+            )
+            .all()
+        )
+
+        scanned = 0
+        rebaked = 0
+        for ship in ships:
+            scanned += 1
+            try:
+                # Per-ship savepoint: a bad hull rolls back to here and is
+                # skipped without poisoning the outer transaction.
+                with db.begin_nested():
+                    # Re-bake through the EXISTING bake path with the resolver
+                    # live — recomputes the citizen slot's contribution against
+                    # the owner's CURRENT subscription (lapsed → 0, active →
+                    # restored). Does NOT commit; the outer txn does.
+                    svc._apply_module_effects(ship)
+                rebaked += 1
+            except Exception:
+                logger.exception(
+                    "citizen-rebake: re-bake failed for ship %s (skipped)",
+                    getattr(ship, "id", "?"),
+                )
+                # begin_nested already rolled the savepoint back on the raise;
+                # the outer transaction is intact for the next ship.
+
+        # Advance the durable day anchor in the SAME outer txn as the re-bakes.
+        state = dict(galaxy.state or {})
+        state[_CITIZEN_REBAKE_STATE_KEY] = this_day
+        galaxy.state = state
+        flag_modified(galaxy, "state")
+        db.commit()  # commits surviving re-bakes + anchor atomically, releases lock
+
+        logger.info(
+            "citizen-rebake: canonical day %d — scanned=%d rebaked=%d",
+            this_day, scanned, rebaked,
+        )
+        return {
+            "ships_scanned": scanned,
+            "ships_rebaked": rebaked,
+            "day": this_day,
+        }
+    except Exception:
+        logger.exception(
+            "citizen-rebake: pass failed — day not advanced (idempotent retry "
+            "next due wake)"
+        )
+        db.rollback()
+        return not_due
+    finally:
+        db.close()
+
+
 async def _run_aria_prune_async() -> Dict[str, int]:
     """ASYNC daily ARIA storage-prune pass (WO-F16).
 
@@ -4671,3 +4834,30 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: retention sweep pass crashed (loop continues)")
+
+        # Citizen-conditional ship RE-BAKE sweep (WO-GC-C leg 4) — THE FIREWALL
+        # trigger. Re-bakes every hull carrying a citizen-conditional slot (today
+        # the Citizen Clipper's EXTRA slot) through the live resolver so a lapsed
+        # Galactic-Citizen's citizen slot goes inert (0 stat; hull persists +
+        # flyable; re-subscribe restores) and an active citizen's is restored /
+        # left byte-identical (idempotent). SYNC bake path (sync Session), so run
+        # via asyncio.to_thread like the retention sweep — NOT awaited inline. The
+        # once-per-canonical-day guarantee + the per-ship savepoint isolation live
+        # inside _run_citizen_rebake_sweep_sync (distinct advisory lock). A coarse
+        # elapsed pre-filter keeps us off Postgres on idle 60s wakes; ≤24h lag is
+        # firewall-safe (capped utility, not power/income).
+        if elapsed % CITIZEN_REBAKE_CHECK_SECONDS == 0:
+            try:
+                reb = await asyncio.to_thread(_run_citizen_rebake_sweep_sync)
+                if reb.get("day", -1) >= 0:
+                    logger.info(
+                        "NPC scheduler: citizen re-bake — rebaked %d of %d "
+                        "hull(s) (canonical day %d)",
+                        reb.get("ships_rebaked", 0),
+                        reb.get("ships_scanned", 0),
+                        reb.get("day", -1),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: citizen re-bake sweep pass crashed (loop continues)")

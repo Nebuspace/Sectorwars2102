@@ -582,7 +582,12 @@ _SHIP_MODS_LAYOUT = {
     # slot (index 3) that is the hull's ONLY super slot AND class-locked to
     # "maintenance" (P2W firewall: the extra capacity is utility-fenced — no open
     # super slot, unlike free SMALL hulls' super [0]). 4 slots total.
-    ShipType.CITIZEN_CLIPPER: {"super": [3],     "locked": {3: "maintenance"}},
+    # WO-GC-C leg 4 — lapse-neutralization firewall: the EXTRA slot (index 3) is
+    # the citizen perk, so it carries `requires: "citizen"`. While a Citizen lapses
+    # this slot's module bakes to 0 (its effects go inert via _apply_module_effects);
+    # the hull persists + stays flyable; re-subscribe re-bakes and restores it.
+    ShipType.CITIZEN_CLIPPER: {"super": [3],     "locked": {3: "maintenance"},
+                               "requires": {3: "citizen"}},
     # medium → 4 slots (cols 2, rows 2), 1 super.
     ShipType.LIGHT_FREIGHTER: {"super": [0],     "locked": {}},
     # Defender: 4 slots, 1 super, 1 class-locked "combat".
@@ -629,6 +634,10 @@ def _build_module_slots(ship_type: ShipType, ship_size) -> dict:
 
     super_idx = set(layout["super"])
     locked = layout["locked"]
+    # WO-GC-C leg 4 — per-slot Citizen seam. Hulls with no "requires" map → empty
+    # → every slot resolves None (default open), unchanged. Only the Citizen
+    # Clipper's extra slot (index 3) carries "citizen".
+    requires_map = layout.get("requires", {})
 
     # Firewall guard (WO-GC-C reviewer LOW): a super / class-lock index that
     # exceeds the slot count would SILENTLY vanish from the lattice (range(count))
@@ -650,7 +659,7 @@ def _build_module_slots(ship_type: ShipType, ship_size) -> dict:
             "y": (i // cols) if cols else 0,
             "super": i in super_idx,
             "class": locked.get(i),   # None unless this index is class-locked
-            "requires": None,         # Citizen seam ships as data, default open
+            "requires": requires_map.get(i),  # Citizen seam (WO-GC-C leg 4): None unless gated
         })
 
     return {"v": 1, "cols": cols, "rows": rows, "slots": slots}
