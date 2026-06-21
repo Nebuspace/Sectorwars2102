@@ -302,6 +302,43 @@ DAILY_DECLINE_BASE = 0.01
 # population growth so the two anchors behave identically.
 MAX_TICK_ELAPSED_SECONDS = 86400.0  # 24 hours
 
+# Gourmet-food luxury production bonus (WO-G14). A planet that holds a positive
+# gourmet_food stockpile (a real economy commodity — see
+# core/commodity_economy.py / models/resource.py GOURMET_FOOD) feeds its
+# colonists a luxury diet that lifts both colonist growth and commodity output by
+# GOURMET_FOOD_PRODUCTION_BONUS while supplied, consuming
+# GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY units per colonist per day (i.e. 1
+# unit per 1000 colonists per day). No bonus and no consumption when the
+# stockpile is absent or non-positive.
+#
+# The planet has no gourmet_food COLUMN; per the WO it lives in the existing
+# planet stockpile JSONB. We use active_events['gourmet_food'] — the same JSONB
+# catch-all that already holds research_points / surplus_pioneers / production
+# counters — so no migration is needed.
+#
+# NO-CANON: the +5% magnitude and the 1u/1000-colonists/day consumption rate are
+# not specified in canon (gourmet_food appears in the economy/trading layer, not
+# in a documented colony-feeding rule); both are FLAGGED for DECISIONS.
+GOURMET_FOOD_STOCKPILE_KEY = "gourmet_food"
+GOURMET_FOOD_PRODUCTION_BONUS = 0.05  # NO-CANON: +5% to growth + commodity output
+GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY = 0.001  # NO-CANON: 1u / 1000 colonists / day
+
+
+def _read_gourmet_food_stockpile(planet: "Planet") -> int:
+    """Read a planet's gourmet_food stockpile from the active_events JSONB.
+
+    Defensive: a missing key, a non-dict active_events, or a malformed/None
+    value all read as 0 (no bonus, no consumption, never an exception). Negative
+    junk is clamped to 0.
+    """
+    events = planet.active_events
+    if not isinstance(events, dict):
+        return 0
+    try:
+        return max(int(events.get(GOURMET_FOOD_STOCKPILE_KEY, 0) or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
 # Per-PlanetType production-efficiency multipliers. CANON: the planet-type
 # efficiency table in FEATURES/planets/production.md ("Planet-type efficiency
 # table") and the matching column block in FEATURES/planets/colonization.md
@@ -580,6 +617,15 @@ class PlanetaryService:
         # ───────────────────────────────────────────────────────────────────
 
         rate_per_day = colonists * DAILY_GROWTH_BASE * (habitability / 100.0)
+        # WO-G14: a positive gourmet_food stockpile lifts REALIZED colonist
+        # growth by +5% — applied HERE (the path that actually advances
+        # planet.colonists), so the bonus is real and not just the display rate
+        # shown by _calculate_production_rates. Growth-only: the below-threshold
+        # decline branch above is intentionally unaffected (a luxury diet speeds
+        # growth, it does not halt decay). apply_resource_production charges the
+        # matching per-colonist food cost on the same tick.
+        if _read_gourmet_food_stockpile(planet) > 0:
+            rate_per_day *= (1 + GOURMET_FOOD_PRODUCTION_BONUS)
         if rate_per_day <= 0:
             # Nothing can grow (zero habitability at/above threshold is
             # impossible, but guard anyway); keep the anchor current.
@@ -736,10 +782,53 @@ class PlanetaryService:
         surplus_produced = carry.get("surplus_pioneers", 0.0) + surplus_rate * (capped_elapsed / SECONDS_PER_DAY)
         surplus_gained = int(surplus_produced)
 
-        if sum(g for g, _ in gains.values()) + research_gained + surplus_gained <= 0:
-            # Not enough elapsed time for a whole unit of anything yet; leave the
-            # anchor (and stored carry) untouched so fractions keep banking
-            # against the growing elapsed window.
+        # Gourmet-food luxury consumption (WO-G14). When the planet holds a
+        # positive gourmet_food stockpile, the +5% production bonus applied in
+        # _calculate_production_rates is "paid for" by consuming
+        # GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY units per colonist per day
+        # (= 1u / 1000 colonists / day), pro-rated to this tick's elapsed window
+        # in exactly the same units as every other accrual above
+        # (rate × capped_elapsed/SECONDS_PER_DAY). The sub-unit remainder banks
+        # in the shared production_carry under 'gourmet_food', mirroring research
+        # / surplus_pioneers, so consumption is idempotent across a settle()+read
+        # on the same window and never double-charges.
+        #
+        # Dry-stockpile handling: the WHOLE-unit decrement is clamped to the
+        # stockpile on hand (`min(consumed_whole, stockpile)`) so the stockpile
+        # can never go negative. If it runs dry mid-tick the bonus was already
+        # granted for this window (the rate was computed when the stockpile was
+        # positive) — we simply consume what's left and the stockpile reaches 0;
+        # the NEXT tick reads 0, grants no bonus, and consumes nothing. We do NOT
+        # bank a fractional carry once the stockpile is empty, so an exhausted
+        # colony's JSONB doesn't accumulate a phantom debt.
+        gourmet_stock = _read_gourmet_food_stockpile(planet)
+        gourmet_consumed_whole = 0
+        gourmet_remainder = 0.0
+        if gourmet_stock > 0:
+            gourmet_to_consume = (
+                carry.get(GOURMET_FOOD_STOCKPILE_KEY, 0.0)
+                + (planet.colonists or 0)
+                * GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY
+                * (capped_elapsed / SECONDS_PER_DAY)
+            )
+            gourmet_consumed_whole = min(int(gourmet_to_consume), gourmet_stock)
+            # Only bank a remainder while the stockpile is still supplied; once it
+            # would run dry, drop the fraction so no phantom debt persists.
+            if gourmet_consumed_whole < gourmet_stock:
+                gourmet_remainder = gourmet_to_consume - int(gourmet_to_consume)
+            else:
+                gourmet_remainder = 0.0
+
+        if (
+            sum(g for g, _ in gains.values())
+            + research_gained
+            + surplus_gained
+            + gourmet_consumed_whole
+        ) <= 0:
+            # Not enough elapsed time for a whole unit of anything yet (including
+            # a whole unit of gourmet consumption); leave the anchor (and stored
+            # carry) untouched so fractions keep banking against the growing
+            # elapsed window.
             return False
 
         for col, (gained, remainder) in gains.items():
@@ -754,8 +843,30 @@ class PlanetaryService:
         if surplus_rate > 0 or "surplus_pioneers" in carry:
             carry["surplus_pioneers"] = surplus_produced - surplus_gained
 
+        # Bank the gourmet-food fractional remainder only while supplied; clear a
+        # stale carry once the stockpile is exhausted (gourmet_remainder is 0.0
+        # both when nothing is held and when the stockpile just ran dry).
+        if gourmet_stock > 0:
+            if gourmet_remainder > 0:
+                carry[GOURMET_FOOD_STOCKPILE_KEY] = gourmet_remainder
+            else:
+                carry.pop(GOURMET_FOOD_STOCKPILE_KEY, None)
+        else:
+            carry.pop(GOURMET_FOOD_STOCKPILE_KEY, None)
+
         new_events = dict(events)
         new_events["production_carry"] = carry
+        # Decrement the gourmet_food stockpile by the whole units consumed this
+        # tick (already clamped to never exceed the stockpile on hand). When the
+        # remaining stockpile reaches 0, drop the key entirely so an exhausted
+        # colony's JSONB stays clean (mirrors the "don't pollute with a 0" idiom
+        # used for research_points / surplus_pioneers above).
+        if gourmet_consumed_whole > 0:
+            remaining_gourmet = gourmet_stock - gourmet_consumed_whole
+            if remaining_gourmet > 0:
+                new_events[GOURMET_FOOD_STOCKPILE_KEY] = remaining_gourmet
+            else:
+                new_events.pop(GOURMET_FOOD_STOCKPILE_KEY, None)
         # Only stamp research_points on planets that actually research (or already
         # carry the key) — don't pollute every producing planet's JSONB with a 0.
         if research_gained > 0 or "research_points" in events:
@@ -1992,6 +2103,23 @@ class PlanetaryService:
             organics_rate *= citadel_multiplier
             equipment_rate *= citadel_multiplier
             research_rate *= citadel_multiplier
+
+        # Gourmet-food luxury bonus (WO-G14): a planet holding a positive
+        # gourmet_food stockpile lifts BOTH colonist growth and the three
+        # commodity rates by GOURMET_FOOD_PRODUCTION_BONUS. This is a pure,
+        # side-effect-free read of the bonus state — it does NOT consume the
+        # stockpile here (this method is called on read/preview paths like
+        # _format_planet_data and the allocate-preview, where mutating the
+        # stockpile would silently drain it on every UI poll). Actual
+        # consumption is pro-rated to elapsed time in apply_resource_production,
+        # the only path that advances the tick. Research yield is excluded — the
+        # bonus models a well-fed workforce producing more, not a lab effect.
+        if _read_gourmet_food_stockpile(planet) > 0:
+            gourmet_multiplier = 1 + GOURMET_FOOD_PRODUCTION_BONUS
+            fuel_rate *= gourmet_multiplier
+            organics_rate *= gourmet_multiplier
+            equipment_rate *= gourmet_multiplier
+            colonist_rate *= gourmet_multiplier
 
         # Colony cap-taper (CANON colonization.md:190-194, WO-CT2): population growth halts at the
         # demographic ceiling and tapers linearly across the top 10% band. Keys on population vs
