@@ -200,6 +200,27 @@ INSOLVENCY_MONTHS = 3                 # consecutive shortfall months -> auto-sel
 DEPRECIATION_FACTOR = 0.50            # auto-sell to faction at 40-60% (midpoint)
 SECONDS_PER_DAY = 24 * 3600.0
 
+# ---------------------------------------------------------------------------
+# Fair-operation reputation bonus (WO-F12). Canon FEATURES/economy/port-ownership
+# rewards an owner who keeps the station a GOOD local employer — a sustained run
+# of low-tariff months earns a one-time personal-reputation bump. The threshold
+# and magnitude are NO-CANON (port-ownership.md is silent on exact numbers);
+# proposed v1 values mirror the existing penalty scale on this lane (the -50
+# insolvency hit), so a fair operator's reward is symmetric with the failed
+# operator's penalty. Streak + grant-once flag live in the EXISTING
+# station.ownership JSONB sub-ledger (no schema change), settled inside the same
+# lazy monthly tick (accrue_operating_costs) that tracks insolvency_months.
+#   FAIR_TARIFF_MAX        — the "low tariff" ceiling (canon: tariff <= 4%).
+#   FAIR_OPS_MONTHS        — consecutive low-tariff months that earn the bonus.
+#   FAIR_OPS_REPUTATION    — one-time positive personal-reputation grant.
+# A tick whose CURRENT tariff exceeds FAIR_TARIFF_MAX resets the streak to 0
+# (historical per-month rates are not snapshotted — the current rate is the only
+# tariff signal at tick time, exactly as insolvency reads current state).
+# ---------------------------------------------------------------------------
+FAIR_TARIFF_MAX = 0.04                # tariff ceiling for a "fair-operation" month
+FAIR_OPS_MONTHS = 6                   # consecutive low-tariff months -> bonus
+FAIR_OPS_REPUTATION = 50             # one-time positive personal-reputation grant
+
 # Personal reputation tiers in ascending order
 # (personal_reputation_service.REPUTATION_TIERS). See the module docstring
 # for the 'Trusted' -> 'Heroic' mapping rationale.
@@ -1110,6 +1131,17 @@ def accrue_operating_costs(
         # A covered month resets the consecutive-shortfall streak.
         shortfall_months = 0
     ledger["insolvency_months"] = shortfall_months
+
+    # Fair-operation reputation bonus (WO-F12): a sustained low-tariff run earns
+    # a one-time positive personal-reputation grant. Settled here, inside the
+    # same whole-month tick, reading the CURRENT tariff (historical per-month
+    # rates are not snapshotted — current state is the only signal at tick time,
+    # exactly as the insolvency streak reads current state). Returns the granted
+    # amount (0 when no grant fired) so the caller/proof can observe it.
+    fair_ops_granted = _accrue_fair_operation_bonus(
+        db, station, ledger, months_elapsed
+    )
+
     flag_modified(station, "ownership")
     db.flush()
 
@@ -1121,11 +1153,61 @@ def accrue_operating_costs(
         "operating_fund": _bucket(station, "operating_fund"),
         "treasury_balance": station.treasury_balance or 0,
         "insolvency_months": shortfall_months,
+        "fair_ops_months": int(ledger.get("fair_ops_months", 0) or 0),
+        "fair_ops_bonus_granted": fair_ops_granted,
         "status": "current" if covered else "shortfall",
     }
     if shortfall_months >= INSOLVENCY_MONTHS:
         result["insolvency"] = auto_sell_insolvent(db, station, now)
     return result
+
+
+def _accrue_fair_operation_bonus(
+    db: Session, station: Station, ledger: Dict[str, Any], months_elapsed: int
+) -> int:
+    """Advance the per-station consecutive-low-tariff streak inside the monthly
+    tick and grant the one-time fair-operation reputation bonus at the threshold.
+
+    Behaviour (WO-F12):
+      * No whole month elapsed this tick (months_elapsed < 1) -> no change
+        (sub-month reads never move the monthly streak, mirroring insolvency).
+      * Current tariff > FAIR_TARIFF_MAX -> reset the streak to 0 (an
+        above-ceiling month breaks the run). The grant-once flag is NOT cleared
+        by a reset — the bonus is awarded at most once per ownership tenure;
+        ownership transfer rewrites station.ownership wholesale and clears both.
+      * Current tariff <= FAIR_TARIFF_MAX -> add the whole months elapsed to the
+        streak. If that reaches FAIR_OPS_MONTHS and the bonus has not yet been
+        granted for this owner, grant FAIR_OPS_REPUTATION once and set the
+        grant-once flag.
+
+    Caller holds the station lock, owns the JSONB ledger handle (and the
+    flag_modified / commit). Returns the reputation amount granted this tick
+    (0 if none) for observability/proof. Unowned stations never reach here
+    (accrue_operating_costs returns early when owner_id is None)."""
+    if months_elapsed < 1:
+        return 0
+
+    tariff = float(station.tax_rate or 0.0)
+    if tariff > FAIR_TARIFF_MAX:
+        ledger["fair_ops_months"] = 0
+        return 0
+
+    streak = int(ledger.get("fair_ops_months", 0) or 0) + int(months_elapsed)
+    ledger["fair_ops_months"] = streak
+
+    granted = 0
+    if streak >= FAIR_OPS_MONTHS and not bool(ledger.get("fair_ops_bonus_granted")):
+        ledger["fair_ops_bonus_granted"] = True
+        owner_id = station.owner_id
+        if owner_id is not None:
+            _apply_reputation(db, owner_id, FAIR_OPS_REPUTATION, "port_fair_operation")
+            granted = FAIR_OPS_REPUTATION
+            logger.info(
+                "Fair-operation bonus: station %s owner %s granted +%d reputation "
+                "after %d consecutive low-tariff months",
+                station.id, owner_id, FAIR_OPS_REPUTATION, streak,
+            )
+    return granted
 
 
 def auto_sell_insolvent(
