@@ -64,6 +64,35 @@ BUMP_COST_MULTIPLIER = 5
 BUMP_MIN_TENURE_HOURS = 4.0
 
 
+def _realize_fee(db: Session, station: Station, fee: int) -> None:
+    """Route a collected station fee through the canon 40/30/30 revenue split
+    (defense_fund / operating_fund / owner-treasury) instead of crediting the
+    owner treasury at 100%.
+
+    Delegates to port_ownership_service.realize_port_revenue, which owns the
+    split, re-locks the station row (a no-op here — the caller already holds the
+    station lock per this module's lock-ordering contract), and flushes. The
+    import is lazy to avoid a service-layer import cycle, mirroring the in-
+    function import pattern used by _notify_bumped / _player_faction_rep_for_station.
+
+    Defensive: if the revenue hook is unavailable or raises, fall back to the
+    legacy 100%-to-treasury credit so a live docking path can never break.
+    """
+    try:
+        from src.services.port_ownership_service import realize_port_revenue
+
+        realize_port_revenue(db, station, int(fee))
+    except Exception:
+        logger.warning(
+            "realize_port_revenue failed for station=%s fee=%s; "
+            "falling back to direct treasury credit",
+            getattr(station, "id", None),
+            fee,
+            exc_info=True,
+        )
+        station.treasury_balance = (station.treasury_balance or 0) + int(fee)
+
+
 class BumpError(Exception):
     """Raised when a bump attempt is invalid; carries an HTTP status hint."""
 
@@ -520,7 +549,9 @@ def bump(db: Session, station: Station, bumper: Player, occupant_player_id) -> D
             f"have {bumper.credits}",
         )
     bumper.credits -= cost
-    station.treasury_balance = (station.treasury_balance or 0) + cost
+    # Route the bump fee through the canon 40/30/30 split (defense/operating/owner)
+    # rather than crediting the owner treasury at 100%.
+    _realize_fee(db, station, cost)
 
     # 4. Evict the occupant. No refund of their original fee (canon is silent;
     #    the eviction is the cost of overstaying).
@@ -643,7 +674,9 @@ def acquire_long_term(
         return {"status": "insufficient_credits", "need": fee, "have": player_locked.credits}
 
     player_locked.credits -= fee
-    station.treasury_balance = (station.treasury_balance or 0) + fee
+    # Route the mooring fee through the canon 40/30/30 split (defense/operating/owner)
+    # rather than crediting the owner treasury at 100%.
+    _realize_fee(db, station, fee)
 
     occupancy = DockingSlipOccupancy(
         station_id=station.id,
