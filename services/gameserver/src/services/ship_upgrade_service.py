@@ -130,6 +130,264 @@ class ShipUpgradeService:
         },
     }
 
+    # ========================================================================
+    # SHIP-MODS (WO-SM-2): the unified module catalog + bake-on-install effects.
+    # ------------------------------------------------------------------------
+    # SHIP-MODS-MASTER.md §5: the 8 legacy upgrade tracks + the 4 player
+    # equipment plug-ins fold INTO one catalog as 12 module CLASSES, each tiered
+    # Mk I / II / III. Tier-1 effect magnitudes are the existing ✅-Decided
+    # per-level magnitudes ported 1:1 from UPGRADE_DEFINITIONS + EQUIPMENT_
+    # DEFINITIONS above (zero new balance surface for the ported numbers).
+    #
+    # This is the Phase-A KERNEL: the catalog (this dict) + _apply_module_effects
+    # (bake-on-install). install/remove/routes + the Phase-2 destructive cutover
+    # are SEPARATE WOs (SM-3 / Max-gated). During coexistence both legacy upgrades
+    # and modules write the SAME baked stat columns — see _apply_module_effects for
+    # the zero-double-count contract.
+    # ========================================================================
+
+    # §4.1 supercharge multiplier (flat) — a module installed in a supercharged
+    # slot has its effects multiplied by this. Snapshotted as `super_at_install`
+    # on the slot record so a later slot-layout re-tune never silently re-buffs a
+    # fielded ship. [NO-CANON — Max-blessed launch value.]
+    SUPERCHARGE_MULT = 1.6
+
+    # §4.2 stacking cap — FLAT best-3 per effect: of all same-effect contributions
+    # only the 3 LARGEST count (summed); the rest contribute 0. The dumb cap that
+    # prevents the god-ship; the smooth geometric DR curve is the Phase-B swap-in.
+    # [NO-CANON — Max-blessed launch value.]
+    MODULE_STACK_BEST_N = 3
+
+    # §5.3 tier curve (NO-CANON, co-tuned + Max-blessed): a module's effect scales
+    # SUB-LINEARLY with tier (so breadth-by-count survives as a real alternative to
+    # depth-in-a-super-slot) while cost scales faster. tier is 1-based (Mk I = 1).
+    #   tier_effect = base_effect × MODULE_TIER_EFFECT_MULT ** (tier - 1)
+    #   tier_cost   = base_cost   × MODULE_TIER_COST_MULT   ** (tier - 1)
+    MODULE_TIER_EFFECT_MULT = 1.6   # Mk III effect = 2.56× base
+    MODULE_TIER_COST_MULT = 2.2     # Mk III cost  = 4.84× base
+    MODULE_MAX_TIER = 3             # Mk I / II / III
+
+    # Genesis hulls — the module-class hull gate for the `genesis` family, mirroring
+    # how the legacy GENESIS_CONTAINMENT track is only buyable on genesis-capable
+    # specs (ShipSpecification.genesis_compatible=True in the seeder). These are the
+    # five hulls seeded genesis_compatible.
+    _GENESIS_HULLS = [
+        ShipType.CARGO_HAULER,
+        ShipType.COLONY_SHIP,
+        ShipType.DEFENDER,
+        ShipType.CARRIER,
+        ShipType.WARP_JUMPER,
+    ]
+
+    # §5.2 — the 12 module families' tier-1 base spec (the ✅ per-level / equipment
+    # magnitude ported 1:1). Each entry:
+    #   class           : the module-class label (== UpgradeType-family / equipment lineage)
+    #   base_cost       : Mk I credit price (tier cost scales from this)
+    #   base_effects    : tier-1 effect dict — the SAME effect keys _apply_module_effects
+    #                     bakes into the stat columns (matched to _apply_upgrade_effects)
+    #   compatible_ships: hull gate (None = open; genesis = genesis hulls only) —
+    #                     mirrors EQUIPMENT_DEFINITIONS["...compatible_ships"]
+    #   requires        : the Citizen/faction eligibility predicate seam (None = open,
+    #                     default) — built day one so the Citizen tier is DATA not code
+    #   slot_class      : which class-locked slot accepts this module (None = any slot)
+    #   inert           : True for the ported-but-not-consumed families (cargo, drone) —
+    #                     the effect is still BAKED into its column, but no new consumer
+    #                     is wired in the kernel (fix D); a separate balance-flagged WO
+    #                     wires the consumer.
+    #
+    # §5.4 HARD CANON: there is NO `weapon_damage` family — attack_rating is fixed at
+    # hull purchase; modules add tactical/defensive/utility modifiers only.
+    _MODULE_FAMILIES = {
+        # --- ported from UPGRADE_DEFINITIONS (✅ live per-level magnitudes) ---
+        "engine": {
+            "base_cost": 5000,
+            "base_effects": {"speed_bonus": 0.5},
+            "compatible_ships": None,
+            "requires": None,
+            "slot_class": None,
+            "name": "Engine Module",
+            "description": "Improves ship speed (and shortens the Warp Jumper's post-jump cooldown).",
+        },
+        "shield": {
+            "base_cost": 8000,
+            "base_effects": {"shield_bonus": 200},
+            "compatible_ships": None,
+            "requires": None,
+            "slot_class": None,
+            "name": "Shield Module",
+            "description": "Increases max shields.",
+        },
+        "hull": {
+            "base_cost": 7000,
+            "base_effects": {"hull_bonus": 300},
+            "compatible_ships": None,
+            "requires": None,
+            "slot_class": None,
+            "name": "Hull Module",
+            "description": "Increases hull points.",
+        },
+        "sensor": {
+            "base_cost": 6000,
+            "base_effects": {"evasion_bonus_percent": 15, "scanner_range_bonus": 1},
+            "compatible_ships": None,
+            "requires": None,
+            "slot_class": None,
+            "name": "Sensor Module",
+            "description": "Increases evasion and scanner range.",
+        },
+        "maintenance": {
+            "base_cost": 6000,
+            "base_effects": {"failure_rate_reduction": 0.15},
+            "compatible_ships": None,
+            "requires": None,
+            "slot_class": None,
+            "name": "Maintenance Module",
+            "description": "Reduces mechanical failure rate (clamped to a full 1.0 reduction).",
+        },
+        "genesis": {
+            "base_cost": 15000,
+            "base_effects": {"genesis_capacity_bonus": 2},
+            "compatible_ships": _GENESIS_HULLS,
+            "requires": None,
+            "slot_class": None,
+            "name": "Genesis Containment Module",
+            "description": "Increases genesis-device capacity (genesis-capable hulls only).",
+        },
+        # cargo + drone: ported but INERT — written, not (yet) consumed (fix D).
+        "cargo": {
+            "base_cost": 3000,
+            "base_effects": {"cargo_bonus_percent": 30},
+            "compatible_ships": None,
+            "requires": None,
+            "slot_class": None,
+            "inert": True,  # [NO-CANON] baked into cargo._capacity_bonus_percent; no kernel consumer change
+            "name": "Cargo Module",
+            "description": "Increases cargo capacity (effect baked; consumer wiring is a separate WO).",
+        },
+        "drone": {
+            "base_cost": 10000,
+            "base_effects": {"drone_capacity_bonus": 2},
+            "compatible_ships": None,
+            "requires": None,
+            "slot_class": None,
+            "inert": True,  # [NO-CANON] no consumer EXISTS for drone capacity; effect tracked, never read
+            "name": "Drone Bay Module",
+            "description": "Increases drone capacity (NO consumer wired — net-new wiring is a separate WO).",
+        },
+        # --- ported from EQUIPMENT_DEFINITIONS (the 4 player equipment plug-ins) ---
+        "harvester": {
+            "base_cost": 25000,
+            "base_effects": {"passive_income": 100},
+            # Mirrors quantum_harvester compatible_ships.
+            "compatible_ships": [
+                ShipType.SCOUT_SHIP, ShipType.FAST_COURIER,
+                ShipType.DEFENDER, ShipType.WARP_JUMPER,
+            ],
+            "requires": None,
+            "slot_class": None,
+            "name": "Quantum Harvester Module",
+            "description": "Harvests quantum particles for passive income.",
+        },
+        "lander": {
+            "base_cost": 20000,
+            "base_effects": {"landing_bonus": 1.25},
+            # Mirrors planetary_lander compatible_ships.
+            "compatible_ships": [
+                ShipType.COLONY_SHIP, ShipType.LIGHT_FREIGHTER, ShipType.CARGO_HAULER,
+            ],
+            "requires": None,
+            "slot_class": None,
+            "name": "Planetary Lander Module",
+            "description": "Improves planet-landing interaction.",
+        },
+        "mining": {
+            "base_cost": 35000,
+            "base_effects": {"mining_efficiency": 1.5},
+            # Mirrors mining_laser compatible_ships.
+            "compatible_ships": [
+                ShipType.CARGO_HAULER, ShipType.COLONY_SHIP, ShipType.DEFENDER,
+            ],
+            "requires": None,
+            "slot_class": None,
+            "name": "Mining Laser Module",
+            "description": "Enables direct asteroid mining.",
+        },
+        "tractor": {
+            "base_cost": 40000,
+            # Non-numeric, non-tiering effects: a tractor is a tractor at any tier
+            # (the tow flag + the combat-side tractor weapon_mode). These do NOT
+            # scale by tier or supercharge — only numeric effects do (see
+            # _apply_module_effects). slot_class "combat": the tractor's combat face
+            # makes it eligible for the class-locked "combat" slot (Defender) — a
+            # TACTICAL module (no damage, §5.4), not firepower.
+            "base_effects": {"tow_capable": True, "weapon_mode": "tractor"},
+            # Mirrors tractor_beam compatible_ships.
+            "compatible_ships": [
+                ShipType.CARGO_HAULER, ShipType.DEFENDER,
+                ShipType.CARRIER, ShipType.WARP_JUMPER,
+            ],
+            "requires": None,
+            "slot_class": "combat",
+            "name": "Tractor Beam Module",
+            "description": "Dual-use tractor: combat escape-denial (no damage) + ship-tow rig.",
+        },
+    }
+
+    @staticmethod
+    def _scale_effects(base_effects: Dict[str, Any], tier: int) -> Dict[str, Any]:
+        """Scale a family's tier-1 base_effects to `tier` (1-based) per §5.3.
+
+        Only NUMERIC effects scale (``base × 1.6^(tier-1)``); boolean/string
+        effects (the tractor's ``tow_capable`` / ``weapon_mode``) are tier-invariant
+        and passed through unchanged. Rounded sensibly: ints stay int, floats keep
+        2 decimals so the catalog reads cleanly.
+        """
+        factor = ShipUpgradeService.MODULE_TIER_EFFECT_MULT ** (tier - 1)
+        scaled: Dict[str, Any] = {}
+        for k, v in base_effects.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                scaled[k] = v  # tier-invariant (tow_capable / weapon_mode)
+                continue
+            val = v * factor
+            scaled[k] = int(round(val)) if isinstance(v, int) else round(val, 2)
+        return scaled
+
+    @staticmethod
+    def _build_module_definitions() -> Dict[tuple, Dict[str, Any]]:
+        """Expand _MODULE_FAMILIES into the tiered catalog keyed by (class, tier).
+
+        §5.1 entry shape per (class, tier): {name, cost, effects, compatible_ships,
+        requires, slot_class[, inert]}. Mk I/II/III via the §5.3 curve:
+        effect ×1.6^(tier-1), cost ×2.2^(tier-1).
+        """
+        catalog: Dict[tuple, Dict[str, Any]] = {}
+        for cls, fam in ShipUpgradeService._MODULE_FAMILIES.items():
+            for tier in range(1, ShipUpgradeService.MODULE_MAX_TIER + 1):
+                tier_label = {1: "Mk I", 2: "Mk II", 3: "Mk III"}[tier]
+                cost = int(round(fam["base_cost"] * (ShipUpgradeService.MODULE_TIER_COST_MULT ** (tier - 1))))
+                entry = {
+                    "name": f"{fam['name']} {tier_label}",
+                    "description": fam["description"],
+                    "cost": cost,
+                    "effects": ShipUpgradeService._scale_effects(fam["base_effects"], tier),
+                    "compatible_ships": fam["compatible_ships"],
+                    "requires": fam["requires"],
+                    "slot_class": fam["slot_class"],
+                    "class": cls,
+                    "tier": tier,
+                }
+                if fam.get("inert"):
+                    entry["inert"] = True
+                catalog[(cls, tier)] = entry
+        return catalog
+
+    # §5.1 the catalog — MODULE_DEFINITIONS[(class, tier)] -> entry. Built once at
+    # class-definition time from _MODULE_FAMILIES (the §5.2 magnitudes) via the §5.3
+    # tier curve. The (class, tier) tuple key matches the §7 bake loop
+    # (MODULE_DEFINITIONS[(m["class"], m["tier"])]).
+    # NOTE: assigned after the class body (see below) because it references the
+    # @staticmethod builders.
+
     # NO-CANON kernel (ship-systems.md §2.5 marks the Sensor scan-range effect
     # 📐 Design-only): each Sensor upgrade level adds +1 sector of scanner range
     # on top of the hull spec's base scanner_range. Flagged for a DECISIONS.md
@@ -508,6 +766,220 @@ class ShipUpgradeService:
 
         return updated
 
+    def _apply_module_effects(self, ship: Ship) -> Dict[str, Any]:
+        """SHIP-MODS §7 — bake-on-install: recompute the MODULE subsystem's total
+        contribution from ``Ship.modules`` and re-derive each baked stat column so
+        the column holds ``spec_base + legacy_upgrade_contribution + module_total``.
+
+        Called by install_module / remove_module (WO-SM-3) AFTER the ``Ship.modules``
+        JSONB has been mutated. This is recompute-from-installed *inside the module
+        subsystem* — there is NO per-module symmetric inverse to maintain; removal
+        just drops the slot entry and re-bakes (the win the spec prized).
+
+        ───────────────────────────────────────────────────────────────────────────
+        ZERO-DOUBLE-COUNT contract (the load-bearing detail):
+        The baked columns already hold ``spec_base + legacy_upgrade_contribution``,
+        written INCREMENTALLY (``+=`` / ``+ bonus``) by _apply_upgrade_effects — there
+        is no source from which to re-derive the legacy contribution cheaply (cargo /
+        maintenance bonuses are cumulative-in-JSONB, not back-computable from a level).
+        So a naive ``column = spec_base + legacy + module`` is unwritable. Instead this
+        method is a REPLACE: it stores the LAST-baked module total in
+        ``Ship.modules["_baked"]`` and, on every re-bake, removes the previous module
+        contribution and adds the freshly-computed one:
+
+            column_new = column_current - previous_module_total + new_module_total
+
+        Because the legacy contribution rides inside ``column_current`` untouched, the
+        legacy bonus and the module bonus are each added EXACTLY ONCE. This makes the
+        bake idempotent (re-baking identical modules is a no-op) and install→remove
+        exactly reversible: install a `shield` module over a legacy SHIELD upgrade →
+        ``max_shields == spec_base + upgrade + module``; remove it → restored exactly
+        to ``spec_base + upgrade`` (§7.1 bake-correctness test). The caller mutates
+        ``Ship.modules`` first, then calls this; it does NOT commit or flush.
+
+        Defensive: null / {} / None modules → drains any previously-baked module
+        contribution to zero (all modules removed). Missing catalog defs and stray
+        slot records are skipped, never crash.
+        """
+        updated: Dict[str, Any] = {}
+
+        modules = getattr(ship, "modules", None)
+        if not isinstance(modules, dict):
+            # No modules JSONB at all (hull predates feature / first-ever bake with
+            # nothing installed): nothing to add and nothing prior to drain.
+            return updated
+
+        installed = modules.get("installed")
+        if not isinstance(installed, dict):
+            installed = {}
+
+        # --- 1. Accumulate per-effect contributions from every installed module. ---
+        # ordering §4.4:  per-module base  →  ×adjacency (Phase B; 1.0 here)  →  ×supercharge
+        by_effect: Dict[str, List[float]] = {}
+        for slot_key, m in installed.items():  # slot_key is a STR (JSON keys) — never assume int
+            if not isinstance(m, dict):
+                continue  # stray / malformed slot record
+            cls = m.get("class")
+            tier = m.get("tier")
+            entry = self.MODULE_DEFINITIONS.get((cls, tier))
+            if not entry:
+                continue  # unknown (class, tier) — skip, don't crash
+            base = entry.get("effects", {})
+
+            adj = self._adjacency_factor(slot_key, cls, ship)   # Phase-B stub == 1.0
+            sc = self.SUPERCHARGE_MULT if m.get("super_at_install") else 1.0
+
+            for k, v in base.items():
+                # Only NUMERIC effects accumulate/scale. Boolean/string effects
+                # (tractor tow_capable / weapon_mode) are presence-flags handled by
+                # their own consumers, NOT summed into a baked numeric column.
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                by_effect.setdefault(k, []).append(v * adj * sc)
+
+        # --- 2. §4.2 FLAT best-3 cap per effect: keep only the 3 largest, sum them. ---
+        module_totals: Dict[str, float] = {
+            k: self._best_n_flat(vs, self.MODULE_STACK_BEST_N) for k, vs in by_effect.items()
+        }
+
+        # --- 3. The previously-baked module total (zero on first bake). ---
+        prev = modules.get("_baked")
+        if not isinstance(prev, dict):
+            prev = {}
+
+        # --- 4. Re-derive each baked column = current - prev_module + new_module. ---
+        # Mirrors EXACTLY the columns _apply_upgrade_effects writes, so legacy
+        # upgrades and modules share one accumulator (no consumer change).
+
+        def _delta(effect_key: str) -> float:
+            """Signed change to apply to a column for one effect this bake."""
+            return module_totals.get(effect_key, 0) - prev.get(effect_key, 0)
+
+        # engine.speed_bonus -> current_speed (additive; floor at base_speed).
+        d = _delta("speed_bonus")
+        if d:
+            base_speed = getattr(ship, "base_speed", 0) or 0
+            ship.current_speed = max(base_speed, (ship.current_speed or 0) + d)
+            updated["current_speed"] = ship.current_speed
+
+        # cargo.cargo_bonus_percent -> cargo._capacity_bonus_percent (INERT: baked,
+        # no kernel consumer change — fix D).
+        d = _delta("cargo_bonus_percent")
+        if d:
+            cargo = ship.cargo if isinstance(ship.cargo, dict) else {}
+            cargo["_capacity_bonus_percent"] = max(0, cargo.get("_capacity_bonus_percent", 0) + d)
+            ship.cargo = cargo
+            flag_modified(ship, "cargo")
+            updated["cargo_capacity_bonus_percent"] = cargo["_capacity_bonus_percent"]
+
+        # shield.shield_bonus -> combat.max_shields / shields.
+        d = _delta("shield_bonus")
+        if d:
+            combat = ship.combat if isinstance(ship.combat, dict) else {}
+            combat["max_shields"] = max(0, combat.get("max_shields", 0) + d)
+            # Current shields rise with new capacity but never exceed the (re-derived)
+            # max nor go negative.
+            combat["shields"] = max(0, min(combat.get("shields", 0) + d, combat["max_shields"]))
+            ship.combat = combat
+            flag_modified(ship, "combat")
+            updated["max_shields"] = combat["max_shields"]
+            updated["shields"] = combat["shields"]
+
+        # hull.hull_bonus -> combat.max_hull / hull.
+        d = _delta("hull_bonus")
+        if d:
+            combat = ship.combat if isinstance(ship.combat, dict) else {}
+            combat["max_hull"] = max(0, combat.get("max_hull", 0) + d)
+            new_hull = min(combat.get("hull", 0) + d, combat["max_hull"])
+            # Floor at 1 while the hull can hold any (never let a re-bake destroy the ship).
+            combat["hull"] = max(1, new_hull) if combat["max_hull"] >= 1 else max(0, new_hull)
+            ship.combat = combat
+            flag_modified(ship, "combat")
+            updated["max_hull"] = combat["max_hull"]
+            updated["hull"] = combat["hull"]
+
+        # sensor.evasion_bonus_percent -> combat.evasion. (scanner_range is DERIVED,
+        # no per-instance column — handled by the scan path; not baked here, matching
+        # _apply_upgrade_effects.)
+        d = _delta("evasion_bonus_percent")
+        if d:
+            combat = ship.combat if isinstance(ship.combat, dict) else {}
+            combat["evasion"] = max(0, combat.get("evasion", 0) + d)
+            ship.combat = combat
+            flag_modified(ship, "combat")
+            updated["evasion"] = combat["evasion"]
+
+        # maintenance.failure_rate_reduction -> maintenance.failure_rate_reduction
+        # (clamp [0.0, 1.0]).
+        d = _delta("failure_rate_reduction")
+        if d:
+            maintenance = ship.maintenance if isinstance(ship.maintenance, dict) else {}
+            new_red = (maintenance.get("failure_rate_reduction", 0) or 0) + d
+            maintenance["failure_rate_reduction"] = min(1.0, max(0.0, new_red))
+            ship.maintenance = maintenance
+            flag_modified(ship, "maintenance")
+            updated["failure_rate_reduction"] = maintenance["failure_rate_reduction"]
+
+        # genesis.genesis_capacity_bonus -> max_genesis_devices.
+        d = _delta("genesis_capacity_bonus")
+        if d:
+            ship.max_genesis_devices = max(0, (ship.max_genesis_devices or 0) + d)
+            updated["max_genesis_devices"] = ship.max_genesis_devices
+
+        # EQUIPMENT-FAMILY effects (harvester.passive_income / lander.landing_bonus
+        # / mining.mining_efficiency) + drone.drone_capacity_bonus are KERNEL-INERT
+        # here (reviewer SM-2 HIGH gate-fix). Unlike engine/shield/hull/sensor/
+        # maintenance/genesis (which write real scalar/JSONB stat columns above),
+        # these four have NO scalar column on the Ship model — their legacy
+        # consumers read them out of the equipment_slots JSONB that install_equipment
+        # writes (quantum_service passive income, the landing/mining/tow paths). The
+        # earlier draft wrote ship.passive_income/landing_bonus/mining_efficiency,
+        # which DO NOT EXIST on Ship → silent hasattr no-ops (the HIGH). Rather than
+        # ship a misleading dead write, the kernel tracks these totals in _baked
+        # (below) — a correct, re-tune-safe snapshot — and DEFERS their consumer
+        # persistence to WO-SM-3, which wires install_module + writes each
+        # equipment-family effect into the equipment_slots key its existing consumer
+        # already reads (no new consumer, no double-count vs install_equipment).
+        # Surfaced in `updated` for observability so SM-3's bake-correctness test can
+        # assert the tracked totals.
+        for _inert_key in (
+            "passive_income", "landing_bonus", "mining_efficiency", "drone_capacity_bonus",
+        ):
+            if _inert_key in module_totals or _inert_key in prev:
+                updated[_inert_key] = module_totals.get(_inert_key, 0)
+
+        # --- 5. Snapshot the new module total so the NEXT bake replaces it cleanly. ---
+        # Boolean/string effects (tractor flags) are NOT in module_totals (they were
+        # skipped) — they are presence flags read directly from Ship.modules by their
+        # own consumers, not summed into a column, so they never enter the _baked
+        # delta math.
+        modules["_baked"] = module_totals
+        ship.modules = modules
+        flag_modified(ship, "modules")
+
+        return updated
+
+    @staticmethod
+    def _best_n_flat(values: List[float], n: int) -> float:
+        """§4.2 FLAT best-N cap: sum only the N LARGEST contributions; the rest
+        contribute 0. The dumb anti-god-ship cap shipped in the kernel (the smooth
+        geometric DR curve is the Phase-B swap-in). Empty -> 0.
+        """
+        if not values:
+            return 0
+        return sum(sorted(values, reverse=True)[:n])
+
+    @staticmethod
+    def _adjacency_factor(slot_key: str, module_class, ship: Ship) -> float:
+        """§4.4 adjacency factor — Phase-B STUB. Same-class adjacency clustering
+        multiplies a module's effect; in the Phase-A kernel adjacency is the
+        identity (1.0) so the live multiplier chain is ``base → ×supercharge →
+        best-3 cap`` only. The (x,y) lattice is authored in ShipSpecification.
+        module_slots NOW so adjacency becomes a behaviour toggle here, never a
+        re-migration.
+        """
+        return 1.0
+
     def _reverse_upgrade_effects(self, ship: Ship, upgrade_type: UpgradeType, effects: Dict[str, Any]) -> Dict[str, Any]:
         """Reverse the stat changes ONE level of an upgrade contributed — the exact
         inverse of ``_apply_upgrade_effects`` for a single level.
@@ -789,3 +1261,10 @@ class ShipUpgradeService:
             "message": f"{eq_name} uninstalled (no credit refund)",
             "equipment": equipment_key,
         }
+
+
+# SHIP-MODS §5.1 — the tiered module catalog, keyed by (class, tier). Assigned
+# after the class body because it is built from the @staticmethod expanders
+# (_build_module_definitions → _scale_effects) which reference the class-level
+# §5.2/§5.3 constants. The §7 bake loop reads MODULE_DEFINITIONS[(class, tier)].
+ShipUpgradeService.MODULE_DEFINITIONS = ShipUpgradeService._build_module_definitions()
