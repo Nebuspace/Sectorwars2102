@@ -397,14 +397,18 @@ MEDAL_CATALOG: Dict[str, Dict[str, Any]] = {
                        magnitude=0.02, notes="+0.02 haggle band sliver (cat-charm)."),
     ),
     "special.pioneer_office_pillar": _medal(
-        "special.pioneer_office_pillar", "Pillar of the Pioneer Office", CAT_SPECIAL, TIER_UNIQUE,
-        "Awarded for a hidden civic-recognition event",
-        # WO-CG3: DISTINCT trigger_type (was the shared "special_discovery" @3) so it
-        # is admin-grant-safe and group-collision-proof. PARKED — UNWIRED: the doc
-        # has an identity collision (Economic/Silver "10,000 colonists hauled" vs this
-        # Special/Unique "civic-recognition event"; neither is concretely earnable
-        # here). No auto-award dispatcher; no invented threshold. Routed to Max.
-        "pioneer_office_civic", 1, "pillar_pioneer", "pioneer_office_pillar",
+        "special.pioneer_office_pillar", "Pillar of the Pioneer Office", CAT_ECONOMIC, TIER_SILVER,
+        "Transport 10,000 colonists in cryosleep transit (lifetime)",
+        # WO-CG3 follow-up (Orchestrator ruling 2026-06-20T23:57): the doc-identity
+        # collision is RESOLVED — medals.md is authoritative: this is the ECONOMIC /
+        # SILVER medal earned by hauling >=10,000 colonists in cryosleep (lifetime),
+        # effect -2% per-pioneer migration fee at a Capital Class-0 station. Aligned
+        # category/tier/criterion to canon (was Special/Unique "civic-recognition"
+        # code drift); stable id + legacy_key kept so existing PlayerMedal rows are
+        # unaffected. STILL UNWIRED — gated on a lifetime-colonist-transport counter
+        # that doesn't exist yet (filed as a future counter WO); distinct trigger_type
+        # keeps it admin-grant-safe + collision-proof. No auto-award dispatcher.
+        "colonists_transported_lifetime", 10000, "pillar_pioneer", "pioneer_office_pillar",
         # FINAL: Pioneer Office keeps published −2%. Sign convention: positive
         # magnitude on trading_discount = a buy discount / sell uplift.
         effect=_effect("passive", hook=HOOK_TRADING_DISCOUNT, scope="loop:trade",
