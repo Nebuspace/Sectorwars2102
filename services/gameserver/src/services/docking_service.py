@@ -246,6 +246,54 @@ def long_term_capacity_for(station: Station) -> int:
     return 2
 
 
+def construction_capacity_for(station: Station) -> int:
+    """Construction slip count by station kind (canon table).
+
+    Canon: FEATURES/economy/docking-slips §Per-station-class slip counts.
+    Construction slips are the third slip class — only TradeDocks offer them:
+    Tier-A → 8, Tier-B → 12, every other station class → 0. Mirrors the
+    tradedock_tier > is_spacedock > station_class precedence of the other
+    compute functions; since only TradeDocks have construction slips, the
+    lower-precedence branches all collapse to 0.
+    """
+    tier = getattr(station, "tradedock_tier", None)
+    if tier == "A":
+        return 8
+    if tier == "B":
+        return 12
+    return 0
+
+
+def specialized_construction_capacity_for(station: Station) -> int:
+    """Specialized-construction slip count by station kind (canon table).
+
+    Canon: FEATURES/economy/docking-slips §Per-station-class slip counts.
+    Specialized-construction is the fourth slip class — only the TradeDock
+    Tier-A flagship offers it: Tier-A → 4, every other station class
+    (including Tier-B) → 0. Same precedence as the other compute functions.
+    """
+    tier = getattr(station, "tradedock_tier", None)
+    if tier == "A":
+        return 4
+    return 0
+
+
+def slip_capacities_for(station: Station) -> Dict[str, int]:
+    """All four canonical slip-class capacities for `station`, as a dict.
+
+    Canon: FEATURES/economy/docking-slips §Per-station-class slip counts.
+    Aggregates the four per-class compute functions so callers (e.g. the
+    pre-dock slip route) can surface the complete taxonomy in one call:
+    {"transient", "long_term", "construction", "specialized_construction"}.
+    """
+    return {
+        "transient": slip_capacity_for(station),
+        "long_term": long_term_capacity_for(station),
+        "construction": construction_capacity_for(station),
+        "specialized_construction": specialized_construction_capacity_for(station),
+    }
+
+
 def docking_fee_for(station: Station) -> int:
     """Transient docking fee in credits.
 

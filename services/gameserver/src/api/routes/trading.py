@@ -1300,6 +1300,10 @@ async def get_station_slips(
         "capacity": capacity,
         "occupied": occupied,
         "free": max(capacity - occupied, 0),
+        # Full four-class slip taxonomy (canon: FEATURES/economy/docking-slips
+        # §Per-station-class slip counts). transient/long_term are the active
+        # pools; construction/specialized_construction are TradeDock-only.
+        "slip_capacities": docking_service.slip_capacities_for(station),
         "estimated_wait_minutes": estimated_wait_minutes,
         "fee": fee,
         "bump_cost": fee * docking_service.BUMP_COST_MULTIPLIER,
