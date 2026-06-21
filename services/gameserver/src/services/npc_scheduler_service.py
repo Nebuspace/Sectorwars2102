@@ -53,7 +53,7 @@ import os
 import random
 import uuid
 from datetime import datetime, timedelta, UTC
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -1814,7 +1814,7 @@ def _run_weekly_decay_sync() -> Dict[str, int]:
 # Genesis — scheduled formation completion
 # ---------------------------------------------------------------------------
 
-def _run_genesis_completion_sync() -> int:
+def _run_genesis_completion_sync() -> Tuple[int, List[Dict[str, Any]]]:
     """Complete forming genesis planets whose timer has elapsed.
 
     Before this tick, formation completion settled ONLY lazily — GenesisService.
@@ -1824,24 +1824,37 @@ def _run_genesis_completion_sync() -> int:
     "forming" forever past its 48h timer. This periodic sweep makes the timer
     authoritative for everyone. Cheap (an indexed forming/past-due filter that
     returns nothing on a steady galaxy), idempotent, xact-advisory-lock-gated
-    so a second instance skips instead of double-completing."""
+    so a second instance skips instead of double-completing.
+
+    WO-G4: returns ``(completed_count, events)`` where ``events`` is a list of
+    best-effort ``genesis_progress`` frames — one per OWNED planet that just
+    advanced to complete — collected via the GenesisService out-param. Like
+    every tick-body event, the caller broadcasts these POST-COMMIT on the EVENT
+    LOOP (``_broadcast_events``), NOT from this worker thread (no running loop
+    here — a worker-thread→loop bridge is forbidden). The frames are composed
+    inside complete_all_due_formations BEFORE its internal commit and handed
+    back only after it returns (i.e. after that commit succeeded), so a WS
+    hiccup can never roll back a completion."""
     from src.core.database import SessionLocal
     from src.services.genesis_service import GenesisService
 
     db = SessionLocal()
+    events: List[Dict[str, Any]] = []
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
             {"key": _ADVISORY_LOCK_KEY},
         ).scalar()
         if not got_lock:
-            return 0
+            return 0, events
         # GenesisService.complete_all_due_formations commits internally when it
-        # completes any planet; that commit also releases this xact lock.
-        completed = GenesisService(db).complete_all_due_formations()
+        # completes any planet; that commit also releases this xact lock. The
+        # genesis_progress frames are appended to ``events`` (out-param) as each
+        # owned planet completes, returned post-commit for loop-side broadcast.
+        completed = GenesisService(db).complete_all_due_formations(events=events)
         if not completed:
             db.commit()  # release the lock on the no-op path
-        return completed
+        return completed, events
     finally:
         db.close()
 
@@ -3841,6 +3854,26 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
                 )
             continue
 
+        # WO-G4: genesis_progress is a PERSONAL frame to the planet owner — not a
+        # sector room broadcast. Route it via the per-user primitive
+        # (connection_manager.send_personal_message(user_id: str, message)).
+        # Best-effort like every broadcast here: a WS hiccup is logged, never
+        # raised, so the underlying genesis completion is unaffected. Falls
+        # through to nothing else (continue) — owner_id absent => no recipient.
+        if event.get("type") == "genesis_progress":
+            owner_id = event.get("owner_id")
+            if owner_id is not None:
+                try:
+                    await connection_manager.send_personal_message(
+                        str(owner_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: genesis_progress send failed for owner %s",
+                        owner_id,
+                    )
+            continue
+
         sector_id = event.get("sector_id")
         if sector_id is None:
             continue
@@ -3931,12 +3964,19 @@ async def npc_scheduler_loop() -> None:
         # session, own advisory lock.
         if elapsed % GENESIS_COMPLETION_SECONDS == 0:
             try:
-                completed = await asyncio.to_thread(_run_genesis_completion_sync)
+                completed, genesis_events = await asyncio.to_thread(
+                    _run_genesis_completion_sync
+                )
                 if completed:
                     logger.info(
                         "NPC scheduler: completed %d due genesis formation(s)",
                         completed,
                     )
+                # WO-G4: broadcast the per-owner genesis_progress frames
+                # POST-COMMIT, here on the event loop (never from the worker
+                # thread the sweep ran in). Best-effort inside _broadcast_events.
+                if genesis_events:
+                    await _broadcast_events(genesis_events)
             except asyncio.CancelledError:
                 raise
             except Exception:

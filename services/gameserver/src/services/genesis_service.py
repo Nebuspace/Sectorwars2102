@@ -807,7 +807,9 @@ class GenesisService:
             self.db.commit()
         return len(due)
 
-    def complete_all_due_formations(self) -> int:
+    def complete_all_due_formations(
+        self, events: Optional[List[Dict[str, Any]]] = None
+    ) -> int:
         """Complete EVERY forming genesis planet whose formation timer has
         elapsed, regardless of owner — the periodic (scheduler-driven)
         counterpart to ``complete_due_formations`` (which is lazy and scoped to
@@ -820,7 +822,19 @@ class GenesisService:
         formation timer authoritative: a deployed device always finishes.
 
         Idempotent (only ``forming`` rows past their timer are touched) and safe
-        to run repeatedly. Returns the number of planets completed."""
+        to run repeatedly. Returns the number of planets completed.
+
+        WO-G4: when an out-param ``events`` list is supplied, a best-effort
+        ``genesis_progress`` realtime event dict is appended per OWNED planet
+        that just advanced to ``complete`` — carrying the same completion values
+        the REST status returns (``progress_percent`` 100.0 / ``hours_remaining``
+        0, per ``get_formation_status``'s completed branch). The math is NOT
+        recomputed here; completion IS 100% / 0h by definition. The caller (the
+        scheduler sweep) hands these to ``_broadcast_events`` POST-COMMIT on the
+        EVENT LOOP — never from the worker thread this method runs in — so a
+        WebSocket hiccup can never roll back the formation completion. An
+        abandoned/unowned planet (``owner_id is None``) yields no frame (no owner
+        to notify) but is still completed."""
         now = datetime.now(timezone.utc)
         due = (
             self.db.query(Planet)
@@ -834,6 +848,26 @@ class GenesisService:
         )
         for planet in due:
             self._complete_formation(planet)
+            # Compose the per-owner progress frame BEFORE commit; the caller
+            # broadcasts it on the loop AFTER the commit succeeds (post-commit
+            # discipline). Best-effort: never let frame composition disturb the
+            # completion path.
+            if events is not None and planet.owner_id is not None:
+                try:
+                    events.append({
+                        "type": "genesis_progress",
+                        "planet_id": str(planet.id),
+                        "owner_id": str(planet.owner_id),
+                        "sector_id": planet.sector_id,
+                        "progress_percent": 100.0,
+                        "hours_remaining": 0,
+                        "at": now.isoformat(),
+                    })
+                except Exception:  # never break a completion over a frame
+                    logger.exception(
+                        "genesis_progress frame compose failed for planet %s",
+                        planet.id,
+                    )
         if due:
             self.db.commit()
         return len(due)
