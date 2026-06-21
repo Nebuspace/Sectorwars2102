@@ -28,10 +28,25 @@ BOUNTY_PLACEMENT_FEE = 0.10  # 10% fee
 # were instantaneous bounty values recomputed on every kill; under WO-BN the pot
 # is STORED and GROWS over time, so a tier's figure is now the cap, not the
 # constant payout.)
+#
+# WO-DBB-EC1 (canon §1.3, lifecycle.md): "Federation Bounty Board payouts are
+# minted ... Target: 5,000–250,000 cr per kill scaling with target's personal-rep
+# tier." This per-criminal tier ceiling IS the Federation payout scale — the
+# stored pot grows toward, and a kill pays out, the deepest-matched tier's figure,
+# so the maximum a Federation kill can mint now scales monotonically from 5,000
+# (shallowest criminal tier) up to the canon band's 250,000 ceiling (deepest).
+# PLAYER-PLACED (zero-sum) bounties are untouched by this table — they pay their
+# own escrowed `amount` from Player.settings["bounties"].
+#
+# NO-CANON: canon §1.3 gives ONLY the 5,000–250,000 band and marks the per-tier
+# scale 📐 Design-only — it does NOT specify per-tier figures. The intermediate
+# rung below (-750 -> 75,000) is a CONSERVATIVE monotonic interpolation across the
+# three existing criminal thresholds, anchored to the canon endpoints (5,000 at
+# the shallowest tier, 250,000 at the deepest). Flagged for DECISIONS.md bless.
 SYSTEM_BOUNTY_TIERS = {
-    -500: 5000,    # Criminal: pot caps at 5,000 credits
-    -750: 25000,   # Villain low: pot caps at 25,000 credits
-    -1000: 100000, # Villain max: pot caps at 100,000 credits
+    -500: 5000,     # Criminal: pot caps at 5,000 credits (canon band floor)
+    -750: 75000,    # Villain low: pot caps at 75,000 credits (NO-CANON interp)
+    -1000: 250000,  # Villain max: pot caps at 250,000 credits (canon band ceiling)
 }
 
 # Shallowest criminal threshold — a player whose personal_reputation is strictly
@@ -59,12 +74,14 @@ SYSTEM_BOUNTY_POT_PERIOD_KEY = "system_bounty_pot_period"
 #   * base accrual per canonical day for a shallow criminal (-500..-749);
 #   * scaled UP by a per-tier "dastardly" multiplier (more-severe criminals
 #     accrue FASTER — the deeper the pit, the bigger the daily bounty bump);
-#   * each criminal's pot is CAPPED at its deepest-matched tier figure, so a
-#     -500 player tops out at 5,000, a -1000 player at 100,000 — the same
-#     ceilings the old on-demand model paid, now reached gradually.
+#   * each criminal's pot is CAPPED at its deepest-matched tier figure (the
+#     WO-DBB-EC1 canon §1.3 payout scale), so a -500 player tops out at 5,000,
+#     a -1000 player at 250,000 — reached gradually by the daily drip.
 # Conservative: at base 250/day a -500 criminal needs ~20 canonical days to fill
-# its 5,000 cap; a -1000 criminal at 4x (1,000/day) needs ~100 days to fill
-# 100,000 — slow enough that the pot is never a runaway faucet.
+# its 5,000 cap; a -1000 criminal at 4x (1,000/day) needs ~250 days to fill its
+# 250,000 cap — slow enough that the pot is never a runaway faucet (the cap, not
+# the drip rate, was raised by WO-DBB-EC1; the accrual multipliers below are the
+# pre-existing NO-CANON growth model, unchanged).
 SYSTEM_BOUNTY_BASE_ACCRUAL_PER_DAY = 250  # credits/canonical-day, shallow tier
 # Per-tier dastardly multiplier on the base daily accrual (keyed by the same
 # thresholds as SYSTEM_BOUNTY_TIERS — deepest matched tier wins).
@@ -135,7 +152,8 @@ class BountyService:
     @classmethod
     def system_bounty_pot_cap(cls, player: Player) -> int:
         """The ceiling this criminal's pot may grow to — the deepest-matched
-        tier's figure (5k / 25k / 100k). 0 for a non-criminal."""
+        tier's figure (5k / 75k / 250k — the WO-DBB-EC1 canon §1.3 payout scale).
+        0 for a non-criminal."""
         tier = cls._matched_tier(player.personal_reputation or 0)
         return SYSTEM_BOUNTY_TIERS.get(tier, 0) if tier is not None else 0
 
