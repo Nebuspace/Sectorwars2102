@@ -231,6 +231,87 @@ def _legacy_layout_map(planet) -> dict:
     }
 
 
+def _seed_find_spot(structures: dict, kind: str):
+    """First (x,y) where `kind`'s footprint fits (cleared, hazard-free, unoccupied). None if no fit."""
+    grid = structures.get("grid") or {}
+    for y in range(int(grid.get("rows", 0))):
+        for x in range(int(grid.get("cols", 0))):
+            ok, _ = can_place(structures, kind, x, y)
+            if ok:
+                return x, y
+    return None
+
+
+def _seed_place(structures: dict, kind: str, level: int = 1) -> Optional[dict]:
+    """Place an OPERATIONAL building of `kind` on the first fitting plot (complete_at=None). Returns
+    the building or None if the grid has no room (a too-small grid simply seeds fewer buildings)."""
+    spot = _seed_find_spot(structures, kind)
+    if spot is None:
+        return None
+    return place(structures, kind, spot[0], spot[1], level=int(level))
+
+
+def _seed_buildings_from_legacy(planet, structures: dict) -> None:
+    """Cold-start the grid's BUILDINGS from the legacy scalars so the shadow derivation reproduces
+    the shipped ladder: place HAB_DOME(s) + economy + research + per-tier key buildings + defense so
+    ``derive_citadel_level(structures) == planet.citadel_level`` (K1b-1 calibration target, spec
+    §1.2). Idempotent: no-op if buildings already present. A planet with citadel_level 0
+    (forming/uncolonized) seeds no buildings."""
+    if structures.get("buildings"):
+        return
+    L = int(getattr(planet, "citadel_level", 0) or 0)
+    if L < 1:
+        return
+
+    from src.services import building_catalog
+
+    # Economy floor — at least one (the L1 key needs ≥1 economy); upgrade to the legacy levels.
+    _seed_place(structures, "MINE", max(1, int(getattr(planet, "mine_level", 0) or 0)))
+    if int(getattr(planet, "farm_level", 0) or 0) > 0:
+        _seed_place(structures, "FARM", int(planet.farm_level))
+    if int(getattr(planet, "factory_level", 0) or 0) > 0:
+        _seed_place(structures, "FABRICATOR", int(planet.factory_level))
+    if int(getattr(planet, "research_level", 0) or 0) > 0:
+        _seed_place(structures, "LAB", int(planet.research_level))
+
+    # Housing — one dome (two at L3+), sized to cover HOUSING[L] (HAB_DOME caps 50k/level).
+    cap_per = int(((building_catalog.get("HAB_DOME") or {}).get("effect") or {}).get("capacity_per_level", 50000)) or 50000
+    dome_count = 2 if L >= 3 else 1
+    need = HOUSING.get(L, 0)
+    per_dome = (need + dome_count - 1) // dome_count if need else 0
+    dome_level = min(5, max(1, (per_dome + cap_per - 1) // cap_per)) if per_dome else 1
+    for _ in range(dome_count):
+        _seed_place(structures, "HAB_DOME", dome_level)
+
+    # Per-tier key buildings (spec §1.2).
+    if L >= 2:
+        _seed_place(structures, "SCANNER_ARRAY", 1)
+    if L >= 3:
+        _seed_place(structures, "POWER_PLANT", 1)
+    if L >= 4:
+        _seed_place(structures, "SPACEPORT", 1)
+        eco = sum(1 for b in structures["buildings"]
+                  if (building_catalog.get(b.get("kind")) or {}).get("domain") == "economy")
+        while eco < 3 and _seed_place(structures, "FABRICATOR", 1) is not None:
+            eco += 1
+    if L >= 5:
+        _seed_place(structures, "ADMIN_SPIRE", 1)
+
+    # Defense from the shipped active_events['defense_buildings'] counts (CT1 store).
+    events = planet.active_events if isinstance(planet.active_events, dict) else {}
+    dbld = events.get("defense_buildings") if isinstance(events.get("defense_buildings"), dict) else {}
+    for kind in ("TURRET_NETWORK", "ORBITAL_PLATFORM", "SCANNER_ARRAY"):
+        for _ in range(int(dbld.get(kind.lower(), 0) or 0)):
+            _seed_place(structures, kind, 1)
+
+    # Floor-area backfill — if still short of FLOOR_AREA[L], add baseline MINEs until met or full.
+    guard = 0
+    while powered_floor_area(structures) < FLOOR_AREA.get(L, 0) and guard < 40:
+        if _seed_place(structures, "MINE", 1) is None:
+            break
+        guard += 1
+
+
 def seed(planet, *, db=None) -> dict:
     """Cold-start owner of Planet.structures for a planet with null/empty structures. Idempotent —
     if the spine anchor is already present, returns the existing dict unchanged (never re-seeds).
@@ -247,12 +328,14 @@ def seed(planet, *, db=None) -> dict:
     K1b-1: this builds the structural grid (plots placement can occupy) but does NOT yet seed
     buildings from legacy levels — that calibration (so derive_citadel_level == shipped) lands with
     the shadow-derive wiring."""
-    if isinstance(planet.structures, dict) and _read_settle_anchor(planet) is not None:
-        return planet.structures
+    # Fully IDEMPOTENT cold-start: each piece is guarded so re-calling seed() (incl. BACKFILLING a
+    # planet seeded before the grid code landed — anchor present, grid/buildings missing) adds only
+    # what's absent. The spine anchor is stamped EXACTLY ONCE (never re-stamped — I8).
     base = dict(planet.structures) if isinstance(planet.structures, dict) else {}
     base.setdefault("version", 1)
     tmeta = dict(base.get("terraform_meta")) if isinstance(base.get("terraform_meta"), dict) else {}
-    tmeta["last_settle_at"] = _seed_anchor_value(planet).isoformat()
+    if not tmeta.get("last_settle_at"):
+        tmeta["last_settle_at"] = _seed_anchor_value(planet).isoformat()
     base["terraform_meta"] = tmeta
     if not isinstance(base.get("grid"), dict) or not isinstance(base.get("plots"), list):
         cols, rows, count = _grid_dims_for(getattr(planet, "size", 5) or 5)
@@ -260,7 +343,11 @@ def seed(planet, *, db=None) -> dict:
         base["plots"] = _seed_plots(planet, cols, rows, count)
     base.setdefault("buildings", [])
     base.setdefault("instability", 0)
-    base["legacy_seed"] = _legacy_layout_map(planet)
+    # K1b-1 calibration: cold-start the grid's buildings from the legacy scalars so the SHADOW
+    # derive reproduces the shipped citadel_level. Touches only structures.buildings — no shipped
+    # derived field (citadel_level/max_population/habitability) changes, so reproduce-exactly holds.
+    _seed_buildings_from_legacy(planet, base)
+    base.setdefault("legacy_seed", _legacy_layout_map(planet))
     planet.structures = base
     flag_modified(planet, "structures")
     return base
