@@ -220,6 +220,30 @@ _ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY = "active_players_30d_last_day"
 # player counts as "active in this region" if they logged any PlayerActivity in
 # one of the region's sectors within the trailing 30 days).
 _ACTIVE_PLAYERS_WINDOW_DAYS = 30
+# Galaxy.state JSONB key holding the canonical-DAY index of the last ARIA
+# storage-prune pass (WO-F16). The dormant prune kernel
+# (AriaPersonalIntelligenceService.prune_player_storage) evicts each player's
+# oldest ARIAPersonalMemory + ARIAMarketIntelligence rows until that player's
+# combined payload is back under MAX_PLAYER_ARIA_BYTES (10 MiB). The prune is
+# ASYNC (it owns its own commit per player against an AsyncSession) so — unlike
+# the to_thread sync sweeps — it is awaited DIRECTLY by npc_scheduler_loop on an
+# async session; calling it through asyncio.to_thread would run an async coroutine
+# in a worker thread with no running loop. A durable per-day anchor — mirroring
+# _ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY / _WEEKLY_DECAY_STATE_KEY's discipline —
+# gates the (potentially heavy) all-players scan to run at most ONCE per canonical
+# day regardless of process restarts.
+_ARIA_PRUNE_STATE_KEY = "aria_storage_prune_last_day"
+# Coarse CHEAP pre-filter cadence for the ARIA storage-prune pass. The durable
+# canonical-day anchor (_ARIA_PRUNE_STATE_KEY) is what actually guarantees
+# once-per-day; this only keeps us from opening an async session + querying
+# Galaxy.state every 60s. A 45-minute pre-filter is far finer than a (canonical)
+# day, so a day's prune is never missed, while idle wakes do nothing. Offset from
+# the sync coarse probes (decay 15m / faucet 20m / snapshot 25m / idle 30m /
+# stipend 35m / bounty 40m) by landing at 45m so the probes don't all hit
+# Postgres on the same scheduler wake.
+ARIA_PRUNE_CHECK_SECONDS = int(
+    os.environ.get("ARIA_PRUNE_CHECK_SECONDS", str(45 * 60))
+)
 # Coarse CHEAP pre-filter cadence for the weekly-decay check. The durable
 # canonical-week anchor is what actually guarantees once-per-week; this only
 # keeps us from taking the advisory lock + querying Galaxy.state every 60s. A
@@ -3883,6 +3907,155 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
             logger.exception("NPC scheduler: broadcast failed for %s", event.get("type"))
 
 
+async def _run_aria_prune_async() -> Dict[str, int]:
+    """ASYNC daily ARIA storage-prune pass (WO-F16).
+
+    Wires the dormant prune kernel
+    (``AriaPersonalIntelligenceService.prune_player_storage``) into the
+    scheduler. For each player that HAS any ARIA storage, the kernel computes
+    that player's combined ``ARIAPersonalMemory`` (memory_content) +
+    ``ARIAMarketIntelligence`` (price_observations) JSON byte size and, if it
+    exceeds the per-player hard cap (MAX_PLAYER_ARIA_BYTES — NO-CANON 10 MiB),
+    evicts the OLDEST rows across BOTH tables until back under the cap.
+    Under-cap players are left untouched.
+
+    WHY ASYNC (and NOT a to_thread sync sweep like the other daily passes):
+    ``prune_player_storage`` is an ``async def`` that owns its own per-player
+    commit against an ``AsyncSession``. Running it through ``asyncio.to_thread``
+    would execute a coroutine in a worker thread that has no running event loop
+    — it would never actually run. So this pass opens its OWN async session
+    (``AsyncSessionLocal`` from src.core.database, the same factory
+    ``get_async_session`` yields from) and is ``await``-ed DIRECTLY by
+    ``npc_scheduler_loop`` (no to_thread). It does NOT touch the sync engine /
+    advisory-lock path the to_thread sweeps use, so there is no cross-engine
+    pool contamination.
+
+    Day-gating: a durable Galaxy.state JSONB anchor (``_ARIA_PRUNE_STATE_KEY``)
+    holds the canonical-day index of the last completed prune, mirroring G18's
+    ``_ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY`` discipline so the all-players scan
+    runs at most ONCE per canonical day across process restarts. canonical_day_
+    number() is called NO-ARG (defaults to an aware datetime.now(UTC)) so the
+    anchor never shifts on a naive/local-time interpretation.
+
+    Best-effort per player: one player's prune error is logged and skipped — it
+    never aborts the rest of the pass. The day anchor is advanced only after the
+    per-player loop (a failure to advance just means a harmless idempotent
+    re-run next pass — under-cap players are no-ops and an already-pruned player
+    is simply under cap again).
+
+    Returns {players_scanned, players_pruned, rows_evicted}.
+    """
+    from src.core.database import AsyncSessionLocal
+    from src.models.galaxy import Galaxy
+    from src.models.aria_personal_intelligence import (
+        ARIAPersonalMemory, ARIAMarketIntelligence,
+    )
+    from src.services.aria_personal_intelligence_service import (
+        AriaPersonalIntelligenceService,
+    )
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm.attributes import flag_modified
+
+    result = {"players_scanned": 0, "players_pruned": 0, "rows_evicted": 0}
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # --- Day-gate via durable Galaxy.state anchor --------------------
+            # No-arg → aware datetime.now(UTC); mirrors the G18 recompute and
+            # _run_weekly_decay_sync's canonical-clock anchor reads.
+            this_day = canonical_day_number()
+            galaxy_res = await db.execute(
+                sa_select(Galaxy).order_by(Galaxy.created_at.asc())
+            )
+            galaxy = galaxy_res.scalars().first()
+            gstate = dict(galaxy.state or {}) if galaxy is not None else {}
+            last_day = gstate.get(_ARIA_PRUNE_STATE_KEY)
+            already_today = (
+                galaxy is not None
+                and last_day is not None
+                and int(last_day) >= this_day
+            )
+            if already_today:
+                return result  # clean no-op — already pruned this canonical day
+
+            # --- Enumerate ONLY players who HAVE ARIA storage ----------------
+            # The kernel reads ARIAPersonalMemory + ARIAMarketIntelligence; a
+            # player with neither has nothing to prune, so collect the DISTINCT
+            # player_ids that own at least one row in EITHER table and merge
+            # them (never scan all players blindly). Two cheap DISTINCT probes
+            # unioned in Python — unambiguous and equally targeted.
+            mem_ids_res = await db.execute(
+                sa_select(ARIAPersonalMemory.player_id).distinct()
+            )
+            intel_ids_res = await db.execute(
+                sa_select(ARIAMarketIntelligence.player_id).distinct()
+            )
+            player_ids = {
+                pid for (pid,) in mem_ids_res.all() if pid is not None
+            } | {
+                pid for (pid,) in intel_ids_res.all() if pid is not None
+            }
+
+            service = AriaPersonalIntelligenceService()
+
+            # --- Best-effort per-player prune --------------------------------
+            for pid in player_ids:
+                result["players_scanned"] += 1
+                try:
+                    summary = await service.prune_player_storage(str(pid), db)
+                    evicted = int(summary.get("evicted_total", 0)) if summary else 0
+                    if evicted:
+                        result["players_pruned"] += 1
+                        result["rows_evicted"] += evicted
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "ARIA prune: prune failed for player %s (skipped)", pid
+                    )
+                    # One bad row owns its session; make sure a poisoned
+                    # transaction can't break the next player's commit.
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        logger.exception(
+                            "ARIA prune: rollback failed after player %s", pid
+                        )
+
+            # --- Advance the durable per-day anchor (best-effort) ------------
+            if galaxy is not None:
+                try:
+                    # Reuse the gstate dict captured BEFORE the per-player loop —
+                    # do NOT re-read galaxy.state here. The kernel's per-player
+                    # await db.commit() expires every ORM object on this async
+                    # session (AsyncSessionLocal uses expire_on_commit=True), and
+                    # a lazy re-read of an expired attribute on an async session
+                    # raises MissingGreenlet (greenlet_spawn) — see
+                    # enhanced_ai_service.py:477. Setting the attribute (no read)
+                    # is safe; the captured dict carries the prior state.
+                    gstate[_ARIA_PRUNE_STATE_KEY] = this_day
+                    galaxy.state = gstate
+                    flag_modified(galaxy, "state")
+                    await db.commit()
+                except Exception:
+                    logger.exception(
+                        "ARIA prune: day-anchor advance failed "
+                        "(prune will re-run next pass; it is idempotent)"
+                    )
+                    await db.rollback()
+
+            return result
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ARIA prune: pass failed")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            return result
+
+
 async def npc_scheduler_loop() -> None:
     """The lifespan-owned host task. Wakes every TICK_SECONDS, runs due
     tick bodies in a worker thread, broadcasts the returned events."""
@@ -4284,3 +4457,31 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: price-recompute flush sweep crashed (loop continues)")
+
+        # ARIA storage-prune pass (WO-F16) — evict each player's oldest ARIA
+        # memory/market-intelligence rows until their combined payload is back
+        # under the per-player hard cap (MAX_PLAYER_ARIA_BYTES, 10 MiB). UNLIKE
+        # the sweeps above, the prune kernel is ASYNC (it owns its per-player
+        # commit on an AsyncSession), so this pass is AWAITED DIRECTLY here on
+        # its own async session — NOT run through asyncio.to_thread (a coroutine
+        # in a worker thread has no running loop and would never execute). The
+        # once-per-canonical-day guarantee comes from a durable Galaxy.state
+        # anchor inside _run_aria_prune_async (mirroring the G18 recompute); a
+        # coarse elapsed pre-filter keeps us from opening an async session every
+        # 60s. Idempotent + a no-op once the day's prune is done; under-cap
+        # players are untouched.
+        if elapsed % ARIA_PRUNE_CHECK_SECONDS == 0:
+            try:
+                pruned = await _run_aria_prune_async()
+                if pruned.get("players_pruned"):
+                    logger.info(
+                        "NPC scheduler: ARIA storage prune — pruned %d of %d "
+                        "player(s), evicted %d stale row(s)",
+                        pruned.get("players_pruned", 0),
+                        pruned.get("players_scanned", 0),
+                        pruned.get("rows_evicted", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: ARIA storage prune pass crashed (loop continues)")
