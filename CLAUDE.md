@@ -802,6 +802,14 @@ If the mailbox is idle ≥ 20 min it appends a `💓 HEARTBEAT` line that trips 
 > PROCESS-NOTE additions here were authored + committed by the Orchestrator; **your only part is
 > to run the `heartbeat.sh` command above** (and post suggestions). Arming the heartbeat ≠
 > editing the protocol — it's a runtime step you own, exactly like arming the watcher.
+>
+> **Reciprocity + mutual ratification (Max, 2026-06-21).** When you post a `💡 PROCESS-NOTE` you
+> trigger an obligation: the Orchestrator reciprocates with a *full end-to-end review* of the
+> cross-claude process (matching the time you spent), not just a yes/no on your one idea. And
+> **no process change is committed without your agreement** — the Orchestrator proposes the final
+> form back to you and you ratify it; symmetrically, the Orchestrator must agree before any change
+> *you* propose is committed. The Orchestrator authors + commits all protocol edits, but neither
+> side changes the shared process unilaterally.
 
 **The 5 rules that prevent disasters (full detail in the root spec):**
 1. **Commit only explicit paths** — `git commit -- <your/owned/paths>`. **NEVER `git add -A` / `git add .`** in this shared working tree (it sweeps the other instance's in-flight files — this has already happened once). `git pull --rebase --autostash` before every push.
