@@ -436,6 +436,30 @@ async def claim_planet(
     except Exception:
         logger.exception("Exploration medal dispatch failed on colony founding")
 
+    # Lifetime colonist-transport counter (WO-PC1): credit the ACTUAL colonists
+    # that just decanted into this colony's workforce — the post-clamp
+    # `colonists_settled`, NOT base_settled (which is the physical pods consumed
+    # from cargo). The landing_bonus deliberately lands more pioneers per pod, so
+    # the lifetime haul tracks what truly settled. Then dispatch the
+    # colonists_transported_lifetime medal trigger (pioneer_office_pillar @10,000)
+    # BEFORE db.commit() below, so its award SAVEPOINT folds into this route's
+    # single commit — exactly like the exploration hook above. Fully defensive +
+    # idempotent: a medal hiccup must never break a colony founding.
+    if colonists_settled > 0:
+        player.colonists_transported_lifetime = (
+            (player.colonists_transported_lifetime or 0) + colonists_settled
+        )
+        try:
+            from src.services.medal_service import _evaluate_and_award
+            _evaluate_and_award(
+                db,
+                player.id,
+                "colonists_transported_lifetime",
+                player.colonists_transported_lifetime,
+            )
+        except Exception:
+            logger.exception("Colonist-transport medal dispatch failed on colony founding")
+
     # Auto-land the player on the newly claimed planet
     player.is_landed = True
     player.current_planet_id = planet.id
@@ -655,6 +679,29 @@ async def transfer_colonists(
             pioneer_service.attribute_settlement(db, player.id, base_settled)
         except Exception:
             logger.exception("Migration-contract attribution failed on disembark")
+
+        # Lifetime colonist-transport counter (WO-PC1): credit the ACTUAL
+        # colonists that decanted into the workforce — the post-clamp
+        # `colonists_settled`, mirroring the claim path. Embark does NOT touch
+        # this counter (those colonists are leaving the planet, not landing).
+        # Dispatch the colonists_transported_lifetime medal trigger BEFORE the
+        # db.commit() below so its award SAVEPOINT folds into this route's single
+        # commit. Defensive + idempotent — a medal hiccup must never break a
+        # disembark; award_medal is idempotent per (player, medal).
+        if colonists_settled > 0:
+            player.colonists_transported_lifetime = (
+                (player.colonists_transported_lifetime or 0) + colonists_settled
+            )
+            try:
+                from src.services.medal_service import _evaluate_and_award
+                _evaluate_and_award(
+                    db,
+                    player.id,
+                    "colonists_transported_lifetime",
+                    player.colonists_transported_lifetime,
+                )
+            except Exception:
+                logger.exception("Colonist-transport medal dispatch failed on disembark")
         message = f"{colonists_settled:,} colonists disembarked onto {planet.name}"
     else:  # embark
         if planet_colonists < quantity:

@@ -35,6 +35,12 @@ class Player(Base):
     # police arrival watchers compare against. Mutate ONLY through
     # turn_service.spend_turns/refund_turns.
     lifetime_turns_spent = Column(Integer, nullable=False, default=0)
+    # Monotonic count of colonists this player has ever LANDED onto a planet
+    # (claim founding + disembark transfers). Counts the ACTUAL settled amount
+    # after free-cap clamping — what truly decanted into a workforce. Drives the
+    # `colonists_transported_lifetime` medal trigger (pioneer_office_pillar
+    # @10,000). Embarking colonists back onto a ship does NOT decrement it.
+    colonists_transported_lifetime = Column(Integer, nullable=False, default=0, server_default=text("0"))
     reputation = Column(JSONB, nullable=False, default={})  # Faction reputations
 
     # Personal Reputation System (good vs evil alignment)
