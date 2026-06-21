@@ -187,10 +187,18 @@ class DroneService:
             deployment.is_active = False
             deployment.recalled_at = datetime.utcnow()
             
-            # Update drone status
+            # Update drone status. Recall is instantaneous in this API (sector_id
+            # is cleared synchronously), and there is no scheduler/tick anywhere
+            # that completes a RETURNING drone's transit back to base. Leaving the
+            # drone in RETURNING was a terminal dead-end: nothing ever moved it
+            # back to IDLE, so a recalled drone was permanently stuck in a phantom
+            # state (sector_id None but status not idle), passing the
+            # "undeployed" re-deploy filter while never being cleanly available.
+            # The correct terminal state for a completed recall is IDLE ("created
+            # but not deployed to any sector" — see DroneStatus.IDLE).
             drone = await self.session.get(Drone, drone_id)
             if drone and drone.status != DroneStatus.DESTROYED.value:
-                drone.status = DroneStatus.RETURNING.value
+                drone.status = DroneStatus.IDLE.value
                 drone.sector_id = None
                 
             await self.session.commit()
