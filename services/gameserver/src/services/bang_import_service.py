@@ -40,6 +40,7 @@ import logging
 import random
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -345,6 +346,14 @@ class ClusterSpec:
     is_discovered: bool
     is_hidden: bool
     special_features: List[str]
+    # Structured nebula fields (WO-DBB-QR4). The bang payload has nebula data
+    # PER-SECTOR only; these capture the cluster's dominant/representative
+    # nebula, derived from its member sectors during _translate_region. They
+    # default unset (cluster has no nebula sectors) → all three stay None.
+    # color_hex has no payload source and is always None for now.
+    nebula_type: Optional[str] = None
+    quantum_field_strength: Optional[float] = None
+    color_hex: Optional[str] = None
 
 
 @dataclass
@@ -1321,6 +1330,12 @@ class BangImportService:
                 is_discovered=cs.is_discovered,
                 is_hidden=cs.is_hidden,
                 special_features=cs.special_features,
+                # WO-DBB-QR4: structured cluster nebula (dominant/representative,
+                # derived from member sectors in _translate_region). color_hex
+                # has no payload source → None.
+                nebula_type=cs.nebula_type,
+                quantum_field_strength=cs.quantum_field_strength,
+                color_hex=cs.color_hex,
                 stats={
                     "sector_range_start": cs.sector_range_start,
                     "sector_range_end": cs.sector_range_end,
@@ -1977,6 +1992,11 @@ class BangImportService:
         sector_specs: List[SectorSpec] = []
         station_specs: List[StationSpec] = []
         planet_specs: List[PlanetSpec] = []
+        # WO-DBB-QR4: accumulate per-cluster nebula samples so we can derive
+        # each cluster's dominant/representative nebula after the sector walk.
+        # nebula data lives PER-SECTOR in the bang payload; cluster_int_id →
+        # {"types": [str, ...], "densities": [int, ...]}.
+        cluster_nebula_samples: Dict[int, Dict[str, List[Any]]] = {}
         bang_sectors = raw.get("sectors") or {}
         for sid_str, sector_payload in bang_sectors.items():
             sid = int(sid_str)
@@ -2000,6 +2020,13 @@ class BangImportService:
                 special_features.append(
                     f"nebula_density:{int(nebula.get('density', 0))}"
                 )
+                # WO-DBB-QR4: sample this sector's nebula toward the cluster's
+                # representative nebula (finalized after the loop).
+                samples = cluster_nebula_samples.setdefault(
+                    cluster_spec.cluster_int_id, {"types": [], "densities": []}
+                )
+                samples["types"].append(str(nebula.get("type", "normal")))
+                samples["densities"].append(int(nebula.get("density", 0)))
             if sid in fedspace_set:
                 special_features.append("fedspace")
 
@@ -2061,6 +2088,22 @@ class BangImportService:
 
             for planet_payload in sector_payload.get("planets") or []:
                 planet_specs.append(self._build_planet_spec(sid, planet_payload))
+
+        # WO-DBB-QR4: finalize each cluster's dominant/representative nebula
+        # from the per-sector samples gathered above. nebula_type = the most
+        # frequent type among the cluster's nebula sectors (ties broken by
+        # first-seen via Counter.most_common); quantum_field_strength = the mean
+        # density of those sectors (the only quantitative nebula attribute the
+        # bang payload carries). color_hex has no payload source → stays None.
+        # A cluster with no nebula sectors leaves all three fields None.
+        for cs in cluster_specs:
+            samples = cluster_nebula_samples.get(cs.cluster_int_id)
+            if not samples or not samples["types"]:
+                continue
+            cs.nebula_type = Counter(samples["types"]).most_common(1)[0][0]
+            densities = samples["densities"]
+            if densities:
+                cs.quantum_field_strength = sum(densities) / len(densities)
 
         # Warps. Defensively dedupe on the (from, to) pair: sector_warps has
         # composite pkey (source_sector_id, destination_sector_id) and bang
