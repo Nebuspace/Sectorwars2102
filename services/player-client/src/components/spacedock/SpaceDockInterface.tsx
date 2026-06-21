@@ -1973,6 +1973,25 @@ const SpaceDockInterface: React.FC = () => {
               )}
             </div>
 
+            {/* WO-SM-5 (reachability gate-fix): the slot-grid module UI lives here
+                in the ACTIVE Shipyard venue (the venue card already advertises
+                "Ship Customization"). It was previously mounted only in the legacy
+                .service-card "Ship Upgrades" overlay, which the venue-card hub no
+                longer renders — so the grid was unreachable in the live UI. */}
+            {shipData && (
+              <div className="shipyard-section">
+                <h3>🔧 Ship Customization</h3>
+                <p className="section-description">
+                  Fit modules into your hull's slot grid — supercharged slots, class locks, and salvage on removal.
+                </p>
+                <ModuleGridInterface
+                  ship={{ id: shipData.id }}
+                  playerCredits={displayCredits}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                />
+              </div>
+            )}
+
             <div className="shipyard-section">
               <h3>🚀 Ship Catalog</h3>
               <p className="section-description">Browse and purchase pre-fabricated vessels</p>
