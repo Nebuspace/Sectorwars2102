@@ -33,9 +33,9 @@ def _planet(**kw):
     p.id = kw.get("id", "test-planet")
     for n in ("size", "citadel_level", "research_level", "factory_level",
               "farm_level", "mine_level", "defense_level", "defense_shields",
-              "defense_fighters"):
+              "defense_fighters", "radiation_level"):
         setattr(p, n, kw.get(n, 0))
-    for n in ("terrain", "temperature", "water_coverage"):
+    for n in ("terrain", "temperature", "water_coverage", "planet_type"):
         setattr(p, n, kw.get(n))
     return p
 
