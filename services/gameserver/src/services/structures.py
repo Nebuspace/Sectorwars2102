@@ -254,51 +254,180 @@ def _seed_place(structures: dict, kind: str, level: int = 1) -> Optional[dict]:
     return place(structures, kind, spot[0], spot[1], level=int(level))
 
 
+def _footprint_area(kind: str) -> int:
+    """Plot-cell count of `kind`'s footprint (w×h), 0 for an unknown kind."""
+    from src.services import building_catalog
+    spec = building_catalog.get(kind)
+    if not spec:
+        return 0
+    w, h = spec["footprint"]
+    return int(w) * int(h)
+
+
+def _place_largest_first(structures: dict, requests: list) -> list:
+    """LARGEST-FOOTPRINT-FIRST, prereq-aware placement of a LIST of ``(kind, level)`` requests
+    (CRT-1 GATE fix). The first-fit ``_seed_place`` placed small [1,1] buildings top-left first,
+    fragmenting tight grids so a multi-cell block (ADMIN_SPIRE [2,2], SPACEPORT [2,1]) could no
+    longer find a contiguous rectangle → ``key_buildings_present`` failed → ``derive_citadel_level``
+    capped below the true level. Reserving the largest footprints FIRST lets the big blocks claim
+    their contiguous space before the [1,1] fill fragments the grid.
+
+    Placement order ≠ building SET: this changes only WHERE (which plots) each building lands, never
+    WHICH buildings are placed, so ``derive_citadel_level`` (position-agnostic) is unchanged on grids
+    where everything already fit — and ENABLED to reach the top tier on tight grids where the spire
+    previously could not pack.
+
+    Prereq-aware: a request whose ``prereqs`` are not yet on the grid is deferred (ADMIN_SPIRE
+    requires SPACEPORT) — at each step we place the LARGEST request whose prereqs are already
+    satisfied, repeating until none remain placeable. So SPACEPORT lands, THEN the larger spire claims
+    its 2×2 block before any 1×1 fill. Returns ``[(kind, level, placed_bool), ...]`` for callers that
+    care; a building the grid had no room for is reported ``placed_bool=False`` (and simply absent)."""
+    from src.services import building_catalog
+    placed = []
+    pending = [(k, int(lv)) for (k, lv) in requests]
+    while pending:
+        present = {b.get("kind") for b in structures.get("buildings", []) if isinstance(b, dict)}
+        ready = [
+            (k, lv) for (k, lv) in pending
+            if all(pre in present for pre in (building_catalog.get(k) or {}).get("prereqs", []))
+        ]
+        if not ready:
+            # Remaining requests can never satisfy their prereqs (the prereq itself failed to place,
+            # e.g. no room for SPACEPORT → the spire is unreachable). Stop; the grid lacks room.
+            break
+        ready.sort(key=lambda r: _footprint_area(r[0]), reverse=True)
+        kind, level = ready[0]
+        pending.remove((kind, level))
+        b = _seed_place(structures, kind, level)
+        placed.append((kind, level, b is not None))
+    return placed
+
+
+def _dome_level_for_housing(target_level: int, dome_count: int) -> int:
+    """The per-dome HAB_DOME level so ``dome_count`` domes cover HOUSING[target_level] (each dome
+    houses ``capacity_per_level`` × level; default 50k/level). Shared seed/ensure dome-sizing math."""
+    from src.services import building_catalog
+    effect = (building_catalog.get("HAB_DOME") or {}).get("effect") or {}
+    cap_per = int(effect.get("capacity_per_level", 50000)) or 50000
+    need = HOUSING.get(int(target_level), 0)
+    if not need or dome_count <= 0:
+        return 1
+    per_dome = (need + dome_count - 1) // dome_count
+    return min(5, max(1, (per_dome + cap_per - 1) // cap_per))
+
+
+def _key_building_requests(target_level: int) -> list:
+    """The cumulative per-tier KEY-building ``(kind, level)`` request list for ``target_level``,
+    mirroring ``key_buildings_present`` EXACTLY (same buildings, same counts). HAB_DOMEs are sized to
+    cover HOUSING[target] via ``_dome_level_for_housing``; SPACEPORT/POWER_PLANT also satisfy the
+    eco≥3 / eco≥1 demands of the gate (both are economy-domain). The list is intended for
+    ``_place_largest_first`` (it carries the spire's SPACEPORT prereq for the prereq-aware order)."""
+    L = int(target_level)
+    dome_count = 2 if L >= 3 else 1
+    dome_level = _dome_level_for_housing(L, dome_count)
+    reqs = [("HAB_DOME", dome_level), ("MINE", 1)]      # L1: ≥1 dome + ≥1 economy
+    if L >= 2:
+        reqs.append(("SCANNER_ARRAY", 1))
+    if L >= 3:
+        reqs.append(("HAB_DOME", dome_level))           # 2nd dome
+        reqs.append(("POWER_PLANT", 1))                 # economy + the L3 power key
+    if L >= 4:
+        reqs.append(("SPACEPORT", 1))                   # economy + the L4 spaceport key
+    if L >= 5:
+        reqs.append(("ADMIN_SPIRE", 1))                 # civic; prereq SPACEPORT (placed first)
+    return reqs
+
+
+def _operational_eco_count(structures: dict) -> int:
+    """Count of operational economy-domain buildings (the eco≥N input to key_buildings_present)."""
+    from src.services import building_catalog
+    return sum(1 for b in structures.get("buildings", [])
+               if _operational(b) and (building_catalog.get(b.get("kind")) or {}).get("domain") == "economy")
+
+
+def _backfill_floor_area(structures: dict, target_level: int) -> None:
+    """Raise ``powered_floor_area`` to FLOOR_AREA[target_level] by adding economy buildings — leveled
+    so a TIGHT grid still reaches the target (PFA = footprint-cells × LEVEL, so a level-N MINE on one
+    plot adds N). Place a MINE at the level that closes the remaining deficit (capped at max_level);
+    when no plot remains, UPGRADE the lowest-level operational eco/civic building instead (no new
+    cell). Stops when the target is met or neither a place nor an upgrade is possible (a genuinely
+    too-small grid simply falls short — the (size,level) packing floor, never a number change)."""
+    from src.services import building_catalog
+    need = FLOOR_AREA.get(int(target_level), 0)
+    guard = 0
+    while powered_floor_area(structures) < need and guard < 300:
+        guard += 1
+        deficit = need - powered_floor_area(structures)
+        mine_max = int((building_catalog.get("MINE") or {}).get("max_level", 5))
+        level = min(mine_max, max(1, deficit))
+        if _seed_place(structures, "MINE", level) is not None:
+            continue
+        # No room for a new building — upgrade the lowest-level operational eco/civic building.
+        upgradable = [
+            b for b in structures.get("buildings", [])
+            if _operational(b)
+            and (building_catalog.get(b.get("kind")) or {}).get("domain") in ("economy", "civic")
+            and int(b.get("level", 1)) < int((building_catalog.get(b.get("kind")) or {}).get("max_level", 1))
+        ]
+        if not upgradable:
+            break
+        upgradable.sort(key=lambda b: int(b.get("level", 1)))
+        upgradable[0]["level"] = int(upgradable[0].get("level", 1)) + 1
+
+
 def _seed_buildings_from_legacy(planet, structures: dict) -> None:
     """Cold-start the grid's BUILDINGS from the legacy scalars so the shadow derivation reproduces
     the shipped ladder: place HAB_DOME(s) + economy + research + per-tier key buildings + defense so
     ``derive_citadel_level(structures) == planet.citadel_level`` (K1b-1 calibration target, spec
     §1.2). Idempotent: no-op if buildings already present. A planet with citadel_level 0
-    (forming/uncolonized) seeds no buildings."""
+    (forming/uncolonized) seeds no buildings.
+
+    CRT-1 GATE: all placements route through ``_place_largest_first`` (largest footprint reserved
+    FIRST, prereq-aware) so the ADMIN_SPIRE [2,2] / SPACEPORT [2,1] blocks pack on tight grids that
+    first-fit fragmented; the floor-area backfill is the shared leveled ``_backfill_floor_area``. The
+    building SET is unchanged from the shipped seed (same kinds, same counts) — only the placement
+    ORDER and the backfill LEVELING change, so reproduce-exactly holds (positions may move; the
+    derived level does not, and now matches on small grids where the spire previously could not fit)."""
     if structures.get("buildings"):
         return
     L = int(getattr(planet, "citadel_level", 0) or 0)
     if L < 1:
         return
 
-    from src.services import building_catalog
+    requests: list = []
 
     # Economy floor — at least one (the L1 key needs ≥1 economy); upgrade to the legacy levels.
-    _seed_place(structures, "MINE", max(1, int(getattr(planet, "mine_level", 0) or 0)))
+    requests.append(("MINE", max(1, int(getattr(planet, "mine_level", 0) or 0))))
     if int(getattr(planet, "farm_level", 0) or 0) > 0:
-        _seed_place(structures, "FARM", int(planet.farm_level))
+        requests.append(("FARM", int(planet.farm_level)))
     if int(getattr(planet, "factory_level", 0) or 0) > 0:
-        _seed_place(structures, "FABRICATOR", int(planet.factory_level))
+        requests.append(("FABRICATOR", int(planet.factory_level)))
     if int(getattr(planet, "research_level", 0) or 0) > 0:
-        _seed_place(structures, "LAB", int(planet.research_level))
+        requests.append(("LAB", int(planet.research_level)))
 
-    # Housing — one dome (two at L3+), sized to cover HOUSING[L] (HAB_DOME caps 50k/level).
-    cap_per = int(((building_catalog.get("HAB_DOME") or {}).get("effect") or {}).get("capacity_per_level", 50000)) or 50000
+    # Housing — one dome (two at L3+), sized to cover HOUSING[L] (shared dome-sizing math).
     dome_count = 2 if L >= 3 else 1
-    need = HOUSING.get(L, 0)
-    per_dome = (need + dome_count - 1) // dome_count if need else 0
-    dome_level = min(5, max(1, (per_dome + cap_per - 1) // cap_per)) if per_dome else 1
+    dome_level = _dome_level_for_housing(L, dome_count)
     for _ in range(dome_count):
-        _seed_place(structures, "HAB_DOME", dome_level)
+        requests.append(("HAB_DOME", dome_level))
 
-    # Per-tier key buildings (spec §1.2).
+    # Per-tier key buildings (spec §1.2). SPACEPORT/POWER_PLANT are economy-domain (count toward eco≥3).
     if L >= 2:
-        _seed_place(structures, "SCANNER_ARRAY", 1)
+        requests.append(("SCANNER_ARRAY", 1))
     if L >= 3:
-        _seed_place(structures, "POWER_PLANT", 1)
+        requests.append(("POWER_PLANT", 1))
     if L >= 4:
-        _seed_place(structures, "SPACEPORT", 1)
-        eco = sum(1 for b in structures["buildings"]
-                  if (building_catalog.get(b.get("kind")) or {}).get("domain") == "economy")
-        while eco < 3 and _seed_place(structures, "FABRICATOR", 1) is not None:
-            eco += 1
+        requests.append(("SPACEPORT", 1))
     if L >= 5:
-        _seed_place(structures, "ADMIN_SPIRE", 1)
+        requests.append(("ADMIN_SPIRE", 1))   # prereq SPACEPORT — _place_largest_first orders it
+
+    # Place the whole SET largest-footprint-first (reserves the 2×2 spire / 2×1 spaceport blocks).
+    _place_largest_first(structures, requests)
+
+    # eco≥3 for L4+ (POWER_PLANT + SPACEPORT are 2 eco; top up with MINEs to reach 3).
+    if L >= 4:
+        while _operational_eco_count(structures) < 3 and _seed_place(structures, "FABRICATOR", 1) is not None:
+            pass
 
     # Defense from the shipped active_events['defense_buildings'] counts (CT1 store).
     events = planet.active_events if isinstance(planet.active_events, dict) else {}
@@ -307,12 +436,81 @@ def _seed_buildings_from_legacy(planet, structures: dict) -> None:
         for _ in range(int(dbld.get(kind.lower(), 0) or 0)):
             _seed_place(structures, kind, 1)
 
-    # Floor-area backfill — if still short of FLOOR_AREA[L], add baseline MINEs until met or full.
+    # Floor-area backfill — leveled so tight grids still reach FLOOR_AREA[L] (shared helper).
+    _backfill_floor_area(structures, L)
+
+
+def ensure_citadel_level(structures: dict, planet, target_level: int) -> None:
+    """Make ``derive_citadel_level(structures) >= target_level`` on a grid with room — IDEMPOTENT
+    and ADDITIVE (CRT-1 GATE). Counts the buildings already operational on the grid (same operational
+    / economy-count logic as ``key_buildings_present``) and places ONLY what is MISSING:
+      * the cumulative per-tier KEY buildings (``_key_building_requests`` — mirrors
+        ``key_buildings_present`` exactly), sized for HOUSING[target] domes;
+      * an eco≥3 top-up of MINEs for L4+ (POWER_PLANT + SPACEPORT count as 2 eco);
+      * a leveled floor-area backfill to FLOOR_AREA[target] (``_backfill_floor_area``).
+    Every placement routes through ``_place_largest_first`` so the multi-cell ADMIN_SPIRE / SPACEPORT
+    blocks pack before [1,1] fill fragments a tight grid.
+
+    Re-running is a no-op once the target is met (missing-only requests resolve to nothing new; the
+    floor-area loop exits immediately). Does NOT change any canon number — FLOOR_AREA/HOUSING/the key
+    ladder are untouched; it only PLACES buildings so the ladder's own gates are satisfied. On a grid
+    too small to pack the tier (the (size,level) packing floor) it falls short rather than inventing
+    capacity — the caller/test treats that as the intrinsic limit."""
+    if not isinstance(structures, dict):
+        return
+    L = int(target_level)
+    if L < 1:
+        return
+    from collections import Counter
+    from src.services import building_catalog
+
+    # What is already operational on the grid (additive: never duplicate an existing key building).
+    ops = [b for b in structures.get("buildings", []) if _operational(b)]
+    have = Counter(b.get("kind") for b in ops)
+
+    # Desired cumulative key set, then subtract what we already have (place only the deficit).
+    want = Counter()
+    for kind, level in _key_building_requests(L):
+        want[(kind, level)] += 1
+    # Group desired counts by kind so we can compare to existing counts of that kind.
+    desired_by_kind = Counter()
+    level_by_kind = {}
+    for (kind, level), n in want.items():
+        desired_by_kind[kind] += n
+        # remember the highest requested level per kind (housing domes carry the sizing)
+        level_by_kind[kind] = max(level_by_kind.get(kind, 1), level)
+
+    requests: list = []
+    for kind, desired_n in desired_by_kind.items():
+        missing = desired_n - int(have.get(kind, 0))
+        for _ in range(max(0, missing)):
+            requests.append((kind, level_by_kind[kind]))
+
+    if requests:
+        _place_largest_first(structures, requests)
+
+    # eco≥3 for L4+ (additive — top up MINEs only if short).
+    if L >= 4:
+        while _operational_eco_count(structures) < 3 and _seed_place(structures, "FABRICATOR", 1) is not None:
+            pass
+
+    # If existing housing under-covers HOUSING[L] (e.g. pre-existing small domes), upgrade domes.
+    need_house = HOUSING.get(L, 0)
     guard = 0
-    while powered_floor_area(structures) < FLOOR_AREA.get(L, 0) and guard < 40:
-        if _seed_place(structures, "MINE", 1) is None:
-            break
+    while need_house and population_housed(structures) < need_house and guard < 50:
         guard += 1
+        domes = [b for b in structures.get("buildings", [])
+                 if _operational(b) and b.get("kind") == "HAB_DOME"
+                 and int(b.get("level", 1)) < int((building_catalog.get("HAB_DOME") or {}).get("max_level", 5))]
+        if not domes:
+            if _seed_place(structures, "HAB_DOME", 1) is None:
+                break
+            continue
+        domes.sort(key=lambda b: int(b.get("level", 1)))
+        domes[0]["level"] = int(domes[0].get("level", 1)) + 1
+
+    # Leveled floor-area backfill to FLOOR_AREA[L] (shared helper; idempotent once met).
+    _backfill_floor_area(structures, L)
 
 
 def seed(planet, *, db=None) -> dict:
