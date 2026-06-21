@@ -139,6 +139,11 @@ GENESIS_DEVICE_COST = {
     "advanced": 1,
 }
 
+# Canon (quantum-resources.md:326 "Genesis Device (advanced tier) | 1 (target)"):
+# the ADVANCED tier consumes 1 Quantum Crystal at deploy, in ADDITION to the
+# existing Colony-Ship sacrifice. Mirrors warp_gate_service.PHASE1_QUANTUM_CRYSTALS.
+GENESIS_ADVANCED_QUANTUM_CRYSTALS = 1
+
 # Maximum genesis device purchases per week per player
 MAX_PURCHASES_PER_WEEK = 3
 
@@ -457,6 +462,19 @@ class GenesisService:
                     f"Advanced genesis deployment requires sacrificing a {required_type.value}. "
                     f"Your current ship is a {ship.type.value}."
                 )
+            # Canon (quantum-resources.md:326): the advanced tier ALSO consumes 1
+            # Quantum Crystal at deploy, on top of the Colony-Ship sacrifice. Guard
+            # cleanly BEFORE any state mutation — the player row is already locked
+            # above (with_for_update), so this read is race-safe. Mirrors the
+            # warp_gate_service.deploy_beacon crystal check.
+            player_crystals = getattr(player, "quantum_crystals", 0) or 0
+            if player_crystals < GENESIS_ADVANCED_QUANTUM_CRYSTALS:
+                raise ValueError(
+                    "Advanced genesis deployment consumes "
+                    f"{GENESIS_ADVANCED_QUANTUM_CRYSTALS} Quantum Crystal — assemble "
+                    "one from 5 Quantum Shards at a Class 3+ station or SpaceDock "
+                    f"(you have {player_crystals})."
+                )
 
         # --- Select random planet type based on tier probabilities ---
         planet_type = self._select_planet_type(tier_config["planet_type_weights"])
@@ -535,6 +553,16 @@ class GenesisService:
 
         # --- Deduct credits (tier sequence cost + registration fee) ---
         player.credits -= total_cost
+
+        # --- Advanced tier: consume 1 Quantum Crystal (canon quantum-resources.md:326) ---
+        # Charged ON TOP of the Colony-Ship sacrifice below. Sufficiency was already
+        # guarded BEFORE any mutation in the advanced-tier validation block; this
+        # debit is on the already-locked player row (planet-then-player lock order is
+        # preserved — the planet row was added above). Re-reads via the same getattr
+        # pattern to debit atomically within this txn.
+        if tier_config.get("requires_ship_sacrifice"):
+            _crystals = getattr(player, "quantum_crystals", 0) or 0
+            player.quantum_crystals = max(0, _crystals - GENESIS_ADVANCED_QUANTUM_CRYSTALS)
 
         # Chartering a planet is a public, lawful act: +25 personal reputation
         # (FROZEN contract). adjust_reputation takes a player_id (UUID), not a
