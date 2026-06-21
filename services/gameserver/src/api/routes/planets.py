@@ -460,6 +460,38 @@ async def claim_planet(
         except Exception:
             logger.exception("Colonist-transport medal dispatch failed on colony founding")
 
+    # Per-sector faction influence (WO-G10 / ADR-0021): founding a colony
+    # extends the influence of the player's DOMINANT-reputation faction over
+    # this sector by +3%. The WRITE half only — the read-side taxonomy /
+    # patrol-spawn effects are Max-gated and intentionally not invoked here.
+    # The dominant faction is the player's highest *positive* personal
+    # reputation (there is no dedicated dominant-faction column). The influence
+    # table keys on the sector UUID (sectors.id); planet.sector_uuid is that FK
+    # (nullable), with a lookup by the integer sector number as a fallback.
+    # Fully best-effort / non-fatal — an influence hiccup must never block a
+    # colony founding (flush-only; the helper rides this route's single commit).
+    try:
+        from src.services.faction_service import (
+            adjust_sector_influence,
+            dominant_reputation_faction_id,
+        )
+        from src.models.sector import Sector as _Sector
+
+        influence_faction_id = dominant_reputation_faction_id(db, player.id)
+        if influence_faction_id is not None:
+            sector_uuid = planet.sector_uuid
+            if sector_uuid is None and planet.sector_id is not None:
+                resolved = (
+                    db.query(_Sector.id)
+                    .filter(_Sector.sector_id == planet.sector_id)
+                    .first()
+                )
+                sector_uuid = resolved[0] if resolved else None
+            if sector_uuid is not None:
+                adjust_sector_influence(db, sector_uuid, influence_faction_id, 3.0)
+    except Exception:
+        logger.exception("Sector-influence credit failed on colony founding")
+
     # Auto-land the player on the newly claimed planet
     player.is_landed = True
     player.current_planet_id = planet.id

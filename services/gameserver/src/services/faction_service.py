@@ -7,12 +7,14 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
+from sqlalchemy.exc import IntegrityError
 import logging
 
 from src.models.faction import Faction, FactionType, FactionMission
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.player import Player
 from src.models.sector import Sector
+from src.models.sector_faction_influence import SectorFactionInfluence
 from src.services.websocket_service import ConnectionManager
 
 logger = logging.getLogger(__name__)
@@ -155,6 +157,120 @@ def apply_faction_rep_delta(
         old_value, reputation.current_value, reason,
     )
     return reputation
+
+
+# Clamp range for per-sector faction influence (ADR-0021: 0-100% taxonomy input).
+SECTOR_INFLUENCE_MIN = 0.0
+SECTOR_INFLUENCE_MAX = 100.0
+
+
+def adjust_sector_influence(
+    db: Session,
+    sector_id: UUID,
+    faction_id: UUID,
+    delta: float,
+) -> Optional[SectorFactionInfluence]:
+    """UPSERT one faction's influence over one sector by ``delta`` (ADR-0021).
+
+    The WRITE half of SectorFactionInfluence: get-or-create the
+    ``(sector_id, faction_id)`` row, add ``delta`` to ``influence_percentage``,
+    CLAMP the stored value to [0, 100], and FLUSH only — the caller owns the
+    commit (built for in-transaction hooks like the colony-establish and
+    warp-gate-build paths, mirroring ``apply_faction_rep_delta``).
+
+    The READ-side taxonomy / patrol-spawn effects (ADR-0021) are deliberately
+    NOT computed here (Max-gated) — this only maintains the canonical stored
+    influence value. ``patrol_spawn_weight`` is left at its model default and is
+    untouched until the read-side lands.
+
+    Defensive: a ``None`` faction (or sector) is a no-op returning ``None`` so a
+    missing-faction hook degrades to a dropped influence delta rather than an
+    exception that breaks the caller's primary action.
+    """
+    if faction_id is None or sector_id is None:
+        return None
+
+    influence = (
+        db.query(SectorFactionInfluence)
+        .filter(
+            and_(
+                SectorFactionInfluence.sector_id == sector_id,
+                SectorFactionInfluence.faction_id == faction_id,
+            )
+        )
+        .first()
+    )
+    if influence is None:
+        # Contain the INSERT in a SAVEPOINT: under concurrency two callers can
+        # both miss the SELECT above and race to insert the same
+        # (sector_id, faction_id) — the table's UniqueConstraint makes the loser
+        # raise IntegrityError on flush. Without the savepoint that error would
+        # poison the whole session and the caller's later db.commit() (the colony
+        # founding / gate completion) would abort with PendingRollbackError. The
+        # savepoint rolls back ONLY the failed INSERT; we then re-SELECT the row
+        # that won the race and apply the delta to it. (Same guard medal_service
+        # uses for its identical get-or-create.)
+        try:
+            with db.begin_nested():
+                influence = SectorFactionInfluence(
+                    sector_id=sector_id,
+                    faction_id=faction_id,
+                    influence_percentage=0.0,
+                )
+                db.add(influence)
+                db.flush()
+        except IntegrityError:
+            influence = (
+                db.query(SectorFactionInfluence)
+                .filter(
+                    and_(
+                        SectorFactionInfluence.sector_id == sector_id,
+                        SectorFactionInfluence.faction_id == faction_id,
+                    )
+                )
+                .first()
+            )
+            if influence is None:
+                # Lost the race yet still can't see the winner — degrade to a
+                # dropped delta rather than re-raise into the caller's txn.
+                return None
+
+    old_value = influence.influence_percentage or 0.0
+    influence.influence_percentage = max(
+        SECTOR_INFLUENCE_MIN,
+        min(SECTOR_INFLUENCE_MAX, old_value + float(delta)),
+    )
+
+    db.flush()
+    logger.info(
+        "Sector influence for faction %s over sector %s: %.2f -> %.2f (delta %+.2f)",
+        faction_id, sector_id, old_value, influence.influence_percentage, float(delta),
+    )
+    return influence
+
+
+def dominant_reputation_faction_id(db: Session, player_id: UUID) -> Optional[UUID]:
+    """Resolve the faction the player has the HIGHEST personal reputation with.
+
+    There is no dedicated "dominant faction" column on the player, so the
+    canonical signal is the player's strongest standing: the ``Reputation`` row
+    with the greatest ``current_value`` (ties broken DETERMINISTICALLY by
+    ``faction_id`` so the credited faction never flaps between calls). Returns
+    ``None`` when the player has no reputation rows or their best standing is not
+    positive — only a genuinely allied faction should be credited with sector
+    influence, not a merely-least-hostile one.
+    """
+    if player_id is None:
+        return None
+    top = (
+        db.query(Reputation)
+        .filter(Reputation.player_id == player_id)
+        .order_by(Reputation.current_value.desc(), Reputation.faction_id.asc())
+        .first()
+    )
+    if top is None or (top.current_value or 0) <= 0:
+        return None
+    return top.faction_id
 
 
 class FactionService:

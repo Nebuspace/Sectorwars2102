@@ -918,6 +918,39 @@ def advance_gate(db: Session, gate: WarpGate, now: Optional[datetime] = None) ->
             exc_info=True,
         )
 
+    # WO-G10 / ADR-0021 — per-sector faction influence WRITE: a completed
+    # warp gate extends the builder's DOMINANT-reputation faction's influence
+    # over the gate's DESTINATION sector by +5%. The destination is where the
+    # gate plants a permanent foothold; the tunnel's destination_sector_id is
+    # already a sectors.id UUID (the influence table's FK target). WRITE half
+    # only — read-side taxonomy / patrol-spawn effects are Max-gated and not
+    # invoked. Best-effort / flush-only (this function does not commit — the
+    # calling route owns the transaction); a hiccup never breaks gate
+    # completion. Same once-only activation point as the emergent hook above.
+    try:
+        from src.services.faction_service import (
+            adjust_sector_influence,
+            dominant_reputation_faction_id,
+        )
+
+        if gate.warp_tunnel_id:
+            infl_tunnel = (
+                db.query(WarpTunnel)
+                .filter(WarpTunnel.id == gate.warp_tunnel_id)
+                .first()
+            )
+            if infl_tunnel is not None and infl_tunnel.destination_sector_id is not None:
+                infl_faction_id = dominant_reputation_faction_id(db, gate.player_id)
+                if infl_faction_id is not None:
+                    adjust_sector_influence(
+                        db, infl_tunnel.destination_sector_id, infl_faction_id, 5.0
+                    )
+    except Exception:
+        logger.warning(
+            "sector-influence credit failed for completed gate %s", gate.id,
+            exc_info=True,
+        )
+
     return gate
 
 
