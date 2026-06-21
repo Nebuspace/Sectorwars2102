@@ -47,7 +47,7 @@ from typing import Optional, Set
 
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.core.game_time import GAME_TIME_SCALE
+from src.core.game_time import GAME_TIME_SCALE, canonical_hours_since
 
 logger = logging.getLogger(__name__)
 
@@ -609,6 +609,20 @@ TERRA_UNFED_FLOOR = 0.4                    # NO-CANON: an unfed/browned-out rig 
 TERRA_INSTAB_PEN_DIVISOR = 5              # NO-CANON: instability_penalty = instability // 5
 TERRA_INSTAB_ACCRUAL = 0.5               # NO-CANON: aggressive instability += Σ(push) × this
 TERRA_AXES = ("thermal", "hydro")        # the kernel's two axes (atmo/biosphere are T2)
+GRID_TICK_PERIOD_HOURS = 1.0   # K1b-2 CUTOVER: 1 grid field tick = 1 canonical hour (mirrors the
+                               # legacy terraform tick cadence so habitability advances time-accurately)
+GRID_TICK_CAP = 2000           # safety cap on ticks applied in one settle (a long-dormant planet
+                               # can't run away / spin for ages on a single sweep)
+
+
+def _planet_type_name(planet) -> Optional[str]:
+    """Resolve the planet's type NAME for natural_band decay. The authoritative column is the
+    ``type`` enum (Planet.type); the ``planet_type`` String is an often-null API-compat mirror. Read
+    the enum first (its ``.name``), then the string, else None (→ _natural_band default band)."""
+    t = getattr(planet, "type", None)
+    if t is not None:
+        return getattr(t, "name", None) or str(t)
+    return getattr(planet, "planet_type", None)
 
 
 def _natural_band(planet_type: Optional[str], axis: str) -> int:
@@ -691,6 +705,69 @@ def grid_habitability(structures: dict) -> Optional[int]:
     return max(0, int(mean) - penalty)
 
 
+def _advance_grid_field(planet, structures: dict) -> int:
+    """K1b-2 CUTOVER: advance the terraform grid field by the CANONICAL hours elapsed since its own
+    wall-clock inner anchor ``terraform_meta.last_grid_tick_at`` — 1 tick = GRID_TICK_PERIOD_HOURS
+    canonical hours, capped at GRID_TICK_CAP. OWN-ANCHOR-GATED + idempotent (a caught-up planet
+    advances 0 ticks; a gated/duplicate settle no-ops), mirroring _advance_terraforming's discipline
+    so habitability advances time-accurately rather than once-per-settle-call. Seeds the anchor once
+    (no advance on the seeding call); consumes only the wall-time the applied ticks represent. Flags
+    structures dirty when it mutates (like seed()); returns ticks applied (0 if seeded or caught-up)."""
+    tmeta = dict(structures.get("terraform_meta")) if isinstance(structures.get("terraform_meta"), dict) else {}
+    anchor_raw = tmeta.get("last_grid_tick_at")
+    if not anchor_raw:
+        tmeta["last_grid_tick_at"] = _canonical_now().isoformat()   # wall-clock now; seed once
+        structures["terraform_meta"] = tmeta
+        flag_modified(planet, "structures")
+        return 0
+    anchor = _aware(datetime.fromisoformat(anchor_raw))
+    ticks = int(canonical_hours_since(anchor) // GRID_TICK_PERIOD_HOURS)
+    if ticks <= 0:
+        return 0                                                    # caught-up: no mutation
+    ticks = min(ticks, GRID_TICK_CAP)
+    pt = _planet_type_name(planet)
+    for _ in range(ticks):
+        terraform_grid_tick(structures, pt, "standard")
+    wall_hours_consumed = (ticks * GRID_TICK_PERIOD_HOURS) / (GAME_TIME_SCALE or 1.0)
+    tmeta["last_grid_tick_at"] = (anchor + timedelta(hours=wall_hours_consumed)).isoformat()
+    structures["terraform_meta"] = tmeta
+    flag_modified(planet, "structures")
+    return ticks
+
+
+def rebaseline_habitability_to_grid(db) -> dict:
+    """K1b-2 CUTOVER one-time pass (Max-ruled 2026-06-21 fresh re-baseline): for every planet, ensure
+    the grid is seeded, then set ``habitability_score = grid_habitability()`` of the current grid.
+    Established planets drop to their grid value (terraform re-lifts them — accepted). Logs pre/post.
+    Per-planet SAVEPOINT isolation (a bad planet rolls back only itself, like WO-B1). Idempotent:
+    re-running re-reads the grid → same value. Returns {planets, changed}."""
+    from src.models.planet import Planet
+    result = {"planets": 0, "changed": 0}
+    for planet in db.query(Planet).all():
+        sp = db.begin_nested()
+        try:
+            seed(planet, db=db)   # idempotent: builds the grid if missing
+            st = planet.structures if isinstance(planet.structures, dict) else {}
+            new_hab = grid_habitability(st)
+            if new_hab is None:
+                sp.rollback()
+                continue
+            result["planets"] += 1
+            old_hab = int(getattr(planet, "habitability_score", 0) or 0)
+            if int(new_hab) != old_hab:
+                logger.info("K1b-2 re-baseline: planet %s habitability %s -> %s (grid-derived)",
+                            getattr(planet, "id", "?"), old_hab, int(new_hab))
+                planet.habitability_score = int(new_hab)
+                result["changed"] += 1
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            logger.exception("K1b-2 re-baseline failed (skipped) for planet %s",
+                             getattr(planet, "id", "?"))
+    db.commit()
+    return result
+
+
 def place_terraform_preset(structures: dict, level: int) -> list:
     """Place the legacy terraforming level's rig BUNDLE on the grid (K1b-2 §1.3): the preserved
     ``start_terraforming(level=N)`` API becomes a bundle of THERMAL_RIG/HYDRO_PLANT rigs (N rigs,
@@ -745,29 +822,31 @@ def _step1_build_queue(planet, db) -> bool:
 
 
 def _step2_terraform(planet, ts) -> bool:
-    """CALLS _advance_terraforming UNCHANGED (own canonical inner anchor last_tick_at), then runs the
-    K1b-2 SHADOW: READ the grid-derived habitability and LOG it vs the shipped habitability_score.
-    READ-ONLY — it never writes the habitability column nor advances the grid field (the field-advance
-    + button→derived cutover is a SEPARATE Max-gated WO, like the citadel one). The shadow runs on
-    EVERY planet (not only active terraform) so we observe grid-vs-shipped across the world; a
-    divergence here is OBSERVATIONAL (grid-habitability is a new ADR-0002-amendment model, not a
-    reproduction of the legacy column), not a defect. Fully defensive: a shadow hiccup never breaks
-    the tick."""
+    """K1b-2 CUTOVER (Max-ruled 2026-06-21, fresh re-baseline — "game is not released yet"):
+    grid-habitability is AUTHORITATIVE, NO calibration to legacy. Three substeps:
+      1. advance the legacy terraform body (still owns the terraforming_active lifecycle / target /
+         resource costs on its own canonical anchor),
+      2. advance the grid FIELD by canonical-elapsed (own-anchor-gated + idempotent, see
+         _advance_grid_field) — push fed rigs, decay unfed plots toward natural_band, accrue
+         instability,
+      3. WRITE ``habitability_score = grid_habitability()`` (the post-advance grid value). Ends the
+         read-only shadow.
+    The own-plot-flat-mean value is accepted as-is (no legacy +10…+30 reproduction). Fully defensive:
+    a grid hiccup never breaks the tick (the legacy advance already ran)."""
     changed = False
     if getattr(planet, "terraforming_active", False):
         changed = bool(ts._advance_terraforming(planet, _via_settle=True))
     try:
-        derived = grid_habitability(planet.structures if isinstance(planet.structures, dict) else {})
-        if derived is not None:
-            shipped = int(getattr(planet, "habitability_score", 0) or 0)
-            if derived != shipped:
-                logger.info(
-                    "habitability SHADOW: planet %s grid=%s vs shipped=%s "
-                    "(shipped authoritative; grid-habitability is a Max-gated ADR-0002 amendment)",
-                    getattr(planet, "id", "?"), derived, shipped,
-                )
+        st = planet.structures if isinstance(planet.structures, dict) else None
+        if st is not None and grid_habitability(st) is not None:
+            _advance_grid_field(planet, st)              # flags structures itself when it mutates
+            new_hab = grid_habitability(st)
+            old_hab = int(getattr(planet, "habitability_score", 0) or 0)
+            if new_hab is not None and int(new_hab) != old_hab:
+                planet.habitability_score = int(new_hab)  # scalar column → dirtied on assign
+                changed = True
     except Exception:
-        logger.exception("habitability shadow-derive failed (non-fatal) for planet %s",
+        logger.exception("K1b-2 grid field-advance/habitability-write failed (non-fatal) for planet %s",
                          getattr(planet, "id", "?"))
     return changed
 

@@ -239,6 +239,45 @@ def test_terraform_unfed_rig_pushes_at_floor():
     assert g["plots"][0]["axes"]["thermal"] == 54
 
 
+def test_advance_grid_field_seeds_then_idempotent():
+    p = _planet(planet_type="OCEANIC")
+    p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    # first call seeds the wall-clock anchor + advances 0 ticks
+    assert S._advance_grid_field(p, p.structures) == 0
+    assert p.structures["terraform_meta"]["last_grid_tick_at"]
+    # immediate re-call → caught-up (≈0 canonical hours elapsed) → 0 ticks (idempotent)
+    assert S._advance_grid_field(p, p.structures) == 0
+
+
+def test_advance_grid_field_advances_after_elapsed():
+    p = _planet(planet_type="OCEANIC")
+    p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    past = (S._canonical_now() - timedelta(hours=10)).isoformat()   # anchor 10 wall-h in the past
+    p.structures["terraform_meta"] = {"last_grid_tick_at": past}
+    ticks = S._advance_grid_field(p, p.structures)
+    assert ticks > 0
+    # unfed OCEANIC plots decayed UP toward natural_band (65/75) from 40 → grid-hab rose above 40
+    assert S.grid_habitability(p.structures) > 40
+
+
+def test_advance_grid_field_caps_runaway():
+    p = _planet(planet_type="OCEANIC")
+    p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    ancient = (S._canonical_now() - timedelta(days=3650)).isoformat()  # absurd elapsed
+    p.structures["terraform_meta"] = {"last_grid_tick_at": ancient}
+    assert S._advance_grid_field(p, p.structures) == S.GRID_TICK_CAP    # capped, not runaway
+
+
+def test_step2_cutover_writes_habitability():
+    p = _planet(planet_type="OCEANIC")
+    p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    p.habitability_score = 99      # deliberately wrong → cutover overwrites with the grid value
+    p.terraforming_active = False
+    S._step2_terraform(p, None)    # ts is unused when terraforming is inactive
+    assert p.habitability_score == S.grid_habitability(p.structures)
+    assert p.habitability_score != 99   # re-baselined to grid (ends the read-only shadow)
+
+
 def test_grid_habitability_pure_read_no_mutation():
     g = _tgrid([_plot(0, 0, 60, 40), _plot(1, 0, 80, 20)], instability=10)
     before = [dict(p["axes"]) for p in g["plots"]]
