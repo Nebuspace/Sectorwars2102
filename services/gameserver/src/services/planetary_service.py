@@ -353,23 +353,23 @@ class PlanetaryService:
         except OperationalError:
             self.db.rollback()
 
-        # Lazily apply colonist growth + commodity production accrued since the last read
+        # Lazily apply colonist growth (population growth is NOT one of the spine's three clocks,
+        # §9 — it stays a pre-settle lazy call), then settle the planetary clocks.
         changed = self.apply_population_growth(planet)
-        changed = self.apply_resource_production(planet) or changed
 
-        # Siege validity check BEFORE decay (S2): re-evaluate whether the siege
-        # still holds (enemies present AND owner absent) before applying any
-        # morale loss. Canon (defense.md "Siege") requires owner ABSENCE for a
-        # siege — so the owner standing on the planet (the common case for this
-        # owner-facing detail read) must LIFT the siege, not decay morale. A
-        # stale siege whose enemies have left also lifts here rather than
-        # bleeding morale on every detail fetch. _detect_siege commits its own
-        # state change; only the remaining lazy mutations need our commit.
+        # Siege LIFECYCLE stays BEFORE settle() (§5.2): _detect_siege may LIFT a stale siege
+        # (enemies gone OR owner present) — canon (defense.md) requires owner ABSENCE, so the owner
+        # standing on the planet (the common case for this owner-facing read) must LIFT, not decay.
+        # settle()'s siege substep only ADVANCES morale on a siege that STILL holds; it never
+        # starts/lifts. _detect_siege commits its own state change.
         if planet.under_siege:
             self._detect_siege(planet, planet.owner_id or player_id)
-        # Apply accrued morale decay only if the siege survived validation.
-        if planet.under_siege:
-            changed = self.advance_siege(planet) or changed
+
+        # CRT WO-K1a cutover: ONE planetary tick replaces the direct apply_resource_production +
+        # advance_siege calls — production + (held) siege morale + terraforming + research faucet,
+        # each on its own inner anchor in its own clock domain (no `now` threaded in).
+        from src.services.structures import settle
+        changed = settle(planet, db=self.db).changed or changed
         if changed:
             try:
                 self.db.commit()
@@ -1047,17 +1047,18 @@ class PlanetaryService:
             raise ValueError("Planet not found or not owned by player")
 
         # Settle accrued morale decay BEFORE re-evaluating siege validity (S1):
-        # if the siege is about to lift this read, the turns that already
-        # elapsed under it must still be applied — detecting first would clear
-        # siege_started_at and silently forgive that decay.
-        siege_advanced = planet.under_siege and self.advance_siege(planet)
+        # if the siege is about to lift this read, the turns that already elapsed under it must
+        # still be applied — detecting first would clear siege_started_at and silently forgive that
+        # decay. CRT WO-K1a: settle() advances the held siege (+ other clocks, each idempotent).
+        from src.services.structures import settle
+        _settle_res = settle(planet, db=self.db)
 
         # Run siege detection to get current state (may lift the siege)
         siege_info = self._detect_siege(planet, player_id)
 
-        if siege_advanced:
-            # advance_siege mutated morale/siege_turns; _detect_siege already
-            # committed its own changes, so persist the decay too.
+        if _settle_res.changed:
+            # settle() mutated clocks (morale/siege_turns/production/terraform); _detect_siege
+            # already committed its own changes, so persist the settle too.
             self.db.commit()
 
         if not planet.under_siege:
@@ -1113,15 +1114,16 @@ class PlanetaryService:
 
         owner_id = owner_record[0]
 
-        # Settle accrued morale decay BEFORE re-evaluating siege validity (S1),
-        # so a siege that lifts this turn still applies the elapsed decay rather
-        # than forgiving it when _detect_siege clears siege_started_at.
-        siege_advanced = planet.under_siege and self.advance_siege(planet)
+        # Settle accrued morale decay BEFORE re-evaluating siege validity (S1), so a siege that
+        # lifts this turn still applies the elapsed decay rather than forgiving it when
+        # _detect_siege clears siege_started_at. CRT WO-K1a: settle() advances the held siege.
+        from src.services.structures import settle
+        _settle_res = settle(planet, db=self.db)
 
         siege_info = self._detect_siege(planet, owner_id)
 
-        if siege_advanced:
-            # _detect_siege committed its own changes; persist the decay too.
+        if _settle_res.changed:
+            # _detect_siege committed its own changes; persist the settle too.
             self.db.commit()
 
         return {
@@ -1488,10 +1490,11 @@ class PlanetaryService:
         if not planet.under_siege:
             return {"success": True, "message": "Planet was not under siege"}
 
-        # Settle pending morale decay BEFORE clearing siege state (S1): the
-        # turns that elapsed while the siege stood are earned and must be
-        # applied; clearing siege_started_at first would discard them.
-        self.advance_siege(planet)
+        # Settle pending morale decay BEFORE clearing siege state (S1): the turns that elapsed
+        # while the siege stood are earned and must be applied; clearing siege_started_at first
+        # would discard them. CRT WO-K1a: settle() credits the held siege's final turns.
+        from src.services.structures import settle
+        settle(planet, db=self.db)
 
         planet.under_siege = False
         planet.siege_started_at = None

@@ -54,17 +54,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # _via_settle guard (COEXIST graft, spec §3 / I5)
 # ---------------------------------------------------------------------------
-# Each legacy body gains a ``_via_settle: bool = False`` kwarg and calls this guard. While DORMANT
-# (pre-cutover) every real caller still calls the bodies directly (``_via_settle=False``) and is
-# legit, so the guard only DEBUG-logs — no production spam. Tests flip ``STRICT_VIA_SETTLE`` to
-# turn a direct call into a loud AssertionError, proving the guard trips (I5). After the Max-gated
-# cutover (when settle() is the single writer), this flag flips to strict by default.
+# Each legacy body gains a ``_via_settle: bool = False`` kwarg and calls this guard. POST-CUTOVER
+# (K1a-3) settle() is the single clock-writer — every legit body call comes through settle() with
+# ``_via_settle=True`` (the grep-gate test, I4, proves zero other callers). So a ``_via_settle=False``
+# call is now a STRAY clock-advancing caller: the guard WARN-logs it loudly. We deliberately do NOT
+# raise in production by default (``STRICT_VIA_SETTLE=False``) — crashing a live planetary tick /
+# player read on a stray is worse than a loud WARNING + the CI grep-gate. Tests flip
+# ``STRICT_VIA_SETTLE=True`` to turn a stray into an AssertionError, proving the guard trips (I5).
 STRICT_VIA_SETTLE = False
 
 
 def _via_settle_guard(name: str, via_settle: bool) -> None:
     if not via_settle:
-        logger.debug("%s called directly (not via settle()); legit while DORMANT pre-cutover", name)
+        logger.warning(
+            "%s() called directly, NOT via structures.settle() — stray clock-advancing caller "
+            "(post-cutover all clock advances must route through settle()).", name,
+        )
         if STRICT_VIA_SETTLE:
             raise AssertionError(
                 f"{name}() called outside structures.settle() with STRICT_VIA_SETTLE — "

@@ -1645,8 +1645,8 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
     """
     from src.core.database import SessionLocal
     from src.models.planet import Planet
-    from src.services.planetary_service import PlanetaryService
-    from src.services.terraforming_service import TerraformingService
+    from sqlalchemy import or_, and_
+    from src.services.structures import settle
 
     result = {"terraforming": 0, "siege": 0, "production": 0}
     db = SessionLocal()
@@ -1658,49 +1658,37 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
         if not got_lock:
             return result
 
-        # Terraforming progression. _advance_terraforming mutates the planet
-        # and leaves the commit to the caller, so we commit per planet (one
-        # bad planet rolls back only itself).
-        terra = TerraformingService(db)
-        terra_planets = (
-            db.query(Planet.id)
-            .filter(Planet.terraforming_active.is_(True))
-            .all()
-        )
-        for (planet_id,) in terra_planets:
-            try:
-                planet = (
-                    db.query(Planet)
-                    .filter(Planet.id == planet_id)
-                    .with_for_update()
-                    .first()
-                )
-                if planet is None:
-                    continue
-                if terra._advance_terraforming(planet):
-                    db.commit()
-                    result["terraforming"] += 1
-                else:
-                    db.rollback()  # release the row lock; nothing changed
-            except Exception:
-                logger.exception(
-                    "Planetary advance: terraforming failed for planet %s",
-                    planet_id,
-                )
-                db.rollback()
-
-        # Siege progression. advance_siege mutates the planet and leaves the
-        # commit to the caller — same per-planet commit/rollback discipline.
-        planetary = PlanetaryService(db)
-        siege_planets = (
+        # ONE unioned candidate set (CRT WO-K1a §5.3): terraforming_active OR (under_siege AND
+        # siege_started_at) OR (owner_id AND colonists>0). Each planet is visited ONCE through
+        # structures.settle() — the single planetary tick that advances terraform + (held) siege
+        # morale + commodity production and drains the research faucet (now step 5 of settle(),
+        # re-homed from the prior chained sweep_research_faucet call), each on its OWN inner anchor
+        # in its OWN clock domain. This collapses the prior three filtered phase-loops and
+        # eliminates the double-visit when a planet sat in two phase-sets. Per-planet
+        # commit/rollback discipline is preserved (one bad planet rolls back only itself); settle()
+        # leaves the commit to the caller and self-no-ops every step that doesn't apply, so this
+        # stays a cheap no-op on a steady galaxy. NOTE: siege LIFECYCLE (_detect_siege) is
+        # intentionally NOT run here — the sweep has no owner/enemy context; settle() only ADVANCES
+        # a held siege's morale, exactly as the prior advance_siege phase did (neither started nor
+        # lifted sieges).
+        candidates = (
             db.query(Planet.id)
             .filter(
-                Planet.under_siege.is_(True),
-                Planet.siege_started_at.isnot(None),
+                or_(
+                    Planet.terraforming_active.is_(True),
+                    and_(
+                        Planet.under_siege.is_(True),
+                        Planet.siege_started_at.isnot(None),
+                    ),
+                    and_(
+                        Planet.owner_id.isnot(None),
+                        Planet.colonists > 0,
+                    ),
+                )
             )
             .all()
         )
-        for (planet_id,) in siege_planets:
+        for (planet_id,) in candidates:
             try:
                 planet = (
                     db.query(Planet)
@@ -1710,68 +1698,26 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
                 )
                 if planet is None:
                     continue
-                if planetary.advance_siege(planet):
+                res = settle(planet, db=db)
+                if res.changed:
                     db.commit()
-                    result["siege"] += 1
+                    if "terraform" in res.steps_changed:
+                        result["terraforming"] += 1
+                    if "siege" in res.steps_changed:
+                        result["siege"] += 1
+                    if "production" in res.steps_changed or "research" in res.steps_changed:
+                        result["production"] += 1
                 else:
                     db.rollback()  # release the row lock; nothing changed
             except Exception:
                 logger.exception(
-                    "Planetary advance: siege failed for planet %s", planet_id,
+                    "Planetary advance (settle) failed for planet %s", planet_id,
                 )
                 db.rollback()
 
-        # Commodity production progression. realize_production accrues exactly
-        # the fuel/organics/equipment (and research points) produced since the
-        # durable last_production anchor and leaves the commit to the caller —
-        # same per-planet commit/rollback discipline as terraforming/siege. The
-        # filter targets owned, colonized planets only (owner_id set AND
-        # colonists > 0); an unowned or empty planet produces nothing and is
-        # skipped without a row lock. Idempotent: a player read between sweeps
-        # leaves the planet already current, so the sweep is a clean no-op.
-        from src.services import research_service
-        production_planets = (
-            db.query(Planet.id)
-            .filter(
-                Planet.owner_id.isnot(None),
-                Planet.colonists > 0,
-            )
-            .all()
-        )
-        for (planet_id,) in production_planets:
-            try:
-                planet = (
-                    db.query(Planet)
-                    .filter(Planet.id == planet_id)
-                    .with_for_update()
-                    .first()
-                )
-                if planet is None:
-                    continue
-                # Drive commodity + research-point accrual first (writes
-                # active_events['research_points']), THEN drain the research
-                # faucet into the owner's ledger (CRT WO-K0-2). Both run inside
-                # the one per-planet transaction while the planet row is held;
-                # the sweep acquires the owner's player lock in the SAME
-                # transaction (planet-then-player order). Commit if EITHER moved.
-                produced = planetary.realize_production(planet)
-                swept = research_service.sweep_research_faucet(db, planet)
-                if produced or swept:
-                    db.commit()
-                    result["production"] += 1
-                else:
-                    db.rollback()  # release the row lock; nothing changed
-            except Exception:
-                logger.exception(
-                    "Planetary advance: production failed for planet %s",
-                    planet_id,
-                )
-                db.rollback()
-
-        # Release the advisory lock held on this session's transaction. Each
-        # per-planet commit above already released it once; a final commit
-        # closes out any open transaction (e.g. the rollback after the last
-        # no-op planet) so the lock is not held on the pooled connection.
+        # Release the advisory lock held on this session's transaction. Each per-planet commit
+        # above already released it once; a final commit closes out any open transaction (e.g. the
+        # rollback after the last no-op planet) so the lock is not held on the pooled connection.
         db.commit()
         return result
     except Exception:

@@ -1186,6 +1186,11 @@ class CombatService:
         
         # If planet was captured, transfer ownership and deliver capture rewards.
         if combat_result["planet_captured"]:
+            # CRT WO-K1a §1.2: settle to the CURRENT (pre-flip) owner BEFORE the ownership swap —
+            # realizes pending production onto the planet's stockpiles (the captor inherits them
+            # with ownership) and drains the research faucet to the owner who EARNED it. Then flip.
+            from src.services.structures import settle
+            settle(planet, db=self.db)
             self._transfer_planet_ownership(planet, attacker)
             # Capture rewards (DECISIONS planet-assault-reward-model, Max
             # 2026-06-20): resources-to-captor (primary), ARIA memory (always),
@@ -3561,19 +3566,10 @@ class CombatService:
         best-effort: a failure in one never aborts the others or the combat
         commit. The CALLER owns the commit (this method only stages mutations).
         """
-        # --- (a) RESOURCES (PRIMARY) — realize pending production to the captor.
-        # The stored stockpiles already moved with ownership (planet columns);
-        # realize_production advances accrued-but-unbanked production so the
-        # captor inherits the up-to-date totals. Idempotent — re-running accrues
-        # exactly elapsed×rate once (anchored on planet.last_production).
-        try:
-            from src.services.planetary_service import PlanetaryService
-            PlanetaryService(self.db).realize_production(planet)
-        except Exception as e:
-            logger.error(
-                "Planet-capture resource realization failed for planet %s: %s",
-                planet.id, e,
-            )
+        # --- (a) RESOURCES (PRIMARY) — already realized by the pre-transfer settle() (CRT WO-K1a
+        # §1.2): production was accrued onto the planet's stockpiles (planet columns) BEFORE the
+        # ownership swap, so the captor inherits the up-to-date totals; the research faucet drained
+        # to the pre-flip owner who earned it. Nothing to realize here.
 
         # --- (b) ARIA MEMORY (ALWAYS) — record the capture as a combat memory.
         # combat_service is sync; use the sync ARIA recorder (flush-free, dedup

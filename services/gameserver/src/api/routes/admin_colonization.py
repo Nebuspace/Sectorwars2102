@@ -803,10 +803,13 @@ async def tick_planet_production(
     }
 
     try:
-        changed = PlanetaryService(db).realize_production(planet)
-        # Commit even on the no-unit-but-anchor-advanced path so the durable
-        # anchor advance persists (realize_production returns True there too);
-        # rollback only when truly nothing changed to release the row lock.
+        # CRT WO-K1a cutover: the admin /tick drives the full planetary tick via settle()
+        # (production + siege + terraform + research faucet, each idempotent on its own anchor).
+        from src.services.structures import settle
+        changed = settle(planet, db=db).changed
+        # Commit even on the no-unit-but-anchor-advanced path so the durable anchor advance
+        # persists (settle() reports changed there too); rollback only when truly nothing changed
+        # to release the row lock.
         if changed:
             db.commit()
             db.refresh(planet)

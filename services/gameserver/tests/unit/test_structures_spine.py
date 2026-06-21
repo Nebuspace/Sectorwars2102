@@ -50,9 +50,38 @@ def test_via_settle_guard_trips_loudly_under_strict():
         S.STRICT_VIA_SETTLE = False
 
 
-def test_via_settle_guard_quiet_pre_cutover():
+def test_via_settle_guard_warns_but_does_not_raise_by_default():
     S.STRICT_VIA_SETTLE = False
-    S._via_settle_guard("apply_resource_production", False)  # legit while DORMANT: no raise
+    S._via_settle_guard("apply_resource_production", False)  # WARN-logs a stray; never crashes prod
+
+
+def test_i4_grep_gate_no_stray_clock_callers():
+    """I4 (grep-gate): after the cutover, the clock bodies must have ZERO call-sites outside
+    structures.settle() — the sole allowed exception is realize_production's pass-through to
+    apply_resource_production."""
+    import os
+    import re
+
+    src = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+    bodies = ("apply_resource_production", "advance_siege", "_advance_terraforming",
+              "sweep_research_faucet", "realize_production", "process_terraforming_tick")
+    allow_lines = {"return self.apply_resource_production(planet, _via_settle=_via_settle)"}
+    strays = []
+    for root, _dirs, files in os.walk(src):
+        for fn in files:
+            if not fn.endswith(".py") or fn == "structures.py":
+                continue
+            path = os.path.join(root, fn)
+            with open(path) as f:
+                for i, line in enumerate(f, 1):
+                    stripped = line.strip()
+                    if stripped.startswith(("def ", "#", '"', "'", "*")):
+                        continue
+                    code = line.split("#", 1)[0]
+                    for b in bodies:
+                        if re.search(rf"{b}\(", code) and stripped not in allow_lines:
+                            strays.append(f"{os.path.relpath(path, src)}:{i}: {stripped}")
+    assert not strays, "I4 grep-gate — stray clock-advancing callers outside settle():\n" + "\n".join(strays)
 
 
 def test_settle_anchor_roundtrip_and_set_under_terraform_meta():

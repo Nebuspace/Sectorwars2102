@@ -249,13 +249,13 @@ class TerraformingService:
         # serialize to avoid both applying the same accrued ticks (T5).
         planet = self._get_owned_planet(planet_id, player_id, lock=True)
 
-        # Advance-on-read: apply every population-scaled tick accrued since
-        # the project's last advance (and complete the project if the target
-        # is reached). No scheduler exists; reads keep the world honest.
-        if planet.terraforming_active:
-            if self._advance_terraforming(planet):
-                self.db.commit()
-                self.db.refresh(planet)
+        # Advance-on-read via the CRT spine (WO-K1a cutover): settle() applies every
+        # population-scaled terraforming tick (+ the other clocks, each idempotent on its own
+        # anchor) and completes the project if the target is reached.
+        from src.services.structures import settle
+        if settle(planet, db=self.db).changed:
+            self.db.commit()
+            self.db.refresh(planet)
 
         if not planet.terraforming_active:
             return {
@@ -333,124 +333,6 @@ class TerraformingService:
             "estimatedCompletion": estimated_completion,
             "populationBonus": self._get_population_bonus_description(planet)
         }
-
-    def process_terraforming_tick(self, planet_id: UUID, *, _via_settle: bool = False) -> Dict[str, Any]:
-        """
-        Advance terraforming progress by one tick.
-
-        Called during turn/tick processing. Each tick increases
-        habitability by 1-3 points based on population assigned to
-        the planet.
-
-        Returns:
-            Dict with tick processing results
-
-        ``_via_settle`` (CRT spine): this manual-tick verb has ZERO live call-sites today and is
-        slated for deletion in the Max-gated cutover (spec §3.3/§6.1 step 5). Guarded so any future
-        stray caller trips loudly under tests before the deletion lands.
-        """
-        _via_settle_guard("process_terraforming_tick", _via_settle)
-        planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
-        if not planet:
-            raise ValueError("Planet not found")
-
-        if not planet.terraforming_active:
-            return {
-                "processed": False,
-                "reason": "No active terraforming project"
-            }
-
-        # Calculate increment based on population
-        increment = self._calculate_increment(planet)
-
-        old_habitability = planet.habitability_score
-        new_habitability = min(
-            planet.terraforming_target,
-            planet.habitability_score + increment
-        )
-        planet.habitability_score = new_habitability
-        # ADR-0035: re-fire the demographic-ceiling trigger on this mutation too.
-        self._recompute_max_population(planet)
-
-        # Progress is the fraction of the gap already closed toward the target.
-        # Honest math (current - start) / (target - start) when the start
-        # marker exists; legacy projects without it fall back to current/target
-        # (reaches 100% at habitability == target). Unifies this path with
-        # _advance_terraforming's progress model.
-        terra_meta = self._get_terraforming_meta(planet)
-        start_habitability = (terra_meta or {}).get("start_habitability")
-        target = planet.terraforming_target
-        if isinstance(start_habitability, int) and target > start_habitability:
-            fraction = (new_habitability - start_habitability) / (target - start_habitability)
-        elif target and target > 0:
-            fraction = new_habitability / target
-        else:
-            fraction = 0.0
-        planet.terraforming_progress = max(
-            planet.terraforming_progress or 0.0,
-            min(100.0, fraction * 100.0)
-        )
-
-        # A manually-driven tick consumes the lazy anchor by exactly one tick
-        # period (not "reset to now"), so banked sub-tick time the advance-on-
-        # read path was tracking is preserved rather than discarded, and the
-        # same elapsed window is never re-awarded. Derived the same way as
-        # _advance_terraforming: TICK_PERIOD = duration / total_points.
-        duration_hours = (terra_meta or {}).get("duration_hours")
-        if duration_hours and duration_hours > 0:
-            if isinstance(start_habitability, int) and target > start_habitability:
-                total_points = target - start_habitability
-            else:
-                total_points = max(1, (terra_meta or {}).get("habitability_boost") or 1)
-            tick_period_hours = duration_hours / total_points
-            anchor_raw = (terra_meta or {}).get("last_tick_at") or (terra_meta or {}).get("started_at")
-            anchor = None
-            if anchor_raw:
-                try:
-                    anchor = datetime.fromisoformat(anchor_raw)
-                except (TypeError, ValueError):
-                    anchor = None
-            if anchor is None:
-                anchor = planet.terraforming_start_time or datetime.now(UTC)
-            if anchor.tzinfo is None:
-                anchor = anchor.replace(tzinfo=UTC)
-            # One tick's wall-clock cost (canonical period de-scaled).
-            wall_hours_consumed = tick_period_hours / GAME_TIME_SCALE
-            self._set_terraforming_meta_field(
-                planet, "last_tick_at",
-                (anchor + timedelta(hours=wall_hours_consumed)).isoformat()
-            )
-        else:
-            # No usable period metadata — fall back to the prior behaviour.
-            self._set_terraforming_meta_field(
-                planet, "last_tick_at", datetime.now(UTC).isoformat()
-            )
-
-        result = {
-            "processed": True,
-            "planetId": str(planet.id),
-            "planetName": planet.name,
-            "increment": increment,
-            "oldHabitability": old_habitability,
-            "newHabitability": new_habitability,
-            "progress": round(planet.terraforming_progress, 2),
-            "completed": False
-        }
-
-        # Check if terraforming is complete
-        if new_habitability >= planet.terraforming_target:
-            completion_result = self._complete_terraforming(planet)
-            result["completed"] = True
-            result["completionDetails"] = completion_result
-
-        self.db.commit()
-
-        logger.info(
-            f"Terraforming tick on planet {planet.name}: "
-            f"{old_habitability} -> {new_habitability} (+{increment})"
-        )
-
-        return result
 
     def cancel_terraforming(
         self,
@@ -556,7 +438,11 @@ class TerraformingService:
         """
         if not planet.terraforming_active:
             return False
-        changed = self._advance_terraforming(planet)
+        # CRT WO-K1a cutover: settle() reconciles banked terraforming ticks (at the current
+        # population rate) — and the other idempotent clocks — BEFORE the caller applies the
+        # population transfer (§5.4).
+        from src.services.structures import settle
+        changed = settle(planet, db=self.db).changed
         if changed:
             self.db.commit()
             self.db.refresh(planet)
