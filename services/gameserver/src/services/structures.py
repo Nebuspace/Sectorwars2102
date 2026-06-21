@@ -650,6 +650,7 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
         return 0
     imult = float(TERRA_INTENSITY_MULT.get(intensity, 1.0))
     fed_plots = set()
+    anchored_cells = set()   # K1b-3: Climate Anchor plots hold their axes (excluded from decay)
     push_total = 0.0
     for b in structures.get("buildings", []):
         # A built terraform rig pushes even when browned-out (at the floor, below) — so gate on
@@ -657,6 +658,10 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
         if not (isinstance(b, dict) and b.get("domain") == "terraform" and b.get("complete_at") is None):
             continue
         cell = (b.get("x"), b.get("y"))
+        # K1b-3 Climate Anchor: PINS its plot (no push) — recorded so the decay loop skips it.
+        if (b.get("effect") or {}).get("kind") == "climate_anchor" or b.get("kind") == "CLIMATE_ANCHOR":
+            anchored_cells.add(cell)
+            continue
         plot = plots.get(cell)
         if plot is None:
             continue
@@ -668,9 +673,9 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
         plot["axes"] = ax
         fed_plots.add(cell)
         push_total += push
-    # decay unfed plots toward natural_band
+    # decay unfed plots toward natural_band (anchored plots HOLD — K1b-3 Climate Anchor)
     for cell, plot in plots.items():
-        if cell in fed_plots:
+        if cell in fed_plots or cell in anchored_cells:
             continue
         ax = dict(plot.get("axes") or {})
         for axis in TERRA_AXES:
@@ -811,6 +816,35 @@ def decommission(structures: dict, building_id: str) -> Optional[dict]:
         if isinstance(p, dict) and p.get("building_id") == building_id:
             p["building_id"] = None
     return removed
+
+
+DECOMM_REFUND_PCT = 0.25   # NO-CANON: salvage fraction of cumulative invested credits on decommission
+
+
+def _invested_credits(kind: Optional[str], level: int) -> int:
+    """Cumulative catalog credit cost for building ``kind`` across levels 1..level (the total credits
+    sunk into it). Unknown kind / missing cost → 0."""
+    from src.services import building_catalog
+    spec = building_catalog.get(kind) or {}
+    cost = spec.get("cost") or {}
+    total = 0
+    for L in range(1, int(level or 1) + 1):
+        c = cost.get(L) or cost.get(str(L)) or {}
+        total += int(c.get("credits", 0) or 0)
+    return total
+
+
+def decommission_with_refund(structures: dict, building_id: str,
+                             refund_pct: float = DECOMM_REFUND_PCT) -> Optional[dict]:
+    """K1b-3 refund kernel: decommission a building (via decommission()) AND compute its salvage
+    refund = ``refund_pct`` × cumulative invested credits. Returns ``{removed, refund_credits}`` or
+    None if not found. PURE — the CALLER credits the player + commits (no player write here). The
+    refund fraction is NO-CANON (DECOMM_REFUND_PCT)."""
+    removed = decommission(structures, building_id)
+    if removed is None:
+        return None
+    invested = _invested_credits(removed.get("kind"), removed.get("level", 1))
+    return {"removed": removed, "refund_credits": int(invested * refund_pct)}
 
 
 # ---------------------------------------------------------------------------

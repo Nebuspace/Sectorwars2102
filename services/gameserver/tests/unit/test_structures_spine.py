@@ -239,6 +239,30 @@ def test_terraform_unfed_rig_pushes_at_floor():
     assert g["plots"][0]["axes"]["thermal"] == 54
 
 
+def test_decommission_with_refund():
+    g = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    rig = S.place(g, "THERMAL_RIG", 0, 0, level=1)
+    res = S.decommission_with_refund(g, rig["id"])
+    assert res is not None
+    assert res["refund_credits"] == 10000          # THERMAL_RIG L1 = 40000 cr × 0.25 salvage
+    assert res["removed"]["id"] == rig["id"]
+    assert all(b.get("id") != rig["id"] for b in g["buildings"])   # building gone
+
+
+def test_decommission_with_refund_missing_returns_none():
+    assert S.decommission_with_refund(_tgrid([_plot(0, 0, 40, 40)]), "nope") is None
+
+
+def test_climate_anchor_pins_plot_against_decay():
+    # BARREN natural_band 0/0: an un-anchored plot decays DOWN from 40; an anchored plot HOLDS.
+    g = _tgrid([_plot(0, 0, 40, 40), _plot(1, 0, 40, 40)])
+    S.place(g, "CLIMATE_ANCHOR", 0, 0, level=1)     # pins plot (0,0)
+    S.terraform_grid_tick(g, "BARREN", "standard")
+    idx = S._plot_index(g)
+    assert idx[(0, 0)]["axes"]["thermal"] == 40 and idx[(0, 0)]["axes"]["hydro"] == 40  # held
+    assert idx[(1, 0)]["axes"]["thermal"] < 40      # unanchored decayed toward natural_band 0
+
+
 def test_advance_grid_field_seeds_then_idempotent():
     p = _planet(planet_type="OCEANIC")
     p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])

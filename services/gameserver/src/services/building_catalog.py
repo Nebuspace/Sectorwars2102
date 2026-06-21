@@ -240,6 +240,20 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
         "terrain_bonus": {}, "effect": {"kind": "terra_push", "axis": "hydro"},
         "push_axis": "hydro", "push_base": 2.0, "signature": False, "prereqs": [],
     },
+    # Climate Anchor (K1b-3) — does NOT push; PINS its plot's axes against natural-band decay
+    # (terraform_grid_tick skips anchored cells in the decay loop). ⚠️ ALL NO-CANON (cost/effect/
+    # magnitude) — proposed for ratification; the kernel pins both axes fully on its own plot.
+    "CLIMATE_ANCHOR": {
+        "kind": "CLIMATE_ANCHOR", "domain": "terraform", "name": "Climate Anchor",
+        "footprint": [1, 1], "max_level": 3,
+        "build_hours": {1: 36, 2: 60, 3: 96},
+        "cost": {1: {"credits": 60000, "organics": 300}, 2: {"credits": 120000, "organics": 600},
+                 3: {"credits": 240000, "organics": 1200}},
+        "power_draw": {1: 40, 2: 55, 3: 72}, "crew": {1: 5, 2: 8, 3: 12},
+        "upkeep": {"credits": 400, "materials": {"equipment": 6}}, "tech_gate": None,
+        "terrain_bonus": {}, "effect": {"kind": "climate_anchor"},
+        "signature": False, "prereqs": [],
+    },
 }
 
 
