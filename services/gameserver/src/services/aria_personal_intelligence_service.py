@@ -62,6 +62,12 @@ class ARIAPersonalIntelligenceService:
         self.MIN_DATA_POINTS_FOR_PREDICTION = 5  # Need at least 5 visits
         self.CONFIDENCE_THRESHOLD = 0.6  # Minimum confidence for predictions
         self.MEMORY_DECAY_RATE = 0.001  # How fast old memories fade
+
+        # Per-player ARIA storage hard cap (NO-CANON: 10 MiB proposed — pure
+        # data-maintenance, not dialogue/LLM). When a player's combined
+        # ARIAPersonalMemory + ARIAMarketIntelligence row bytes exceed this,
+        # the daily pass evicts oldest-first until back under the cap.
+        self.MAX_PLAYER_ARIA_BYTES = 10 * 1024 * 1024  # 10 MiB
         
         # Security monitoring (OWASP A09)
         self.anomaly_threshold = 0.8
@@ -1403,6 +1409,180 @@ class ARIAPersonalIntelligenceService:
             "relationship_score": player.aria_relationship_score,
             "decay_applied": decay,
         }
+
+    # =============================================================================
+    # STORAGE MAINTENANCE (size-cap prune — NOT dialogue/LLM)
+    # =============================================================================
+
+    @staticmethod
+    def _row_byte_size(value: Any) -> int:
+        """
+        Estimate the on-disk JSON byte size of a single ARIA row's payload.
+
+        Pure size proxy: the UTF-8 byte length of the row's JSON content
+        (memory_content for memories, price_observations for market
+        intelligence). Defensive — a non-serialisable payload falls back to
+        ``len(str(value))`` so one bad row can never derail the whole prune.
+        """
+        if value is None:
+            return 0
+        try:
+            return len(json.dumps(value, default=str).encode("utf-8"))
+        except Exception:
+            try:
+                return len(str(value).encode("utf-8"))
+            except Exception:
+                return 0
+
+    async def prune_player_storage(
+        self, player_id: str, db: AsyncSession
+    ) -> Dict[str, Any]:
+        """
+        Daily-pass-callable storage prune for ONE player's ARIA data.
+
+        Computes the combined JSON byte size of the player's
+        ``ARIAPersonalMemory`` rows (``memory_content``) and
+        ``ARIAMarketIntelligence`` rows (``price_observations`` — the player's
+        personal trading-observation log). If the total exceeds the
+        ``MAX_PLAYER_ARIA_BYTES`` hard cap (NO-CANON: 10 MiB), the OLDEST rows
+        across BOTH tables are evicted first until the total is back under the
+        cap. Under-cap players are left completely untouched.
+
+        This is pure data maintenance — it deletes whole stale rows by age and
+        size. It does NOT read, write, decrypt, or otherwise touch any
+        LLM/dialogue/prompt logic; the memories' encrypted contents are never
+        opened. Ordering keys:
+          - ARIAPersonalMemory:       ``created_at``
+          - ARIAMarketIntelligence:   ``last_visit`` (NULL sorts oldest)
+
+        Returns a summary dict (no raise on the happy path); fully defensive so
+        a hiccup in the nightly sweep can never break the pass for other players.
+
+        Args:
+            player_id: the player whose ARIA storage to size-check and prune.
+            db: async database session (this method owns its single commit).
+
+        Returns:
+            {success, over_cap, bytes_before, bytes_after, cap_bytes,
+             evicted_memories, evicted_intelligence, evicted_total}
+        """
+        cap = self.MAX_PLAYER_ARIA_BYTES
+
+        try:
+            # --- Load the player's rows from both tables ---
+            mem_result = await db.execute(
+                select(ARIAPersonalMemory).where(
+                    ARIAPersonalMemory.player_id == player_id
+                )
+            )
+            memories = mem_result.scalars().all()
+
+            intel_result = await db.execute(
+                select(ARIAMarketIntelligence).where(
+                    ARIAMarketIntelligence.player_id == player_id
+                )
+            )
+            intelligences = intel_result.scalars().all()
+
+            # --- Build an age-sortable, size-tagged eviction list ---
+            # Each entry: (sort_key_datetime, byte_size, kind, orm_obj)
+            # Use a tz-aware epoch floor so NULL timestamps sort OLDEST and
+            # naive/aware mixes never raise on comparison.
+            epoch = datetime(1970, 1, 1, tzinfo=UTC)
+
+            def _as_aware(dt: Optional[datetime]) -> datetime:
+                if dt is None:
+                    return epoch
+                if dt.tzinfo is None:
+                    return dt.replace(tzinfo=UTC)
+                return dt
+
+            entries: List[Tuple[datetime, int, str, Any]] = []
+            total_bytes = 0
+
+            for m in memories:
+                size = self._row_byte_size(m.memory_content)
+                total_bytes += size
+                entries.append(
+                    (_as_aware(m.created_at), size, "memory", m)
+                )
+
+            for intel in intelligences:
+                size = self._row_byte_size(intel.price_observations)
+                total_bytes += size
+                entries.append(
+                    (_as_aware(intel.last_visit), size, "intelligence", intel)
+                )
+
+            bytes_before = total_bytes
+
+            # --- Under cap: untouched ---
+            if total_bytes <= cap:
+                return {
+                    "success": True,
+                    "over_cap": False,
+                    "bytes_before": bytes_before,
+                    "bytes_after": bytes_before,
+                    "cap_bytes": cap,
+                    "evicted_memories": 0,
+                    "evicted_intelligence": 0,
+                    "evicted_total": 0,
+                }
+
+            # --- Over cap: evict OLDEST-first across both tables ---
+            entries.sort(key=lambda e: e[0])  # oldest first
+
+            evicted_memories = 0
+            evicted_intelligence = 0
+            for _sort_key, size, kind, obj in entries:
+                if total_bytes <= cap:
+                    break
+                await db.delete(obj)
+                total_bytes -= size
+                if kind == "memory":
+                    evicted_memories += 1
+                else:
+                    evicted_intelligence += 1
+
+            await db.commit()
+
+            evicted_total = evicted_memories + evicted_intelligence
+            logger.info(
+                "ARIA storage prune for player %s: %d -> %d bytes (cap %d), "
+                "evicted %d rows (%d memories, %d intelligence)",
+                player_id, bytes_before, total_bytes, cap,
+                evicted_total, evicted_memories, evicted_intelligence,
+            )
+
+            return {
+                "success": True,
+                "over_cap": True,
+                "bytes_before": bytes_before,
+                "bytes_after": total_bytes,
+                "cap_bytes": cap,
+                "evicted_memories": evicted_memories,
+                "evicted_intelligence": evicted_intelligence,
+                "evicted_total": evicted_total,
+            }
+        except Exception as e:
+            logger.warning(
+                "ARIA storage prune failed for player %s: %s", player_id, e
+            )
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "over_cap": False,
+                "bytes_before": 0,
+                "bytes_after": 0,
+                "cap_bytes": cap,
+                "evicted_memories": 0,
+                "evicted_intelligence": 0,
+                "evicted_total": 0,
+                "error": str(e),
+            }
 
     # =============================================================================
     # CONSCIOUSNESS EVOLUTION & GAMEPLAY INTEGRATION
