@@ -863,7 +863,7 @@ def run_loop_b(db: Session) -> List[Dict[str, Any]]:
                 "Loop B: career-stage advance failed for NPC %s", npc.id
             )
 
-    flooded_regions = _genocide_flood_regions(db, now)
+    flooded_regions = _genocide_flood_regions(db, now, events)
 
     for roster in db.query(NPCRoster).all():
         try:
@@ -968,17 +968,29 @@ def _advance_career_stage(npc: NPCCharacter) -> None:
         )
 
 
-def _genocide_flood_regions(db: Session, now: datetime) -> set:
+def _genocide_flood_regions(
+    db: Session, now: datetime, events: Optional[List[Dict[str, Any]]] = None
+) -> set:
     """Region ids currently under the N-V4 rapid-recovery flood: ≥3
     law-enforcement KIAs inside a 30-minute window, response active for
-    1 hour after the triggering kill."""
+    1 hour after the triggering kill.
+
+    When ``events`` is supplied, a best-effort ``npc.coordinated_genocide_detected``
+    realtime event dict is appended per newly-flooded region (N-V4). Like
+    every tick-body event it is broadcast POST-COMMIT by ``_broadcast_events``
+    on the event loop (never from this worker thread), so a WebSocket hiccup
+    can never roll back the underlying flood detection / roster fill."""
     from src.models.npc_character import NPCArchetype, NPCDeathLog
 
     lookback = timedelta(
         minutes=GENOCIDE_WINDOW_MINUTES + GENOCIDE_RESPONSE_MINUTES
     )
     rows = (
-        db.query(NPCDeathLog.home_region_id, NPCDeathLog.killed_at)
+        db.query(
+            NPCDeathLog.home_region_id,
+            NPCDeathLog.killed_at,
+            NPCDeathLog.npc_id,
+        )
         .join(NPCCharacter, NPCDeathLog.npc_id == NPCCharacter.id)
         .filter(
             NPCCharacter.archetype == NPCArchetype.LAW_ENFORCEMENT,
@@ -989,19 +1001,19 @@ def _genocide_flood_regions(db: Session, now: datetime) -> set:
         .all()
     )
 
-    by_region: Dict[Any, List[datetime]] = {}
-    for region_id, killed_at in rows:
+    by_region: Dict[Any, List[tuple]] = {}
+    for region_id, killed_at, npc_id in rows:
         if killed_at is not None and killed_at.tzinfo is None:
             killed_at = killed_at.replace(tzinfo=UTC)
-        by_region.setdefault(region_id, []).append(killed_at)
+        by_region.setdefault(region_id, []).append((killed_at, npc_id))
 
     flooded = set()
     window = timedelta(minutes=GENOCIDE_WINDOW_MINUTES)
     response = timedelta(minutes=GENOCIDE_RESPONSE_MINUTES)
     for region_id, kills in by_region.items():
         for i in range(len(kills) - GENOCIDE_KILL_THRESHOLD + 1):
-            third = kills[i + GENOCIDE_KILL_THRESHOLD - 1]
-            if third - kills[i] <= window and now - third <= response:
+            third_at = kills[i + GENOCIDE_KILL_THRESHOLD - 1][0]
+            if third_at - kills[i][0] <= window and now - third_at <= response:
                 flooded.add(region_id)
                 logger.warning(
                     "npc.coordinated_genocide_detected: region %s — "
@@ -1009,6 +1021,26 @@ def _genocide_flood_regions(db: Session, now: datetime) -> set:
                     "half-stage recruits)",
                     region_id,
                 )
+                if events is not None:
+                    # KIAs inside the triggering window (the marshals whose
+                    # rapid loss tripped the flood). Counted from the window
+                    # opener forward across every kill within GENOCIDE_WINDOW.
+                    window_kills = [
+                        (k_at, k_id)
+                        for (k_at, k_id) in kills[i:]
+                        if k_at - kills[i][0] <= window
+                    ]
+                    events.append({
+                        "type": "npc.coordinated_genocide_detected",
+                        "region_id": str(region_id),
+                        "kills_in_window": len(window_kills),
+                        "window_seconds": int(window.total_seconds()),
+                        "marshal_npc_ids": [
+                            str(k_id) for (_, k_id) in window_kills
+                            if k_id is not None
+                        ],
+                        "at": now.isoformat(),
+                    })
                 break
     return flooded
 
@@ -3669,6 +3701,32 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
     from src.services.websocket_service import connection_manager
 
     for event in events:
+        # N-V4: region-scoped ops alert. Fans out to the affected region room
+        # AND the admin/ops fan-out (the standing admin alert channel). Routes
+        # off the event type (not sector_id) since detection is region-level.
+        # Best-effort, same as every broadcast here — a WS failure is logged,
+        # never raised, so the underlying flood op is unaffected.
+        if event.get("type") == "npc.coordinated_genocide_detected":
+            region_id = event.get("region_id")
+            if region_id is not None:
+                try:
+                    await connection_manager.broadcast_to_region(
+                        str(region_id), dict(event)
+                    )
+                except Exception:
+                    logger.exception(
+                        "NPC scheduler: region broadcast failed for %s",
+                        event.get("type"),
+                    )
+            try:
+                await connection_manager.broadcast_to_admins(dict(event))
+            except Exception:
+                logger.exception(
+                    "NPC scheduler: admin broadcast failed for %s",
+                    event.get("type"),
+                )
+            continue
+
         sector_id = event.get("sector_id")
         if sector_id is None:
             continue
