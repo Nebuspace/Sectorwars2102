@@ -17,14 +17,91 @@ from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType, UpgradeType
 from src.models.station import Station, StationType
+from src.models.faction import Faction
+from src.models.reputation import Reputation, ReputationLevel
 from src.services.ship_service import ShipService
 from src.services.ship_upgrade_service import ShipUpgradeService
 from src.services import maintenance_service
-from src.services.emergent_reputation_service import apply_emergent_action
+from src.services.emergent_reputation_service import apply_emergent_action, FACTION_CODE_TO_TYPE
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ships", tags=["ship-upgrades"])
+
+
+# Reputation-gated hulls (ShipSpecification.faction_requirements). A spec's
+# faction_requirements is a dict of {faction_code: required_ReputationLevel_name},
+# e.g. {"terran_federation": "TRUSTED"}; None/empty == no gate. The faction_code
+# is the roster slug resolved to a FactionType via the canonical
+# FACTION_CODE_TO_TYPE map (the same map emergent_reputation uses), then to the
+# Faction row, then to the player's Reputation row with that faction.
+#
+# ReputationLevel is declared low->high (PUBLIC_ENEMY .. EXALTED), so a member's
+# index in the enum's declaration order IS its monotonic rank — "TRUSTED required"
+# is satisfied by TRUSTED and every level above it.
+_REPUTATION_RANK = {level: rank for rank, level in enumerate(ReputationLevel)}
+
+
+def _player_reputation_level(db: Session, player_id, faction_type) -> ReputationLevel:
+    """The player's current ReputationLevel with the given FactionType.
+
+    Resolves the FactionType to its Faction row and reads the player's
+    Reputation row (mirrors apply_faction_rep_delta's resolution path). A
+    player with no Reputation row for that faction is at the seeded default
+    of NEUTRAL.
+    """
+    faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
+    if faction is None:
+        return ReputationLevel.NEUTRAL
+    rep = (
+        db.query(Reputation)
+        .filter(Reputation.player_id == player_id, Reputation.faction_id == faction.id)
+        .first()
+    )
+    if rep is None or rep.current_level is None:
+        return ReputationLevel.NEUTRAL
+    return rep.current_level
+
+
+def check_faction_eligibility(db: Session, player_id, spec: ShipSpecification):
+    """Return (eligible: bool, reason: Optional[str]) for a player buying `spec`.
+
+    No faction_requirements -> always eligible. Otherwise EVERY {faction_code:
+    required_level} entry must be met: the player's reputation LEVEL with that
+    faction must rank >= the required level. The first unmet requirement is the
+    returned reason (ERR_CITIZEN_ONLY_HULL-style, naming faction + level).
+    """
+    requirements = spec.faction_requirements or {}
+    if not requirements:
+        return True, None
+
+    for faction_code, required_name in requirements.items():
+        try:
+            required_level = ReputationLevel(required_name)
+        except ValueError:
+            # Mis-seeded requirement name: fail closed rather than sell a
+            # gated hull on a typo (better a stuck ship than a free one).
+            return False, (
+                f"ERR_CITIZEN_ONLY_HULL: this hull has a misconfigured "
+                f"faction requirement ({faction_code}: {required_name})"
+            )
+
+        faction_type = FACTION_CODE_TO_TYPE.get(faction_code)
+        if faction_type is None:
+            return False, (
+                f"ERR_CITIZEN_ONLY_HULL: this hull requires standing with an "
+                f"unknown faction ({faction_code})"
+            )
+
+        player_level = _player_reputation_level(db, player_id, faction_type)
+        if _REPUTATION_RANK[player_level] < _REPUTATION_RANK[required_level]:
+            faction_label = faction_code.replace("_", " ").title()
+            return False, (
+                f"ERR_CITIZEN_ONLY_HULL: requires {required_level.value} standing "
+                f"with the {faction_label} (you are {player_level.value})"
+            )
+
+    return True, None
 
 
 # Request/Response Models
@@ -172,11 +249,17 @@ async def get_ship_catalog(
     ships = []
     for spec in specs:
         acquisition_methods = spec.acquisition_methods or []
+        # Reputation-gated hulls: surface the requirement + whether THIS player
+        # currently meets it, so the shipyard UI can lock the card and show why.
+        eligible, ineligible_reason = check_faction_eligibility(db, player.id, spec)
         ships.append({
             "type": spec.type.value,
             "name": spec.type.value.replace("_", " ").title(),
             "base_cost": spec.base_cost,
             "purchasable": "purchase" in acquisition_methods,
+            "faction_requirements": spec.faction_requirements or None,
+            "eligible": eligible,
+            "ineligible_reason": ineligible_reason,
             "speed": spec.speed,
             "turn_cost": spec.turn_cost,
             "max_cargo": spec.max_cargo,
@@ -272,6 +355,16 @@ async def purchase_ship(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{ship_type.value.replace('_', ' ').title()} cannot be purchased at a shipyard",
+        )
+
+    # Reputation-gated hulls: a player must hold the required faction standing
+    # before they can buy (e.g. terran_federation: TRUSTED). Checked before any
+    # credits are charged so a rejected buy is free of side effects.
+    eligible, reason = check_faction_eligibility(db, player.id, spec)
+    if not eligible:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=reason,
         )
 
     if player.credits < spec.base_cost:
