@@ -362,6 +362,19 @@ _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
 
+# npc-lifecycle.md career-stage canon (lines 139-140, 148-149):
+#   senior at >= 90 canonical-days tenure, combat +5% / scanner +1;
+#   decorated on faction-medal earn, buff scales with medal count.
+SENIOR_TENURE_HOURS = 90 * 24            # canon: "Tenure >= 90 real-time days"
+SENIOR_COMBAT_BONUS = 0.05               # canon: "combat +5%"
+SENIOR_SCANNER_BONUS = 1                 # canon: "scanner range +1"
+# Decorated buff "scales with medal count" (canon, npc-lifecycle.md:140,149).
+# Doc gives no per-medal magnitude, so each medal adds the same step the
+# senior tier grants — a conservative, canon-anchored scaling unit rather
+# than an invented number. NO-CANON: the per-medal step size.
+DECORATED_COMBAT_PER_MEDAL = SENIOR_COMBAT_BONUS   # NO-CANON
+DECORATED_SCANNER_PER_MEDAL = SENIOR_SCANNER_BONUS  # NO-CANON
+
 # ADR-0063 N-V4 genocide rapid-recovery. Detection and response windows
 # are WALL-CLOCK (the trigger keys off real player behavior — a
 # canonical window at dev time-scale would be seconds wide and
@@ -756,6 +769,33 @@ def run_loop_b(db: Session) -> List[Dict[str, Any]]:
         ):
             npc.lifecycle_stage = NPCLifecycleStage.ACTIVE
 
+    # Career advancement for already-active NPCs (npc-lifecycle.md lines
+    # 139-140, 148-149):
+    #   active  -> senior    at 90 canonical-days tenure (combat +5%, scanner +1)
+    #   active/senior -> decorated  on faction-medal earn (buff scales with
+    #                    medal count). DECORATED outranks SENIOR, so it is
+    #                    evaluated last and wins.
+    # Same tenure anchor the recruit->active pass uses (npc.spawned_at via
+    # game_time.canonical_hours_since) — the model has no separate
+    # recruited_at/created_at field; spawned_at is the canon tenure clock.
+    careerists = (
+        db.query(NPCCharacter)
+        .filter(
+            NPCCharacter.lifecycle_stage.in_(
+                (NPCLifecycleStage.ACTIVE, NPCLifecycleStage.SENIOR)
+            ),
+            NPCCharacter.status.in_(_LIVE_STATUSES),
+        )
+        .all()
+    )
+    for npc in careerists:
+        try:
+            _advance_career_stage(npc)
+        except Exception:
+            logger.exception(
+                "Loop B: career-stage advance failed for NPC %s", npc.id
+            )
+
     flooded_regions = _genocide_flood_regions(db, now)
 
     for roster in db.query(NPCRoster).all():
@@ -771,6 +811,94 @@ def run_loop_b(db: Session) -> List[Dict[str, Any]]:
 
     db.flush()
     return events
+
+
+def _decoration_count(npc: NPCCharacter) -> int:
+    """Number of faction medals this NPC has earned, read from the canon
+    ``role_history.decorations[]`` array (npc-lifecycle.md career-arc JSONB,
+    lines 156-169). The medal-EARN side records rows here; this pass only
+    reads the count to drive the DECORATED transition and its scaling buff."""
+    history = npc.role_history or {}
+    decorations = history.get("decorations") or []
+    return len([d for d in decorations if isinstance(d, dict)])
+
+
+def _apply_stat_buff(
+    npc: NPCCharacter,
+    combat_bonus: float,
+    scanner_bonus: int,
+    flavor: str,
+) -> None:
+    """Idempotent read-modify-write of the per-NPC stat modifiers + display
+    flavor cue into the existing ``backstory`` JSONB (no migration: backstory
+    is JSONB, default dict — the canon home for per-NPC skill/flavor data per
+    DATA_MODELS/npcs.md backstory shape). Only writes when a value actually
+    changes so a steady-state daily pass stays a no-op."""
+    backstory = dict(npc.backstory or {})
+    mods = dict(backstory.get("stat_modifiers") or {})
+
+    combat_bonus = round(float(combat_bonus), 4)
+    desired = {
+        "combat_bonus": combat_bonus,
+        "scanner_bonus": int(scanner_bonus),
+    }
+    changed = False
+    if mods.get("combat_bonus") != desired["combat_bonus"]:
+        mods["combat_bonus"] = desired["combat_bonus"]
+        changed = True
+    if mods.get("scanner_bonus") != desired["scanner_bonus"]:
+        mods["scanner_bonus"] = desired["scanner_bonus"]
+        changed = True
+    if backstory.get("display_flavor") != flavor:
+        backstory["display_flavor"] = flavor
+        changed = True
+
+    if changed:
+        backstory["stat_modifiers"] = mods
+        npc.backstory = backstory
+        flag_modified(npc, "backstory")
+
+
+def _advance_career_stage(npc: NPCCharacter) -> None:
+    """Drive the active -> senior (tenure) and active/senior -> decorated
+    (medal-earn) transitions for one already-active NPC, applying the canon
+    stat buffs and updating the display flavor cue. DECORATED outranks SENIOR
+    (npc-lifecycle.md:141), so a decorated NPC keeps the DECORATED stage and a
+    medal-scaled buff even once it crosses the 90-day tenure line.
+
+    Idempotent and additive: re-running the daily pass on an already-advanced
+    NPC re-derives the same stage + buff and writes nothing new."""
+    medals = _decoration_count(npc)
+
+    # DECORATED — earned >= 1 faction medal. Wins over SENIOR. Buff scales
+    # with medal count (canon: "Stat buff scales with medal count").
+    if medals > 0:
+        if npc.lifecycle_stage != NPCLifecycleStage.DECORATED:
+            npc.lifecycle_stage = NPCLifecycleStage.DECORATED
+        _apply_stat_buff(
+            npc,
+            combat_bonus=DECORATED_COMBAT_PER_MEDAL * medals,
+            scanner_bonus=DECORATED_SCANNER_PER_MEDAL * medals,
+            flavor="Decorated",
+        )
+        return
+
+    # SENIOR — tenure >= 90 canonical days. Same tenure anchor as the
+    # recruit->active pass (spawned_at via canonical_hours_since).
+    if (
+        npc.lifecycle_stage == NPCLifecycleStage.ACTIVE
+        and npc.spawned_at
+        and game_time.canonical_hours_since(npc.spawned_at) >= SENIOR_TENURE_HOURS
+    ):
+        npc.lifecycle_stage = NPCLifecycleStage.SENIOR
+
+    if npc.lifecycle_stage == NPCLifecycleStage.SENIOR:
+        _apply_stat_buff(
+            npc,
+            combat_bonus=SENIOR_COMBAT_BONUS,
+            scanner_bonus=SENIOR_SCANNER_BONUS,
+            flavor="Senior",
+        )
 
 
 def _genocide_flood_regions(db: Session, now: datetime) -> set:
