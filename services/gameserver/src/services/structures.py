@@ -772,6 +772,35 @@ def grid_habitability(structures: dict) -> Optional[int]:
     return max(0, int(mean) - penalty)
 
 
+BIOME_CONFIRM_TOLERANCE = 10   # NO-CANON: axis points within the target band to count as "confirmed"
+
+
+def confirm_biome(structures: dict, target_biome: Optional[str]) -> dict:
+    """K1b-5 capstone — PURE READ. Is the grid's area-weighted per-axis mean within the target
+    biome's NATURAL_BAND (± BIOME_CONFIRM_TOLERANCE), and how many consecutive hold-ticks has it held
+    (read from ``structures.terraform_meta['biome_hold'][target_biome]``, 0 if unmaintained)?
+
+    Returns ``{confirmed, hold_ticks, axes}``. **NEVER writes planet.type** — the hold-tick
+    maintenance + the planet.type biome-reclass are the Max-gated activation step (PL2-adjacent), NOT
+    done here. This read is the thin capstone the CRT T1-exit gate confirms against."""
+    plots = [p for p in structures.get("plots", []) if isinstance(p, dict)]
+    if not plots:
+        return {"confirmed": False, "hold_ticks": 0, "axes": {}}
+    axes_mean = {
+        axis: sum(int(p.get("axes", {}).get(axis, 0)) for p in plots) / len(plots)
+        for axis in TERRA_AXES
+    }
+    confirmed = bool(target_biome) and all(
+        abs(axes_mean[axis] - _natural_band(target_biome, axis)) <= BIOME_CONFIRM_TOLERANCE
+        for axis in TERRA_AXES
+    )
+    tmeta = structures.get("terraform_meta") if isinstance(structures.get("terraform_meta"), dict) else {}
+    hold = tmeta.get("biome_hold") if isinstance(tmeta.get("biome_hold"), dict) else {}
+    hold_ticks = int(hold.get((target_biome or "").upper(), 0) or 0)
+    return {"confirmed": confirmed, "hold_ticks": hold_ticks,
+            "axes": {a: round(axes_mean[a], 1) for a in TERRA_AXES}}
+
+
 def _advance_grid_field(planet, structures: dict) -> int:
     """K1b-2 CUTOVER: advance the terraform grid field by the CANONICAL hours elapsed since its own
     wall-clock inner anchor ``terraform_meta.last_grid_tick_at`` — 1 tick = GRID_TICK_PERIOD_HOURS

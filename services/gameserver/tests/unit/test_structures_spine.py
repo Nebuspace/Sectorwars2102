@@ -239,6 +239,26 @@ def test_terraform_unfed_rig_pushes_at_floor():
     assert g["plots"][0]["axes"]["thermal"] == 54
 
 
+def test_k1b5_cold_start_gate():
+    # K1b-5 4-clause cold-start: a null-structures planet seeds to a COHERENT CRT init (zero-research).
+    p = _planet(planet_type="OCEANIC")
+    p.structures = None
+    s = S.seed(p)
+    assert isinstance(s.get("plots"), list) and len(s["plots"]) > 0          # (1) grid built
+    assert s["terraform_meta"]["last_settle_at"]                              # (2) spine anchor seeded
+    assert isinstance(S.derive_citadel_level(s), int)                        # (3) derive coherent (no crash)
+    r = S.confirm_biome(s, "OCEANIC")                                        # (4) capstone READ works
+    assert set(r) == {"confirmed", "hold_ticks", "axes"} and r["hold_ticks"] == 0
+    assert getattr(p, "type", None) is None                                  # type-reclass NOT written (Max-gated)
+
+
+def test_confirm_biome_in_and_out_of_band():
+    g = S.confirm_biome(_tgrid([_plot(0, 0, 65, 75), _plot(1, 0, 70, 70)]), "OCEANIC")  # near OCEANIC 65/75
+    assert g["confirmed"] is True
+    assert S.confirm_biome(_tgrid([_plot(0, 0, 0, 0)]), "OCEANIC")["confirmed"] is False  # far off-band
+    assert S.confirm_biome(_tgrid([_plot(0, 0, 65, 75)]), None)["confirmed"] is False     # no target
+
+
 def test_decommission_with_refund():
     g = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
     rig = S.place(g, "THERMAL_RIG", 0, 0, level=1)
