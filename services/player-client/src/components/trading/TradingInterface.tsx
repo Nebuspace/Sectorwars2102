@@ -482,6 +482,18 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         level: 'success'
       });
 
+      // WO-G5 (EC3): the backend sets `price_alert` on a trade whose post-trade
+      // reprice crosses this commodity's alert threshold at the station. Surface
+      // it as a distinct warning toast so the player knows the market just moved
+      // (no client read this flag before).
+      if (result?.price_alert === true) {
+        addNotification({
+          title: '📈 Market Price Alert',
+          content: `Your ${formatName(selectedResource)} trade moved prices sharply at this station — the market has shifted. Check the board before your next run.`,
+          level: 'warning'
+        });
+      }
+
       // Reset form (also drops out of haggle mode if we got here via accept)
       setTradeQuantity(1);
       closeTradeModal();
