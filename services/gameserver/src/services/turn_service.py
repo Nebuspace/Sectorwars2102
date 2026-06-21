@@ -287,6 +287,106 @@ def _calculate_max_turns(player: Player) -> int:
         return int(stored) if stored else BASE_TURNS_PER_DAY
 
 
+# Returning-player welcome-back bonus (OPERATIONS/retention.md §"Returning-player
+# turn bonus"): a one-time top-up of Player.turns when the player returns after a
+# >7-day absence, sized at min(WELCOME_BACK_MAX, days_inactive * WELCOME_BACK_PER_DAY).
+WELCOME_BACK_THRESHOLD_DAYS = 7      # bonus only fires for absences strictly > 7 days
+WELCOME_BACK_PER_DAY = 50            # turns granted per full day inactive
+WELCOME_BACK_MAX = 500              # hard cap (anti-alt-abuse, per canon)
+
+
+def welcome_back(player: Player, prior_last_game_login: Optional[datetime]) -> Dict[str, Any]:
+    """Apply the returning-player welcome-back turn bonus, ONCE per return.
+
+    OPERATIONS/retention.md: ``Player.turns`` is topped up by a "welcome back"
+    bonus if last login was > 7 days ago — ``min(500, days_inactive × 50)`` —
+    capped to prevent alt-account abuse.
+
+    Idempotency is structural, not a flag: the caller passes the player's OLD
+    ``last_game_login`` (captured BEFORE this call), and this helper overwrites
+    ``player.last_game_login`` to *now*. The next login within 7 days therefore
+    measures a fresh, sub-threshold gap and grants 0 — the bonus can only fire
+    once per genuine return. ``last_game_login`` is the live login-recency clock
+    for the auth path (track_login is called without a db arg, so this is the
+    only writer of that column on the live login route).
+
+    The bonus is added to the balance and clamped to ``player.max_turns`` so a
+    returning player is topped up *to* their cap at most — never overflowed past
+    the ADR-0004 ceiling.
+
+    Args:
+        player: the returning Player row (mutated in place; NOT committed here —
+            the caller owns the transaction).
+        prior_last_game_login: the value of ``player.last_game_login`` captured
+            *before* this call. ``None`` (never logged in) grants nothing.
+
+    Returns a small dict describing the outcome (callers may ignore it).
+    """
+    now = datetime.now(timezone.utc)
+
+    result: Dict[str, Any] = {
+        "granted": False,
+        "bonus": 0,
+        "days_inactive": 0,
+        "old_turns": player.turns or 0,
+        "new_turns": player.turns or 0,
+    }
+
+    # Always advance the recency clock to now — this is what makes the grant
+    # one-shot per return (and keeps last_game_login current for retention
+    # signals even when no bonus is due).
+    player.last_game_login = now
+
+    # Never logged in (or unknown) — no prior absence to reward.
+    if prior_last_game_login is None:
+        return result
+
+    # Normalise the prior anchor to tz-aware UTC for a safe subtraction.
+    anchor = prior_last_game_login
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+
+    elapsed_days = (now - anchor).total_seconds() / SECONDS_PER_DAY
+    # Clock-skew / future-anchor guard: a negative gap rewards nothing.
+    if elapsed_days <= 0:
+        return result
+
+    days_inactive = int(elapsed_days)  # whole days only (floor)
+    result["days_inactive"] = days_inactive
+
+    # Bonus only for absences STRICTLY greater than the threshold.
+    if days_inactive <= WELCOME_BACK_THRESHOLD_DAYS:
+        return result
+
+    bonus = min(WELCOME_BACK_MAX, days_inactive * WELCOME_BACK_PER_DAY)
+    if bonus <= 0:
+        return result
+
+    current_turns = player.turns or 0
+    # Top up toward the cap — never push the balance past max_turns.
+    max_turns = _calculate_max_turns(player)
+    new_turns = min(max_turns, current_turns + bonus)
+    actually_added = new_turns - current_turns
+    if actually_added <= 0:
+        # Already at/above cap — nothing to grant this return.
+        return result
+
+    player.turns = new_turns
+
+    logger.info(
+        "Welcome-back bonus for player %s: +%d turns (%d -> %d, %d days inactive)",
+        getattr(player, "id", "?"), actually_added, current_turns, new_turns,
+        days_inactive,
+    )
+
+    result.update({
+        "granted": True,
+        "bonus": actually_added,
+        "new_turns": new_turns,
+    })
+    return result
+
+
 def spend_turns(player: Player, amount: int) -> None:
     """Deduct ``amount`` turns from the balance and advance the lifetime
     clock. The caller has already verified affordability."""

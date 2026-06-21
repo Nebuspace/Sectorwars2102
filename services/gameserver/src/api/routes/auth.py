@@ -43,6 +43,32 @@ async def _track_player_login(db: Session, user_id) -> None:
         player = db.query(Player).filter(Player.user_id == user_id).first()
         if player is None:
             return  # admin or non-player user — nothing to track
+
+        # WO-F4 — returning-player welcome-back turn bonus (retention.md). This
+        # is the SINGLE shared login chokepoint (every login route funnels here),
+        # so the bonus is applied exactly once per login here rather than in each
+        # endpoint. Capture the OLD last_game_login BEFORE welcome_back overwrites
+        # it to now: that overwrite is what makes the grant one-shot per return
+        # (a second login inside 7 days measures a sub-threshold gap → 0). Fully
+        # DEFENSIVE — a bonus failure must never break login, so it is isolated
+        # in its own try/except and the row is committed best-effort.
+        try:
+            from src.services.turn_service import welcome_back
+            prior_last_game_login = player.last_game_login
+            outcome = welcome_back(player, prior_last_game_login)
+            db.commit()
+            if outcome.get("granted"):
+                logger.info(
+                    "Welcome-back bonus granted to player %s: +%d turns (%d days inactive)",
+                    player.id, outcome.get("bonus", 0), outcome.get("days_inactive", 0),
+                )
+        except Exception:
+            logger.warning("welcome-back turn bonus failed (non-fatal)", exc_info=True)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
         from src.services.player_activity_service import get_player_activity_service
         activity_service = await get_player_activity_service()
         # Call without the optional db arg: the routes' Session is sync, and
