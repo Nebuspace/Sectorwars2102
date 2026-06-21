@@ -547,6 +547,33 @@ export const shipUpgradeAPI = {
       method: 'POST',
       body: JSON.stringify({ equipment_key: equipmentKey }),
     }),
+
+  // SHIP-MODS (WO-SM-5): module slot-grid lattice + install/remove.
+  //
+  // getModules → { ship_id, ship_name, ship_type, module_slots, installed }
+  //   module_slots: { v, cols, rows, slots:[{i,x,y,super,class,requires}] } | null
+  //   installed:    { "<slot_i>": { class, tier, super_at_install, installed_at } }
+  getModules: (shipId: string) =>
+    apiRequest(`/api/v1/ships/${shipId}/modules`),
+
+  // installModule → { success, module, supercharged, cost_paid, remaining_credits,
+  //                   updated_stats, [consumer_inert] }. The deferred equipment
+  //   families (harvester/lander/mining/tractor) return success:false +
+  //   consumer_inert:true with a "not yet installable" message — surfaced as
+  //   "coming soon" in the catalog so they never reach this call.
+  installModule: (shipId: string, slotIndex: number, moduleClass: string, tier: number) =>
+    apiRequest(`/api/v1/ships/${shipId}/modules/install`, {
+      method: 'POST',
+      body: JSON.stringify({ slot_index: slotIndex, module_class: moduleClass, tier }),
+    }),
+
+  // removeModule → { success, refund, remaining_credits, updated_stats }. The
+  //   refund is SALVAGE_FRACTION (~25%) of the module's tier-scaled cost.
+  removeModule: (shipId: string, slotIndex: number) =>
+    apiRequest(`/api/v1/ships/${shipId}/modules/remove`, {
+      method: 'POST',
+      body: JSON.stringify({ slot_index: slotIndex }),
+    }),
 };
 
 // Planetary Registry APIs (shadow-broker lookup of another player's holdings).

@@ -4,7 +4,7 @@ import type { Station } from '../../contexts/GameContext';
 import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
-import { InsuranceManager, MaintenanceManager, UpgradeInterface } from '../ships';
+import { InsuranceManager, MaintenanceManager, ModuleGridInterface } from '../ships';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -2685,7 +2685,11 @@ const SpaceDockInterface: React.FC = () => {
                 >
                   ✕
                 </button>
-                <UpgradeInterface ship={{ id: shipData.id }} />
+                <ModuleGridInterface
+                  ship={{ id: shipData.id }}
+                  playerCredits={displayCredits}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                />
               </div>
             </div>
           )}
