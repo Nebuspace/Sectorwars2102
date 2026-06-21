@@ -19,6 +19,17 @@ from src.services import tech_tree
 from src.services import research_service as rs
 
 
+@pytest.fixture(autouse=True)
+def _noop_flag_modified(monkeypatch):
+    """WO-CL5: the SimpleNamespace fakes below aren't SQLAlchemy-mapped, so
+    ``sqlalchemy.orm.attributes.flag_modified`` raises ``'SimpleNamespace' has no attribute
+    '_sa_instance_state'``. The real flag_modified is exercised by the in-process dev proofs
+    against real Planet/Player rows (WO-K0 + the K1a refund proof); these unit tests assert the
+    pure faucet/unlock LOGIC, for which marking the JSONB column dirty is irrelevant (the code also
+    reassigns the attribute). No-op it so the logic tests run."""
+    monkeypatch.setattr(rs, "flag_modified", lambda *a, **k: None)
+
+
 # --------------------------------------------------------------------------- #
 # K0-1: catalog / DAG reachability
 # --------------------------------------------------------------------------- #
