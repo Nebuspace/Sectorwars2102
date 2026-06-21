@@ -11,7 +11,7 @@ from sqlalchemy import and_, or_
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus, ShipType, ShipSpecification
-from src.models.sector import Sector
+from src.models.sector import Sector, SectorType
 from src.models.combat import CombatType, CombatResult
 from src.models.combat_log import CombatLog, CombatOutcome
 from src.models.drone import Drone, DroneDeployment, DroneStatus
@@ -315,6 +315,31 @@ class CombatService:
         (ShipType.CARRIER, ShipType.SCOUT_SHIP): 1.8,         # Capital vs scout
         (ShipType.CARRIER, ShipType.FAST_COURIER): 1.5,       # Capital vs light
         (ShipType.COLONY_SHIP, ShipType.DEFENDER): 0.5,       # Colony ship weak in combat
+    }
+
+    # --- Per-sector combat modifier (WO-CR1) -----------------------------
+    # The canonical damage stack (SYSTEMS/combat-resolver.md "Damage stack —
+    # order of operations", step 1) lists `sector.modifier (nebula,
+    # radiation, etc.)` as a multiplier alongside SHIP_COMBAT_MODIFIERS. The
+    # per-sector `Sector.type = NEBULA` flag "is what gates sensor/combat
+    # effects" (SYSTEMS/bang-import-pipeline.md:188/479). So the WIRING — a
+    # per-sector damage multiplier read from the sector's type — IS canon.
+    #
+    # NO-CANON (flag for Max): canon describes a NEBULA's effect only
+    # qualitatively — Crimson gives a "Mild combat advantage (heat-glow
+    # concealment)" (FEATURES/galaxy/quantum-resources.md:37) — but states NO
+    # numeric damage multiplier, and the per-color secondary effects are not
+    # persisted on the Sector row (only the binary SectorType.NEBULA is).
+    # The values below are a conservative placeholder table: a NEBULA reduces
+    # damage dealt (concealment cuts targeting accuracy) and every other
+    # sector type is a no-op (1.0). Default for any unlisted / None sector is
+    # 1.0, so the non-special combat path is BYTE-IDENTICAL to before this WO.
+    DEFAULT_SECTOR_COMBAT_MODIFIER = 1.0
+    SECTOR_COMBAT_MODIFIERS = {
+        # NO-CANON 0.85: nebula concealment reduces damage dealt ~15%.
+        SectorType.NEBULA: 0.85,
+        # All other sector types: explicit no-op (documents intent; the
+        # .get() default already yields 1.0 for anything absent here).
     }
 
     # Weapon type effectiveness against different defenses
@@ -2269,6 +2294,29 @@ class CombatService:
             "destroyed": new_hull <= 0,
         }
 
+    def _sector_combat_modifier(self, sector: Optional[Sector]) -> float:
+        """Return the per-sector combat damage multiplier (WO-CR1).
+
+        Reads the sector's terrain type (``Sector.type`` — the SectorType
+        enum) and maps it through ``SECTOR_COMBAT_MODIFIERS``. A NEBULA cuts
+        damage dealt (concealment); every other sector type — and a missing
+        sector / missing type — is a no-op 1.0, so the standard combat path
+        is unaffected. Never raises: a malformed sector yields the default
+        rather than breaking a live fight.
+        """
+        try:
+            sector_type = getattr(sector, "type", None)
+            if sector_type is None:
+                return self.DEFAULT_SECTOR_COMBAT_MODIFIER
+            return self.SECTOR_COMBAT_MODIFIERS.get(
+                sector_type, self.DEFAULT_SECTOR_COMBAT_MODIFIER
+            )
+        except Exception as e:  # never let a sector read break combat
+            logger.error(
+                "Sector combat-modifier read failed (defaulting to 1.0): %s", e
+            )
+            return self.DEFAULT_SECTOR_COMBAT_MODIFIER
+
     def _resolve_ship_combat(
         self,
         attacker: Player,
@@ -2346,6 +2394,13 @@ class CombatService:
         attacker_drones = attacker.defense_drones
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         defender_defense = self._calculate_defense_power(defender_ship, defender_drones)
+
+        # WO-CR1: per-sector combat damage modifier (canon damage stack
+        # step 1 — `sector.modifier (nebula, radiation, etc.)`). Read once
+        # for this engagement; applied symmetrically to both sides' damage
+        # since the terrain affects everyone in the sector equally. 1.0 for
+        # a standard sector (the default combat path is unchanged).
+        sector_modifier = self._sector_combat_modifier(sector)
 
         # Live shield/hull pools — seeded from ShipSpecification when a
         # ship's combat JSONB lacks keys. These dicts ARE the ships' combat
@@ -2426,6 +2481,7 @@ class CombatService:
                         damage = (
                             base_damage * attacker_damage_mult * type_modifier
                             * atk_weapon["base_damage"] * attacker_drone_mult
+                            * sector_modifier  # WO-CR1 per-sector terrain
                         )
                         hit = self._apply_weapon_damage(
                             damage, atk_weapon, defender_combat,
@@ -2533,6 +2589,7 @@ class CombatService:
                         damage = (
                             base_damage * defender_damage_mult * type_modifier
                             * def_weapon["base_damage"] * defender_drone_mult
+                            * sector_modifier  # WO-CR1 per-sector terrain
                         )
                         hit = self._apply_weapon_damage(
                             damage, def_weapon, attacker_combat,
