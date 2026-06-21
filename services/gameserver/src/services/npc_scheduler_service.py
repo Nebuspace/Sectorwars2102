@@ -222,7 +222,7 @@ _ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY = "active_players_30d_last_day"
 _ACTIVE_PLAYERS_WINDOW_DAYS = 30
 # Galaxy.state JSONB key holding the canonical-DAY index of the last ARIA
 # storage-prune pass (WO-F16). The dormant prune kernel
-# (AriaPersonalIntelligenceService.prune_player_storage) evicts each player's
+# (ARIAPersonalIntelligenceService.prune_player_storage) evicts each player's
 # oldest ARIAPersonalMemory + ARIAMarketIntelligence rows until that player's
 # combined payload is back under MAX_PLAYER_ARIA_BYTES (10 MiB). The prune is
 # ASYNC (it owns its own commit per player against an AsyncSession) so — unlike
@@ -3911,7 +3911,7 @@ async def _run_aria_prune_async() -> Dict[str, int]:
     """ASYNC daily ARIA storage-prune pass (WO-F16).
 
     Wires the dormant prune kernel
-    (``AriaPersonalIntelligenceService.prune_player_storage``) into the
+    (``ARIAPersonalIntelligenceService.prune_player_storage``) into the
     scheduler. For each player that HAS any ARIA storage, the kernel computes
     that player's combined ``ARIAPersonalMemory`` (memory_content) +
     ``ARIAMarketIntelligence`` (price_observations) JSON byte size and, if it
@@ -3951,7 +3951,7 @@ async def _run_aria_prune_async() -> Dict[str, int]:
         ARIAPersonalMemory, ARIAMarketIntelligence,
     )
     from src.services.aria_personal_intelligence_service import (
-        AriaPersonalIntelligenceService,
+        ARIAPersonalIntelligenceService,
     )
     from sqlalchemy import select as sa_select
     from sqlalchemy.orm.attributes import flag_modified
@@ -3996,7 +3996,7 @@ async def _run_aria_prune_async() -> Dict[str, int]:
                 pid for (pid,) in intel_ids_res.all() if pid is not None
             }
 
-            service = AriaPersonalIntelligenceService()
+            service = ARIAPersonalIntelligenceService()
 
             # --- Best-effort per-player prune --------------------------------
             for pid in player_ids:
