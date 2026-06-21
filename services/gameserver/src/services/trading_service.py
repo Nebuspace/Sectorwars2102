@@ -687,13 +687,16 @@ class TradingService:
             if (now - last).total_seconds() < EC4_RECOMPUTE_WINDOW_SECONDS:
                 # Rate-limited: defer the recompute to the flush sweep.
                 station.pending_price_recomputation = True
-                return {}
+                self.db.flush()   # autoflush is OFF — flush so the pending flag + window are
+                return {}         # visible to the flush sweep + the next call before the request commit
 
         # Window elapsed (or never recomputed): do the recompute. It re-locks
         # this same row in-txn (re-entrant) and runs the lazy regen tick.
         result = self.update_market_prices(station_id)
         station.last_price_recomputed_at = now
         station.pending_price_recomputation = False
+        self.db.flush()   # autoflush OFF: flush the anchor so a subsequent call's locked re-read
+                          # (populate_existing) sees it and the 1s window actually rate-limits
         return result
 
     def flush_pending_recomputes(self) -> int:
