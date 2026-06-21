@@ -33,6 +33,15 @@ _SEND_RATE_MAX = 5            # max sends ...
 _SEND_RATE_WINDOW = 60.0      # ... per this many seconds, per sender
 _send_history: Dict[UUID, Deque[float]] = defaultdict(deque)
 
+# Canonical thread depth cap (messaging.md "Threading" — Depth cap):
+# a conversation thread holds up to 50 messages. The 51st send/reply into an
+# existing thread is rejected with the canonical `thread_limit_exceeded` error
+# and is NOT persisted; the player must archive or start a new thread. Older
+# messages stay searchable via the thread_id index even when truncated from the
+# active-thread view. A brand-new thread (first message) is unaffected.
+THREAD_MESSAGE_CAP = 50
+THREAD_LIMIT_EXCEEDED = "thread_limit_exceeded"
+
 
 class MessageService:
     """Service for managing player messages"""
@@ -115,6 +124,12 @@ class MessageService:
         # (treated as a fresh thread) so a guessed/forged reply_to_id can't
         # splice a stranger into someone else's conversation. We never error on
         # a bad reply_to_id; the message still sends as a new thread.
+        # `appending_to_existing_thread` is True only when this send genuinely
+        # joins a pre-existing conversation — either an authorized reply that
+        # inherits its parent's thread, or an explicit thread_id the caller
+        # supplied. A brand-new thread (fresh uuid4 below) is exempt from the
+        # depth cap, per canon ("a new message starts a new thread").
+        appending_to_existing_thread = False
         if reply_to_id:
             original = db.query(Message).filter(Message.id == reply_to_id).first()
             sender_participated = original is not None and sender_id in (
@@ -122,15 +137,36 @@ class MessageService:
             )
             if sender_participated:
                 thread_id = original.thread_id or original.id
+                appending_to_existing_thread = True
             else:
                 # Drop the unauthorized/unknown reply link; start a new thread.
                 reply_to_id = None
                 if not thread_id:
                     thread_id = uuid4()
-        elif not thread_id:
+                else:
+                    appending_to_existing_thread = True
+        elif thread_id:
+            # Caller targeted an explicit existing thread without a reply link.
+            appending_to_existing_thread = True
+        else:
             # New thread
             thread_id = uuid4()
-        
+
+        # Canonical depth cap (messaging.md "Threading" — Depth cap): a thread
+        # holds at most THREAD_MESSAGE_CAP messages. When appending to an
+        # existing thread, count what is already there; if the cap is reached the
+        # 51st send is rejected with `thread_limit_exceeded` and NOTHING is
+        # persisted. New threads (first message) skip this guard entirely.
+        if appending_to_existing_thread:
+            existing_count = db.query(Message).filter(
+                Message.thread_id == thread_id
+            ).count()
+            if existing_count >= THREAD_MESSAGE_CAP:
+                raise HTTPException(
+                    status_code=409,
+                    detail=THREAD_LIMIT_EXCEEDED,
+                )
+
         # Create message
         message = Message(
             sender_id=sender_id,
