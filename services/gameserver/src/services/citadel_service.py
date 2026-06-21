@@ -182,6 +182,50 @@ CITADEL_LEVELS = {
 COMMODITY_CREDIT_VALUE = get_commodity_credit_values()
 
 
+def citadel_passive_defense(level: int) -> int:
+    """Passive defensive contribution of a citadel at the given level.
+
+    The citadel's drone garrison (CITADEL_LEVELS[level]["drone_capacity"]) IS its
+    passive defense — a fortified citadel holds more defensive drones (combat_service
+    reads the same garrison for the defense-drones passive). This reuses the single
+    CITADEL_LEVELS mapping rather than introducing a divergent level->defense table.
+    Clamps to the known range; an unknown level degrades to 0 (never raises).
+    """
+    info = CITADEL_LEVELS.get(int(level or 0))
+    if not info:
+        return 0
+    return int(info.get("drone_capacity", 0) or 0)
+
+
+def citadel_passive_defense_rating(planet) -> int:
+    """Defense rating contributed by a planet's citadel, including the partial
+    bonus earned WHILE an upgrade is in progress (WO-G6).
+
+    - Idle (no upgrade running): the full passive value of the current level.
+    - Upgrade in progress (``citadel_upgrading`` set, not yet completed): the
+      current level's full value PLUS 50% of the NEXT level's passive-defense delta,
+      i.e. 0.5 x (defense(next_level) - defense(current_level)). The remaining 50%
+      lands automatically on completion when ``citadel_level`` increments to the
+      next level (so there is no double-count).
+    - Defensive throughout: a missing field (e.g. a planet model without the
+      citadel columns) degrades to the bare current-level value or 0, never raises.
+    """
+    current_level = int(getattr(planet, "citadel_level", 0) or 0)
+    base = citadel_passive_defense(current_level)
+
+    # Partial in-progress bonus only when an upgrade is actively running and a
+    # higher level exists to upgrade toward.
+    upgrading = bool(getattr(planet, "citadel_upgrading", False))
+    if not upgrading or current_level >= 5:
+        return base
+
+    next_level = current_level + 1
+    delta = citadel_passive_defense(next_level) - base
+    if delta <= 0:
+        return base
+    return base + int(0.5 * delta)
+
+
 class CitadelService:
     def __init__(self, db: Session):
         self.db = db

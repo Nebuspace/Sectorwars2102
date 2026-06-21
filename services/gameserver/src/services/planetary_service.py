@@ -986,11 +986,18 @@ class PlanetaryService:
         if fighters is not None:
             planet.defense_fighters = new_fighters
 
-        # Calculate total defense power
+        # Calculate total defense power. The citadel contributes a passive
+        # defensive garrison on top of the deployed units (WO-G6): the full
+        # value of the current citadel level, plus — WHILE an upgrade is in
+        # progress — 50% of the next level's passive-defense delta (the other
+        # 50% lands on completion when citadel_level increments). Idle citadels
+        # add only their current-level value; no citadel adds nothing.
+        from src.services.citadel_service import citadel_passive_defense_rating
         defense_power = (
             planet.defense_turrets * 10 +
             planet.defense_shields * 5 +
-            planet.defense_fighters * 2
+            planet.defense_fighters * 2 +
+            citadel_passive_defense_rating(planet)
         )
 
         self.db.commit()
