@@ -244,6 +244,17 @@ _ARIA_PRUNE_STATE_KEY = "aria_storage_prune_last_day"
 ARIA_PRUNE_CHECK_SECONDS = int(
     os.environ.get("ARIA_PRUNE_CHECK_SECONDS", str(45 * 60))
 )
+# Retention at-risk-signal sweep (WO-RE2). Durable canonical-day anchor in
+# Galaxy.state gates the all-active-players READ-ONLY signal scan to run at most
+# ONCE per canonical day across restarts — mirrors _ARIA_PRUNE_STATE_KEY.
+_RETENTION_SWEEP_STATE_KEY = "retention_signal_sweep_last_day"
+# Coarse CHEAP pre-filter cadence for the retention sweep. The durable day anchor
+# is what guarantees once-per-canonical-day; this just keeps us from opening a
+# session + querying Galaxy.state every 60s. Offset to 50m so it doesn't collide
+# with the ARIA prune (45m) or the sync coarse probes on the same wake.
+RETENTION_SWEEP_CHECK_SECONDS = int(
+    os.environ.get("RETENTION_SWEEP_CHECK_SECONDS", str(50 * 60))
+)
 # Coarse CHEAP pre-filter cadence for the weekly-decay check. The durable
 # canonical-week anchor is what actually guarantees once-per-week; this only
 # keeps us from taking the advisory lock + querying Galaxy.state every 60s. A
@@ -3907,6 +3918,155 @@ async def _broadcast_events(events: List[Dict[str, Any]]) -> None:
             logger.exception("NPC scheduler: broadcast failed for %s", event.get("type"))
 
 
+def _run_retention_sweep_sync() -> Dict[str, int]:
+    """Nightly at-risk retention-signal sweep (WO-RE2) — FULLY SYNCHRONOUS,
+    day-gated on a durable canonical-day anchor in ``Galaxy.state``
+    (``_RETENTION_SWEEP_STATE_KEY``), mirroring the ARIA-prune / G18-recompute
+    discipline so the all-active-players scan runs at most ONCE per canonical day
+    across process restarts. Run via ``asyncio.to_thread`` from the loop (the
+    signal computer uses a SYNC Session — no AsyncSession, no event-loop bridge,
+    so nothing can poison the shared async pool).
+
+    READ-ONLY on the analytics tables: ``RetentionService.compute_player_signals``
+    only SELECTs from PlayerActivity / PlayerSession / CombatLog / Message /
+    Player. The ONLY write this sweep performs is upserting the single OPEN
+    re-engagement-queue row per flagged player.
+
+    Per-player failure isolation: each player gets its OWN savepoint
+    (``db.begin_nested``); a compute or upsert error for one player is rolled
+    back to that savepoint and skipped — it NEVER aborts the sweep or corrupts
+    another player's flag (mirrors the per-row savepoint discipline in
+    sweep_pending_engagements, WO-B1). The outer txn commits all surviving
+    flags + the day anchor together at the end.
+
+    Idempotent: re-running the same canonical day re-computes signals and
+    refreshes each flagged player's OPEN row in place (signals/detail/computed_*
+    updated); players who CLEARED all signals since a prior flag have their OPEN
+    row RESOLVED. The day anchor short-circuits a second run in the same
+    canonical day to a clean no-op.
+
+    Returns {players_scanned, players_flagged, rows_resolved, day} (day=-1 + all
+    zero when not yet due / lock held elsewhere)."""
+    from src.core.database import SessionLocal
+    from src.models.galaxy import Galaxy
+    from src.models.player import Player
+    from src.models.player_analytics import PlayerReEngagement
+    from src.services.retention_service import RetentionService
+
+    this_day = canonical_day_number()
+    not_due = {
+        "players_scanned": 0,
+        "players_flagged": 0,
+        "rows_resolved": 0,
+        "day": -1,
+    }
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return not_due
+
+        galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+        if galaxy is None:
+            return not_due
+        state = dict(galaxy.state or {})
+        last_day = state.get(_RETENTION_SWEEP_STATE_KEY)
+        if last_day is not None and int(last_day) >= this_day:
+            return not_due  # already swept this canonical day
+
+        now = datetime.now(UTC)
+        svc = RetentionService(db)
+        player_ids = [
+            r[0]
+            for r in db.query(Player.id).filter(Player.is_active.is_(True)).all()
+        ]
+
+        scanned = 0
+        flagged = 0
+        resolved = 0
+        for pid in player_ids:
+            scanned += 1
+            try:
+                # Per-player savepoint: a bad row rolls back to here and is
+                # skipped without poisoning the outer transaction.
+                with db.begin_nested():
+                    verdict = svc.compute_player_signals(pid, now)
+                    tripped = verdict["tripped"]
+                    detail = verdict["detail"]
+
+                    existing = (
+                        db.query(PlayerReEngagement)
+                        .filter(
+                            PlayerReEngagement.player_id == pid,
+                            PlayerReEngagement.status == "OPEN",
+                        )
+                        .first()
+                    )
+
+                    if tripped:
+                        if existing is None:
+                            db.add(
+                                PlayerReEngagement(
+                                    player_id=pid,
+                                    signals=tripped,
+                                    signal_detail=detail,
+                                    status="OPEN",
+                                    computed_at=now,
+                                    computed_day=this_day,
+                                )
+                            )
+                        else:
+                            # Refresh the live OPEN flag in place.
+                            existing.signals = tripped
+                            existing.signal_detail = detail
+                            existing.computed_at = now
+                            existing.computed_day = this_day
+                        flagged += 1
+                    elif existing is not None:
+                        # Player cleared all signals → close the open flag.
+                        existing.status = "RESOLVED"
+                        existing.resolved_at = now
+                        resolved += 1
+            except Exception:
+                logger.exception(
+                    "retention-sweep: signal compute/upsert failed for "
+                    "player %s (skipped)", pid
+                )
+                # begin_nested already rolled the savepoint back on the raise;
+                # the outer transaction is intact for the next player.
+
+        # Advance the durable day anchor in the SAME outer txn as the flags.
+        state = dict(galaxy.state or {})
+        state[_RETENTION_SWEEP_STATE_KEY] = this_day
+        galaxy.state = state
+        flag_modified(galaxy, "state")
+        db.commit()  # commits surviving flags + anchor atomically, releases lock
+
+        logger.info(
+            "retention-sweep: canonical day %d — scanned=%d flagged=%d "
+            "resolved=%d", this_day, scanned, flagged, resolved,
+        )
+        return {
+            "players_scanned": scanned,
+            "players_flagged": flagged,
+            "rows_resolved": resolved,
+            "day": this_day,
+        }
+    except Exception:
+        logger.exception(
+            "retention-sweep: pass failed — day not advanced (idempotent retry "
+            "next due wake)"
+        )
+        db.rollback()
+        return not_due
+    finally:
+        db.close()
+
+
 async def _run_aria_prune_async() -> Dict[str, int]:
     """ASYNC daily ARIA storage-prune pass (WO-F16).
 
@@ -4485,3 +4645,29 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: ARIA storage prune pass crashed (loop continues)")
+
+        # Retention at-risk-signal sweep (WO-RE2) — READ-ONLY compute of the 7
+        # canonical at-risk signals (OPERATIONS/retention.md) per active player,
+        # flagging anyone who crosses a threshold INTO the re-engagement queue.
+        # SYNC signal computer (sync Session), so run via asyncio.to_thread like
+        # the weekly-decay / planetary sweeps — NOT awaited inline. The
+        # once-per-canonical-day guarantee + the ONLY write (the queue upsert)
+        # live inside _run_retention_sweep_sync, which is READ-ONLY on the
+        # activity tables and isolates per-player failures with a savepoint. A
+        # coarse elapsed pre-filter keeps us off Postgres on idle 60s wakes.
+        if elapsed % RETENTION_SWEEP_CHECK_SECONDS == 0:
+            try:
+                ret = await asyncio.to_thread(_run_retention_sweep_sync)
+                if ret.get("day", -1) >= 0:
+                    logger.info(
+                        "NPC scheduler: retention sweep — flagged %d, "
+                        "resolved %d (of %d scanned, canonical day %d)",
+                        ret.get("players_flagged", 0),
+                        ret.get("rows_resolved", 0),
+                        ret.get("players_scanned", 0),
+                        ret.get("day", -1),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: retention sweep pass crashed (loop continues)")
