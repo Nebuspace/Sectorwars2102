@@ -18,6 +18,11 @@ class ShipType(enum.Enum):
     LIGHT_FREIGHTER = "LIGHT_FREIGHTER"
     CARGO_HAULER = "CARGO_HAULER"
     FAST_COURIER = "FAST_COURIER"
+    # Galactic-Citizen courier — membership-gated SHAPE/QoL re-skin anchored to
+    # FAST_COURIER (P2W firewall: NO combat/income axis exceeds the free anchor;
+    # see ship_specifications_seeder.py CITIZEN_CLIPPER spec). Player-facing
+    # (is_npc_only False) so it appears in /catalog.
+    CITIZEN_CLIPPER = "CITIZEN_CLIPPER"
     SCOUT_SHIP = "SCOUT_SHIP"
     COLONY_SHIP = "COLONY_SHIP"
     DEFENDER = "DEFENDER"

@@ -167,6 +167,60 @@ SHIP_SPECIFICATIONS = {
         "acquisition_methods": ["purchase", "reputation_reward"],
         "faction_requirements": None
     },
+    # ------------------------------------------------------------------
+    # Galactic-Citizen courier (GC-C). P2W FIREWALL: anchored EXACTLY to
+    # FAST_COURIER above — every combat/income axis (attack_rating 5,
+    # defense_rating 10, max_shields 200, hull_points 300, max_genesis_devices 0,
+    # speed 2.0, max_cargo 200, NO income field) is mirrored, NEVER exceeded. The
+    # only citizen differences are SHAPE/utility-breadth/QoL/cosmetic (one extra
+    # maintenance-locked super slot, see _SHIP_MODS_LAYOUT) plus acquisition gating.
+    # Overrides vs FAST_COURIER: acquisition_methods (membership unlocks the buy,
+    # credits still pay), faction_requirements (None — gated by citizenship, not
+    # faction), and a Citizen-flavored description. is_npc_only defaults False
+    # (player-facing → appears in /catalog).
+    # ------------------------------------------------------------------
+    ShipType.CITIZEN_CLIPPER: {
+        "ship_size": ShipSize.SMALL,  # canon ships.md:325 — same as Fast Courier anchor
+        "base_cost": 50000,
+        "speed": 2.0,
+        "turn_cost": 1,
+        "attack_turn_cost": 8,  # mirrors Fast Courier — combat axis not exceeded
+        "max_cargo": 200,
+        "max_colonists": 2,
+        "max_drones": 0,
+        "max_shields": 200,
+        "shield_recharge_rate": 15.0,
+        "hull_points": 300,
+        "evasion": 35,
+        "genesis_compatible": False,
+        "max_genesis_devices": 0,
+        "warp_compatible": True,
+        "warp_creation_capable": False,
+        "quantum_jump_capable": False,
+        "scanner_range": 3,
+        "attack_rating": 5,
+        "defense_rating": 10,
+        "maintenance_rate": 0.0,  # DEAD/UNUSED — neutral seed (canon decay uses by-hull-class table; see models/ship.py)
+        "construction_time": 2,
+        "fuel_efficiency": 90,
+        "max_upgrade_levels": {
+            "ENGINE": 4,
+            "CARGO_HOLD": 2,
+            "SHIELD": 2,
+            "HULL": 2,
+            "SENSOR": 4,
+            "DRONE_BAY": 0,
+            "GENESIS_CONTAINMENT": 0,
+            "MAINTENANCE_SYSTEM": 2
+        },
+        "special_abilities": ["stealth_systems"],
+        "description": "Citizen Clipper — a Galactic-Citizen courier. A membership-issue re-skin of the Fast Courier: identical speed, handling, and survivability, distinguished only by Citizen styling and a dedicated maintenance bay. No edge in combat or income — a badge of citizenship, not a power spike.",
+        # Membership unlocks the BUY; credits (base_cost) still pay. NOT "purchase"
+        # (open market) nor "reputation_reward" (faction grind) — "citizen" gates on
+        # Galactic-Citizen membership at the catalog/purchase layer.
+        "acquisition_methods": ["citizen"],
+        "faction_requirements": None
+    },
     ShipType.SCOUT_SHIP: {
         "ship_size": ShipSize.SMALL,  # canon ships.md:325
         "base_cost": 30000,
@@ -524,6 +578,11 @@ _SHIP_MODS_LAYOUT = {
     # small → 3 slots (cols 3, rows 1), 1 super.
     ShipType.SCOUT_SHIP:    {"super": [0],       "locked": {}},
     ShipType.FAST_COURIER:  {"super": [0],       "locked": {}},
+    # Citizen Clipper: SMALL baseline (slots 0,1,2 open, non-super) + 1 EXTRA
+    # slot (index 3) that is the hull's ONLY super slot AND class-locked to
+    # "maintenance" (P2W firewall: the extra capacity is utility-fenced — no open
+    # super slot, unlike free SMALL hulls' super [0]). 4 slots total.
+    ShipType.CITIZEN_CLIPPER: {"super": [3],     "locked": {3: "maintenance"}},
     # medium → 4 slots (cols 2, rows 2), 1 super.
     ShipType.LIGHT_FREIGHTER: {"super": [0],     "locked": {}},
     # Defender: 4 slots, 1 super, 1 class-locked "combat".
@@ -551,7 +610,12 @@ def _build_module_slots(ship_type: ShipType, ship_size) -> dict:
     # Resolve slot count — explicit per-tier branches, never falling through the
     # literal table for capital/tiny/None (fact 2: size_units_for() raises on
     # CAPITAL by design).
-    if ship_size == ShipSize.CAPITAL:
+    if ship_type == ShipType.CITIZEN_CLIPPER:
+        # SMALL baseline (3) + 1 EXTRA maintenance-locked slot = 4 (P2W firewall:
+        # extra capacity is utility breadth, not a combat/income axis). Branches
+        # BEFORE the size table so the SMALL→3 lookup never undercounts it.
+        count = 4
+    elif ship_size == ShipSize.CAPITAL:
         count = 8  # hand-set (no size_unit)
     elif ship_size is None or ship_size == ShipSize.TINY:
         count = 0  # NPC-only hulls + Escape Pod → zero slots
@@ -565,6 +629,18 @@ def _build_module_slots(ship_type: ShipType, ship_size) -> dict:
 
     super_idx = set(layout["super"])
     locked = layout["locked"]
+
+    # Firewall guard (WO-GC-C reviewer LOW): a super / class-lock index that
+    # exceeds the slot count would SILENTLY vanish from the lattice (range(count))
+    # — e.g. if the CITIZEN_CLIPPER count=4 branch were ever dropped, slot 3's
+    # maintenance-lock would disappear and re-open the firewall gap with no error.
+    # Fail loud at seed time instead.
+    _max_layout_idx = max([*super_idx, *locked.keys()], default=-1)
+    if _max_layout_idx >= count:
+        raise ValueError(
+            f"_build_module_slots[{ship_type}]: layout index {_max_layout_idx} >= "
+            f"slot count {count} — would drop a super/class-locked slot (firewall guard)"
+        )
 
     slots = []
     for i in range(count):

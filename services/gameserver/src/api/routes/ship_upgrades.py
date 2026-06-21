@@ -271,14 +271,30 @@ async def get_ship_catalog(
     ships = []
     for spec in specs:
         acquisition_methods = spec.acquisition_methods or []
+        # Galactic-Citizen-only hulls: unlocked by membership, not faction rep.
+        # Surfaced as a VISIBLE flag so the shipyard UI can render the lock state
+        # openly (never a hidden 403). A hull is citizen-only when it offers the
+        # "citizen" acquisition method WITHOUT a generic "purchase" path.
+        citizen_only = (
+            "citizen" in acquisition_methods and "purchase" not in acquisition_methods
+        )
         # Reputation-gated hulls: surface the requirement + whether THIS player
         # currently meets it, so the shipyard UI can lock the card and show why.
         eligible, ineligible_reason = check_faction_eligibility(db, player.id, spec)
+        if citizen_only:
+            # For citizen-only hulls, eligibility tracks membership (the
+            # P2W-firewall gate), not faction standing.
+            eligible = gc_is_galactic_citizen(db, player)
+            ineligible_reason = (
+                None if eligible
+                else "Requires an active Galactic Citizen membership"
+            )
         ships.append({
             "type": spec.type.value,
             "name": spec.type.value.replace("_", " ").title(),
             "base_cost": spec.base_cost,
             "purchasable": "purchase" in acquisition_methods,
+            "citizen_only": citizen_only,
             "faction_requirements": spec.faction_requirements or None,
             "eligible": eligible,
             "ineligible_reason": ineligible_reason,
@@ -370,10 +386,27 @@ async def purchase_ship(
             ),
         )
 
-    # Only ship types flagged as purchasable can be bought at a shipyard
-    # (blocks ESCAPE_POD free-dupes and WARP_JUMPER special construction)
+    # Galactic-Citizen hulls (P2W firewall): a citizen-anchored hull mirrors a
+    # free anchor's combat/income ceiling and differs only in shape/utility/QoL/
+    # cosmetics — the membership UNLOCKS the buy, it does not buy power. The
+    # citizen branch gates on membership BEFORE the generic "not purchasable"
+    # reject so a citizen-eligible hull bypasses that reject and still hits the
+    # credit check + deduction + ship creation (members pay full credits).
     acquisition_methods = spec.acquisition_methods or []
-    if "purchase" not in acquisition_methods:
+    if "citizen" in acquisition_methods:
+        if not gc_is_galactic_citizen(db, player):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"ERR_CITIZEN_ONLY_HULL: {ship_type.value.replace('_', ' ').title()} "
+                    f"requires an active Galactic Citizen membership to acquire"
+                ),
+            )
+        # Citizen is eligible — fall through to faction/credit checks + creation.
+    # Only ship types flagged as purchasable (or citizen-unlocked above) can be
+    # bought at a shipyard (blocks ESCAPE_POD free-dupes and WARP_JUMPER special
+    # construction)
+    elif "purchase" not in acquisition_methods:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{ship_type.value.replace('_', ' ').title()} cannot be purchased at a shipyard",
