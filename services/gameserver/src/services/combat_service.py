@@ -346,6 +346,32 @@ class CombatService:
     # Ship types that get a bonus to escape chance due to speed/agility
     FAST_ESCAPE_SHIP_TYPES = {ShipType.FAST_COURIER, ShipType.SCOUT_SHIP}
 
+    # --- Escape-chance formula (WO-CR2, combat-resolver.md) ----------------
+    # escape = BASE + FAST_BONUS·[fast] + (1−hull/maxhull)·HULL_W + edge·EDGE_W − pursuer_class·PURSUER_W
+    # The WEIGHTS are canon (combat-resolver.md). Replaces the prior relative-speed model. Result is
+    # ×100 and clamped 10-90% (unchanged bounds).
+    ESCAPE_BASE = 0.15
+    ESCAPE_FAST_BONUS = 0.20
+    ESCAPE_HULL_WEIGHT = 0.30
+    ESCAPE_EDGE_WEIGHT = 0.10
+    ESCAPE_PURSUER_WEIGHT = 0.10
+    # NO-CANON (flag for Max): the sector-edge metric normaliser + the pursuer-class factor table.
+    ESCAPE_EDGE_NORM = 3   # this many active outbound warp-tunnel exits = full edge-proximity (1.0)
+    DEFAULT_PURSUER_CLASS_FACTOR = 0.3
+    PURSUER_CLASS_FACTOR = {
+        ShipType.NPC_MARSHAL_INTERDICTOR: 1.0,   # interdictors EXIST to suppress escape → max factor
+        ShipType.NPC_SENTINEL_INTERDICTOR: 1.0,
+        ShipType.DEFENDER: 0.8,                  # purpose-built combat hull
+        ShipType.CARRIER: 0.6,                   # heavy; fighters help the chase
+        ShipType.WARP_JUMPER: 0.5,
+        ShipType.SCOUT_SHIP: 0.5,                # fast, but not a warship
+        ShipType.FAST_COURIER: 0.4,
+        ShipType.LIGHT_FREIGHTER: 0.3,
+        ShipType.CARGO_HAULER: 0.2,
+        ShipType.COLONY_SHIP: 0.1,
+        ShipType.ESCAPE_POD: 0.0,
+    }
+
     # --- Between-battle shield regeneration (WO-SR1) ---------------------
     # ShipSpecification.shield_recharge_rate seeds Ship.combat but nothing
     # consumed it. Shields recover OUT OF COMBAT only, via an advance-on-read
@@ -2572,7 +2598,9 @@ class CombatService:
                 # DEFENDER_FLED would dominate while the static ship never
                 # actually leaves the sector.
                 if defender is not None and defender_drones <= 0:
-                    escape_pct = self._calculate_escape_chance(defender_ship, attacker_ship)
+                    escape_pct = self._calculate_escape_chance(
+                        defender_ship, attacker_ship,
+                        self._sector_edge_proximity(defender_ship))
                     # WO-BC tractor lock: a tractor-equipped attacker denies the
                     # defender's escape (canon combat.md:162). Force the chance to 0
                     # so the flee roll can never succeed this resolution. Applies to
@@ -2598,7 +2626,9 @@ class CombatService:
 
                 # Attacker tries to escape if they have no drones left (hull exposed)
                 if fled_result is None and attacker_drones <= 0:
-                    escape_pct = self._calculate_escape_chance(attacker_ship, defender_ship)
+                    escape_pct = self._calculate_escape_chance(
+                        attacker_ship, defender_ship,
+                        self._sector_edge_proximity(attacker_ship))
                     if random.randint(1, 100) <= escape_pct:
                         fled_result = CombatResult.ATTACKER_FLED
                         combat_details.append({
@@ -3527,43 +3557,62 @@ class CombatService:
             "combat_details": combat_details
         }
     
-    def _calculate_escape_chance(self, fleeing_ship: Ship, pursuing_ship: Ship) -> int:
-        """Calculate the percentage chance of a ship escaping combat.
+    def _pursuer_class_factor(self, pursuing_ship: Ship) -> float:
+        """NO-CANON (WO-CR2): the pursuer's class suppression factor (0-1) — interdictors max it (their
+        canonical role), freighters barely chase. Unknown/absent → DEFAULT_PURSUER_CLASS_FACTOR."""
+        if not pursuing_ship:
+            return self.DEFAULT_PURSUER_CLASS_FACTOR
+        return self.PURSUER_CLASS_FACTOR.get(pursuing_ship.type, self.DEFAULT_PURSUER_CLASS_FACTOR)
 
-        Escape chance is based on relative speed of both ships, with a bonus
-        for nimble ship types (FAST_COURIER, SCOUT_SHIP). Result is clamped
-        to the range 10-90%.
+    def _sector_edge_proximity(self, fleeing_ship: Ship) -> float:
+        """NO-CANON (WO-CR2) sector-edge metric: more active outbound warp-tunnel exits from the
+        fleeing ship's current sector = more escape routes = higher proximity. Counts ACTIVE outbound
+        tunnels, normalised by ESCAPE_EDGE_NORM, clamped 0-1. Defensive → 0.0 on unknown sector / any
+        query error (an escape roll must never crash combat)."""
+        sid = getattr(fleeing_ship, "current_sector_id", None) if fleeing_ship else None
+        if sid is None:
+            return 0.0
+        try:
+            from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
+            exits = self.db.query(WarpTunnel).filter(
+                WarpTunnel.origin_sector_id == sid,
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+            ).count()
+        except Exception:
+            return 0.0
+        return max(0.0, min(1.0, exits / float(self.ESCAPE_EDGE_NORM)))
 
-        Args:
-            fleeing_ship: The ship attempting to escape.
-            pursuing_ship: The ship trying to prevent escape.
+    def _calculate_escape_chance(self, fleeing_ship: Ship, pursuing_ship: Ship,
+                                 sector_edge_proximity: float = 0.0) -> int:
+        """Percentage chance (10-90) of the fleeing ship escaping combat (WO-CR2, combat-resolver.md).
 
-        Returns:
-            Escape chance as an integer percentage (10-90).
-        """
-        fleeing_speed = fleeing_ship.current_speed if fleeing_ship else 1.0
-        pursuing_speed = pursuing_ship.current_speed if pursuing_ship else 1.0
+        escape = BASE(0.15) + FAST_BONUS(0.20)·[fast hull] + (1−hull/maxhull)·HULL_W(0.30)
+                 + edge_proximity·EDGE_W(0.10) − pursuer_class·PURSUER_W(0.10)
+        ×100, clamped 10-90%. Replaces the prior relative-speed model. The WEIGHTS are canon; the
+        edge metric + pursuer-class table are NO-CANON (caller passes the proximity via
+        _sector_edge_proximity). Args: fleeing_ship, pursuing_ship, sector_edge_proximity (0-1)."""
+        chance = self.ESCAPE_BASE
 
-        chance = 30 + int(fleeing_speed * 10) - int(pursuing_speed * 5)
+        # FAST/agile fleeing hull bonus
+        if fleeing_ship and fleeing_ship.type in self.FAST_ESCAPE_SHIP_TYPES:
+            chance += self.ESCAPE_FAST_BONUS
 
-        # Hull-ratio valve (combat-resolver.md:128-133): the more damaged the
-        # fleeing ship's hull, the more desperate/likely the escape — up to a
-        # +30 bonus at near-zero hull: int((1 - hull/max_hull) * 30). Reads the
-        # live combat JSONB; guards missing keys and a zero/absent max_hull.
+        # Hull-damage valve (combat-resolver.md:128-133): more damaged → more desperate → likelier.
         if fleeing_ship:
             combat = getattr(fleeing_ship, "combat", None) or {}
             max_hull = combat.get("max_hull") or 0
             hull = combat.get("hull") or 0
             if max_hull > 0:
                 hull_ratio = max(0.0, min(1.0, hull / max_hull))
-                chance += int((1 - hull_ratio) * 30)
+                chance += (1 - hull_ratio) * self.ESCAPE_HULL_WEIGHT
 
-        # Fast/agile ships get a flat +20% bonus
-        if fleeing_ship and fleeing_ship.type in self.FAST_ESCAPE_SHIP_TYPES:
-            chance += 20
+        # Sector-edge proximity: more escape routes nearby → easier flee.
+        chance += max(0.0, min(1.0, sector_edge_proximity)) * self.ESCAPE_EDGE_WEIGHT
 
-        # Clamp to 10-90%
-        return max(10, min(90, chance))
+        # Pursuer class suppresses escape (interdictors most).
+        chance -= self._pursuer_class_factor(pursuing_ship) * self.ESCAPE_PURSUER_WEIGHT
+
+        return max(10, min(90, int(round(chance * 100))))
 
     def _read_defense_buildings(self, planet: Planet) -> Dict[str, int]:
         """Read the citadel-built defense buildings off the planet's active_events JSONB.
