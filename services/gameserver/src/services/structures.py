@@ -189,13 +189,16 @@ def _seed_anchor_value(planet) -> datetime:
 
 
 def _get_settle_anchor(planet) -> datetime:
-    """Read the spine anchor; full cold-start via seed() if null. Caller commits — the seed is
-    atomic with the first settle() (SEED-determinism, I8)."""
+    """Read the spine anchor; cold-start/backfill via seed() if the anchor OR the grid is missing.
+    seed() is idempotent (stamps the anchor exactly once — I8 — and backfills grid/buildings only if
+    absent), so this also backfills planets seeded before the grid code landed. Caller commits — the
+    seed is atomic with the settle()."""
     anchor = _read_settle_anchor(planet)
-    if anchor is not None:
-        return anchor
-    seed(planet)
-    return _read_settle_anchor(planet)
+    grid_present = isinstance(planet.structures, dict) and isinstance(planet.structures.get("grid"), dict)
+    if anchor is None or not grid_present:
+        seed(planet)
+        anchor = _read_settle_anchor(planet)
+    return anchor
 
 
 # ---------------------------------------------------------------------------
@@ -616,11 +619,28 @@ def _step2_terraform(planet, ts) -> bool:
 
 
 def _step3_power_siege(planet, ps) -> bool:
-    """Siege morale substep FIRST (guarded), then the KERNEL near-empty reproduce-exactly derive
-    (point-of-use reads; zero cross-write — citadel_level/habitability/capacity stay stored)."""
+    """Siege morale substep FIRST (guarded), then the KERNEL near-empty reproduce-exactly derive +
+    the K1b-1 SHADOW citadel derivation."""
+    changed = False
     if planet.under_siege and planet.siege_started_at:
-        return bool(ps.advance_siege(planet, _via_settle=True))
-    return False
+        changed = bool(ps.advance_siege(planet, _via_settle=True))
+    # K1b-1 SHADOW: compute derive_citadel_level over the (now-seeded) grid and LOG any divergence
+    # from the authoritative shipped citadel_level. READ-ONLY — it never writes the citadel column;
+    # the button→derived cutover is a SEPARATE Max-gated WO. Fully defensive: a shadow hiccup must
+    # never break the tick. The grid was backfilled by _get_settle_anchor before the steps run.
+    try:
+        derived = derive_citadel_level(planet.structures)
+        shipped = int(getattr(planet, "citadel_level", 0) or 0)
+        if derived != shipped:
+            logger.info(
+                "citadel SHADOW divergence: planet %s derived=%s vs shipped=%s "
+                "(button authoritative; cutover Max-gated)",
+                getattr(planet, "id", "?"), derived, shipped,
+            )
+    except Exception:
+        logger.exception("citadel shadow-derive failed (non-fatal) for planet %s",
+                         getattr(planet, "id", "?"))
+    return changed
 
 
 def _step4_production(planet, ps) -> bool:
