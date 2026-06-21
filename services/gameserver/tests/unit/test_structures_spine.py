@@ -132,6 +132,55 @@ def test_place_unknown_kind_raises():
         S.place(st, "NOT_A_KIND", 0, 0)
 
 
+def _bld(kind, level=1, x=0, y=0, browned_out=False, complete_at=None):
+    from src.services import building_catalog
+    return {"id": f"b_{kind}_{x}_{y}", "domain": building_catalog.get(kind)["domain"],
+            "kind": kind, "x": x, "y": y, "level": level,
+            "complete_at": complete_at, "browned_out": browned_out}
+
+
+def _grid(buildings):
+    return {"v": 1, "grid": {"cols": 8, "rows": 8}, "plots": [], "buildings": buildings, "instability": 0}
+
+
+def test_derive_empty_grid_is_zero():
+    assert S.derive_citadel_level(_grid([])) == 0
+    assert S.derive_citadel_level(None) == 0
+
+
+def test_derive_l1_outpost():
+    g = _grid([_bld("HAB_DOME", 5), _bld("MINE", 5, x=1)])  # hab + economy, no scanner
+    assert S.derive_citadel_level(g) == 1
+
+
+def test_derive_l3_colony():
+    g = _grid([_bld("HAB_DOME", 5, x=0), _bld("HAB_DOME", 5, x=1), _bld("POWER_PLANT", 5, x=2),
+               _bld("SCANNER_ARRAY", 1, x=3), _bld("MINE", 5, x=4)])
+    assert S.derive_citadel_level(g) == 3  # 2 domes + power + scanner; no spaceport/3-eco for L4
+
+
+def test_derive_l5_planetary_capital():
+    g = _grid([_bld("HAB_DOME", 5, x=0), _bld("HAB_DOME", 5, x=1), _bld("POWER_PLANT", 5, x=2),
+               _bld("SCANNER_ARRAY", 1, x=3), _bld("SPACEPORT", 3, x=4),
+               _bld("MINE", 5, x=6), _bld("FARM", 5, x=7), _bld("FABRICATOR", 5, x=0, y=1),
+               _bld("ADMIN_SPIRE", 1, x=2, y=2)])
+    assert S.derive_citadel_level(g) == 5
+
+
+def test_derive_brownout_derives_down():
+    full = [_bld("HAB_DOME", 5, x=0), _bld("HAB_DOME", 5, x=1), _bld("POWER_PLANT", 5, x=2),
+            _bld("SCANNER_ARRAY", 1, x=3), _bld("SPACEPORT", 3, x=4),
+            _bld("MINE", 5, x=6), _bld("FARM", 5, x=7), _bld("FABRICATOR", 5, x=0, y=1),
+            _bld("ADMIN_SPIRE", 1, x=2, y=2, browned_out=True)]  # ADMIN_SPIRE browned out
+    assert S.derive_citadel_level(_grid(full)) == 4  # loses L5 (admin spire not operational)
+
+
+def test_derive_unbuilt_building_does_not_count():
+    # a building still in the build queue (complete_at set) is not operational
+    g = _grid([_bld("HAB_DOME", 5), _bld("MINE", 5, x=1, complete_at="2099-01-01T00:00:00+00:00")])
+    assert S.derive_citadel_level(g) == 0  # MINE not yet operational -> no economy -> not even L1
+
+
 def test_i4_grep_gate_no_stray_clock_callers():
     """I4 (grep-gate): after the cutover, the clock bodies must have ZERO call-sites outside
     structures.settle() — the sole allowed exception is realize_production's pass-through to

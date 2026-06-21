@@ -410,6 +410,90 @@ def place(structures: dict, kind: str, x: int, y: int, *, level: int = 1,
     return building
 
 
+# ---------------------------------------------------------------------------
+# derive_citadel_level (K1b-1) — the SHADOW faucet (spec §2.1). A pure read of the
+# placed/powered/populated grid that reproduces the shipped CITADEL_LEVELS ladder.
+# DORMANT: not wired into settle() yet, and not yet calibrated against the live planet
+# distribution (that lands with seed-buildings-from-legacy). The button stays authoritative.
+# ---------------------------------------------------------------------------
+# NO-CANON derivation thresholds (spec §1.2 "tuned to reproduce the ladder"). These are
+# PLACEHOLDERS — the calibration target is derive_citadel_level(seed(legacy)) == the planet's
+# shipped citadel_level for every live planet, tuned with the seed-buildings step. Propose for bless.
+FLOOR_AREA = {1: 2, 2: 4, 3: 8, 4: 14, 5: 24}        # Σ(footprint cells × level) over operational eco/civic
+HOUSING = {1: 0, 2: 0, 3: 50000, 4: 100000, 5: 200000}  # Σ powered HAB_DOME capacity
+
+
+def _operational(b: dict) -> bool:
+    """A building counts once it has gone operational (build-queue complete) and is not browned out
+    (the brown-out floor is K1b power/crew; absent here a building simply counts)."""
+    return isinstance(b, dict) and b.get("complete_at") is None and not b.get("browned_out")
+
+
+def powered_floor_area(structures: dict) -> int:
+    """Σ (footprint cells × level) over operational, not-browned-out economy/civic buildings
+    (spec §1.2). A browned-out grid derives DOWN — a legible penalty."""
+    from src.services import building_catalog
+    total = 0
+    for b in structures.get("buildings", []):
+        if not _operational(b):
+            continue
+        spec = building_catalog.get(b.get("kind"))
+        if spec and spec["domain"] in ("economy", "civic"):
+            w, h = spec["footprint"]
+            total += int(w) * int(h) * int(b.get("level", 1))
+    return total
+
+
+def population_housed(structures: dict) -> int:
+    """Σ HAB_DOME housing capacity over operational, powered domes (the L-derivation demographic
+    input, spec §1.2)."""
+    from src.services import building_catalog
+    spec = building_catalog.get("HAB_DOME")
+    cap_per_level = int(((spec or {}).get("effect") or {}).get("capacity_per_level", 0))
+    total = 0
+    for b in structures.get("buildings", []):
+        if _operational(b) and b.get("kind") == "HAB_DOME":
+            total += cap_per_level * int(b.get("level", 1))
+    return total
+
+
+def key_buildings_present(structures: dict, level: int) -> bool:
+    """The named per-tier gate buildings (spec §1.2), cumulative: a level requires all lower tiers'
+    keys plus its own. This is what makes derivation read like progression, not an opaque area count."""
+    from collections import Counter
+    from src.services import building_catalog
+    ops = [b for b in structures.get("buildings", []) if _operational(b)]
+    cnt = Counter(b.get("kind") for b in ops)
+    eco = sum(1 for b in ops if (building_catalog.get(b.get("kind")) or {}).get("domain") == "economy")
+    if level >= 1 and not (cnt.get("HAB_DOME", 0) >= 1 and eco >= 1):
+        return False
+    if level >= 2 and not (cnt.get("SCANNER_ARRAY", 0) >= 1):
+        return False
+    if level >= 3 and not (cnt.get("HAB_DOME", 0) >= 2 and cnt.get("POWER_PLANT", 0) >= 1):
+        return False
+    if level >= 4 and not (cnt.get("SPACEPORT", 0) >= 1 and eco >= 3):
+        return False
+    if level >= 5 and not (cnt.get("ADMIN_SPIRE", 0) >= 1):
+        return False
+    return True
+
+
+def derive_citadel_level(structures: dict) -> int:
+    """Pure derivation of the citadel level from the placed/powered/populated grid (spec §2.1):
+    L5→1, first match wins, on powered_floor_area ≥ FLOOR_AREA[L] AND key_buildings_present(L) AND
+    population_housed ≥ HOUSING[L]. Returns 0 for an empty/ungridded planet. SHADOW only in K1b-1 —
+    the shipped citadel_level column stays authoritative; settle() will log derived-vs-button
+    divergence (the cutover is a separate Max-gated WO after calibration proves byte-identical)."""
+    if not isinstance(structures, dict):
+        return 0
+    pfa = powered_floor_area(structures)
+    housed = population_housed(structures)
+    for level in (5, 4, 3, 2, 1):
+        if pfa >= FLOOR_AREA[level] and housed >= HOUSING[level] and key_buildings_present(structures, level):
+            return level
+    return 0
+
+
 def decommission(structures: dict, building_id: str) -> Optional[dict]:
     """Tear down a building and RECLAIM its plots (§2.3/§6.1 step 1). Returns the removed building
     dict, or None if not found. PURE grid op (no hab revert, no refund — the caller applies the

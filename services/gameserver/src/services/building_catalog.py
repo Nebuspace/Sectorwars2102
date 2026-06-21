@@ -145,6 +145,18 @@ BUILDING_CATALOG: Dict[str, Dict[str, Any]] = {
         "upkeep": {"credits": 150, "materials": {}}, "tech_gate": "t.prod.2",
         "terrain_bonus": {}, "effect": {"kind": "upkeep_reduction"}, "signature": False, "prereqs": [],
     },
+    "ADMIN_SPIRE": {
+        # The Seat landmark (§6 / Player.house) — the L5 Planetary-Capital key building that
+        # derive_citadel_level() gates the top tier on. One per planet (max_level 1, count-style).
+        "kind": "ADMIN_SPIRE", "domain": "civic", "name": "Administration Spire",
+        "footprint": [2, 2], "max_level": 1,
+        "build_hours": {1: 240},
+        "cost": {1: {"credits": 2000000, "equipment": 500}},
+        "power_draw": {1: 120}, "crew": {1: 20},
+        "upkeep": {"credits": 1500, "materials": {}}, "tech_gate": None,
+        "terrain_bonus": {}, "effect": {"kind": "seat_landmark"},
+        "signature": True, "prereqs": ["SPACEPORT"],
+    },
 
     # ===== DEFENSE — the 3 shipped (cost/build/min-citadel verbatim from DEFENSE_BUILDINGS) +
     # RAIL_GUN/DEFENSE_GRID (cashed via K0). count-based: max_level 1, count tracked by placements.
