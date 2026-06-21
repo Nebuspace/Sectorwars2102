@@ -135,10 +135,10 @@ SHIELD_GENERATOR_LEVELS = {
     3: {"name": "Military Shield", "strength": 5000, "regen_per_hour": 500, "cost": 200000},
     4: {"name": "Advanced Shield", "strength": 10000, "regen_per_hour": 1000, "cost": 350000},
     5: {"name": "Heavy Shield", "strength": 15000, "regen_per_hour": 1500, "cost": 500000},
-    6: {"name": "Fortress Shield", "strength": 25000, "regen_per_hour": 2500, "cost": 750000},
-    7: {"name": "Citadel Shield", "strength": 35000, "regen_per_hour": 3500, "cost": 1000000},
-    8: {"name": "Planetary Shield", "strength": 50000, "regen_per_hour": 5000, "cost": 1500000},
-    9: {"name": "Quantum Shield", "strength": 65000, "regen_per_hour": 6500, "cost": 2000000},
+    6: {"name": "Fortress Shield", "strength": 20000, "regen_per_hour": 2500, "cost": 750000},
+    7: {"name": "Citadel Shield", "strength": 30000, "regen_per_hour": 3500, "cost": 1000000},
+    8: {"name": "Planetary Shield", "strength": 40000, "regen_per_hour": 5000, "cost": 1500000},
+    9: {"name": "Quantum Shield", "strength": 50000, "regen_per_hour": 6500, "cost": 2000000},
     10: {"name": "Impervious Shield", "strength": 75000, "regen_per_hour": 7500, "cost": 3000000},
 }
 
