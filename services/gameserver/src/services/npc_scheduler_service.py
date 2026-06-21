@@ -327,6 +327,35 @@ BOUNTY_ACCRUAL_CHECK_SECONDS = int(
     os.environ.get("BOUNTY_ACCRUAL_CHECK_SECONDS", str(40 * 60))
 )
 
+# Port operating-cost sweep pre-filter (WO-B3). The maintenance/upkeep accrual
+# + 3-month insolvency force-sell live in port_ownership_service.accrue_operating_
+# costs — a LAZY, idempotent engine that, before this sweep, only fired via the
+# manual POST /stations/{id}/accrue-costs endpoint. An unvisited port therefore
+# NEVER paid its upkeep and an abandoned port NEVER force-sold. This sweep DRIVES
+# that existing engine on the scheduler so accrual + insolvency happen
+# autonomously. Like the bounty/idle/stipend sweeps, the cadence is a COARSE
+# elapsed pre-filter (so we don't take the advisory lock + scan stations every
+# 60s); the once-per-elapsed-canonical-day guarantee + restart-proofing come from
+# the DURABLE per-station anchor already written by accrue_operating_costs —
+# ownership['costs_accrued_at'] (an existing JSONB key on Station.ownership). A
+# restart or a re-run within the same canonical day re-reads the anchor, computes
+# elapsed_days <= 0, and no-ops — so the charge NEVER double-debits and the
+# insolvency clock NEVER double-counts (no double force-sell). Additive JSONB
+# only; NO migration, NO new column. Offset from the other coarse probes (decay
+# 15m / faucet 20m / snapshot 25m / idle 30m / stipend 35m / bounty 40m) by
+# landing at 45m so the coarse probes don't all hit Postgres on the same wake.
+#
+# CADENCE IS NO-CANON: port-ownership canon specifies the maintenance rate (1%
+# acquisition/month, in maintenance_for_days) and the 3-month insolvency
+# threshold (INSOLVENCY_MONTHS) — BOTH reused here, NOT reinvented. Only the
+# background SWEEP cadence (45m pre-filter, once-per-canonical-day granularity via
+# the anchor) is an implementation choice — flagged for a DECISIONS.md ruling.
+# ECONOMY-SENSITIVE: the insolvency force-sell clears ownership + re-lists at a
+# depreciated price, so the per-station anchor idempotency is load-bearing.
+PORT_OPERATING_COST_CHECK_SECONDS = int(
+    os.environ.get("PORT_OPERATING_COST_CHECK_SECONDS", str(45 * 60))
+)
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -2831,6 +2860,135 @@ def _run_bounty_accrual_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_port_operating_costs_sync() -> Dict[str, int]:
+    """Charge each player-owned port its accrued maintenance/upkeep and force-sell
+    any port that has been insolvent for the canon threshold (WO-B3). This is the
+    AUTONOMOUS half of the operating-cost engine — port_ownership_service.
+    accrue_operating_costs is the LAZY, idempotent engine (charge math +
+    insolvency 3-month auto-sell); before this sweep it ONLY fired via the manual
+    POST /stations/{id}/accrue-costs endpoint, so an unvisited port never paid
+    upkeep and an abandoned port never force-sold. This sweep is the scheduler
+    shell that DRIVES that existing engine under the standard discipline. It does
+    NOT reimplement any cost math, the maintenance rate, or the insolvency
+    threshold — it calls accrue_operating_costs per port and lets it manage its
+    own charge, anchor advance, insolvency tally, and inline auto_sell_insolvent.
+
+    DISCIPLINE — mirrors _run_bounty_accrual_sweep_sync / _run_idle_income_sweep_
+    sync EXACTLY (this runs on the LIVE scheduler):
+      * own SessionLocal (never the request session, never the async engine);
+      * xact-level advisory lock so a second gameserver instance skips instead of
+        double-charging (the lock auto-releases on the first commit), then commit
+        immediately to CLAIM the sweep without pinning the lock across the
+        iteration — MANDATORY: if this commit is omitted, the first per-station
+        commit below would release the advisory lock mid-iteration and let a
+        second instance enter concurrently (double-accrual);
+      * a candidate-id query (no batch lock), then a per-station with_for_update
+        re-read so a concurrent manual /accrue-costs call or a transfer can't race
+        the charge. NOTE: accrue_operating_costs calls _lock_station internally
+        (.with_for_update()) — that IS the row lock; we do NOT re-lock here, and
+        we acquire NO other row lock before calling it, preserving the service's
+        station-then-player-ascending lock order (auto_sell_insolvent locks a
+        Player row for the reputation hit);
+      * per-station commit and per-station try/except — one bad port cannot abort
+        the batch or roll back already-charged ports.
+
+    IDEMPOTENCY ACROSS RESTARTS (mandatory — the charge is a DEBIT and the
+    insolvency path force-SELLS): the durable per-station anchor is the wall-clock
+    ISO timestamp under Station.ownership['costs_accrued_at'], advanced in the
+    SAME per-station transaction as the debit by accrue_operating_costs (whole
+    elapsed days only; sub-day remainder stays pending). A re-run, duplicate wake,
+    or restart within the same canonical day re-reads the anchor, computes
+    elapsed_days <= 0, and returns status 'current' — NEVER a double-charge and
+    NEVER a double-increment of the insolvency clock (so NEVER a double
+    force-sell). Additive JSONB only; NO migration, NO new column.
+
+    CANDIDATE GATE: owned, player-ownable, not-destroyed stations. owner_id IS NOT
+    NULL is the real ownership gate (accrue_operating_costs no-ops on unowned
+    stations anyway); is_player_ownable excludes structural non-ownable stations;
+    is_destroyed excludes ruined ones. Listability flags (spacedock/tradedock/…)
+    gate SALE, not cost accrual — an owned port pays upkeep regardless.
+
+    Returns {"ports": n_charged, "insolvent": n_force_sold}; ``ports`` counts
+    stations that took a NONZERO charge (a station already current for the period
+    is not counted). All zero on the lock-held / nothing-due no-op paths."""
+    from src.core.database import SessionLocal
+    from src.models.station import Station
+    from src.services import port_ownership_service
+
+    result = {"ports": 0, "insolvent": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        # Release the lock-acquiring transaction before per-row work (same
+        # rationale as the bounty / idle-income / stipend sweeps): claim the
+        # sweep, then iterate. MANDATORY — see the docstring.
+        db.commit()
+
+        # Candidate ports: owned + player-ownable + not destroyed. IDs only (no
+        # batch lock); the per-station re-read takes the row lock.
+        candidate_ids = (
+            db.query(Station.id)
+            .filter(
+                Station.owner_id.isnot(None),
+                Station.is_player_ownable.is_(True),
+                Station.is_destroyed.is_(False),
+            )
+            .all()
+        )
+
+        for (station_id,) in candidate_ids:
+            try:
+                station = (
+                    db.query(Station)
+                    .filter(Station.id == station_id)
+                    .with_for_update()
+                    .first()
+                )
+                if station is None or station.owner_id is None:
+                    db.rollback()  # release row lock; nothing to do
+                    continue
+
+                # accrue_operating_costs re-locks the station internally
+                # (_lock_station), charges whole elapsed canonical days, advances
+                # the durable anchor, tallies insolvency months, and inline-
+                # force-sells at the canon threshold — all in THIS transaction,
+                # no commit of its own.
+                outcome = port_ownership_service.accrue_operating_costs(db, station)
+
+                db.commit()  # charge + anchor advance (+ any force-sell) atomic
+
+                if (outcome.get("charged") or 0) > 0:
+                    result["ports"] += 1
+                if outcome.get("insolvency"):
+                    result["insolvent"] += 1
+            except Exception:
+                logger.exception(
+                    "Port operating-cost sweep: accrual failed for station %s",
+                    station_id,
+                )
+                db.rollback()
+
+        if result["ports"] or result["insolvent"]:
+            logger.info(
+                "Port operating-cost sweep: charged %d port(s); %d force-sold "
+                "(insolvent)",
+                result["ports"], result["insolvent"],
+            )
+        return result
+    except Exception:
+        logger.exception("Port operating-cost sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
@@ -3527,3 +3685,33 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: system-bounty accrual crashed (loop continues)")
+
+        # Port operating-cost sweep (WO-B3) — charge each player-owned port its
+        # accrued maintenance/upkeep and force-sell any port insolvent for the
+        # canon 3-month threshold. Drives port_ownership_service.accrue_operating_
+        # costs (the lazy, idempotent charge + insolvency engine) on the scheduler
+        # so accrual no longer requires a manual /accrue-costs call — an unvisited
+        # port now pays upkeep and an abandoned one force-sells autonomously.
+        # Coarse elapsed pre-filter (45 min) so we don't scan stations every 60s;
+        # the once-per-elapsed-canonical-day guarantee + restart-proofing come from
+        # the durable per-station anchor (ownership['costs_accrued_at']) inside the
+        # engine — a re-run in the same period computes elapsed_days <= 0 and
+        # no-ops (NO double-charge, NO double force-sell). Own session, own advisory
+        # lock, per-port failure isolated — same discipline as the bounty-accrual /
+        # idle-income / daily-stipend / genesis / planetary / governance sweeps.
+        # Maintenance rate + 3-month insolvency threshold are CANON (reused, not
+        # reinvented); only the sweep cadence is NO-CANON (flagged for the
+        # orchestrator). ECONOMY-SENSITIVE: the insolvency path force-sells.
+        if elapsed % PORT_OPERATING_COST_CHECK_SECONDS == 0:
+            try:
+                ports = await asyncio.to_thread(_run_port_operating_costs_sync)
+                if ports.get("ports") or ports.get("insolvent"):
+                    logger.info(
+                        "NPC scheduler: port operating-cost sweep — charged %d "
+                        "port(s); %d force-sold (insolvent)",
+                        ports.get("ports", 0), ports.get("insolvent", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: port operating-cost sweep crashed (loop continues)")
