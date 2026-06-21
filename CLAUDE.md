@@ -351,7 +351,7 @@ Design before coding. Consider:
 Turn design into numbered checklist via `EnterPlanMode`. Cover: dependency-ordered changes, migration planning, API design, frontend wiring, verification steps.
 
 #### Stage 5: IMPLEMENT — Execute the Plan
-Follow approved plan. Dispatch parallel subagents if plan has **4+ files across multiple services**.
+Follow approved plan. **DEFAULT to parallelizing across your own subagent WORKERS — a build-wave (∥ build → adversarial-review → you integrate) — for any non-trivial work; do NOT build inline single-threaded** (Max, 2026-06-21). Fan the **disjoint-file** sub-parts to parallel workers even within a single WO; serialize only what shares files / a migration head. Inline/direct building is only for a genuinely trivial one-file change. (The old "4+ files across multiple services" bar was too conservative — parallelism is the point; a WO that's a dependency chain still fans its independent legs.) The Orchestrator's WOs will call out the disjoint sub-parts + lanes to make this easy.
 
 **Rules during implementation:**
 - Follow existing patterns in each service
