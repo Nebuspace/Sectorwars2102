@@ -1171,6 +1171,7 @@ def handle_npc_ship_destroyed(
     # N-F1 — zero-gap promotion: the on-duty backup steps up the moment
     # the primary falls. The recruit fill (Loop B) then targets the
     # vacated backup slot.
+    promotion_event: Optional[Dict[str, Any]] = None
     if (npc.duty_role or "").startswith("primary") and npc.bang_roster_ref:
         backup = (
             db.query(NPCCharacter)
@@ -1199,6 +1200,16 @@ def handle_npc_ship_destroyed(
                 "N-F1 zero-gap promotion: %s %s -> %s after %s KIA",
                 backup.display_name, old_role, npc.duty_role, npc.display_name,
             )
+            # Captured here (while backup/old_role are in scope) so the
+            # post-flush realtime emit below carries canonical payload.
+            promotion_event = {
+                "npc_id": str(backup.id),
+                "sector_id": sector_id,
+                "from_role": old_role,
+                "to_role": npc.duty_role,
+                "predecessor_npc_id": str(npc.id),
+                "at": now.isoformat(),
+            }
 
     if sector_id is not None:
         # Row lock: the presence cleanup below is JSONB read-modify-write —
@@ -1271,5 +1282,35 @@ def handle_npc_ship_destroyed(
             pass  # no running loop — polled presence covers it
         except Exception:
             logger.exception("npc_kia broadcast failed (non-fatal)")
+
+    # N-F1 — best-effort npc.role_promoted realtime event for the zero-gap
+    # Marshal promotion. Same constraints as npc_kia above: only firable
+    # when an event loop is running (async route context); sync contexts
+    # rely on the role_history row that was already persisted. Fanned out
+    # to the sector room (where the action was felt) and the region room
+    # (governance/roster subscribers). A WS hiccup must never break the KIA
+    # op, so it stays guarded and non-fatal.
+    if promotion_event is not None:
+        try:
+            import asyncio
+
+            from src.services.websocket_service import connection_manager
+
+            loop = asyncio.get_running_loop()
+            message = {"type": "npc.role_promoted", **promotion_event}
+            if sector_id is not None:
+                loop.create_task(
+                    connection_manager.broadcast_to_sector(sector_id, dict(message))
+                )
+            if npc.home_region_id is not None:
+                loop.create_task(
+                    connection_manager.broadcast_to_region(
+                        str(npc.home_region_id), dict(message)
+                    )
+                )
+        except RuntimeError:
+            pass  # no running loop — persisted role_history covers it
+        except Exception:
+            logger.exception("npc.role_promoted broadcast failed (non-fatal)")
 
     return npc
