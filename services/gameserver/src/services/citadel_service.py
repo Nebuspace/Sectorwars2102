@@ -106,6 +106,36 @@ DEFENSE_BUILDINGS = {
         },
         "research_node": "t.defense.grid.1",
     },
+    # planet_minefield (WO-G7): citadel L3+; per-level capacity 1@L3 / 2@L4 /
+    # 3@L5; 100,000 cr + 10,000 equipment; 48h. A field seeds 20 proximity mines.
+    # MIRRORS rail_gun EXACTLY: same key shape (name / min_citadel_level /
+    # max_count / cost / build_hours / effects), consumed by the UNCHANGED
+    # data-driven build_defense_building flow (credit charge, slot reserve, 48h
+    # settle timer, per-citadel-level capacity gate, below-gate rejection). As
+    # rail_gun stores its DEFERRED per-shot combat data inside ``effects`` (no
+    # resolver wiring yet), planet_minefield stores its DEFERRED per-mine combat
+    # data inside ``effects`` the same way — the per-mine damage INJECTION is
+    # deferred (no combat_service change here), exactly like rail_gun. The
+    # 10,000-equipment requirement and the 20-mines-per-field datum are recorded
+    # in ``effects`` (rail_gun's metadata home) rather than as new top-level
+    # keys, so the catalog shape stays identical to rail_gun and the existing
+    # credit-only build flow needs no change.
+    "planet_minefield": {
+        "name": "Planetary Minefield",
+        "min_citadel_level": 3,
+        "max_count": {3: 1, 4: 2, 5: 3},
+        "cost": 100000,
+        "build_hours": 48,
+        "effects": {
+            # Deferred per-mine combat data (no resolver wiring yet — mirrors
+            # rail_gun's deferred per-shot data living here).
+            "weapon_kind": "proximity_mine",
+            "mines_per_field": 20,
+            # Equipment material requirement recorded as catalog metadata
+            # (build_defense_building charges credits only, like rail_gun).
+            "equipment_cost": 10000,
+        },
+    },
 }
 
 CITADEL_LEVELS = {
