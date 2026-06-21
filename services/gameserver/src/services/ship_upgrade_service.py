@@ -358,7 +358,12 @@ class ShipUpgradeService:
             "base_effects": {"failure_rate_reduction": 0.15},
             "compatible_ships": None,
             "requires": None,
-            "slot_class": None,
+            # slot_class "maintenance": fits OPEN slots (unchanged — open slots
+            # skip the class check) AND the Citizen Clipper's maintenance-locked
+            # super slot (WO-GC-C). Without this the maintenance-fenced slot would
+            # accept no module (a dead slot — caught live). The Clipper is the only
+            # maintenance-locked slot, so no other hull is affected.
+            "slot_class": "maintenance",
             "name": "Maintenance Module",
             "description": "Reduces mechanical failure rate (clamped to a full 1.0 reduction).",
         },
