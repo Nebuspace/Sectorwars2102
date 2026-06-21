@@ -48,6 +48,7 @@ from src.models.enhanced_ai_models import AIComprehensiveAssistant
 from src.models.bang_generation_job import BangGenerationJob, BangGenerationJobStatus
 from src.models.docking import DockingSlipOccupancy, DockingQueueEntry
 from src.models.pending_engagement import PendingEngagement, EngagementStatus
+from src.models.cargo_wreck import CargoWreck, WreckCause
 from src.models.migration_contract import MigrationContract, MigrationContractStatus
 from src.models.npc_character import (
     NPCCharacter,

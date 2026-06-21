@@ -12,6 +12,7 @@ from sqlalchemy import and_, or_
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus, ShipType, ShipSpecification
 from src.models.sector import Sector, SectorType
+from src.models.cargo_wreck import CargoWreck, WreckCause
 from src.models.combat import CombatType, CombatResult
 from src.models.combat_log import CombatLog, CombatOutcome
 from src.models.drone import Drone, DroneDeployment, DroneStatus
@@ -1096,6 +1097,21 @@ class CombatService:
             npc_ship.is_destroyed = True
             npc_ship.is_active = False
             npc_ship.status = ShipStatus.DESTROYED
+
+            # WO-F21 (spawn half): the NPC hull's lost cargo — everything NOT
+            # already looted to the attacker by the cargo-theft transfer above
+            # (line ~1092, run BEFORE this block) — drops as a salvageable
+            # CargoWreck. NPC hulls never funnel through destroy_ship, so this is
+            # the single spawn site for NPC wrecks (no double-spawn). NPC →
+            # original_owner=None (no player/team); the attacker is the
+            # killing-blow pilot and inherits grace (ADR-0055 S-F2).
+            self._spawn_cargo_wreck(
+                destroyed_ship=npc_ship,
+                cause="combat",
+                original_owner=None,
+                killing_blow_pilot=attacker,
+            )
+
             # Notify the NPC lifecycle system (delivered by the NPC slice).
             # Lazy import + ImportError guard so combat still resolves if the
             # module is absent in this deployment.
@@ -3957,15 +3973,173 @@ class CombatService:
         if self.ship_service.is_ship_indestructible(player.current_ship):
             logger.info(f"Ship {player.current_ship.name} is indestructible, cannot be destroyed")
             return
-        
+
+        # Capture the DEAD hull NOW: destroy_ship repoints player.current_ship to
+        # the escape pod, so reading it afterward would describe the pod, not the
+        # ship that was destroyed. WO-F21 reads this hull's leftover (lost) cargo.
+        destroyed_ship = player.current_ship
+
         # Use ship service to handle destruction and escape pod ejection
         escape_pod = self.ship_service.destroy_ship(
-            ship=player.current_ship,
+            ship=destroyed_ship,
             destroyer=destroyer,
             cause=cause
         )
         
         logger.info(f"Player {player.id} ship destroyed, ejected to {escape_pod.name}")
+
+        # WO-F21 (spawn half): the lost cargo — everything NOT rescued to the
+        # escape pod by destroy_ship — drops as a salvageable CargoWreck. Read
+        # the DEAD hull (not player.current_ship, which destroy_ship has just
+        # repointed to the pod), whose cargo["contents"] now holds exactly the
+        # unrescued remainder. Wreck generation lives HERE in CombatService (the
+        # model + destroy_ship's docstring make this the single spawn site), so
+        # there is no double-spawn from the ship_service path.
+        self._spawn_cargo_wreck(
+            destroyed_ship=destroyed_ship,
+            cause=cause,
+            original_owner=player,
+            killing_blow_pilot=destroyer,
+        )
+
+    # ── WO-F21: cargo-wreck spawn (canon: DATA_MODELS/cargo-wrecks.md;
+    # ADR-0007 grace/Suspect; ADR-0055 S-F2 killing-blow attribution) ─────────
+    #
+    # Map the destruction-cause string to the spawning WreckCause. Causes that
+    # canonically spawn NO wreck are deliberately absent (return None → skip):
+    #   - "warp_gate_anchor" / "genesis_sacrifice": voluntary consume — all
+    #     non-bound cargo rides to the pod, nothing is lost, and these never
+    #     funnel through _handle_ship_destruction anyway (they call
+    #     destroy_ship directly from warp_gate_service / genesis_service).
+    #   - "self_destruct": SELF_DESTRUCT never leaves a wreck (canon).
+    # The combat family ("combat", "drone_combat", "planet_defense",
+    # "port_defense") all map to COMBAT — the analytics tag; the grace window is
+    # identical for every spawning cause.
+    _WRECK_CAUSE_MAP = {
+        "combat": WreckCause.COMBAT,
+        "drone_combat": WreckCause.COMBAT,
+        "planet_defense": WreckCause.COMBAT,
+        "port_defense": WreckCause.COMBAT,
+        "hazard": WreckCause.HAZARD,
+        "abandonment_expired": WreckCause.ABANDONMENT_EXPIRED,
+    }
+
+    def _spawn_cargo_wreck(
+        self,
+        destroyed_ship: Ship,
+        cause: str,
+        original_owner: Optional[Player],
+        killing_blow_pilot: Optional[Player],
+    ) -> Optional[CargoWreck]:
+        """Spawn ONE salvageable CargoWreck for the lost cargo of a destroyed
+        hull, or None when no wreck is warranted.
+
+        Single spawn site for both the player-ship path (_handle_ship_destruction,
+        after destroy_ship has stripped the emergency-cargo rescue) and the
+        NPC-hull path (attack_npc_ship, after cargo theft). Best-effort: a wreck
+        hiccup must never abort the kill or the caller's combat commit, so the
+        whole body is guarded. Stages with db.add + db.flush only — the calling
+        attack_* method owns the single commit that persists it.
+
+        No wreck is spawned when:
+          - the cause does not map to a spawning WreckCause (warp_gate_anchor /
+            genesis_sacrifice / self_destruct), or
+          - there is no lost cargo (empty contents) — a wreck is a "salvageable
+            container"; nothing to salvage means no wreck, and the empty map is
+            the wreck's terminal/deleted state anyway, or
+          - the host sector UUID cannot be resolved.
+
+        killing_blow_pilot is attributed (ADR-0055 S-F2) only for COMBAT; it is
+        ignored (left null) for non-combat causes.
+        """
+        try:
+            wreck_cause = self._WRECK_CAUSE_MAP.get((cause or "").lower())
+            if wreck_cause is None:
+                # warp_gate_anchor / genesis_sacrifice / self_destruct — no wreck.
+                return None
+
+            # The lost cargo = whatever remains in the dead hull's hold after the
+            # pod-rescue / theft transfers. Flatten the nested cargo JSONB
+            # ({"contents": {commodity: qty}}) to the wreck's {commodity: int}
+            # map, dropping non-positive entries.
+            ship_cargo = destroyed_ship.cargo or {}
+            contents = ship_cargo.get("contents") or {}
+            lost_cargo: Dict[str, int] = {
+                str(commodity): int(qty)
+                for commodity, qty in contents.items()
+                if isinstance(qty, (int, float)) and int(qty) > 0
+            }
+            if not lost_cargo:
+                # Nothing to salvage → no container spawns.
+                return None
+
+            # Host sector: CargoWreck.sector_id is a UUID FK to sectors.id, but
+            # Ship.sector_id is the INTEGER human-readable sector number — resolve
+            # the Sector row's UUID via the ship's sector relationship (fall back
+            # to a lookup if the relationship is unloaded).
+            sector = destroyed_ship.sector
+            if sector is None:
+                sector = (
+                    self.db.query(Sector)
+                    .filter(Sector.sector_id == destroyed_ship.sector_id)
+                    .first()
+                )
+            if sector is None:
+                logger.error(
+                    "Cargo-wreck spawn skipped — could not resolve sector for "
+                    "destroyed ship %s (sector_id=%s)",
+                    destroyed_ship.id, destroyed_ship.sector_id,
+                )
+                return None
+
+            # Owner / team snapshot (null for an NPC hull). team_id is the
+            # owner's CURRENT team at destruction — team-mates inherit grace via
+            # the live membership of this snapshot id (ADR-0007).
+            original_owner_id = original_owner.id if original_owner is not None else None
+            original_team_id = (
+                original_owner.team_id if original_owner is not None else None
+            )
+
+            # Killing-blow attribution (ADR-0055 S-F2): only for COMBAT, and only
+            # when an actual killer pilot exists (NPC / drone / planet- / port-
+            # defense kills pass killing_blow_pilot=None).
+            killing_blow_pilot_id = (
+                killing_blow_pilot.id
+                if (wreck_cause == WreckCause.COMBAT and killing_blow_pilot is not None)
+                else None
+            )
+
+            wreck = CargoWreck(
+                sector_id=sector.id,
+                original_owner_id=original_owner_id,
+                original_team_id=original_team_id,
+                killing_blow_pilot_id=killing_blow_pilot_id,
+                destroyed_ship_id=destroyed_ship.id,
+                destroyed_ship_type=destroyed_ship.type,
+                cargo=lost_cargo,
+                cause=wreck_cause,
+            )
+            # SAVEPOINT the add+flush: if the flush raises (e.g. an integrity
+            # error), a bare flush would poison the session so the caller's
+            # combat db.commit() would then fail. begin_nested() rolls back ONLY
+            # the wreck insert, leaving the outer combat transaction intact —
+            # the kill still commits, just without a wreck (reviewer LOW fix).
+            with self.db.begin_nested():
+                self.db.add(wreck)
+                self.db.flush()
+            logger.info(
+                "Spawned CargoWreck %s in sector %s (cause=%s, owner=%s, "
+                "killer=%s, items=%d)",
+                wreck.id, sector.sector_id, wreck_cause.value,
+                original_owner_id, killing_blow_pilot_id, len(lost_cargo),
+            )
+            return wreck
+        except Exception as e:
+            logger.error(
+                "Cargo-wreck spawn failed for destroyed ship %s: %s",
+                getattr(destroyed_ship, "id", "?"), e,
+            )
+            return None
 
     # NOTE (WO-BL): the dead combat-driven _set_suspect / _set_wanted static
     # helpers were REMOVED here. They were the never-wired (zero call sites)

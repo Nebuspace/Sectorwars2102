@@ -10,12 +10,23 @@ from src.models.sector import Sector
 from src.models.planet import Planet
 from src.models.station import Station
 from src.services.celestial_service import generate_system
+from src.services import salvage_service
 
 router = APIRouter(
     prefix="/sectors",
     tags=["sectors"],
     responses={404: {"description": "Not found"}},
 )
+
+
+class SalvageRequest(BaseModel):
+    wreck_id: str
+
+
+class SalvageResponse(BaseModel):
+    salvaged: Dict[str, int]
+    suspect_flagged: bool
+    wreck_cleared: bool
 
 class PlanetResponse(BaseModel):
     id: str
@@ -200,3 +211,20 @@ async def get_sector_system(
 
     db.commit()  # persist celestial skeleton + discovery marks
     return result
+
+
+@router.post("/salvage", response_model=SalvageResponse)
+async def salvage_wreck(
+    request: SalvageRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Salvage a CargoWreck sitting in the player's CURRENT sector.
+
+    Transfers as much of the wreck's cargo as fits the player's free hold;
+    the wreck row is deleted once emptied. ADR-0007: salvaging another team's
+    wreck inside its 1-hour grace window is allowed but flags the salvager
+    Suspect (original owner / a current team-mate / the killing-blow pilot are
+    exempt).
+    """
+    return salvage_service.salvage_wreck(db, player, request.wreck_id)
