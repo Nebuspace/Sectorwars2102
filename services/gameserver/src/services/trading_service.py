@@ -279,6 +279,86 @@ def compute_station_lever_multiplier(db: Session, player, station) -> Tuple[floa
         return 1.0, 0.0
 
 
+# ----------------------------------------------------------------------
+# GameEvent / EventEffect consumer (WO-G17)
+# ----------------------------------------------------------------------
+# GameEvent + EventEffect had full admin CRUD but ZERO gameplay consumers:
+# admins could schedule a "price_modifier" event and it never moved a single
+# trade. This reader is the first consumer. It returns the SUMMED additive
+# delta of every currently-active matching EventEffect, expressed so it folds
+# into the price stack with the SAME (1 + delta) convention as the region
+# tariff and station lever above.
+#
+# Active-in-window definition (matches the model + the admin CRUD that flips
+# status to ACTIVE):
+#   GameEvent.status == EventStatus.ACTIVE
+#   GameEvent.start_time <= now <= GameEvent.end_time
+#   EventEffect.effect_type == effect_type
+#   EventEffect.is_active is True
+#   (EventEffect.expires_at is null OR expires_at > now)
+#   target filter (when given): EventEffect.target == target  (case-insensitive)
+#
+# Modifier convention: EventEffect.modifier is stored as a MULTIPLIER (neutral
+# 1.0 per the model's column default + the "price_modifier ... multiplier"
+# comment). We convert each matching effect to its additive delta (modifier -
+# 1.0) and SUM those deltas, so the return is 0.0 when nothing is active and,
+# e.g., a single 1.20 event yields +0.20. The caller folds it as
+# price *= (1 + delta) — exactly like (1 + tariff_rate) / (1 + lever) — so a
+# fully neutral return leaves the price untouched. Fully defensive: any failure
+# (missing tables, bad row, db hiccup) degrades to 0.0 — a price calc must NEVER
+# 500 over a cosmetic admin event.
+def get_active_event_modifiers(
+    db: Session,
+    effect_type: str,
+    target: Optional[str] = None,
+) -> float:
+    """Return the summed additive modifier-delta for active in-window events.
+
+    Reads GameEvent rows with status ACTIVE whose [start_time, end_time] window
+    contains 'now' (UTC), joins their active, non-expired EventEffect rows of
+    the given effect_type (optionally filtered to a target/scope), and sums each
+    effect's (modifier - 1.0) into one additive delta. Returns 0.0 (neutral)
+    when nothing matches. Never raises into a trade."""
+    try:
+        from src.models.game_event import GameEvent, EventEffect, EventStatus
+
+        now = datetime.now(UTC)
+        q = (
+            db.query(EventEffect.modifier, EventEffect.target)
+            .join(GameEvent, EventEffect.event_id == GameEvent.id)
+            .filter(GameEvent.status == EventStatus.ACTIVE)
+            .filter(GameEvent.start_time <= now)
+            .filter(GameEvent.end_time >= now)
+            .filter(EventEffect.effect_type == effect_type)
+            .filter(EventEffect.is_active.is_(True))
+            .filter(
+                (EventEffect.expires_at.is_(None))
+                | (EventEffect.expires_at > now)
+            )
+        )
+
+        target_norm = target.strip().lower() if isinstance(target, str) else None
+        total_delta = 0.0
+        for modifier, eff_target in q.all():
+            # Target filter (when requested): exact, case-insensitive. A global
+            # effect with no target ("" / None) is treated as untargeted and
+            # only matches when no target filter is supplied.
+            if target_norm is not None:
+                row_target = (eff_target or "").strip().lower()
+                if row_target != target_norm:
+                    continue
+            try:
+                total_delta += float(modifier) - 1.0
+            except (TypeError, ValueError):
+                continue
+        return total_delta
+    except Exception:
+        logger.warning(
+            "active event-modifier lookup failed; using neutral", exc_info=True
+        )
+        return 0.0
+
+
 # Spec-defined price ranges per commodity (from Resources.aispec;
 # precious_metals per sw2102-docs ADR-0062 E-D1: 80-180 cr/unit, slotted
 # between equipment and exotic_technology).
@@ -474,6 +554,21 @@ class TradingService:
                 raw_price *= get_class_premium(StationClass.CLASS_11, "buy")
             elif transaction_type == "sell" and commodity.get("sells"):
                 raw_price *= get_class_premium(StationClass.CLASS_11, "sell")
+
+        # WO-G17: fold in any ACTIVE price_modifier GameEvent for this commodity.
+        # Applied at the SAME stage as the station-class premium — after the
+        # supply/demand spread, BEFORE the canon clamp — so an admin-scheduled
+        # event shifts trade prices but can never push a price outside the
+        # commodity's hard [min, max] band. get_active_event_modifiers returns a
+        # summed additive delta (0.0 neutral), folded multiplicatively as
+        # (1 + delta) to match the region-tariff / station-lever convention.
+        # A single clean fold; never double-applied. Defensive/neutral on any
+        # lookup failure (a price calc must not 500 over an event).
+        event_delta = get_active_event_modifiers(
+            self.db, "price_modifier", target=commodity_name
+        )
+        if event_delta:
+            raw_price *= max(0.0, 1.0 + event_delta)
 
         # Clamp to spec ranges
         price_range = COMMODITY_PRICE_RANGES.get(commodity_name)
