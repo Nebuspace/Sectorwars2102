@@ -907,6 +907,20 @@ class MovementService:
         # created is_bidirectional=False, so a gate matched here is
         # guaranteed origin -> destination.
         if _is_player_gate(tunnel):
+            # WG1 access-mode enforcement (warp-gates.md "Access control"): a player-built gate
+            # honors its access_requirements mode (PUBLIC/TEAM_ONLY/PRIVATE/WHITELIST/ALLIANCE).
+            # check_traversal_access was dead-stored before this wiring — defined but uncalled, so
+            # any player could traverse a restricted gate. Enforce here, the single move-validation
+            # path. The traverser is the owner of the ship being moved (owner_id == the player).
+            traverser_id = getattr(ship, "owner_id", None) if ship else None
+            if traverser_id is not None:
+                from src.services.warp_gate_service import check_traversal_access, WarpGateError
+                traverser = self.db.query(Player).filter(Player.id == traverser_id).first()
+                if traverser is not None:
+                    try:
+                        check_traversal_access(self.db, traverser, tunnel)
+                    except WarpGateError as e:
+                        return False, 0, e.detail
             return True, tunnel.turn_cost, "Warp gate available"
 
         # Get base turn cost

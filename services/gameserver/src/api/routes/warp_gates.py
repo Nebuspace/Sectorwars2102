@@ -56,6 +56,39 @@ class CancelResponse(BaseModel):
     message: str
 
 
+class SetPermissionsRequest(BaseModel):
+    # One of PUBLIC / TEAM_ONLY / PRIVATE / WHITELIST / ALLIANCE
+    # (warp-gates.md "Access control").
+    mode: str
+    # Player UUIDs for WHITELIST mode; team UUIDs for ALLIANCE allies. Both are
+    # accepted on every call and persisted, but only consulted by their mode.
+    whitelist: Optional[List[str]] = None
+    allies: Optional[List[str]] = None
+
+
+class SetPermissionsResponse(BaseModel):
+    gate_id: str
+    mode: str
+    whitelist: List[str]
+    allies: List[str]
+    is_public: bool
+
+
+class TransferRequest(BaseModel):
+    new_owner_id: str
+    sale_price: Optional[int] = None
+
+
+class TransferResponse(BaseModel):
+    gate_id: str
+    previous_owner_id: str
+    new_owner_id: str
+    sale_price: int
+    buyer_credits: int
+    seller_credits: int
+    access_carried_over: str
+
+
 class ProjectEntry(BaseModel):
     beacon_id: str
     gate_id: Optional[str] = None
@@ -155,6 +188,50 @@ async def get_sector_structures(
         db.rollback()
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     return SectorStructuresResponse(**result)
+
+
+@router.post("/{gate_id}/permissions", response_model=SetPermissionsResponse)
+async def set_permissions(
+    gate_id: str,
+    request: SetPermissionsRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """WO-DBB-WG1 — set an active gate's access mode, whitelist and allied
+    teams atomically (owner-only; a gate that isn't yours 404s). The mode is
+    enforced at traversal by warp_gate_service.check_traversal_access."""
+    try:
+        result = warp_gate_service.set_gate_permissions(
+            db, player, gate_id,
+            request.mode, request.whitelist, request.allies,
+        )
+        db.commit()
+    except WarpGateError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return SetPermissionsResponse(**result)
+
+
+@router.post("/{gate_id}/transfer", response_model=TransferResponse)
+async def transfer_gate(
+    gate_id: str,
+    request: TransferRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """WO-DBB-WG2 — transfer an active gate to another player, carrying the
+    toll / access / revenue config and settling an optional salePrice under
+    row locks. The buyer's gate cap is enforced; on any failure no credits move
+    and ownership is unchanged (single transaction)."""
+    try:
+        result = warp_gate_service.transfer_gate(
+            db, player, gate_id, request.new_owner_id, request.sale_price,
+        )
+        db.commit()
+    except WarpGateError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return TransferResponse(**result)
 
 
 @router.post("/{gate_or_beacon_id}/cancel", response_model=CancelResponse)

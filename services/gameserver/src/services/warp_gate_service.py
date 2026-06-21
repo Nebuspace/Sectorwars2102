@@ -100,6 +100,36 @@ MAX_INCOMING_ACTIVE_GATES = 5  # destination anti-spam cap
 NO_WARP_FEATURE = "no_warp"
 NEXUS_PROTECTED_FEATURE = "nexus_protected"
 
+# --- Access modes (WO-DBB-WG1, warp-gates.md "Access control") --------------
+# The owner picks one mode; whitelist + allies layer on top. The mode and its
+# layers live in WarpTunnel.access_requirements JSONB (canon: "full access modes
+# live in access_requirements"). The traversable connection IS the WarpTunnel
+# row, so enforcement reads it there.
+
+ACCESS_MODE_PUBLIC = "PUBLIC"        # anyone (default)
+ACCESS_MODE_TEAM_ONLY = "TEAM_ONLY"  # owner + members of owner's team
+ACCESS_MODE_PRIVATE = "PRIVATE"      # owner only
+ACCESS_MODE_WHITELIST = "WHITELIST"  # owner + specific player UUIDs
+ACCESS_MODE_ALLIANCE = "ALLIANCE"    # owner's team + allied teams
+
+ACCESS_MODES = frozenset({
+    ACCESS_MODE_PUBLIC,
+    ACCESS_MODE_TEAM_ONLY,
+    ACCESS_MODE_PRIVATE,
+    ACCESS_MODE_WHITELIST,
+    ACCESS_MODE_ALLIANCE,
+})
+
+# Mode -> is_public coarse flag (warp-gates.md: is_public is a "coarse flag",
+# the authoritative mode lives in access_requirements). Only PUBLIC sets the
+# coarse public flag; every gated mode clears it.
+_PUBLIC_MODES = frozenset({ACCESS_MODE_PUBLIC})
+
+# No-canon cap on how many entries an owner may set in the whitelist / allies
+# lists in a single permissions call — a conservative DoS guard so a malicious
+# owner cannot bloat the JSONB. NOT a documented game number.
+MAX_ACCESS_LIST_ENTRIES = 200  # NO-CANON
+
 
 class WarpGateError(Exception):
     """Carries an HTTP status + human detail string up to the route layer."""
@@ -1130,9 +1160,380 @@ def list_sector_structures(db: Session, sector_number: int) -> Dict[str, Any]:
             "destination_name": destination.name if destination else None,
             "owner_name": owner.username if owner else None,
             "is_public": tunnel.is_public if tunnel is not None else True,
+            "access_mode": _access_mode_of(tunnel) if tunnel is not None else ACCESS_MODE_PUBLIC,
             # Toll system is design-only (warp-gates.md) — all gates are
             # toll-free until it ships; the field is part of the contract.
             "toll": 0,
         })
 
     return {"beacons": beacons, "gates": gates}
+
+
+# --- Access-mode enforcement (WO-DBB-WG1) -----------------------------------
+
+def _access_mode_of(tunnel: Optional[WarpTunnel]) -> str:
+    """Read the authoritative access mode from a gate's WarpTunnel row.
+
+    The mode lives in WarpTunnel.access_requirements["mode"]; absent/blank
+    falls back to the coarse is_public flag (warp-gates.md: is_public is the
+    coarse flag, access_requirements is authoritative). A None tunnel (no
+    traversable connection yet) is treated PUBLIC — nothing to gate."""
+    if tunnel is None:
+        return ACCESS_MODE_PUBLIC
+    reqs = tunnel.access_requirements or {}
+    mode = reqs.get("mode") if isinstance(reqs, dict) else None
+    if mode in ACCESS_MODES:
+        return mode
+    # No explicit mode set yet — honour the coarse flag.
+    return ACCESS_MODE_PUBLIC if tunnel.is_public else ACCESS_MODE_PRIVATE
+
+
+def _player_team_ids(db: Session, player: Player) -> set:
+    """The set of team UUIDs a player currently belongs to (by membership row,
+    not only Player.team_id — a player may hold rows for several teams). Always
+    includes Player.team_id when set so a freshly-set team is honoured."""
+    ids = set()
+    if player.team_id:
+        ids.add(player.team_id)
+    rows = (
+        db.query(TeamMember.team_id)
+        .filter(TeamMember.player_id == player.id)
+        .all()
+    )
+    for (team_id,) in rows:
+        if team_id is not None:
+            ids.add(team_id)
+    return ids
+
+
+def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> None:
+    """Enforce the gate's access mode for a player attempting traversal.
+
+    Raises WarpGateError(403, ...) when the player is not allowed. Returns
+    None (allowed) for: any non-player gate, the owner, or a player who
+    satisfies the configured mode. This is the single enforcement point the
+    movement layer calls before letting a player traverse a player-built gate
+    (warp-gates.md "Access control"). No locking, no mutation — a pure check.
+
+    The owner is identified by WarpTunnel.created_by_player_id (the gate's
+    owner FK on the traversable row, kept in sync with WarpGate.player_id on
+    transfer)."""
+    # Only player-built gates are access-controlled. A natural/generator tunnel
+    # has no created_by_player_id and is always open.
+    if tunnel is None or tunnel.created_by_player_id is None \
+            or tunnel.type != WarpTunnelType.ARTIFICIAL:
+        return
+
+    owner_id = tunnel.created_by_player_id
+    if owner_id == player.id:
+        return  # the owner always passes
+
+    mode = _access_mode_of(tunnel)
+    reqs = tunnel.access_requirements or {}
+    if not isinstance(reqs, dict):
+        reqs = {}
+
+    if mode == ACCESS_MODE_PUBLIC:
+        return
+
+    if mode == ACCESS_MODE_PRIVATE:
+        raise WarpGateError(
+            403,
+            "ERR_GATE_PRIVATE: this warp gate is private — only its owner may "
+            "traverse it",
+        )
+
+    if mode == ACCESS_MODE_WHITELIST:
+        whitelist = {str(x) for x in (reqs.get("whitelist") or [])}
+        if str(player.id) in whitelist:
+            return
+        raise WarpGateError(
+            403,
+            "ERR_GATE_NOT_WHITELISTED: this warp gate is restricted to a "
+            "whitelist you are not on",
+        )
+
+    if mode == ACCESS_MODE_TEAM_ONLY:
+        owner = db.query(Player).filter(Player.id == owner_id).first()
+        owner_teams = _player_team_ids(db, owner) if owner is not None else set()
+        if owner_teams & _player_team_ids(db, player):
+            return
+        raise WarpGateError(
+            403,
+            "ERR_GATE_TEAM_ONLY: this warp gate is restricted to the owner's "
+            "team",
+        )
+
+    if mode == ACCESS_MODE_ALLIANCE:
+        owner = db.query(Player).filter(Player.id == owner_id).first()
+        owner_teams = _player_team_ids(db, owner) if owner is not None else set()
+        player_teams = _player_team_ids(db, player)
+        if owner_teams & player_teams:
+            return  # same team always passes under ALLIANCE too
+        # Allied teams are stored as team UUIDs in access_requirements.allies
+        # (no diplomacy/alliance table exists yet — this is the documented
+        # JSONB interpretation, flagged NO-CANON for structural allies).
+        allies = {str(x) for x in (reqs.get("allies") or [])}
+        if allies & {str(t) for t in player_teams}:
+            return
+        raise WarpGateError(
+            403,
+            "ERR_GATE_ALLIANCE_ONLY: this warp gate is restricted to the "
+            "owner's team and its allies",
+        )
+
+    # Unknown mode (should be impossible — validated on set) — fail closed.
+    raise WarpGateError(403, "ERR_GATE_ACCESS_DENIED: gate access denied")
+
+
+def _resolve_owned_active_gate(db: Session, player: Player, gate_id: str, *, lock: bool):
+    """Look up an ACTIVE WarpGate the player owns, optionally row-locked.
+
+    Ownership-gated: a gate that isn't the caller's 404s (no existence leak,
+    mirrors the project endpoints). Only ACTIVE gates expose permissions /
+    transfer — an in-construction or collapsed gate has no traversable
+    connection to administer."""
+    try:
+        gate_uuid = uuid.UUID(str(gate_id))
+    except (ValueError, AttributeError, TypeError):
+        raise WarpGateError(404, "Warp gate not found")
+    query = db.query(WarpGate).filter(WarpGate.id == gate_uuid)
+    if lock:
+        query = query.populate_existing().with_for_update()
+    gate = query.first()
+    if gate is None or gate.player_id != player.id:
+        raise WarpGateError(404, "Warp gate not found")
+    if gate.status != WarpGateStatus.ACTIVE:
+        raise WarpGateError(
+            400,
+            f"Gate is {gate.status.value.lower()} — only an active gate can be "
+            "administered",
+        )
+    return gate
+
+
+def _validate_uuid_list(values, label: str) -> List[str]:
+    """Coerce an inbound list of player/team ids to canonical UUID strings,
+    rejecting malformed entries and over-long lists."""
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        raise WarpGateError(400, f"{label} must be a list of UUIDs")
+    if len(values) > MAX_ACCESS_LIST_ENTRIES:
+        raise WarpGateError(
+            400,
+            f"{label} may hold at most {MAX_ACCESS_LIST_ENTRIES} entries",
+        )
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        try:
+            canonical = str(uuid.UUID(str(value)))
+        except (ValueError, AttributeError, TypeError):
+            raise WarpGateError(400, f"{label} contains an invalid UUID: {value!r}")
+        if canonical not in seen:
+            seen.add(canonical)
+            out.append(canonical)
+    return out
+
+
+def set_gate_permissions(
+    db: Session,
+    player: Player,
+    gate_id: str,
+    mode: str,
+    whitelist=None,
+    allies=None,
+) -> Dict[str, Any]:
+    """WO-DBB-WG1 — atomically set a gate's access mode, whitelist and allied
+    teams (owner-only). Persists onto the gate's WarpTunnel.access_requirements
+    JSONB and keeps the coarse is_public flag in sync. Caller owns the commit.
+
+    Lock order: gate row first (then the tunnel is fetched under the same txn).
+    No credit movement, so no player lock is needed."""
+    mode = (mode or "").upper()
+    if mode not in ACCESS_MODES:
+        raise WarpGateError(
+            400,
+            f"Unknown access mode {mode!r}; valid modes: "
+            + ", ".join(sorted(ACCESS_MODES)),
+        )
+
+    gate = _resolve_owned_active_gate(db, player, gate_id, lock=True)
+    if not gate.warp_tunnel_id:
+        raise WarpGateError(400, "This gate has no traversable connection to configure")
+    tunnel = (
+        db.query(WarpTunnel)
+        .filter(WarpTunnel.id == gate.warp_tunnel_id)
+        .with_for_update()
+        .first()
+    )
+    if tunnel is None:
+        raise WarpGateError(404, "The gate's warp tunnel could not be found")
+
+    whitelist_ids = _validate_uuid_list(whitelist, "whitelist")
+    allies_ids = _validate_uuid_list(allies, "allies")
+
+    reqs = dict(tunnel.access_requirements or {}) if isinstance(tunnel.access_requirements, dict) else {}
+    reqs["mode"] = mode
+    reqs["whitelist"] = whitelist_ids
+    reqs["allies"] = allies_ids
+    tunnel.access_requirements = reqs
+    flag_modified(tunnel, "access_requirements")
+    tunnel.is_public = mode in _PUBLIC_MODES
+    db.flush()
+
+    logger.info(
+        "Player %s set warp gate %s access mode to %s (whitelist=%d allies=%d)",
+        player.id, gate.id, mode, len(whitelist_ids), len(allies_ids),
+    )
+    return {
+        "gate_id": str(gate.id),
+        "mode": mode,
+        "whitelist": whitelist_ids,
+        "allies": allies_ids,
+        "is_public": tunnel.is_public,
+    }
+
+
+# --- Ownership transfer / sale (WO-DBB-WG2) ---------------------------------
+
+def transfer_gate(
+    db: Session,
+    player: Player,
+    gate_id: str,
+    new_owner_id: str,
+    sale_price: Optional[int] = None,
+) -> Dict[str, Any]:
+    """WO-DBB-WG2 — atomically transfer an active gate to another player.
+
+    Flips WarpGate.player_id AND the gate's WarpTunnel.created_by_player_id;
+    the toll / access-mode / accumulated-revenue config all live on those rows
+    (access_requirements + artificial_data JSONB) and carry over untouched.
+    Settles an optional salePrice (debit buyer, credit seller) under row locks.
+    Enforces the buyer's max-gate cap; on any failure no balance or ownership
+    changes (single transaction, reversed by the caller's rollback). Caller
+    owns the commit.
+
+    Lock order (shipped race-safety invariant): the GATE row first, then the
+    PLAYER rows — and the two players in a deterministic id order so two
+    simultaneous transfers between the same pair cannot deadlock."""
+    if sale_price is not None:
+        if not isinstance(sale_price, int) or isinstance(sale_price, bool):
+            raise WarpGateError(400, "salePrice must be a whole number of credits")
+        if sale_price < 0:
+            raise WarpGateError(400, "salePrice cannot be negative")
+
+    try:
+        buyer_uuid = uuid.UUID(str(new_owner_id))
+    except (ValueError, AttributeError, TypeError):
+        raise WarpGateError(400, "newOwnerId is not a valid player id")
+    if buyer_uuid == player.id:
+        raise WarpGateError(400, "You already own this gate")
+
+    # Lock the gate row first (lock order: gate before players).
+    gate = _resolve_owned_active_gate(db, player, gate_id, lock=True)
+
+    # Lock both player rows in a deterministic id order to avoid deadlock,
+    # then bind the named seller/buyer handles to the locked instances.
+    ids_in_order = sorted({player.id, buyer_uuid}, key=lambda x: str(x))
+    locked: Dict[Any, Player] = {}
+    for pid in ids_in_order:
+        row = (
+            db.query(Player)
+            .filter(Player.id == pid)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            raise WarpGateError(
+                404,
+                "Buyer not found" if pid == buyer_uuid else "Seller not found",
+            )
+        locked[pid] = row
+    seller = locked[player.id]
+    buyer = locked[buyer_uuid]
+
+    if buyer.id == seller.id:
+        raise WarpGateError(400, "You already own this gate")
+
+    # Buyer-cap check: the buyer's current owned ACTIVE gates + this one must
+    # not exceed their cap (warp-gates.md "Transfer & sale" buyer-cap check;
+    # ADR-0010 formula via max_gates_for_player). The gate being transferred is
+    # the seller's, so it is not yet in the buyer's count.
+    buyer_cap = max_gates_for_player(db, buyer)
+    buyer_active = (
+        db.query(WarpGate)
+        .filter(
+            WarpGate.player_id == buyer.id,
+            WarpGate.status == WarpGateStatus.ACTIVE,
+        )
+        .count()
+    )
+    if buyer_active + 1 > buyer_cap:
+        raise WarpGateError(
+            400,
+            f"The buyer already owns {buyer_active} active warp gate(s); their "
+            f"limit is {buyer_cap} — they cannot accept another. (No credits "
+            "were moved.)",
+        )
+
+    # Settle the optional sale price under the held locks. The buyer is debited
+    # and the seller credited atomically; if the buyer is short, nothing moves
+    # (the caller's rollback reverses any prior flush — "holds reversed").
+    settled_price = 0
+    if sale_price:
+        if buyer.credits < sale_price:
+            raise WarpGateError(
+                400,
+                f"The buyer has {buyer.credits:,} credits but the sale price is "
+                f"{sale_price:,} — transfer rejected, no credits moved",
+            )
+        buyer.credits -= sale_price
+        seller.credits += sale_price
+        settled_price = sale_price
+
+    # Flip ownership on the gate AND its traversable tunnel together. Toll /
+    # access / revenue config stays on the tunnel JSONB and carries over.
+    gate.player_id = buyer.id
+    tunnel = None
+    if gate.warp_tunnel_id:
+        tunnel = (
+            db.query(WarpTunnel)
+            .filter(WarpTunnel.id == gate.warp_tunnel_id)
+            .with_for_update()
+            .first()
+        )
+        if tunnel is not None:
+            tunnel.created_by_player_id = buyer.id
+    # Also reassign the linked beacon (the project row list_player_projects keys
+    # /mine off): without this the transferred gate would stay on the SELLER's
+    # /mine and never surface on the BUYER's. Locked in the same gate->tunnel->
+    # beacon->player order.
+    if gate.beacon_id:
+        beacon = (
+            db.query(WarpGateBeacon)
+            .filter(WarpGateBeacon.id == gate.beacon_id)
+            .with_for_update()
+            .first()
+        )
+        if beacon is not None:
+            beacon.player_id = buyer.id
+    db.flush()
+
+    logger.info(
+        "Warp gate %s transferred from player %s to player %s (sale_price=%d)",
+        gate.id, seller.id, buyer.id, settled_price,
+    )
+    return {
+        "gate_id": str(gate.id),
+        "previous_owner_id": str(seller.id),
+        "new_owner_id": str(buyer.id),
+        "sale_price": settled_price,
+        "buyer_credits": buyer.credits,
+        "seller_credits": seller.credits,
+        "access_carried_over": (
+            _access_mode_of(tunnel) if tunnel is not None else ACCESS_MODE_PUBLIC
+        ),
+    }
