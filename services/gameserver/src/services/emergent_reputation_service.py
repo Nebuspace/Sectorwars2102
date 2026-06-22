@@ -413,6 +413,15 @@ EMERGENT_ACTIONS: Dict[str, EmergentAction] = {
             "ANOMALY / WARP_STORM sector (+15) — NEBULA/BLACK_HOLE subset wired"
         ),
     ),
+    # WO-NEBULA: Nova Scientific rep for nebula harvesting — PER-BLOCK (+1 per
+    # whole 3 Quantum Shards harvested; quantum_service.harvest_nebula dispatches
+    # this action once per earned 3-shard block, mirroring the TRADE_VOLUME
+    # per-block model below). Nova == FactionType.EXPLORERS.
+    "HARVEST_NEBULA_SHARDS_NS": EmergentAction(
+        name="HARVEST_NEBULA_SHARDS_NS",
+        deltas=[FactionDelta(FactionType.EXPLORERS, 1)],
+        doc_source="quantum-resources.md NS: +1 / 3 Quantum Shards harvested (per-block; WO-NEBULA)",
+    ),
     # -----------------------------------------------------------------------
     # WO-CD-2: PER-BLOCK trade-volume actions (one whole rep point per earned
     # 5,000-cr block — see apply_trade_volume_rep below, which owns the

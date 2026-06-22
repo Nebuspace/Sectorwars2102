@@ -58,7 +58,9 @@ from src.models.player import Player
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.station import Station
+from src.models.cluster import Cluster
 from src.services.ship_upgrade_service import ShipUpgradeService
+from src.services.emergent_reputation_service import apply_emergent_action
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,53 @@ MISREAD_REDUCTION_PER_SENSOR_LEVEL = 5
 EXTENDED_BAND_SENSOR_LEVEL = 3
 FAR_BAND_SHARD_COST = 1
 REFINE_MIN_STATION_CLASS = 3
+
+
+# --- Nebula harvest (quantum-resources.md § Harvest mechanics / § Nebula types
+# and field strengths) ---
+
+# § Harvest mechanics: "Real-time cooldown: 2 hours per attempt." Canonical,
+# scaled the SAME way scan/jump compute their cooldown_until (scaled_deadline).
+HARVEST_COOLDOWN_HOURS = 2.0
+
+# § Harvest mechanics resolution step 4: "Roll crit ~ uniform(0, 1) < 0.02."
+HARVEST_CRIT_RATE = 0.02
+# § Resolution step 4: "multiply yield by the nebula's critical multiplier
+# (×2 default; ×5 in Obsidian)."
+HARVEST_CRIT_MULT_DEFAULT = 2
+HARVEST_CRIT_MULT_OBSIDIAN = 5
+
+# Shard-yield bands transcribed VERBATIM from the canon "Nebula types and field
+# strengths" table (quantum-resources.md § Nebula types and field strengths):
+# the (lo, hi) inclusive shard band per nebula color. Keyed by the lowercase
+# nebula type as it is persisted on Cluster.nebula_type at generation time.
+_HARVEST_YIELD_BANDS: Dict[str, Tuple[int, int]] = {
+    "crimson": (2, 3),    # field 80-100 | shard yield 2-3
+    "azure": (1, 3),      # field 60-80  | shard yield 1-3
+    "emerald": (1, 2),    # field 50-70  | shard yield 1-2
+    "violet": (1, 2),     # field 40-60  | shard yield 1-2
+    "amber": (0, 1),      # field 20-40  | shard yield 0-1
+    "obsidian": (0, 1),   # field 0-20   | shard yield 0-1 (rare x5 crit ~2%)
+}
+
+# § Faction reputation hooks: "Harvest Quantum Shards in any nebula | +1 Nova
+# Scientific Institute rep per 3 Shards harvested." Nova = FactionType.EXPLORERS
+# (emergent_reputation_service FACTION code map). One emergent-action dispatch
+# per whole 3-shard block — mirrors apply_trade_volume_rep's per-block model.
+HARVEST_NS_REP_SHARDS_PER_BLOCK = 3
+# Emergent-action key the per-block Nova award dispatches. NOTE: this action is
+# NOT YET registered in emergent_reputation_service.EMERGENT_ACTIONS (that file
+# is out of this lane); until the orchestrator adds it the dispatcher logs a
+# warning and returns {"success": False} WITHOUT raising — the harvest still
+# succeeds and the rep wiring activates the instant the one-line action entry
+# lands (the codebase's "defined-but-unwired-but-ready" pattern). Flagged in the
+# WO report as a cross-lane follow-up.
+HARVEST_NS_EMERGENT_ACTION = "HARVEST_NEBULA_SHARDS_NS"
+
+# Secrets-backed RNG — canon § Anti-cheat ("Yield rolls use a cryptographically
+# secure RNG"). Module-level SystemRandom per the stdlib guidance, mirroring
+# mining_service / contraband_service.
+_RNG = random.SystemRandom()
 
 # Range bands in inter-sector spacings: (min, max). Projection uses the
 # band midpoint; the committed range (misfire ceiling) is the band max.
@@ -744,6 +793,132 @@ def refine_charge(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     return {
         "quantum_charges": ship.quantum_charges,
         "quantum_shards": player.quantum_shards,
+    }
+
+
+# --- nebula harvest ---
+
+def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
+    """Harvest Quantum Shards from a nebula sector (quantum-resources.md
+    § Harvest mechanics / § Nebula types and field strengths).
+
+    Locks the player + piloted ship row FOR UPDATE, gates on the nebula
+    sector + fitted harvester + the 2h per-ship harvest cooldown, rolls the
+    shard yield from the canon band for the cluster's nebula type (secrets
+    RNG) with the 2% crit (×2, or ×5 for Obsidian), credits
+    ``player.quantum_shards``, awards Nova Scientific Institute rep (+1 per 3
+    shards), and arms the 2h cooldown (canonical, scaled via scaled_deadline
+    the same way scan/jump compute theirs).
+
+    KERNEL SCOPE: the per-sector soft-cap depletion (Max-gated) is deferred —
+    not implemented here. FLUSH-ONLY: the route owns db.commit().
+
+    Returns the harvest outcome dict; raises QuantumError with a stable reason
+    string for a rejected attempt (the route maps reasons to 4xx)."""
+    player = _lock_player(db, player_id)
+
+    # Lock the piloted ship row FOR UPDATE (harvest cooldown mutates on it;
+    # per-ship serialization per § Concurrency: "the harvest endpoint takes
+    # with_for_update on the ship row to serialize concurrent attempts").
+    ship = player.current_ship
+    if not ship or ship.is_destroyed:
+        raise QuantumError("No active ship selected")
+    ship = (
+        db.query(Ship)
+        .filter(Ship.id == ship.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if not ship or ship.is_destroyed:
+        raise QuantumError("No active ship selected")
+
+    # GATE — fitted harvester (§ Preconditions 2).
+    if not ship.quantum_harvester_slot:
+        raise QuantumError(
+            "no_harvester: this ship has no Quantum Field Harvester fitted"
+        )
+
+    # GATE — harvest cooldown (§ Preconditions 5: "2-hour real-time per ship").
+    if _cooldown_active(ship.quantum_harvest_cooldown_until):
+        raise QuantumError(
+            "on_cooldown: the harvester is recharging until "
+            f"{_iso_or_none(ship.quantum_harvest_cooldown_until)}"
+        )
+
+    # GATE — sector is a NEBULA whose cluster carries a nebula type
+    # (§ Preconditions 1). Resolve the sector by its global sector_id, then
+    # the parent cluster's nebula_type (member NEBULA sectors inherit it).
+    sector = (
+        db.query(Sector)
+        .filter(Sector.sector_id == player.current_sector_id)
+        .first()
+    )
+    if sector is None or sector.type != SectorType.NEBULA:
+        raise QuantumError("not_a_nebula: you must be in a nebula sector to harvest")
+
+    cluster = (
+        db.query(Cluster).filter(Cluster.id == sector.cluster_id).first()
+        if sector.cluster_id
+        else None
+    )
+    nebula_type = (cluster.nebula_type or "").strip().lower() if cluster else ""
+    band = _HARVEST_YIELD_BANDS.get(nebula_type)
+    if band is None:
+        # The sector is NEBULA but its cluster carries no recognised nebula
+        # type (un-persisted nebula_type — quantum-resources.md flags this as a
+        # 🚧 Partial: "per-cluster nebula_type ... not yet persisted"). Reject
+        # cleanly rather than guessing a band.
+        raise QuantumError(
+            "not_a_nebula: this nebula's field type is uncharted — no harvest band"
+        )
+
+    # ROLL — shard yield from the canon band (inclusive), secrets RNG.
+    lo, hi = band
+    shard_yield = _RNG.randint(lo, hi)
+
+    # CRIT — 2% chance: ×2, or ×5 for Obsidian (§ Resolution step 4).
+    crit = _RNG.random() < HARVEST_CRIT_RATE
+    crit_multiplier = (
+        HARVEST_CRIT_MULT_OBSIDIAN if nebula_type == "obsidian"
+        else HARVEST_CRIT_MULT_DEFAULT
+    )
+    if crit:
+        shard_yield *= crit_multiplier
+
+    # CREDIT — player's quantum-shard ledger (§ Storage: dedicated player
+    # quantum-shard count; quantum_service reads player.quantum_shards).
+    player.quantum_shards = (player.quantum_shards or 0) + shard_yield
+
+    # NOVA REP — +1 Nova Scientific Institute rep per whole 3-shard block
+    # (§ Faction reputation hooks). One dispatch per block, mirroring
+    # apply_trade_volume_rep's per-block model. apply_emergent_action is
+    # flush-only and never raises, so a missing action key / rep hiccup can
+    # never break the harvest path.
+    ns_blocks = shard_yield // HARVEST_NS_REP_SHARDS_PER_BLOCK if shard_yield else 0
+    for _ in range(ns_blocks):
+        apply_emergent_action(
+            db, player, HARVEST_NS_EMERGENT_ACTION,
+            {"sector_id": sector.sector_id},
+        )
+
+    # COOLDOWN — arm the 2h per-ship harvest cooldown (canonical, scaled the
+    # SAME way scan/jump compute their cooldown_until).
+    ship.quantum_harvest_cooldown_until = scaled_deadline(HARVEST_COOLDOWN_HOURS)
+
+    db.flush()  # route owns the commit
+
+    logger.info(
+        "Player %s harvested nebula sector %s (%s): %d shards (crit=%s, ns_blocks=%d)",
+        player.id, sector.sector_id, nebula_type, shard_yield, crit, ns_blocks,
+    )
+
+    return {
+        "shard_yield": shard_yield,
+        "crit": crit,
+        "nebula_type": nebula_type,
+        "quantum_shards": player.quantum_shards,
+        "harvest_cooldown_until": _iso_or_none(ship.quantum_harvest_cooldown_until),
     }
 
 

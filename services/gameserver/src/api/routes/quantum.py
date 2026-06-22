@@ -54,6 +54,12 @@ class RefineChargeRequest(BaseModel):
     pass
 
 
+class HarvestRequest(BaseModel):
+    """Empty body — the nebula sector, fitted harvester, and cooldown are all
+    validated server-side from the player's current state."""
+    pass
+
+
 # Endpoints
 
 @router.get("/status")
@@ -130,3 +136,29 @@ async def quantum_jump(
         )
     except QuantumError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/harvest")
+async def quantum_harvest(
+    request: HarvestRequest = None,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Harvest Quantum Shards from a nebula sector. Requires a fitted Quantum
+    Field Harvester, being in a NEBULA sector whose cluster carries a nebula
+    type, and the 2h per-ship harvest cooldown to be clear. Rolls the canon
+    shard yield (with a 2% crit) and arms the cooldown.
+
+    THIS ROUTE OWNS THE COMMIT: harvest_nebula flushes only, so a successful
+    harvest must commit here or the credited shards / armed cooldown silently
+    roll back; any failure rolls back."""
+    try:
+        result = quantum_service.harvest_nebula(db, player.id)
+        db.commit()
+        return result
+    except QuantumError as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        db.rollback()
+        raise

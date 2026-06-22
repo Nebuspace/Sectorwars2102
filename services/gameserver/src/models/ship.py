@@ -213,6 +213,11 @@ class Ship(Base):
     # canonical). NULL or in the past = no active cooldown.
     quantum_jump_cooldown_until = Column(DateTime(timezone=True), nullable=True)
     quantum_scan_cooldown_until = Column(DateTime(timezone=True), nullable=True)
+    # Nebula harvest cooldown (quantum-resources.md § Harvest mechanics: "2-hour
+    # real-time per ship"). Pre-scaled through scaled_deadline at set time (2h
+    # canonical). NULL or in the past = no active cooldown. Per-ship so swapping
+    # hulls cannot stack harvest bursts from a single sector.
+    quantum_harvest_cooldown_until = Column(DateTime(timezone=True), nullable=True)
     # Warp gate construction (ADR-0036): set when status == HARMONIZING,
     # cleared when harmonization resolves (1h canonical, scaled).
     harmonization_completes_at = Column(DateTime(timezone=True), nullable=True)
