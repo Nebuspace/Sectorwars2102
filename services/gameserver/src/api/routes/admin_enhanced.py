@@ -55,6 +55,7 @@ class PlanetCreateRequest(BaseModel):
     citadel_level: int
     shield_level: int
     fighters: int
+    size: int = 5  # 1-10 planet size; caps the citadel level (max_citadel_level_for_size)
 
 class WarpTunnelEnhancedRequest(BaseModel):
     source_sector_id: int
@@ -197,14 +198,22 @@ async def create_planet(
     
     if sector.has_planet:
         raise HTTPException(status_code=400, detail="Sector already has a planet")
-    
+
+    # CRT size-gate: a planet's size caps its citadel level (small worlds can't pack a
+    # full citadel). Clamp the admin-requested level so an admin can't create an
+    # over-cap planet — the same invariant citadel_service.start_upgrade enforces.
+    from src.services.structures import max_citadel_level_for_size
+    planet_size = max(1, min(10, request.size))
+    clamped_citadel_level = max(0, min(request.citadel_level, max_citadel_level_for_size(planet_size)))
+
     # Create planet
     planet = Planet(
         name=request.name,
         sector_id=request.sector_id,
         planet_type=request.planet_type,
         owner_id=None,  # Uncolonized
-        citadel_level=request.citadel_level,
+        size=planet_size,
+        citadel_level=clamped_citadel_level,
         shield_level=request.shield_level,
         colonists=request.colonists,
         production=request.production_rates,
