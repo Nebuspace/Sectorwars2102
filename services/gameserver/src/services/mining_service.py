@@ -353,12 +353,14 @@ class MiningService:
                 **empty,
             }
 
-        # Cargo capacity: need >= 1 free unit (canon precondition 5).
+        # Cargo capacity: need >= 1 free unit (canon precondition 5). The cargo
+        # JSONB convention (matches trading.py) is {'used','capacity','contents'}
+        # with a 50-unit default when 'capacity' is absent. There is NO
+        # Ship.max_cargo column — max_cargo lives on ShipSpecification — so the
+        # capacity must come from the JSONB (or the 50 default), never ship.*.
         cargo = ship.cargo if isinstance(ship.cargo, dict) else {}
         cargo_used = cargo.get("used", 0) or 0
-        cargo_capacity = cargo.get("capacity", None)
-        if cargo_capacity is None:
-            cargo_capacity = ship.max_cargo if ship.max_cargo is not None else 50
+        cargo_capacity = cargo.get("capacity", 50)
         free_cargo = cargo_capacity - cargo_used
         if free_cargo < 1:
             return {
