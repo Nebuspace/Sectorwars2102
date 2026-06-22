@@ -26,7 +26,7 @@ interface MapConnection {
 }
 
 const GalaxyMap: React.FC = () => {
-  const { playerState, currentSector, availableMoves, getAvailableMoves, moveToSector } = useGame();
+  const { playerState, currentSector, availableMoves, getAvailableMoves, moveToSector, scanForLatentTunnels } = useGame();
   const [localSectors, setLocalSectors] = useState<MapSector[]>([]);
   const [connections, setConnections] = useState<MapConnection[]>([]);
   const [selectedSector, setSelectedSector] = useState<MapSector | null>(null);
@@ -35,6 +35,9 @@ const GalaxyMap: React.FC = () => {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
+  // WO-LW — latent-warp scan: in-app feedback (no native alert — freeze-trap).
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<{ ok: boolean; message: string } | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   
   // Simulated data for visualization - in a real game, this would come from API
@@ -183,6 +186,36 @@ const GalaxyMap: React.FC = () => {
       setSelectedSector(null);
     }
   };
+
+  // WO-LW — sweep this sector for latent (hidden) warp tunnels. The context
+  // method refreshes available moves on a reveal, so the new tunnels flow into
+  // the map's tunnel rendering automatically via the availableMoves effect.
+  const handleScanLatentWarps = async () => {
+    if (isScanning) return;
+    setIsScanning(true);
+    setScanResult(null);
+    try {
+      const result = await scanForLatentTunnels();
+      if (result) {
+        const revealed = result.revealed ?? 0;
+        setScanResult({
+          ok: true,
+          message: revealed > 0
+            ? `Latent scan: ${revealed} warp tunnel${revealed === 1 ? '' : 's'} revealed`
+            : (result.message || 'Latent scan: no hidden tunnels detected'),
+        });
+      } else {
+        setScanResult({ ok: false, message: 'Latent scan unavailable' });
+      }
+    } catch (error: any) {
+      setScanResult({
+        ok: false,
+        message: error?.response?.data?.detail || error?.response?.data?.message || 'Latent scan failed',
+      });
+    } finally {
+      setIsScanning(false);
+    }
+  };
   
   return (
     <GameLayout>
@@ -199,12 +232,20 @@ const GalaxyMap: React.FC = () => {
             >
               🌌 3D
             </button>
-            <button 
+            <button
               className={`view-mode-button ${viewMode === '2d' ? 'active' : ''}`}
               onClick={() => setViewMode('2d')}
               title="2D Galaxy Map"
             >
               📍 2D
+            </button>
+            <button
+              className="view-mode-button"
+              onClick={handleScanLatentWarps}
+              disabled={isScanning}
+              title="Sweep this sector for hidden warp tunnels"
+            >
+              {isScanning ? '📡 Scanning…' : '📡 Scan latent warps'}
             </button>
             {viewMode === '2d' && (
               <>
@@ -232,8 +273,26 @@ const GalaxyMap: React.FC = () => {
               </>
             )}
           </div>
+          {scanResult && (
+            <div
+              className="latent-scan-result"
+              role="status"
+              style={{
+                marginTop: '0.5rem',
+                padding: '0.4rem 0.75rem',
+                borderRadius: '4px',
+                fontSize: '0.85rem',
+                alignSelf: 'flex-end',
+                backgroundColor: '#131b2c',
+                border: `1px solid ${scanResult.ok ? '#2a6f4d' : '#6f2a2a'}`,
+                color: scanResult.ok ? '#7ee0a8' : '#ff9b9b',
+              }}
+            >
+              {scanResult.message}
+            </div>
+          )}
         </div>
-        
+
         {viewMode === '3d' ? (
           <div className="map-view map-view-3d">
             <ErrorBoundary fallback={
