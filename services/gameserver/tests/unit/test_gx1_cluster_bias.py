@@ -242,6 +242,101 @@ def test_bias_helper_is_deterministic():
     assert out_a == out_b
 
 
+# ---------------------------------------------------------------------------
+# LOCKED — the ratified GX1 20-cluster Central Nexus table (4/2/6/5/3 remix)
+#
+# Canonical spec: sw2102-docs/SYSTEMS/central-nexus-clusters.md §"Cluster table".
+# These assertions are deliberately LOCKED to the FROZEN ratified table so any
+# future drift in nexus_generation_service._create_nexus_clusters fails here.
+# Transcribed EXACTLY in index order 1..20; do NOT reorder/rename/reinterpret.
+# ---------------------------------------------------------------------------
+
+# (name, ClusterType, grid (x, y)) in index order — the FROZEN ratified table.
+NEXUS_CLUSTER_TABLE = [
+    ("Commerce Central Hub", ClusterType.TRADE_HUB, (0, 0)),          # 1  ANCHOR
+    ("Diplomatic Quarter", ClusterType.POPULATION_CENTER, (1, 0)),    # 2
+    ("Industrial Complex", ClusterType.TRADE_HUB, (2, 0)),            # 3
+    ("Prospect Belt", ClusterType.RESOURCE_RICH, (3, 0)),             # 4
+    ("Drift Reaches", ClusterType.FRONTIER_OUTPOST, (4, 0)),          # 5
+    ("Outer Survey Station", ClusterType.FRONTIER_OUTPOST, (0, 1)),   # 6
+    ("Free Trade Zone", ClusterType.TRADE_HUB, (1, 1)),              # 7
+    ("Lodestar Reach", ClusterType.RESOURCE_RICH, (2, 1)),           # 8
+    ("Quiet Quarter", ClusterType.STANDARD, (3, 1)),                # 9
+    ("Gateway Plaza", ClusterType.STANDARD, (4, 1)),                # 10 ANCHOR
+    ("Settlers' Rest", ClusterType.POPULATION_CENTER, (0, 2)),       # 11
+    ("Transit Junction", ClusterType.STANDARD, (1, 2)),             # 12
+    ("Slag Fields", ClusterType.RESOURCE_RICH, (2, 2)),             # 13
+    ("Starport Complex", ClusterType.TRADE_HUB, (3, 2)),            # 14
+    ("Marker's Edge", ClusterType.FRONTIER_OUTPOST, (4, 2)),        # 15
+    ("The Bazaar", ClusterType.STANDARD, (0, 3)),                  # 16
+    ("Lonesome Span", ClusterType.FRONTIER_OUTPOST, (1, 3)),       # 17
+    ("Wayfarer Hollow", ClusterType.STANDARD, (2, 3)),            # 18
+    ("Merchant's Row", ClusterType.STANDARD, (3, 3)),             # 19
+    ("Frontier Gateway", ClusterType.FRONTIER_OUTPOST, (4, 3)),    # 20
+]
+
+
+async def _generate_nexus_clusters():
+    """Invoke _create_nexus_clusters with a mock session and return the list."""
+    service = NexusGenerationService()
+    session = AsyncMock()
+    # _create_nexus_clusters does session.add(...) (sync) then await session.flush().
+    return await service._create_nexus_clusters(session, "region-uuid")
+
+
+@pytest.mark.asyncio
+async def test_nexus_cluster_table_is_ratified_gx1_remix():
+    """LOCKED 1:1: the generated 20-cluster table matches the ratified FROZEN
+    table EXACTLY — name + type + grid (x, y), in index order. A future drift in
+    _create_nexus_clusters (rename, reorder, retype) fails this test."""
+    clusters = await _generate_nexus_clusters()
+    assert len(clusters) == 20, "the Nexus has exactly 20 clusters (invariant #1)"
+    for idx, (name, ctype, (gx, gy)) in enumerate(NEXUS_CLUSTER_TABLE):
+        c = clusters[idx]
+        assert c.name == name, f"cluster #{idx + 1} name: {c.name!r} != {name!r}"
+        assert c.type == ctype, f"cluster #{idx + 1} type: {c.type!r} != {ctype!r}"
+        assert c.x_coord == gx, f"cluster #{idx + 1} x_coord: {c.x_coord} != {gx}"
+        assert c.y_coord == gy, f"cluster #{idx + 1} y_coord: {c.y_coord} != {gy}"
+        assert c.z_coord == 0
+
+
+@pytest.mark.asyncio
+async def test_nexus_cluster_type_counts_are_4_2_6_5_3():
+    """LOCKED: the ratified remix proportions — 4 TRADE_HUB · 2 POPULATION_CENTER ·
+    6 STANDARD · 5 FRONTIER_OUTPOST · 3 RESOURCE_RICH · 0 MILITARY/CONTESTED/SPECIAL
+    (= 20). Replaces the prior 8/4/8 mix."""
+    clusters = await _generate_nexus_clusters()
+    from collections import Counter
+
+    counts = Counter(c.type for c in clusters)
+    assert counts[ClusterType.TRADE_HUB] == 4
+    assert counts[ClusterType.POPULATION_CENTER] == 2
+    assert counts[ClusterType.STANDARD] == 6
+    assert counts[ClusterType.FRONTIER_OUTPOST] == 5
+    assert counts[ClusterType.RESOURCE_RICH] == 3
+    # The three types the Nexus never seeds (0 slots each).
+    assert counts[ClusterType.MILITARY_ZONE] == 0
+    assert counts[ClusterType.CONTESTED] == 0
+    assert counts[ClusterType.SPECIAL_INTEREST] == 0
+    assert sum(counts.values()) == 20
+
+
+@pytest.mark.asyncio
+async def test_nexus_civic_safe_anchors():
+    """LOCKED invariant: slot 1 (Commerce Central Hub) stays TRADE_HUB — the
+    starter/civic-safe cluster; slot 10 (Gateway Plaza) stays STANDARD — the
+    Capital cluster, never FRONTIER_OUTPOST/RESOURCE_RICH."""
+    clusters = await _generate_nexus_clusters()
+    assert clusters[0].name == "Commerce Central Hub"
+    assert clusters[0].type == ClusterType.TRADE_HUB
+    assert clusters[9].name == "Gateway Plaza"
+    assert clusters[9].type == ClusterType.STANDARD
+    assert clusters[9].type not in (
+        ClusterType.FRONTIER_OUTPOST,
+        ClusterType.RESOURCE_RICH,
+    )
+
+
 @pytest.mark.asyncio
 async def test_nexus_military_patrol_ships_is_scalar_int():
     """WO-GX1 CRITICAL: a MILITARY_ZONE Nexus sector writes patrol_ships as a

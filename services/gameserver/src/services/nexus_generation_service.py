@@ -206,47 +206,47 @@ class NexusGenerationService:
         """
         clusters = []
         cluster_types_distribution = [
-            ClusterType.TRADE_HUB,
-            ClusterType.POPULATION_CENTER,
-            ClusterType.TRADE_HUB,
-            ClusterType.TRADE_HUB,
-            ClusterType.STANDARD,
-            ClusterType.POPULATION_CENTER,
-            ClusterType.TRADE_HUB,
-            ClusterType.TRADE_HUB,
-            ClusterType.STANDARD,
-            ClusterType.STANDARD,
-            ClusterType.TRADE_HUB,
-            ClusterType.POPULATION_CENTER,
-            ClusterType.STANDARD,
-            ClusterType.TRADE_HUB,
-            ClusterType.STANDARD,
-            ClusterType.TRADE_HUB,
-            ClusterType.STANDARD,
-            ClusterType.POPULATION_CENTER,
-            ClusterType.STANDARD,
-            ClusterType.STANDARD
+            ClusterType.TRADE_HUB,          # 1  Commerce Central Hub (ANCHOR: starter, civic-safe)
+            ClusterType.POPULATION_CENTER,  # 2  Diplomatic Quarter
+            ClusterType.TRADE_HUB,          # 3  Industrial Complex
+            ClusterType.RESOURCE_RICH,      # 4  Prospect Belt
+            ClusterType.FRONTIER_OUTPOST,   # 5  Drift Reaches
+            ClusterType.FRONTIER_OUTPOST,   # 6  Outer Survey Station
+            ClusterType.TRADE_HUB,          # 7  Free Trade Zone
+            ClusterType.RESOURCE_RICH,      # 8  Lodestar Reach
+            ClusterType.STANDARD,           # 9  Quiet Quarter
+            ClusterType.STANDARD,           # 10 Gateway Plaza (ANCHOR: Capital, never FRONTIER/RESOURCE)
+            ClusterType.POPULATION_CENTER,  # 11 Settlers' Rest
+            ClusterType.STANDARD,           # 12 Transit Junction
+            ClusterType.RESOURCE_RICH,      # 13 Slag Fields
+            ClusterType.TRADE_HUB,          # 14 Starport Complex
+            ClusterType.FRONTIER_OUTPOST,   # 15 Marker's Edge
+            ClusterType.STANDARD,           # 16 The Bazaar
+            ClusterType.FRONTIER_OUTPOST,   # 17 Lonesome Span
+            ClusterType.STANDARD,           # 18 Wayfarer Hollow
+            ClusterType.STANDARD,           # 19 Merchant's Row
+            ClusterType.FRONTIER_OUTPOST    # 20 Frontier Gateway
         ]
 
         cluster_names = [
             "Commerce Central Hub",
             "Diplomatic Quarter",
             "Industrial Complex",
-            "Residential District Alpha",
-            "Transit Hub Prime",
-            "High Security Zone",
-            "Cultural Center",
-            "Research Campus",
+            "Prospect Belt",
+            "Drift Reaches",
+            "Outer Survey Station",
             "Free Trade Zone",
+            "Lodestar Reach",
+            "Quiet Quarter",
             "Gateway Plaza",
-            "Financial District",
-            "Medical Center",
-            "Technology Park",
+            "Settlers' Rest",
+            "Transit Junction",
+            "Slag Fields",
             "Starport Complex",
-            "Civic Center",
-            "Entertainment District",
-            "Manufacturing Zone",
-            "Academic Quarter",
+            "Marker's Edge",
+            "The Bazaar",
+            "Lonesome Span",
+            "Wayfarer Hollow",
             "Merchant's Row",
             "Frontier Gateway"
         ]
