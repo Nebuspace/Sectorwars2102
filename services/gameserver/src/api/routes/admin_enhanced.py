@@ -245,48 +245,67 @@ async def create_enhanced_warp_tunnel(
     db: Session = Depends(get_db)
 ):
     """Create a warp tunnel with enhanced options"""
-    # Validate sectors exist
+    from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
+
+    # Validate sectors exist (request carries human-readable Integer sector numbers;
+    # WarpTunnel FKs reference the Sector UUID primary key, so resolve to .id below).
     source = db.query(Sector).filter(Sector.sector_id == request.source_sector_id).first()
     target = db.query(Sector).filter(Sector.sector_id == request.target_sector_id).first()
-    
+
     if not source or not target:
         raise HTTPException(status_code=404, detail="Source or target sector not found")
-    
-    # Check if warp already exists
+
+    # Check if warp already exists (real model fields: origin_/destination_sector_id, by UUID)
     existing = db.query(WarpTunnel).filter(
-        ((WarpTunnel.source_sector_id == request.source_sector_id) & 
-         (WarpTunnel.destination_sector_id == request.target_sector_id)) |
-        ((WarpTunnel.source_sector_id == request.target_sector_id) & 
-         (WarpTunnel.destination_sector_id == request.source_sector_id))
+        ((WarpTunnel.origin_sector_id == source.id) &
+         (WarpTunnel.destination_sector_id == target.id)) |
+        ((WarpTunnel.origin_sector_id == target.id) &
+         (WarpTunnel.destination_sector_id == source.id))
     ).first()
-    
+
     if existing:
         raise HTTPException(status_code=400, detail="Warp tunnel already exists between these sectors")
-    
-    # Create warp tunnel
+
+    # Map the request's tunnel_type ("natural"/"artificial") to the model enum;
+    # unknown values fall back to STANDARD (matches admin_comprehensive's pattern).
+    try:
+        tunnel_type = WarpTunnelType[request.tunnel_type.upper()]
+    except KeyError:
+        tunnel_type = WarpTunnelType.STANDARD
+
+    # Access control / toll do not have dedicated WarpTunnel columns; persist them
+    # in the access_requirements JSONB so the intent isn't lost.
+    access_requirements = {
+        "access_control": request.access_control,
+        "toll_amount": request.toll_amount or 0,
+    }
+
+    # Create warp tunnel using the REAL model fields.
     warp = WarpTunnel(
-        source_sector_id=request.source_sector_id,
-        destination_sector_id=request.target_sector_id,
+        name=f"{source.name} <-> {target.name}",
+        origin_sector_id=source.id,
+        destination_sector_id=target.id,
+        type=tunnel_type,
+        status=WarpTunnelStatus.ACTIVE,
         is_bidirectional=not request.is_one_way,
         stability=request.stability / 100.0,
         turn_cost=request.turn_cost,
-        creator_id=None if request.tunnel_type == "natural" else current_admin.id,
-        toll_amount=request.toll_amount or 0,
-        max_ship_size=None,
-        hidden=False
+        is_public=(request.access_control == "public"),
+        access_requirements=access_requirements,
+        created_by_player_id=None,  # admin-created; no player owner
     )
-    
+
     db.add(warp)
     source.has_warp_tunnel = True
     if not request.is_one_way:
         target.has_warp_tunnel = True
-    
+
     db.commit()
-    
+
     return {
         "id": str(warp.id),
-        "source_sector_id": warp.source_sector_id,
-        "destination_sector_id": warp.destination_sector_id,
+        "source_sector_id": request.source_sector_id,
+        "target_sector_id": request.target_sector_id,
         "is_one_way": request.is_one_way,
         "stability": request.stability,
         "created": True

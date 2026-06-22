@@ -880,9 +880,15 @@ def _maintenance_status(ship: Ship, condition: float, station: Station = None) -
     value = ship.current_value or 0
     # premium needs a Class-I / Military yard (approximated by a SpaceDock here)
     premium_here = bool(station and station.is_spacedock)
+    # Owner service-charge (B4 consume-side): the docked station owner's
+    # service-charge multiplier (0.8x-2.0x) scales the quoted repair costs so the
+    # quote matches what the repair endpoint will actually charge. 1.0 (== today)
+    # when unset or when reading a quote outside a station context.
+    from src.services import docking_service
+    service_mult = docking_service.service_charge_multiplier_for(station) if station else 1.0
     options = []
     for tier, pct in MAINTENANCE_REPAIR_TIER_PCT.items():
-        cost = round((max(0.0, 100.0 - condition) / 10.0) * pct * value)
+        cost = round((max(0.0, 100.0 - condition) / 10.0) * pct * value * service_mult)
         options.append({
             "tier": tier,
             "cost_pct_per_10": pct,
@@ -977,7 +983,14 @@ async def repair_ship_maintenance(
 
     value = ship.current_value or 0
     pct = MAINTENANCE_REPAIR_TIER_PCT[tier]
-    cost = round((max(0.0, 100.0 - condition) / 10.0) * pct * value)
+    # Owner service-charge (B4 consume-side): the docked station owner's
+    # service-charge multiplier (0.8x-2.0x) scales the repair cost. Returns 1.0
+    # when unset, so a port with no service charge prices servicing exactly as
+    # before. Applied inside the rounding so the charge matches the quote in
+    # _maintenance_status.
+    from src.services import docking_service
+    service_mult = docking_service.service_charge_multiplier_for(station)
+    cost = round((max(0.0, 100.0 - condition) / 10.0) * pct * value * service_mult)
     # Never restore for free: a near-pristine or zero-value hull whose cost rounds
     # to <=0 would otherwise get a free full-condition reset.
     if cost <= 0:

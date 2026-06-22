@@ -1159,11 +1159,16 @@ async def dock_at_station(
         # Deduct turns for docking
         spend_turns(current_player, DOCKING_TURN_COST)
 
-        # Charge the docking fee; fees accrue to the station treasury.
-        # The station row is already locked by acquire() — one session,
-        # single commit.
+        # Charge the docking fee; fees fund the station via the canon 40/30/30
+        # revenue split (defense / operating / owner-treasury) — the same
+        # realization path the bump and long-term mooring fees already use,
+        # rather than crediting the owner treasury at 100%. The station row is
+        # already locked by acquire() — one session, single commit. The fee
+        # amount itself already honors the owner override (B4) because
+        # docking_fee_for() reads price_modifiers; a port with no fee set
+        # charges the canonical base fee, exactly as before.
         current_player.credits -= docking_fee
-        station.treasury_balance = (station.treasury_balance or 0) + docking_fee
+        docking_service._realize_fee(db, station, docking_fee)
         slip_result["occupancy"].fee_paid = docking_fee
 
         db.commit()

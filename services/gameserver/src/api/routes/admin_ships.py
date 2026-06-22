@@ -458,6 +458,12 @@ async def create_ship(
             "defense_rating": spec.defense_rating
         },
 
+        # B3: copy the per-hull shield/armor mitigation fractions from the
+        # ShipSpecification onto the Ship row — combat_service reads these off
+        # the Ship, not the spec. Defensive default 0.0 if unset.
+        shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
+        armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
+
         # Genesis and equipment
         genesis_devices=0,
         max_genesis_devices=spec.max_genesis_devices,

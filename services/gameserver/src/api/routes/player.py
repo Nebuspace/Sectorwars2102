@@ -349,6 +349,15 @@ async def repair_player_ship(
     # Basic repair: 5% of current_value per +10% rating restored.
     cost = int(round((ship.current_value or 0) * 0.05 * (deficit_pct / 10.0)))
 
+    # Owner service-charge (B4 consume-side): if the docked station's owner has
+    # set a service-charge multiplier (0.8x-2.0x), it scales the repair cost.
+    # docking_service.service_charge_multiplier_for returns 1.0 when unset, so a
+    # port with no service charge prices repairs exactly as before.
+    from src.services import docking_service
+    service_mult = docking_service.service_charge_multiplier_for(station)
+    if service_mult != 1.0:
+        cost = int(round(cost * service_mult))
+
     if locked_player.credits < cost:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

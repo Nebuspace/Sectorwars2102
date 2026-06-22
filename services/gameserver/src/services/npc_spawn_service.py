@@ -418,6 +418,11 @@ def _build_npc_ship(
             "defense_rating": spec.defense_rating,
         },
         attack_turn_cost=spec.attack_turn_cost,
+        # B3: copy the per-hull shield/armor mitigation fractions from the
+        # ShipSpecification onto the Ship row — combat_service reads these off
+        # the Ship (NPC ships fight as attacker/defender too). Default 0.0.
+        shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
+        armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
         genesis_devices=0,
         max_genesis_devices=spec.max_genesis_devices,
         mines=0,

@@ -294,6 +294,65 @@ def slip_capacities_for(station: Station) -> Dict[str, int]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Owner revenue overrides (B4 consume-side). port_ownership_service is the
+# WRITER of these price_modifiers sub-keys (set_docking_fee / set_service_charge
+# / set_storage_rental, all owner-gated + canon-clamped). This module is a READER
+# only — it never writes them. The bounds below are the canon clamp ranges
+# (port-ownership.md), duplicated as read-side defensive guards so a hand-edited
+# or legacy price_modifiers blob can never push a charge outside canon.
+# ---------------------------------------------------------------------------
+_DOCKING_FEE_KEY = "docking_fee"
+_DOCKING_FEE_ENABLED_KEY = "docking_fee_enabled"
+_SERVICE_CHARGE_KEY = "service_charge_multiplier"
+_DOCKING_FEE_MIN = 50          # cr (canon floor)
+_DOCKING_FEE_MAX = 500         # cr (canon ceiling)
+_SERVICE_CHARGE_MIN = 0.8      # x standard (canon loss-leader floor)
+_SERVICE_CHARGE_MAX = 2.0      # x standard (canon captive-market ceiling)
+
+
+def _owner_docking_fee_override(station: Station) -> Optional[int]:
+    """The owner-set flat docking fee IF set and enabled, else None.
+
+    Returns None whenever the owner has not set a fee or has the toggle off, so
+    the caller falls back to the canonical base-table fee (reproduce-exactly: a
+    port with no fee set / disabled charges the base fee, == today). Defensively
+    clamped to the canon 50-500 cr range.
+    """
+    mods = getattr(station, "price_modifiers", None) or {}
+    if not mods.get(_DOCKING_FEE_ENABLED_KEY):
+        return None
+    raw = mods.get(_DOCKING_FEE_KEY)
+    if raw is None:
+        return None
+    try:
+        amount = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(_DOCKING_FEE_MIN, min(_DOCKING_FEE_MAX, amount))
+
+
+def service_charge_multiplier_for(station: Station) -> float:
+    """Owner-set service-charge multiplier on station services (repair / refuel /
+    etc.), defaulting to 1.0 (no change) when unset.
+
+    B4 consume-side reader for price_modifiers['service_charge_multiplier']
+    (written by port_ownership_service.set_service_charge, 0.8x-2.0x). When the
+    owner has not set a multiplier this returns 1.0 — a port with no service
+    charge set prices services EXACTLY as today (reproduce-exactly). Defensively
+    clamped to the canon 0.8x-2.0x range.
+    """
+    mods = getattr(station, "price_modifiers", None) or {}
+    raw = mods.get(_SERVICE_CHARGE_KEY)
+    if raw is None:
+        return 1.0
+    try:
+        mult = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(_SERVICE_CHARGE_MIN, min(_SERVICE_CHARGE_MAX, mult))
+
+
 def docking_fee_for(station: Station) -> int:
     """Transient docking fee in credits.
 
@@ -301,7 +360,21 @@ def docking_fee_for(station: Station) -> int:
     specify amounts — this table is the documented interpretation:
     capital CLASS_0 50cr · class 1-2 25 · 3-6 50 · 7-10 100 · 11 150 ·
     spacedock 200 · tradedock 250. Same precedence as slip_capacity_for.
+
+    OWNER OVERRIDE (B4 consume-side): when the station owner has set a docking
+    fee AND enabled the toggle (port_ownership_service.set_docking_fee writes
+    price_modifiers['docking_fee'] + ['docking_fee_enabled']), that owner amount
+    REPLACES the base-table value. The amount was already clamped to the canon
+    50-500 cr range by the setter; we defensively clamp again here. When the
+    owner has not set a fee, or has it disabled, this returns the base-table
+    value EXACTLY as before — a port with no fee set behaves identically to
+    today. Reading the override here makes every docking-fee consume site (dock
+    charge, bump cost, slip-info quote, admin display) honor it through one
+    source of truth.
     """
+    override = _owner_docking_fee_override(station)
+    if override is not None:
+        return override
     tier = getattr(station, "tradedock_tier", None)
     if tier in ("A", "B"):
         return 250

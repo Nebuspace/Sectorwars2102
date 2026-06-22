@@ -277,19 +277,3 @@ async def get_team_players(
         "players": players,
         "count": len(players)
     }
-
-
-# Helper function to notify sector changes from other parts of the application
-async def notify_player_moved(user_id: str, new_sector_id: int):
-    """Helper function to notify about player movement from other API endpoints"""
-    await connection_manager.update_user_location(user_id, new_sector_id)
-
-
-# Helper function to send personal notifications
-async def send_personal_notification(user_id: str, notification_data: dict):
-    """Helper function to send personal notifications to a specific user"""
-    message = {
-        "type": "notification",
-        **notification_data
-    }
-    await connection_manager.send_personal_message(user_id, message)
