@@ -61,6 +61,7 @@ from src.api.routes.nav import router as nav_router
 from src.api.routes.medals import router as medals_router
 from src.api.routes.haggle import router as haggle_router
 from src.api.routes.research_cockpit import router as research_cockpit_router
+from src.api.routes.black_market import router as black_market_router
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -159,6 +160,10 @@ api_router.include_router(nav_router, tags=["nav"])
 # The legacy `/admin/galaxy/generate` route in admin.py stays intact; Phase 4
 # removes it in favour of the new job-based flow defined here.
 api_router.include_router(bang_galaxy_router, prefix="/admin", tags=["admin-bang"])
+# Black-market contraband trading (WO-BLACKMARKET kernel): gated catalog + buy +
+# sell with detection roll (router carries its own /trading prefix → endpoints at
+# /trading/black-market/...)
+api_router.include_router(black_market_router, tags=["black-market"])
 
 # Only include test routes in development/test environments
 if settings.TESTING or settings.DEVELOPMENT_MODE:

@@ -62,6 +62,14 @@ class MarketTransaction(Base):
     owner_tariff_rate = Column(Float, nullable=True)
     port_owner_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
     
+    # Black-market context (WO-BLACKMARKET kernel — audit/design-briefs/black-market.md).
+    # is_illegal flags a contraband trade (ContrabandService buy/sell); illegal_commodity
+    # records which IllegalCommodity (core/illegal_commodities.py) was traded. Both nullable:
+    # pre-migration rows and all legal trades stay NULL/False — they do NOT alter the legal
+    # supply/demand ledger, only annotate the row for heat/analytics queries.
+    is_illegal = Column(Boolean, nullable=True)
+    illegal_commodity = Column(String(50), nullable=True)
+
     # Admin fields
     admin_notes = Column(String(500), nullable=True)
     flagged_suspicious = Column(Boolean, nullable=False, default=False)
