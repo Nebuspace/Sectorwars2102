@@ -56,21 +56,26 @@ TRUST_MAX = 1000
 MEMORY_DURATION_DAYS = 90
 
 
-# ── Archetype defaults (DATA_MODELS/jsonb-schema.md authoritative table) ──────
+# ── Archetype defaults ────────────────────────────────────────────────────────
+#
+# haggling_difficulty + preferred_appeal_types: DATA_MODELS/jsonb-schema.md.
+# memory_duration_days: FEATURES/economy/haggling.md (Max DECISION #4, 2026-06-22 —
+#   the haggling.md per-archetype memory windows win over the jsonb-schema.md
+#   defaults). All values stay within the canonical [7, 90] bound.
 #
 # | type        | haggling_difficulty | preferred_appeal_types  | memory_duration_days |
-# | Federation  | 3                   | procedural, compliance  | 30                   |
+# | Federation  | 3                   | procedural, compliance  | 14                   |
 # | Border      | 5                   | economic, personal      | 30                   |
-# | Frontier    | 7                   | personal, risk          | 14                   |
-# | Luxury      | 8                   | cultural, aesthetic     | 60                   |
-# | Black Market| 9                   | risk, discretion        | 7                    |
+# | Frontier    | 7                   | personal, risk          | 60                   |
+# | Luxury      | 8                   | cultural, aesthetic     | 21                   |
+# | Black Market| 9                   | risk, discretion        | 90                   |
 #
 # trust_level defaults to 0; quirks defaults to [].
 _ARCHETYPE_DEFAULTS: Dict[TraderArchetype, Dict[str, Any]] = {
     TraderArchetype.FEDERATION: {
         "haggling_difficulty": 3,
         "preferred_appeal_types": ["procedural", "compliance"],
-        "memory_duration_days": 30,
+        "memory_duration_days": 14,
     },
     TraderArchetype.BORDER: {
         "haggling_difficulty": 5,
@@ -80,17 +85,17 @@ _ARCHETYPE_DEFAULTS: Dict[TraderArchetype, Dict[str, Any]] = {
     TraderArchetype.FRONTIER: {
         "haggling_difficulty": 7,
         "preferred_appeal_types": ["personal", "risk"],
-        "memory_duration_days": 14,
+        "memory_duration_days": 60,
     },
     TraderArchetype.LUXURY: {
         "haggling_difficulty": 8,
         "preferred_appeal_types": ["cultural", "aesthetic"],
-        "memory_duration_days": 60,
+        "memory_duration_days": 21,
     },
     TraderArchetype.BLACK_MARKET: {
         "haggling_difficulty": 9,
         "preferred_appeal_types": ["risk", "discretion"],
-        "memory_duration_days": 7,
+        "memory_duration_days": 90,
     },
 }
 
@@ -318,3 +323,12 @@ def reseed_personality(
         if isinstance(prior_quirks, list) and prior_quirks:
             base["quirks"] = [q for q in prior_quirks if isinstance(q, str)]
     return base
+
+
+# Difficulty presentation note: ``haggling_difficulty`` (int 1–10) is the SINGLE
+# authoritative engine input (ADR-0079 point 5). The FEATURES/economy/haggling.md
+# doc describes difficulty as a ×0.85–1.25 band for readers; that band is derived
+# from the int by the engine's own ``haggle_service._difficulty_band_factor`` —
+# the single home for the formula. WO-HAG intentionally does NOT add a second
+# copy here (it would risk drift); a presentation layer that needs the band
+# reuses the engine helper.
