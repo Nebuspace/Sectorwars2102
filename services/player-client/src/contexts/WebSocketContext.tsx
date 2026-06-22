@@ -98,6 +98,20 @@ interface WebSocketContextType {
     awarded_via: string;
   } | null;
 
+  // Colony tick: bumps once per inbound `genesis_progress` (a deployed Genesis
+  // device finished forming → 100% / 0h) or `planetary_update` (server-pushed
+  // planet-state change) frame. CRT-T1.5-9 §5.1: both frames were SILENTLY
+  // DROPPED here (no case in generalHandler) — the colony panel never knew the
+  // world ticked. PlanetManager watches this counter to re-fetch /planets/owned
+  // live, replacing the locally-guessed formation setInterval poll.
+  // lastPlanetaryEvent carries the payload (planet_id, type) for targeted use.
+  planetaryEventSignal: number;
+  lastPlanetaryEvent: {
+    type: 'genesis_progress' | 'planetary_update';
+    planet_id: string | null;
+    sector_id: number | null;
+  } | null;
+
   // Connection management
   connect: () => void;
   disconnect: () => void;
@@ -171,6 +185,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     medal_description: string | null;
     medal_icon: string | null;
     awarded_via: string;
+  } | null>(null);
+  const [planetaryEventSignal, setPlanetaryEventSignal] = useState(0);
+  const [lastPlanetaryEvent, setLastPlanetaryEvent] = useState<{
+    type: 'genesis_progress' | 'planetary_update';
+    planet_id: string | null;
+    sector_id: number | null;
   } | null>(null);
 
   // Keep track of cleanup functions
@@ -455,6 +475,41 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // toast every medal). The MedalToast is the single medal surface.
           break;
 
+        case 'genesis_progress': {
+          // A deployed Genesis device finished forming (genesis_service emits
+          // 100% / 0h per OWNED planet that just completed — composed pre-commit,
+          // broadcast post-commit by the scheduler). CRT-T1.5-9 §5.1: this frame
+          // was silently dropped. Bump the colony-refresh signal so PlanetManager
+          // re-fetches (the world is now usable) and surface a celebratory toast.
+          setLastPlanetaryEvent({
+            type: 'genesis_progress',
+            planet_id: message.planet_id != null ? String(message.planet_id) : null,
+            sector_id: typeof message.sector_id === 'number' ? message.sector_id : null
+          });
+          setPlanetaryEventSignal(prev => prev + 1);
+          addNotification({
+            title: 'Colony Formation Complete',
+            content: 'A Genesis device finished terraforming — the colony is now usable.',
+            level: 'success'
+          });
+          break;
+        }
+
+        case 'planetary_update': {
+          // Server-pushed planet-state change to the owner (websocket_service
+          // .send_planetary_update). CRT-T1.5-9 §5.1: also silently dropped.
+          // Bump the same colony-refresh signal so the open colony panel reflects
+          // the new state live. No toast — these are routine state ticks, not a
+          // milestone; the silent refresh is the "world ticks on screen" win.
+          setLastPlanetaryEvent({
+            type: 'planetary_update',
+            planet_id: message.planet_id != null ? String(message.planet_id) : null,
+            sector_id: typeof message.sector_id === 'number' ? message.sector_id : null
+          });
+          setPlanetaryEventSignal(prev => prev + 1);
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -483,7 +538,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // Only log truly unhandled message types, not ones handled by specific handlers
           // (aria_response is consumed by the dedicated ariaHandler above; the
           // generalHandler still sees it, so exclude it from the noise warning.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded', 'genesis_progress', 'planetary_update'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -561,6 +616,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     // Medal awards
     medalAwardedSignal,
     lastMedalAwarded,
+
+    // Colony ticks (genesis_progress / planetary_update — CRT-T1.5-9 §5.1)
+    planetaryEventSignal,
+    lastPlanetaryEvent,
 
     // Connection management
     connect,

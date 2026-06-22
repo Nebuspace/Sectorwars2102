@@ -5,6 +5,7 @@ This service manages planetary colonization, resource allocation,
 building construction, defenses, and sieges.
 """
 
+import math
 from typing import Dict, Any, Optional, List
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta, UTC
@@ -231,6 +232,34 @@ SPECIALIZATION_BONUSES = {
 # production. NOTE: the SINK for research points (what they unlock) is an open
 # design decision — see DECISIONS colony-research-points-sink.
 RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
+
+# T1.5-1 PER-PLANET RP BACKSTOP (CRT-4 / CRT-T15-MASTER §2.3) — defense-in-depth.
+# The per-empire flywheel governor (research_service.governed_rp at the sweep) is
+# PRIMARY; this is the seatbelt: even if the per-empire SUM has an aggregation bug,
+# the lab-spread exploit (keep each planet just under the empire cap × N planets) is
+# dead because a single planet's marginal RP/lab is log-compressed at the MINT once
+# research_level passes LAB_DIMINISH_N. A planet under the threshold mints linearly
+# (level × 25/day) exactly as today; past it, further lab levels yield diminishing RP.
+#
+# REPRODUCE-EXACTLY OFF-SWITCH: LAB_DIMINISH_N = math.inf → no level is ever past the
+# threshold → the rate is the plain linear (level × 25) mint, byte-identical to today.
+# Ship the RULED finite value AND keep inf reachable via the constant (reversible).
+LAB_DIMINISH_N = 10.0  # per-planet RP-diminish threshold in lab levels (Orch default; inf = off)
+
+
+def _diminished_lab_levels(research_level: float) -> float:
+    """The effective lab-level count after the per-planet diminishing backstop (§2.3).
+
+    Below LAB_DIMINISH_N: returns research_level unchanged (linear mint, == today).
+    Above it: the levels past the threshold are log-compressed so a single planet can
+    never run away on lab count alone. LAB_DIMINISH_N = inf → returns research_level
+    unchanged for ALL inputs (reproduce-exactly).
+    """
+    level = research_level or 0
+    if level <= LAB_DIMINISH_N:
+        return float(level)
+    excess = level - LAB_DIMINISH_N
+    return LAB_DIMINISH_N + math.log1p(excess)
 
 # Canon daily colonist growth (FEATURES/planets/colonization.md "Population
 # growth"): colonist_rate = colonists × 0.01 × (habitability_score / 100),
@@ -2079,7 +2108,10 @@ class PlanetaryService:
         colonist_rate = planet.colonists * 0.01 * habitability_multiplier
 
         # Research-point yield (ADR-0087): driven by the Research Lab level.
-        research_rate = (planet.research_level or 0) * RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY
+        # T1.5-1 per-planet backstop (§2.3): the lab-count is log-compressed past
+        # LAB_DIMINISH_N so a single planet can't run away on lab spread; with
+        # LAB_DIMINISH_N=inf this is the plain linear (level × 25) mint == today.
+        research_rate = _diminished_lab_levels(planet.research_level or 0) * RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY
 
         # Apply specialization bonuses
         research_mult = 1.0

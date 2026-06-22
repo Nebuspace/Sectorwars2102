@@ -7,6 +7,7 @@ for planetary owners.
 """
 
 import logging
+import math
 import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Dict, Any, List, Optional
@@ -195,6 +196,29 @@ CITADEL_LEVELS = {
     },
 }
 
+# --- T1.5-2 NO-FREE-PROMOTION GATE (CRT-4 / CRT-T15-MASTER §3.4) -------------
+# The honest one-time GATE at the early tiers (NOT the recurring floor — that is
+# the faucet copay in research_service §3.3). The shipped CITADEL_LEVELS table
+# already charges 0 at tiers 0 and 1 and a rising cost at tier ≥ 2; the rescope
+# (Orch default, option a) ACCEPTS a free 0→1 promotion and scopes the rule to
+# "no free promotion at tier ≥ 2, where the glut lives." This gate (a) asserts
+# that invariant and (b) layers an OPTIONAL empire-scale surcharge.
+#
+#   levy(target_tier) = base_upgrade_cost[target_tier]
+#                       × (1 + EMPIRE_SCALE_K × log2(1 + planets_at_or_above_tier))
+#
+# Log-scaled so it never explodes (a 16-planet empire ≈ 2× base at K=0.25, not 16×).
+#
+# REPRODUCE-EXACTLY OFF-SWITCH: EMPIRE_SCALE_K = 0.0 → the surcharge factor is 1.0
+# → levy == the shipped upgrade_cost exactly (byte-identical to today). Ship K=0;
+# raise ONLY with the levy-breakdown confirm surface live (§5.6) — a silently-rising
+# cost is the most trust-corrosive thing in an economy game.
+EMPIRE_SCALE_K = 0.0  # promotion-levy empire-scale factor (Orch default 0 = shipped cost; raise only with the surface)
+
+# Tier at and above which a promotion may never be free (the rescoped invariant).
+NO_FREE_PROMOTION_TIER = 2
+
+
 # Credit-equivalent valuation for commodities stored in the citadel safe.
 # Canon (citadels.md "Safe") caps the safe by a single cr-equivalent total; the
 # safe_storage figures above are that cap. These per-unit values (the economy's
@@ -210,6 +234,32 @@ CITADEL_LEVELS = {
 # Behaviour-preserving: reproduces fuel_ore 15 / organics 18 / equipment 35
 # exactly (guarded by import-time assertions in commodity_economy).
 COMMODITY_CREDIT_VALUE = get_commodity_credit_values()
+
+
+def promotion_levy(db: Session, player_id, target_tier: int) -> int:
+    """The credit charge to promote a citadel to ``target_tier`` (CRT-T15-MASTER §3.4).
+
+    = shipped ``CITADEL_LEVELS[target_tier]['upgrade_cost']`` × the empire-scale factor.
+    With ``EMPIRE_SCALE_K = 0`` the factor is 1.0 → the levy == the shipped cost exactly
+    (reproduce-exactly). When raised, the surcharge is log-scaled on the count of the
+    player's planets already at-or-above ``target_tier`` (larger empires pay more to
+    promote — and MUST be surfaced in the confirm dialog before K is ever non-zero, §5.6).
+
+    NO-FREE-PROMOTION INVARIANT: for ``target_tier >= NO_FREE_PROMOTION_TIER`` the shipped
+    table already carries a positive ``upgrade_cost`` (50k at tier 2, rising), so the levy
+    is always > 0 there — a tier ≥ 2 promotion can never be free. Tiers 0→1 are documented
+    free (the bootstrap rescope). Pure read; the caller charges + commits.
+    """
+    base = int(CITADEL_LEVELS.get(int(target_tier), {}).get("upgrade_cost", 0) or 0)
+    if EMPIRE_SCALE_K <= 0 or base <= 0:
+        return base
+    at_or_above = (
+        db.query(Planet)
+        .filter(Planet.owner_id == player_id, Planet.citadel_level >= int(target_tier))
+        .count()
+    )
+    factor = 1.0 + EMPIRE_SCALE_K * math.log2(1 + at_or_above)
+    return int(round(base * factor))
 
 
 def citadel_passive_defense(level: int) -> int:
@@ -417,7 +467,24 @@ class CitadelService:
         if not player:
             return {"success": False, "message": "Player not found"}
 
-        upgrade_cost = next_info["upgrade_cost"]
+        # T1.5-2 no-free-promotion gate (§3.4): the charge is the promotion levy
+        # (== shipped upgrade_cost at EMPIRE_SCALE_K=0; an optional log-scaled empire
+        # surcharge above that). Invariant: a tier ≥ NO_FREE_PROMOTION_TIER promotion
+        # is never free — the shipped table guarantees a positive base there, and the
+        # levy preserves it. (Tiers 0→1 are documented free; handled by the early
+        # current_level==0 branch above.)
+        upgrade_cost = promotion_levy(self.db, player_id, next_level)
+        if next_level >= NO_FREE_PROMOTION_TIER and upgrade_cost <= 0:
+            # Defensive: should be impossible given the shipped table, but never let a
+            # tier-2+ promotion slip through free if the catalog is ever mis-edited.
+            logger.error(
+                "no-free-promotion invariant breach: tier %s promotion priced at %s for "
+                "player %s — refusing free promotion", next_level, upgrade_cost, player_id,
+            )
+            return {
+                "success": False,
+                "message": "This promotion has no configured cost; contact an administrator.",
+            }
         if player.credits < upgrade_cost:
             return {
                 "success": False,

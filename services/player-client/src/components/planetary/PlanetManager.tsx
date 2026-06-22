@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { gameAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
+import { useWebSocket } from '../../contexts/WebSocketContext';
 import type { Planet, ColonySpecialization } from '../../types/planetary';
 import { ColonistAllocator } from './ColonistAllocator';
 import { BuildingManager } from './BuildingManager';
@@ -156,6 +157,12 @@ const HabitabilityRing: React.FC<HabitabilityRingProps> = ({
 
 export const PlanetManager: React.FC = () => {
   const { playerState } = useGame();
+  // CRT-T1.5-9 §5.1: the colony refresh is now SERVER-PUSHED, not locally guessed.
+  // A genesis_progress (formation finished) or planetary_update frame bumps this
+  // counter in WebSocketContext; the effect below re-fetches /planets/owned when
+  // it changes — replacing the client-side formation setInterval that guessed
+  // completion from a timer.
+  const { planetaryEventSignal } = useWebSocket();
   const [planets, setPlanets] = useState<Planet[]>([]);
   const [selectedPlanet, setSelectedPlanet] = useState<Planet | null>(null);
   const [loading, setLoading] = useState(true);
@@ -176,27 +183,32 @@ export const PlanetManager: React.FC = () => {
   const [scanTimedOut, setScanTimedOut] = useState(false);
   const [scanAttempt, setScanAttempt] = useState(0);
 
-  // Live clock for genesis terraforming countdowns (ticks only while a planet
-  // is still forming; bumps a refresh once a timer elapses so the colony flips
-  // to usable on its own).
+  // Display-only clock for the genesis terraforming countdown bar (ticks `nowMs`
+  // once a second only while a planet is still forming, purely to animate the
+  // remaining-time readout + progress fill). CRT-T1.5-9 §5.1: this no longer
+  // GUESSES completion from the timer and self-refetches — the authoritative
+  // "formation finished" signal arrives as a server-pushed genesis_progress
+  // frame (see the planetaryEventSignal effect below). This clock just paints.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const anyForming = planets.some((p: any) => p?.formationStatus === 'forming');
   useEffect(() => {
     if (!anyForming) return;
-    const id = window.setInterval(() => {
-      const t = Date.now();
-      setNowMs(t);
-      const soonest = planets
-        .filter((p: any) => p?.formationStatus === 'forming' && p?.formationCompleteAt)
-        .map((p: any) => new Date(p.formationCompleteAt).getTime());
-      if (soonest.length && t >= Math.min(...soonest)) {
-        window.clearInterval(id);
-        loadPlanets(); // a formation finished — re-fetch (server lazily completes it)
-      }
-    }, 1000);
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
+  }, [anyForming]);
+
+  // CRT-T1.5-9 §5.1: re-fetch the colony registry whenever the server pushes a
+  // genesis_progress (formation complete) or planetary_update frame. This is the
+  // dropped-frame fix's payoff — "the world ticks on screen" without a guessed
+  // local timer. Skip the initial mount (signal 0); the mount effect below owns
+  // the first load.
+  const planetaryEventRef = useRef(planetaryEventSignal);
+  useEffect(() => {
+    if (planetaryEventSignal === planetaryEventRef.current) return;
+    planetaryEventRef.current = planetaryEventSignal;
+    loadPlanets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anyForming, planets]);
+  }, [planetaryEventSignal]);
 
   const fmtFormationLeft = (ms: number): string => {
     const s = Math.max(0, Math.floor(ms / 1000));

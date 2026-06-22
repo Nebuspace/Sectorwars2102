@@ -923,6 +923,41 @@ GRID_TICK_PERIOD_HOURS = 1.0   # K1b-2 CUTOVER: 1 grid field tick = 1 canonical 
 GRID_TICK_CAP = 2000           # safety cap on ticks applied in one settle (a long-dormant planet
                                # can't run away / spin for ages on a single sweep)
 
+# ---------------------------------------------------------------------------
+# T1.5-7 DECAY-RESCOPE (CRT-4 / PIECE 3, CRT-T15-MASTER §4) — the demand engine.
+#
+# Today every unfed non-anchored plot decays toward natural_band at a FLAT TERRA_DECAY_RATE: a
+# finished peaceful world decays exactly as hard as a frontier under siege ("the decay treadmill").
+# decay_pressure() rescopes that flat rate into a PURE per-plot MULTIPLIER on TERRA_DECAY_RATE so
+# the tiers are:
+#   * DONE      (capstoned + in-band + uncontested)  -> 0.1× — nearly free, but NOT 0.0 (E4): a
+#                literal 0.0 kills the contract economy's demand engine the moment every world is
+#                finished, so a capstoned world still needs OCCASIONAL feeding (a warm trickle).
+#   * BANDED    (in-band, peaceful, NOT yet capstoned) -> 0.3× — gentle middle (best-relief
+#                pre-capstone); the cockpit frames this as "stabilizing — confirm the biome to lock".
+#   * FRONTIER  (not yet in-band, peaceful)          -> 1.0× == shipped flat decay (regression anchor).
+#   * CONTESTED (under siege / recent-siege tail / claimed-border) -> 2.0× — contested ≫ frontier so
+#                "you can't fight and farm"; the recent-siege TAIL (CONTESTED_COOLDOWN) keeps the
+#                teeth from being timing-dodgeable (repel/wait-out then instantly back to 1.0×).
+#
+# Decay stays a DISTINCT resource class (material/power/instability — the demand engine the contract
+# sink consumes), NEVER a credit charge: no double-charge with the §3.3 credit copay.
+#
+# REPRODUCE-EXACTLY OFF-SWITCH: with DECAY_FRONTIER_MULT == 1.0 AND every plot treated as frontier
+# (the default whenever no `planet` is threaded in — see terraform_grid_tick(planet=None)), the decay
+# math is BYTE-IDENTICAL to today. The rescope only RELAXES done/banded and RAISES contested; setting
+# DECAY_FRONTIER_MULT back to 1.0 while never matching a relaxed/raised tier is the master kill-switch.
+# All five magnitudes are NO-CANON (MAX-MEMO #5, Orch-default-ruled 2026-06-21).
+# ---------------------------------------------------------------------------
+DECAY_DONE_MULT = 0.1          # NO-CANON: capstoned + in-band + uncontested ≈ free (a VALUE, not 0.0 — E4)
+DECAY_BANDED_MULT = 0.3        # NO-CANON: in-band, peaceful, NOT capstoned (best-relief pre-capstone)
+DECAY_FRONTIER_MULT = 1.0      # NO-CANON + OFF-SWITCH: not-yet-in-band peaceful == shipped flat decay
+DECAY_CONTESTED_MULT = 2.0     # NO-CANON: under siege / recent-siege / claimed-border (was 1.5 — E4-b)
+CONTESTED_COOLDOWN_DAYS = 3.0  # NO-CANON: post-siege tail in CANONICAL days (E4-b) — teeth keep biting
+# The "banded" axis tolerance reuses BIOME_CONFIRM_TOLERANCE (±10). That constant is defined further
+# down (next to confirm_biome); _plot_is_banded reads it at CALL time (module fully loaded by then) so
+# the two stay a single source of truth without a module-level forward reference.
+
 
 def _planet_type_name(planet) -> Optional[str]:
     """Resolve the planet's type NAME for natural_band decay. The authoritative column is the
@@ -942,7 +977,125 @@ def _natural_band(planet_type: Optional[str], axis: str) -> int:
     return int(_DEFAULT_NATURAL_BAND[axis])
 
 
-def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity: str = "standard") -> int:
+# ---------------------------------------------------------------------------
+# T1.5-7 DECAY-RESCOPE — decay_pressure() + its tier-detection readers (CRT-T15-MASTER §4.2-4.5).
+# All PURE READS of already-persisted state. Fully defensive: any reader that hits a malformed blob
+# falls back to the FRONTIER (== today) multiplier so the decay tick can NEVER break (the K1b-2 grid
+# tick already runs inside a defensive _step2_terraform try/except, but the multiplier itself must
+# also never throw). Single-writer law preserved — none of these WRITE the grid; the breadcrumb the
+# tail reads is stamped by terraform_grid_tick under the existing structures-write discipline.
+# ---------------------------------------------------------------------------
+def _planet_is_capstoned(structures: dict) -> bool:
+    """DONE-tier signal — reads the CRT-3 capstone flag ``terraform_meta.confirmed_biome`` (a key
+    INSIDE the ``structures`` JSONB blob, §4.4 — NOT a Planet column). Truthy non-empty value =
+    capstoned. Until the Max-gated CRT-3 capstone-activation WO writes this flag it is absent →
+    False, so a peaceful in-band world gets BANDED relief (0.3×), not DONE (0.1×) — the §5.10 guard
+    keeps the cockpit from advertising "free to hold" before the engine can deliver it."""
+    if not isinstance(structures, dict):
+        return False
+    tmeta = structures.get("terraform_meta")
+    if not isinstance(tmeta, dict):
+        return False
+    return bool(tmeta.get("confirmed_biome"))
+
+
+def _recently_contested(planet, structures: dict, now: datetime) -> bool:
+    """CONTESTED post-siege TAIL (E4-b, §4.3). Binary ``under_siege`` is timing-dodgeable — repel or
+    wait the besieger out and the world snaps straight back to 1.0×. So a world that was *seen under
+    siege* within CONTESTED_COOLDOWN_DAYS (canonical) stays contested even after the flag clears.
+
+    The siege-lift path nulls ``siege_started_at``/``siege_turns`` (planetary_service ~1834/1927), so
+    no surviving Planet timestamp marks the lift. We instead read a breadcrumb in OUR own owned blob:
+    ``terraform_meta.last_siege_seen_at`` — stamped by terraform_grid_tick whenever it advances a grid
+    on an ``under_siege`` planet (so it survives the lift that erases the Planet-side siege columns).
+    Absent breadcrumb → no tail (== today). Compares in the CANONICAL domain via canonical_hours_since
+    (the breadcrumb is stored as a wall-clock instant, like every other terraform_meta anchor)."""
+    if not isinstance(structures, dict):
+        return False
+    tmeta = structures.get("terraform_meta")
+    if not isinstance(tmeta, dict):
+        return False
+    raw = tmeta.get("last_siege_seen_at")
+    if not raw:
+        return False
+    try:
+        seen = _aware(datetime.fromisoformat(raw))
+    except (TypeError, ValueError):
+        return False
+    if seen is None:
+        return False
+    # Canonical hours since the last siege observation; within COOLDOWN (in canonical days) = tail.
+    elapsed_canonical_hours = canonical_hours_since(seen, now)
+    return 0.0 <= elapsed_canonical_hours <= CONTESTED_COOLDOWN_DAYS * 24.0
+
+
+def _is_border_contested(planet, structures: dict) -> bool:
+    """Claimed-border contestation heuristic (§4.3). Depends on region-lifecycle, which is unbuilt —
+    STUBS TO FALSE in the kernel. Lit later by the region-lifecycle sibling. Until then "frontier-
+    teeth" reduces to "siege + recent-siege teeth" (be explicit in canon/cockpit — §4.3)."""
+    return False
+
+
+def _plot_is_banded(plot: dict, planet) -> bool:
+    """BANDED/DONE axis test (§4.5): is THIS plot's per-axis state within DONE_TOLERANCE (±10, reusing
+    BIOME_CONFIRM_TOLERANCE) of the planet type's natural_band on BOTH axes? A plot already settled
+    into its target band is "in-band" (peaceful relief); a plot still far from band is "frontier" and
+    decays at the full shipped rate (the regression anchor) — exactly the worlds the contract economy
+    should keep paying to push. Pure read; a malformed plot → not banded (→ frontier)."""
+    if not isinstance(plot, dict):
+        return False
+    axes = plot.get("axes")
+    if not isinstance(axes, dict):
+        return False
+    planet_type = _planet_type_name(planet)
+    for axis in TERRA_AXES:
+        cur = int(axes.get(axis, 0) or 0)
+        target = _natural_band(planet_type, axis)
+        if abs(cur - target) > BIOME_CONFIRM_TOLERANCE:
+            return False
+    return True
+
+
+def decay_pressure(plot: dict, planet, structures: dict, *, now: Optional[datetime] = None) -> float:
+    """PURE per-plot multiplier on TERRA_DECAY_RATE in the grid-field decay path (CRT-T15-MASTER §4.2).
+    Tier resolution order (contested wins over relief — you cannot farm under siege):
+        under_siege  OR  recent-siege tail  OR  claimed-border(stub)  -> DECAY_CONTESTED_MULT (2.0×)
+        in-band + capstoned (CRT-3 confirmed_biome)                   -> DECAY_DONE_MULT      (0.1×)
+        in-band, peaceful, not capstoned                              -> DECAY_BANDED_MULT    (0.3×)
+        otherwise (frontier — not yet in band)                        -> DECAY_FRONTIER_MULT  (1.0× == today)
+
+    REPRODUCE-EXACTLY: when ``planet is None`` (legacy/test callers of terraform_grid_tick that pass no
+    planet) this returns DECAY_FRONTIER_MULT for EVERY plot → byte-identical decay to today. With a
+    real planet, DECAY_FRONTIER_MULT==1.0 still reproduces today on any not-yet-in-band peaceful world
+    (the regression anchor). Fully defensive — any unexpected state collapses to the FRONTIER rate so
+    the decay tick can never throw."""
+    if planet is None:
+        return DECAY_FRONTIER_MULT
+    try:
+        if now is None:
+            now = _canonical_now()
+        # CONTESTED — checked first so siege teeth always override any relief on the same plot.
+        if getattr(planet, "under_siege", False):
+            return DECAY_CONTESTED_MULT
+        if _recently_contested(planet, structures, now):
+            return DECAY_CONTESTED_MULT
+        if _is_border_contested(planet, structures):     # stub -> False until region-lifecycle
+            return DECAY_CONTESTED_MULT
+        # RELIEF tiers — only a plot already settled into its natural band gets relief.
+        if _plot_is_banded(plot, planet):
+            if _planet_is_capstoned(structures):          # CRT-3 confirmed_biome
+                return DECAY_DONE_MULT                     # ~free, NOT 0.0 (keeps demand warm — E4)
+            return DECAY_BANDED_MULT                       # gentle middle (best-relief pre-capstone)
+        return DECAY_FRONTIER_MULT                         # frontier == today (regression anchor)
+    except Exception:
+        # Never let the multiplier break the tick — fall back to the shipped flat rate.
+        logger.exception("decay_pressure failed (non-fatal) for planet %s — using FRONTIER (==today)",
+                         getattr(planet, "id", "?"))
+        return DECAY_FRONTIER_MULT
+
+
+def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity: str = "standard",
+                        *, planet=None, now: Optional[datetime] = None) -> int:
     """One terraform field tick over the grid (K1b-2 own-plot-flat kernel, spec §2.2/§2.3/§2.6):
       * each operational ``domain:"terraform"`` rig pushes ITS OWN plot's axis, FLAT (no falloff) —
         an unfed/browned rig pushes at the floor;
@@ -953,10 +1106,34 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
     Mutates structures.plots[].axes + structures.instability (the terraform field advancing — the
     grid is terraform's to write). SHADOW: does NOT write the shipped habitability_score column; the
     caller logs the divergence (Max-gated cutover). Idempotent shape: a rig-less planet simply decays
-    toward natural_band each tick."""
+    toward natural_band each tick.
+
+    T1.5-7 DECAY-RESCOPE: the optional ``planet`` (threaded by _advance_grid_field, omitted by legacy/
+    test callers) scopes the per-plot decay rate via ``decay_pressure(plot, planet, structures)`` —
+    done≈free / banded gentle / frontier==today / contested bites. ``planet=None`` reproduces today
+    byte-for-byte (every plot frontier). When ``planet`` is under siege, the tick also stamps the
+    ``terraform_meta.last_siege_seen_at`` breadcrumb so the post-siege contested TAIL survives the
+    siege-lift that nulls the Planet-side siege columns. ``now`` (default = wall-clock now) anchors the
+    cooldown comparison; pass the settle()'s ``now`` for time-accuracy."""
     plots = {(p["x"], p["y"]): p for p in structures.get("plots", []) if isinstance(p, dict)}
     if not plots:
         return 0
+    if now is None:
+        now = _canonical_now()
+    # T1.5-7: while under active siege, stamp a breadcrumb in OUR owned blob so the post-siege tail
+    # (DECAY_CONTESTED_MULT for CONTESTED_COOLDOWN_DAYS) outlives the lift that erases the Planet-side
+    # siege columns. Written under the same dict-reassign + flag_modified discipline as the spine
+    # anchor. Defensive: a breadcrumb hiccup must never break the tick. Skipped when planet is None
+    # (legacy/test callers) → no new state → reproduce-exactly.
+    if planet is not None and getattr(planet, "under_siege", False):
+        try:
+            tmeta = dict(structures.get("terraform_meta")) if isinstance(structures.get("terraform_meta"), dict) else {}
+            tmeta["last_siege_seen_at"] = _aware(now).isoformat()
+            structures["terraform_meta"] = tmeta
+            flag_modified(planet, "structures")
+        except Exception:
+            logger.exception("T1.5-7 last_siege_seen_at breadcrumb stamp failed (non-fatal) for planet %s",
+                             getattr(planet, "id", "?"))
     imult = float(TERRA_INTENSITY_MULT.get(intensity, 1.0))
     fed_plots = set()
     anchored_cells = set()   # K1b-3: Climate Anchor plots hold their axes (excluded from decay)
@@ -982,16 +1159,32 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
         plot["axes"] = ax
         fed_plots.add(cell)
         push_total += push
-    # decay unfed plots toward natural_band (anchored plots HOLD — K1b-3 Climate Anchor)
+    # decay unfed plots toward natural_band (anchored plots HOLD — K1b-3 Climate Anchor).
+    # T1.5-7: the flat TERRA_DECAY_RATE is scoped per-plot by decay_pressure() — done≈free (0.1×) /
+    # banded gentle (0.3×) / frontier==today (1.0×) / contested bites (2.0×). decay_pressure is
+    # per-plot (the tier is a property of the plot+planet, constant across both axes) so compute it
+    # ONCE per plot. With planet=None OR DECAY_FRONTIER_MULT==1.0 on a frontier plot, rate == the
+    # shipped int TERRA_DECAY_RATE and the step math is byte-identical to today (no rounding drift):
+    # int * 1.0 == the int, min() picks the same value, and cur±step stays integral.
     for cell, plot in plots.items():
         if cell in fed_plots or cell in anchored_cells:
             continue
+        pressure = decay_pressure(plot, planet, structures, now=now)
+        rate = TERRA_DECAY_RATE * pressure
         ax = dict(plot.get("axes") or {})
         for axis in TERRA_AXES:
             cur = int(ax.get(axis, 0))
             target = _natural_band(planet_type, axis)
             if cur != target:
-                step = min(TERRA_DECAY_RATE, abs(cur - target))
+                gap = abs(cur - target)
+                step = min(rate, gap)
+                # Keep relief tiers WARM, never silent (E4): a nonzero sub-unit rate on an off-band
+                # plot still moves AT LEAST one point toward target this tick — so DONE (0.1×) is a
+                # slow trickle, not a frozen 0.0. Frontier (rate>=2 on a >=1 gap) is unaffected: its
+                # step is already >=1, so this floor is a no-op there and reproduce-exactly holds.
+                if 0.0 < step < 1.0:
+                    step = 1.0
+                step = int(round(step))
                 ax[axis] = cur - step if cur > target else cur + step
         plot["axes"] = ax
     # instability (aggressive pushing destabilises)
@@ -1148,8 +1341,11 @@ def _advance_grid_field(planet, structures: dict) -> int:
         return 0                                                    # caught-up: no mutation
     ticks = min(ticks, GRID_TICK_CAP)
     pt = _planet_type_name(planet)
+    # T1.5-7: thread the live `planet` into the tick so decay_pressure() can scope the per-plot decay
+    # rate (done/banded/frontier/contested) and stamp the post-siege breadcrumb. `now` anchors the
+    # post-siege-tail cooldown comparison to the wall-clock instant this advance runs.
     for _ in range(ticks):
-        terraform_grid_tick(structures, pt, "standard")
+        terraform_grid_tick(structures, pt, "standard", planet=planet, now=_canonical_now())
     wall_hours_consumed = (ticks * GRID_TICK_PERIOD_HOURS) / (GAME_TIME_SCALE or 1.0)
     tmeta["last_grid_tick_at"] = (anchor + timedelta(hours=wall_hours_consumed)).isoformat()
     structures["terraform_meta"] = tmeta
