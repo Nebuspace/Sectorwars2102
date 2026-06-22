@@ -17,7 +17,7 @@ const getApiBaseUrl = () => {
 };
 
 // Venue type definitions
-type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'genesis' | 'armory' | 'services' | 'gambling';
+type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types
@@ -129,6 +129,29 @@ const SERVICE_ICONS: Array<{ key: string; icon: string; label: string }> = [
   { key: 'diplomatic_services', icon: '🕊️', label: 'Diplomatic Services' }
 ];
 
+// Black-market contraband catalog row (GET /api/v1/trading/black-market/{id}).
+// Mirrors ContrabandService.get_catalog's per-commodity listing shape.
+interface ContrabandListing {
+  commodity: string;
+  base_price: number;
+  category_multiplier: number;
+  severity: string;
+  indicative_unit_price: number;
+  federation_rep_delta: number;
+}
+
+interface BlackMarketCatalog {
+  station_id: string;
+  station_name: string;
+  haggle_swing: number;
+  commodities: ContrabandListing[];
+}
+
+// Human-readable label for a contraband commodity enum value (e.g.
+// "stolen_goods" → "Stolen Goods"). Falls back gracefully for new commodities.
+const prettyCommodity = (value: string): string =>
+  value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
 // Display metadata for known armory items (falls back gracefully for new items)
 const ARMORY_ICONS: Record<string, string> = {
   attack_drone: '⚔️',
@@ -231,6 +254,20 @@ const SpaceDockInterface: React.FC = () => {
   // Black market state
   const [showBlackMarket, setShowBlackMarket] = useState(false);
 
+  // Real contraband catalog (GET /api/v1/trading/black-market/{station_id}).
+  // The endpoint is the authoritative gate: a 404 means either this isn't a
+  // BLACK_MARKET venue OR the player's OUTLAWS rep is below RECOGNIZED — both
+  // collapse to "no underworld contacts" so the gate never advertises itself.
+  const [bmCatalog, setBmCatalog] = useState<BlackMarketCatalog | null>(null);
+  const [bmLoading, setBmLoading] = useState(false);
+  const [bmGateClosed, setBmGateClosed] = useState(false); // 404 from the catalog GET
+  const [bmCatalogError, setBmCatalogError] = useState<string | null>(null);
+  const [bmQuantities, setBmQuantities] = useState<Record<string, number>>({});
+  const [bmBusy, setBmBusy] = useState<string | null>(null); // `buy:<c>` / `sell:<c>` in flight
+  const [bmError, setBmError] = useState<string | null>(null);
+  const [bmSuccess, setBmSuccess] = useState<string | null>(null);
+  const [bmDetected, setBmDetected] = useState<string | null>(null); // bust feedback (fine/heat)
+
   // Planetary registry lookup (shadow-broker widget inside the black market modal)
   const [registryQueryName, setRegistryQueryName] = useState('');
   const [registryLoading, setRegistryLoading] = useState(false);
@@ -302,8 +339,16 @@ const SpaceDockInterface: React.FC = () => {
     : null;
   const tradedockTier: 'A' | 'B' | null = rawTier === 'A' || rawTier === 'B' ? rawTier : null;
 
-  // Check if player has negative reputation (access to black market)
-  const hasBlackMarketAccess = (playerState?.personal_reputation || 0) < 0;
+  // Black-market entry affordance: show the "figure in the shadows" knock-on-
+  // the-door button when the DOCKED STATION is a BLACK_MARKET venue. The real
+  // access gate (Fringe-Alliance/OUTLAWS rep ≥ RECOGNIZED) is enforced
+  // server-side by the catalog endpoint — the modal surfaces "no underworld
+  // contacts" on a 404 — so we deliberately do NOT gate the button on the local
+  // personal_reputation<0 flag (that flag is not the backend gate).
+  const stationIsBlackMarket =
+    typeof currentStation?.type === 'string' &&
+    currentStation.type.toUpperCase() === 'BLACK_MARKET';
+  const hasBlackMarketAccess = stationIsBlackMarket;
 
   // Define available venues based on station services
   const stationServices = currentStation?.services || {};
@@ -371,6 +416,16 @@ const SpaceDockInterface: React.FC = () => {
       description: 'Hull and shield repair plus ship condition readouts',
       available: Boolean(stationServices.ship_repair) || Boolean(stationServices.ship_maintenance),
       services: ['Ship Repair', 'Hull & Shield Status', 'Cargo Readout']
+    },
+    {
+      id: 'mining',
+      name: 'Astral Mining',
+      icon: '⛏️',
+      description: 'Astral Mining Consortium — claim-license desk and Mining Laser refits',
+      // The Consortium maintains an office at every dock; the claim license is
+      // sector-bound (server-enforced), the laser refit is universal.
+      available: true,
+      services: ['Claim Licenses', 'Mining Laser Refits']
     },
     {
       id: 'gambling',
@@ -1108,6 +1163,117 @@ const SpaceDockInterface: React.FC = () => {
     updatePlayerCredits(value);
   }, [updatePlayerCredits]);
 
+  // --- Astral Mining: claim-license purchase + Mining Laser refit ---
+  const [licenseBusy, setLicenseBusy] = useState(false);
+  const [licenseError, setLicenseError] = useState<string | null>(null);
+  const [licenseSuccess, setLicenseSuccess] = useState<string | null>(null);
+  const [laserBusy, setLaserBusy] = useState(false);
+  const [laserError, setLaserError] = useState<string | null>(null);
+  const [laserSuccess, setLaserSuccess] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (activeVenue === 'mining') {
+      // Ensure ship telemetry (ship id) is fresh on entry; clear stale feedback.
+      fetchShipData();
+      setLicenseError(null);
+      setLicenseSuccess(null);
+      setLaserError(null);
+      setLaserSuccess(null);
+    }
+  }, [activeVenue, fetchShipData]);
+
+  // Purchase / renew the AM claim license for the current sector
+  // (POST /api/v1/mining/license {ship_id}). The fee is sector-tier-scaled and
+  // server-authoritative; a non-asteroid sector returns not_an_asteroid_field.
+  const purchaseClaimLicense = useCallback(async () => {
+    const token = getToken();
+    const shipId = shipData?.id;
+    if (!token || !shipId || licenseBusy) {
+      if (!token) setLicenseError('Not authenticated. Please log in again.');
+      else if (!shipId) setLicenseError('No active ship found.');
+      return;
+    }
+    setLicenseBusy(true);
+    setLicenseError(null);
+    setLicenseSuccess(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/mining/license`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ship_id: shipId })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        const reason = typeof rawDetail === 'string' && rawDetail ? rawDetail : 'License purchase failed';
+        // Map the most common stable reason to a friendlier line.
+        setLicenseError(
+          reason === 'not_an_asteroid_field'
+            ? 'Claim licenses are only sold for asteroid-field sectors. Fly to one to file a claim.'
+            : reason === 'insufficient_credits'
+              ? 'Insufficient credits for this claim license.'
+              : reason
+        );
+        return;
+      }
+      const result = await response.json();
+      const cost = (result.cost_paid_cr ?? 0).toLocaleString();
+      const expires = result.expires_at ? new Date(result.expires_at).toLocaleString() : 'soon';
+      setLicenseSuccess(`Claim filed for ${cost} cr — license valid until ${expires}.`);
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Claim license error:', error);
+      setLicenseError('Connection error. Please try again.');
+    } finally {
+      setLicenseBusy(false);
+    }
+  }, [shipData?.id, licenseBusy, refreshPlayerState, fetchShipData]);
+
+  // Buy the next Mining Laser ladder level
+  // (POST /api/v1/mining/laser-upgrade {ship_id}). Requires a Mining Laser
+  // already installed (the server surfaces a clear message otherwise).
+  const upgradeMiningLaser = useCallback(async () => {
+    const token = getToken();
+    const shipId = shipData?.id;
+    if (!token || !shipId || laserBusy) {
+      if (!token) setLaserError('Not authenticated. Please log in again.');
+      else if (!shipId) setLaserError('No active ship found.');
+      return;
+    }
+    setLaserBusy(true);
+    setLaserError(null);
+    setLaserSuccess(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/mining/laser-upgrade`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ship_id: shipId })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        setLaserError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'Mining laser upgrade failed');
+        return;
+      }
+      const result = await response.json();
+      const mult = typeof result.yield_multiplier === 'number' ? `${result.yield_multiplier}× yield` : '';
+      const cost = (result.cost_paid ?? 0).toLocaleString();
+      setLaserSuccess(
+        `${result.message || `Mining Laser upgraded to level ${result.new_level}`} — ${cost} cr${mult ? ` (${mult})` : ''}.`
+      );
+      if (typeof result.remaining_credits === 'number') {
+        setLocalCredits(result.remaining_credits);
+        updatePlayerCredits(result.remaining_credits);
+      }
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Mining laser upgrade error:', error);
+      setLaserError('Connection error. Please try again.');
+    } finally {
+      setLaserBusy(false);
+    }
+  }, [shipData?.id, laserBusy, updatePlayerCredits, refreshPlayerState, fetchShipData]);
+
   // Get current genesis device counts (use local if set, otherwise from ship data)
   const currentGenesisDevices = localGenesisDevices ?? shipData?.genesis_devices ?? 0;
   const maxGenesisDevices = localMaxGenesis ?? shipData?.max_genesis_devices ?? 0;
@@ -1171,36 +1337,174 @@ const SpaceDockInterface: React.FC = () => {
     }
   };
 
+  // --- Black market: real contraband catalog + buy/sell flow ---
+  // The catalog GET is the authoritative gate: a 404 means either this station
+  // is not a BLACK_MARKET venue OR the player's Fringe-Alliance (OUTLAWS) rep is
+  // below RECOGNIZED. Both are deliberately indistinguishable — we surface "no
+  // underworld contacts" rather than the catalog. Raw fetch (the established
+  // in-component pattern, like handleRegistryLookup / the gambling/genesis calls)
+  // so the auth token rides along.
+  const fetchBlackMarketCatalog = useCallback(async (stationId: string) => {
+    const token = getToken();
+    if (!token) {
+      setBmCatalogError('Not authenticated. Please log in again.');
+      return;
+    }
+    setBmLoading(true);
+    setBmCatalogError(null);
+    setBmGateClosed(false);
+    setBmCatalog(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/trading/black-market/${stationId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (response.status === 404) {
+        // Gate unmet OR not a black-market venue — same response by design.
+        setBmGateClosed(true);
+        return;
+      }
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        setBmCatalogError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'Could not reach the shadow market.');
+        return;
+      }
+      const data: BlackMarketCatalog = await response.json();
+      setBmCatalog(data);
+    } catch (error) {
+      console.error('Black-market catalog error:', error);
+      setBmCatalogError('Connection error. Please try again.');
+    } finally {
+      setBmLoading(false);
+    }
+  }, []);
+
+  // Fetch the real catalog when the modal opens (gates visibility off the
+  // endpoint, never the local personal_reputation flag). Reset transient
+  // buy/sell feedback on open/close.
+  React.useEffect(() => {
+    if (!showBlackMarket) {
+      setBmError(null);
+      setBmSuccess(null);
+      setBmDetected(null);
+      return;
+    }
+    const stationId = currentStation?.id;
+    if (stationId) {
+      fetchBlackMarketCatalog(stationId);
+    } else {
+      setBmGateClosed(true);
+    }
+    setBmError(null);
+    setBmSuccess(null);
+    setBmDetected(null);
+  }, [showBlackMarket, currentStation?.id, fetchBlackMarketCatalog]);
+
+  // Buy contraband: POST /trading/black-market/buy. SLAVES is never in the
+  // catalog (server-excluded) so there is no path to request it from this UI.
+  const buyContraband = useCallback(async (listing: ContrabandListing, quantity: number) => {
+    const token = getToken();
+    const stationId = currentStation?.id;
+    if (!token || !stationId || bmBusy) {
+      if (!token) setBmError('Not authenticated. Please log in again.');
+      return;
+    }
+    setBmBusy(`buy:${listing.commodity}`);
+    setBmError(null);
+    setBmSuccess(null);
+    setBmDetected(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/trading/black-market/buy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ station_id: stationId, commodity: listing.commodity, quantity })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        setBmError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'The deal fell through.');
+        return;
+      }
+      const result = await response.json();
+      if (typeof result.remaining_credits === 'number') {
+        setLocalCredits(result.remaining_credits);
+        updatePlayerCredits(result.remaining_credits);
+      }
+      setBmSuccess(`Acquired ${result.quantity} × ${prettyCommodity(listing.commodity)} for ${(result.total_cost ?? 0).toLocaleString()} cr.`);
+      // Re-price the catalog (fresh haggle quotes) and sync ship cargo state.
+      fetchBlackMarketCatalog(stationId);
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Black-market buy error:', error);
+      setBmError('Connection error. Please try again.');
+    } finally {
+      setBmBusy(null);
+    }
+  }, [currentStation?.id, bmBusy, updatePlayerCredits, fetchBlackMarketCatalog, refreshPlayerState, fetchShipData]);
+
+  // Sell held contraband: POST /trading/black-market/sell. A DETECTED sell is
+  // still a 2xx success — the response carries detected/fine/heat — so surface
+  // the bust feedback distinctly from a clean payout.
+  const sellContraband = useCallback(async (listing: ContrabandListing, quantity: number) => {
+    const token = getToken();
+    const stationId = currentStation?.id;
+    if (!token || !stationId || bmBusy) {
+      if (!token) setBmError('Not authenticated. Please log in again.');
+      return;
+    }
+    setBmBusy(`sell:${listing.commodity}`);
+    setBmError(null);
+    setBmSuccess(null);
+    setBmDetected(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/trading/black-market/sell`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ station_id: stationId, commodity: listing.commodity, quantity })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        setBmError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'The sale fell through.');
+        return;
+      }
+      const result = await response.json();
+      if (typeof result.remaining_credits === 'number') {
+        setLocalCredits(result.remaining_credits);
+        updatePlayerCredits(result.remaining_credits);
+      }
+      if (result.detected) {
+        // Bust: cargo confiscated, fine levied, heat flipped.
+        const fine = (result.fine ?? 0).toLocaleString();
+        const heat = result.heat === 'wanted' ? 'You are now WANTED.' : 'You are now a SUSPECT.';
+        setBmDetected(`Detected! ${result.confiscated_units ?? 0} units of contraband confiscated — fine of ${fine} cr levied. ${heat}`);
+      } else {
+        setBmSuccess(`Sold ${result.quantity} × ${prettyCommodity(listing.commodity)} for ${(result.sale_value ?? 0).toLocaleString()} cr. (No one was watching... this time.)`);
+      }
+      fetchBlackMarketCatalog(stationId);
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Black-market sell error:', error);
+      setBmError('Connection error. Please try again.');
+    } finally {
+      setBmBusy(null);
+    }
+  }, [currentStation?.id, bmBusy, updatePlayerCredits, fetchBlackMarketCatalog, refreshPlayerState, fetchShipData]);
+
   // Black Market Modal
   const renderBlackMarketModal = () => {
     if (!showBlackMarket) return null;
 
-    const getBlackMarketItems = () => {
-      switch (activeVenue) {
-        case 'trading':
-          return [
-            { name: 'Stolen Cargo Manifest', desc: 'Discounted goods of questionable origin', price: 5000, discount: '40% off market' },
-            { name: 'Smuggling Contract', desc: 'High-risk, high-reward delivery job', price: 2000, reward: '15,000 cr on completion' },
-            { name: 'Contraband Spices', desc: 'Illegal but highly valuable commodities', price: 10000, sellPrice: '25,000 at black ports' },
-          ];
-        case 'armory':
-          return [
-            { name: 'EMP Mine', desc: 'Disables ship systems on impact', price: 8000, stats: 'Disable: 3 turns' },
-            { name: 'Cloaking Generator', desc: 'Temporary invisibility field', price: 50000, stats: 'Duration: 5 sectors' },
-            { name: 'Illegal Weapon Mod', desc: '+50% damage, voids warranty', price: 15000, stats: '+50% ATK' },
-          ];
-        case 'services':
-          return [
-            { name: 'Identity Wipe', desc: 'Clear your criminal record... temporarily', price: 25000, effect: 'Reset bounty' },
-            { name: 'Stolen Ship Parts', desc: 'Repair at 30% cost, 20% failure chance', price: 3000, risk: '20% failure' },
-            { name: 'Unregistered Mods', desc: 'Performance upgrades with no paper trail', price: 20000, stats: '+10% speed' },
-          ];
-        default:
-          return [];
-      }
+    // Held contraband counts per commodity (from the current ship cargo), so a
+    // commodity the player actually holds can be sold. Cargo "contents" keys are
+    // ``illegal:<commodity>`` (ContrabandService.cargo_key).
+    const cargoContents = (shipData?.cargo && typeof shipData.cargo === 'object'
+      ? (shipData.cargo as Record<string, unknown>).contents
+      : null) as Record<string, number> | null | undefined;
+    const heldOf = (commodity: string): number => {
+      const v = cargoContents?.[`illegal:${commodity}`];
+      return typeof v === 'number' && v > 0 ? v : 0;
     };
-
-    const items = getBlackMarketItems();
 
     return (
       <div className="black-market-overlay" onClick={() => setShowBlackMarket(false)}>
@@ -1220,30 +1524,105 @@ const SpaceDockInterface: React.FC = () => {
             <span className="rep-tier">({playerState?.reputation_tier})</span>
           </div>
 
-          <div className="bm-items">
-            {items.map((item, idx) => (
-              <div key={idx} className="bm-item">
-                <div className="bm-item-info">
-                  <h4>{item.name}</h4>
-                  <p>{item.desc}</p>
-                  <div className="bm-item-stats">
-                    {Object.entries(item).filter(([k]) => !['name', 'desc', 'price'].includes(k)).map(([key, val]) => (
-                      <span key={key} className="bm-stat">{key}: {String(val)}</span>
-                    ))}
-                  </div>
-                </div>
-                <div className="bm-item-purchase">
-                  <span className="bm-price">{item.price.toLocaleString()} cr</span>
-                  <button
-                    className="bm-buy-btn"
-                    disabled={(playerState?.credits || 0) < item.price}
-                  >
-                    Acquire
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
+          {/* Buy/sell feedback */}
+          {bmSuccess && (
+            <div className="genesis-success-message">
+              <span className="success-icon">✅</span>
+              {bmSuccess}
+            </div>
+          )}
+          {bmDetected && (
+            <div className="genesis-error-message">
+              <span className="error-icon">🚨</span>
+              {bmDetected}
+            </div>
+          )}
+          {bmError && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {bmError}
+            </div>
+          )}
+
+          {/* Real contraband catalog — gated off the endpoint */}
+          {bmLoading && (
+            <div className="catalog-loading">Making contact with the fence...</div>
+          )}
+
+          {!bmLoading && bmGateClosed && (
+            <div className="bm-registry-empty">
+              No underworld contacts here. You have no business at this station —
+              or none they'll acknowledge.
+            </div>
+          )}
+
+          {!bmLoading && !bmGateClosed && bmCatalogError && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {bmCatalogError}
+            </div>
+          )}
+
+          {!bmLoading && !bmGateClosed && bmCatalog && (
+            <div className="bm-items">
+              {bmCatalog.commodities.length === 0 ? (
+                <div className="bm-registry-empty">The fence has nothing to move today.</div>
+              ) : (
+                bmCatalog.commodities.map(listing => {
+                  const held = heldOf(listing.commodity);
+                  const qty = bmQuantities[listing.commodity] ?? 1;
+                  const totalBuy = listing.indicative_unit_price * qty;
+                  const buyBusy = bmBusy === `buy:${listing.commodity}`;
+                  const sellBusy = bmBusy === `sell:${listing.commodity}`;
+                  const anyBusy = bmBusy !== null;
+                  return (
+                    <div key={listing.commodity} className="bm-item">
+                      <div className="bm-item-info">
+                        <h4>{prettyCommodity(listing.commodity)}</h4>
+                        <div className="bm-item-stats">
+                          <span className="bm-stat">severity: {listing.severity}</span>
+                          <span className="bm-stat">~{listing.indicative_unit_price.toLocaleString()} cr/unit</span>
+                          {held > 0 && <span className="bm-stat">held: {held}</span>}
+                        </div>
+                      </div>
+                      <div className="bm-item-purchase">
+                        <input
+                          type="number"
+                          min={1}
+                          max={100000}
+                          className="bm-registry-input"
+                          style={{ width: '72px' }}
+                          value={qty}
+                          onChange={e => {
+                            const n = Math.max(1, Math.min(100000, parseInt(e.target.value, 10) || 1));
+                            setBmQuantities(prev => ({ ...prev, [listing.commodity]: n }));
+                          }}
+                          disabled={anyBusy}
+                          aria-label={`Quantity of ${prettyCommodity(listing.commodity)}`}
+                        />
+                        <span className="bm-price">{totalBuy.toLocaleString()} cr</span>
+                        <button
+                          className="bm-buy-btn"
+                          onClick={() => buyContraband(listing, qty)}
+                          disabled={anyBusy || (playerState?.credits || 0) < totalBuy}
+                        >
+                          {buyBusy ? '...' : 'Buy'}
+                        </button>
+                        <button
+                          className="bm-buy-btn"
+                          onClick={() => sellContraband(listing, Math.min(qty, held))}
+                          disabled={anyBusy || held <= 0}
+                          title={held <= 0 ? 'None of this contraband in your hold' : undefined}
+                        >
+                          {sellBusy ? '...' : 'Sell'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
 
           <div className="bm-registry">
             <h4 className="bm-registry-title">🔍 Planetary Registry Lookup</h4>
@@ -2718,6 +3097,90 @@ const SpaceDockInterface: React.FC = () => {
     );
   };
 
+  const renderMiningVenue = () => {
+    const hasShip = Boolean(shipData?.id);
+    return (
+      <div className="venue-container mining">
+        <div className="venue-header">
+          <button className="back-button" onClick={() => setActiveVenue('hub')}>
+            ← Back to Hub
+          </button>
+          <h2>⛏️ Astral Mining Consortium</h2>
+        </div>
+        <div className="venue-content-area">
+          <div className="services-grid">
+            <div className="service-card">
+              <div className="service-icon">📜</div>
+              <h3>Claim License</h3>
+              <p>File a 24-hour Consortium claim for this sector's asteroid field</p>
+              <div className="service-status">
+                A claim license authorises legal harvesting in an asteroid-field
+                sector. The fee scales with the field's richness; renewing an
+                active claim costs less than a fresh filing.
+              </div>
+              {licenseSuccess && (
+                <div className="genesis-success-message">
+                  <span className="success-icon">✅</span>
+                  {licenseSuccess}
+                </div>
+              )}
+              {licenseError && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {licenseError}
+                </div>
+              )}
+              <div className="service-action">
+                <button
+                  className="service-btn"
+                  onClick={purchaseClaimLicense}
+                  disabled={licenseBusy || !hasShip}
+                  title={!hasShip ? 'No active ship' : undefined}
+                >
+                  {licenseBusy ? 'Filing...' : 'Purchase / Renew License'}
+                </button>
+              </div>
+            </div>
+
+            <div className="service-card">
+              <div className="service-icon">🔆</div>
+              <h3>Mining Laser Refit</h3>
+              <p>Upgrade your installed Mining Laser to the next yield tier</p>
+              <div className="service-status">
+                A higher Mining Laser level raises ore yield, the precious-metals
+                cap, and the quantum-shard trace drop. Requires a Mining Laser
+                already fitted to your ship.
+              </div>
+              {laserSuccess && (
+                <div className="genesis-success-message">
+                  <span className="success-icon">✅</span>
+                  {laserSuccess}
+                </div>
+              )}
+              {laserError && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {laserError}
+                </div>
+              )}
+              <div className="service-action">
+                <button
+                  className="service-btn"
+                  onClick={upgradeMiningLaser}
+                  disabled={laserBusy || !hasShip}
+                  title={!hasShip ? 'No active ship' : undefined}
+                >
+                  {laserBusy ? 'Refitting...' : 'Upgrade Mining Laser'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <BlackMarketButton />
+      </div>
+    );
+  };
+
   const renderTrading = () => (
     <div className="venue-container trading">
       <div className="venue-header">
@@ -2773,6 +3236,8 @@ const SpaceDockInterface: React.FC = () => {
         return renderArmory();
       case 'services':
         return renderServices();
+      case 'mining':
+        return renderMiningVenue();
       case 'gambling':
         return renderGamblingHall();
       default:
