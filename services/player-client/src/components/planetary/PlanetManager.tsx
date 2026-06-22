@@ -9,6 +9,7 @@ import { GenesisDeployment } from './GenesisDeployment';
 import { ColonySpecialization as ColonySpecializationComponent } from './ColonySpecialization';
 import { SiegeStatusMonitor } from './SiegeStatusMonitor';
 import CitadelManager from './CitadelManager';
+import GridManager from './GridManager';
 import TerraformingPanel from './TerraformingPanel';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
@@ -166,7 +167,7 @@ export const PlanetManager: React.FC = () => {
   const [showGenesisDeployment, setShowGenesisDeployment] = useState(false);
   const [showSpecialization, setShowSpecialization] = useState(false);
   const [showSiegeMonitor, setShowSiegeMonitor] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'citadel' | 'terraforming'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'citadel' | 'grid' | 'terraforming'>('overview');
 
   // COLONY scan loading state: show a spinner while the registry loads, then
   // fall back to a retry affordance if nothing arrives within 10s. apiRequest
@@ -531,6 +532,14 @@ export const PlanetManager: React.FC = () => {
             </button>
             <button
               role="tab"
+              aria-selected={activeTab === 'grid'}
+              className={`planet-tab ${activeTab === 'grid' ? 'active' : ''}`}
+              onClick={() => setActiveTab('grid')}
+            >
+              🏗️ Grid
+            </button>
+            <button
+              role="tab"
               aria-selected={activeTab === 'terraforming'}
               className={`planet-tab ${activeTab === 'terraforming' ? 'active' : ''}`}
               onClick={() => setActiveTab('terraforming')}
@@ -545,6 +554,16 @@ export const PlanetManager: React.FC = () => {
                 planetId={selectedPlanet.id}
                 playerCredits={playerState?.credits ?? 0}
                 stationedDrones={selectedPlanet.defenses?.drones}
+                onUpdate={loadPlanets}
+              />
+            </div>
+          )}
+
+          {activeTab === 'grid' && (
+            <div className="planet-overview citadel-tab-content">
+              <GridManager
+                planetId={selectedPlanet.id}
+                playerCredits={playerState?.credits ?? 0}
                 onUpdate={loadPlanets}
               />
             </div>

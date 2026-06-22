@@ -525,6 +525,36 @@ export const citadelAPI = {
     }),
 };
 
+// Planet Grid APIs (CRT-2) — the authoritative citadel grid the player manages.
+//
+// getGrid → the grid view: cols/rows + plots + placed buildings + derived
+//   citadel_level/max_citadel_level (size cap) + the placeable catalog + the
+//   owning player's researched-node set (so the UI can render names, costs, and
+//   research-gating without a second round-trip). Exact payload shape is owned
+//   by the gameserver (GET /grid); GridPanel reads it defensively.
+// place → enqueue a building of `kind` on empty plot (x,y); the server charges
+//   credits from the player (planet-row→player-row lock order), enforces the
+//   research gate (403) and affordability (402); failures surface the server's
+//   human message via apiRequest's error mapping.
+// decommission → remove a placed building by id; the server credits the 0.25×
+//   invested refund back to the player and returns { removed, refund_credits }.
+export const gridAPI = {
+  getGrid: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid`),
+
+  place: (planetId: string, kind: string, x: number, y: number, level: number = 1) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/place`, {
+      method: 'POST',
+      body: JSON.stringify({ kind, x, y, level }),
+    }),
+
+  decommission: (planetId: string, buildingId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/grid/decommission`, {
+      method: 'POST',
+      body: JSON.stringify({ building_id: buildingId }),
+    }),
+};
+
 // Ship Upgrade APIs (real backend endpoints)
 export const shipUpgradeAPI = {
   getUpgrades: (shipId: string) =>
@@ -708,6 +738,7 @@ export const gameAPI = {
   ranking: rankingAPI,
   bounty: bountyAPI,
   citadel: citadelAPI,
+  grid: gridAPI,
   shipUpgrade: shipUpgradeAPI,
   governance: governanceAPI,
   regionOwner: regionOwnerAPI,
