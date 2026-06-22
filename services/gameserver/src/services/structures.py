@@ -69,10 +69,14 @@ STRICT_VIA_SETTLE = False
 # instead of merely shadow-logging the divergence. The size-gated upgrade ladder
 # (max_citadel_level_for_size) makes derive a faithful inverse by construction, so this never
 # regresses a legitimately-built citadel. False = the original read-only K1b-1 shadow.
-# Staged cutover (WO-CRT-1): ships FALSE = read-only SHADOW. Flip True only AFTER
-# the one-time backfill repacks every divergent planet so derive==shipped (else
-# settle would write a still-divergent planet DOWN — e.g. a not-yet-repacked L5).
-CITADEL_DERIVE_AUTHORITATIVE = False
+# Cutover (WO-CRT-1): TRUE = derive is AUTHORITATIVE (settle writes citadel_level
+# from the grid). REQUIRED per-env before flipping: a one-time backfill that
+# FULL-re-seeds (structures=None → seed()) every divergent citadel planet so
+# derive==shipped (clearing only buildings re-seeds onto stale plots and fails —
+# use a full re-seed). Verified 0-divergence on dev before this flip. The
+# derived>=1 floor (below) + _get_settle_anchor's empty-grid backfill guard the
+# residual cases; a populated-but-suboptimal grid still needs the backfill.
+CITADEL_DERIVE_AUTHORITATIVE = True
 
 
 def _via_settle_guard(name: str, via_settle: bool) -> None:
