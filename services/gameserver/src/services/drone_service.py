@@ -15,7 +15,12 @@ from src.models.drone import Drone, DroneDeployment, DroneType, DroneStatus
 from src.models.player import Player
 from src.models.sector import Sector
 from src.models.team import Team
-from src.models.ship import Ship, ShipSpecification
+from src.models.ship import Ship, ShipSpecification, UpgradeType
+
+# ship-systems.md §2.7 / drones.md:62 — each Drone Bay upgrade level adds +2 drone
+# capacity. Mirrors GENESIS_CONTAINMENT's +2/level (genesis_service consumes that one
+# the same way). The level lives in ``Ship.upgrades[UpgradeType.DRONE_BAY.value]``.
+DRONE_CAPACITY_BONUS_PER_BAY_LEVEL = 2
 
 
 class DroneService:
@@ -136,10 +141,18 @@ class DroneService:
 
         The cap is ``ShipSpecification.max_drones`` for the player's
         ``current_ship`` (the same source the armory loadout caps use —
-        armory.py /purchase reads ``spec.max_drones`` off the current ship).
+        armory.py /purchase reads ``spec.max_drones`` off the current ship)
+        PLUS the installed Drone Bay upgrade bonus (+2 per level, ship-systems.md
+        §2.7 / drones.md:62). The Drone Bay level lives in
+        ``Ship.upgrades[UpgradeType.DRONE_BAY.value]`` — the same legacy upgrades
+        JSONB the Genesis Containment cap consumer reads
+        (genesis_service._get_ship_genesis_capacity). Before this, the Drone Bay
+        upgrade was purchasable but read by no consumer (pay-for-nothing).
+
         A player with no active ship has a cap of 0 (you need a ship to carry
         drones — matches the armory "You need an active ship to carry armory
-        items" rule).
+        items" rule). A ship with no Drone Bay upgrade (``upgrades`` absent/empty)
+        yields the static ``spec.max_drones`` unchanged (bonus 0).
         """
         player = await self.session.get(Player, player_id)
         if player is None or player.current_ship_id is None:
@@ -155,7 +168,27 @@ class DroneService:
             )
         )
         max_drones = result.scalar_one_or_none()
-        return int(max_drones) if max_drones is not None else 0
+        base_max = int(max_drones) if max_drones is not None else 0
+
+        return base_max + self._drone_bay_bonus(ship)
+
+    @staticmethod
+    def _drone_bay_bonus(ship: Ship) -> int:
+        """The Drone Bay upgrade's +2/level capacity bonus for ``ship``.
+
+        Reads the installed Drone Bay level from ``Ship.upgrades`` (the
+        UpgradeType-keyed JSONB ship_upgrade_service writes on purchase) and
+        multiplies by ``DRONE_CAPACITY_BONUS_PER_BAY_LEVEL``. A ship with no
+        Drone Bay level (upgrades absent/empty/non-dict) contributes 0.
+        """
+        upgrades = getattr(ship, "upgrades", None)
+        if not isinstance(upgrades, dict):
+            return 0
+        try:
+            level = int(upgrades.get(UpgradeType.DRONE_BAY.value, 0))
+        except (TypeError, ValueError):
+            return 0
+        return max(0, level) * DRONE_CAPACITY_BONUS_PER_BAY_LEVEL
 
     async def _count_live_drones(self, player_id: UUID) -> int:
         """Count a player's non-destroyed drones (the ones that occupy a cap slot)."""

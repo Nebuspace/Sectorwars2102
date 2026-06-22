@@ -20,7 +20,7 @@ from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.planet import Planet, PlanetStatus
-from src.models.ship import Ship
+from src.models.ship import Ship, effective_cargo_capacity
 from src.services.planetary_service import (
     PlanetaryService,
     max_colonists_for,
@@ -960,7 +960,7 @@ async def transfer_colonists(
     contents = cargo.get('contents', {})
     ship_colonists = contents.get('colonists', 0)
     cargo_used = cargo.get('used', 0)
-    cargo_capacity = cargo.get('capacity', 50)
+    cargo_capacity = effective_cargo_capacity(ship)
 
     quantity = request.quantity
     planet_colonists = planet.colonists or 0

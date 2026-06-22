@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.ship import Ship, ShipType
+from src.models.ship import Ship, ShipType, effective_cargo_capacity
 from src.models.sector import Sector
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel
@@ -244,7 +244,7 @@ async def get_player_ships(
     ship_responses = []
     for ship in ships:
         cargo_data = ship.cargo or {}
-        cargo_capacity = cargo_data.get('capacity', 50)
+        cargo_capacity = effective_cargo_capacity(ship)
         ship_responses.append(ShipResponse(
             id=str(ship.id),
             name=ship.name,
@@ -286,7 +286,7 @@ async def get_current_ship(
         )
     
     cargo_data = ship.cargo or {}
-    cargo_capacity = cargo_data.get('capacity', 50)
+    cargo_capacity = effective_cargo_capacity(ship)
     return ShipResponse(
         id=str(ship.id),
         name=ship.name,

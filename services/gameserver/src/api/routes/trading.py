@@ -12,7 +12,7 @@ from src.models.user import User
 from src.models.player import Player
 from src.models.station import Station
 from src.models.sector import Sector
-from src.models.ship import Ship, ShipStatus
+from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
 from src.models.market_transaction import MarketTransaction, MarketPrice, TransactionType
 from src.services.trading_service import (
@@ -419,7 +419,7 @@ async def buy_resource(
     # Cargo structure: {'used': X, 'capacity': Y, 'contents': {...}}
     cargo = current_ship.cargo or {'used': 0, 'capacity': 50, 'contents': {}}
     current_cargo_used = cargo.get('used', 0)
-    cargo_capacity = cargo.get('capacity', 50)
+    cargo_capacity = effective_cargo_capacity(current_ship)
 
     if current_cargo_used + trade_request.quantity > cargo_capacity:
         raise HTTPException(
@@ -623,7 +623,7 @@ async def buy_resource(
                 "tariff_rate": tariff_rate_eff,
                 "price_lever": lever_eff,
                 "remaining_credits": current_player.credits,
-                "remaining_cargo_space": current_ship.cargo.get('capacity', 50) - current_ship.cargo.get('used', 0)
+                "remaining_cargo_space": effective_cargo_capacity(current_ship) - current_ship.cargo.get('used', 0)
             }
         }
         if alert_fired:

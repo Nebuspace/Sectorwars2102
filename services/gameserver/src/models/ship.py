@@ -163,6 +163,36 @@ class ShipStatus(enum.Enum):
     MINING = "MINING"
 
 
+def effective_cargo_capacity(ship) -> int:
+    """The ship's usable cargo capacity AFTER the Cargo-Hold ship-mod bonus.
+
+    Base capacity lives in ``ship.cargo["capacity"]`` (default 50). The Cargo-Hold
+    upgrade / module writes a single pre-summed ``_capacity_bonus_percent`` meta-key
+    into the same ``cargo`` JSONB (ship-systems.md §2.4: +30% per level), and the
+    effective capacity is ``base * (1 + bonus/100)``.
+
+    The best-3 module stacking cap is ALREADY applied UPSTREAM, where
+    ``_capacity_bonus_percent`` is written (``ShipUpgradeService`` §4.2 via
+    ``_best_n_flat`` before the JSONB write) — so this consumer MUST NOT re-cap;
+    it simply consumes the pre-capped percent. The single home for this read so the
+    +30%/level applies consistently at every cargo-capacity reader (trade-profit-per-haul,
+    the warp-gate per-run limit, the ShipResponse.cargo_capacity field).
+
+    Reproduce-exactly: a ship with NO Cargo-Hold mod (bonus absent → 0) returns the
+    base capacity unchanged.
+    """
+    cargo = ship.cargo if isinstance(getattr(ship, "cargo", None), dict) else {}
+    try:
+        base = int(cargo.get("capacity", 50))
+    except (TypeError, ValueError):
+        base = 50
+    try:
+        bonus_percent = float(cargo.get("_capacity_bonus_percent", 0) or 0)
+    except (TypeError, ValueError):
+        bonus_percent = 0.0
+    return int(base * (1 + bonus_percent / 100))
+
+
 class Ship(Base):
     __tablename__ = "ships"
 
