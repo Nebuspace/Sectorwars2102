@@ -517,6 +517,15 @@ class ShipUpgradeService:
     # Pending ruling on the exact per-level figure.
     SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL = 1
 
+    # CANON (ship-systems.md §2.5 line 90, marked ✅ Shipped): "Each Sensor level
+    # adds +15% evasion." Applied as a derived percentage of the hull spec's base
+    # evasion, scaled by installed Sensor level — exactly the baked-bonus shape of
+    # SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL above. The +15% figure IS canon (not
+    # NO-CANON); only the linear-per-level composition (15% × level vs compounding)
+    # is an implementation choice — chosen linear to match the doc's stated cap
+    # ("Sensor L1–L3 (max evasion: +45%)", line 181 = 15% × 3).
+    EVASION_BONUS_PCT_PER_SENSOR_LEVEL = 0.15
+
     # NO-CANON kernel (ship-systems.md §6.6 line 242 marks the Engine
     # jump-cooldown-reduction effect "📐 Design-only" with no per-level figure):
     # each Engine upgrade level shortens the Warp Jumper's post-jump quantum
@@ -582,6 +591,25 @@ class ShipUpgradeService:
         sensor_level = ShipUpgradeService.get_sensor_level(ship)
         bonus = sensor_level * ShipUpgradeService.SCANNER_RANGE_BONUS_PER_SENSOR_LEVEL
         return int(base_scanner_range) + bonus
+
+    @staticmethod
+    def effective_evasion(ship, base_evasion: int) -> int:
+        """Effective combat evasion = the hull spec's base evasion scaled up by
+        the Sensor-upgrade bonus (+15% per installed Sensor level — CANON
+        ship-systems.md §2.5 line 90; see EVASION_BONUS_PCT_PER_SENSOR_LEVEL).
+
+        Mirrors `effective_scanner_range`: `Ship` has no separate per-instance
+        evasion column (the static value lives on `ShipSpecification.evasion`),
+        so the combat seed path passes that spec base in and consults the
+        returned effective value. The bonus is linear in Sensor level
+        (`base × (1 + 0.15 × level)`), so an un-upgraded ship (Sensor L0) gets
+        `base × 1.0` — its base evasion is returned UNCHANGED. Rounded to an int
+        to match the integer `ShipSpecification.evasion` column and the integer
+        defense-component arithmetic in combat_service.
+        """
+        sensor_level = ShipUpgradeService.get_sensor_level(ship)
+        multiplier = 1.0 + (sensor_level * ShipUpgradeService.EVASION_BONUS_PCT_PER_SENSOR_LEVEL)
+        return int(round(int(base_evasion) * multiplier))
 
     @staticmethod
     def get_passive_income(ship) -> int:

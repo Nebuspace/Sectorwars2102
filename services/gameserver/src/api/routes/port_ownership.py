@@ -61,6 +61,27 @@ class TaxRateRequest(BaseModel):
     rate: float = Field(..., ge=0.0, le=0.25)
 
 
+class PriceLeverRequest(BaseModel):
+    # Canon price-adjustment lever: +/-10% over base (port-ownership.md).
+    pct: float = Field(..., ge=-0.10, le=0.10)
+
+
+class DockingFeeRequest(BaseModel):
+    # Canon docking fee: 50-500 cr, "toggle + amount".
+    amount: int = Field(..., ge=50, le=500)
+    enabled: bool = True
+
+
+class ServiceChargeRequest(BaseModel):
+    # Canon service charge: 0.8x-2.0x of standard.
+    multiplier: float = Field(..., ge=0.8, le=2.0)
+
+
+class StorageRentalRequest(BaseModel):
+    # Canon storage rental: 1,000-10,000 cr/day per slot.
+    per_day: int = Field(..., ge=1_000, le=10_000)
+
+
 class WithdrawRequest(BaseModel):
     amount: int = Field(..., ge=1)
 
@@ -289,6 +310,112 @@ async def set_tax_rate(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     return {
         "message": f"Tax rate at {station.name} set to {request.rate:.0%}",
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/price-lever")
+async def set_price_lever(
+    station_id: str,
+    request: PriceLeverRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Set the station's marketing price-adjustment lever (owner only, canon
+    +/-10% over base). A positive lever widens the owner's margin (less traffic);
+    a negative lever tightens it (more traffic). Writes the key
+    trading_service reads, so the lever takes effect on the next trade."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.set_price_lever(
+            db, station, current_player, request.pct
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Price lever at {station.name} set to {request.pct:+.0%}",
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/docking-fee")
+async def set_docking_fee(
+    station_id: str,
+    request: DockingFeeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Set the station's flat per-docking fee (owner only, canon 50-500 cr with
+    a toggle). Discourages casual traffic; useful at high-traffic transit
+    stations."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.set_docking_fee(
+            db, station, current_player, request.amount, request.enabled
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    state = "on" if request.enabled else "off"
+    return {
+        "message": f"Docking fee at {station.name} set to {request.amount:,} cr ({state})",
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/service-charge")
+async def set_service_charge(
+    station_id: str,
+    request: ServiceChargeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Set the station's service-charge multiplier on repair/refuel/etc. (owner
+    only, canon 0.8x-2.0x of standard). 1.0x is baseline; 0.8x is a loss-leader
+    for traffic; 2.0x is premium pricing for a captive market."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.set_service_charge(
+            db, station, current_player, request.multiplier
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Service charge at {station.name} set to {request.multiplier:.1f}x",
+        **result,
+    }
+
+
+@router.post("/stations/{station_id}/storage-rental")
+async def set_storage_rental(
+    station_id: str,
+    request: StorageRentalRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player),
+):
+    """Set the station's storage-rental rate (owner only, canon 1,000-10,000
+    cr/day per slot). Players rent station hangar slots for cargo storage; slot
+    count is gated by the Extended Storage upgrade."""
+    station = _get_station_or_404(db, station_id)
+    try:
+        result = port_ownership_service.set_storage_rental(
+            db, station, current_player, request.per_day
+        )
+        db.commit()
+    except PortOwnershipError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return {
+        "message": f"Storage rental at {station.name} set to {request.per_day:,} cr/day",
         **result,
     }
 

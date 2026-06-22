@@ -17,7 +17,7 @@ from sqlalchemy import and_, func, select
 
 from src.models.player import Player
 from src.models.planet import Planet, PlanetType, PlanetStatus, player_planets
-from src.models.ship import Ship, ShipType
+from src.models.ship import Ship, ShipType, UpgradeType
 from src.models.sector import Sector, sector_warps
 from src.models.region import Region
 
@@ -129,6 +129,18 @@ GENESIS_CAPACITY_BY_SHIP = {
     ShipType.CARRIER: 5,
     ShipType.WARP_JUMPER: 1,
 }
+
+# NO-CANON kernel: the Genesis Containment (GENESIS_CONTAINMENT) ship upgrade
+# declares effect_per_level genesis_capacity_bonus: 2 (ship_upgrade_service.py),
+# but the canon (sw2102-docs ship-systems.md §2.9) marks the GENESIS_CONTAINMENT
+# effect 📐 Design-only with no stacking rule. Conservative proposed kernel:
+# each installed Genesis Containment level adds a flat +2 to the ship's genesis
+# device capacity, ADDITIVE on top of the static GENESIS_CAPACITY_BY_SHIP base
+# (mirrors the Sensor/scanner-range and drone-bay baked-bonus pattern: read the
+# installed upgrade level, add bonus × level). Magnitude/stack rule flagged for
+# a DECISIONS.md Pending ruling. Kept in lockstep with the per-level figure in
+# ship_upgrade_service GENESIS_CONTAINMENT.effect_per_level (worker α owns it).
+GENESIS_CAPACITY_BONUS_PER_CONTAINMENT_LEVEL = 2
 
 # Canon device consumption per tier (genesis-devices.md "Formation process" /
 # tier matrix): basic spends 1 device, enhanced fuses 3, advanced spends 1
@@ -1001,8 +1013,36 @@ class GenesisService:
         player.settings = settings
 
     def _get_ship_genesis_capacity(self, ship: Ship) -> int:
-        """Get the genesis device capacity for a ship based on its type."""
-        return GENESIS_CAPACITY_BY_SHIP.get(ship.type, 0)
+        """Get the genesis device capacity for a ship: the static per-hull base
+        plus the installed Genesis Containment upgrade bonus.
+
+        Mirrors the Sensor/scanner-range baked-bonus pattern
+        (ship_upgrade_service.effective_scanner_range): read the installed
+        GENESIS_CONTAINMENT upgrade level from the ship's ``upgrades`` JSONB and
+        add ``GENESIS_CAPACITY_BONUS_PER_CONTAINMENT_LEVEL`` × level on top of the
+        GENESIS_CAPACITY_BY_SHIP base. The genesis_capacity_bonus:2 upgrade
+        previously baked only into the ``max_genesis_devices`` column (the
+        carry/load count) and never reached this capacity gate, so a purchased
+        Genesis Containment upgrade did nothing for the carry-eligibility check or
+        the displayed capacity — this consumes it here too.
+
+        Reproduce-exactly: a ship with no GENESIS_CONTAINMENT level (upgrades
+        absent/empty) yields the static GENESIS_CAPACITY_BY_SHIP value unchanged.
+
+        Stack rule (additive +2/level) is NO-CANON — flagged for a DECISIONS.md
+        Pending ruling (see GENESIS_CAPACITY_BONUS_PER_CONTAINMENT_LEVEL).
+        """
+        base_capacity = GENESIS_CAPACITY_BY_SHIP.get(ship.type, 0)
+
+        upgrades = getattr(ship, "upgrades", None)
+        if not isinstance(upgrades, dict):
+            return base_capacity
+        try:
+            containment_level = int(upgrades.get(UpgradeType.GENESIS_CONTAINMENT.value, 0))
+        except (TypeError, ValueError):
+            return base_capacity
+
+        return base_capacity + containment_level * GENESIS_CAPACITY_BONUS_PER_CONTAINMENT_LEVEL
 
     def _complete_formation(self, planet: Planet) -> None:
         """Transition a forming planet to a usable completed state."""

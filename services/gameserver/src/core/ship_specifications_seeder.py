@@ -9,6 +9,54 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ----------------------------------------------------------------------------
+# [NO-CANON] Per-hull combat-mitigation table (B3) — shield_resistance &
+# armor_rating. These two ShipSpecification columns (models/ship.py:222-223,
+# defaulted 0.0) are CONSUMED by the combat resolver
+# (combat_service._apply_weapon_damage, combat_service.py:2277-2287): they are
+# FRACTIONS of incoming damage absorbed (shield component & hull component
+# respectively), clamped by _resistance_fraction to [0.0, 0.9]. Until now the
+# seeder never set them, so every hull absorbed 0% — these mitigations were
+# inert. This table makes them non-zero.
+#
+# *** THESE ARE [NO-CANON] MAGNITUDES — sw2102-docs gives no shield_resistance /
+# armor_rating numbers. The values below are a PROPOSAL for Max to bless. ***
+# Design: conservative + gently hull/class-tiered. Civilian / utility hulls get
+# little-to-nothing; dedicated combat hulls get the most. Even the heaviest
+# combat hull stays at 0.20 (well under the 0.90 clamp) so this is a SMALL
+# rebalance, not a wall of immunity.
+#
+# *** BALANCE NOTE: this CHANGES combat absorption from 0% -> non-zero. It is a
+# deliberate (conservative) balance change; flagged for Max. ***
+#
+# WIRING CAVEAT (out of THIS file's lane, flag for a follow-up WO): combat reads
+# these off the Ship ROW (getattr(defender_ship, "shield_resistance"...)), and
+# the three Ship() constructors (ship_service.create_ship:63-112,
+# npc_spawn_service:391, first_login_service:1642) do NOT yet copy
+# shield_resistance / armor_rating from the spec, so live Ship rows stay at the
+# column default 0.0. Seeding the SPEC is necessary but not sufficient — a
+# downstream task must copy spec.shield_resistance / spec.armor_rating onto new
+# Ship rows for these to take effect in combat.
+# ----------------------------------------------------------------------------
+_NO_CANON_MITIGATION = {
+    # ESCAPE_POD: indestructible already; no mitigation needed. Keep 0.0.
+    ShipType.ESCAPE_POD:      {"shield_resistance": 0.0,  "armor_rating": 0.0},
+    # Civilian / light haulers & couriers — token armor, ~no shield resistance.
+    ShipType.FAST_COURIER:    {"shield_resistance": 0.0,  "armor_rating": 0.02},
+    ShipType.CITIZEN_CLIPPER: {"shield_resistance": 0.0,  "armor_rating": 0.02},  # mirrors FAST_COURIER (P2W firewall)
+    ShipType.SCOUT_SHIP:      {"shield_resistance": 0.0,  "armor_rating": 0.02},
+    ShipType.LIGHT_FREIGHTER: {"shield_resistance": 0.02, "armor_rating": 0.03},
+    ShipType.CARGO_HAULER:    {"shield_resistance": 0.03, "armor_rating": 0.05},
+    ShipType.COLONY_SHIP:     {"shield_resistance": 0.03, "armor_rating": 0.05},
+    ShipType.WARP_JUMPER:     {"shield_resistance": 0.05, "armor_rating": 0.05},
+    # Dedicated combat hulls — meaningful but still well under the 0.90 clamp.
+    ShipType.DEFENDER:        {"shield_resistance": 0.10, "armor_rating": 0.10},
+    ShipType.CARRIER:         {"shield_resistance": 0.15, "armor_rating": 0.15},
+    # NPC-only Interdictor pursuit hulls — toughest, but conservative (<= 0.20).
+    ShipType.NPC_MARSHAL_INTERDICTOR:  {"shield_resistance": 0.15, "armor_rating": 0.15},
+    ShipType.NPC_SENTINEL_INTERDICTOR: {"shield_resistance": 0.20, "armor_rating": 0.20},
+}
+
 # Ship specifications based on DOCS/FEATURES/SHIP_TYPES.md
 SHIP_SPECIFICATIONS = {
     ShipType.ESCAPE_POD: {
@@ -710,6 +758,20 @@ def seed_ship_specifications(db: Session) -> None:
     updated_count = 0
 
     for ship_type, spec_data in SHIP_SPECIFICATIONS.items():
+        # [NO-CANON] B3: merge the per-hull combat-mitigation values
+        # (shield_resistance / armor_rating) onto this spec's data so they flow
+        # through BOTH the create (**spec_data) and the update (setattr) paths
+        # below. A shallow copy keeps SHIP_SPECIFICATIONS (module-level) pristine.
+        # Idempotent: re-running re-sets the same values; ships present without
+        # these keys get them on the next boot (update branch). Defaults to the
+        # column default (0.0) for any hull absent from the table.
+        spec_data = {
+            **spec_data,
+            **_NO_CANON_MITIGATION.get(
+                ship_type, {"shield_resistance": 0.0, "armor_rating": 0.0}
+            ),
+        }
+
         # Check if specification already exists
         existing_spec = db.query(ShipSpecification).filter(
             ShipSpecification.type == ship_type

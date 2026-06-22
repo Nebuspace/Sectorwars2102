@@ -142,6 +142,46 @@ def _dispatch_bounty_medals(db: Session, collector_id) -> None:
         logger.error("Bounty medal dispatch hook failed: %s", e)
 
 
+def _emit_bounty_collected(collector_id, target_id, bounty_result: Dict[str, Any]) -> None:
+    """Best-effort realtime ``bounty_updated`` push on a PAYING combat collect —
+    the third bounty-lifecycle action ("collected") alongside the route-layer
+    "placed" / "cancelled" emits (ranking.py place_bounty / cancel_bounty).
+
+    Payload shape and ``action`` semantics mirror those route emits exactly
+    (``send_bounty_update(action=..., bounty_data=..., placer_id, target_id)`` ->
+    a typed ``bounty_updated`` frame). Transport, however, mirrors this file's
+    OWN sync-context idiom (``_emit_combat_phase_events``): the place/cancel
+    callers ``await`` because they sit in async routes, but combat resolution is
+    synchronous, so we bridge via ``asyncio.get_running_loop().create_task`` and
+    swallow every failure (no loop, no socket, a quiet client) — a WS hiccup must
+    NEVER break combat or roll back the credited bounty. Same defensive contract
+    as ``_dispatch_bounty_medals``: errors are logged and dropped."""
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        placer = str(collector_id)
+        target = str(target_id)
+        loop.create_task(connection_manager.send_bounty_update(
+            action="collected",
+            bounty_data={
+                "target_id": target,
+                "collected_by": placer,
+                "total_collected": bounty_result.get("total_collected", 0),
+                "player_bounties_collected": bounty_result.get("player_bounties_collected", 0),
+                "system_bounties_collected": bounty_result.get("system_bounties_collected", 0),
+            },
+            placer_id=placer,
+            target_id=target,
+        ))
+    except Exception:  # never let a WS hiccup break combat
+        logger.debug(
+            "Skipped bounty_updated 'collected' WS event (no loop or socket)",
+            exc_info=True,
+        )
+
+
 def _combat_round_deltas(combat_details: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
     """Group a fight's ``combat_details`` action log by round number (WO-DBB-RT3).
 
@@ -711,6 +751,11 @@ class CombatService:
                     # work; idempotent on the medals side. Defensive dispatch —
                     # never breaks combat (the hook swallows its own errors).
                     _dispatch_bounty_medals(self.db, attacker.id)
+                    # Realtime bounty-board push: the "collected" lifecycle event
+                    # (place/cancel already emit "placed"/"cancelled" from the
+                    # route layer). Best-effort + self-isolated — a WS hiccup
+                    # never breaks combat or rolls back the paid bounty.
+                    _emit_bounty_collected(attacker.id, defender.id, bounty_result)
                 elif not bounty_result.get("had_bounty"):
                     # Target carried NO bounty at all — attacked a genuine
                     # innocent. Reputation penalty + police "attack_innocent"
@@ -2137,7 +2182,17 @@ class CombatService:
                 combat.setdefault("max_hull", spec.hull_points or 1)
                 combat.setdefault("hull", combat["max_hull"])
                 combat.setdefault("shield_recharge_rate", spec.shield_recharge_rate)
-                combat.setdefault("evasion", spec.evasion)
+                # Sensor-upgrade evasion bonus (+15%/level, CANON ship-systems.md
+                # §2.5 line 90) baked into the combat seed: read the effective
+                # value (spec base scaled by installed Sensor level) rather than the
+                # raw static spec column, so a sensor-upgraded ship whose combat
+                # dict is seeded HERE (rather than mutated at install time) still
+                # carries its evasion bonus into the fight. effective_evasion()
+                # returns the base UNCHANGED for an un-upgraded ship (Sensor L0).
+                combat.setdefault(
+                    "evasion",
+                    ShipUpgradeService.effective_evasion(ship, spec.evasion or 0),
+                )
                 combat.setdefault("attack_rating", spec.attack_rating)
                 combat.setdefault("defense_rating", spec.defense_rating)
             else:

@@ -161,6 +161,42 @@ CATCHUP_EVAL_LIMIT = 3              # lazy month catch-up: evaluate at most the
 MIN_TAX_RATE = 0.0
 MAX_TAX_RATE = 0.25
 
+# ---------------------------------------------------------------------------
+# Owner revenue-stream levers (canon FEATURES/economy/port-ownership "Revenue
+# streams" table, port-ownership.md:154-161). Every owner-tunable value below is
+# clamped to the canon range and STORED in the EXISTING Station.price_modifiers
+# JSONB — no migration (the alembic head is stranded; this mirrors how the
+# price-adjustment lever already persists). The price-adjustment lever shares
+# the SAME key trading_service.compute_station_lever_multiplier reads
+# ("price_adjustment_lever"); the docking-fee / service-charge / storage-rental
+# legs are new sub-keys that the realization sites (trading.py docking charge,
+# ship repair/refuel, a future storage-rental ledger) read when those lanes wire
+# them up. This lane builds the OWNER SETTERS + clamps + owner-gating only; it
+# does NOT edit trading.py / docking_service to consume the new keys (those are
+# the trading lane's follow-up, exactly like realize_port_revenue).
+#
+# Canon ranges (port-ownership.md:157-161):
+#   * Price adjustment lever  — +/-10% over base (matches STATION_LEVER_BOUND
+#     in trading_service; the reader clamps too, so this is belt-and-braces).
+#   * Docking fee             — 50-500 cr per docking, toggle + amount.
+#   * Service charge          — 0.8x-2.0x standard (repair / refuel / etc.).
+#   * Storage rental          — 1,000-10,000 cr/day per slot.
+# ---------------------------------------------------------------------------
+PRICE_LEVER_BOUND = 0.10          # +/-10% over base (canon; == STATION_LEVER_BOUND)
+DOCKING_FEE_MIN = 50              # cr per docking (canon floor)
+DOCKING_FEE_MAX = 500             # cr per docking (canon ceiling)
+SERVICE_CHARGE_MIN = 0.8          # x standard (canon loss-leader floor)
+SERVICE_CHARGE_MAX = 2.0          # x standard (canon captive-market ceiling)
+STORAGE_RENTAL_MIN = 1_000        # cr/day per slot (canon floor)
+STORAGE_RENTAL_MAX = 10_000       # cr/day per slot (canon ceiling)
+
+# price_modifiers JSONB sub-keys for the owner revenue levers.
+PRICE_LEVER_KEY = "price_adjustment_lever"      # SHARED with trading_service reader
+DOCKING_FEE_KEY = "docking_fee"                 # owner-set flat docking charge
+DOCKING_FEE_ENABLED_KEY = "docking_fee_enabled"  # toggle (canon "toggle + amount")
+SERVICE_CHARGE_KEY = "service_charge_multiplier"  # owner-set repair/refuel multiplier
+STORAGE_RENTAL_KEY = "storage_rental_per_day"   # owner-set cr/day per storage slot
+
 # Campaign statuses considered "active" (a live takeover attempt). Hoisted here
 # so both the economic and military engines reference one source of truth.
 _ACTIVE_CAMPAIGN_STATUSES = ("building", "eligible", "countered", "disputed")
@@ -892,6 +928,143 @@ def set_tax_rate(db: Session, station: Station, owner: Player, rate: float) -> D
     db.flush()
     logger.info("Station %s tax rate set to %.4f by %s", station.id, rate, owner.id)
     return {"station_id": str(station.id), "tax_rate": station.tax_rate}
+
+
+def _price_modifiers(station: Station) -> Dict[str, Any]:
+    """Mutable handle on station.price_modifiers (created if absent). The owner
+    revenue levers all persist here. Caller MUST
+    flag_modified(station, 'price_modifiers') after mutating."""
+    if station.price_modifiers is None:
+        station.price_modifiers = {}
+    return station.price_modifiers
+
+
+def set_price_lever(
+    db: Session, station: Station, owner: Player, pct: float
+) -> Dict[str, Any]:
+    """Owner lever (B2): the marketing PRICE-ADJUSTMENT lever, +/-10% over base
+    (canon port-ownership.md "Price adjustment lever"). Written to the EXISTING
+    price_modifiers["price_adjustment_lever"] key — the SAME key
+    trading_service.compute_station_lever_multiplier reads (closing the
+    "read side exists, no writer" gap). Clamped to [-0.10, +0.10]; the reader
+    clamps again defensively.
+
+    A positive lever raises what the player pays (wider margin, less traffic); a
+    negative lever lowers it (tighter margin, more traffic). Owner-gated under
+    the station lock; no commit (the router owns the transaction)."""
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    if not (-PRICE_LEVER_BOUND <= pct <= PRICE_LEVER_BOUND):
+        raise PortOwnershipError(
+            400,
+            f"Price adjustment lever must be between {-PRICE_LEVER_BOUND:+.2f} "
+            f"and {PRICE_LEVER_BOUND:+.2f}",
+        )
+    modifiers = _price_modifiers(station)
+    modifiers[PRICE_LEVER_KEY] = float(pct)
+    flag_modified(station, "price_modifiers")
+    db.flush()
+    logger.info("Station %s price lever set to %+.4f by %s", station.id, pct, owner.id)
+    return {"station_id": str(station.id), "price_adjustment_lever": float(pct)}
+
+
+def set_docking_fee(
+    db: Session,
+    station: Station,
+    owner: Player,
+    amount: int,
+    enabled: bool = True,
+) -> Dict[str, Any]:
+    """Owner lever (B4, leg 1): the flat per-docking fee, 50-500 cr with a
+    toggle (canon port-ownership.md "Docking fee": "Yes (toggle + amount)").
+    Persists the amount + the enabled toggle into price_modifiers. The trading
+    lane's docking charge (routes/trading.py / docking_service.docking_fee_for)
+    reads the owner override when those sites are wired to consume it; this lane
+    only SETS the value (owner-gated + clamped), it does not edit the charging
+    sites. No commit."""
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    if not (DOCKING_FEE_MIN <= amount <= DOCKING_FEE_MAX):
+        raise PortOwnershipError(
+            400,
+            f"Docking fee must be between {DOCKING_FEE_MIN:,} and "
+            f"{DOCKING_FEE_MAX:,} credits",
+        )
+    modifiers = _price_modifiers(station)
+    modifiers[DOCKING_FEE_KEY] = int(amount)
+    modifiers[DOCKING_FEE_ENABLED_KEY] = bool(enabled)
+    flag_modified(station, "price_modifiers")
+    db.flush()
+    logger.info(
+        "Station %s docking fee set to %s cr (enabled=%s) by %s",
+        station.id, amount, enabled, owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "docking_fee": int(amount),
+        "docking_fee_enabled": bool(enabled),
+    }
+
+
+def set_service_charge(
+    db: Session, station: Station, owner: Player, multiplier: float
+) -> Dict[str, Any]:
+    """Owner lever (B4, leg 2): the service-charge multiplier on station
+    services (repair / refuel / drone manufacture / refining), 0.8x-2.0x of
+    standard (canon port-ownership.md "Service charges"). 1.0x is baseline; 0.8x
+    is a loss-leader for traffic; 2.0x is premium pricing for a captive market.
+    Persists into price_modifiers; the service-charging sites read the override
+    when wired. Owner-gated + clamped; no commit."""
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    if not (SERVICE_CHARGE_MIN <= multiplier <= SERVICE_CHARGE_MAX):
+        raise PortOwnershipError(
+            400,
+            f"Service charge multiplier must be between "
+            f"{SERVICE_CHARGE_MIN:.1f}x and {SERVICE_CHARGE_MAX:.1f}x",
+        )
+    modifiers = _price_modifiers(station)
+    modifiers[SERVICE_CHARGE_KEY] = float(multiplier)
+    flag_modified(station, "price_modifiers")
+    db.flush()
+    logger.info(
+        "Station %s service charge set to %.2fx by %s", station.id, multiplier, owner.id
+    )
+    return {
+        "station_id": str(station.id),
+        "service_charge_multiplier": float(multiplier),
+    }
+
+
+def set_storage_rental(
+    db: Session, station: Station, owner: Player, per_day: int
+) -> Dict[str, Any]:
+    """Owner lever (B4, leg 3): the storage-rental rate, 1,000-10,000 cr/day per
+    slot (canon port-ownership.md "Storage rental"). Players rent station hangar
+    slots for cargo storage; the slot count is gated by the Extended Storage
+    upgrade (the storage_rental service flag). Persists into price_modifiers; a
+    future storage-rental ledger reads the override when wired. Owner-gated +
+    clamped; no commit."""
+    station = _lock_station(db, station.id)
+    _require_owner(station, owner)
+    if not (STORAGE_RENTAL_MIN <= per_day <= STORAGE_RENTAL_MAX):
+        raise PortOwnershipError(
+            400,
+            f"Storage rental must be between {STORAGE_RENTAL_MIN:,} and "
+            f"{STORAGE_RENTAL_MAX:,} credits per day",
+        )
+    modifiers = _price_modifiers(station)
+    modifiers[STORAGE_RENTAL_KEY] = int(per_day)
+    flag_modified(station, "price_modifiers")
+    db.flush()
+    logger.info(
+        "Station %s storage rental set to %s cr/day by %s",
+        station.id, per_day, owner.id,
+    )
+    return {
+        "station_id": str(station.id),
+        "storage_rental_per_day": int(per_day),
+    }
 
 
 def withdraw_treasury(
