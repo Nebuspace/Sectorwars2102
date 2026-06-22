@@ -566,6 +566,45 @@ export const terraformAPI = {
     }),
 };
 
+// Citadel Research APIs (CRT-T1.5-9 / CRT-4 — the empire R&D notification cockpit).
+//
+// Player-facing brand: "Citadel Research" (Max-ruled). These read the now-live
+// governed-flywheel economy (the governor + contract sink + faucet copay) and
+// surface the generated, perishable Research-Directive OFFERS. The offers are
+// PUSHED by the server (contract_offer WS frame) and reacted to here — this is a
+// generated, never-browsed pipeline (a done/uncontested world raises no offer).
+//
+//   getCockpit  → the empire R&D summary + headroom (§5.4/§5.5). One empire-level
+//     read: { rpPerDay, rpThroughputPct, banked, spent, contractsActive,
+//             worldsFrontier, worldsDone, governorHeadroom, softCap }.
+//   getOffers   → the generated, perishable offers (§5.7), NEVER a catalogue:
+//     { offers: [{ id, kind, planetId, planetName, rpCost, crCost, magnitude,
+//                  expiresAt }] }.
+//   startContract → accept an offer / start a kind on a planet (charges the RP
+//     gate + cr sink via the existing start_contract). { offerId?, kind?, planetId }.
+//   cancelContract → cancel an active/accepted contract (existing cancel_contract;
+//     0% cr on active, 0% RP — the anti-arbitrage refund rule). { contractId }.
+export const researchCockpitAPI = {
+  getCockpit: () =>
+    apiRequest('/api/v1/research/cockpit'),
+
+  getOffers: () =>
+    apiRequest('/api/v1/research/offers'),
+
+  // Accept a generated offer (offerId) OR start a kind directly (kind + planetId).
+  startContract: (params: { offerId?: string; kind?: string; planetId: string }) =>
+    apiRequest('/api/v1/research/contracts/start', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
+
+  cancelContract: (contractId: string) =>
+    apiRequest('/api/v1/research/contracts/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ contractId }),
+    }),
+};
+
 // Ship Upgrade APIs (real backend endpoints)
 export const shipUpgradeAPI = {
   getUpgrades: (shipId: string) =>
@@ -750,6 +789,7 @@ export const gameAPI = {
   bounty: bountyAPI,
   citadel: citadelAPI,
   grid: gridAPI,
+  researchCockpit: researchCockpitAPI,
   shipUpgrade: shipUpgradeAPI,
   governance: governanceAPI,
   regionOwner: regionOwnerAPI,

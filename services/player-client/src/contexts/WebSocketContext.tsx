@@ -112,6 +112,35 @@ interface WebSocketContextType {
     sector_id: number | null;
   } | null;
 
+  // Citadel Research cockpit (CRT-T1.5-9 / CRT-4). Three PUSHED frame types from
+  // the now-live governed-flywheel economy, handled in generalHandler below:
+  //   • contract_offer    — the HEADLINE: a generated, perishable Research-Directive
+  //       offer raised by the sweep on a frontier/contested world (a done world
+  //       raises none). High-value toast; the EmpireResearchPanel reads the latest
+  //       offer to nudge a refetch of GET /research/offers.
+  //   • contract_settled  — one-shot toast ("Overclock on Planet X ended").
+  //   • rp_governor_status — fires ONCE on band-cross into the taper, NEVER on a
+  //       healthy under-cap player; inbox/toast, NEVER modal. Carries the live
+  //       rpPerDay/throughputPct so the panel's headroom readout stays fresh.
+  // These bump a single research signal (panel watches it to re-fetch cockpit +
+  // offers live); lastContractOffer / lastGovernorStatus carry the payloads.
+  researchEventSignal: number;
+  lastContractOffer: {
+    id: string;
+    kind: string;
+    planetId: string | null;
+    planetName: string | null;
+    rpCost: number | null;
+    crCost: number | null;
+    magnitude: number | null;
+    expiresAt: string | null;
+  } | null;
+  lastGovernorStatus: {
+    rpPerDay: number | null;
+    throughputPct: number | null;
+    ariaText: string | null;
+  } | null;
+
   // Connection management
   connect: () => void;
   disconnect: () => void;
@@ -191,6 +220,22 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     type: 'genesis_progress' | 'planetary_update';
     planet_id: string | null;
     sector_id: number | null;
+  } | null>(null);
+  const [researchEventSignal, setResearchEventSignal] = useState(0);
+  const [lastContractOffer, setLastContractOffer] = useState<{
+    id: string;
+    kind: string;
+    planetId: string | null;
+    planetName: string | null;
+    rpCost: number | null;
+    crCost: number | null;
+    magnitude: number | null;
+    expiresAt: string | null;
+  } | null>(null);
+  const [lastGovernorStatus, setLastGovernorStatus] = useState<{
+    rpPerDay: number | null;
+    throughputPct: number | null;
+    ariaText: string | null;
   } | null>(null);
 
   // Keep track of cleanup functions
@@ -510,6 +555,89 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'contract_offer': {
+          // CRT-T1.5-9 §5.2/§5.3: THE HEADLINE ping. The sweep GENERATED (never
+          // browsed) a perishable Research-Directive offer on a frontier/contested
+          // world — a done/uncontested world raises none (§5.9 #2). Stash the offer
+          // + bump the research signal so the EmpireResearchPanel re-fetches its
+          // live offer set, and surface a fresh high-value toast carrying ARIA's
+          // narration. The transport's priority/delivery escalation ladder governs
+          // toast-vs-modal; an offer is routine inbox+toast, never modal.
+          const offer = (message.offer && typeof message.offer === 'object') ? message.offer : message;
+          const delivery: string[] = Array.isArray(message.delivery)
+            ? message.delivery.map((s: any) => String(s))
+            : ['inbox', 'toast'];
+          setLastContractOffer({
+            id: String(offer.id || ''),
+            kind: String(offer.kind || ''),
+            planetId: offer.planetId != null ? String(offer.planetId) : null,
+            planetName: offer.planetName != null ? String(offer.planetName) : null,
+            rpCost: typeof offer.rpCost === 'number' ? offer.rpCost : null,
+            crCost: typeof offer.crCost === 'number' ? offer.crCost : null,
+            magnitude: typeof offer.magnitude === 'number' ? offer.magnitude : null,
+            expiresAt: offer.expiresAt != null ? String(offer.expiresAt) : null
+          });
+          setResearchEventSignal(prev => prev + 1);
+          if (delivery.includes('toast')) {
+            const where = offer.planetName ? ` on ${offer.planetName}` : '';
+            addNotification({
+              title: 'Citadel Research — Directive Available',
+              content: message.ariaText
+                ? String(message.ariaText)
+                : `A research directive${where} is available. Open Citadel Research to accept or let it perish.`,
+              level: 'info'
+            });
+          }
+          break;
+        }
+
+        case 'contract_settled': {
+          // CRT-T1.5-9 §5.2: one-shot toast when an active directive expires
+          // ("Overclock on Planet X ended"). Bump the research signal so an open
+          // panel refreshes its contracts-active count. No modal — purely informational.
+          setResearchEventSignal(prev => prev + 1);
+          const kind = message.kind ? String(message.kind) : 'Directive';
+          const where = message.planetName ? ` on ${message.planetName}` : '';
+          addNotification({
+            title: 'Citadel Research — Directive Complete',
+            content: message.ariaText
+              ? String(message.ariaText)
+              : `${kind}${where} ended.`,
+            level: 'success'
+          });
+          break;
+        }
+
+        case 'rp_governor_status': {
+          // CRT-T1.5-9 §5.2/§5.5: fires ONCE on a band-cross into the taper —
+          // NEVER on a healthy under-cap player (the server gates emission). Carry
+          // the live rpPerDay/throughputPct so the panel's headroom readout reflects
+          // the band-cross immediately. Inbox/toast, NEVER modal (§5.2). Copy is
+          // day-one-TRUE: it names no non-existent lever (no "Doctrine" — §5.3/§5.10);
+          // ARIA's text, when present, is honored; the fallback points at a real
+          // T1.5 action (finishing/expanding worlds lifts throughput).
+          setLastGovernorStatus({
+            rpPerDay: typeof message.rpPerDay === 'number' ? message.rpPerDay : null,
+            throughputPct: typeof message.throughputPct === 'number' ? message.throughputPct : null,
+            ariaText: message.ariaText != null ? String(message.ariaText) : null
+          });
+          setResearchEventSignal(prev => prev + 1);
+          const delivery: string[] = Array.isArray(message.delivery)
+            ? message.delivery.map((s: any) => String(s))
+            : ['inbox', 'toast'];
+          if (delivery.includes('toast')) {
+            const pct = typeof message.throughputPct === 'number' ? ` (throughput ${message.throughputPct}%)` : '';
+            addNotification({
+              title: 'Citadel Research — Throughput Update',
+              content: message.ariaText
+                ? String(message.ariaText)
+                : `Your empire's research is at full throughput for its current frontier${pct} — finishing or expanding worlds raises it.`,
+              level: 'info'
+            });
+          }
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -538,7 +666,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // Only log truly unhandled message types, not ones handled by specific handlers
           // (aria_response is consumed by the dedicated ariaHandler above; the
           // generalHandler still sees it, so exclude it from the noise warning.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded', 'genesis_progress', 'planetary_update'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -620,6 +748,11 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     // Colony ticks (genesis_progress / planetary_update — CRT-T1.5-9 §5.1)
     planetaryEventSignal,
     lastPlanetaryEvent,
+
+    // Citadel Research cockpit (contract_offer / contract_settled / rp_governor_status — CRT-T1.5-9 §5.2)
+    researchEventSignal,
+    lastContractOffer,
+    lastGovernorStatus,
 
     // Connection management
     connect,

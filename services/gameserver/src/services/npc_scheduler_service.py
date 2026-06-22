@@ -4507,6 +4507,22 @@ async def npc_scheduler_loop() -> None:
                     "NPC scheduler: planetary advance sweep crashed (loop continues)"
                 )
 
+        # CRT-4 Lane D: drain + push the staged Research-Directive cockpit frames
+        # (contract_offer / contract_settled / rp_governor_status) POST-COMMIT on
+        # the event loop. The writer (settle_contracts / faucet sweep, in the
+        # worker thread above) stages them into research_service._PENDING_FRAMES;
+        # this is the true-push delivery so a frame reaches the owner without
+        # waiting for a cockpit GET. Best-effort (mirrors genesis_progress).
+        try:
+            from src.services import research_service as _rs
+            await _rs.broadcast_pending_research_frames()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "NPC scheduler: research cockpit frame broadcast failed (loop continues)"
+            )
+
         # Regional governance sweep (open/close elections + finalize policies).
         # Drives the democratic loop forward on the durable per-row voting
         # windows so an election/policy resolves even if no player happens to

@@ -59,6 +59,7 @@ from src.api.routes.warp_gates import router as warp_gates_router
 from src.api.routes.nav import router as nav_router
 from src.api.routes.medals import router as medals_router
 from src.api.routes.haggle import router as haggle_router
+from src.api.routes.research_cockpit import router as research_cockpit_router
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -138,6 +139,9 @@ api_router.include_router(port_ownership_router, tags=["port-ownership"])
 # (router carries its own /ranking prefix)
 api_router.include_router(ranking_router, tags=["ranking"])
 api_router.include_router(medals_router, tags=["medals"])  # ADR-0028 relational medals (router carries /medals prefix)
+# Citadel Research notification cockpit (CRT-T1.5-9 / CRT-4): empire R&D summary +
+# generated perishable directive offers + start/cancel (router carries /research prefix)
+api_router.include_router(research_cockpit_router, tags=["research-cockpit"])
 # Quantum drive: shard/crystal/charge inventory, directional scan + jump
 # (router carries its own /quantum prefix — no other router claims /quantum,
 # so no mount-order shadowing)

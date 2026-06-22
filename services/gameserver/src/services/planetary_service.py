@@ -2136,6 +2136,38 @@ class PlanetaryService:
             equipment_rate *= citadel_multiplier
             research_rate *= citadel_multiplier
 
+        # CRT-T1.5-2 Overclock directive (§3.2): a player-bought, perishable
+        # Citadel-Research directive lifts ONE planet's production by +15% for its
+        # duration. The effect is point-of-use READ here at the moment production is
+        # consumed (leaf-discipline — research_service.active_overclock_multiplier is
+        # a pure read of the owner's research_ledger.contracts[]; the effect is NEVER
+        # written onto the planet, the zero-migration guarantee). Off when no active
+        # Overclock targets this planet: the reader returns 1.0 (a no-op multiply) so
+        # the wiring is byte-identical to today on any world without an active
+        # directive. Applies to commodity output, not research (mirrors the gourmet
+        # bonus's scope — Overclock models a production surge, not a lab effect).
+        # Wrapped defensively so a malformed ledger on this hot read path can never
+        # raise; on any hiccup the world simply gets the un-overclocked (today) rate.
+        if planet.owner_id is not None:
+            try:
+                owner = (
+                    self.db.query(Player)
+                    .filter(Player.id == planet.owner_id)
+                    .first()
+                )
+                if owner is not None:
+                    from src.services.research_service import active_overclock_multiplier
+                    overclock_multiplier = active_overclock_multiplier(owner, planet.id)
+                    if overclock_multiplier != 1.0:
+                        fuel_rate *= overclock_multiplier
+                        organics_rate *= overclock_multiplier
+                        equipment_rate *= overclock_multiplier
+            except Exception:
+                logger.debug(
+                    "Overclock production-read skipped on planet %s (non-fatal)",
+                    getattr(planet, "id", "?"), exc_info=True,
+                )
+
         # Gourmet-food luxury bonus (WO-G14): a planet holding a positive
         # gourmet_food stockpile lifts BOTH colonist growth and the three
         # commodity rates by GOURMET_FOOD_PRODUCTION_BONUS. This is a pure,

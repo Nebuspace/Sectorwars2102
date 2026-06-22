@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import uuid
 from datetime import datetime, UTC
 from typing import Any, Dict, List, Optional
@@ -44,6 +45,149 @@ from src.services import tech_tree
 from src.services.structures import _via_settle_guard
 
 logger = logging.getLogger(__name__)
+
+
+# ===========================================================================
+# T1.5-9 / CRT-4 — THE NOTIFICATION COCKPIT: the post-commit emit seam
+# (CRT-T15-MASTER §5.2/§5.3/§5.8). Notification-driven, ~0 clicks/day on a
+# healthy empire. The transport (send_personal_message → the new_message
+# escalation ladder) is shipped + proven; this is the PRODUCER side.
+#
+# WHY A PENDING BUFFER (not a direct broadcast):
+#   The faucet sweep + settle_contracts run inside settle()'s step 5, which is
+#   driven from a WORKER THREAD (asyncio.to_thread in the scheduler) — there is
+#   NO running event loop there, so a worker-thread→loop bridge is FORBIDDEN
+#   (the same discipline genesis_progress follows: compose the frame BEFORE the
+#   commit, broadcast it AFTER, on the loop). So the writer STAGES composed
+#   frames into this module-level buffer; the loop-side caller drains them via
+#   ``drain_pending_research_frames()`` and hands them to ``_broadcast_events``
+#   POST-COMMIT (no-rollback: a WS hiccup can never roll back the settle). Each
+#   staged frame carries the recipient User id so the drainer can route per-user
+#   via ``connection_manager.send_personal_message`` — exactly the frozen
+#   cross-zone contract (the client handles these in WebSocketContext's
+#   generalHandler). The buffer is bounded so a never-draining process (e.g. the
+#   cockpit-only deploy before the scheduler drains) can't grow unbounded.
+# ===========================================================================
+_PENDING_FRAMES: List[Dict[str, Any]] = []
+_PENDING_FRAMES_LOCK = threading.Lock()
+_PENDING_FRAMES_MAX = 5000          # hard bound so a non-draining process can't grow it forever
+
+
+def _stage_frame(recipient_user_id: Any, frame: Dict[str, Any]) -> None:
+    """Stage a composed WS frame for POST-COMMIT broadcast to one player (§5.2).
+
+    ``recipient_user_id`` is the owning User's id (the key send_personal_message
+    routes on — Planet.owner_id is the PLAYER id, so callers resolve the User id
+    via player.user_id before staging). Best-effort: a malformed/owner-less frame
+    is dropped, never raised — the underlying settle must not be disturbed by an
+    emit. Bounded: once at capacity the oldest staged frame is dropped (a stale
+    notification matters less than memory safety).
+    """
+    if recipient_user_id is None or not isinstance(frame, dict):
+        return
+    staged = dict(frame)
+    staged["_recipient_user_id"] = str(recipient_user_id)
+    with _PENDING_FRAMES_LOCK:
+        _PENDING_FRAMES.append(staged)
+        if len(_PENDING_FRAMES) > _PENDING_FRAMES_MAX:
+            # Drop the oldest overflow (FIFO) — never block the writer.
+            del _PENDING_FRAMES[: len(_PENDING_FRAMES) - _PENDING_FRAMES_MAX]
+
+
+def drain_pending_research_frames() -> List[Dict[str, Any]]:
+    """Atomically drain + return all staged frames (the loop-side post-commit
+    broadcaster calls this AFTER the settle commit, then routes each frame to
+    ``send_personal_message`` keyed on ``_recipient_user_id``). Returns an empty
+    list on the steady-state quiet path (no offers generated, no contracts
+    settled, no band-cross) so the broadcast step is a cheap no-op.
+    """
+    with _PENDING_FRAMES_LOCK:
+        if not _PENDING_FRAMES:
+            return []
+        drained = list(_PENDING_FRAMES)
+        _PENDING_FRAMES.clear()
+    return drained
+
+
+async def broadcast_pending_research_frames() -> int:
+    """Loop-side POST-COMMIT broadcaster (§5.2): drain the staged frames and send
+    each to its recipient via the shipped per-user transport
+    (``connection_manager.send_personal_message`` — the same primitive
+    genesis_progress uses). MUST be awaited ON THE EVENT LOOP, AFTER the settle
+    commit succeeded (never from the worker thread the sweep runs in — a
+    worker-thread→loop bridge is forbidden). Best-effort per frame: a WS hiccup is
+    logged, never raised, so a quiet/closed socket can never disturb the economy.
+
+    Returns the number of frames actually dispatched (0 on the quiet path). Wire
+    points (both on the loop): the cockpit route calls this on read (delivers any
+    frames staged since the player last looked), and the scheduler's
+    ``_run_planetary_advance_sync`` consumer should call it POST-COMMIT each tick
+    (the one-line true-push wiring — mirrors how genesis_progress is broadcast
+    after its sweep, npc_scheduler_service ~4475). Strips the internal
+    ``_recipient_user_id`` routing key before sending the frozen client shape.
+    """
+    frames = drain_pending_research_frames()
+    if not frames:
+        return 0
+    from src.services.websocket_service import connection_manager
+
+    sent = 0
+    for frame in frames:
+        recipient = frame.pop("_recipient_user_id", None)
+        if not recipient:
+            continue
+        try:
+            await connection_manager.send_personal_message(str(recipient), frame)
+            sent += 1
+        except Exception:
+            logger.exception(
+                "Citadel-Research frame broadcast failed for recipient %s (type %s)",
+                recipient, frame.get("type"),
+            )
+    return sent
+
+
+# --- The proactive-ARIA emit seam (§5.8) — PURE READ, writes NOTHING ---------
+# ARIA has no proactive emit path today; the "ARIA: buy Overclock on Planet X"
+# telegraph is net-new CRT-4 work composed HERE as the human text of each frame.
+# These composers READ settled state only — they fire NOTHING into the substrate
+# and the offer GENERATION (which world/kind/magnitude) lives in the writer
+# (settle_contracts); ARIA only NARRATES the already-decided frame. Copy is the
+# §5.5/§5.10 day-one-true guard: NO "Doctrine" string (the lever does not exist
+# in T1.5); headroom copy points at a real T1.5 action (finish/expand worlds).
+
+def _aria_offer_text(kind: str, planet_name: Optional[str]) -> str:
+    """ARIA narration for a generated directive offer (§5.8). Pure read."""
+    where = f" on {planet_name}" if planet_name else ""
+    if kind == "overclock":
+        return f"ARIA: {planet_name or 'a frontier world'} could push harder — buy Overclock{where} for a temporary production surge."
+    if kind == "rush":
+        return f"ARIA: a build{where} is dragging — Rush it to collapse the timer."
+    if kind == "stabilize":
+        return f"ARIA: {planet_name or 'a contested world'} is slipping — Stabilize{where} to bleed off instability."
+    return f"ARIA: a research directive{where} is available."
+
+
+def _aria_settled_text(kind: str, planet_name: Optional[str]) -> str:
+    """ARIA narration for a settled/expired active directive (§5.8). Pure read."""
+    where = f" on {planet_name}" if planet_name else ""
+    label = (kind or "directive").capitalize()
+    return f"ARIA: the {label} directive{where} has run its course."
+
+
+def _aria_governor_text(rp_per_day: int, throughput_pct: int) -> str:
+    """ARIA narration for the band-cross governor ping (§5.5/§5.10). Pure read.
+
+    DAY-ONE-TRUE: never names a non-existent lever (no "Doctrine"). Points at a
+    real T1.5 action — finishing/expanding worlds raises the cap (the capstone
+    lift is shipped ON, §2.6) — and frames the taper honestly as "full throughput
+    for the current frontier," never "you've been capped."
+    """
+    return (
+        f"ARIA: your empire's research is at full throughput for its current frontier "
+        f"({rp_per_day} RP/day, ~{throughput_pct}% of raw) — finishing or expanding worlds raises it."
+    )
+
 
 # --- A.4 RULING (Max): WIPE + REFUND TO CREDITS -----------------------------
 # On a player's first-ever sweep, their accrued research_points (summed across
@@ -196,6 +340,53 @@ def _gov_apply(led: Dict[str, Any], raw_drained: int, soft_cap: float,
     return delta
 
 
+def _maybe_stage_governor_status(player: Player, led: Dict[str, Any], soft_cap: float,
+                                 raw_before: int, raw_after: int) -> None:
+    """Stage the ``rp_governor_status`` frame ONCE on a band-cross into the taper
+    (§5.2/§5.5), and NEVER on a healthy under-cap player (§5.9 #3).
+
+    Band-cross = the per-empire daily raw RP sum crossed ``soft_cap`` THIS sweep
+    (``raw_before <= soft_cap < raw_after``). Gated to fire at most once per
+    canonical day via ``gov_status_pinged_day`` in the ledger (reset implicitly on
+    day-roll because the bucket changes), so a whale that stays over-cap all day is
+    pinged exactly once, not every per-planet sweep. With ``soft_cap == inf`` (the
+    reproduce-exactly off value) the cross condition can never be True → no frame
+    ever fires (byte-identical to today). Copy is day-one-TRUE: it names no
+    non-existent lever (§5.10 — no "Doctrine") and points at a real T1.5 action.
+
+    PURE composer + stage — writes the ledger's ping-flag only (a notification
+    bookkeeping key, not an economy quantity); fires nothing into the substrate.
+    """
+    if soft_cap == GOV_SOFT_CAP_OFF or math.isinf(soft_cap):
+        return                                   # off-switch: never pings (== today)
+    if not (raw_before <= soft_cap < raw_after):
+        return                                   # no band-cross this sweep (the common case)
+    bucket = led.get("gov_day")
+    if led.get("gov_status_pinged_day") == bucket:
+        return                                   # already pinged this canonical day
+
+    led["gov_status_pinged_day"] = bucket
+    # The headroom readout numbers (§5.5): RP/day = the GOVERNED daily total; the
+    # throughput % = governed / raw (how much of the raw faucet survives the taper).
+    governed = int(math.floor(governed_rp(float(raw_after), soft_cap)))
+    throughput_pct = int(round((governed / raw_after) * 100)) if raw_after > 0 else 100
+    _stage_frame(
+        getattr(player, "user_id", None),
+        {
+            "type": "rp_governor_status",
+            "rpPerDay": governed,
+            "throughputPct": throughput_pct,
+            "ariaText": _aria_governor_text(governed, throughput_pct),
+            "priority": "normal",
+            "delivery": ["inbox", "toast"],     # inbox/toast, NEVER modal (§5.2)
+        },
+    )
+    logger.info(
+        "rp_governor_status band-cross: player %s — governed %s RP/day (~%s%% throughput, soft_cap %s)",
+        player.id, governed, throughput_pct, soft_cap,
+    )
+
+
 # --- T1.5-2 FAUCET CREDIT-COPAY (the recurring involuntary floor, §3.3) -------
 # The central E3 fix: the old promotion levy was NOT a floor (it dead-ended at
 # citadel L5 — a finished empire paid it zero forever while the faucet kept
@@ -244,6 +435,68 @@ def _apply_faucet_copay(player: Player, governed_rp_banked: int) -> int:
             player.id, debit, owed, governed_rp_banked,
         )
     return debit
+
+
+# --- World classification (CRT-4 §5.3/§5.4) — PURE READ ----------------------
+# The offer generator + the empire R&D summary need a per-PLANET rollup of the
+# same frontier/contested/done axis the decay-rescope (structures.decay_pressure)
+# resolves per-PLOT. A world is:
+#   contested — under_siege OR within the post-siege tail (a contested world is
+#               where the contract economy lives; it RAISES offers but never the
+#               "done, free to hold" relief).
+#   done      — capstoned (CRT-3 confirmed_biome) AND its grid is in-band — a
+#               finished, peaceful world. RAISES NO OFFER (§5.3: ~0 clicks/day on
+#               a healthy empire); the §5.10 guard means until CRT-3 ships
+#               confirmed_biome no world reads "done" (it reads frontier/banded).
+#   frontier  — everything else (not yet in-band / not yet capstoned) — the world
+#               the contract economy should keep paying to push. RAISES OFFERS.
+# Reuses the structures helpers so classification can never drift from the decay
+# tiers they drive. Fully defensive — any hiccup collapses to "frontier".
+
+def _planet_grid_in_band(structures: Dict[str, Any], planet: Planet) -> bool:
+    """True iff EVERY terraform plot on the planet's grid is within the DONE band
+    (reuses structures._plot_is_banded). The plots are a flat list directly under
+    ``structures['plots']`` (structures.py:645). An empty/absent grid is NOT
+    in-band (a world with no terraform grid is still frontier — nothing has
+    settled yet)."""
+    from src.services import structures as _st
+
+    if not isinstance(structures, dict):
+        return False
+    plots = structures.get("plots")
+    if not isinstance(plots, list) or not plots:
+        return False
+    try:
+        return all(_st._plot_is_banded(p, planet) for p in plots if isinstance(p, dict))
+    except Exception:
+        return False
+
+
+def classify_world(planet: Planet, now: Optional[datetime] = None) -> str:
+    """Return "contested" | "done" | "frontier" for one owned planet (§5.3/§5.4).
+
+    Pure read of already-persisted state (Planet columns + the structures blob);
+    writes nothing, fires nothing. Mirrors the contested-wins-over-relief order
+    of structures.decay_pressure so the cockpit's worlds-frontier-vs-done count
+    never contradicts the decay the player feels."""
+    from src.services import structures as _st
+
+    now = now if now is not None else datetime.now(UTC)
+    try:
+        structures = planet.structures if isinstance(planet.structures, dict) else {}
+        if getattr(planet, "under_siege", False):
+            return "contested"
+        if _st._recently_contested(planet, structures, _st._aware(now)):
+            return "contested"
+        # DONE only if capstoned AND in-band — the §5.10 guard keeps a pre-CRT-3
+        # world out of "done" (confirmed_biome absent → not capstoned → frontier).
+        if _st._planet_is_capstoned(structures) and _planet_grid_in_band(structures, planet):
+            return "done"
+        return "frontier"
+    except Exception:
+        logger.debug("classify_world fell back to frontier for planet %s",
+                     getattr(planet, "id", "?"), exc_info=True)
+        return "frontier"
 
 
 def _default_ledger() -> Dict[str, Any]:
@@ -615,8 +868,22 @@ def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = Fa
     # T1.5-1: govern the per-empire daily SUM before crediting (incremental +
     # idempotent — §2.2). soft_cap=inf credits the raw amount byte-for-byte.
     soft_cap = _empire_soft_cap(db, player.id)
+    # Capture the per-empire daily raw sum BEFORE this sweep folds in `drained`, for
+    # the band-cross governor ping (§5.2). Day-roll → raw_before is 0 (a new day's
+    # sum starts at 0 inside _gov_apply); same day → the running sum carried so far.
+    raw_before = (
+        int(led.get("gov_raw_today", 0) or 0)
+        if led.get("gov_day") == _canonical_day_bucket()
+        else 0
+    )
     credited = _gov_apply(led, drained, soft_cap)
     led["rp"] = int(led.get("rp", 0)) + credited
+    # T1.5-9: ping rp_governor_status ONCE on the band-cross into the taper, NEVER on
+    # a healthy under-cap player (§5.9 #3). raw_after is the post-fold running sum
+    # _gov_apply just wrote. soft_cap=inf never crosses → no frame (== today).
+    _maybe_stage_governor_status(
+        player, led, soft_cap, raw_before, int(led.get("gov_raw_today", 0) or 0)
+    )
     # T1.5-2: the recurring involuntary copay — every day a world banks (governed) RP
     # it pays a small credit copay. COPAY=0 reproduces today (§3.3).
     _apply_faucet_copay(player, credited)
@@ -695,6 +962,24 @@ CONTRACT_KINDS: Dict[str, Dict[str, Any]] = {
 # cockpit history; live (offered/active) rows are never pruned. [NO-CANON].
 CONTRACT_HISTORY_KEEP = 20
 
+# --- T1.5-9 / CRT-4 OFFER GENERATION (§5.3 — generated, NEVER browsed) --------
+# The sweep GENERATES a perishable contract_offer for a frontier/contested world
+# on a band crossing; a done/uncontested world raises NONE → ~0 clicks/day on a
+# healthy empire (§5.3/§5.9). The offer perishes free at offer_expires_at (it
+# was never charged — accepting it is the only spend). [NO-CANON] windows below.
+#
+# RATE-LIMIT (the ~0-clicks budget): at most ONE live offer per empire at a time
+# AND a per-empire cooldown between generations, both keyed in the ledger so the
+# generation is idempotent across the per-planet sweep (every owned planet visits
+# the sweep, but only the FIRST eligible one this cooldown window raises an offer).
+# An empire with a live offer or in cooldown generates nothing; a done empire
+# (no frontier/contested world) generates nothing. OFF-SWITCH: OFFER_GEN_ENABLED
+# = False makes generation a pure no-op (an empty offer set is byte-identical to
+# the contract-pipeline reproduce-exactly baseline).
+OFFER_GEN_ENABLED = True
+OFFER_EXPIRES_DAYS = 1.0            # canonical days an offer survives before perishing free (§9.3)
+OFFER_GEN_COOLDOWN_DAYS = 1.0      # min canonical days between offer generations per empire (anti-spam)
+
 
 def _contracts_of(led: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Return the ledger's contracts[] list (a fresh empty list if absent/malformed).
@@ -733,6 +1018,172 @@ def active_overclock_multiplier(player: Player, planet_id: Any) -> float:
         ):
             mult += float(row.get("magnitude", 0.0) or 0.0)
     return mult
+
+
+def display_magnitude(kind: str, raw_magnitude: float) -> int:
+    """The human-meaningful integer effect size for an offer/frame (frozen contract
+    ``magnitude:int``). Overclock's raw magnitude is a 0.15 FRACTION → present it as
+    the PERCENT (15) so the client's ``⬆ {magnitude}`` reads as a real number, not a
+    rounded-to-0. Rush/Stabilize raw magnitudes are already whole effect sizes
+    (1 timer collapsed / 10 instability removed) → round as-is. Pure read."""
+    raw = float(raw_magnitude or 0.0)
+    if kind == "overclock":
+        return int(round(raw * 100))     # 0.15 → 15 (%)
+    return int(round(raw))               # rush 1.0 → 1; stabilize 10.0 → 10
+
+
+def _has_live_offer(rows: List[Dict[str, Any]]) -> bool:
+    """True iff the empire already has an un-perished offered directive (anti-spam:
+    one live offer per empire at a time — §5.3 ~0-clicks budget)."""
+    return any(r.get("state") == "offered" for r in rows)
+
+
+def _offer_cooldown_active(led: Dict[str, Any], now: datetime) -> bool:
+    """True iff the empire generated an offer within OFFER_GEN_COOLDOWN_DAYS
+    (canonical). Keyed by ``last_offer_gen_at`` in the ledger so generation is
+    idempotent across the per-planet sweep (only the first eligible planet this
+    window raises an offer; the rest see the cooldown stamp and skip)."""
+    raw = led.get("last_offer_gen_at")
+    seen = _parse_iso(raw) if raw else None
+    if seen is None:
+        return False
+    elapsed_canonical_days = (
+        (now - seen).total_seconds() / 3600.0 * GAME_TIME_SCALE / 24.0
+    )
+    return 0.0 <= elapsed_canonical_days < OFFER_GEN_COOLDOWN_DAYS
+
+
+def _pick_offer_for_world(world_class: str, planet: Planet,
+                          rows: List[Dict[str, Any]]) -> Optional[str]:
+    """Choose which directive KIND to offer a frontier/contested world (§5.3), or
+    None if this world should raise nothing right now. Pure read.
+
+      * contested → Stabilize (bleed instability — the contract economy's home).
+      * frontier  → Overclock (the workhorse re-buyable drain) UNLESS the world
+                    already carries an active Overclock (one per planet, mirrors
+                    start_contract's guard) — then nothing (don't dangle a buy
+                    the engine will reject).
+      * done      → None (a finished world raises no offer — §5.3).
+    """
+    if world_class == "done":
+        return None
+    if world_class == "contested":
+        return "stabilize"
+    # frontier
+    pid = str(planet.id)
+    for r in rows:
+        if (
+            r.get("kind") == "overclock"
+            and r.get("state") == "active"
+            and str(r.get("target_planet_id")) == pid
+        ):
+            return None
+    return "overclock"
+
+
+def maybe_generate_offer(db: Session, player: Player, now: datetime) -> bool:
+    """Generate at most ONE perishable directive offer for a frontier/contested
+    world this empire owns, on a band crossing (§5.3 — generated, NEVER browsed).
+
+    Stages a ``contract_offer`` frame for POST-COMMIT broadcast (the writer; ARIA
+    only narrates it, §5.8). Single-writer on ``research_ledger`` — mutates the
+    ledger IN PLACE (the CALLER assigns + flag_modifies + commits). Returns True
+    iff an offer was generated (so the caller knows the ledger changed).
+
+    Gating (the ~0-clicks budget): no-op if disabled, if the empire already has a
+    live offer, if the per-empire generation cooldown is active, or if the empire
+    has no frontier/contested world (a done empire raises none). A perished offer
+    cost nothing — the only spend is accepting it (start_contract).
+    """
+    if not OFFER_GEN_ENABLED:
+        return False
+    led = ledger_of(player)
+    rows = _contracts_of(led)
+    if _has_live_offer(rows) or _offer_cooldown_active(led, now):
+        return False
+
+    # Find the player's owned colonized planets (owner_id == the PLAYER id; the
+    # secondary player_planets m2m mirrors owner_id, which the kernel sets on
+    # colonize — owner_id is the authoritative single-owner column here).
+    owned = (
+        db.query(Planet)
+        .filter(Planet.owner_id == player.id)
+        .order_by(Planet.id)
+        .all()
+    )
+    if not owned:
+        return False
+
+    chosen_planet: Optional[Planet] = None
+    chosen_kind: Optional[str] = None
+    for planet in owned:
+        wc = classify_world(planet, now)
+        if wc == "done":
+            continue                              # a finished world raises none (§5.3)
+        kind = _pick_offer_for_world(wc, planet, rows)
+        if kind is not None:
+            chosen_planet = planet
+            chosen_kind = kind
+            break
+
+    if chosen_planet is None or chosen_kind is None:
+        # No frontier/contested world wants an offer right now (e.g. a done empire,
+        # or every frontier already carries an active Overclock). Stamp the cooldown
+        # anyway so we don't re-scan every per-planet sweep — and return False (no
+        # ledger change worth committing for the cooldown stamp alone is acceptable;
+        # we DON'T stamp on a pure scan-miss so a world finishing a build inside the
+        # cooldown window can still raise its offer promptly).
+        return False
+
+    spec = CONTRACT_KINDS.get(chosen_kind, {})
+    offer_id = f"ctr_{uuid.uuid4().hex}"
+    planet_name = getattr(chosen_planet, "name", None) or "Unnamed World"
+    offer_row = {
+        "id": offer_id,
+        "kind": chosen_kind,
+        "state": "offered",
+        "target_planet_id": str(chosen_planet.id),
+        "target_build_id": None,
+        "rp_cost": int(spec.get("rp_cost", 0)),
+        "cr_cost": int(spec.get("cr_cost", 0)),
+        "magnitude": float(spec.get("magnitude", 0.0) or 0.0),
+        "offered_at": now.isoformat(),
+        "offer_expires_at": _canonical_days_from_now(OFFER_EXPIRES_DAYS, now),
+        "started_at": None,
+        "complete_at": None,
+    }
+    rows.append(offer_row)
+    led["contracts"] = _prune_contracts(rows)
+    led["last_offer_gen_at"] = now.isoformat()
+    player.research_ledger = led
+    flag_modified(player, "research_ledger")
+
+    # Stage the headline contract_offer frame for post-commit broadcast (§5.2).
+    # ARIA narrates the already-decided offer (§5.8 — pure read, writes nothing).
+    _stage_frame(
+        getattr(player, "user_id", None),
+        {
+            "type": "contract_offer",
+            "offer": {
+                "id": offer_id,
+                "kind": chosen_kind,
+                "planetId": str(chosen_planet.id),
+                "planetName": planet_name,
+                "rpCost": int(spec.get("rp_cost", 0)),
+                "crCost": int(spec.get("cr_cost", 0)),
+                "magnitude": display_magnitude(chosen_kind, float(spec.get("magnitude", 0.0) or 0.0)),
+                "expiresAt": offer_row["offer_expires_at"],
+            },
+            "ariaText": _aria_offer_text(chosen_kind, planet_name),
+            "priority": "normal",
+            "delivery": ["inbox", "toast"],
+        },
+    )
+    logger.info(
+        "Citadel-Research offer generated: player %s kind %s on planet %s (%s), perishes %s",
+        player.id, chosen_kind, chosen_planet.id, planet_name, offer_row["offer_expires_at"],
+    )
+    return True
 
 
 def _settle_stabilize_instability(db: Session, target_planet_id: Any) -> bool:
@@ -947,6 +1398,18 @@ def start_contract(
     }
 
 
+def _planet_name_for(db: Session, planet_id: Any) -> Optional[str]:
+    """Best-effort planet display name for a settled/offered frame (pure read).
+    None on any miss — the frame just omits the name then."""
+    if planet_id is None:
+        return None
+    try:
+        row = db.query(Planet.name).filter(Planet.id == planet_id).first()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
 def settle_contracts(db: Session, player: Player, now: Optional[datetime] = None,
                      *, _via_settle: bool = False) -> bool:
     """Settle a player's live directives — called INSIDE ``settle()`` step 5 beside the
@@ -954,12 +1417,18 @@ def settle_contracts(db: Session, player: Player, now: Optional[datetime] = None
 
       * Expire due ``active`` rows (``complete_at <= now``): revert the effect (the
         effect is point-of-use-read so reverting == flipping state to ``settled``),
-        mark ``settled``.
+        mark ``settled``, and STAGE a one-shot ``contract_settled`` frame (§5.2).
       * Perish stale ``offered`` rows (``offer_expires_at <= now`` → ``expired-offer``).
+        A perished offer fires NO frame (silence is correct — an ignored offer
+        perishing free is expected, never a ping; §5.3/§5.9 #4).
+      * GENERATE at most one fresh perishable offer for a frontier/contested world
+        (``maybe_generate_offer`` — the §5.3 keystone; stages a ``contract_offer``).
       * Prune terminal rows to ``CONTRACT_HISTORY_KEEP``.
 
     Returns True iff any row changed (so the caller commits only on a real change).
-    The CALLER commits. ``_via_settle`` mirrors the spine guard discipline.
+    The CALLER commits; the staged frames are broadcast POST-COMMIT by the
+    loop-side drainer (``drain_pending_research_frames``). ``_via_settle`` mirrors
+    the spine guard discipline.
     """
     now = now if now is not None else datetime.now(UTC)
     if now.tzinfo is None:
@@ -967,10 +1436,9 @@ def settle_contracts(db: Session, player: Player, now: Optional[datetime] = None
 
     led = ledger_of(player)
     rows = _contracts_of(led)
-    if not rows:
-        return False
 
     changed = False
+    settled_frames: List[Dict[str, Any]] = []
     for r in rows:
         state = r.get("state")
         if state == "active":
@@ -986,20 +1454,40 @@ def settle_contracts(db: Session, player: Player, now: Optional[datetime] = None
                 # keeps the bleed co-located with the `settled` transition either way.
                 if r.get("kind") == "stabilize":
                     _settle_stabilize_instability(db, r.get("target_planet_id"))
+                # Compose the one-shot contract_settled frame (§5.2). Stage it AFTER
+                # the commit succeeds — collect now, stage once the ledger write is in.
+                pname = _planet_name_for(db, r.get("target_planet_id"))
+                kind = r.get("kind") or "directive"
+                settled_frames.append({
+                    "type": "contract_settled",
+                    "planetName": pname,
+                    "kind": kind,
+                    "ariaText": _aria_settled_text(kind, pname),
+                    "priority": "normal",
+                    "delivery": ["inbox", "toast"],
+                })
         elif state == "offered":
             exp = _parse_iso(r.get("offer_expires_at")) if r.get("offer_expires_at") else None
             if exp is not None and exp <= now:
                 r["state"] = "expired-offer"
-                changed = True
+                changed = True       # a perished offer fires NO frame (§5.3 — silence is correct)
 
-    if not changed:
-        return False
+    if changed:
+        led["contracts"] = _prune_contracts(rows)
+        player.research_ledger = led
+        flag_modified(player, "research_ledger")
+        logger.debug("settle_contracts: player %s — directives settled/expired this tick", player.id)
 
-    led["contracts"] = _prune_contracts(rows)
-    player.research_ledger = led
-    flag_modified(player, "research_ledger")
-    logger.debug("settle_contracts: player %s — directives settled/expired this tick", player.id)
-    return True
+    # GENERATE a fresh perishable offer for a frontier/contested world (§5.3). This
+    # writes the ledger itself (and stages the contract_offer frame) when it fires.
+    offer_made = maybe_generate_offer(db, player, now)
+
+    # Stage the contract_settled frames only now (after the ledger mutation above)
+    # — they ride the SAME post-commit broadcast as the offer frame.
+    for f in settled_frames:
+        _stage_frame(getattr(player, "user_id", None), f)
+
+    return bool(changed or offer_made)
 
 
 def cancel_contract(db: Session, player_id: Any, contract_id: str,

@@ -12,6 +12,7 @@ import { SiegeStatusMonitor } from './SiegeStatusMonitor';
 import CitadelManager from './CitadelManager';
 import GridManager from './GridManager';
 import TerraformingPanel from './TerraformingPanel';
+import EmpireResearchPanel from '../research/EmpireResearchPanel';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
@@ -174,7 +175,7 @@ export const PlanetManager: React.FC = () => {
   const [showGenesisDeployment, setShowGenesisDeployment] = useState(false);
   const [showSpecialization, setShowSpecialization] = useState(false);
   const [showSiegeMonitor, setShowSiegeMonitor] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'citadel' | 'grid' | 'terraforming'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'citadel' | 'grid' | 'terraforming' | 'research'>('overview');
 
   // COLONY scan loading state: show a spinner while the registry loads, then
   // fall back to a retry affordance if nothing arrives within 10s. apiRequest
@@ -558,6 +559,18 @@ export const PlanetManager: React.FC = () => {
             >
               🌱 Terraforming
             </button>
+            {/* CRT-T1.5-9 §5.4: the empire-level "Citadel Research" cockpit. It is
+                empire-wide (matching where the governor + copay live), not a
+                per-planet gauge — but it lives here beside the citadel/grid tabs,
+                the home of the Citadel⋈Research loop it surfaces. */}
+            <button
+              role="tab"
+              aria-selected={activeTab === 'research'}
+              className={`planet-tab ${activeTab === 'research' ? 'active' : ''}`}
+              onClick={() => setActiveTab('research')}
+            >
+              🔬 Citadel Research
+            </button>
           </div>
 
           {activeTab === 'citadel' && (
@@ -590,6 +603,14 @@ export const PlanetManager: React.FC = () => {
                 habitabilityScore={getHabitabilityScore(selectedPlanet as PlanetWithExtras)}
                 onUpdate={loadPlanets}
               />
+            </div>
+          )}
+
+          {/* Empire-level R&D cockpit — reads the empire summary + generated
+              offers, independent of which planet is selected (§5.4). */}
+          {activeTab === 'research' && (
+            <div className="planet-overview citadel-tab-content">
+              <EmpireResearchPanel />
             </div>
           )}
 
