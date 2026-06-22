@@ -145,7 +145,14 @@ class Player(Base):
     warp_knowledge = relationship(
         "PlayerWarpKnowledge", back_populates="player", cascade="all, delete-orphan"
     )
-    enhanced_market_transactions = relationship("src.models.market_transaction.MarketTransaction", back_populates="player")
+    # WO-TF added a 2nd FK to players (port_owner_id) on MarketTransaction, so this
+    # reverse relationship must declare foreign_keys to disambiguate the join (else
+    # AmbiguousForeignKeysError). It pairs with MarketTransaction.player (player_id).
+    enhanced_market_transactions = relationship(
+        "src.models.market_transaction.MarketTransaction",
+        back_populates="player",
+        foreign_keys="src.models.market_transaction.MarketTransaction.player_id",
+    )
     first_login_sessions = relationship("FirstLoginSession", back_populates="player", cascade="all, delete-orphan")
     first_login_state = relationship("PlayerFirstLoginState", back_populates="player", uselist=False, cascade="all, delete-orphan")
     
