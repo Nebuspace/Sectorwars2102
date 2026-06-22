@@ -50,6 +50,17 @@ class MarketTransaction(Base):
     # Transaction metadata
     profit_margin = Column(Float, nullable=True)  # calculated profit percentage
     market_impact = Column(Float, nullable=True)  # price impact of this transaction
+
+    # Tariff context at time of transaction (WO-TF — revenue analytics).
+    # owner_tariff_rate is the EFFECTIVE region COMMERCE tariff in force when the
+    # trade executed (the value compute_region_tariff_multiplier returned for the
+    # station's region, already sliding-cap clamped). port_owner_id is the Player
+    # who owned the station at trade time (NULL for unowned/NPC stations). These
+    # RECORD who taxed and at what rate — they do NOT change the charge. Both are
+    # nullable: pre-migration rows stay NULL, and a trade at an unowned station or
+    # with a zero/failed tariff lookup records NULL/0.0 respectively.
+    owner_tariff_rate = Column(Float, nullable=True)
+    port_owner_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
     
     # Admin fields
     admin_notes = Column(String(500), nullable=True)
@@ -57,7 +68,14 @@ class MarketTransaction(Base):
     reviewed_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     
     # Relationships
-    player = relationship("Player", back_populates="enhanced_market_transactions")
+    # Two FKs now point at players.id (player_id, port_owner_id), so both
+    # player relationships must declare foreign_keys explicitly to disambiguate.
+    player = relationship(
+        "Player",
+        foreign_keys=[player_id],
+        back_populates="enhanced_market_transactions",
+    )
+    port_owner = relationship("Player", foreign_keys=[port_owner_id])
     station = relationship("Station")
     sector = relationship("Sector", foreign_keys=[sector_uuid])
     reviewer = relationship("User", foreign_keys=[reviewed_by])

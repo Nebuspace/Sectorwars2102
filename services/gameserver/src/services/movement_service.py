@@ -2,7 +2,7 @@ import logging
 import random
 import uuid
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, select
 
@@ -11,6 +11,12 @@ from src.models.ship import Ship, ShipStatus, ShipType
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.planet import Planet
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
+from src.models.player_warp_knowledge import (
+    PlayerWarpKnowledge,
+    WarpLayer,
+    WarpVisibilityState,
+    WarpRevealedVia,
+)
 from src.models.combat import CombatResult
 from src.models.combat_log import CombatLog
 from sqlalchemy.orm.attributes import flag_modified
@@ -30,6 +36,107 @@ def _is_player_gate(tunnel: WarpTunnel) -> bool:
         tunnel.type == WarpTunnelType.ARTIFICIAL
         and tunnel.created_by_player_id is not None
     )
+
+
+def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Coerce a possibly-naive datetime to UTC-aware so comparisons against
+    ``datetime.now(UTC)`` never raise. Stored timestamps are timezone-aware
+    columns, but a value parsed from JSONB may be naive."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _tunnel_collapse_due(tunnel: WarpTunnel) -> bool:
+    """WO-WC / async-workers.md § Warp-tunnel collapse: lazy-on-read lifetime
+    check. An artificial tunnel carries an ``expected_lifetime`` — an absolute
+    ISO-8601 collapse time (jsonb-schema.md: WarpTunnel.properties.expected_lifetime
+    = "iso8601 | null"; natural tunnels are null). If that collapse time is in
+    the past, the tunnel is due to collapse. The legacy ``expires_at`` column is
+    honored too (same semantics, an absolute collapse instant).
+
+    Returns True iff the tunnel has a defined collapse time that is now past.
+    Natural tunnels (no lifetime, no expires_at) never collapse on lifetime.
+    """
+    now = datetime.now(UTC)
+
+    # Legacy absolute column (set by some generators / artificial flows).
+    expires_at = _aware(getattr(tunnel, "expires_at", None))
+    if expires_at is not None and expires_at <= now:
+        return True
+
+    # Canonical lifetime in properties JSONB.
+    props = tunnel.properties or {}
+    raw = props.get("expected_lifetime")
+    if raw is None:
+        return False
+
+    collapse_at: Optional[datetime] = None
+    if isinstance(raw, datetime):
+        collapse_at = _aware(raw)
+    elif isinstance(raw, str):
+        try:
+            # Accept a trailing 'Z' (Zulu) as +00:00.
+            collapse_at = _aware(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+        except ValueError:
+            logger.warning(
+                "Unparseable expected_lifetime %r on tunnel %s — treating as "
+                "no-lifetime", raw, tunnel.id,
+            )
+            return False
+    elif isinstance(raw, (int, float)):
+        # Defensive fallback: a numeric lifetime is interpreted as DAYS from
+        # creation (WO additive phrasing "created_at + expected_lifetime").
+        created = _aware(getattr(tunnel, "created_at", None))
+        if created is not None:
+            collapse_at = created + timedelta(days=float(raw))
+
+    return collapse_at is not None and collapse_at <= now
+
+
+def _player_knows_warp(db: Session, player_id: uuid.UUID, tunnel: WarpTunnel) -> bool:
+    """True if ``player_id`` holds a revealed/traversed PlayerWarpKnowledge row
+    for this warp tunnel (ADR-0045). Only meaningful for latent tunnels — a
+    non-latent tunnel is visible to everyone regardless of this table."""
+    row = db.query(PlayerWarpKnowledge).filter(
+        PlayerWarpKnowledge.player_id == player_id,
+        PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
+        PlayerWarpKnowledge.warp_id == tunnel.id,
+    ).first()
+    return row is not None and row.is_known
+
+
+def _reveal_warp_to_player(
+    db: Session,
+    player_id: uuid.UUID,
+    tunnel: WarpTunnel,
+    revealed_via: WarpRevealedVia,
+) -> PlayerWarpKnowledge:
+    """Idempotent upsert of a per-player warp-knowledge row at ``revealed``
+    state (ADR-0045 / aria-companion.md § Warp discovery). Re-revealing an
+    already-known warp is a no-op that never downgrades a ``traversed`` row.
+    Does NOT commit — the caller owns the transaction."""
+    row = db.query(PlayerWarpKnowledge).filter(
+        PlayerWarpKnowledge.player_id == player_id,
+        PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
+        PlayerWarpKnowledge.warp_id == tunnel.id,
+    ).first()
+    if row is None:
+        row = PlayerWarpKnowledge(
+            player_id=player_id,
+            warp_layer=WarpLayer.WARP_TUNNELS,
+            warp_id=tunnel.id,
+            visibility_state=WarpVisibilityState.REVEALED,
+            revealed_via=revealed_via,
+        )
+        db.add(row)
+    elif row.visibility_state == WarpVisibilityState.HIDDEN:
+        # Promote hidden -> revealed; never downgrade traversed.
+        row.visibility_state = WarpVisibilityState.REVEALED
+        row.revealed_via = revealed_via
+    return row
 
 
 def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str, Any]) -> None:
@@ -692,6 +799,19 @@ class MovementService:
         ).all()
 
         for tunnel in outgoing_tunnels:
+            # WO-WC: a lifetime-expired tunnel is collapsed and must not list as
+            # available (the traversal gate fails it anyway; hide it here too).
+            if _tunnel_collapse_due(tunnel):
+                continue
+            # WO-LW view-filter: hide a latent tunnel the player hasn't
+            # personally discovered (ADR-0045). Non-latent tunnels and player
+            # gates are unaffected — they list exactly as before.
+            if (
+                getattr(tunnel, "is_latent", False)
+                and not _is_player_gate(tunnel)
+                and not _player_knows_warp(self.db, player.id, tunnel)
+            ):
+                continue
             dest_sector = self.db.query(Sector).filter(Sector.id == tunnel.destination_sector_id).first()
             if dest_sector:
                 tunnel_cost = tunnel.turn_cost
@@ -725,6 +845,17 @@ class MovementService:
         ).all()
 
         for tunnel in incoming_bidirectional:
+            # WO-WC: hide a lifetime-expired (collapsed) tunnel from the reverse view too.
+            if _tunnel_collapse_due(tunnel):
+                continue
+            # WO-LW view-filter: a latent tunnel the player hasn't discovered
+            # stays hidden on the reverse (incoming-bidirectional) view too.
+            if (
+                getattr(tunnel, "is_latent", False)
+                and not _is_player_gate(tunnel)
+                and not _player_knows_warp(self.db, player.id, tunnel)
+            ):
+                continue
             # The "destination" for travel is the tunnel's origin sector
             dest_sector = self.db.query(Sector).filter(Sector.id == tunnel.origin_sector_id).first()
             if dest_sector:
@@ -755,6 +886,73 @@ class MovementService:
         return {
             "warps": direct_warps,
             "tunnels": warp_tunnels
+        }
+
+    def scan_for_latent_tunnels(self, player_id: uuid.UUID) -> Dict[str, Any]:
+        """WO-LW — reveal the latent warp tunnels touching the player's current
+        sector, writing a per-player PlayerWarpKnowledge row for each newly
+        discovered one (ADR-0045 / aria-companion.md § Warp discovery,
+        ``revealed_via = scan``).
+
+        This is the sector-local reveal primitive: a scan resolves the latent
+        tunnels at the player's position (both directions — a latent tunnel
+        looks bidirectional until revealed). Already-known and non-latent
+        tunnels are left untouched. Returns the count + the sectors revealed.
+        Idempotent: re-scanning a sector with no new latent tunnels reveals 0.
+        """
+        player = self.db.query(Player).filter(Player.id == player_id).first()
+        if not player:
+            return {"success": False, "message": "Player not found", "revealed": 0, "sectors": []}
+
+        current_sector = self.db.query(Sector).filter(
+            Sector.sector_id == player.current_sector_id
+        ).first()
+        if not current_sector:
+            return {"success": False, "message": "Current sector not found", "revealed": 0, "sectors": []}
+
+        # Latent tunnels touching this sector in either direction (a latent
+        # tunnel looks bidirectional from the player's chair until revealed).
+        latent_tunnels = self.db.query(WarpTunnel).filter(
+            WarpTunnel.is_latent == True,  # noqa: E712 — SQLA boolean column compare
+            WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+            or_(
+                WarpTunnel.origin_sector_id == current_sector.id,
+                WarpTunnel.destination_sector_id == current_sector.id,
+            ),
+        ).all()
+
+        revealed_sector_numbers: List[int] = []
+        revealed_count = 0
+        for tunnel in latent_tunnels:
+            # Player gates are never latent; skip defensively.
+            if _is_player_gate(tunnel):
+                continue
+            if _player_knows_warp(self.db, player_id, tunnel):
+                continue
+            _reveal_warp_to_player(self.db, player_id, tunnel, WarpRevealedVia.SCAN)
+            revealed_count += 1
+            # Report the OTHER endpoint relative to the player's sector.
+            other_id = (
+                tunnel.destination_sector_id
+                if tunnel.origin_sector_id == current_sector.id
+                else tunnel.origin_sector_id
+            )
+            other = self.db.query(Sector).filter(Sector.id == other_id).first()
+            if other is not None:
+                revealed_sector_numbers.append(other.sector_id)
+
+        if revealed_count:
+            self.db.commit()
+
+        return {
+            "success": True,
+            "message": (
+                f"Scan revealed {revealed_count} latent warp tunnel(s)"
+                if revealed_count
+                else "Scan complete — no undiscovered latent tunnels here"
+            ),
+            "revealed": revealed_count,
+            "sectors": revealed_sector_numbers,
         }
     
     def get_path_between_sectors(self, start_sector_id: int, end_sector_id: int) -> List[Dict[str, Any]]:
@@ -956,6 +1154,46 @@ class MovementService:
 
         if not tunnel:
             return False, 0, "No active warp tunnel found"
+
+        # WO-WC — lazy-on-read lifetime collapse (async-workers.md § Warp-tunnel
+        # collapse: "expected_lifetime is checked when a ship attempts traversal.
+        # If expected_lifetime is past, the tunnel transitions to COLLAPSED and
+        # traversal fails."). This is the single move-validation gate and runs
+        # BEFORE any turn is charged, so an expired tunnel never moves the ship.
+        # Mirrors the existing max_uses collapse semantics — both are canon.
+        # (Player gates are handled separately below and carry no lifetime.)
+        if _tunnel_collapse_due(tunnel):
+            # Lock the tunnel row before flipping status so a concurrent
+            # traversal can't double-flip (single-writer; same lock discipline
+            # as the player-row lock in move_player_to_sector).
+            locked = self.db.query(WarpTunnel).filter(
+                WarpTunnel.id == tunnel.id
+            ).with_for_update().first()
+            if locked is not None and locked.status == WarpTunnelStatus.ACTIVE:
+                locked.status = WarpTunnelStatus.COLLAPSED
+                # The traversal fails, so the caller (move_player_to_sector)
+                # returns BEFORE _execute_movement's commit. Persist the
+                # COLLAPSED transition on its own — canon requires the tunnel to
+                # actually transition, not just refuse this one traversal. This
+                # is an isolated, idempotent state flip safe to commit here.
+                try:
+                    self.db.commit()
+                except Exception as e:
+                    logger.error("Failed to persist tunnel COLLAPSED flip: %s", e)
+                    self.db.rollback()
+            return False, 0, "This warp tunnel has collapsed and can no longer be traversed"
+
+        # WO-LW — latent-tunnel per-player reveal gate (ADR-0045 /
+        # aria-companion.md § Warp discovery). A latent tunnel stays invisible —
+        # and untraversable — to a player until they personally hold a
+        # revealed/traversed knowledge row for it (discovered via a scan). A
+        # non-latent tunnel is unaffected: visible and usable as today. Player
+        # gates (handled below) are intrinsically known to anyone who can see
+        # the gate and are never latent.
+        if getattr(tunnel, "is_latent", False) and not _is_player_gate(tunnel):
+            traverser_id = getattr(ship, "owner_id", None) if ship else None
+            if traverser_id is None or not _player_knows_warp(self.db, traverser_id, tunnel):
+                return False, 0, "No active warp tunnel found"
 
         # Player-built warp gate: 0 turns flat, no ship-type multipliers and
         # no max(1, ...) clamp (warp-gates.md). Strictly one-way: the reverse

@@ -659,6 +659,33 @@ async def get_available_moves(
     return AvailableMovesResponse(warps=warps, tunnels=tunnels)
 
 
+# WO-LW — scan the current sector for latent warp tunnels (ADR-0045 /
+# aria-companion.md § Warp discovery). Reveals latent tunnels the player has
+# not personally discovered, writing per-player PlayerWarpKnowledge rows
+# (revealed_via=scan). Idempotent; non-latent tunnels are unaffected.
+class ScanLatentTunnelsResponse(BaseModel):
+    success: bool
+    message: str
+    revealed: int
+    sectors: List[int]
+
+
+@router.post("/scan-latent-tunnels", response_model=ScanLatentTunnelsResponse)
+async def scan_latent_tunnels(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Reveal latent warp tunnels in the player's current sector (per-player)."""
+    movement_service = MovementService(db)
+    result = movement_service.scan_for_latent_tunnels(player.id)
+    return ScanLatentTunnelsResponse(
+        success=bool(result.get("success")),
+        message=result.get("message", ""),
+        revealed=int(result.get("revealed", 0)),
+        sectors=result.get("sectors", []),
+    )
+
+
 # Genesis Device Purchase
 #
 # Genesis devices are a single FUNGIBLE consumable (untiered count on the ship —

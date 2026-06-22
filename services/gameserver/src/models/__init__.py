@@ -23,6 +23,12 @@ from src.models.zone import Zone
 from src.models.cluster import Cluster, ClusterType
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType, WarpTunnelStatus
+from src.models.player_warp_knowledge import (
+    PlayerWarpKnowledge,
+    WarpLayer,
+    WarpVisibilityState,
+    WarpRevealedVia,
+)
 from src.models.resource import Resource, ResourceType, ResourceQuality, Market
 from src.models.combat_log import CombatLog, CombatStats
 from src.models.game_event import GameEvent, EventTemplate, EventEffect, EventParticipation

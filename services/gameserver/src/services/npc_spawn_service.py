@@ -499,6 +499,40 @@ def _ensure_federation_faction(db: Session) -> Faction:
     return faction
 
 
+def npc_spawn_bias_for_sector(db: Session, sector_id) -> Dict[str, Any]:
+    """READ the SectorFactionInfluence bias for a sector (WO-FI / ADR-0021).
+
+    Thin pass-through to ``faction_service.sector_spawn_bias`` so the NPC-spawn
+    layer (this service today; the scheduler's Loop B later) has a single,
+    locally-named entry point for "should this sector tilt patrol-vs-pirate?"
+    without each caller reaching into faction_service directly.
+
+    ``sector_id`` is the ``sectors.id`` UUID (the SectorFactionInfluence FK),
+    NOT the integer global ``sector_id`` column. Returns the advisory dict
+    documented on ``sector_spawn_bias``; a sector with no influence rows yields
+    the neutral, reproduce-exactly result (patrol x1.0, pirate x1.0,
+    tier "uncontrolled").
+
+    Defensive: any error degrades to the neutral bias rather than breaking a
+    spawn — the bias is advisory, never load-bearing.
+    """
+    try:
+        from src.services.faction_service import sector_spawn_bias
+        return sector_spawn_bias(db, sector_id)
+    except Exception:
+        logger.exception(
+            "Sector spawn-bias read failed for sector %s; using neutral bias",
+            sector_id,
+        )
+        return {
+            "tier": "uncontrolled",
+            "dominant_faction_id": None,
+            "dominant_influence": 0.0,
+            "patrol_multiplier": 1.0,
+            "pirate_multiplier": 1.0,
+        }
+
+
 def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
     """One-shot, degenerate Loop B (SYSTEMS/npc-scheduler.md): spawn the
     pirate-captain and police rosters from the galaxy's BANG snapshot.
@@ -654,6 +688,17 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
                 continue
 
             faction_code = str(roster.get("factionCode", cfg.default_faction_code))
+            # READ-side SectorFactionInfluence bias (WO-FI / ADR-0021): consult
+            # the dominant faction influence over THIS sector to tilt patrol-vs-
+            # pirate spawning. Read-only and advisory — an Uncontrolled / un-
+            # seeded sector returns the neutral bias (patrol x1.0, pirate x1.0)
+            # so existing sectors spawn EXACTLY as before. We do NOT change the
+            # canonical roster targetCount (BANG-authoritative); the bias is
+            # recorded on the squad row so the dynamic scheduler (Loop B, a
+            # later slice) and the territory API can act on it. The sector row
+            # is already held with_for_update() above, so this read is
+            # consistent with the presence writes below.
+            spawn_bias = npc_spawn_bias_for_sector(db, sector.id)
             now = datetime.now(UTC)
             squad_npc_ids: List[str] = []
             presence_entries: List[Dict[str, Any]] = []
@@ -723,6 +768,14 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
                 "npc_character_ids": squad_npc_ids,
                 "ship_count": len(squad_npc_ids),
                 "deployed_at": now.isoformat(),
+                # READ-side influence context (WO-FI / ADR-0021), advisory:
+                # the sector's territory tier and the patrol/pirate spawn
+                # multipliers derived from its dominant faction influence at
+                # spawn time. Neutral (tier "uncontrolled", x1.0/x1.0) for an
+                # un-seeded sector — additive, never alters spawned counts.
+                "territory_tier": spawn_bias["tier"],
+                "patrol_spawn_multiplier": spawn_bias["patrol_multiplier"],
+                "pirate_spawn_multiplier": spawn_bias["pirate_multiplier"],
             }
             if cfg.is_police:
                 squad_row["wanted_threshold"] = POLICE_WANTED_THRESHOLD

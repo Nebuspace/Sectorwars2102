@@ -15,7 +15,12 @@ from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.faction import Faction, FactionType, FactionMission
 from src.models.reputation import Reputation
-from src.services.faction_service import FactionService
+from src.models.sector import Sector
+from src.services.faction_service import (
+    FactionService,
+    get_sector_influence,
+    sector_territory_tier,
+)
 
 router = APIRouter(prefix="/factions", tags=["factions"])
 
@@ -121,6 +126,28 @@ class TerritoryResponse(BaseModel):
     faction_name: str
     sectors: List[str]
     home_sector_id: Optional[str]
+
+
+class SectorInfluenceEntry(BaseModel):
+    """One faction's influence over one sector (ADR-0021)."""
+    faction_id: str
+    faction_name: Optional[str]
+    influence_percentage: float
+
+
+class SectorInfluenceResponse(BaseModel):
+    """Per-sector faction influence + derived territory tier (ADR-0021).
+
+    The READ side of ``SectorFactionInfluence``: surfaces every faction's
+    influence over a sector and the four-tier taxonomy classification (Core /
+    Controlled / Contested / Uncontrolled). A sector with no influence rows
+    reads as ``tier="uncontrolled"`` with an empty list — reproduce-exactly.
+    """
+    sector_id: int
+    sector_uuid: str
+    tier: str
+    dominant_faction_id: Optional[str]
+    influences: List[SectorInfluenceEntry]
 
 
 # API Endpoints
@@ -311,6 +338,65 @@ async def get_faction_territory(
         faction_name=faction.name,
         sectors=[str(sid) for sid in (faction.territory_sectors or [])],
         home_sector_id=str(faction.home_sector_id) if faction.home_sector_id else None
+    )
+
+
+@router.get("/sectors/{sector_id}/influence", response_model=SectorInfluenceResponse)
+async def get_sector_faction_influence(
+    sector_id: int,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player)
+):
+    """READ per-sector faction influence + territory tier (WO-FI / ADR-0021).
+
+    ``sector_id`` is the GLOBAL human-readable sector number (the integer
+    ``sectors.sector_id`` column the rest of the player UI uses), resolved to
+    the sector UUID that ``SectorFactionInfluence`` keys on. A sector with no
+    influence rows returns ``tier="uncontrolled"`` with an empty list — the
+    pre-existing, reproduce-exactly behavior.
+    """
+    sector = (
+        db.query(Sector)
+        .filter(Sector.sector_id == sector_id)
+        .first()
+    )
+    if sector is None:
+        raise HTTPException(status_code=404, detail="Sector not found")
+
+    rows = get_sector_influence(db, sector.id)
+    tier = sector_territory_tier(rows)
+
+    # Resolve faction names in one batched query (avoid per-row lazy loads).
+    faction_ids = [row.faction_id for row in rows]
+    name_by_id = {}
+    if faction_ids:
+        name_by_id = {
+            f.id: f.name
+            for f in db.query(Faction.id, Faction.name)
+            .filter(Faction.id.in_(faction_ids))
+            .all()
+        }
+
+    influences = [
+        SectorInfluenceEntry(
+            faction_id=str(row.faction_id),
+            faction_name=name_by_id.get(row.faction_id),
+            influence_percentage=row.influence_percentage or 0.0,
+        )
+        for row in rows
+    ]
+    dominant = (
+        str(rows[0].faction_id)
+        if rows and (rows[0].influence_percentage or 0.0) > 0.0
+        else None
+    )
+
+    return SectorInfluenceResponse(
+        sector_id=sector.sector_id,
+        sector_uuid=str(sector.id),
+        tier=tier,
+        dominant_faction_id=dominant,
+        influences=influences,
     )
 
 

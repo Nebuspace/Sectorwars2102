@@ -120,6 +120,14 @@ export interface MoveOption {
   special_formations?: SpecialFormationSummary[];
 }
 
+// WO-LW — result of a latent-warp-tunnel scan (ADR-0045).
+export interface ScanLatentTunnelsResult {
+  success: boolean;
+  message: string;
+  revealed: number;      // how many latent tunnels this scan newly revealed
+  sectors: number[];     // the sector numbers the revealed tunnels lead to
+}
+
 export interface MarketInfo {
   resources: Record<string, {
     quantity: number;
@@ -273,7 +281,9 @@ interface GameContextType {
   // Movement
   moveToSector: (sectorId: number) => Promise<any>;
   getAvailableMoves: () => Promise<void>;
-  
+  // WO-LW — reveal latent warp tunnels in the current sector (per-player).
+  scanForLatentTunnels: () => Promise<ScanLatentTunnelsResult | undefined>;
+
   // Station interactions
   dockAtStation: (stationId: string) => Promise<any>;
   undockFromStation: () => Promise<any>;
@@ -667,15 +677,40 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Get available moves from current sector
   const getAvailableMoves = async () => {
     if (!user || !playerState) return;
-    
+
     setError(null);
-    
+
     try {
       const response = await api.get('/api/v1/player/available-moves');
       setAvailableMoves(response.data);
     } catch (error) {
       console.error('Error getting available moves:', error);
       setError('Failed to get available moves');
+    }
+  };
+
+  // WO-LW — scan the current sector for latent warp tunnels (ADR-0045 /
+  // aria-companion.md § Warp discovery). Reveals latent tunnels the player
+  // hasn't personally discovered, writing per-player warp knowledge server-side,
+  // then refreshes the move list so newly-revealed tunnels appear. Returns the
+  // scan result ({ success, message, revealed, sectors }). Latent tunnels stay
+  // hidden until scanned — non-latent tunnels are unaffected and always shown.
+  const scanForLatentTunnels = async (): Promise<ScanLatentTunnelsResult | undefined> => {
+    if (!user || !playerState) return undefined;
+
+    setError(null);
+
+    try {
+      const response = await api.post<ScanLatentTunnelsResult>('/api/v1/player/scan-latent-tunnels');
+      // A successful reveal changes what the player can navigate to — refresh.
+      if (response.data?.revealed) {
+        await getAvailableMoves();
+      }
+      return response.data;
+    } catch (error: any) {
+      console.error('Error scanning for latent tunnels:', error);
+      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to scan for latent tunnels');
+      throw error;
     }
   };
 
@@ -1647,7 +1682,8 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Movement
     moveToSector,
     getAvailableMoves,
-    
+    scanForLatentTunnels,
+
     // Station interactions
     dockAtStation,
     undockFromStation,

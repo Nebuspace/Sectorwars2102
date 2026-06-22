@@ -433,6 +433,7 @@ async def deploy_drones_contract(
     # always 404'd. Each deploy_drone creates one DroneDeployment; return its id.
     deployed_count = 0
     deployment_ids: list[str] = []
+    last_error: Optional[str] = None
 
     for i in range(min(request.droneCount, len(undeployed_drones))):
         drone = undeployed_drones[i]
@@ -445,14 +446,23 @@ async def deploy_drones_contract(
             deployed_count += 1
             if deployment is not None:
                 deployment_ids.append(str(deployment.id))
+        except ValueError as e:
+            # Per-drone reject (e.g. the per-ship drone cap was reached). Stop
+            # the batch — the cap is monotonic for this batch, so once one deploy
+            # is capped, every remaining one will be too. Within-cap deploys
+            # already done above are kept (clamp behaviour).
+            last_error = str(e)
+            logger.info(f"Stopping batch deploy at drone {drone.id}: {e}")
+            break
         except Exception as e:
-            # Continue deploying others even if one fails
+            # Continue deploying others even if one fails for an unexpected reason
+            last_error = str(e)
             logger.warning(f"Failed to deploy drone {drone.id}: {e}")
 
     if deployed_count == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No drones could be deployed",
+            detail=last_error or "No drones could be deployed",
         )
 
     return {

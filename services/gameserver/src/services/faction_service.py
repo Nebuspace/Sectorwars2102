@@ -249,6 +249,171 @@ def adjust_sector_influence(
     return influence
 
 
+# ---------------------------------------------------------------------------
+# SectorFactionInfluence READ side (WO-FI / ADR-0021)
+#
+# The WRITE half (adjust_sector_influence, above) maintains the canonical
+# stored influence_percentage. These pure-READ helpers consume it for the
+# taxonomy / spawn-bias effects canon attributes to it
+# (FEATURES/gameplay/factions-and-teams.md "### Territory & influence"):
+#   - four-tier taxonomy (Core 100 / Controlled >=75 / Contested 40-60 across
+#     >=2 factions / Uncontrolled 0)
+#   - "Patrol spawn rate scales with influence ... Pirate spawn rate is
+#     inversely proportional".
+#
+# Reproduce-exactly invariant: a sector with NO influence rows reads as
+# Uncontrolled with a neutral spawn bias, so existing (un-seeded) sectors
+# behave EXACTLY as before these helpers existed.
+# ---------------------------------------------------------------------------
+
+# Canon taxonomy thresholds (factions-and-teams.md "### Territory & influence").
+TERRITORY_CORE_MIN = 100.0       # Core: 100%
+TERRITORY_CONTROLLED_MIN = 75.0  # Controlled: >= 75%
+TERRITORY_CONTESTED_MIN = 40.0   # Contested floor (40-60% across >= 2 factions)
+TERRITORY_CONTESTED_MAX = 60.0   # Contested ceiling
+
+# [NO-CANON] Secondary-influencer half-share threshold. factions-and-teams.md
+# states "secondary influencers >=25% receive half-share rep" for emergent-rep,
+# which is the only numeric handle canon gives on a "meaningful secondary
+# influencer"; reused here purely to label a sector Contested when a second
+# faction is materially present. Flagged for DECISIONS.md if the read-side
+# taxonomy ever needs its own threshold.
+TERRITORY_SECONDARY_PRESENCE_MIN = 25.0
+
+
+def get_sector_influence(
+    db: Session,
+    sector_id: UUID,
+) -> List[SectorFactionInfluence]:
+    """READ all per-faction influence rows for one sector, strongest first.
+
+    Pure read; ties broken DETERMINISTICALLY by ``faction_id`` so the ordering
+    (and therefore the derived "dominant" faction) never flaps between calls.
+    Returns ``[]`` for a sector with no influence rows — the Uncontrolled,
+    reproduce-exactly case.
+    """
+    if sector_id is None:
+        return []
+    return (
+        db.query(SectorFactionInfluence)
+        .filter(SectorFactionInfluence.sector_id == sector_id)
+        .order_by(
+            SectorFactionInfluence.influence_percentage.desc(),
+            SectorFactionInfluence.faction_id.asc(),
+        )
+        .all()
+    )
+
+
+def dominant_sector_faction(
+    db: Session,
+    sector_id: UUID,
+) -> Optional[SectorFactionInfluence]:
+    """READ the single highest-influence faction row for a sector, or ``None``.
+
+    ``None`` when the sector has no influence rows OR its strongest influence is
+    0 (genuinely Uncontrolled) — only a faction with positive influence is the
+    dominant one. Deterministic tie-break via ``get_sector_influence``.
+    """
+    rows = get_sector_influence(db, sector_id)
+    if not rows:
+        return None
+    top = rows[0]
+    if (top.influence_percentage or 0.0) <= 0.0:
+        return None
+    return top
+
+
+def sector_territory_tier(rows: List[SectorFactionInfluence]) -> str:
+    """Classify a sector into the canon four-tier taxonomy from its influence
+    rows (factions-and-teams.md "### Territory & influence").
+
+    ``rows`` is the output of ``get_sector_influence`` (already sorted
+    strongest-first). Returns one of ``"core"``, ``"controlled"``,
+    ``"contested"``, ``"uncontrolled"``. An empty / all-zero sector is
+    ``"uncontrolled"`` (reproduce-exactly).
+    """
+    if not rows:
+        return "uncontrolled"
+    top = rows[0].influence_percentage or 0.0
+    if top <= 0.0:
+        return "uncontrolled"
+    if top >= TERRITORY_CORE_MIN:
+        return "core"
+    if top >= TERRITORY_CONTROLLED_MIN:
+        return "controlled"
+    # Contested per canon needs the band 40-60% AND >= 2 factions materially
+    # present (a meaningful secondary influencer).
+    secondary = rows[1].influence_percentage if len(rows) > 1 else 0.0
+    secondary = secondary or 0.0
+    if (
+        TERRITORY_CONTESTED_MIN <= top <= TERRITORY_CONTESTED_MAX
+        and secondary >= TERRITORY_SECONDARY_PRESENCE_MIN
+    ):
+        return "contested"
+    # Below Controlled but not a canon-Contested split: a single weak holder.
+    # Canon names no tier for this band, so it degrades to "uncontrolled" for
+    # spawn purposes (low/no faction suppression) — the conservative, no-new-
+    # behavior reading. [NO-CANON] for the sub-40% single-holder band.
+    return "uncontrolled"
+
+
+# [NO-CANON] Patrol-versus-pirate spawn multiplier mapping. Canon states the
+# DIRECTION only ("Patrol spawn rate scales with influence ... Pirate spawn
+# rate is inversely proportional") but gives no formula. This conservative
+# linear mapping keys off the dominant influence (0-100) and is centered so
+# that an Uncontrolled sector (0%) reproduces TODAY's neutral behavior exactly
+# (pirate x1.0, patrol x1.0). Flagged for DECISIONS.md; the bias is read-only
+# advice — callers may ignore it, so an un-tuned multiplier never breaks spawn.
+PIRATE_SPAWN_FLOOR = 0.25  # high faction influence suppresses, never zeroes
+
+
+def sector_spawn_bias(
+    db: Session,
+    sector_id: UUID,
+) -> Dict[str, Any]:
+    """READ a sector's influence and derive a patrol-vs-pirate spawn bias.
+
+    Returns a small advisory dict — the NPC spawn layer consults it to TILT
+    patrol-versus-pirate weighting without changing canonical roster counts:
+
+        {
+          "tier": "core|controlled|contested|uncontrolled",
+          "dominant_faction_id": UUID | None,
+          "dominant_influence": float,   # 0-100
+          "patrol_multiplier": float,    # >= 1.0 as influence rises
+          "pirate_multiplier": float,    # <= 1.0 as influence rises (floor)
+        }
+
+    Reproduce-exactly: a sector with no influence rows (or 0% dominant) yields
+    tier "uncontrolled", patrol x1.0, pirate x1.0 — the pre-existing behavior.
+    """
+    rows = get_sector_influence(db, sector_id)
+    tier = sector_territory_tier(rows)
+    if not rows:
+        return {
+            "tier": tier,
+            "dominant_faction_id": None,
+            "dominant_influence": 0.0,
+            "patrol_multiplier": 1.0,
+            "pirate_multiplier": 1.0,
+        }
+    top = rows[0]
+    influence = max(0.0, min(100.0, top.influence_percentage or 0.0))
+    frac = influence / 100.0  # 0.0 (neutral) .. 1.0 (Core)
+    # Patrols scale UP with influence; pirates scale DOWN toward a floor.
+    patrol_multiplier = 1.0 + frac
+    pirate_multiplier = max(PIRATE_SPAWN_FLOOR, 1.0 - frac)
+    dominant_id = top.faction_id if influence > 0.0 else None
+    return {
+        "tier": tier,
+        "dominant_faction_id": dominant_id,
+        "dominant_influence": influence,
+        "patrol_multiplier": patrol_multiplier,
+        "pirate_multiplier": pirate_multiplier,
+    }
+
+
 def dominant_reputation_faction_id(db: Session, player_id: UUID) -> Optional[UUID]:
     """Resolve the faction the player has the HIGHEST personal reputation with.
 

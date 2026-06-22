@@ -498,6 +498,12 @@ async def buy_resource(
             station_buy_price=market_price.buy_price,
             station_sell_price=market_price.sell_price,
             station_quantity=market_price.quantity,
+            # WO-TF — record the tariff context for revenue analytics (who taxed,
+            # at what rate). tariff_rate_eff is the effective region tariff already
+            # computed for the price stack above; owner_id is NULL for unowned/NPC
+            # stations. These only RECORD context; they do not change the charge.
+            owner_tariff_rate=tariff_rate_eff,
+            port_owner_id=station.owner_id,
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)
@@ -826,6 +832,12 @@ async def sell_resource(
             station_buy_price=market_price.buy_price,
             station_sell_price=market_price.sell_price,
             station_quantity=market_price.quantity,
+            # WO-TF — record the tariff context for revenue analytics (who taxed,
+            # at what rate). tariff_rate_eff is the effective region tariff already
+            # computed for the payout stack above; owner_id is NULL for unowned/NPC
+            # stations. These only RECORD context; they do not change the payout.
+            owner_tariff_rate=tariff_rate_eff,
+            port_owner_id=station.owner_id,
             timestamp=datetime.now(UTC)
         )
         db.add(transaction)

@@ -458,6 +458,46 @@ def max_colonists_for(citadel_level: int) -> int:
     return info["max_population"]
 
 
+def storage_cap_for(citadel_level: int) -> int:
+    """Per-resource commodity storage cap, derived from the citadel tier.
+
+    CANON: SYSTEMS/planetary-production-tick.md "Storage caps" — the production
+    tick clamps each commodity stockpile to a per-resource maximum, and "the
+    excess is wasted (not stored, not transferred)" with an `overflow_warning`
+    event surfaced. Invariant 2: fuel_ore/organics/equipment are "≥ 0, bounded
+    by their respective caps."
+
+    Cap source — CITADEL_LEVELS[level]["safe_storage"]: the only concrete,
+    shipped per-level capacity figure in code (L1 100k → L5 50M, mirroring how
+    `max_colonists_for` reads `max_population` from the same table). Applied as a
+    PER-RESOURCE cap, matching the per-commodity `cap_fuel/cap_organics/
+    cap_equipment` shape of the canon formula (production-tick.md:142-144,178-180).
+
+    [NO-CANON divergence — FLAGGED, not invented]: the canon "Storage caps"
+    formula is `cap = base_cap * (1 + storage_level * 0.5)`, parameterised by a
+    `base_cap` and a *storage-building* `storage_level`. Neither a base_cap
+    constant nor a storage-building model/level exists in code today, so there is
+    no way to evaluate that formula. This helper substitutes the in-code
+    `safe_storage` per-tier figure as the cap until a storage-building tier lands
+    (at which point the canon multiplier `(1 + storage_level * 0.5)` can layer on
+    top of this base). Propose DECISIONS entry: ratify safe_storage as the
+    commodity storage base_cap, or define the missing base_cap/storage_level.
+
+    Edge case (production-tick.md:223): a non-positive cap "due to
+    misconfiguration" is treated as no cap (return 0 → callers skip clamping).
+    An un-citadeled planet (level 0, safe_storage 0) is therefore left UNCAPPED,
+    which reproduces today's behaviour exactly for citadel-less colonies — the
+    cap only binds once a player has actually built a citadel (level ≥ 1, where
+    safe_storage is positive). This avoids the destructive alternative of
+    clamping a producing L0 colony to ~0 and discarding all of its output.
+    """
+    from src.services.citadel_service import CITADEL_LEVELS
+    level = citadel_level or 0
+    info = CITADEL_LEVELS.get(level, CITADEL_LEVELS[0])
+    cap = int(info.get("safe_storage", 0) or 0)
+    return cap if cap > 0 else 0
+
+
 def max_population_for(habitability_score: int) -> int:
     """Habitability-derived demographic ceiling per ADR-0035.
 
@@ -751,9 +791,20 @@ class PlanetaryService:
         Sub-unit progress is banked exactly in a per-resource fractional carry
         stored in planet.active_events['production_carry'] (JSONB, no migration),
         so a fast resource never robs a slow one of its accruing fraction when
-        the anchor advances. Stockpiles are uncapped for now (the storage-cap
-        formula is design-only); the citadel safe provides the protected,
-        capacity-limited store.
+        the anchor advances.
+
+        Storage caps (CANON: production-tick.md "Storage caps" / invariant 2):
+        each commodity stockpile is clamped to the citadel-derived per-resource
+        cap (``storage_cap_for`` ← CITADEL_LEVELS safe_storage). When this tick's
+        accrual would push a stockpile past the cap, the excess is WASTED ("not
+        stored, not transferred") and recorded under
+        active_events['overflow_warning'] so the read layer can raise a
+        `planet.overflow_warning`. An un-citadeled planet (level 0, cap 0) is left
+        uncapped — reproducing today's behaviour exactly for citadel-less
+        colonies; the cap only binds once a citadel exists (level ≥ 1). A
+        stockpile already sitting above the cap is never retroactively trimmed —
+        the clamp only refuses NEW accrual past the cap. The citadel safe remains
+        the separate protected, cr-equivalent-pooled store (citadel_service).
 
         Returns True if any state changed (whole units accrued, or the anchor
         was initialized/advanced) so callers know to commit.
@@ -892,9 +943,32 @@ class PlanetaryService:
             # elapsed window.
             return False
 
+        # Per-resource storage cap (CANON: production-tick.md "Storage caps" /
+        # invariant 2). Each commodity stockpile is clamped to the citadel-derived
+        # cap; any excess this tick is WASTED ("not stored, not transferred") and
+        # the overflow is recorded so the read/notification layer can surface a
+        # `planet.overflow_warning` event. A non-positive cap (un-citadeled L0)
+        # means "uncapped" — reproduces today's behaviour for citadel-less
+        # colonies exactly (see storage_cap_for's docstring). A stockpile already
+        # at/over the cap (e.g. deposited above it before caps existed) is left
+        # untouched here — the clamp only refuses NEW accrual past the cap, never
+        # retroactively confiscates pre-existing stock (max(new, current_over_cap)).
+        cap = storage_cap_for(planet.citadel_level or 0)
+        overflow = {}
         for col, (gained, remainder) in gains.items():
             if gained > 0:
-                setattr(planet, col, (getattr(planet, col) or 0) + gained)
+                current = getattr(planet, col) or 0
+                proposed = current + gained
+                if cap > 0 and proposed > cap:
+                    # Clamp to the cap but never below what's already on hand, so a
+                    # stockpile sitting above the cap is not retroactively trimmed.
+                    new_stock = max(current, cap)
+                    wasted = proposed - new_stock
+                    if wasted > 0:
+                        overflow[col] = wasted
+                    setattr(planet, col, new_stock)
+                else:
+                    setattr(planet, col, proposed)
             carry[col] = remainder
 
         carry["research"] = research_produced - research_gained
@@ -936,6 +1010,23 @@ class PlanetaryService:
         # counter already exists, so an empty/un-owned planet's JSONB stays clean.
         if surplus_gained > 0 or "surplus_pioneers" in events:
             new_events["surplus_pioneers"] = int(events.get("surplus_pioneers", 0) or 0) + surplus_gained
+        # Storage-overflow surfacing (CANON: production-tick.md "Storage caps" —
+        # "Surface as `overflow_warning` event"). When this tick wasted any
+        # commodity at the cap, stamp a per-resource record (units wasted + the
+        # cap + a wall-clock stamp) under `overflow_warning` in the planet's
+        # active_events JSONB (no migration — same store as production_carry), so
+        # the read/notification layer can raise `planet.overflow_warning`. When no
+        # overflow occurred this tick, clear a stale marker so the JSONB doesn't
+        # carry a phantom warning forward (mirrors the "don't pollute with a 0"
+        # idiom used for research_points / surplus_pioneers above).
+        if overflow:
+            new_events["overflow_warning"] = {
+                "resources": overflow,
+                "cap": cap,
+                "at": now.isoformat(),
+            }
+        else:
+            new_events.pop("overflow_warning", None)
         planet.active_events = new_events
         # Advance the anchor by ONLY the consumed (capped) window, not to now, so
         # a backlog > 24h drains 24h per subsequent tick rather than being

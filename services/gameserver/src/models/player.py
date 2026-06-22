@@ -141,6 +141,10 @@ class Player(Base):
     combat_logs_as_attacker = relationship("CombatLog", foreign_keys="CombatLog.attacker_id", back_populates="attacker")
     combat_logs_as_defender = relationship("CombatLog", foreign_keys="CombatLog.defender_id", back_populates="defender")
     created_warp_tunnels = relationship("WarpTunnel", back_populates="created_by")
+    # ADR-0045: per-player warp knowledge (latent-warp discovery state).
+    warp_knowledge = relationship(
+        "PlayerWarpKnowledge", back_populates="player", cascade="all, delete-orphan"
+    )
     enhanced_market_transactions = relationship("src.models.market_transaction.MarketTransaction", back_populates="player")
     first_login_sessions = relationship("FirstLoginSession", back_populates="player", cascade="all, delete-orphan")
     first_login_state = relationship("PlayerFirstLoginState", back_populates="player", uselist=False, cascade="all, delete-orphan")
