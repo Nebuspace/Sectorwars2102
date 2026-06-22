@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { teamAPI } from '../../services/api';
-import type { TeamMember, TreasuryBalanceApiResponse } from '../../types/team';
+import type { TeamMember, TreasuryBalanceApiResponse, TreasuryTransactionApiResponse } from '../../types/team';
 import './resource-sharing.css';
 
 interface ResourceSharingProps {
@@ -35,6 +35,19 @@ const LABELS: Record<string, string> = {
   plasma: 'Plasma', bio_samples: 'Bio Samples', dark_matter: 'Dark Matter'
 };
 
+const RESOURCE_LABELS: Record<string, string> = {
+  credits: 'Credits', quantum_crystals: 'Quantum Crystals', ...LABELS
+};
+
+// How each ledger kind reads + which sign to show on the amount.
+const KIND_META: Record<string, { label: string; sign: '+' | '−' | '' }> = {
+  deposit: { label: 'Deposit', sign: '+' },
+  withdraw: { label: 'Withdraw', sign: '−' },
+  transfer: { label: 'Transfer Out', sign: '−' },
+  tax: { label: 'Tax', sign: '−' },
+  payout: { label: 'Payout', sign: '−' }
+};
+
 type Operation = 'deposit' | 'withdraw' | 'transfer';
 
 export const ResourceSharing: React.FC<ResourceSharingProps> = ({
@@ -52,6 +65,7 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
   const [recipient, setRecipient] = useState('');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [history, setHistory] = useState<TreasuryTransactionApiResponse[] | null>(null);
 
   const recipients = members.filter(m => m.playerId !== playerId);
 
@@ -64,9 +78,19 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
     }
   }, [teamId]);
 
+  const loadHistory = useCallback(async () => {
+    try {
+      const data = await teamAPI.getTreasuryHistory(teamId) as TreasuryTransactionApiResponse[];
+      setHistory(data);
+    } catch (error) {
+      console.error('Failed to load treasury history:', error);
+    }
+  }, [teamId]);
+
   useEffect(() => {
     void loadBalance();
-  }, [loadBalance]);
+    void loadHistory();
+  }, [loadBalance, loadHistory]);
 
   // Members can deposit; only treasury managers can withdraw or transfer.
   const allowedOps: Operation[] = canManageTreasury ? ['deposit', 'withdraw', 'transfer'] : ['deposit'];
@@ -112,6 +136,7 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
       }
       setAmount('');
       await loadBalance();
+      await loadHistory();
       onChanged?.();
     } catch (error) {
       setStatus({ kind: 'err', text: error instanceof Error ? error.message : 'Operation failed.' });
@@ -217,6 +242,45 @@ export const ResourceSharing: React.FC<ResourceSharingProps> = ({
             : operation === 'withdraw' ? 'Withdraw from Treasury'
             : 'Transfer to Member'}
         </button>
+      </div>
+
+      <div className="treasury-history">
+        <h4>Transaction History</h4>
+        {history === null ? (
+          <p className="field-note">Loading history…</p>
+        ) : history.length === 0 ? (
+          <p className="field-note">No treasury activity yet.</p>
+        ) : (
+          <table className="history-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>Resource</th>
+                <th className="num">Amount</th>
+                <th className="num">Balance</th>
+                <th>By</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map(tx => {
+                const meta = KIND_META[tx.kind] ?? { label: tx.kind, sign: '' as const };
+                return (
+                  <tr key={tx.id}>
+                    <td className="when">{tx.created_at ? new Date(tx.created_at).toLocaleString() : '—'}</td>
+                    <td><span className={`kind-badge ${tx.kind}`}>{meta.label}</span></td>
+                    <td>{RESOURCE_LABELS[tx.resource_type] ?? tx.resource_type}</td>
+                    <td className={`num ${meta.sign === '+' ? 'credit' : 'debit'}`}>
+                      {meta.sign}{tx.amount.toLocaleString()}
+                    </td>
+                    <td className="num">{tx.balance_after.toLocaleString()}</td>
+                    <td>{tx.actor_name ?? 'Unknown'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

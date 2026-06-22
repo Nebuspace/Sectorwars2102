@@ -1,4 +1,5 @@
 from typing import Dict, Any, List
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -85,6 +86,29 @@ class FormationResponse(BaseModel):
     # placeholder instead of leaking the formation's identity.
     name: str | None = None
     type: str | None = None
+
+class FormationInvestigateRewardResponse(BaseModel):
+    """The reward granted by investigating a formation. [NO-CANON]: the reward
+    magnitude is a proposed conservative value pending Max's canon ruling."""
+    credits: int = 0
+
+class FormationInvestigateDetailResponse(BaseModel):
+    """The investigated formation's disclosed details."""
+    id: str
+    type: str | None = None
+    name: str | None = None
+    is_discovered: bool
+    is_investigated: bool
+    region_id: str | None = None
+    anchor_sector_id: str | None = None
+
+class FormationInvestigateResponse(BaseModel):
+    """Payload returned on a successful POST /player/formations/{id}/investigate."""
+    formation: FormationInvestigateDetailResponse
+    reward: FormationInvestigateRewardResponse
+    credits_remaining: int
+    # FLAG: the reward magnitude is [NO-CANON] — proposed, pending Max's ruling.
+    reward_is_no_canon: bool = True
 
 class SectorResponse(BaseModel):
     id: str
@@ -480,6 +504,46 @@ async def get_current_sector(
         y_coord=sector.y_coord,
         z_coord=sector.z_coord,
         special_formations=formation_responses
+    )
+
+@router.post("/formations/{formation_id}/investigate", response_model=FormationInvestigateResponse)
+async def investigate_formation_route(
+    formation_id: UUID,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Investigate a DISCOVERED special-formation, granting a one-time reward.
+
+    404 if the formation does not exist or has not yet been discovered (identity
+    is withheld pre-discovery, so both collapse to "not found"). 409 if it has
+    already been investigated (the reward is one-time). On success: marks the
+    formation investigated, grants the [NO-CANON] rarity-scaled credit reward, and
+    returns the formation details + reward payload.
+    """
+    from src.services.special_formation_service import (
+        investigate_formation,
+        FormationNotDiscoveredError,
+        FormationAlreadyInvestigatedError,
+    )
+
+    try:
+        payload = investigate_formation(db, player, formation_id)
+    except FormationNotDiscoveredError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Formation not found or not yet discovered.",
+        )
+    except FormationAlreadyInvestigatedError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Formation has already been investigated.",
+        )
+
+    return FormationInvestigateResponse(
+        formation=FormationInvestigateDetailResponse(**payload["formation"]),
+        reward=FormationInvestigateRewardResponse(**payload["reward"]),
+        credits_remaining=payload["credits_remaining"],
+        reward_is_no_canon=payload["reward_is_no_canon"],
     )
 
 @router.post("/move/{sector_id}", response_model=MoveResponse)

@@ -16,6 +16,7 @@ from src.models.team import Team, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
 from src.models.player import Player
 from src.models.message import Message
+from src.models.treasury_transaction import TreasuryTransaction
 from src.services.audit_service import AuditService, AuditAction
 
 logger = logging.getLogger(__name__)
@@ -711,7 +712,36 @@ class TeamService:
         return team
     
     # Treasury Management Methods
-    
+
+    def _record_treasury_transaction(
+        self,
+        team_id: uuid.UUID,
+        resource_type: str,
+        kind: str,
+        amount: int,
+        balance_after: int,
+        actor_player_id: Optional[uuid.UUID],
+        reason: Optional[str] = None,
+    ) -> None:
+        """Append one TreasuryTransaction ledger row for a treasury mutation.
+
+        Single-writer: called by each treasury mutation method AFTER the balance
+        is mutated but BEFORE the shared commit, so the ledger row lands in the
+        SAME transaction as the balance change (atomic — no orphan rows, no
+        missed events). The row is staged here; the caller's self.db.commit()
+        persists it together with the balance.
+        """
+        entry = TreasuryTransaction(
+            team_id=team_id,
+            resource_type=resource_type,
+            kind=kind,
+            amount=amount,
+            balance_after=balance_after,
+            actor_player_id=actor_player_id,
+            reason=reason,
+        )
+        self.db.add(entry)
+
     def deposit_to_treasury(self, team_id: uuid.UUID, player_id: uuid.UUID,
                            resource_type: str, amount: int) -> Dict[str, Any]:
         """Deposit resources to team treasury"""
@@ -765,7 +795,18 @@ class TeamService:
         contributions[resource_type] = contributions.get(resource_type, 0) + amount
         member.contribution_credits = contributions
         flag_modified(member, "contribution_credits")
-        
+
+        # Ledger: one row per mutation, same txn as the balance change.
+        self._record_treasury_transaction(
+            team_id=team_id,
+            resource_type=resource_type,
+            kind=TreasuryTransaction.KIND_DEPOSIT,
+            amount=amount,
+            balance_after=getattr(team, treasury_field),
+            actor_player_id=player_id,
+            reason=f"{player.nickname} deposited {amount} {resource_type}",
+        )
+
         # Send team notification
         self._send_notification(
             sender_id=player_id,
@@ -839,7 +880,18 @@ class TeamService:
         setattr(team, treasury_field, treasury_balance - amount)
         player_resource = getattr(player, resource_type, 0)
         setattr(player, resource_type, player_resource + amount)
-        
+
+        # Ledger: one row per mutation, same txn as the balance change.
+        self._record_treasury_transaction(
+            team_id=team_id,
+            resource_type=resource_type,
+            kind=TreasuryTransaction.KIND_WITHDRAW,
+            amount=amount,
+            balance_after=getattr(team, treasury_field),
+            actor_player_id=player_id,
+            reason=f"{player.nickname} withdrew {amount} {resource_type}",
+        )
+
         # Send team notification
         self._send_notification(
             sender_id=player_id,
@@ -932,7 +984,19 @@ class TeamService:
         
         # Send notifications
         actor = self.db.query(Player).filter(Player.id == actor_id).first()
-        
+
+        # Ledger: one row per mutation, same txn as the balance change.
+        actor_name = actor.nickname if actor else "Someone"
+        self._record_treasury_transaction(
+            team_id=team_id,
+            resource_type=resource_type,
+            kind=TreasuryTransaction.KIND_TRANSFER,
+            amount=amount,
+            balance_after=getattr(team, treasury_field),
+            actor_player_id=actor_id,
+            reason=f"{actor_name} transferred {amount} {resource_type} to {recipient.nickname}",
+        )
+
         # Notify recipient
         self._send_notification(
             sender_id=actor_id,
@@ -997,3 +1061,46 @@ class TeamService:
             "dark_matter": team.treasury_dark_matter,
             "quantum_crystals": team.treasury_quantum_crystals
         }
+
+    def get_treasury_history(
+        self,
+        team_id: uuid.UUID,
+        skip: int = 0,
+        limit: int = 25,
+    ) -> List[Dict[str, Any]]:
+        """Return the team's treasury ledger, newest-first, paginated.
+
+        Each row is the append-only record written at a mutation site. The actor
+        nickname is resolved for display; a deleted actor (SET NULL) renders as
+        None so the caller can show "Unknown".
+        """
+        rows = (
+            self.db.query(TreasuryTransaction)
+            .filter(TreasuryTransaction.team_id == team_id)
+            .order_by(TreasuryTransaction.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+        # Resolve actor nicknames in one pass (avoid N+1).
+        actor_ids = {r.actor_player_id for r in rows if r.actor_player_id is not None}
+        actor_names: Dict[uuid.UUID, str] = {}
+        if actor_ids:
+            for p in self.db.query(Player).filter(Player.id.in_(actor_ids)).all():
+                actor_names[p.id] = p.nickname
+
+        return [
+            {
+                "id": str(r.id),
+                "resource_type": r.resource_type,
+                "kind": r.kind,
+                "amount": r.amount,
+                "balance_after": r.balance_after,
+                "actor_player_id": str(r.actor_player_id) if r.actor_player_id else None,
+                "actor_name": actor_names.get(r.actor_player_id) if r.actor_player_id else None,
+                "reason": r.reason,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]

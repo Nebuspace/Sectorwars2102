@@ -21,6 +21,7 @@ from src.models.fleet import (
 from src.models.ship import Ship
 from src.models.player import Player
 from src.models.team import Team
+from src.models.treasury_transaction import TreasuryTransaction
 from src.models.sector import Sector
 from src.models.combat_log import CombatLog, CombatOutcome
 
@@ -1317,6 +1318,22 @@ class FleetService:
 
         return False
 
+    def _record_combat_loot(self, actor, team, loot, *, won, battle) -> None:
+        """Ledger a combat-loot treasury move (WO-TT review HIGH). Staged in the
+        SAME txn as the treasury mutation (the _end_battle caller commits). team
+        None / loot<=0 → no-op."""
+        if team is None or loot <= 0:
+            return
+        self.db.add(TreasuryTransaction(
+            team_id=team.id,
+            resource_type="credits",
+            kind=TreasuryTransaction.KIND_COMBAT_LOOT,
+            amount=loot,
+            balance_after=(team.treasury_credits or 0),
+            actor_player_id=getattr(actor, "id", None),
+            reason=f"Combat loot {'won' if won else 'lost'} (battle {getattr(battle, 'id', None)})",
+        ))
+
     def _end_battle(self, battle: FleetBattle) -> Dict[str, Any]:
         """End a fleet battle and determine the winner."""
         battle.ended_at = datetime.utcnow()
@@ -1358,6 +1375,9 @@ class FleetService:
                 attacker.team.treasury_credits = (attacker.team.treasury_credits or 0) + loot
             if loot > 0:
                 defender.team.treasury_credits = (defender.team.treasury_credits or 0) - loot
+                # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
+                self._record_combat_loot(attacker, attacker.team if attacker else None, loot, won=True, battle=battle)
+                self._record_combat_loot(attacker, defender.team, loot, won=False, battle=battle)
 
         elif battle.winner == "defender" and attacker and attacker.team:
             loot = (attacker.team.treasury_credits or 0) // 10
@@ -1366,6 +1386,9 @@ class FleetService:
                 defender.team.treasury_credits = (defender.team.treasury_credits or 0) + loot
             if loot > 0:
                 attacker.team.treasury_credits = (attacker.team.treasury_credits or 0) - loot
+                # WO-TT review HIGH: ledger the combat-loot treasury moves (same txn).
+                self._record_combat_loot(defender, defender.team if defender else None, loot, won=True, battle=battle)
+                self._record_combat_loot(defender, attacker.team, loot, won=False, battle=battle)
 
         # Update fleet statuses. The former post-battle -20 to Fleet.morale is
         # REMOVED (WO-BS2, reverts WO-AS). Max ruled Fleet.morale fully inert —

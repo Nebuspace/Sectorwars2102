@@ -638,6 +638,42 @@ async def get_treasury_balance(
         raise HTTPException(status_code=500, detail="Failed to get treasury balance")
 
 
+class TreasuryTransactionResponse(BaseModel):
+    id: str
+    resource_type: str
+    kind: str
+    amount: int
+    balance_after: int
+    actor_player_id: Optional[str]
+    actor_name: Optional[str]
+    reason: Optional[str]
+    created_at: Optional[str]
+
+
+@router.get("/{team_id}/treasury/history", response_model=List[TreasuryTransactionResponse])
+async def get_treasury_history(
+    team_id: UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
+    current_player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Get the team's treasury transaction history (newest-first, paginated).
+
+    Requires team membership — the same gate as the treasury balance endpoint.
+    """
+    if not current_player.team_id or str(current_player.team_id) != str(team_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this team")
+
+    try:
+        team_service = TeamService(db)
+        history = team_service.get_treasury_history(team_id, skip=skip, limit=limit)
+        return [TreasuryTransactionResponse(**row) for row in history]
+    except Exception as e:
+        logger.error(f"Failed to get treasury history: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get treasury history")
+
+
 # Team Communication Endpoints
 
 class SendMessageRequest(BaseModel):

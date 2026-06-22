@@ -219,6 +219,10 @@ export const teamAPI = {
   getTreasuryBalance: (teamId: string) =>
     apiRequest(`/api/v1/teams/${teamId}/treasury`),
 
+  // Newest-first, paginated ledger of every treasury mutation.
+  getTreasuryHistory: (teamId: string, skip = 0, limit = 25) =>
+    apiRequest(`/api/v1/teams/${teamId}/treasury/history?skip=${skip}&limit=${limit}`),
+
   depositToTreasury: (teamId: string, resourceType: string, amount: number) =>
     apiRequest(`/api/v1/teams/${teamId}/treasury/deposit`, {
       method: 'POST',

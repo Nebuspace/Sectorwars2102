@@ -8,6 +8,7 @@ from src.models.ship import Ship, ShipSpecification, ShipType, FailureType, Upgr
 from src.models.reputation import Reputation, TeamReputation, ReputationLevel
 from src.models.team import Team, TeamReputationHandling, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
+from src.models.treasury_transaction import TreasuryTransaction
 from src.models.planet import Planet, player_planets
 from src.models.station import Station, StationClass, StationType, StationStatus, player_stations
 

@@ -160,6 +160,20 @@ export interface TreasuryBalanceApiResponse {
   quantum_crystals: number;
 }
 
+// One row of the team treasury ledger (GET /teams/{id}/treasury/history).
+// snake_case to match the backend TreasuryTransactionResponse shape.
+export interface TreasuryTransactionApiResponse {
+  id: string;
+  resource_type: string;
+  kind: string;            // deposit | withdraw | transfer | tax | payout
+  amount: number;
+  balance_after: number;
+  actor_player_id: string | null;
+  actor_name: string | null;
+  reason: string | null;
+  created_at: string | null;
+}
+
 export interface ResourceTransfer {
   id: string;
   teamId: string;
