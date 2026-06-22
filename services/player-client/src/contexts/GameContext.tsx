@@ -206,6 +206,18 @@ export interface QuantumJumpResult {
   turns_remaining: number;
 }
 
+// Result of harvesting Quantum Shards from a nebula sector
+// (POST /api/v1/quantum/harvest). The server rolls the canon shard yield
+// (with a 2% crit), credits player.quantum_shards, and arms the 2h per-ship
+// harvest cooldown — the ISO deadline is returned so the console can show it.
+export interface QuantumHarvestResult {
+  shard_yield: number;
+  crit: boolean;
+  nebula_type: string;
+  quantum_shards: number;
+  harvest_cooldown_until: string | null;
+}
+
 // One inbox entry, exactly as Message.to_dict() serializes it on the
 // gameserver (GET /api/v1/messages/inbox → {messages: [...], unread_count,
 // total, page, limit, pages}).
@@ -367,6 +379,9 @@ interface GameContextType {
   quantumScan: (payload: QuantumBearing) => Promise<QuantumScanResult>;
   quantumJump: (payload: QuantumBearing) => Promise<QuantumJumpResult>;
   refineQuantumCharge: () => Promise<{ quantum_charges: number; quantum_shards: number }>;
+  // Harvest Quantum Shards from the current nebula sector (Warp Jumper with a
+  // fitted harvester). Server gates on nebula + harvester + the 2h cooldown.
+  harvestNebula: () => Promise<QuantumHarvestResult>;
   // Last paid echo scan, preserved across NAV mode flips and cleared on
   // sector change (telemetry from a prior sector is meaningless here).
   quantumScanResult: QuantumScanTelemetry | null;
@@ -1636,6 +1651,26 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Harvest Quantum Shards from the current nebula sector (server gates on a
+  // NEBULA sector + a fitted Quantum Field Harvester + the 2h per-ship harvest
+  // cooldown; rejected attempts arrive as 400 detail strings prefixed with a
+  // stable reason — no_harvester / not_a_nebula / on_cooldown — which the
+  // console maps to friendly inline messages). A success credits the shard
+  // wallet and arms the cooldown, so refresh quantum status to keep the
+  // inventory strip authoritative.
+  const harvestNebula = async (): Promise<QuantumHarvestResult> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post('/api/v1/quantum/harvest', {});
+      await refreshQuantumStatus();
+      return response.data as QuantumHarvestResult;
+    } catch (error: any) {
+      console.error('Error harvesting nebula:', error);
+      throw error;
+    }
+  };
+
   // Handle first login completion - refresh all game data
   const onFirstLoginComplete = async () => {
     setNeedsFirstLogin(false);
@@ -1747,6 +1782,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     quantumScan,
     quantumJump,
     refineQuantumCharge,
+    harvestNebula,
     quantumScanResult,
     setQuantumScanResult,
 

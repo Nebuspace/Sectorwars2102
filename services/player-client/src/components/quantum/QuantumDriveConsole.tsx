@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useGame, type QuantumBearing, type QuantumScanResult, type QuantumJumpResult } from '../../contexts/GameContext';
+import { useGame, type QuantumBearing, type QuantumScanResult, type QuantumJumpResult, type QuantumHarvestResult } from '../../contexts/GameContext';
 import apiClient from '../../services/apiClient';
 import QuantumBearingViewport, { type MinimapSector } from './QuantumBearingViewport';
 import './quantum-drive.css';
@@ -62,10 +62,12 @@ const formatCountdown = (ms: number): string => {
 const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewright }) => {
   const {
     playerState,
+    currentSector,
     quantumStatus,
     quantumScan,
     quantumJump,
     refineQuantumCharge,
+    harvestNebula,
     quantumScanResult,
     setQuantumScanResult,
   } = useGame();
@@ -93,6 +95,18 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   // --- Charge refinement (docked at Class-3+/SpaceDock) ---
   const [isRefining, setIsRefining] = useState(false);
   const [refineError, setRefineError] = useState<string | null>(null);
+
+  // --- Nebula harvest (Warp Jumper with a fitted harvester, in a nebula) ---
+  // The status payload doesn't expose harvester-fitted / harvest-cooldown, so
+  // (like refine) the button enables on the observable state — nebula sector +
+  // not mid-harvest + not within a locally-known cooldown — and the server
+  // enforces the precise gate, surfacing no_harvester / on_cooldown inline.
+  const [isHarvesting, setIsHarvesting] = useState(false);
+  const [harvestError, setHarvestError] = useState<string | null>(null);
+  const [harvestResult, setHarvestResult] = useState<QuantumHarvestResult | null>(null);
+  // Armed cooldown deadline learned from the last successful harvest (or an
+  // on_cooldown rejection that carries the ISO deadline in its detail).
+  const [harvestCooldownUntil, setHarvestCooldownUntil] = useState<string | null>(null);
 
   // --- Astrogation chart (minimap) — fetched once per sector while piloting
   // a Warp Jumper. On fetch failure the viewport renders WITHOUT dots and
@@ -150,6 +164,13 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     return () => clearTimeout(timer);
   }, [jumpPhase]);
 
+  // A harvest result / error is meaningful only in the sector it was rolled in
+  // — clear them on relocation (the per-ship cooldown persists, so keep it).
+  useEffect(() => {
+    setHarvestResult(null);
+    setHarvestError(null);
+  }, [originSectorId]);
+
   const isMounted = useRef(true);
   useEffect(() => {
     isMounted.current = true;
@@ -161,6 +182,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
 
   const scanCooldownLeft = msLeft(quantumStatus?.scan_cooldown_until);
   const jumpCooldownLeft = msLeft(quantumStatus?.jump_cooldown_until);
+  const harvestCooldownLeft = msLeft(harvestCooldownUntil);
   const scanExpiryLeft = msLeft(scanResult?.expires_at);
   const liveScan = scanResult && scanExpiryLeft > 0 ? scanResult : null;
 
@@ -174,6 +196,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
   const sensorLevel = quantumStatus?.sensor_level ?? 0;
   const isDocked = !!(playerState?.is_docked || playerState?.is_landed);
   const extendedLocked = sensorLevel < 3;
+  const isNebula = currentSector?.type?.toUpperCase() === 'NEBULA';
 
   const bearing: QuantumBearing = { yaw_deg: yaw, pitch_deg: pitch, range_band: rangeBand };
 
@@ -194,6 +217,14 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
     : charges < 1 ? 'NO QUANTUM CHARGE'
     : turns < JUMP_TURN_COST ? 'INSUFFICIENT TURNS'
     : quantumStatus && !quantumStatus.can_jump ? 'DRIVE NOT READY'
+    : null;
+
+  // Harvest enable gate (observable client-side; server enforces the rest).
+  const harvestBlockReason: string | null =
+    !statusReady ? 'LINKING DRIVE…'
+    : isHarvesting ? 'HARVESTING…'
+    : !isNebula ? 'NO NEBULA HERE'
+    : harvestCooldownLeft > 0 ? `RECHARGE ${formatCountdown(harvestCooldownLeft)}`
     : null;
 
   const handleScan = async () => {
@@ -250,6 +281,39 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
       setRefineError(error?.response?.data?.detail || 'Charge refinement failed');
     } finally {
       if (isMounted.current) setIsRefining(false);
+    }
+  };
+
+  // Map the server's stable reason-prefixed 400 detail to a friendly line.
+  const friendlyHarvestError = (detail: unknown): string => {
+    const text = typeof detail === 'string' ? detail : '';
+    if (text.startsWith('no_harvester')) return 'No Quantum Field Harvester fitted on this ship';
+    if (text.startsWith('not_a_nebula')) return 'No harvestable nebula field here';
+    if (text.startsWith('on_cooldown')) return 'Harvester is still recharging';
+    return text || 'Nebula harvest failed — harvester unresponsive';
+  };
+
+  const handleHarvest = async () => {
+    if (harvestBlockReason) return;
+    setIsHarvesting(true);
+    setHarvestError(null);
+    try {
+      const result = await harvestNebula();
+      if (!isMounted.current) return;
+      setHarvestResult(result);
+      setHarvestCooldownUntil(result.harvest_cooldown_until);
+    } catch (error: any) {
+      if (!isMounted.current) return;
+      const detail = error?.response?.data?.detail;
+      // An on_cooldown rejection carries the ISO deadline — adopt it so the
+      // button shows a real countdown instead of staying spuriously enabled.
+      if (typeof detail === 'string' && detail.startsWith('on_cooldown')) {
+        const iso = detail.split('until').pop()?.trim();
+        if (iso) setHarvestCooldownUntil(iso);
+      }
+      setHarvestError(friendlyHarvestError(detail));
+    } finally {
+      if (isMounted.current) setIsHarvesting(false);
     }
   };
 
@@ -394,9 +458,9 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
         </div>
       </div>
 
-      {/* Echo scan */}
+      {/* Echo scan + nebula harvest */}
       <div className="qd-section">
-        <div className="qd-action-row">
+        <div className="qd-action-row" style={{ gap: '0.3rem' }}>
           <button
             className="qd-scan-btn"
             onClick={handleScan}
@@ -409,8 +473,47 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
               </span>
             )}
           </button>
+          <button
+            className="qd-scan-btn"
+            onClick={handleHarvest}
+            disabled={!!harvestBlockReason}
+            title={
+              !isNebula
+                ? 'Harvesting requires a nebula sector + a fitted Quantum Field Harvester'
+                : 'Harvest Quantum Shards from this nebula field'
+            }
+          >
+            {harvestBlockReason || 'HARVEST NEBULA'}
+            {!harvestBlockReason && <span className="qd-cost-tag">+ QUANTUM SHARDS</span>}
+          </button>
         </div>
         {scanError && <div className="qd-inline-error">{scanError}</div>}
+        {harvestError && <div className="qd-inline-error">{harvestError}</div>}
+
+        {harvestResult && (
+          <div className="qd-telemetry">
+            <div className="qd-telemetry-header">
+              <span>NEBULA HARVEST{harvestResult.crit ? ' · ◈ CRITICAL YIELD' : ''}</span>
+              {harvestCooldownLeft > 0 && (
+                <span className="qd-telemetry-expiry">RECHARGE {formatCountdown(harvestCooldownLeft)}</span>
+              )}
+            </div>
+            <div className="qd-telemetry-row">
+              <span className="qd-tele-label">YIELD</span>
+              <span className="qd-tele-value">+{harvestResult.shard_yield} SHARDS</span>
+            </div>
+            {harvestResult.nebula_type && (
+              <div className="qd-telemetry-row">
+                <span className="qd-tele-label">FIELD</span>
+                <span className="qd-tele-value">{harvestResult.nebula_type.toUpperCase()}</span>
+              </div>
+            )}
+            <div className="qd-telemetry-row">
+              <span className="qd-tele-label">WALLET</span>
+              <span className="qd-tele-value">{harvestResult.quantum_shards} SHARDS</span>
+            </div>
+          </div>
+        )}
 
         {liveScan && (
           <div className="qd-telemetry">
