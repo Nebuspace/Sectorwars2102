@@ -647,6 +647,23 @@ def sweep_research_faucet(db: Session, planet: Planet, *, _via_settle: bool = Fa
 # defaults below. There is no OFF-SWITCH constant here: an empire that buys no
 # contract spends nothing — "contracts off ≡ no spend" IS the reproduce-exactly
 # baseline (an empty contracts[] is byte-identical to today).
+# --- T1.5-6 STABILIZE INSTABILITY COUPLING (CRT-T15-MASTER §4.5, line ~609) ---
+# Stabilize is the ONE designed credit<->instability touch-point: spend credits
+# (the sink) to bleed instability off a target planet. Instability lives in the
+# SHARED JSONB key terraform_meta.instability (a float INSIDE the planet.structures
+# blob; absent/0 == today/off). On SETTLE a Stabilize contract DECREMENTS it by
+# STABILIZE_INSTAB_REDUCTION, clamped >= 0. C1 (structures.decay_pressure) READS the
+# same key as an additive decay term (higher instability => faster decay; <=0 == today).
+# The coupling is via this shared key ONLY — no cross-file call.
+#
+# REPRODUCE-EXACTLY OFF-SWITCH: this whole strand is purely additive. An empire that
+# offers/accepts no Stabilize spends nothing and writes nothing (an empty contracts[]
+# is byte-identical to today). The instability write is a NO-OP when instability is
+# already 0/absent (max(0, 0 - 10) == 0 leaves the key effectively today). Lowering
+# STABILIZE_INSTAB_REDUCTION to 0 makes the settle a no-op too.
+STABILIZE_INSTAB_REDUCTION = 10.0   # instability points removed when a Stabilize settles (frozen cross-worker contract)
+
+
 CONTRACT_KINDS: Dict[str, Dict[str, Any]] = {
     "overclock": {
         "rp_cost": 300,             # the GATE (recoverable; governs pacing)
@@ -661,6 +678,14 @@ CONTRACT_KINDS: Dict[str, Dict[str, Any]] = {
         "cr_cost": 30000,           # the SINK (Max-ruled)
         "duration_days": 0,         # instant — collapses one live build/terraform timer
         "magnitude": 1.0,
+        "instant": True,
+        "free_tier": True,
+    },
+    "stabilize": {
+        "rp_cost": 150,             # the GATE (recoverable; governs pacing — spec line ~609)
+        "cr_cost": 20000,           # the SINK (Max-ruled — the credit<->instability touch-point)
+        "duration_days": 0,         # instant — the instability bleed applies on settle (same tick)
+        "magnitude": STABILIZE_INSTAB_REDUCTION,   # -10 instability on the target planet (frozen contract #1)
         "instant": True,
         "free_tier": True,
     },
@@ -708,6 +733,59 @@ def active_overclock_multiplier(player: Player, planet_id: Any) -> float:
         ):
             mult += float(row.get("magnitude", 0.0) or 0.0)
     return mult
+
+
+def _settle_stabilize_instability(db: Session, target_planet_id: Any) -> bool:
+    """The one designed credit<->instability touch-point (T1.5-6, §4.5).
+
+    On a Stabilize SETTLE, DECREMENT the shared JSONB key ``terraform_meta.instability``
+    by ``STABILIZE_INSTAB_REDUCTION``, clamped ``>= 0``, on the target planet. The key
+    lives INSIDE the ``planet.structures`` blob (NOT its own column), so we re-read the
+    locked planet's structures, mutate in place, re-assign, and ``flag_modified`` the
+    ``structures`` column (frozen cross-worker contract #1 — the writer of the structures
+    blob must flag it). C1 (``structures.decay_pressure``) READS this same key.
+
+    Re-reads ``structures`` FRESH under the held planet lock to avoid clobbering a
+    concurrent C1 decay write to the same blob. Returns True iff the key was changed.
+
+    OFF-SWITCH / no-op: instability absent or already 0 → ``max(0, 0 - 10) == 0`` leaves
+    the key effectively today (we still set it to 0.0 / leave it absent — no terrain
+    change). With ``STABILIZE_INSTAB_REDUCTION == 0`` this is a pure no-op.
+    """
+    if target_planet_id is None or STABILIZE_INSTAB_REDUCTION <= 0:
+        return False
+    planet = (
+        db.query(Planet)
+        .filter(Planet.id == target_planet_id)
+        .with_for_update()
+        .first()
+    )
+    if planet is None:
+        return False
+    structures = planet.structures if isinstance(planet.structures, dict) else {}
+    tmeta = structures.get("terraform_meta")
+    current = 0.0
+    if isinstance(tmeta, dict):
+        try:
+            current = float(tmeta.get("instability", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            current = 0.0
+    if current <= 0.0:
+        # Already at/below the floor — nothing to reduce. No-op (today byte-identical:
+        # absent/0 instability means C1 applies no extra decay term).
+        return False
+    new_val = max(0.0, current - STABILIZE_INSTAB_REDUCTION)
+    new_structures = dict(structures)
+    new_tmeta = dict(tmeta) if isinstance(tmeta, dict) else {}
+    new_tmeta["instability"] = new_val
+    new_structures["terraform_meta"] = new_tmeta
+    planet.structures = new_structures
+    flag_modified(planet, "structures")  # frozen contract #1: flag the structures blob
+    logger.info(
+        "Stabilize settled: planet %s instability %.3f -> %.3f (-%s, clamped >=0)",
+        planet.id, current, new_val, STABILIZE_INSTAB_REDUCTION,
+    )
+    return True
 
 
 def start_contract(
@@ -838,13 +916,17 @@ def start_contract(
         }
         rows.append(new_row)
 
-    # Instant kinds (Rush) settle the SAME tick they start: mark settled immediately.
-    # The actual timer-collapse on the target build is the consuming system's job
-    # (read at point-of-use / applied by the build pipeline) — research only records
-    # the spend and the settled directive (leaf-discipline).
+    # Instant kinds (Rush, Stabilize) settle the SAME tick they start: mark settled
+    # immediately. For Rush the actual timer-collapse on the target build is the
+    # consuming system's job (read at point-of-use / applied by the build pipeline) —
+    # research only records the spend and the settled directive (leaf-discipline). For
+    # Stabilize the settle IS the designed credit<->instability touch-point: on settle
+    # it DECREMENTS the shared terraform_meta.instability key (frozen contract #1, §4.5).
     if instant:
         new_row["state"] = "settled"
         new_row["complete_at"] = started_at
+        if kind == "stabilize":
+            _settle_stabilize_instability(db, target_planet_id)
 
     led["contracts"] = _prune_contracts(rows)
     player.research_ledger = led
@@ -896,6 +978,14 @@ def settle_contracts(db: Session, player: Player, now: Optional[datetime] = None
             if comp is not None and comp <= now:
                 r["state"] = "settled"
                 changed = True
+                # T1.5-6: a Stabilize that settles via the timer (not the instant path)
+                # applies the SAME credit<->instability touch-point on settle — DECREMENT
+                # the shared terraform_meta.instability key (§4.5, frozen contract #1).
+                # In the T1.5 kernel Stabilize is instant (settles in start_contract), so
+                # this branch only fires if a future tier gives Stabilize a duration; it
+                # keeps the bleed co-located with the `settled` transition either way.
+                if r.get("kind") == "stabilize":
+                    _settle_stabilize_instability(db, r.get("target_planet_id"))
         elif state == "offered":
             exp = _parse_iso(r.get("offer_expires_at")) if r.get("offer_expires_at") else None
             if exp is not None and exp <= now:

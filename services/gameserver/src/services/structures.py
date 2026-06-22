@@ -958,6 +958,325 @@ CONTESTED_COOLDOWN_DAYS = 3.0  # NO-CANON: post-siege tail in CANONICAL days (E4
 # down (next to confirm_biome); _plot_is_banded reads it at CALL time (module fully loaded by then) so
 # the two stay a single source of truth without a module-level forward reference.
 
+# ---------------------------------------------------------------------------
+# TASK B — DECAY FRACTIONAL-CARRY (the deferred batch-1 reviewer MED, CRT-4 Lane C C1)
+#
+# The integer grid step previously floored EVERY sub-1.0 decay multiplier to 1pt/tick
+# (``if 0.0 < step < 1.0: step = 1.0``), so DECAY_DONE_MULT=0.1 and DECAY_BANDED_MULT=0.3 were
+# OBSERVATIONALLY IDENTICAL at the integer grid resolution — both moved exactly 1 point per tick, and
+# the capstone payoff (a finished world decaying ~10× slower than a frontier) was never delivered.
+#
+# FIX (mirrors the production_carry pattern in planetary_service.py): accumulate a per-plot/per-axis
+# FRACTIONAL decay carry. Each tick the carry banks ``rate`` (= TERRA_DECAY_RATE × pressure × instab),
+# the WHOLE-unit part is applied to the axis (clamped to the remaining gap), and the SUB-unit remainder
+# carries forward. So at TERRA_DECAY_RATE=2: DONE 0.1× banks 0.2/tick (~1pt per 5 ticks) and BANDED
+# 0.3× banks 0.6/tick (~1pt per ~1.6 ticks) — DONE decays ~3× slower; the tiers now DIFFERENTIATE at
+# the grid resolution instead of collapsing to a shared 1pt/tick floor.
+#
+# REPRODUCE-EXACTLY OFF-SWITCH: ``DECAY_FRACTIONAL_CARRY=False`` restores the legacy integer floor
+# (the byte-identical batch-1 behaviour). And even with carry ON, FRONTIER (1.0×, rate>=2 on a >=1 gap)
+# is unaffected — its per-tick step is already >=1 whole unit, the remainder is consumed each tick, and
+# the carry never accumulates a fraction that changes the integer outcome (the old floor was a no-op on
+# frontier too). Idempotence: the carry lives in ``terraform_meta.decay_carry`` (additive JSONB key),
+# survives across settles, and is keyed per-plot-per-axis so a re-settle never double-applies.
+DECAY_FRACTIONAL_CARRY = True   # OFF-SWITCH: False == legacy integer 1pt/tick floor (byte-identical batch-1)
+
+# ---------------------------------------------------------------------------
+# TASK C — INSTABILITY-as-additive-decay-term (FROZEN CROSS-WORKER CONTRACT #1, CRT-4 Lane C)
+#
+# The shared JSONB key ``terraform_meta.instability`` lives INSIDE the planet.structures blob. C2
+# (research_service Stabilize) DECREMENTS it by STABILIZE_INSTAB_REDUCTION when a Stabilize contract
+# settles; C1 (here) READS it as an ADDITIVE decay term: higher instability => faster decay. This is a
+# PURE READ — C1 never writes the instability key (C2 owns the writes via the shared blob).
+#
+# NOTE the two distinct instability fields, kept separate on purpose:
+#   * ``structures['instability']``          — terraform's own grid-field destabilisation (penalises
+#                                              habitability; accrued by aggressive pushing). UNTOUCHED.
+#   * ``structures['terraform_meta']['instability']`` — the CROSS-WORKER coupling key C2 writes and C1
+#                                              reads here. Absent/0 == today/off (reproduce-exactly).
+# Reading the META key (not the grid key) keeps the cross-worker contract decoupled from terraform's
+# pre-existing grid-instability mechanic — neither lever perturbs the other.
+#
+# The read returns a small additive multiplier bump: ``1 + INSTAB_DECAY_COEFF × meta_instability``,
+# clamped, so a stabilised world (meta_instability<=0/absent) decays exactly as today and an unstable
+# world bleeds faster (the demand the Stabilize contract sells relief from). NO-CANON magnitudes.
+INSTAB_DECAY_COEFF = 0.02       # NO-CANON: per-point additive decay bump (meta_instability 50 => +1.0× decay)
+INSTAB_DECAY_MAX_BUMP = 1.0     # NO-CANON: cap the instability decay bump so it can never run away
+INSTAB_DECAY_ENABLED = True     # OFF-SWITCH: False (or absent/<=0 meta_instability) == today, byte-identical
+
+
+def _meta_instability(structures: dict) -> float:
+    """TASK C — PURE READ of the cross-worker ``terraform_meta.instability`` key (the C2-written,
+    C1-read coupling). Absent / non-numeric / <=0 => 0.0 (== today). NEVER writes (C2 owns writes).
+    Distinct from ``structures['instability']`` (terraform's own grid destabilisation, untouched)."""
+    if not isinstance(structures, dict):
+        return 0.0
+    tmeta = structures.get("terraform_meta")
+    if not isinstance(tmeta, dict):
+        return 0.0
+    try:
+        v = float(tmeta.get("instability", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if v > 0.0 else 0.0
+
+
+def _instability_decay_bump(structures: dict) -> float:
+    """TASK C — the additive decay multiplier from cross-worker instability: ``1 + COEFF × instab``
+    clamped to ``[1.0, 1.0 + INSTAB_DECAY_MAX_BUMP]``. instab<=0/absent OR INSTAB_DECAY_ENABLED=False
+    => 1.0 (no effect == today). PURE READ; fully defensive (any hiccup => 1.0 neutral)."""
+    if not INSTAB_DECAY_ENABLED:
+        return 1.0
+    try:
+        instab = _meta_instability(structures)
+        if instab <= 0.0:
+            return 1.0
+        return 1.0 + min(INSTAB_DECAY_MAX_BUMP, INSTAB_DECAY_COEFF * instab)
+    except Exception:
+        return 1.0
+
+
+# ---------------------------------------------------------------------------
+# TASK A — TERRAIN-MUTATION (T1.5-4, CRT-T15-MASTER §4.7 / 03-spec-terraform §2.4-2.5)
+#
+# Axes crossing a terrain boundary mutate the plot ``terrain`` via a SINGLE-writer ``mutate_terrain``
+# step run inside settle() STEP 2 (the BUILT _step2_terraform — NOT the still-stubbed
+# _step1_build_queue). The RE-GRADE is at POINT-OF-USE in STEP 3: building yields are *computed* from
+# the plot's LIVE terrain (never stored, never destroyed, never blocking — §2.5 zero-cross-write).
+#
+# The threshold table is [NO-CANON] (03-spec-terraform §2.4: "a FROZEN plot whose thermal crosses
+# THAW_THRESHOLD becomes FLAT, then COASTAL when hydro rises"; the band table maps to canon natural
+# bands). Conservative ladder along two axes (thermal then hydro), keyed by the same
+# {thermal, hydro} axes terraform already advances:
+#   FROZEN  --thermal>=THAW_THRESHOLD-->  FLAT  --hydro>=COAST_THRESHOLD-->  COASTAL
+#                                          FLAT  --thermal>=FERTILE_T & hydro in band--> FERTILE
+#                                          FLAT  --thermal>=ARID_THRESHOLD & hydro<DRY-->  ARID
+#                                          FLAT  --thermal>=VOLCANIC_THRESHOLD-->  VOLCANIC_VENT
+# DECAY drives mutation BACKWARD (the demand engine, §4.7): a thawed FLAT plot whose thermal decays
+# back below THAW_THRESHOLD RE-FREEZES to FROZEN; COASTAL whose hydro drains below COAST_THRESHOLD
+# reverts to FLAT; etc. Because mutate_terrain is re-evaluated every grid tick off the LIVE axes, the
+# same step that thaws also re-freezes — no separate backward path.
+#
+# ONE GUARD (§2.5): a mutation that would STRAND a FIRM building (defense / civic life-support) below
+# its hard requirement is REJECTED (the plot keeps its current terrain). "Hard requirement" here = the
+# firm building's plot must stay BUILDABLE for it (cleared, hazard-free): a re-freeze / re-flood that
+# would re-impose a hazard on a firm building's plot is refused. Economy buildings re-grade FREELY
+# (their yield changes; they never block the mutation).
+#
+# OFF-SWITCH (reproduce-exactly): ships OFF (False) as the conservative default — the [NO-CANON]
+# threshold ladder below is unblessed, so per the tranche's "all magnitudes ship conservative" rule
+# (matching DECAY_FRONTIER_MULT=1.0 / FAUCET_CREDIT_COPAY=0 / instability-default-0) the writer is
+# dormant until Max blesses the thresholds. The mechanism is built + sim-proven; flipping this to True
+# activates it. (Even when True the neutral guarantee is also structural: when NO axis has crossed a
+# threshold the resolver returns the plot's CURRENT terrain unchanged, byte-identical to today.)
+# ---------------------------------------------------------------------------
+MUTATION_ENABLED = False        # OFF-SWITCH (conservative default): terrain never mutates == today; Max-gated on the [NO-CANON] thresholds
+# [NO-CANON] threshold ladder (03-spec-terraform §2.4; conservative). thermal/hydro are the 0-100 axes
+# terraform_grid_tick advances. Picked so a default seeded plot (thermal=50, hydro=water%) does NOT
+# spuriously mutate on day one (FLAT stays FLAT until an axis is deliberately pushed past a threshold).
+THAW_THRESHOLD = 40             # [NO-CANON] thermal >= 40 thaws FROZEN -> FLAT (spec §2.4 anchor)
+FREEZE_THRESHOLD = 30           # [NO-CANON] thermal < 30 re-freezes FLAT -> FROZEN (hysteresis below THAW)
+COAST_THRESHOLD = 70            # [NO-CANON] hydro >= 70 floods FLAT -> COASTAL
+DRAIN_THRESHOLD = 50            # [NO-CANON] hydro < 50 drains COASTAL -> FLAT (hysteresis below COAST)
+VOLCANIC_THRESHOLD = 85         # [NO-CANON] thermal >= 85 -> VOLCANIC_VENT (extreme heat)
+VOLCANIC_COOL_THRESHOLD = 70    # [NO-CANON] thermal < 70 cools VOLCANIC_VENT back -> FLAT
+FERTILE_THERMAL_LO, FERTILE_THERMAL_HI = 45, 70   # [NO-CANON] FLAT -> FERTILE thermal band
+FERTILE_HYDRO_LO, FERTILE_HYDRO_HI = 45, 70       # [NO-CANON] FLAT -> FERTILE hydro band
+ARID_THERMAL_MIN = 55           # [NO-CANON] FLAT -> ARID: hot + dry
+ARID_HYDRO_MAX = 25             # [NO-CANON] FLAT -> ARID: hydro below this is "dry"
+# Terrains the mutation engine MANAGES (axis-derived). Other seeded terrains (BARREN/HIGHLAND/ARID/
+# FERTILE from non-axis sources) are left UNTOUCHED unless the axes drive them into a managed state —
+# we never mutate a terrain we don't have a forward+backward rule for (conservative).
+_MUTABLE_TERRAINS = {"FROZEN", "FLAT", "COASTAL", "VOLCANIC_VENT", "FERTILE", "ARID"}
+# FIRM domains (§2.5): the mutation guard protects these from a strand-inducing terrain change.
+_FIRM_DOMAINS = ("defense", "civic")
+
+
+def _is_fertile_band(thermal: int, hydro: int) -> bool:
+    """[NO-CANON] FLAT -> FERTILE forming band (both axes in their fertile window)."""
+    return (FERTILE_THERMAL_LO <= thermal <= FERTILE_THERMAL_HI
+            and FERTILE_HYDRO_LO <= hydro <= FERTILE_HYDRO_HI)
+
+
+def _is_arid_band(thermal: int, hydro: int) -> bool:
+    """[NO-CANON] FLAT -> ARID forming band (hot + dry)."""
+    return thermal >= ARID_THERMAL_MIN and hydro < ARID_HYDRO_MAX
+
+
+def _resolve_terrain_from_flat(thermal: int, hydro: int) -> str:
+    """Forward boundaries from FLAT (or a just-reverted plot now FLAT), priority-ordered: extreme heat
+    -> VOLCANIC_VENT; re-freeze (decay drove thermal below the freeze line) -> FROZEN; flood ->
+    COASTAL; fertile band -> FERTILE; hot+dry -> ARID; else stay FLAT."""
+    if thermal >= VOLCANIC_THRESHOLD:
+        return "VOLCANIC_VENT"
+    if thermal < FREEZE_THRESHOLD:
+        return "FROZEN"
+    if hydro >= COAST_THRESHOLD:
+        return "COASTAL"
+    if _is_fertile_band(thermal, hydro):
+        return "FERTILE"
+    if _is_arid_band(thermal, hydro):
+        return "ARID"
+    return "FLAT"
+
+
+def _resolve_terrain_for_axes(current_terrain: Optional[str], thermal: int, hydro: int) -> Optional[str]:
+    """TASK A — the PURE terrain resolver: given a plot's LIVE axes, return the terrain it SHOULD be.
+    Forward (thaw/flood/heat) AND backward (re-freeze/drain/cool — the decay-driven reversal, §4.7) in
+    ONE function so the same per-tick evaluation handles both directions. Returns the CURRENT terrain
+    unchanged when no boundary is crossed (the structural reproduce-exactly neutral) or when the
+    terrain is not one this engine manages (conservative — never mutate an unmanaged terrain)."""
+    t = (current_terrain or "").upper()
+    if t not in _MUTABLE_TERRAINS:
+        return current_terrain   # unmanaged terrain — leave it (conservative; no forward/back rule)
+
+    # Each non-FLAT managed terrain either holds or reverts to FLAT, then the FLAT-forward resolver
+    # picks the destination — so backward (decay-driven) and forward share one evaluation.
+    if t == "FROZEN":
+        if thermal < THAW_THRESHOLD:
+            return "FROZEN"                      # held — not warm enough to thaw
+        t = "FLAT"
+    elif t == "VOLCANIC_VENT":
+        if thermal >= VOLCANIC_COOL_THRESHOLD:
+            return "VOLCANIC_VENT"               # held — still too hot to cool
+        t = "FLAT"
+    elif t == "COASTAL":
+        if hydro >= DRAIN_THRESHOLD:
+            return "COASTAL"                     # held — still flooded
+        t = "FLAT"
+    elif t == "FERTILE":
+        if _is_fertile_band(thermal, hydro):
+            return "FERTILE"                     # held — still in the fertile band
+        t = "FLAT"
+    elif t == "ARID":
+        if _is_arid_band(thermal, hydro):
+            return "ARID"                        # held — still hot+dry
+        t = "FLAT"
+
+    return _resolve_terrain_from_flat(thermal, hydro)
+
+
+def _terrain_introduces_hazard(new_terrain: str) -> bool:
+    """Does mutating TO ``new_terrain`` make a plot non-buildable (a wall) for a standing firm
+    building? Per §2.4 hazards are walls (cleared:false). A re-FROZEN or VOLCANIC_VENT plot is the
+    strand risk for a firm building (life-support / defense crew can't hold a frozen/volcanic district).
+    Economy buildings never trigger this guard (they re-grade freely). [NO-CANON] hazard set."""
+    return (new_terrain or "").upper() in {"FROZEN", "VOLCANIC_VENT"}
+
+
+def _plot_has_firm_building(structures: dict, plot: dict) -> bool:
+    """TASK A guard input — does ``plot`` host an OPERATIONAL FIRM (defense / civic life-support)
+    building? Reads buildings[] by the plot's ``building_id`` (and its footprint, for multi-cell). Pure
+    read — does NOT write the buildings array (that is citadel's). Defensive: malformed => False."""
+    from src.services import building_catalog
+    if not isinstance(plot, dict):
+        return False
+    bid = plot.get("building_id")
+    if not bid:
+        return False
+    for b in structures.get("buildings", []):
+        if not (isinstance(b, dict) and b.get("id") == bid):
+            continue
+        if not _operational(b):
+            return False
+        spec = building_catalog.get(b.get("kind")) or {}
+        return spec.get("domain") in _FIRM_DOMAINS
+    return False
+
+
+def mutate_terrain(structures: dict, planet=None) -> int:
+    """TASK A — the SINGLE-writer terrain-mutation step (T1.5-4, §4.7). Re-evaluates every plot's
+    terrain off its LIVE axes via _resolve_terrain_for_axes (forward thaw/flood/heat AND backward
+    decay-driven re-freeze/drain/cool — one resolver, both directions). Writes ONLY ``plot['terrain']``
+    inside the structures blob (single-writer law: only structures.py writes the grid). Returns the
+    count of plots whose terrain changed.
+
+    ONE GUARD (§2.5): a mutation that would STRAND a FIRM building (defense/civic) below its hard
+    requirement — i.e. introduce a hazard-terrain (FROZEN/VOLCANIC_VENT) on the firm building's plot —
+    is REJECTED; the plot KEEPS its current terrain. Economy buildings re-grade freely (no block).
+
+    REPRODUCE-EXACTLY: with MUTATION_ENABLED=False, or whenever no plot has crossed a boundary, NOTHING
+    changes (byte-identical to today). Fully defensive — a per-plot hiccup skips that plot, never throws.
+    The CALLER (settle step 2) flag_modifies + commits; this only mutates the dict in place. Returns 0
+    when disabled / nothing moved (so the caller can skip the flag_modified when there's no change)."""
+    if not MUTATION_ENABLED or not isinstance(structures, dict):
+        return 0
+    changed = 0
+    for plot in structures.get("plots", []):
+        if not isinstance(plot, dict):
+            continue
+        try:
+            axes = plot.get("axes") if isinstance(plot.get("axes"), dict) else {}
+            thermal = int(axes.get("thermal", 0) or 0)
+            hydro = int(axes.get("hydro", 0) or 0)
+            current = plot.get("terrain")
+            target = _resolve_terrain_for_axes(current, thermal, hydro)
+            if not target or (target or "").upper() == (current or "").upper():
+                continue
+            # GUARD: refuse a strand-inducing change on a plot hosting a FIRM building.
+            if _terrain_introduces_hazard(target) and _plot_has_firm_building(structures, plot):
+                logger.debug(
+                    "mutate_terrain: rejected %s->%s on planet %s plot (%s,%s) — would strand a firm building",
+                    current, target, getattr(planet, "id", "?"), plot.get("x"), plot.get("y"),
+                )
+                continue
+            plot["terrain"] = target
+            changed += 1
+        except Exception:
+            logger.exception("mutate_terrain failed (non-fatal) for planet %s plot %s",
+                             getattr(planet, "id", "?"), plot.get("x") if isinstance(plot, dict) else "?")
+    return changed
+
+
+def building_effective_terrain(structures: dict, building: dict) -> Optional[str]:
+    """TASK A re-grade hook (POINT-OF-USE, called from settle STEP 3) — read a building's LIVE plot
+    terrain so its yield/affinity is COMPUTED from the current terrain, never stored (§2.5 zero
+    cross-write). Mutate_terrain (step 2) changes plot['terrain']; this reader (step 3) sees the new
+    value next settle with no write to buildings[]. Returns the building's plot terrain, or None if the
+    plot can't be resolved. Pure read."""
+    if not isinstance(structures, dict) or not isinstance(building, dict):
+        return None
+    bid = building.get("id")
+    if not bid:
+        return None
+    for plot in structures.get("plots", []):
+        if isinstance(plot, dict) and plot.get("building_id") == bid:
+            return plot.get("terrain")
+    return None
+
+
+def regrade_buildings_on_terrain(structures: dict, planet=None) -> int:
+    """TASK A — the STEP-3 re-grade pass: for every operational building, READ its plot's LIVE terrain
+    (building_effective_terrain) and its catalog terrain_bonus, so the yield is GRADED off the current
+    terrain at point-of-use. Returns the count of buildings whose effective terrain-bonus differs from
+    a 'neutral' (1.0) baseline — purely to PROVE the re-grade is wired to a BUILT step (it is observed,
+    via the returned count + the per-building debug log). Writes NOTHING (the yield is computed, never
+    baked — §2.5); this is the verify-at-build that re-grade hooks a built settle step, NOT the stubbed
+    _step1_build_queue. Pure read; fully defensive."""
+    from src.services import building_catalog
+    if not isinstance(structures, dict):
+        return 0
+    regraded = 0
+    for b in structures.get("buildings", []):
+        if not (isinstance(b, dict) and _operational(b)):
+            continue
+        try:
+            terrain = building_effective_terrain(structures, b)
+            if terrain is None:
+                continue
+            spec = building_catalog.get(b.get("kind")) or {}
+            bonus = (spec.get("terrain_bonus") or {}).get((terrain or "").upper())
+            if bonus:   # a non-neutral terrain affinity is in effect on this building's LIVE terrain
+                regraded += 1
+                logger.debug(
+                    "regrade(step3): planet %s building %s on %s terrain -> terrain_bonus +%.0f%% (computed)",
+                    getattr(planet, "id", "?"), b.get("kind"), terrain, float(bonus) * 100.0,
+                )
+        except Exception:
+            logger.exception("regrade_buildings_on_terrain failed (non-fatal) for planet %s building %s",
+                             getattr(planet, "id", "?"), b.get("id") if isinstance(b, dict) else "?")
+    return regraded
+
 
 def _planet_type_name(planet) -> Optional[str]:
     """Resolve the planet's type NAME for natural_band decay. The authoritative column is the
@@ -1163,30 +1482,74 @@ def terraform_grid_tick(structures: dict, planet_type: Optional[str], intensity:
     # T1.5-7: the flat TERRA_DECAY_RATE is scoped per-plot by decay_pressure() — done≈free (0.1×) /
     # banded gentle (0.3×) / frontier==today (1.0×) / contested bites (2.0×). decay_pressure is
     # per-plot (the tier is a property of the plot+planet, constant across both axes) so compute it
-    # ONCE per plot. With planet=None OR DECAY_FRONTIER_MULT==1.0 on a frontier plot, rate == the
-    # shipped int TERRA_DECAY_RATE and the step math is byte-identical to today (no rounding drift):
-    # int * 1.0 == the int, min() picks the same value, and cur±step stays integral.
+    # ONCE per plot. TASK C: an additive instability bump (cross-worker terraform_meta.instability,
+    # read-only — C2 writes it) scales the rate UP on an unstable world (== today when absent/<=0).
+    #
+    # TASK B — FRACTIONAL CARRY: the old ``if 0.0<step<1.0: step=1.0`` floored EVERY sub-1.0 rate to
+    # 1pt/tick, collapsing DONE(0.1×) and BANDED(0.3×) to the same observable speed. We now bank the
+    # sub-unit remainder in terraform_meta.decay_carry[cell][axis], apply only the WHOLE units that
+    # have accumulated (clamped to the remaining gap), and carry the rest forward — so 0.1× moves ~1pt
+    # / 10 ticks and 0.3× ~1pt / ~3 ticks (the tiers differentiate at the grid resolution). FRONTIER
+    # (rate>=2 on a >=1 gap) banks >=2 whole units/tick so its outcome is unchanged (the old floor was
+    # a no-op there too); DECAY_FRACTIONAL_CARRY=False restores the legacy integer floor byte-for-byte.
+    instab_bump = _instability_decay_bump(structures)   # TASK C: 1.0 when absent/off == today
+    carry = None
+    carry_dirty = False
+    if DECAY_FRACTIONAL_CARRY:
+        tmeta_dc = structures.get("terraform_meta")
+        existing = tmeta_dc.get("decay_carry") if isinstance(tmeta_dc, dict) else None
+        carry = dict(existing) if isinstance(existing, dict) else {}
     for cell, plot in plots.items():
         if cell in fed_plots or cell in anchored_cells:
             continue
         pressure = decay_pressure(plot, planet, structures, now=now)
-        rate = TERRA_DECAY_RATE * pressure
+        rate = TERRA_DECAY_RATE * pressure * instab_bump
         ax = dict(plot.get("axes") or {})
+        cell_key = f"{cell[0]},{cell[1]}" if DECAY_FRACTIONAL_CARRY else None
+        _cc = carry.get(cell_key) if DECAY_FRACTIONAL_CARRY else None
+        cell_carry = dict(_cc) if isinstance(_cc, dict) else {}
         for axis in TERRA_AXES:
             cur = int(ax.get(axis, 0))
             target = _natural_band(planet_type, axis)
-            if cur != target:
-                gap = abs(cur - target)
+            if cur == target:
+                # Already at band — drop any stale carry so it can't strand a fraction off-band.
+                cell_carry.pop(axis, None)
+                continue
+            gap = abs(cur - target)
+            if DECAY_FRACTIONAL_CARRY:
+                # Bank this tick's fractional rate; spend the accumulated WHOLE units (clamped to gap).
+                banked = float(cell_carry.get(axis, 0.0)) + rate
+                whole = min(int(banked), gap)
+                cell_carry[axis] = banked - int(banked)   # carry the sub-unit remainder forward
+                if whole > 0:
+                    ax[axis] = cur - whole if cur > target else cur + whole
+            else:
+                # Legacy integer floor (OFF-SWITCH): byte-identical to the batch-1 behaviour.
                 step = min(rate, gap)
-                # Keep relief tiers WARM, never silent (E4): a nonzero sub-unit rate on an off-band
-                # plot still moves AT LEAST one point toward target this tick — so DONE (0.1×) is a
-                # slow trickle, not a frozen 0.0. Frontier (rate>=2 on a >=1 gap) is unaffected: its
-                # step is already >=1, so this floor is a no-op there and reproduce-exactly holds.
                 if 0.0 < step < 1.0:
                     step = 1.0
                 step = int(round(step))
                 ax[axis] = cur - step if cur > target else cur + step
         plot["axes"] = ax
+        if DECAY_FRACTIONAL_CARRY:
+            # Keep the per-cell carry dict only if it holds a live fraction; prune empties.
+            cell_carry = {a: v for a, v in cell_carry.items() if float(v or 0.0) > 0.0}
+            if cell_carry:
+                carry[cell_key] = cell_carry
+                carry_dirty = True
+            elif cell_key in carry:
+                carry.pop(cell_key, None)
+                carry_dirty = True
+    # Persist the decay carry into the structures blob (additive JSONB key) — only when it changed, so
+    # a frontier/no-carry world never writes a phantom key (reproduce-exactly). The CALLER
+    # (_advance_grid_field / settle) already flag_modifies structures when the tick mutated.
+    if DECAY_FRACTIONAL_CARRY and carry_dirty:
+        tmeta_w = dict(structures.get("terraform_meta")) if isinstance(structures.get("terraform_meta"), dict) else {}
+        if carry:
+            tmeta_w["decay_carry"] = carry
+        else:
+            tmeta_w.pop("decay_carry", None)
+        structures["terraform_meta"] = tmeta_w
     # instability (aggressive pushing destabilises)
     instab = float(structures.get("instability", 0) or 0)
     if intensity == "aggressive":
@@ -1490,6 +1853,20 @@ def _step2_terraform(planet, ts) -> bool:
             # K1b-5 biome capstone: maintain the hold-tick counter ONLY for ticks actually applied
             # (a caught-up/duplicate settle applies 0 → must not double-count the hold).
             _maintain_biome_hold(planet, st, applied_ticks)
+            # TASK A (T1.5-4): SINGLE-writer terrain mutation off the now-advanced LIVE axes — a plot
+            # whose thermal/hydro crossed a boundary mutates plot['terrain'] (forward thaw/flood AND
+            # backward decay-driven re-freeze/drain). Runs in this BUILT step (NOT the stubbed
+            # _step1_build_queue), AFTER the field advanced so it reads the live axes. Only fires when
+            # ticks were actually applied (a caught-up/duplicate settle moved no axes → no mutation →
+            # reproduce-exactly). flag_modified when terrain changed (plot terrain is in the grid blob).
+            if applied_ticks > 0:
+                try:
+                    if mutate_terrain(st, planet) > 0:
+                        flag_modified(planet, "structures")
+                        changed = True
+                except Exception:
+                    logger.exception("T1.5-4 mutate_terrain failed (non-fatal) for planet %s",
+                                     getattr(planet, "id", "?"))
             new_hab = grid_habitability(st)
             old_hab = int(getattr(planet, "habitability_score", 0) or 0)
             if new_hab is not None and int(new_hab) != old_hab:
@@ -1507,6 +1884,18 @@ def _step3_power_siege(planet, ps) -> bool:
     changed = False
     if planet.under_siege and planet.siege_started_at:
         changed = bool(ps.advance_siege(planet, _via_settle=True))
+    # TASK A (T1.5-4) RE-GRADE — POINT-OF-USE: power/crew recompute reads each building's LIVE plot
+    # terrain (mutated by step 2's mutate_terrain) so its yield/affinity is COMPUTED from the current
+    # terrain, never stored (§2.5 zero cross-write). This is the verify-at-build that the re-grade
+    # hooks a BUILT settle step (step 3), NOT the stubbed _step1_build_queue. Pure read — writes
+    # NOTHING to buildings[] (citadel's array); never destroys, never blocks. Fully defensive.
+    try:
+        st_rg = planet.structures if isinstance(planet.structures, dict) else None
+        if st_rg is not None:
+            regrade_buildings_on_terrain(st_rg, planet)
+    except Exception:
+        logger.exception("T1.5-4 step-3 terrain re-grade failed (non-fatal) for planet %s",
+                         getattr(planet, "id", "?"))
     # CRT-1 CUTOVER (Max-ruled 2026-06-21): compute derive_citadel_level over the (now-seeded) grid.
     #   * CITADEL_DERIVE_AUTHORITATIVE False → the original K1b-1 SHADOW: READ-ONLY, LOG divergence
     #     from the shipped citadel_level (button authoritative).
