@@ -20,6 +20,7 @@ import CommsMailbox from '../comms/CommsMailbox';
 import CitizenshipBadge from '../governance/CitizenshipBadge';
 import RegionInvitePanel from '../governance/RegionInvitePanel';
 import { regionOwnerAPI } from '../../services/api';
+import apiClient from '../../services/apiClient';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
@@ -572,6 +573,23 @@ const GameDashboard: React.FC = () => {
   const [movementResult, setMovementResult] = useState<any>(null);
   const [dockingResult, setDockingResult] = useState<any>(null);
   const [landingResult, setLandingResult] = useState<any>(null);
+
+  // Asteroid-harvest feedback (WO-UI-MINING): the harvest action result banner.
+  // {success} carries the yield (ore/pm/shards), turns spent + remaining, and a
+  // flag for the unlicensed-AM rep penalty; on failure it carries a player-facing
+  // gate message keyed off the service reason code. Auto-clears like the helm
+  // banners below. Separate busy latch so a harvest can't double-fire and so the
+  // button reads "MINING…" without dimming the rest of the rail.
+  const [harvestResult, setHarvestResult] = useState<any>(null);
+  const [harvestBusy, setHarvestBusy] = useState(false);
+
+  // Special-formation investigation (WO-UI-ANOMALY): which discovered formations
+  // this player has already investigated this session (the chip disables once
+  // investigated; a 409 from the server also feeds this set so a stale chip is
+  // corrected), the in-flight latch (per-formation id), and the reward banner.
+  const [investigatedFormationIds, setInvestigatedFormationIds] = useState<Set<string>>(new Set());
+  const [investigatingFormationId, setInvestigatingFormationId] = useState<string | null>(null);
+  const [investigateResult, setInvestigateResult] = useState<any>(null);
 
   // Ghost-on-approach for the HUD glass chips: they are pointer-events:none
   // (clicks pass through to the scene), so :hover can never fire on them.
@@ -1504,6 +1522,25 @@ const GameDashboard: React.FC = () => {
     return () => { if (landingTimerRef.current) clearTimeout(landingTimerRef.current); };
   }, [landingResult]);
 
+  // Harvest + formation-investigate banners share the helm auto-dismiss cadence.
+  const harvestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (harvestTimerRef.current) clearTimeout(harvestTimerRef.current);
+    if (harvestResult) {
+      harvestTimerRef.current = setTimeout(() => setHarvestResult(null), 6000);
+    }
+    return () => { if (harvestTimerRef.current) clearTimeout(harvestTimerRef.current); };
+  }, [harvestResult]);
+
+  const investigateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (investigateTimerRef.current) clearTimeout(investigateTimerRef.current);
+    if (investigateResult) {
+      investigateTimerRef.current = setTimeout(() => setInvestigateResult(null), 7000);
+    }
+    return () => { if (investigateTimerRef.current) clearTimeout(investigateTimerRef.current); };
+  }, [investigateResult]);
+
 
   const handleMove = async (sectorId: number) => {
     try {
@@ -1629,7 +1666,81 @@ const GameDashboard: React.FC = () => {
       setHelmBusy(false);
     }
   };
-  
+
+  // WO-UI-MINING — asteroid harvest. POST /api/v1/mining/harvest {ship_id}; the
+  // server is authoritative (locks, turn spend, cargo grant, AM rep). Success
+  // returns the yield + remaining turns; a failed gate returns a stable reason
+  // code in the HTTP detail, which we translate to player-facing copy. Refresh
+  // player state after a successful harvest so the cockpit turns/cargo reflect
+  // the spend immediately. Uses the raw apiClient (the GameContext pattern).
+  const HARVEST_GATE_COPY: Record<string, string> = {
+    no_mining_laser: 'No mining laser equipped — fit one at a TradeDock to extract ore.',
+    must_be_undocked: 'You must be undocked and in open space to deploy the mining laser.',
+    cargo_full: 'Cargo hold is full — no room for ore. Sell or jettison before mining.',
+    insufficient_turns: 'Not enough turns to run a harvest cycle.',
+    not_an_asteroid_field: 'No asteroids here — harvesting requires an asteroid field.',
+    ship_not_found: 'Active ship not found — re-select a ship and try again.',
+  };
+
+  const handleHarvest = async () => {
+    if (harvestBusy) return;
+    const shipId = currentShip?.id;
+    if (!shipId) {
+      setHarvestResult({ success: false, message: 'No active ship to mine with.' });
+      return;
+    }
+    autopilot.abort('manual helm action');
+    setHarvestBusy(true);
+    try {
+      const response = await apiClient.post('/api/v1/mining/harvest', { ship_id: shipId });
+      setHarvestResult({ success: true, ...response.data });
+      // Turns + cargo changed server-side — pull the fresh player state.
+      await refreshPlayerState();
+    } catch (error: any) {
+      const reason = error?.response?.data?.detail;
+      const message =
+        (typeof reason === 'string' && (HARVEST_GATE_COPY[reason] || reason)) ||
+        'Harvest failed. Please try again.';
+      setHarvestResult({ success: false, message });
+    } finally {
+      setHarvestBusy(false);
+    }
+  };
+
+  // WO-UI-ANOMALY — investigate a discovered special-formation. POST
+  // /api/v1/player/formations/{id}/investigate grants a one-time reward; 404 if
+  // the formation isn't discovered (no control is ever shown in that case), 409
+  // if already investigated. On success or a 409 we mark the id investigated so
+  // the chip's control disables; the 404 is surfaced (shouldn't normally happen
+  // since the control only renders on discovered formations).
+  const handleInvestigateFormation = async (formationId: string) => {
+    if (investigatingFormationId) return;
+    if (investigatedFormationIds.has(formationId)) return;
+    setInvestigatingFormationId(formationId);
+    try {
+      const response = await apiClient.post(`/api/v1/player/formations/${formationId}/investigate`);
+      setInvestigatedFormationIds(prev => new Set(prev).add(formationId));
+      setInvestigateResult({ success: true, ...response.data });
+    } catch (error: any) {
+      const statusCode = error?.response?.status;
+      if (statusCode === 409) {
+        // Already investigated — reconcile the chip and tell the player.
+        setInvestigatedFormationIds(prev => new Set(prev).add(formationId));
+        setInvestigateResult({ success: false, message: 'This formation has already been investigated.' });
+      } else if (statusCode === 404) {
+        setInvestigateResult({ success: false, message: 'Formation not found or not yet discovered.' });
+      } else {
+        const detail = error?.response?.data?.detail;
+        setInvestigateResult({
+          success: false,
+          message: (typeof detail === 'string' && detail) || 'Investigation failed. Please try again.',
+        });
+      }
+    } finally {
+      setInvestigatingFormationId(null);
+    }
+  };
+
   // If the player needs to complete the first login experience, the FirstLoginContainer
   // component will be shown by the App component, so we don't need to render the dashboard
   if (requiresFirstLogin) {
@@ -1756,6 +1867,68 @@ const GameDashboard: React.FC = () => {
                 ? ` · ${formationDiscovery.type.replace(/_/g, ' ').toUpperCase()}`
                 : ''}
             </div>
+          </div>
+        )}
+
+        {/* Asteroid-harvest result (WO-UI-MINING): success shows the yield + turn
+            spend; failure shows the translated gate message. Click to dismiss. */}
+        {harvestResult && (
+          <div
+            className={`cockpit-alert ${harvestResult.success ? 'success' : 'error'}`}
+            role="status"
+            onClick={() => setHarvestResult(null)}
+          >
+            <div className="alert-header">
+              {harvestResult.success ? '⛏️ HARVEST COMPLETE' : '⛏️ HARVEST FAILED'}
+            </div>
+            {harvestResult.success ? (
+              <>
+                <div className="alert-message">
+                  +{harvestResult.ore ?? 0} ORE
+                  {harvestResult.precious_metals ? ` · +${harvestResult.precious_metals} PRECIOUS METALS` : ''}
+                  {harvestResult.quantum_shards ? ` · +${harvestResult.quantum_shards} QUANTUM SHARDS` : ''}
+                  {` · ${harvestResult.turns_spent ?? 0} TURNS SPENT`}
+                  {typeof harvestResult.remaining_turns === 'number'
+                    ? ` · ${harvestResult.remaining_turns} TURNS LEFT`
+                    : ''}
+                </div>
+                {harvestResult.am_rep_delta < 0 && (
+                  <div className="alert-message">
+                    ⚠️ UNLICENSED EXTRACTION — Astral Mining reputation {harvestResult.am_rep_delta}.
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="alert-message">{harvestResult.message}</div>
+            )}
+          </div>
+        )}
+
+        {/* Formation-investigation result (WO-UI-ANOMALY): success shows the
+            reward credits; failure (e.g. already investigated) shows the message.
+            Click to dismiss. */}
+        {investigateResult && (
+          <div
+            className={`cockpit-alert ${investigateResult.success ? 'success' : 'error'}`}
+            role="status"
+            onClick={() => setInvestigateResult(null)}
+          >
+            <div className="alert-header">
+              {investigateResult.success ? '🔬 ANOMALY INVESTIGATED' : '🔬 INVESTIGATION FAILED'}
+            </div>
+            {investigateResult.success ? (
+              <div className="alert-message">
+                {investigateResult.formation?.name
+                  ? `${String(investigateResult.formation.name).toUpperCase()} — `
+                  : ''}
+                REWARD: +{investigateResult.reward?.credits ?? 0} CR
+                {typeof investigateResult.credits_remaining === 'number'
+                  ? ` · BALANCE ${investigateResult.credits_remaining.toLocaleString()} CR`
+                  : ''}
+              </div>
+            ) : (
+              <div className="alert-message">{investigateResult.message}</div>
+            )}
           </div>
         )}
 
@@ -2051,17 +2224,56 @@ const GameDashboard: React.FC = () => {
                 >
                   <div className="hud-label">🌀 FORMATIONS</div>
                   <div className="hud-features">
-                    {currentSector.special_formations.map(f => (
-                      <span
-                        key={f.id}
-                        className={`hud-badge${f.is_discovered ? '' : ' undiscovered'}`}
-                        title={f.is_discovered ? f.type?.replace(/_/g, ' ') : 'Unidentified anomaly — scan or explore to reveal'}
-                      >
-                        {f.is_discovered
-                          ? `${(f.name || 'UNNAMED').toUpperCase()}${f.type ? ` · ${f.type.replace(/_/g, ' ').toUpperCase()}` : ''}`
-                          : '❔ UNKNOWN ANOMALY'}
-                      </span>
-                    ))}
+                    {currentSector.special_formations.map(f => {
+                      // WO-UI-ANOMALY: a discovered formation carries an Investigate
+                      // control (one-time reward). Undiscovered → label only, no
+                      // control. Already-investigated this session → disabled.
+                      const investigated = investigatedFormationIds.has(f.id);
+                      const investigating = investigatingFormationId === f.id;
+                      return (
+                        <div
+                          key={f.id}
+                          style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                        >
+                          <span
+                            className={`hud-badge${f.is_discovered ? '' : ' undiscovered'}`}
+                            title={f.is_discovered ? f.type?.replace(/_/g, ' ') : 'Unidentified anomaly — scan or explore to reveal'}
+                          >
+                            {f.is_discovered
+                              ? `${(f.name || 'UNNAMED').toUpperCase()}${f.type ? ` · ${f.type.replace(/_/g, ' ').toUpperCase()}` : ''}`
+                              : '❔ UNKNOWN ANOMALY'}
+                          </span>
+                          {f.is_discovered && (
+                            <button
+                              type="button"
+                              onClick={() => handleInvestigateFormation(f.id)}
+                              disabled={investigated || investigating}
+                              title={investigated
+                                ? 'Already investigated'
+                                : 'Investigate this anomaly for a one-time reward'}
+                              style={{
+                                pointerEvents: 'auto',
+                                padding: '0.15rem 0.45rem',
+                                fontSize: '0.6rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.08em',
+                                textTransform: 'uppercase',
+                                fontFamily: "'Courier New', monospace",
+                                borderRadius: '3px',
+                                background: investigated ? 'rgba(120, 130, 150, 0.1)' : 'rgba(0, 217, 255, 0.15)',
+                                border: `1px solid ${investigated ? 'rgba(120, 130, 150, 0.35)' : 'rgba(0, 217, 255, 0.45)'}`,
+                                color: investigated ? 'rgba(180, 190, 210, 0.6)' : '#00d9ff',
+                                textShadow: investigated ? 'none' : '0 0 6px rgba(0, 217, 255, 0.5)',
+                                cursor: (investigated || investigating) ? 'not-allowed' : 'pointer',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {investigating ? '🔬 …' : investigated ? '✓ INVESTIGATED' : '🔬 INVESTIGATE'}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </HudChip>
               )}
@@ -2157,6 +2369,19 @@ const GameDashboard: React.FC = () => {
                     🛬 LAND · <span className="helm-btn-target">{planet.name}</span>
                   </button>
                 ))}
+                {/* HARVEST (WO-UI-MINING) — only in an asteroid-field sector while
+                    undocked (this IN FLIGHT branch). Server enforces the full gate
+                    set (laser/turns/cargo); failures surface as a banner below. */}
+                {currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' && (
+                  <button
+                    className="helm-btn harvest"
+                    onClick={handleHarvest}
+                    disabled={helmBusy || harvestBusy}
+                    title="Deploy the mining laser to harvest ore from the asteroid field"
+                  >
+                    {harvestBusy ? '⛏️ MINING…' : '⛏️ HARVEST'}
+                  </button>
+                )}
                 {/* SCANNING until the sector telemetry resolves, so we never
                     flash a false "NO TARGETS" during the in-flight load. */}
                 {!currentSector || !stationsInSector || !planetsInSector ? (
