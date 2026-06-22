@@ -441,6 +441,27 @@ STATION_RECOVERY_CHECK_SECONDS = int(
     os.environ.get("STATION_RECOVERY_CHECK_SECONDS", str(50 * 60))
 )
 
+# Inactivity-reclamation flag sweep cadence (PL4b — planet abandonment/reclaim).
+# Stamps planets.reclaimable_at on every owned, non-hub planet whose owner's
+# Player.last_game_login is older than the canon INACTIVITY_DAYS=90 (and clears
+# the stamp on any planet whose owner is no longer stale). Like the port-cost /
+# bounty / station-recovery sweeps, the cadence is a COARSE wall-clock pre-filter
+# (so we don't take the advisory lock + scan planets every 60s); the actual
+# eligibility comes from the DURABLE per-planet marker (planets.reclaimable_at)
+# cross-checked against the owner's last_game_login inside abandonment_service.
+# flag_inactive_planets, which survives a restart (the process-relative elapsed
+# counter resets; the stored stamps do not). The flag is ADVISORY + REVERSIBLE —
+# the sweep NEVER deletes a row or reassigns ownership; a re-run in the same
+# period re-evaluates the same condition and is a no-op for steady-state rows.
+# Offset to 55m so it does not share a wake with the other coarse probes
+# (decay 15m / faucet 20m / snapshot 25m / idle 30m / stipend 35m / bounty 40m /
+# port-costs 45m / station-recovery 50m). The 90-day inactivity / 7-day grace /
+# 7-day tenure numbers are Max-APPROVED (PL4b); only this background sweep
+# cadence is operational.
+RECLAIM_FLAG_CHECK_SECONDS = int(
+    os.environ.get("RECLAIM_FLAG_CHECK_SECONDS", str(55 * 60))
+)
+
 # Price-recompute flush cadence (WO-DBB-EC4, ADR-0051 SK30). The hot
 # market-read path debounces full price recomputes to once per ~1 wall-clock
 # second per station (TradingService.maybe_recompute_price); a suppressed
@@ -3480,6 +3501,78 @@ def _run_station_recovery_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_reclaim_flag_sweep_sync() -> Dict[str, int]:
+    """Stamp the inactivity-reclamation flag on planets whose owner has gone
+    inactive, and clear it on any planet whose owner is no longer stale (PL4b —
+    planet abandonment/reclaim, master §2.1). This is the AUTONOMOUS half of the
+    abandonment lifecycle — abandonment_service.flag_inactive_planets is the
+    ADVISORY, idempotent, REVERSIBLE flagger (it NEVER deletes a row, NEVER
+    reassigns ownership; it only sets/clears planets.reclaimable_at). This sweep
+    is the scheduler shell that DRIVES that engine under the standard discipline.
+    It does NOT reimplement the 90-day inactivity rule, the grace window, or any
+    compensation math — it calls flag_inactive_planets once per cadence.
+
+    DISCIPLINE — mirrors _run_station_recovery_sync / _run_port_operating_costs_
+    sync / _run_bounty_accrual_sweep_sync (this runs on the LIVE scheduler):
+      * own SessionLocal (never the request session, never the async engine);
+      * xact-level advisory lock so a second gameserver instance skips instead of
+        double-flagging (the lock auto-releases on the first commit), then commit
+        immediately to CLAIM the sweep before the flag work, so the flag commit
+        does not release the advisory lock mid-iteration;
+      * a single set/clear pass (flag_inactive_planets) committed once — the pass
+        touches only the marker column, so a batch commit is safe (no per-row
+        money movement happens here; the credit movement is the PLAYER-driven
+        reclaim route, gated behind grace + tenure).
+
+    IDEMPOTENCY ACROSS RESTARTS: the durable per-planet anchor is the marker
+    itself (planets.reclaimable_at — NULL = not flagged). A re-run, duplicate
+    wake, or restart re-evaluates the SAME condition (owner stale? already
+    flagged?) and is a no-op for steady-state rows — NEVER a double-flag and (the
+    important safety property) NEVER an auto-reclaim: this sweep ONLY moves the
+    advisory marker; ownership only changes when a PLAYER fires the reclaim route
+    AFTER the 90d + 7d-grace gates AND the displaced owner's 7d tenure floor.
+    Additive marker write only; NO new table, NO money faucet.
+
+    Returns {"flagged": n_newly_flagged, "cleared": n_cleared}; both zero on the
+    lock-held no-op path."""
+    from src.core.database import SessionLocal
+    from src.services import abandonment_service
+
+    result = {"flagged": 0, "cleared": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        # Release the lock-acquiring transaction before the flag work (same
+        # rationale as the recovery / port-cost / bounty sweeps): claim the
+        # sweep, then run the pass.
+        db.commit()
+
+        outcome = abandonment_service.flag_inactive_planets(db)
+        db.commit()  # the set/clear pass commits as one (marker-only writes)
+        result["flagged"] = int(outcome.get("flagged", 0))
+        result["cleared"] = int(outcome.get("cleared", 0))
+
+        if result["flagged"] or result["cleared"]:
+            logger.info(
+                "Reclaim-flag sweep: flagged %d inactive-owner planet(s), "
+                "cleared %d returned-owner flag(s)",
+                result["flagged"], result["cleared"],
+            )
+        return result
+    except Exception:
+        logger.exception("Reclaim-flag sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
 def _run_price_recompute_flush_sync() -> int:
     """Settle every station flagged pending_price_recomputation (WO-DBB-EC4,
     ADR-0051 SK30) — the deferred half of the per-station 1s price-recompute
@@ -4774,6 +4867,37 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: station recovery sweep crashed (loop continues)")
+
+        # Inactivity-reclamation flag sweep (PL4b — planet abandonment/reclaim).
+        # Stamp planets.reclaimable_at on every owned, non-hub planet whose owner
+        # has been inactive for the canon 90 days (and clear the stamp on any
+        # planet whose owner has since returned). Drives abandonment_service.
+        # flag_inactive_planets — the ADVISORY, idempotent, REVERSIBLE flagger
+        # that NEVER deletes a row or reassigns ownership: it only moves the
+        # marker. Ownership changes ONLY when a PLAYER fires the reclaim route,
+        # and only AFTER the 7-day grace window past the flag (the displaced
+        # owner's 7-day tenure floor gates compensation, not the flag). Coarse
+        # elapsed pre-filter (55 min) so we don't scan planets every 60s; the
+        # once-per-condition guarantee + restart-proofing come from the durable
+        # per-planet marker (reclaimable_at) inside the sweep — a re-run
+        # re-evaluates the same condition and no-ops for steady-state rows (NO
+        # double-flag, and crucially NO auto-reclaim from this sweep). Own
+        # session, own advisory lock — same discipline as the station-recovery /
+        # port-cost / bounty sweeps. This block is SEPARATE from the CRT-4
+        # research-frame drain above and does not touch it.
+        if elapsed % RECLAIM_FLAG_CHECK_SECONDS == 0:
+            try:
+                reclaim = await asyncio.to_thread(_run_reclaim_flag_sweep_sync)
+                if reclaim.get("flagged") or reclaim.get("cleared"):
+                    logger.info(
+                        "NPC scheduler: reclaim-flag sweep — flagged %d "
+                        "inactive-owner planet(s), cleared %d returned-owner flag(s)",
+                        reclaim.get("flagged", 0), reclaim.get("cleared", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: reclaim-flag sweep crashed (loop continues)")
 
         # Price-recompute flush sweep (WO-DBB-EC4, ADR-0051 SK30) — settle any
         # station the hot read path deferred (pending_price_recomputation set

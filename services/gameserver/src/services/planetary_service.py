@@ -51,6 +51,33 @@ SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
 # world with identical allocations/buildings.
 LOW_HABITABILITY_THRESHOLD = 30           # NO-CANON: target threshold (doc line 213)
 LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20  # NO-CANON: target "+20% resource costs"
+
+# --- PL4b TAX-RATE BOUNDS (DEFERRED, COLUMN-ONLY — I11) ----------------------
+# Planet.tax_rate ships as a NULLABLE, INERT column (migration d7a2f1c9e3b5).
+# Its taxable event — a team-mate withdrawing stockpiled resources from a planet
+# into ship cargo — has NO route in code yet (the one resource-egress route,
+# citadel withdraw-commodity, is owner-only), so NO tax logic is wired this
+# slice (PL4b master §1 / §7). These bounds CODIFY the canon clamp for the
+# follow-on WO that first builds the withdrawal route, then taxes the skim:
+#   - NULL ⇒ 0.0 (backward-compatible: every existing planet is untaxed, I1)
+#   - any explicit value is clamped fail-CLOSED to [0.00, 0.20] (canon
+#     colonization.md:249; reject out-of-range rather than silently truncate).
+# clamp_tax_rate is a PURE, INERT helper — it is intentionally NOT called from
+# any live path (there is no setter route this slice); it exists so the follow-on
+# reuses one bounds definition instead of re-deriving it.
+TAX_RATE_MIN = 0.00
+TAX_RATE_MAX = 0.20
+
+
+def clamp_tax_rate(value: Optional[float]) -> float:
+    """Resolve a planet tax_rate to a valid, in-bounds float (PL4b, DEFERRED).
+
+    NULL/None ⇒ 0.0 (the untaxed backward-compatible default, I1). Any explicit
+    value is bounded to [TAX_RATE_MIN, TAX_RATE_MAX]. PURE + INERT — not wired to
+    any live skim this slice; the taxable event does not exist yet (master §7)."""
+    if value is None:
+        return 0.0
+    return max(TAX_RATE_MIN, min(TAX_RATE_MAX, float(value)))
 # ADR-0076 retired the flat DEFENSE_UPGRADE_COST=1000/level path (upgrade_defense);
 # citadel level unlocks tiers and defense_unit_price (per added unit) prices them.
 DEFENSE_MAX_LEVEL = 10          # Maximum defense level
@@ -544,7 +571,12 @@ class PlanetaryService:
 
         Decline floors `colonists` at 0 — a colony can shrink toward
         abandonment but never goes negative, and the planet row is never
-        deleted here (a future abandonment/claimable pass owns that).
+        deleted here. The owned-planet abandonment/reclaim lifecycle (PL4b) is
+        now built in ``abandonment_service`` — that module reverts a planet to
+        unowned (preserving structures/citadel/population/resources) on either
+        the voluntary ``POST /planets/{id}/abandon`` path or the involuntary
+        inactivity-reclaim path; this growth pass remains population-only and
+        never touches ownership.
 
         Ceilings enforced per ADR-0035 ("Runtime invariants"):
           - colonists ≤ max_colonists (citadel cap)

@@ -6,7 +6,7 @@ defenses, sieges, and landing/departing operations.
 """
 
 import logging
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -127,6 +127,43 @@ class ClaimResponse(BaseModel):
     is_landed: bool
     colonists_settled: int
     credits_spent: int
+
+
+# PL4b — abandonment / inactivity reclamation (master §2). All settlement /
+# eligibility logic lives in abandonment_service (the single writer); these are
+# only the wire shapes.
+
+class AbandonResponse(BaseModel):
+    """Voluntary-abandon response. compensation is always 0 (forfeiture, I3)."""
+    success: bool
+    message: str
+    planet_id: str
+    compensation: int
+
+
+class ReclaimResponse(BaseModel):
+    """Inactivity-reclaim response (the reclaimer's view)."""
+    success: bool
+    message: str
+    planet_id: str
+    reclaim_credits_charged: int
+    reclaim_resource_cost_each: int
+    displaced_compensation: int
+    citadel_level: int
+
+
+class ReclaimStatusResponse(BaseModel):
+    """Read-only reclaim eligibility for a planet (UI affordance)."""
+    planet_id: str
+    owner_id: Optional[str] = None
+    reclaimable: bool          # is this planet currently FLAGGED inactive?
+    reclaimable_at: Optional[str] = None   # ISO8601 flag stamp, if flagged
+    grace_ends_at: Optional[str] = None    # ISO8601; reclaim allowed AFTER this
+    eligible_now: bool         # flagged AND past grace AND owned?
+    abandoned_at: Optional[str] = None
+    inactivity_days: int       # the canon 90-day inactivity threshold
+    grace_days: int            # the canon 7-day grace window
+    tenure_floor_days: int     # the canon 7-day tenure floor for compensation
 
 
 class ColonistTransferRequest(BaseModel):
@@ -592,6 +629,221 @@ async def claim_planet(
         is_landed=True,
         colonists_settled=colonists_settled,
         credits_spent=CLAIM_CREDIT_COST
+    )
+
+
+# PL4b — ABANDONMENT / INACTIVITY RECLAMATION ROUTES (master §2 / §5 Lane C).
+# All settlement, eligibility, grace, tenure, siege, and compensation logic
+# lives in abandonment_service (the SINGLE WRITER of reclaimable_at/abandoned_at/
+# comp, I9). These routes are thin: lock the row, call the service, map its
+# ValueError reasons to 4xx, and commit the service's single transaction.
+
+@router.post("/{planet_id}/abandon", response_model=AbandonResponse)
+async def abandon_planet_route(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """VOLUNTARILY abandon an owned planet (PL4b master §2.1). Owner-only. The
+    planet reverts to unowned with its structures/citadel/population/resources
+    preserved; the abandoning owner is paid NOTHING (forfeiture, not settlement —
+    I3, the money-pump kill). Blocked while the planet is under siege (I8)."""
+    from src.services import abandonment_service
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    # Lock the planet row (sibling owner-write convention: claim/rename/landing).
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+    if planet.owner_id is None or planet.owner_id != player.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the planet's owner can abandon it.",
+        )
+
+    # Re-read the player under a row lock to mutate landed-state safely.
+    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+
+    try:
+        result = abandonment_service.abandon_planet(db, planet, player)
+    except ValueError as e:
+        reason = str(e)
+        if reason == "under_siege":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This planet is under siege — break the siege before abandoning it.",
+            )
+        if reason == "not_owner":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the planet's owner can abandon it.",
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+    db.commit()
+    return AbandonResponse(
+        success=True,
+        message=(
+            f"You have abandoned {planet.name}. It has reverted to unclaimed "
+            "space with its colony intact. No settlement is paid on a voluntary "
+            "abandonment."
+        ),
+        planet_id=result["planet_id"],
+        compensation=result["compensation"],
+    )
+
+
+@router.post("/{planet_id}/reclaim", response_model=ReclaimResponse)
+async def reclaim_planet_route(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """RECLAIM an inactive owner's flagged planet (PL4b master §2.1, involuntary
+    path). Eligible only AFTER the 90-day inactivity flag has aged past the
+    7-day grace window (I5). The reclaimer pays the flat price (50,000 cr +
+    5,000 each ore/organics/equipment from ship cargo); the displaced inactive
+    owner is paid a 0.4 haircut of their verifiable sunk cost, but only if their
+    tenure was ≥ 7 days (I2/I4). The developed world is inherited intact (I7)."""
+    from src.services import abandonment_service
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    # Lock order: planet row BEFORE player row (matches the claim route, I6) so
+    # two reclaimers can't both win the same world.
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+
+    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
+    ship = (
+        db.query(Ship)
+        .filter(Ship.id == player.current_ship_id, Ship.owner_id == player.id)
+        .first()
+        if player.current_ship_id
+        else None
+    )
+
+    try:
+        result = abandonment_service.reclaim_planet(db, planet, player, ship)
+    except ValueError as e:
+        reason = str(e)
+        if reason == "within_grace":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This planet is still within its returning-owner grace window; it cannot be reclaimed yet.",
+            )
+        if reason == "not_flagged":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This planet's owner is not flagged inactive; it cannot be reclaimed.",
+            )
+        if reason == "under_siege":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This planet is under an active siege and cannot be reclaimed right now.",
+            )
+        if reason == "already_owner":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You already own this planet.",
+            )
+        if reason == "not_owned":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This planet is unclaimed — use the standard claim flow instead of reclaim.",
+            )
+        if reason == "no_ship":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You need an active ship carrying the reclaim resources.",
+            )
+        if reason == "insufficient_credits":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Reclaiming a planet costs {abandonment_service.RECLAIM_CREDIT_COST:,} credits.",
+            )
+        if reason == "insufficient_resources":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Reclaiming a planet requires {abandonment_service.RECLAIM_RESOURCE_COST:,} "
+                    "each of ore, organics, and equipment aboard your ship."
+                ),
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+    db.commit()
+    return ReclaimResponse(
+        success=True,
+        message=(
+            f"You have reclaimed {planet.name} from its inactive owner. "
+            "The colony and its structures are now yours."
+        ),
+        planet_id=result["planet_id"],
+        reclaim_credits_charged=result["reclaim_credits_charged"],
+        reclaim_resource_cost_each=result["reclaim_resource_cost_each"],
+        displaced_compensation=result["displaced_compensation"],
+        citadel_level=result["citadel_level"],
+    )
+
+
+@router.get("/{planet_id}/reclaim-status", response_model=ReclaimStatusResponse)
+async def reclaim_status_route(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Read-only reclaim eligibility for a planet (PL4b — UI affordance). Reports
+    whether the planet is flagged inactive, when its grace window ends, and the
+    canon thresholds. READ-ONLY; writes nothing."""
+    from src.services import abandonment_service
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid planet ID format")
+
+    planet = db.query(Planet).filter(Planet.id == pid).first()
+    if not planet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planet not found")
+
+    cols = abandonment_service._read_pl4b_cols(db, pid)
+    reclaimable_at = cols.get("reclaimable_at")
+    abandoned_at = cols.get("abandoned_at")
+
+    grace_ends = None
+    eligible_now = False
+    flagged = reclaimable_at is not None
+    if flagged:
+        ra = reclaimable_at
+        if ra.tzinfo is None:
+            ra = ra.replace(tzinfo=UTC)
+        grace_ends = ra + timedelta(days=abandonment_service.RECLAIM_GRACE_DAYS)
+        eligible_now = (
+            planet.owner_id is not None
+            and datetime.now(UTC) > grace_ends
+            and not abandonment_service._siege_blocks_reclaim(planet)
+        )
+
+    return ReclaimStatusResponse(
+        planet_id=str(planet.id),
+        owner_id=str(planet.owner_id) if planet.owner_id else None,
+        reclaimable=flagged,
+        reclaimable_at=reclaimable_at.isoformat() if reclaimable_at else None,
+        grace_ends_at=grace_ends.isoformat() if grace_ends else None,
+        eligible_now=eligible_now,
+        abandoned_at=abandoned_at.isoformat() if abandoned_at else None,
+        inactivity_days=abandonment_service.INACTIVITY_DAYS,
+        grace_days=abandonment_service.RECLAIM_GRACE_DAYS,
+        tenure_floor_days=abandonment_service.TENURE_FLOOR_DAYS,
     )
 
 
