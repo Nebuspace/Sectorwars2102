@@ -35,8 +35,8 @@ import src.services.structures as S
 #   L4 +SPACEPORT(2)=7 (eco: POWER+SPACEPORT+MINE) · L5 +ADMIN_SPIRE(2x2=4)=11.
 # A grid whose plot count is below the level's minimum is the intrinsic packing FLOOR — no placement
 # order can fit the tier. (Empirically verified to match the exact boundary: L4 floors size 1; L5
-# floors sizes 1-3.)
-MIN_CELLS = {1: 2, 2: 3, 3: 5, 4: 7, 5: 11}
+# floors sizes 1-3.) Imported from structures so there is ONE source of truth (CRT-1 SIZE-GATE).
+MIN_CELLS = S.CITADEL_MIN_CELLS
 
 
 @pytest.fixture(autouse=True)

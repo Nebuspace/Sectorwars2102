@@ -277,6 +277,11 @@ class CitadelService:
         current_level = getattr(planet, "citadel_level", 0) or 0
         current_info = CITADEL_LEVELS[current_level]
 
+        # CRT-1 SIZE-GATE: the ceiling this planet's grid can physically pack (so the UI shows the
+        # reachable max and disables the upgrade button at the cap).
+        from src.services.structures import max_citadel_level_for_size
+        max_level = max_citadel_level_for_size(getattr(planet, "size", 5) or 5)
+
         result: Dict[str, Any] = {
             "success": True,
             "message": "Citadel info retrieved",
@@ -284,6 +289,7 @@ class CitadelService:
             "planet_name": planet.name,
             "citadel_level": current_level,
             "citadel_name": current_info["name"],
+            "max_citadel_level": max_level,
             "max_population": current_info["max_population"],
             "safe_storage": current_info["safe_storage"],
             "safe_credits": getattr(planet, "citadel_safe_credits", 0) or 0,
@@ -341,6 +347,24 @@ class CitadelService:
 
         next_level = current_level + 1
         next_info = CITADEL_LEVELS[next_level]
+
+        # CRT-1 SIZE-GATE (Max-ruled 2026-06-21): a planet's grid can only physically pack the
+        # key-building footprint up to max_citadel_level_for_size(size). Reject an upgrade beyond
+        # that ceiling BEFORE charging credits/resources or starting the timer — otherwise the
+        # authoritative settle() derive would just refuse to confirm the new level and the player
+        # would pay for a level the planet cannot hold.
+        from src.services.structures import max_citadel_level_for_size
+        size_cap = max_citadel_level_for_size(getattr(planet, "size", 5) or 5)
+        if next_level > size_cap:
+            plot_count = (4 + 2 * (getattr(planet, "size", 5) or 5))
+            plot_count = max(6, min(30, plot_count))
+            return {
+                "success": False,
+                "message": (
+                    f"This planet's size ({plot_count} plots) supports at most citadel level "
+                    f"{size_cap}."
+                ),
+            }
 
         # Prerequisite validation: higher citadel levels require planetary defenses
         prerequisite_defense = {
@@ -492,6 +516,11 @@ class CitadelService:
         if not planet:
             return {"success": False, "message": "Planet not found"}
 
+        # CRT-1 SIZE-GATE: the grid-packable ceiling for this planet (exposed so the UI can show the
+        # reachable max on every status read, including the post-completion poll).
+        from src.services.structures import max_citadel_level_for_size
+        max_level = max_citadel_level_for_size(getattr(planet, "size", 5) or 5)
+
         if not getattr(planet, "citadel_upgrading", False):
             current_level = getattr(planet, "citadel_level", 0) or 0
             return {
@@ -499,17 +528,39 @@ class CitadelService:
                 "message": "No upgrade in progress",
                 "citadel_level": current_level,
                 "citadel_name": CITADEL_LEVELS[current_level]["name"],
+                "max_citadel_level": max_level,
                 "is_upgrading": False,
             }
 
         now = datetime.now(UTC)
         if now >= planet.citadel_upgrade_complete_at:
-            # Upgrade complete - apply it
+            # Upgrade complete - apply it.
             current_level = getattr(planet, "citadel_level", 0) or 0
             new_level = current_level + 1
-            new_info = CITADEL_LEVELS[new_level]
 
-            planet.citadel_level = new_level
+            # CRT-1 PLACE→DERIVE→CACHE (Max-ruled 2026-06-21): instead of writing the scalar
+            # citadel_level directly, PLACE the new tier's key buildings on the grid, then DERIVE the
+            # level back from the grid and CACHE it on the scalar column. derive_citadel_level is the
+            # faithful inverse of the ladder, so on a size-packable planet the cached level == new_level
+            # (the size-gate in start_upgrade already rejected un-packable targets). The settle() spine
+            # then keeps the scalar in sync authoritatively. Caps are recomputed from the DERIVED level
+            # so a (defensive) shortfall never over-grants capacity.
+            from src.services import structures as S
+            from sqlalchemy.orm.attributes import flag_modified
+            if not isinstance(planet.structures, dict):
+                S.seed(planet, db=self.db)
+            S.ensure_citadel_level(planet.structures, planet, new_level)
+            flag_modified(planet, "structures")
+            derived_level = S.derive_citadel_level(planet.structures)
+            if derived_level != new_level:
+                logger.warning(
+                    f"Planet {planet_id} citadel upgrade: target level {new_level} but grid derives "
+                    f"{derived_level} (size {getattr(planet, 'size', '?')}); caching derived level."
+                )
+            cached_level = derived_level if derived_level >= 1 else new_level
+            new_info = CITADEL_LEVELS[cached_level]
+
+            planet.citadel_level = cached_level
             planet.citadel_safe_max = new_info["safe_storage"]
             planet.citadel_drone_capacity = new_info["drone_capacity"]
             planet.citadel_max_population = new_info["max_population"]
@@ -520,14 +571,15 @@ class CitadelService:
             self.db.flush()
 
             logger.info(
-                f"Planet {planet_id} citadel upgrade completed: now level {new_level} ({new_info['name']})"
+                f"Planet {planet_id} citadel upgrade completed: now level {cached_level} ({new_info['name']})"
             )
 
             return {
                 "success": True,
-                "message": f"Upgrade complete! Citadel is now level {new_level} ({new_info['name']}).",
-                "citadel_level": new_level,
+                "message": f"Upgrade complete! Citadel is now level {cached_level} ({new_info['name']}).",
+                "citadel_level": cached_level,
                 "citadel_name": new_info["name"],
+                "max_citadel_level": max_level,
                 "is_upgrading": False,
                 "just_completed": True,
             }
@@ -540,6 +592,7 @@ class CitadelService:
                 "message": "Upgrade still in progress",
                 "citadel_level": current_level,
                 "citadel_name": CITADEL_LEVELS[current_level]["name"],
+                "max_citadel_level": max_level,
                 "is_upgrading": True,
                 "upgrade_complete_at": planet.citadel_upgrade_complete_at.isoformat(),
                 "upgrade_remaining_seconds": max(0, int(remaining.total_seconds())),

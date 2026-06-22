@@ -605,6 +605,88 @@
   font-style: italic;
 }
 
+/* Size-capped variant of the terminal state — distinct from a true L5 max so
+   the player understands the limit is the planet's size, not a bug. */
+.citadel-max-level.size-capped {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: rgba(255, 170, 68, 0.07);
+  border-color: rgba(255, 170, 68, 0.3);
+  color: #ffd9a0;
+  font-style: normal;
+}
+
+.citadel-max-level.size-capped .max-level-title {
+  font-weight: 700;
+  color: #ffaa44;
+}
+
+.citadel-max-level.size-capped .max-level-sub {
+  font-size: 0.7rem;
+  color: #aa8866;
+  line-height: 1.35;
+}
+
+/* Always-visible planet-size ceiling line under the level name. */
+.citadel-size-cap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 12px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: rgba(74, 158, 255, 0.06);
+  border: 1px solid rgba(74, 158, 255, 0.18);
+  font-size: 0.72rem;
+  color: #99aabb;
+}
+
+.citadel-size-cap .size-cap-text strong {
+  color: #4a9eff;
+  font-weight: 700;
+}
+
+/* When the planet has actually reached its size ceiling, warm the badge so the
+   stop is unmistakable (matches the amber "construction/limit" language). */
+.citadel-size-cap.at-cap {
+  background: rgba(255, 170, 68, 0.08);
+  border-color: rgba(255, 170, 68, 0.3);
+  color: #ffd9a0;
+}
+
+.citadel-size-cap.at-cap .size-cap-text strong {
+  color: #ffaa44;
+}
+
+.citadel-size-cap .size-cap-flag {
+  color: #ffaa44;
+  font-weight: 600;
+}
+
+/* Progression-track steps above this planet's size ceiling: visibly out of
+   reach (dimmed + crosshatched node) so the ladder itself shows the cap. */
+.citadel-step.beyond-size-cap {
+  opacity: 0.4;
+}
+
+.citadel-step.beyond-size-cap .step-node {
+  border-style: dashed;
+  border-color: rgba(255, 170, 68, 0.4);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 170, 68, 0.08) 0,
+      rgba(255, 170, 68, 0.08) 3px,
+      transparent 3px,
+      transparent 6px
+    );
+}
+
+.citadel-step.beyond-size-cap .step-level {
+  color: #aa8866;
+}
+
 .citadel-message {
   margin-top: 8px;
   padding: 6px 10px;

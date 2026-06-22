@@ -64,6 +64,16 @@ logger = logging.getLogger(__name__)
 # ``STRICT_VIA_SETTLE=True`` to turn a stray into an AssertionError, proving the guard trips (I5).
 STRICT_VIA_SETTLE = False
 
+# CRT-1 CUTOVER FLAG (Max-ruled 2026-06-21): when True, settle()'s step-3 derive becomes
+# AUTHORITATIVE — derive_citadel_level over the grid WRITES planet.citadel_level (+ the three caps)
+# instead of merely shadow-logging the divergence. The size-gated upgrade ladder
+# (max_citadel_level_for_size) makes derive a faithful inverse by construction, so this never
+# regresses a legitimately-built citadel. False = the original read-only K1b-1 shadow.
+# Staged cutover (WO-CRT-1): ships FALSE = read-only SHADOW. Flip True only AFTER
+# the one-time backfill repacks every divergent planet so derive==shipped (else
+# settle would write a still-divergent planet DOWN — e.g. a not-yet-repacked L5).
+CITADEL_DERIVE_AUTHORITATIVE = False
+
 
 def _via_settle_guard(name: str, via_settle: bool) -> None:
     if not via_settle:
@@ -189,15 +199,27 @@ def _seed_anchor_value(planet) -> datetime:
 
 
 def _get_settle_anchor(planet) -> datetime:
-    """Read the spine anchor; cold-start/backfill via seed() if the anchor OR the grid is missing.
-    seed() is idempotent (stamps the anchor exactly once — I8 — and backfills grid/buildings only if
-    absent), so this also backfills planets seeded before the grid code landed. Caller commits — the
-    seed is atomic with the settle()."""
+    """Read the spine anchor; cold-start via seed() if the anchor OR the grid is missing, AND
+    backfill the buildings list of a citadel'd planet whose grid exists but is empty (seed() no-ops
+    once the anchor is stamped, so the empty-buildings case is backfilled directly via
+    _seed_buildings_from_legacy — idempotent). This keeps derive_citadel_level from returning 0 on a
+    planet seeded before the building-backfill landed (which, post-cutover, would wipe its citadel).
+    Caller commits — the seed/backfill is atomic with the settle()."""
     anchor = _read_settle_anchor(planet)
     grid_present = isinstance(planet.structures, dict) and isinstance(planet.structures.get("grid"), dict)
     if anchor is None or not grid_present:
         seed(planet)
         anchor = _read_settle_anchor(planet)
+    # CRT-1: a citadel'd planet with a grid but an EMPTY buildings list (seeded
+    # before the building-backfill landed, or a future buildings-cleared state)
+    # would derive 0 → an authoritative WIPE. seed() above no-ops once the anchor
+    # exists, so backfill the buildings directly. _seed_buildings_from_legacy is
+    # idempotent (returns immediately if buildings are already present), so this
+    # only fires on the empty-grid case and never re-places a built planet.
+    if (int(getattr(planet, "citadel_level", 0) or 0) >= 1
+            and isinstance(planet.structures, dict)
+            and not planet.structures.get("buildings")):
+        _seed_buildings_from_legacy(planet, planet.structures)
     return anchor
 
 
@@ -772,6 +794,29 @@ def assert_research_for_kind(kind: str, researched: Optional[Set[str]]) -> None:
 FLOOR_AREA = {1: 2, 2: 4, 3: 8, 4: 14, 5: 24}        # Σ(footprint cells × level) over operational eco/civic
 HOUSING = {1: 0, 2: 0, 3: 50000, 4: 100000, 5: 200000}  # Σ powered HAB_DOME capacity
 
+# CRT-1 SIZE-GATE (Max-ruled 2026-06-21): the cumulative key-building footprint each citadel level
+# requires, in plot-cells. So derive_citadel_level is a FAITHFUL INVERSE by construction — a level
+# is reachable on a grid IFF the grid has at least this many plots to pack the tier's key buildings:
+#   L1 HAB_DOME(1)+MINE(1)=2 · L2 +SCANNER(1)=3 · L3 +HAB_DOME(1)+POWER(1)=5 ·
+#   L4 +SPACEPORT(2)=7 (eco POWER+SPACEPORT+MINE) · L5 +ADMIN_SPIRE(2×2=4)=11.
+# Single source of truth for the size→max-level cap (the calibration test imports this).
+CITADEL_MIN_CELLS = {1: 2, 2: 3, 3: 5, 4: 7, 5: 11}
+
+
+def max_citadel_level_for_size(size: int) -> int:
+    """The highest citadel level (1..5) whose key-building footprint physically packs onto a planet
+    of ``size``'s grid — i.e. the largest L where ``_grid_dims_for(size)[2] >= CITADEL_MIN_CELLS[L]``.
+    Always ≥1 (every grid clamps to ≥6 plots, which packs L3). With the clamped grid sizing this
+    yields s1→3, s2→4, s3→4, s4→5, s5-10→5: the size→max-level cap that makes derive_citadel_level
+    a faithful inverse of the ladder by construction (a player can never start an upgrade the planet
+    can't pack)."""
+    plot_count = _grid_dims_for(size)[2]
+    cap = 1
+    for level in range(1, 6):
+        if plot_count >= CITADEL_MIN_CELLS[level]:
+            cap = level
+    return cap
+
 
 def _operational(b: dict) -> bool:
     """A building counts once it has gone operational (build-queue complete) and is not browned out
@@ -1176,25 +1221,56 @@ def _step2_terraform(planet, ts) -> bool:
 
 def _step3_power_siege(planet, ps) -> bool:
     """Siege morale substep FIRST (guarded), then the KERNEL near-empty reproduce-exactly derive +
-    the K1b-1 SHADOW citadel derivation."""
+    the citadel derivation (SHADOW when CITADEL_DERIVE_AUTHORITATIVE is False, else AUTHORITATIVE)."""
     changed = False
     if planet.under_siege and planet.siege_started_at:
         changed = bool(ps.advance_siege(planet, _via_settle=True))
-    # K1b-1 SHADOW: compute derive_citadel_level over the (now-seeded) grid and LOG any divergence
-    # from the authoritative shipped citadel_level. READ-ONLY — it never writes the citadel column;
-    # the button→derived cutover is a SEPARATE Max-gated WO. Fully defensive: a shadow hiccup must
-    # never break the tick. The grid was backfilled by _get_settle_anchor before the steps run.
+    # CRT-1 CUTOVER (Max-ruled 2026-06-21): compute derive_citadel_level over the (now-seeded) grid.
+    #   * CITADEL_DERIVE_AUTHORITATIVE False → the original K1b-1 SHADOW: READ-ONLY, LOG divergence
+    #     from the shipped citadel_level (button authoritative).
+    #   * CITADEL_DERIVE_AUTHORITATIVE True → AUTHORITATIVE: on a divergence WRITE
+    #     planet.citadel_level = derived AND recompute the three caps (citadel_safe_max /
+    #     citadel_drone_capacity / citadel_max_population) from CITADEL_LEVELS[derived], matching the
+    #     button's column mapping. The size-gated upgrade ladder keeps derive a faithful inverse, so
+    #     this only ever corrects an un-packed grid, never regresses a legitimately-built citadel.
+    # Fully defensive in BOTH modes: a derive hiccup must never break the tick. The grid was
+    # backfilled by _get_settle_anchor before the steps run.
     try:
         derived = derive_citadel_level(planet.structures)
         shipped = int(getattr(planet, "citadel_level", 0) or 0)
         if derived != shipped:
-            logger.info(
-                "citadel SHADOW divergence: planet %s derived=%s vs shipped=%s "
-                "(button authoritative; cutover Max-gated)",
-                getattr(planet, "id", "?"), derived, shipped,
-            )
+            if CITADEL_DERIVE_AUTHORITATIVE and derived >= 1:
+                # derived>=1 FLOOR (mirrors check_upgrade_completion's guard): NEVER
+                # write a derived==0 — that would WIPE a real citadel whose grid is
+                # empty/un-backfilled. An empty-grid citadel planet is re-seeded by
+                # _get_settle_anchor before this runs; this floor is defense-in-depth.
+                from src.services.citadel_service import CITADEL_LEVELS
+                info = CITADEL_LEVELS.get(derived) or CITADEL_LEVELS[0]
+                planet.citadel_level = derived
+                planet.citadel_safe_max = info["safe_storage"]
+                planet.citadel_drone_capacity = info["drone_capacity"]
+                planet.citadel_max_population = info["max_population"]
+                changed = True
+                logger.info(
+                    "citadel AUTHORITATIVE write: planet %s citadel_level %s -> %s "
+                    "(grid-derived; caps recomputed)",
+                    getattr(planet, "id", "?"), shipped, derived,
+                )
+            elif CITADEL_DERIVE_AUTHORITATIVE and derived < 1 and shipped >= 1:
+                # Un-built grid on a real citadel — do NOT wipe; leave shipped + flag.
+                logger.warning(
+                    "citadel derive=0 on planet %s (shipped=%s) — grid unbuilt; "
+                    "skipping authoritative write (needs backfill/seed)",
+                    getattr(planet, "id", "?"), shipped,
+                )
+            elif not CITADEL_DERIVE_AUTHORITATIVE:
+                logger.info(
+                    "citadel SHADOW divergence: planet %s derived=%s vs shipped=%s "
+                    "(button authoritative; cutover Max-gated)",
+                    getattr(planet, "id", "?"), derived, shipped,
+                )
     except Exception:
-        logger.exception("citadel shadow-derive failed (non-fatal) for planet %s",
+        logger.exception("citadel derive (shadow/authoritative) failed (non-fatal) for planet %s",
                          getattr(planet, "id", "?"))
     return changed
 

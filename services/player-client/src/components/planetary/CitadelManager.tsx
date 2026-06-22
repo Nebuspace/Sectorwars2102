@@ -29,6 +29,14 @@ interface CitadelInfo {
   upgrade_complete_at?: string;
   upgrade_remaining_seconds?: number;
   next_level: CitadelNextLevel | null;
+  /**
+   * Highest citadel level this planet's *size* can ever reach (3–5). Small
+   * worlds physically can't host the larger key buildings, so the ladder is
+   * gated by surface area, not just credits/defense. Supplied by the citadel
+   * status API; absent on older responses, in which case no size ceiling is
+   * shown (the canon max of 5 still applies via next_level === null).
+   */
+  max_citadel_level?: number;
 }
 
 interface CitadelManagerProps {
@@ -215,7 +223,22 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
   const safeCapacity = citadel.safe_storage ?? 0;
   const safeCredits = citadel.safe_credits ?? 0;
   const storagePercent = safeCapacity > 0 ? (safeCredits / safeCapacity) * 100 : 0;
-  const next = citadel.next_level;
+
+  // --- Planet-size ceiling ---
+  // The citadel ladder is gated by the planet's surface area: small worlds
+  // physically can't host the larger key buildings, so they cap below L5.
+  // The API returns max_citadel_level (3–5); when absent, fall back to the
+  // canon ceiling of 5 so older responses behave exactly as before.
+  const sizeCap = citadel.max_citadel_level ?? 5;
+  // A planet is AT its size ceiling when the next rung the server offers would
+  // exceed what its size can host. next_level is purely "current + 1 if < 5",
+  // so it can be populated even on a size-capped world — the cap check is what
+  // turns that into a visible, intended ceiling rather than a confusing reject.
+  const atSizeCap = (citadel.next_level?.level ?? level + 1) > sizeCap;
+
+  // Hide the next-rung upgrade panel once the size ceiling is reached, even if
+  // the server still reports a next_level (it doesn't know this planet's cap).
+  const next = atSizeCap ? null : citadel.next_level;
   const upgradeCost = next?.upgrade_cost ?? 0;
   const canAffordUpgrade = playerCredits >= upgradeCost;
 
@@ -264,6 +287,25 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
         {citadel.citadel_name || (level === 0 ? 'No Citadel' : `Level ${level}`)}
       </div>
 
+      {/* Planet-size ceiling — always visible so players understand why small
+          worlds cap lower; it's intended, never a silent rejection. */}
+      {citadel.max_citadel_level !== undefined && (
+        <div
+          className={`citadel-size-cap${atSizeCap ? ' at-cap' : ''}`}
+          title={
+            sizeCap < 5
+              ? `This planet's surface area limits its citadel to Level ${sizeCap}. Larger worlds can build higher.`
+              : `This planet is large enough to reach the maximum citadel Level ${sizeCap}.`
+          }
+        >
+          <span className="size-cap-icon" aria-hidden="true">{atSizeCap ? '🛑' : '📐'}</span>
+          <span className="size-cap-text">
+            Max citadel for this planet size: <strong>L{sizeCap}</strong>
+            {atSizeCap && <span className="size-cap-flag"> — ceiling reached</span>}
+          </span>
+        </div>
+      )}
+
       {/* Citadel Structure Visualization — the city you can see grow */}
       <CitadelStructure
         level={level}
@@ -284,14 +326,21 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
         {CITADEL_TRACK.map((step) => {
           const state = step.level < level ? 'completed' : step.level === level ? 'current' : 'locked';
           const isNext = next?.level === step.level;
+          // Steps above this planet's size ceiling are physically unreachable
+          // here — render them dimmed so the ladder itself shows the cap.
+          const beyondSizeCap = step.level > sizeCap;
           return (
             <div
               key={step.level}
               role="listitem"
               tabIndex={0}
               data-flavor={CITADEL_FLAVOR[step.level]}
-              className={`citadel-step ${state} ${isNext ? 'next-up' : ''}`}
-              title={`L${step.level} ${step.name} — "${CITADEL_FLAVOR[step.level]}" Workforce cap ${step.maxColonists.toLocaleString()}, safe storage ${step.safeStorage.toLocaleString()} cr, ${step.droneCapacity} drones${CITADEL_PREREQS[step.level] ? `. ${CITADEL_PREREQS[step.level]}` : ''}`}
+              className={`citadel-step ${state} ${isNext ? 'next-up' : ''}${beyondSizeCap ? ' beyond-size-cap' : ''}`}
+              title={
+                beyondSizeCap
+                  ? `L${step.level} ${step.name} — unreachable on this planet (size caps the citadel at L${sizeCap}). Build on a larger world to reach this level.`
+                  : `L${step.level} ${step.name} — "${CITADEL_FLAVOR[step.level]}" Workforce cap ${step.maxColonists.toLocaleString()}, safe storage ${step.safeStorage.toLocaleString()} cr, ${step.droneCapacity} drones${CITADEL_PREREQS[step.level] ? `. ${CITADEL_PREREQS[step.level]}` : ''}`
+              }
             >
               <div className="step-node">
                 <span className="step-level">L{step.level}</span>
@@ -510,7 +559,19 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
       )}
 
       {!next && !citadel.is_upgrading && (
-        <div className="citadel-max-level">Maximum Level Reached</div>
+        <div className={`citadel-max-level${atSizeCap && sizeCap < 5 ? ' size-capped' : ''}`}>
+          {atSizeCap && sizeCap < 5 ? (
+            <>
+              <span className="max-level-title">Size Ceiling Reached — Level {sizeCap}</span>
+              <span className="max-level-sub">
+                This planet is too small to build beyond L{sizeCap}. Establish a
+                citadel on a larger world to reach higher levels.
+              </span>
+            </>
+          ) : (
+            'Maximum Level Reached'
+          )}
+        </div>
       )}
 
       {actionMessage && (
