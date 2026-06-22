@@ -400,8 +400,8 @@ def _maybe_stage_governor_status(player: Player, led: Dict[str, Any], soft_cap: 
 #     as a REAL credit sink — without ever minting credits FROM RP (it only DEBITS).
 #
 # REPRODUCE-EXACTLY OFF-SWITCH: FAUCET_CREDIT_COPAY = 0.0 → copay == 0 → no debit,
-# behaviour byte-identical to today (acceptance §3.6.2). Ship the RULED 0.05.
-FAUCET_CREDIT_COPAY = 0.05          # × governed_rp × RP_TO_CREDIT_RATE cr/day (Orch default — the headline E3 number)
+# behaviour byte-identical to today (acceptance §3.6.2).
+FAUCET_CREDIT_COPAY = 0.10          # × governed_rp × RP_TO_CREDIT_RATE cr/day (Max-RULED, WO-COPAY/#9: raised 0.05→0.10 so the idle-whale floor clears −3k — idle net +1,060−4,471 ≈ −3,411/day, inside the [−8k,−3k] gate band)
 
 
 def faucet_copay(governed_rp_banked: int) -> int:
