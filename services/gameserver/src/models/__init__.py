@@ -75,3 +75,4 @@ from src.models.sector_faction_influence import SectorFactionInfluence
 from src.models.medal import Medal, PlayerMedal
 from src.models.bounty_claim import BountyClaim, BountyClaimStatus
 from src.models.region_invite import RegionInvite, RegionInviteStatus, RegionInviteRedemption
+from src.models.claim_license import ClaimLicense

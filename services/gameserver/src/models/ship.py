@@ -155,6 +155,12 @@ class ShipStatus(enum.Enum):
     # dock, or jump while harmonizing; harmonization_completes_at holds
     # the deadline.
     HARMONIZING = "HARMONIZING"
+    # Ship is harvesting an ASTEROID_FIELD sector (FEATURES/economy/mining.md;
+    # DATA_MODELS/ships.md). Momentary: the harvest resolves synchronously in
+    # one request, so MINING is set and reset to IN_SPACE inside the same
+    # transaction. While MINING the hull is stationary and PvP-vulnerable
+    # (the interrupt-refund window is a deferred enhancement).
+    MINING = "MINING"
 
 
 class Ship(Base):

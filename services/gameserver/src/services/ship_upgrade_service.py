@@ -242,6 +242,41 @@ class ShipUpgradeService:
     }
 
     # ========================================================================
+    # WO-MINING — Mining Laser upgrade ladder (the "mining_laser_level" entry).
+    # ------------------------------------------------------------------------
+    # CANON (sw2102-docs FEATURES/economy/mining.md § Mining Laser upgrade ladder):
+    # the base 35,000 cr Mining Laser ships at level 0; three purchasable levels
+    # raise its yield multiplier. The per-level COST + cumulative + yield
+    # MULTIPLIER are copied VERBATIM from the canon table:
+    #   L1: 50,000 cr  (cum 85,000)   1.25×
+    #   L2: 100,000 cr (cum 185,000)  1.5×   (gate for quantum_shards trace drops)
+    #   L3: 200,000 cr (cum 385,000)  2.0×   (lifts precious_metals to its 11% cap)
+    #
+    # The level is NOT a ship.upgrades JSONB stat (which is keyed by UpgradeType
+    # and stores hull-stat upgrades) — it is a `level: int` key INSIDE the
+    # equipment_slots["mining_laser"] dict, which is where mining_service.py reads
+    # the laser level (frozen contract (F)). This entry is therefore a STRING-keyed
+    # ladder kept OUT of the UpgradeType-keyed UPGRADE_DEFINITIONS dict (whose
+    # consumers iterate it as UpgradeType members and call `.value` — a string key
+    # there would crash get_upgrade_info / purchase_upgrade / degrade_random_system).
+    # purchase_mining_laser_upgrade REUSES the existing purchase ritual
+    # (_get_ship_and_player lock → credit check → flush) rather than forking it.
+    # ========================================================================
+    MINING_LASER_LADDER = {
+        "mining_laser_level": {
+            "name": "Mining Laser Upgrade",
+            "description": "Upgrades the equipped Mining Laser, raising its yield multiplier",
+            "max_level": 3,
+            # 1-based per-level cost / yield multiplier (canon ladder table).
+            "levels": {
+                1: {"cost": 50000, "yield_multiplier": 1.25},
+                2: {"cost": 100000, "yield_multiplier": 1.5},
+                3: {"cost": 200000, "yield_multiplier": 2.0},
+            },
+        }
+    }
+
+    # ========================================================================
     # SHIP-MODS (WO-SM-2): the unified module catalog + bake-on-install effects.
     # ------------------------------------------------------------------------
     # SHIP-MODS-MASTER.md §5: the 8 legacy upgrade tracks + the 4 player
@@ -1441,6 +1476,86 @@ class ShipUpgradeService:
             "success": True,
             "message": f"{eq_name} uninstalled (no credit refund)",
             "equipment": equipment_key,
+        }
+
+    def purchase_mining_laser_upgrade(
+        self, ship_id: uuid.UUID, player_id: uuid.UUID
+    ) -> Dict[str, Any]:
+        """Buy the next Mining Laser upgrade level (WO-MINING ladder).
+
+        REUSES the existing purchase ritual (the same ``_get_ship_and_player``
+        row-lock, credit check, and ``self.db.flush()`` used by
+        ``purchase_upgrade`` / ``install_equipment``) — it does NOT fork that
+        flow. The difference is the STORE: the laser level is a ``level: int``
+        key inside ``equipment_slots["mining_laser"]`` (the slot mining_service.py
+        reads), not the UpgradeType-keyed ``ship.upgrades`` JSONB. Per-level cost
+        and the resulting yield multiplier come VERBATIM from the canon ladder
+        (MINING_LASER_LADDER). Requires a Mining Laser already installed.
+        """
+        ship, player, error = self._get_ship_and_player(ship_id, player_id)
+        if error:
+            return error
+
+        ladder = self.MINING_LASER_LADDER["mining_laser_level"]
+        max_level = ladder["max_level"]
+
+        # The laser must be installed before it can be upgraded.
+        equipment_slots = (
+            ship.equipment_slots
+            if hasattr(ship, "equipment_slots") and ship.equipment_slots
+            else {}
+        )
+        slot = equipment_slots.get("mining_laser")
+        if not isinstance(slot, dict):
+            return {
+                "success": False,
+                "message": "No Mining Laser is installed on this ship",
+            }
+
+        try:
+            current_level = int(slot.get("level", 0))
+        except (TypeError, ValueError):
+            current_level = 0
+
+        if current_level >= max_level:
+            return {
+                "success": False,
+                "message": f"Mining Laser is already at maximum level ({max_level})",
+            }
+
+        next_level = current_level + 1
+        level_def = ladder["levels"][next_level]
+        cost = level_def["cost"]
+
+        if player.credits < cost:
+            return {
+                "success": False,
+                "message": f"Insufficient credits. Need {cost:,}, have {player.credits:,}",
+                "cost": cost,
+                "player_credits": player.credits,
+            }
+
+        # Deduct credits and write the level INTO the equipment slot dict.
+        player.credits -= cost
+        slot["level"] = next_level
+        ship.equipment_slots["mining_laser"] = slot
+        flag_modified(ship, "equipment_slots")
+
+        self.db.flush()
+
+        logger.info(
+            "Player %s upgraded Mining Laser to level %d on ship %s for %s credits",
+            player_id, next_level, ship.name, f"{cost:,}",
+        )
+
+        return {
+            "success": True,
+            "message": f"Mining Laser upgraded to level {next_level}",
+            "new_level": next_level,
+            "max_level": max_level,
+            "yield_multiplier": level_def["yield_multiplier"],
+            "cost_paid": cost,
+            "remaining_credits": player.credits,
         }
 
     # ========================================================================
