@@ -40,9 +40,9 @@ Interpretations where canon leaves room (documented per NEON rules):
     the natural sector_warps network cannot reach the destination within 49
     hops (i.e. the natural-network path-distance is >= 50 or the endpoints
     are unconnected, per warp-gates.md "Placement constraints").
-  * construction_cost snapshot: Warp Jumper spec base_cost (500,000 in code —
-    code wins; canon's 1M figure is flagged in the run report) + the Phase 1
-    and Phase 3 credit costs (2 x 10,000) = 520,000.
+  * construction_cost snapshot: Warp Jumper spec base_cost (1,000,000 — the
+    seeder and construction_service now seed the canon 1M figure) + the Phase 1
+    and Phase 3 credit costs (2 x 10,000) = 1,020,000.
 """
 import logging
 import math
@@ -525,12 +525,12 @@ def _lazy_expire_beacon(db: Session, beacon: WarpGateBeacon, now: Optional[datet
 
 
 def _warp_jumper_construction_cost(db: Session) -> int:
-    """Build-cost snapshot: WJ spec base_cost (code-wins 500,000) + the two
-    10,000 cr phase payments = 520,000."""
+    """Build-cost snapshot: WJ spec base_cost (canon 1,000,000) + the two
+    10,000 cr phase payments = 1,020,000."""
     spec = db.query(ShipSpecification).filter(
         ShipSpecification.type == ShipType.WARP_JUMPER
     ).first()
-    base = spec.base_cost if spec else 500_000
+    base = spec.base_cost if spec else 1_000_000
     return base + PHASE1_CREDITS + PHASE3_CREDITS
 
 

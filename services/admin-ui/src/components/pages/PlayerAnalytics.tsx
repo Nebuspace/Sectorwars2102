@@ -187,8 +187,9 @@ const PlayerAnalytics: React.FC = () => {
     return region?.display_name || region?.name || 'Unknown Region';
   }, [regions]);
 
-  // Enhanced player management functions (placeholder implementations)
-  // These will be fully implemented when sub-components are added
+  // Player management UI handlers. Analytics data is wired to the live admin
+  // API (players/comprehensive + analytics/real-time), with graceful demotion
+  // when the real-time endpoint is unavailable rather than invented values.
 
   // UI event handlers
   const handleFiltersChange = useCallback((newFilters: PlayerFilters) => {
