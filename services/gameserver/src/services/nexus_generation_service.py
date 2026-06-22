@@ -375,6 +375,11 @@ class NexusGenerationService:
                 # More patrols: seed patrol_ships into the defenses blob.
                 # NO-CANON patrol count: 2-4 patrol ships per military sector.
                 patrol_count = random.randint(2, 4)
+                # WO-GX1 CRITICAL: patrol_ships MUST be a SCALAR INT, never a
+                # list-of-dicts — four live consumers read it via int()
+                # (combat_service.py:3506, port_ownership_service.py:1792,
+                # admin.py:1495, admin_comprehensive.py:970); a list detonates
+                # combat + admin in every military sector.
                 sector_data["defenses"] = {
                     "defense_drones": 0,
                     "owner_id": None,
@@ -382,10 +387,7 @@ class NexusGenerationService:
                     "team_id": None,
                     "mines": 0,
                     "mine_owner_id": None,
-                    "patrol_ships": [
-                        {"type": "nexus_patrol", "index": p}
-                        for p in range(patrol_count)
-                    ],
+                    "patrol_ships": patrol_count,
                 }
 
             # FRONTIER_OUTPOST: more nebula. NEVER the starter (sector 1).

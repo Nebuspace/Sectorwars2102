@@ -156,6 +156,160 @@ _SECURITY_BY_CLUSTER_TYPE: Dict[ClusterType, int] = {
     ClusterType.SPECIAL_INTEREST: 4,
 }
 
+# ---------------------------------------------------------------------------
+# WO-GX1 Lane 2 (Gap B) — cluster-type seeding-bias magnitudes
+# ---------------------------------------------------------------------------
+# The bias TYPES are already rolled by sw2102-bang (clusters.ts:51-91); this
+# import path historically consumed cluster.type ONLY for security_level + nebula
+# and dropped every seeding effect. GX1 ports the bias application here, keyed off
+# the already-rolled cluster.type. All magnitudes are NO-CANON except the two doc
+# anchors (RESOURCE_RICH +50% ratio = generation.md:99; FRONTIER ×0.5 density =
+# generation.md:101). Off/regression baseline: types-absent ≡ no-bias ≡ today.
+
+#: RESOURCE_RICH asteroid-yield ratio. +50% is the ONE canon-anchored magnitude
+#: (generation.md:99 — the RATIO, not the absolute base).
+_GX1_RESOURCE_RICH_YIELD_RATIO: float = 1.5
+
+#: RESOURCE_RICH asteroid base ore/precious_metals/radioactives. INVENTED
+#: NO-CANON launch base (the +50% above is applied ON TOP of this baseline, then
+#: composed with the zone multiplier). bang carries no per-sector yield to
+#: multiply, so this is the baseline being scaled (master §3.1c / MAX-MEMO N3).
+_GX1_RESOURCE_RICH_BASE: Dict[str, int] = {
+    "ore": 1000,
+    "precious_metals": 400,
+    "radioactives": 200,
+}
+
+#: RESOURCE_RICH per-sector asteroid probability (NO-CANON ~0.5). Probabilistic,
+#: not a blanket flag on the whole cluster (MAX-MEMO N4 — canon says "higher
+#: probability"), preserving the discovery the design wants.
+_GX1_RESOURCE_RICH_ASTEROID_P: float = 0.5
+
+#: FRONTIER_OUTPOST per-sector nebula chance (NO-CANON 0.15).
+_GX1_FRONTIER_NEBULA_CHANCE: float = 0.15
+
+#: MILITARY_ZONE patrol_ships range (NO-CANON). Written as a SCALAR INT — a
+#: list-of-dicts detonates 4 live consumers that int(...) the key.
+_GX1_MILITARY_PATROL_MIN: int = 2
+_GX1_MILITARY_PATROL_MAX: int = 4
+
+#: Gap-B zone yield multipliers (Federation / Border / Frontier), composed
+#: MULTIPLICATIVELY with the RESOURCE_RICH ratio (MAX-MEMO B3 / N8): a Frontier
+#: RESOURCE_RICH cluster = 1.4 × 1.5 = ×2.1 ore (the game's richest yield, gated
+#: behind frontier risk + distance). NO-CANON magnitudes (generation.md:84-86
+#: are Design-only). Zone is derived per-sector below: fedspace → Federation,
+#: FRONTIER_OUTPOST cluster → Frontier, everything else → Border.
+_GX1_ZONE_MULTIPLIER_FEDERATION: float = 0.7
+_GX1_ZONE_MULTIPLIER_BORDER: float = 1.0
+_GX1_ZONE_MULTIPLIER_FRONTIER: float = 1.4
+
+
+def _gx1_zone_multiplier(cluster_type: ClusterType, is_fedspace: bool) -> float:
+    """Derive the Gap-B zone yield multiplier for one sector.
+
+    Zone is derived from the available per-sector signals:
+      - fedspace sector → Federation (×0.7, the secured core).
+      - FRONTIER_OUTPOST cluster → Frontier (×1.4, the risky rim).
+      - everything else → Border (×1.0).
+    fedspace wins over frontier (a fedspace sector is in the secured core even
+    if its cluster is a frontier type — fedspace is the stronger signal).
+    """
+    if is_fedspace:
+        return _GX1_ZONE_MULTIPLIER_FEDERATION
+    if cluster_type == ClusterType.FRONTIER_OUTPOST:
+        return _GX1_ZONE_MULTIPLIER_FRONTIER
+    return _GX1_ZONE_MULTIPLIER_BORDER
+
+
+def _gx1_sector_bias(
+    cluster_type: ClusterType,
+    is_fedspace: bool,
+    is_starter: bool,
+    rng: "random.Random",
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str], bool]:
+    """Compute the GX1 seeding-bias fields for ONE bang-imported sector.
+
+    Returns ``(resources, defenses, controlling_faction, force_nebula)``:
+      - ``resources`` — RESOURCE_RICH asteroid blob (×1.5 × zone-multiplier,
+        composed MULTIPLICATIVELY), or None (→ Sector column default).
+      - ``defenses`` — MILITARY_ZONE defenses blob with patrol_ships as a SCALAR
+        INT, or None (→ Sector column default).
+      - ``controlling_faction`` — None always for now (CONTESTED leaves it
+        explicitly null = uncontrolled; matches the column default).
+      - ``force_nebula`` — True when FRONTIER_OUTPOST rolls a nebula sector.
+
+    Pure + deterministic given ``rng``. The starter sector is exempt from ALL
+    biases. STANDARD / POPULATION_CENTER / TRADE_HUB (and any non-biased type)
+    return all-None / False — byte-identical to today. ``rng`` is threaded so the
+    caller controls the RNG stream (no hidden global-random dependency).
+    """
+    resources: Optional[Dict[str, Any]] = None
+    defenses: Optional[Dict[str, Any]] = None
+    controlling_faction: Optional[str] = None
+    force_nebula = False
+
+    if is_starter:
+        return resources, defenses, controlling_faction, force_nebula
+
+    if cluster_type == ClusterType.RESOURCE_RICH:
+        # PROBABILISTIC per-sector asteroid roll (~0.5), composed MULTIPLICATIVELY:
+        # base × RESOURCE_RICH ratio (1.5) × zone multiplier. Frontier RR = ×2.1.
+        # Apply each multiplier SEQUENTIALLY and round() (not int-truncate) so
+        # float-association noise (1.5*0.7 == 1.0499999…) can't silently shave a
+        # credit off the composed yield.
+        if rng.random() < _GX1_RESOURCE_RICH_ASTEROID_P:
+            zone_mult = _gx1_zone_multiplier(cluster_type, is_fedspace)
+
+            def _compose(base: int) -> int:
+                return int(round(base * _GX1_RESOURCE_RICH_YIELD_RATIO * zone_mult))
+
+            resources = {
+                "has_asteroids": True,
+                "asteroid_yield": {
+                    "ore": _compose(_GX1_RESOURCE_RICH_BASE["ore"]),
+                    "precious_metals": _compose(
+                        _GX1_RESOURCE_RICH_BASE["precious_metals"]
+                    ),
+                    "radioactives": _compose(
+                        _GX1_RESOURCE_RICH_BASE["radioactives"]
+                    ),
+                },
+                "gas_clouds": [],
+                "has_scanned": False,
+            }
+
+    elif cluster_type == ClusterType.MILITARY_ZONE:
+        # patrol_ships MUST be a scalar int (review CRITICAL — 4 live consumers
+        # int(...) it). NO-CANON 2-4 patrols per military sector.
+        patrol_count = rng.randint(
+            _GX1_MILITARY_PATROL_MIN, _GX1_MILITARY_PATROL_MAX
+        )
+        defenses = {
+            "defense_drones": 0,
+            "owner_id": None,
+            "owner_name": None,
+            "team_id": None,
+            "mines": 0,
+            "mine_owner_id": None,
+            "patrol_ships": patrol_count,
+        }
+
+    elif cluster_type == ClusterType.FRONTIER_OUTPOST:
+        # Frontier scatters nebula sectors. (Port-density halving is a Nexus-only
+        # concept — bang controls its own port placement, so Gap B only carries
+        # the nebula scatter here.)
+        if rng.random() < _GX1_FRONTIER_NEBULA_CHANCE:
+            force_nebula = True
+
+    elif cluster_type == ClusterType.CONTESTED:
+        # CONTESTED is meaningful in player regions (bang already sets a lower
+        # security via _SECURITY_BY_CLUSTER_TYPE). The seeding bias is explicit
+        # non-assignment: controlling_faction stays null (uncontrolled). Setting
+        # it None explicitly documents the intent; it matches the column default.
+        controlling_faction = None
+
+    return resources, defenses, controlling_faction, force_nebula
+
 #: Bang region-type → expected sector count (sanity check only).
 _EXPECTED_SECTOR_COUNT: Dict[RegionType, Optional[int]] = {
     "player_owned": None,
@@ -253,6 +407,21 @@ class SectorSpec:
     special_features: List[str]
     is_discovered: bool
     description: Optional[str] = None
+    # WO-GX1 Lane 2 (Gap B): per-cluster-type seeding biases ported into the
+    # bang import path, keyed off the already-rolled cluster.type. These are
+    # the same biases the Nexus applies in-process; here they thread through
+    # the SectorSpec → Sector(...) materialisation (the 3-site dataclass thread,
+    # master §3.2). ALL default None so a sector with no bias falls back to the
+    # Sector model's column defaults — i.e. bias-types-absent ≡ no-bias ≡ today
+    # (the off/regression baseline). Only non-STANDARD/biased sectors set them.
+    #   - resources: RESOURCE_RICH asteroid yield (×1.5 RESOURCE_RICH × zone
+    #     multiplier, composed MULTIPLICATIVELY — Frontier RR = ×2.1).
+    #   - defenses: MILITARY_ZONE patrol_ships as a SCALAR INT (never a list —
+    #     four live consumers int(...) it).
+    #   - controlling_faction: CONTESTED leaves it explicitly null (uncontrolled).
+    resources: Optional[Dict[str, Any]] = None
+    defenses: Optional[Dict[str, Any]] = None
+    controlling_faction: Optional[str] = None
 
 
 @dataclass
@@ -1355,7 +1524,7 @@ class BangImportService:
         for ss in region_plan.sectors:
             sector_number_by_int[ss.sector_id] = ss.sector_number
             cluster_uuid = cluster_uuid_by_int[ss.cluster_int_id]
-            sector = Sector(
+            sector_kwargs: Dict[str, Any] = dict(
                 sector_id=ss.sector_id,
                 # ADR-0005: region-LOCAL number (was erroneously the global
                 # sector_id). Drives uq_sectors_region_sector_number.
@@ -1376,6 +1545,20 @@ class BangImportService:
                 is_discovered=ss.is_discovered,
                 description=ss.description,
             )
+            # WO-GX1 Lane 2 (Gap B): wire the seeding-bias fields ONLY when set.
+            # Omitting a key lets the Sector model's python-side column default
+            # fire (resources/defenses are NOT NULL with dict defaults), so a
+            # non-biased sector is byte-identical to today (the off baseline).
+            # We never pass None for resources/defenses (that would persist NULL
+            # and violate the NOT NULL constraint). controlling_faction IS
+            # nullable, so omitting it also yields the default (null).
+            if ss.resources is not None:
+                sector_kwargs["resources"] = ss.resources
+            if ss.defenses is not None:
+                sector_kwargs["defenses"] = ss.defenses
+            if ss.controlling_faction is not None:
+                sector_kwargs["controlling_faction"] = ss.controlling_faction
+            sector = Sector(**sector_kwargs)
             session.add(sector)
             await session.flush()
             sector_uuid_by_int[ss.sector_id] = sector.id  # type: ignore[assignment]
@@ -2010,6 +2193,32 @@ class BangImportService:
             nebula = sector_payload.get("nebula")
             sector_type = SectorType.NEBULA if nebula else SectorType.STANDARD
 
+            # WO-GX1 Lane 2 (Gap B): apply the per-cluster-type seeding biases,
+            # keyed off the already-rolled cluster.type. The starter (region
+            # capital) is exempt from all biases. We thread a per-region RNG so
+            # the rolls are deterministic for a given (universe seed, sid) and
+            # never reach for global random. fedspace membership selects the
+            # Federation zone multiplier; FRONTIER_OUTPOST selects Frontier.
+            is_starter_sector = sid == capital_sector_number
+            # Deterministic per-(seed, sid) RNG — string seed (random.Random does
+            # not accept tuples). Threaded so rolls never reach for global random.
+            bias_rng = random.Random(f"gx1:{universe.seed}:{sid}")
+            (
+                bias_resources,
+                bias_defenses,
+                bias_faction,
+                bias_force_nebula,
+            ) = _gx1_sector_bias(
+                cluster_spec.type,
+                sid in fedspace_set,
+                is_starter_sector,
+                bias_rng,
+            )
+            # FRONTIER_OUTPOST nebula scatter promotes a non-nebula sector to
+            # NEBULA (does not override a sector bang already marked nebula).
+            if bias_force_nebula and not nebula:
+                sector_type = SectorType.NEBULA
+
             special_features: List[str] = []
             if sid in special_location_by_sector:
                 special_features.append(
@@ -2077,6 +2286,10 @@ class BangImportService:
                     nav_beacons=nav_beacons,
                     special_features=special_features,
                     is_discovered=bool(sector_payload.get("explored", False)),
+                    # WO-GX1 Lane 2 (Gap B): seeding biases (None → column default)
+                    resources=bias_resources,
+                    defenses=bias_defenses,
+                    controlling_faction=bias_faction,
                 )
             )
 
