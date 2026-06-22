@@ -80,6 +80,7 @@ class IllegalCommodity(str, enum.Enum):
 # merits. To ever enable it, a human must edit this line in source review —
 # which is the explicit gate Max asked for ([OPEN-2] is a *theme* decision, not a
 # runtime flag flip). Do not add an enable path; the reviewer asserts its absence.
+# SLAVES: intentionally disabled + omitted from public canon by design (2026-06-22).
 SLAVES_ENABLED: bool = False
 
 # The set of commodities that are permanently disabled regardless of any flag.
