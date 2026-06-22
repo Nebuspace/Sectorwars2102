@@ -573,6 +573,7 @@ export const PlanetManager: React.FC = () => {
             <div className="planet-overview citadel-tab-content">
               <TerraformingPanel
                 planetId={selectedPlanet.id}
+                planetType={selectedPlanet.planetType}
                 playerCredits={playerState?.credits ?? 0}
                 habitabilityScore={getHabitabilityScore(selectedPlanet as PlanetWithExtras)}
                 onUpdate={loadPlanets}

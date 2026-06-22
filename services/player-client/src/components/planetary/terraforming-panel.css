@@ -322,6 +322,102 @@
   text-align: center;
 }
 
+/* ---- Capstone: Confirm Biome (terminal terraform step) ---- */
+.terraforming-capstone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.06), rgba(68, 221, 136, 0.06));
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 8px;
+}
+
+.capstone-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.capstone-tag {
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  background: rgba(34, 211, 238, 0.18);
+  color: #67e8f9;
+  border: 1px solid rgba(34, 211, 238, 0.45);
+}
+
+.capstone-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #a5f3ec;
+}
+
+.capstone-intro {
+  font-size: 0.74rem;
+  color: #9fc7c9;
+  line-height: 1.4;
+}
+
+.capstone-btn {
+  border-color: #22d3ee;
+  color: #67e8f9;
+  font-weight: 600;
+  align-self: flex-start;
+}
+
+.capstone-btn:hover:not(:disabled) {
+  background: rgba(34, 211, 238, 0.15);
+  color: #a5f3ec;
+}
+
+/* Reclassification result (after a successful confirm) */
+.capstone-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.capstone-transition {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #aaffcc;
+}
+
+.capstone-arrow {
+  color: #67e8f9;
+}
+
+.capstone-result-note {
+  font-size: 0.72rem;
+  color: #7dd3b0;
+  font-style: italic;
+}
+
+/* Gate / success feedback under the capstone */
+.capstone-message {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 0.76rem;
+  text-align: center;
+}
+
+.capstone-message-ok {
+  background: rgba(68, 221, 136, 0.1);
+  border: 1px solid rgba(68, 221, 136, 0.3);
+  color: #aaffcc;
+}
+
+.capstone-message-gate {
+  background: rgba(255, 170, 68, 0.1);
+  border: 1px solid rgba(255, 170, 68, 0.35);
+  color: #ffc58a;
+}
+
 /* ---- Reduced motion ---- */
 @media (prefers-reduced-motion: reduce) {
   .terraforming-spinner {

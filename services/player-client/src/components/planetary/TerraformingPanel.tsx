@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getAuthToken } from '../../utils/auth';
+import { terraformAPI } from '../../services/api';
 import './terraforming-panel.css';
 
 /**
@@ -99,12 +100,40 @@ interface TerraformingStatus {
   durationHours?: number;
   level?: number;
   levelName?: string;
+  // Backend may echo the planet's current type on the status payload; the
+  // capstone falls back to this when the prop is not supplied.
+  planetType?: string;
 }
 
 /** Habitability at or above this makes terraforming unnecessary (mirrors gameserver). */
 const TERRAFORMING_MIN_TARGET = 90;
 /** Cancellation refunds this fraction of the credit cost (mirrors gameserver). */
 const CANCEL_REFUND_PERCENT = 50;
+
+/**
+ * Biome reclassification map for the terraform capstone (CRT-3 / PL2).
+ * Keyed on the uppercased current planet type → the target type the
+ * confirm-biome action reclassifies to. Only these types are reclassable;
+ * everything else hides the capstone control entirely.
+ */
+const RECLASS_MAP: Record<string, string> = {
+  BARREN: 'VOLCANIC',
+  ICE: 'DESERT',
+};
+
+/** Title-case a planet type for display ("VOLCANIC" → "Volcanic"). */
+const prettyType = (type: string): string =>
+  type ? type.charAt(0).toUpperCase() + type.slice(1).toLowerCase() : type;
+
+const typeIcon = (type: string): string => {
+  const icons: Record<string, string> = {
+    BARREN: '🪨',
+    ICE: '❄️',
+    VOLCANIC: '🌋',
+    DESERT: '🏜️',
+  };
+  return icons[type] || '🪐';
+};
 
 /** Normalize one raw level entry, tolerating camelCase or snake_case field names. */
 const normalizeLevel = (raw: unknown): TerraformingLevel | null => {
@@ -165,6 +194,12 @@ interface TerraformingPanelProps {
   playerCredits: number;
   /** Habitability from the planet payload, used as a fallback readout. */
   habitabilityScore?: number | null;
+  /**
+   * Current planet type (e.g. "BARREN", "ICE"). Drives the terminal
+   * "Confirm Biome" capstone — only reclassable types (BARREN, ICE) show it.
+   * Falls back to the status payload's planetType when not supplied.
+   */
+  planetType?: string | null;
   onUpdate?: () => void;
 }
 
@@ -174,6 +209,7 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
   planetId,
   playerCredits,
   habitabilityScore = null,
+  planetType = null,
   onUpdate,
 }) => {
   const [availability, setAvailability] = useState<Availability>('checking');
@@ -183,6 +219,14 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  // Capstone state: separate from the level-action message so the gate
+  // explanation and the reclassification result render in their own slot.
+  const [capstoneLoading, setCapstoneLoading] = useState(false);
+  const [capstoneMessage, setCapstoneMessage] = useState<string | null>(null);
+  const [capstoneError, setCapstoneError] = useState<boolean>(false);
+  // Once reclassified, latch the new type so the control reflects the result
+  // even before the parent's onUpdate refetch repaints the planet header.
+  const [reclassedTo, setReclassedTo] = useState<string | null>(null);
 
   const fetchStatus = useCallback(
     async (silent = false) => {
@@ -219,6 +263,9 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
   useEffect(() => {
     setStatus(null);
     setActionMessage(null);
+    setCapstoneMessage(null);
+    setCapstoneError(false);
+    setReclassedTo(null);
     fetchStatus();
   }, [fetchStatus]);
 
@@ -267,6 +314,39 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
       setActionMessage(err instanceof Error ? err.message : 'Failed to cancel terraforming');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  // ---- Capstone (Confirm Biome) ----
+  // Resolve the current type from the prop first, then the status payload.
+  // Uppercase so the reclass map keys match regardless of backend casing.
+  const currentType = (planetType ?? status?.planetType ?? '').toUpperCase();
+  const capstoneTarget = reclassedTo ? null : RECLASS_MAP[currentType] ?? null;
+  const isReclassable = capstoneTarget !== null;
+
+  const handleConfirmBiome = async () => {
+    if (capstoneLoading || !capstoneTarget) return;
+    try {
+      setCapstoneLoading(true);
+      setCapstoneMessage(null);
+      setCapstoneError(false);
+      await terraformAPI.confirmBiome(planetId);
+      setReclassedTo(capstoneTarget);
+      setCapstoneMessage(
+        `Biome confirmed — ${prettyType(currentType)} reclassified to ${prettyType(capstoneTarget)}. Production efficiency will recompute on the next tick.`
+      );
+      await fetchStatus(true);
+      onUpdate?.();
+    } catch (err) {
+      // The server 400 carries the friendly gate reason (e.g. "biome must
+      // hold 24 ticks (held 7)") — surface it verbatim so the player
+      // understands what's still required.
+      setCapstoneError(true);
+      setCapstoneMessage(
+        err instanceof Error ? err.message : 'Biome could not be confirmed yet.'
+      );
+    } finally {
+      setCapstoneLoading(false);
     }
   };
 
@@ -453,6 +533,57 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
       {!isActive && levels.length === 0 && !habMaxed && (
         <div className="terraforming-no-levels">
           No terraforming programs are currently offered. Check back after the next uplink sync.
+        </div>
+      )}
+
+      {/* ---- Capstone: Confirm Biome (terminal terraform step) ---- */}
+      {(isReclassable || reclassedTo) && (
+        <div className="terraforming-capstone">
+          <div className="capstone-header">
+            <span className="capstone-tag">CAPSTONE</span>
+            <span className="capstone-title">Biome Confirmation</span>
+          </div>
+          {reclassedTo ? (
+            <div className="capstone-result">
+              <span className="capstone-transition">
+                {typeIcon(currentType)} {prettyType(currentType)}
+                <span className="capstone-arrow" aria-hidden="true"> → </span>
+                {typeIcon(reclassedTo)} {prettyType(reclassedTo)}
+              </span>
+              <span className="capstone-result-note">
+                Biome locked in. This world is now classified {prettyType(reclassedTo)}.
+              </span>
+            </div>
+          ) : (
+            <>
+              <div className="capstone-intro">
+                Once the grid&apos;s climate axes have held inside the target biome&apos;s
+                natural band, you can permanently reclassify this world. This is the terminal
+                terraform step — it sets the planet&apos;s type and its production profile.
+              </div>
+              <button
+                onClick={handleConfirmBiome}
+                disabled={capstoneLoading}
+                className="terraforming-btn capstone-btn"
+                title={
+                  capstoneTarget
+                    ? `Reclassify ${prettyType(currentType)} → ${prettyType(capstoneTarget)} once the biome has held the required ticks`
+                    : undefined
+                }
+              >
+                {capstoneLoading
+                  ? 'Confirming…'
+                  : `🌍 Confirm Biome → ${prettyType(capstoneTarget as string)}`}
+              </button>
+            </>
+          )}
+          {capstoneMessage && (
+            <div
+              className={`capstone-message${capstoneError ? ' capstone-message-gate' : ' capstone-message-ok'}`}
+            >
+              {capstoneMessage}
+            </div>
+          )}
         </div>
       )}
 

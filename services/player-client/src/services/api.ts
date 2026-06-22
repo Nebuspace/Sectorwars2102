@@ -555,6 +555,17 @@ export const gridAPI = {
     }),
 };
 
+// Terraforming capstone (CRT grid). The confirm-biome ACTION reclassifies
+// planet.type (BARREN -> VOLCANIC, ICE -> DESERT) once the area-weighted grid
+// axes have held inside the target biome's band for CAPSTONE_HOLD_TICKS.
+// 400 carries a friendly server message (e.g. "biome must hold 24 ticks (held 7)").
+export const terraformAPI = {
+  confirmBiome: (planetId: string) =>
+    apiRequest(`/api/v1/planets/${planetId}/terraforming/confirm-biome`, {
+      method: 'POST',
+    }),
+};
+
 // Ship Upgrade APIs (real backend endpoints)
 export const shipUpgradeAPI = {
   getUpgrades: (shipId: string) =>

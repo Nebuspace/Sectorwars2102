@@ -1048,6 +1048,85 @@ def confirm_biome(structures: dict, target_biome: Optional[str]) -> dict:
             "axes": {a: round(axes_mean[a], 1) for a in TERRA_AXES}}
 
 
+# ---------------------------------------------------------------------------
+# K1b-5 biome CAPSTONE — hold-tick maintenance + planet.type reclassification
+# (CRT-3, folds WO-PL2; Max APPROVED the planet.type write + the default-TRUE flag).
+# ---------------------------------------------------------------------------
+# Single-target reclass map (PL2): a barren rock terraformed to its target band hardens to a real
+# biome. Keyed by the PlanetType ENUM NAME (resolve via _planet_type_name(planet)). VOLCANIC/DESERT
+# are themselves the NATURAL_BAND target the capstone confirms against (so BARREN→VOLCANIC means
+# "hold the VOLCANIC band", ICE→DESERT means "hold the DESERT band").
+BIOME_RECLASS_MAP = {"BARREN": "VOLCANIC", "ICE": "DESERT"}
+# Spec 03-spec-terraform.md E4 / 04-implementation-plan.md: the capstone is held for CAPSTONE_HOLD_TICKS
+# consecutive maintained ticks before the reclass ACTION is allowed.
+CAPSTONE_HOLD_TICKS = 24
+# Reversible flag (the ADR amendment — Max approved shipping it default TRUE). Flip to False to
+# disable the capstone entirely (the endpoint 403s and reclass_planet_type no-ops) without a revert.
+BIOME_RECLASS_ENABLED = True
+
+
+def _maintain_biome_hold(planet, structures: dict, applied_ticks: int) -> None:
+    """K1b-5 hold-tick MAINTENANCE — the WRITE half of the capstone (confirm_biome only READS the
+    counter this maintains). Called from _step2_terraform AFTER the grid field advanced, and ONLY
+    when ``applied_ticks > 0`` (a caught-up/duplicate settle applies 0 ticks → must NOT double-count
+    the hold). For a planet whose type NAME is reclass-eligible:
+      * grid still within the target band → increment ``terraform_meta.biome_hold[TARGET]`` by the
+        applied ticks, capped at CAPSTONE_HOLD_TICKS (a maintained hold accrues toward the capstone);
+      * grid drifted out of band → reset the counter to 0 (an unfed/decayed band loses its hold).
+    Mutates via the dict-reassign + flag_modified discipline. Fully defensive — never breaks the tick."""
+    if applied_ticks <= 0:
+        return
+    try:
+        type_name = (_planet_type_name(planet) or "").upper()
+        target = BIOME_RECLASS_MAP.get(type_name)
+        if not target:
+            return
+        confirmed = bool(confirm_biome(structures, target)["confirmed"])
+        tmeta = dict(structures.get("terraform_meta")) if isinstance(structures.get("terraform_meta"), dict) else {}
+        hold = dict(tmeta.get("biome_hold")) if isinstance(tmeta.get("biome_hold"), dict) else {}
+        if confirmed:
+            # Credit at most +1 per settle (NOT +applied_ticks): we observe the
+            # POST-advance confirmed state only once per settle, so a long-dormant
+            # catch-up (many ticks) must NOT instantly grant the full hold just because
+            # the band was reached on the final tick. Conservative + exploit-free; the
+            # accrual unit is "confirmed settles" (NO-CANON — flagged to Max).
+            current = int(hold.get(target, 0) or 0)
+            hold[target] = min(CAPSTONE_HOLD_TICKS, current + 1)
+        else:
+            hold[target] = 0
+        tmeta["biome_hold"] = hold
+        structures["terraform_meta"] = tmeta
+        flag_modified(planet, "structures")
+    except Exception:
+        logger.exception("K1b-5 biome-hold maintenance failed (non-fatal) for planet %s",
+                         getattr(planet, "id", "?"))
+
+
+def reclass_planet_type(planet) -> Optional[str]:
+    """K1b-5 capstone ACTION (folds WO-PL2): if the planet has held its target biome band for
+    ``CAPSTONE_HOLD_TICKS`` maintained ticks, reclassify ``planet.type`` to the hardened biome and
+    return the new type NAME; otherwise return None. PURE w.r.t. structures (reads the grid + the
+    maintained hold counter, writes NOTHING to structures) — it sets only ``planet.type`` (and the
+    ``planet_type`` String API-mirror). The CALLER commits. Production type-efficiency auto-recomputes
+    via ``planetary_service.type_efficiency_for(planet.type)`` on the next production tick — no
+    explicit recompute is needed. Gated behind the reversible BIOME_RECLASS_ENABLED flag."""
+    if not BIOME_RECLASS_ENABLED:
+        return None
+    from src.models.planet import PlanetType
+    type_name = (_planet_type_name(planet) or "").upper()
+    target = BIOME_RECLASS_MAP.get(type_name)
+    if not target:
+        return None
+    structures = planet.structures if isinstance(planet.structures, dict) else {}
+    res = confirm_biome(structures, target)
+    if res["confirmed"] and int(res["hold_ticks"]) >= CAPSTONE_HOLD_TICKS:
+        planet.type = PlanetType[target]
+        if hasattr(planet, "planet_type"):
+            planet.planet_type = target   # API-compat String mirror (Planet.planet_type)
+        return target
+    return None
+
+
 def _advance_grid_field(planet, structures: dict) -> int:
     """K1b-2 CUTOVER: advance the terraform grid field by the CANONICAL hours elapsed since its own
     wall-clock inner anchor ``terraform_meta.last_grid_tick_at`` — 1 tick = GRID_TICK_PERIOD_HOURS
@@ -1211,7 +1290,10 @@ def _step2_terraform(planet, ts) -> bool:
     try:
         st = planet.structures if isinstance(planet.structures, dict) else None
         if st is not None and grid_habitability(st) is not None:
-            _advance_grid_field(planet, st)              # flags structures itself when it mutates
+            applied_ticks = _advance_grid_field(planet, st)   # flags structures itself when it mutates
+            # K1b-5 biome capstone: maintain the hold-tick counter ONLY for ticks actually applied
+            # (a caught-up/duplicate settle applies 0 → must not double-count the hold).
+            _maintain_biome_hold(planet, st, applied_ticks)
             new_hab = grid_habitability(st)
             old_hab = int(getattr(planet, "habitability_score", 0) or 0)
             if new_hab is not None and int(new_hab) != old_hab:

@@ -1761,3 +1761,73 @@ async def cancel_terraforming(
         return service.cancel_terraforming(pid, player.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{planet_id}/terraforming/confirm-biome")
+async def confirm_biome_reclass(
+    planet_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """
+    K1b-5 biome capstone (folds WO-PL2): reclassify a planet's type once it has held its
+    target biome band for the full capstone duration. Owner-only.
+
+    A barren rock terraformed to its target band and held there hardens into a real biome:
+    BARREN -> VOLCANIC, ICE -> DESERT (the single-target reclass map). The capstone is gated:
+    the area-weighted grid axes must be within the target biome's natural band AND have held
+    there for CAPSTONE_HOLD_TICKS maintained terraform ticks (maintenance accrues lazily on
+    settle()'s step-2). On success the planet's type is reclassified; production type-efficiency
+    auto-recomputes via type_efficiency_for(planet.type) on the next production tick.
+    """
+    from src.services import structures as structures_svc
+
+    if not structures_svc.BIOME_RECLASS_ENABLED:
+        raise HTTPException(status_code=403, detail="biome reclassification is not enabled")
+
+    try:
+        pid = UUID(planet_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    # Lock the planet row — this writes planet.type (mirrors the claim/transfer owner-write
+    # convention of locking the row before mutating it).
+    planet = db.query(Planet).filter(Planet.id == pid).with_for_update().first()
+    if planet is None:
+        raise HTTPException(status_code=404, detail="Planet not found")
+
+    # Owner-only (mirrors the set-landing-rights / terraform ownership gate).
+    if planet.owner_id is None or planet.owner_id != player.id:
+        raise HTTPException(status_code=403, detail="Only the planet's owner can reclassify its biome")
+
+    type_name = (structures_svc._planet_type_name(planet) or "").upper()
+    target = structures_svc.BIOME_RECLASS_MAP.get(type_name)
+    if target is None:
+        raise HTTPException(status_code=400, detail="this planet type cannot be biome-reclassified")
+
+    # confirm_biome reads structures.plots — a never-settled planet has null structures
+    # (it would raise). seed() is idempotent; ensures a grid exists to read the band from.
+    if not isinstance(planet.structures, dict) or not isinstance(planet.structures.get("grid"), dict):
+        structures_svc.seed(planet)
+
+    res = structures_svc.confirm_biome(planet.structures, target)
+    if not res["confirmed"]:
+        raise HTTPException(status_code=400, detail=f"biome not yet at the {target} band")
+    if int(res["hold_ticks"]) < structures_svc.CAPSTONE_HOLD_TICKS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"biome must hold {structures_svc.CAPSTONE_HOLD_TICKS} ticks "
+                f"(held {int(res['hold_ticks'])})"
+            ),
+        )
+
+    old_type = planet.type.value if planet.type is not None else None
+    new_type = structures_svc.reclass_planet_type(planet)
+    db.commit()
+    return {
+        "success": True,
+        "old_type": old_type,
+        "new_type": new_type,
+        "message": f"Biome confirmed — planet reclassified to {new_type}",
+    }
