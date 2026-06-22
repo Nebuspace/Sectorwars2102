@@ -62,6 +62,10 @@ class ShipResponse(BaseModel):
     current_value: int
     genesis_devices: int = 0
     max_genesis_devices: int = 0
+    # WO-UI-FIELDS: the installed Mining Laser ladder level (from
+    # equipment_slots["mining_laser"]["level"]) so the laser-upgrade UI can show
+    # the CURRENT level before a refit. None when no Mining Laser is fitted.
+    mining_laser_level: int | None = None
 
 class RepairShipResponse(BaseModel):
     success: bool
@@ -86,6 +90,11 @@ class FormationResponse(BaseModel):
     # placeholder instead of leaking the formation's identity.
     name: str | None = None
     type: str | None = None
+    # WO-UI-FIELDS: whether this formation's one-time investigation reward has
+    # already been claimed (derived from is_formation_investigated) so the
+    # Investigate UI can mark it done without a per-item fetch. Only meaningful
+    # once discovered.
+    is_investigated: bool = False
 
 class FormationInvestigateRewardResponse(BaseModel):
     """The reward granted by investigating a formation. [NO-CANON]: the reward
@@ -109,6 +118,22 @@ class FormationInvestigateResponse(BaseModel):
     credits_remaining: int
     # FLAG: the reward magnitude is [NO-CANON] — proposed, pending Max's ruling.
     reward_is_no_canon: bool = True
+
+
+def _mining_laser_level(ship) -> int | None:
+    """The installed Mining Laser ladder level from
+    ``equipment_slots["mining_laser"]["level"]`` (WO-UI-FIELDS), or ``None`` when
+    no Mining Laser is fitted. Mirrors MiningService._laser_level — never reads a
+    ship.* column (the level lives on the equipment slot)."""
+    slots = ship.equipment_slots if isinstance(getattr(ship, "equipment_slots", None), dict) else {}
+    slot = slots.get("mining_laser")
+    if not isinstance(slot, dict):
+        return None
+    try:
+        return int(slot.get("level", 0))
+    except (TypeError, ValueError):
+        return 0
+
 
 class SectorResponse(BaseModel):
     id: str
@@ -235,7 +260,8 @@ async def get_player_ships(
             purchase_value=ship.purchase_value,
             current_value=ship.current_value,
             genesis_devices=ship.genesis_devices or 0,
-            max_genesis_devices=ship.max_genesis_devices or 0
+            max_genesis_devices=ship.max_genesis_devices or 0,
+            mining_laser_level=_mining_laser_level(ship)
         ))
 
     return ship_responses
@@ -276,7 +302,8 @@ async def get_current_ship(
         purchase_value=ship.purchase_value,
         current_value=ship.current_value,
         genesis_devices=ship.genesis_devices or 0,
-        max_genesis_devices=ship.max_genesis_devices or 0
+        max_genesis_devices=ship.max_genesis_devices or 0,
+        mining_laser_level=_mining_laser_level(ship)
     )
 
 @router.post("/ships/{ship_id}/repair", response_model=RepairShipResponse)
@@ -472,6 +499,7 @@ async def get_current_sector(
     from src.services.special_formation_service import (
         flip_formation_discovery,
         find_formations_for_sector,
+        is_formation_investigated,
     )
     flip_formation_discovery(db, player, sector)
     db.commit()  # persist the discovery flip (mirrors /system)
@@ -486,6 +514,7 @@ async def get_current_sector(
             # Withhold identity until discovered (omit name+type pre-discovery).
             name=f.name if discovered else None,
             type=(f.type.value if hasattr(f.type, 'value') else str(f.type)) if discovered else None,
+            is_investigated=is_formation_investigated(f) if discovered else False,
         ))
 
     return SectorResponse(
@@ -593,7 +622,10 @@ async def get_available_moves(
     # call find_formations_for_sector (the read-only lookup) and NOT
     # flip_formation_discovery — listing a move is not visiting it, so identity
     # stays withheld until the player actually travels there (WO-CA rule).
-    from src.services.special_formation_service import find_formations_for_sector
+    from src.services.special_formation_service import (
+        find_formations_for_sector,
+        is_formation_investigated,
+    )
 
     def _serialize_neighbour_formations(neighbour_sector) -> List[FormationResponse]:
         if neighbour_sector is None:
@@ -610,6 +642,7 @@ async def get_available_moves(
                 # anomaly exists, never its name/type.
                 name=f.name if discovered else None,
                 type=(f.type.value if hasattr(f.type, 'value') else str(f.type)) if discovered else None,
+                is_investigated=is_formation_investigated(f) if discovered else False,
             ))
         return out
 
