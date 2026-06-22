@@ -8,7 +8,7 @@ influence market prices, and provide missions to players.
 from uuid import uuid4
 from typing import List, Optional
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Text, Float, Integer, ARRAY, Enum as SQLEnum, ForeignKey, TypeDecorator
+from sqlalchemy import Column, String, DateTime, Text, Float, Integer, ARRAY, Enum as SQLEnum, TypeDecorator
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import enum
@@ -105,8 +105,7 @@ class Faction(Base):
     
     # Relationships
     reputation_records = relationship("Reputation", back_populates="faction", cascade="all, delete-orphan")
-    missions = relationship("FactionMission", back_populates="faction", cascade="all, delete-orphan")
-    
+
     def __repr__(self):
         return f"<Faction(id={self.id}, name='{self.name}', type='{self.faction_type}')>"
     
@@ -155,50 +154,3 @@ class Faction(Base):
         
         # Other factions are more lenient
         return player_reputation >= -400  # Can't be hated
-
-
-class FactionMission(Base):
-    """
-    Missions offered by factions to players.
-    
-    Completing missions affects player reputation with the faction
-    and may have consequences with other factions.
-    """
-    __tablename__ = "faction_missions"
-    
-    # Primary key
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    
-    # Mission details
-    faction_id = Column(UUID(as_uuid=True), ForeignKey("factions.id", ondelete="CASCADE"), nullable=False, index=True)
-    title = Column(String(255), nullable=False)
-    description = Column(Text)
-    mission_type = Column(String(50), nullable=False)  # cargo_delivery, combat, exploration, etc.
-    
-    # Requirements
-    min_reputation = Column(Integer, default=-800)  # Minimum reputation to accept
-    min_level = Column(Integer, default=1)
-    
-    # Rewards
-    credit_reward = Column(Integer, default=0)
-    reputation_reward = Column(Integer, default=0)  # Positive or negative
-    item_rewards = Column(ARRAY(String), default=list)
-    
-    # Mission parameters
-    target_sector_id = Column(UUID(as_uuid=True))
-    cargo_type = Column(String(50))  # For delivery missions
-    cargo_quantity = Column(Integer)  # For delivery missions
-    target_faction_id = Column(UUID(as_uuid=True))  # For diplomatic/combat missions
-    
-    # Status
-    is_active = Column(Integer, default=1)  # Boolean as integer for MySQL compatibility
-    expires_at = Column(DateTime)
-    
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Relationships
-    faction = relationship("Faction", back_populates="missions")
-    
-    def __repr__(self):
-        return f"<FactionMission(id={self.id}, title='{self.title}', faction_id={self.faction_id})>"

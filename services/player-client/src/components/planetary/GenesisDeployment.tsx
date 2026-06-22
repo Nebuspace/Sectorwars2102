@@ -331,7 +331,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
         {genesisDevices === 0 ? (
           <div className="no-devices-warning">
             <span className="warning-icon">⚠️</span>
-            <p>You have no Genesis Devices available. Purchase more from specialized ports or complete faction missions to earn them.</p>
+            <p>You have no Genesis Devices available. Purchase more from specialized ports.</p>
           </div>
         ) : (
           <>

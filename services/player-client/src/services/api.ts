@@ -377,11 +377,6 @@ export const factionAPI = {
   getFactionReputation: (factionId: string) =>
     apiRequest(`/api/v1/factions/${factionId}/reputation`),
 
-  getMissions: (factionId?: string) => {
-    const params = factionId ? `?faction_id=${factionId}` : '';
-    return apiRequest(`/api/v1/factions/missions${params}`);
-  },
-
   getTerritory: (factionId: string) =>
     apiRequest(`/api/v1/factions/${factionId}/territory`),
 

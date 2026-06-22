@@ -39,7 +39,7 @@ from src.models.first_login import FirstLoginSession, DialogueExchange, PlayerFi
 from src.models.ai_trading import AIMarketPrediction, PlayerTradingProfile, AIRecommendation, AIModelPerformance, AITrainingData
 from src.models.audit_log import AuditLog
 from src.models.message import Message
-from src.models.faction import Faction, FactionType, FactionMission
+from src.models.faction import Faction, FactionType
 from src.models.drone import Drone, DroneType, DroneStatus, DroneDeployment, DroneCombat
 from src.models.fleet import Fleet, FleetMember, FleetBattle, FleetBattleCasualty, FleetRole, FleetStatus, BattlePhase
 from src.models.mfa import MFASecret, MFAAttempt

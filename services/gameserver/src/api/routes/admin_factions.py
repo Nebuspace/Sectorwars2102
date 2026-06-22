@@ -12,7 +12,7 @@ from datetime import datetime
 from src.core.database import get_db
 from src.auth.dependencies import get_current_admin_user
 from src.models.user import User
-from src.models.faction import Faction, FactionType, FactionMission
+from src.models.faction import Faction, FactionType
 from src.services.faction_service import FactionService
 
 router = APIRouter(prefix="/admin/factions", tags=["admin-factions"])
@@ -47,21 +47,6 @@ class FactionUpdateRequest(BaseModel):
 class TerritoryUpdateRequest(BaseModel):
     sector_ids: List[str]
     home_sector_id: Optional[str] = None
-
-
-class MissionCreateRequest(BaseModel):
-    title: str = Field(..., min_length=1, max_length=255)
-    description: str
-    mission_type: str = Field(..., description="cargo_delivery, combat, exploration, etc.")
-    credit_reward: int = Field(..., ge=0)
-    min_reputation: int = Field(default=-800, ge=-800, le=800)
-    min_level: int = Field(default=1, ge=1)
-    item_rewards: List[str] = Field(default_factory=list)
-    target_sector_id: Optional[str] = None
-    cargo_type: Optional[str] = None
-    cargo_quantity: Optional[int] = Field(None, ge=1)
-    target_faction_id: Optional[str] = None
-    expires_at: Optional[datetime] = None
 
 
 class ReputationUpdateRequest(BaseModel):
@@ -276,49 +261,6 @@ async def update_faction_territory(
     }
 
 
-@router.post("/{faction_id}/missions", response_model=dict)
-async def create_faction_mission(
-    faction_id: UUID,
-    request: MissionCreateRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_current_admin_user)
-):
-    """Create a new mission for a faction (admin only)."""
-    service = FactionService(db)
-    
-    # Verify faction exists
-    faction = await service.get_faction_by_id(faction_id)
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    # Create mission
-    mission = await service.create_mission(
-        faction_id=faction_id,
-        title=request.title,
-        description=request.description,
-        mission_type=request.mission_type,
-        credit_reward=request.credit_reward,
-        # ADR-0090: missions no longer promise reputation; persist the neutral
-        # default (0) into the still-required service param (service is out of scope).
-        reputation_reward=0,
-        min_reputation=request.min_reputation,
-        min_level=request.min_level,
-        item_rewards=request.item_rewards,
-        target_sector_id=UUID(request.target_sector_id) if request.target_sector_id else None,
-        cargo_type=request.cargo_type,
-        cargo_quantity=request.cargo_quantity,
-        target_faction_id=UUID(request.target_faction_id) if request.target_faction_id else None,
-        expires_at=request.expires_at
-    )
-    
-    return {
-        "success": True,
-        "mission_id": str(mission.id),
-        "title": mission.title,
-        "faction_name": faction.name
-    }
-
-
 @router.put("/{faction_id}/reputation")
 async def update_player_reputation(
     faction_id: UUID,
@@ -351,34 +293,3 @@ async def update_player_reputation(
         "new_level": reputation.current_level.value,
         "new_title": reputation.title
     }
-
-
-@router.get("/missions/all")
-async def list_all_missions(
-    active_only: bool = True,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(get_current_admin_user)
-):
-    """Get all missions across all factions (admin only)."""
-    query = db.query(FactionMission).join(Faction)
-    
-    if active_only:
-        query = query.filter(FactionMission.is_active == 1)
-    
-    missions = query.all()
-    
-    return [
-        {
-            "id": str(mission.id),
-            "faction_id": str(mission.faction_id),
-            "faction_name": mission.faction.name,
-            "title": mission.title,
-            "mission_type": mission.mission_type,
-            "credit_reward": mission.credit_reward,
-            "min_reputation": mission.min_reputation,
-            "is_active": bool(mission.is_active),
-            "expires_at": mission.expires_at,
-            "created_at": mission.created_at
-        }
-        for mission in missions
-    ]

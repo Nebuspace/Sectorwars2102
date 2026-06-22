@@ -6,11 +6,11 @@ from uuid import UUID
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
 import logging
 
-from src.models.faction import Faction, FactionType, FactionMission
+from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.player import Player
 from src.models.sector import Sector
@@ -918,92 +918,6 @@ class FactionService:
                 "allowed": False, 
                 "reason": f"Insufficient reputation with {controlling_faction.name}"
             }
-    
-    async def get_available_missions(
-        self, 
-        player_id: UUID, 
-        faction_id: Optional[UUID] = None
-    ) -> List[FactionMission]:
-        """
-        Get available missions for a player.
-        
-        Args:
-            player_id: The player's ID
-            faction_id: Optional specific faction to filter by
-            
-        Returns:
-            List of available missions
-        """
-        # Get player info
-        player = self.db.query(Player).filter(Player.id == player_id).first()
-        if not player:
-            return []
-        
-        # Base query
-        query = self.db.query(FactionMission).filter(
-            and_(
-                FactionMission.is_active == 1,
-                or_(
-                    FactionMission.expires_at.is_(None),
-                    FactionMission.expires_at > datetime.utcnow()
-                )
-            )
-        )
-        
-        # Filter by faction if specified
-        if faction_id:
-            query = query.filter(FactionMission.faction_id == faction_id)
-        
-        missions = query.all()
-        available_missions = []
-        
-        for mission in missions:
-            # Check reputation requirement
-            reputation = await self.get_player_reputation(player_id, mission.faction_id)
-            # A missing reputation row means neutral (0), not hidden missions —
-            # otherwise players without initialized rows see an empty board.
-            rep_value = reputation.current_value if reputation else 0
-            if rep_value >= mission.min_reputation:
-                # Check level requirement (you'll need to implement player level)
-                # For now, assume all players meet level requirements
-                available_missions.append(mission)
-        
-        return available_missions
-    
-    async def create_mission(
-        self,
-        faction_id: UUID,
-        title: str,
-        description: str,
-        mission_type: str,
-        credit_reward: int,
-        reputation_reward: int,
-        **kwargs
-    ) -> FactionMission:
-        """Create a new faction mission."""
-        mission = FactionMission(
-            faction_id=faction_id,
-            title=title,
-            description=description,
-            mission_type=mission_type,
-            credit_reward=credit_reward,
-            reputation_reward=reputation_reward,
-            min_reputation=kwargs.get('min_reputation', -800),
-            min_level=kwargs.get('min_level', 1),
-            item_rewards=kwargs.get('item_rewards', []),
-            target_sector_id=kwargs.get('target_sector_id'),
-            cargo_type=kwargs.get('cargo_type'),
-            cargo_quantity=kwargs.get('cargo_quantity'),
-            target_faction_id=kwargs.get('target_faction_id'),
-            expires_at=kwargs.get('expires_at'),
-            is_active=1
-        )
-        
-        self.db.add(mission)
-        self.db.commit()
-        self.db.refresh(mission)
-        
-        return mission
     
     async def update_faction_territory(
         self,

@@ -21,20 +21,6 @@ interface Faction {
   updated_at: string;
 }
 
-interface FactionMission {
-  id: string;
-  faction_id: string;
-  faction_name: string;
-  title: string;
-  mission_type: string;
-  credit_reward: number;
-  reputation_reward: number;
-  min_reputation: number;
-  is_active: boolean;
-  expires_at: string | null;
-  created_at: string;
-}
-
 const formatType = (value: string): string =>
   value
     .split('_')
@@ -49,10 +35,8 @@ const aggressionLevelClass = (level: number): string => {
 
 const FactionManagement: React.FC = () => {
   const [factions, setFactions] = useState<Faction[]>([]);
-  const [missions, setMissions] = useState<FactionMission[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [missionsError, setMissionsError] = useState<string | null>(null);
 
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
@@ -61,27 +45,14 @@ const FactionManagement: React.FC = () => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setMissionsError(null);
 
-    const [factionsResult, missionsResult] = await Promise.allSettled([
-      api.get<Faction[]>('/api/v1/admin/factions/'),
-      api.get<FactionMission[]>('/api/v1/admin/factions/missions/all?active_only=true'),
-    ]);
-
-    if (factionsResult.status === 'fulfilled') {
-      setFactions(factionsResult.value.data ?? []);
-    } else {
-      console.error('Error fetching factions:', factionsResult.reason);
+    try {
+      const response = await api.get<Faction[]>('/api/v1/admin/factions/');
+      setFactions(response.data ?? []);
+    } catch (err) {
+      console.error('Error fetching factions:', err);
       setError('Failed to load factions.');
       setFactions([]);
-    }
-
-    if (missionsResult.status === 'fulfilled') {
-      setMissions(missionsResult.value.data ?? []);
-    } else {
-      console.error('Error fetching faction missions:', missionsResult.reason);
-      setMissionsError('Failed to load active missions.');
-      setMissions([]);
     }
 
     setLoading(false);
@@ -128,16 +99,15 @@ const FactionManagement: React.FC = () => {
       totalTerritory,
       avgAggression,
       hostileCount,
-      activeMissions: missions.length,
     };
-  }, [factions, missions]);
+  }, [factions]);
 
   if (loading) {
     return (
       <div className="faction-management">
         <PageHeader
           title="Faction Management"
-          subtitle="Monitor factions, territory, diplomacy, and active missions"
+          subtitle="Monitor factions, territory, and diplomacy"
         />
         <div className="faction-loading">
           <div className="loading-spinner" />
@@ -180,10 +150,6 @@ const FactionManagement: React.FC = () => {
         <div className="faction-stat-card">
           <span className="faction-stat-label">Hostile Factions</span>
           <span className="faction-stat-value faction-stat-danger">{summary.hostileCount}</span>
-        </div>
-        <div className="faction-stat-card">
-          <span className="faction-stat-label">Active Missions</span>
-          <span className="faction-stat-value">{summary.activeMissions.toLocaleString()}</span>
         </div>
       </div>
 
@@ -314,49 +280,6 @@ const FactionManagement: React.FC = () => {
                         </div>
                       )}
                     </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Active missions */}
-      <div className="faction-table-section">
-        <h3 className="faction-section-title">Active Faction Missions</h3>
-        {missionsError ? (
-          <div className="faction-empty">{missionsError}</div>
-        ) : missions.length === 0 ? (
-          <div className="faction-empty">No active missions across factions.</div>
-        ) : (
-          <div className="faction-table-container">
-            <table className="faction-table">
-              <thead>
-                <tr>
-                  <th>Mission</th>
-                  <th>Faction</th>
-                  <th>Type</th>
-                  <th>Credit Reward</th>
-                  <th>Reputation</th>
-                  <th>Min Reputation</th>
-                </tr>
-              </thead>
-              <tbody>
-                {missions.map((mission) => (
-                  <tr key={mission.id}>
-                    <td className="faction-name">{mission.title}</td>
-                    <td>{mission.faction_name}</td>
-                    <td>
-                      <span className="faction-type-badge">
-                        {formatType(mission.mission_type)}
-                      </span>
-                    </td>
-                    <td className="faction-mono">
-                      {mission.credit_reward.toLocaleString()} cr
-                    </td>
-                    <td className="faction-mono">{mission.reputation_reward}</td>
-                    <td className="faction-mono">{mission.min_reputation}</td>
                   </tr>
                 ))}
               </tbody>

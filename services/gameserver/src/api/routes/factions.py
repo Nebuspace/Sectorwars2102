@@ -4,16 +4,14 @@ Faction API routes for managing faction relationships and missions.
 
 from uuid import UUID
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
-from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.faction import Faction, FactionType, FactionMission
+from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation
 from src.models.sector import Sector
 from src.services.faction_service import (
@@ -80,45 +78,6 @@ class ReputationResponse(BaseModel):
             port_access_level=reputation.port_access_level,
             combat_response=reputation.combat_response
         )
-
-
-class MissionResponse(BaseModel):
-    id: str
-    faction_id: str
-    faction_name: str
-    title: str
-    description: Optional[str]
-    mission_type: str
-    credit_reward: int
-    item_rewards: List[str]
-    target_sector_id: Optional[str]
-    cargo_type: Optional[str]
-    cargo_quantity: Optional[int]
-    expires_at: Optional[datetime]
-    
-    class Config:
-        from_attributes = True
-    
-    @classmethod
-    def from_mission(cls, mission: FactionMission) -> "MissionResponse":
-        return cls(
-            id=str(mission.id),
-            faction_id=str(mission.faction_id),
-            faction_name=mission.faction.name,
-            title=mission.title,
-            description=mission.description,
-            mission_type=mission.mission_type,
-            credit_reward=mission.credit_reward,
-            item_rewards=mission.item_rewards or [],
-            target_sector_id=str(mission.target_sector_id) if mission.target_sector_id else None,
-            cargo_type=mission.cargo_type,
-            cargo_quantity=mission.cargo_quantity,
-            expires_at=mission.expires_at
-        )
-
-
-class AcceptMissionRequest(BaseModel):
-    mission_id: str
 
 
 class TerritoryResponse(BaseModel):
@@ -199,125 +158,6 @@ async def get_faction_reputation(
         reputation = await service.get_player_reputation(current_player.id, faction_id)
     
     return ReputationResponse.from_reputation(reputation)
-
-
-@router.get("/missions", response_model=List[MissionResponse])
-async def get_available_missions(
-    faction_id: Optional[UUID] = Query(None, description="Filter by faction ID"),
-    db: Session = Depends(get_db),
-    current_player: Player = Depends(get_current_player)
-):
-    """Get available missions for the current player."""
-    service = FactionService(db)
-    missions = await service.get_available_missions(current_player.id, faction_id)
-    return [MissionResponse.from_mission(mission) for mission in missions]
-
-
-@router.get("/{faction_id}/missions", response_model=List[MissionResponse])
-async def get_faction_missions(
-    faction_id: UUID,
-    db: Session = Depends(get_db),
-    current_player: Player = Depends(get_current_player)
-):
-    """Get available missions from a specific faction."""
-    service = FactionService(db)
-    
-    # Verify faction exists
-    faction = await service.get_faction_by_id(faction_id)
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    missions = await service.get_available_missions(current_player.id, faction_id)
-    return [MissionResponse.from_mission(mission) for mission in missions]
-
-
-@router.post("/{faction_id}/missions/accept")
-async def accept_mission(
-    faction_id: UUID,
-    request: AcceptMissionRequest,
-    db: Session = Depends(get_db),
-    current_player: Player = Depends(get_current_player)
-):
-    """Accept a mission from a faction."""
-    service = FactionService(db)
-    
-    # Verify faction exists
-    faction = await service.get_faction_by_id(faction_id)
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    # Get available missions and check if requested mission is available
-    missions = await service.get_available_missions(current_player.id, faction_id)
-    mission = next((m for m in missions if str(m.id) == request.mission_id), None)
-    
-    if not mission:
-        raise HTTPException(
-            status_code=404, 
-            detail="Mission not found or not available to you"
-        )
-    
-    # Lock the player row before mutating settings to prevent concurrent
-    # accepts racing past the duplicate/limit checks. with_for_update() does
-    # NOT refresh the already-loaded instance, so chain populate_existing()
-    # (same pattern as trading.py) and re-read settings from the locked row.
-    current_player = (
-        db.query(Player)
-        .filter(Player.id == current_player.id)
-        .populate_existing()
-        .with_for_update()
-        .first()
-    )
-    if current_player is None:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    # Track accepted missions in the player's settings JSONB field.
-    # Copy the containers (no in-place mutation): JSONB in-place changes are
-    # not change-tracked by SQLAlchemy, so reassign + flag_modified below.
-    player_settings = dict(current_player.settings or {})
-    accepted_missions = list(player_settings.get("accepted_missions", []))
-
-    # Check if player already accepted this mission
-    if any(m.get("mission_id") == request.mission_id for m in accepted_missions):
-        raise HTTPException(
-            status_code=409,
-            detail="You have already accepted this mission"
-        )
-
-    # Check max concurrent missions (limit to 5)
-    active_missions = [m for m in accepted_missions if m.get("status") == "active"]
-    if len(active_missions) >= 5:
-        raise HTTPException(
-            status_code=400,
-            detail="You cannot accept more than 5 missions at a time"
-        )
-
-    # Record the accepted mission
-    accepted_missions.append({
-        "mission_id": request.mission_id,
-        "faction_id": str(faction_id),
-        "title": mission.title,
-        "mission_type": mission.mission_type,
-        "status": "active",
-        "accepted_at": datetime.utcnow().isoformat(),
-        "credit_reward": mission.credit_reward,
-        "target_sector_id": str(mission.target_sector_id) if mission.target_sector_id else None,
-        "cargo_type": mission.cargo_type,
-        "cargo_quantity": mission.cargo_quantity,
-        "expires_at": mission.expires_at.isoformat() if mission.expires_at else None
-    })
-
-    # Reassign the whole settings dict (never mutate in place) and belt-and-
-    # braces flag_modified so SQLAlchemy persists the JSONB change.
-    player_settings["accepted_missions"] = accepted_missions
-    current_player.settings = player_settings
-    flag_modified(current_player, "settings")
-    db.commit()
-
-    return {
-        "success": True,
-        "message": f"Mission '{mission.title}' accepted",
-        "mission_id": request.mission_id
-    }
 
 
 @router.get("/{faction_id}/territory", response_model=TerritoryResponse)
