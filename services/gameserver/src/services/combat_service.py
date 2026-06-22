@@ -639,11 +639,21 @@ class CombatService:
             defender.current_ship.type if defender.current_ship else None
         )
 
-        # Apply combat effects
+        # Quantum-wallet loot (canon: FEATURES/galaxy/quantum-resources.md §3 —
+        # "PvP Warp Jumper kill (pre-expedition) → 100% of victim's unused
+        # shards/crystals"). The defeated PLAYER's quantum_shards/crystals (Player
+        # columns, not the ship) transfer in full to the VICTOR player on actual
+        # ship destruction. Drop-FRACTION (the NPC 5%/15% drop tables) is NO-CANON
+        # for PvP and deferred — PvP canon is a flat 100%. _transfer_quantum_wallet
+        # zeroes the loser's wallet, so a mutual-destruction double-fire (both
+        # branches true) and a multi-round resolution can never double-transfer,
+        # and a victim carrying 0 is a no-op.
         if combat_result["defender_ship_destroyed"]:
+            self._transfer_quantum_wallet(victor=attacker, victim=defender)
             self._handle_ship_destruction(defender, attacker, "combat")
 
         if combat_result["attacker_ship_destroyed"]:
+            self._transfer_quantum_wallet(victor=defender, victim=attacker)
             self._handle_ship_destruction(attacker, defender, "combat")
 
         # Update drone counts
@@ -4077,7 +4087,40 @@ class CombatService:
         target_ship.cargo = target_cargo
         flag_modified(source_ship, "cargo")
         flag_modified(target_ship, "cargo")
-    
+
+    def _transfer_quantum_wallet(self, victor: Player, victim: Player) -> None:
+        """Transfer the VICTIM player's full quantum wallet to the VICTOR.
+
+        Canon: FEATURES/galaxy/quantum-resources.md §3 — a PvP kill loots 100% of
+        the victim's unused quantum shards and crystals. These live on the Player
+        row (Player.quantum_shards / .quantum_crystals — non-null Integers, default
+        0), NOT on the ship, so this is unaffected by destroy_ship's escape-pod
+        swap. Zeroing the victim's wallet makes the transfer idempotent: a
+        mutual-destruction double-fire or a re-entered resolution cannot move the
+        same resource twice, and a victim holding 0 of both is a no-op (no write).
+        Drop-FRACTION (the NPC drop-table percentages) is NO-CANON for PvP and is
+        deferred — the canon PvP yield is a flat 100% transfer.
+        """
+        if not victor or not victim or victor.id == victim.id:
+            return
+
+        looted_shards = victim.quantum_shards or 0
+        looted_crystals = victim.quantum_crystals or 0
+        if looted_shards <= 0 and looted_crystals <= 0:
+            return
+
+        if looted_shards > 0:
+            victor.quantum_shards = (victor.quantum_shards or 0) + looted_shards
+            victim.quantum_shards = 0
+        if looted_crystals > 0:
+            victor.quantum_crystals = (victor.quantum_crystals or 0) + looted_crystals
+            victim.quantum_crystals = 0
+
+        logger.info(
+            "Quantum loot: victor %s took %d shard(s) + %d crystal(s) from victim %s",
+            victor.id, looted_shards, looted_crystals, victim.id,
+        )
+
     def _transfer_planet_ownership(self, planet: Planet, new_owner: Player) -> None:
         """Transfer ownership of a planet to a new player via many-to-many."""
         from src.models.station import player_stations
