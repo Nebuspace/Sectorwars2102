@@ -85,4 +85,6 @@ export interface GameTheme {
   cssVariables: Record<string, string>;
 }
 
-export type ThemeName = 'cockpit' | 'default' | 'military' | 'civilian';
+// WO-C5: only the cockpit theme is implemented; default/military/civilian were
+// unimplemented stubs (all aliased cockpitTheme) with no picker UI — removed.
+export type ThemeName = 'cockpit';

@@ -285,32 +285,6 @@ async def notify_player_moved(user_id: str, new_sector_id: int):
     await connection_manager.update_user_location(user_id, new_sector_id)
 
 
-# Helper function to broadcast trading activities
-async def notify_trade_completed(station_id: str, trade_data: dict):
-    """Helper function to notify about completed trades"""
-    # Get the sector for this port
-    # You would need to implement this based on your data model
-    # For now, we'll broadcast globally
-    message = {
-        "type": "trade_completed",
-        "station_id": station_id,
-        "trade_data": trade_data,
-        "timestamp": trade_data.get("timestamp", "")
-    }
-    await connection_manager.broadcast_global(message)
-
-
-# Helper function to broadcast combat events
-async def notify_combat_event(sector_id: int, combat_data: dict):
-    """Helper function to notify about combat events"""
-    message = {
-        "type": "combat_event",
-        "combat_data": combat_data,
-        "timestamp": combat_data.get("timestamp", "")
-    }
-    await connection_manager.broadcast_to_sector(sector_id, message)
-
-
 # Helper function to send personal notifications
 async def send_personal_notification(user_id: str, notification_data: dict):
     """Helper function to send personal notifications to a specific user"""

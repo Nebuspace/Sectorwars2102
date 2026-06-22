@@ -272,7 +272,6 @@ async def create_enhanced_warp_tunnel(
         turn_cost=request.turn_cost,
         creator_id=None if request.tunnel_type == "natural" else current_admin.id,
         toll_amount=request.toll_amount or 0,
-        access_list=[],  # TODO: Implement access control
         max_ship_size=None,
         hidden=False
     )

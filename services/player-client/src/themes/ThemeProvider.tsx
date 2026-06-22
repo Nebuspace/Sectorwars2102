@@ -11,12 +11,10 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-// Available themes registry
+// Available themes registry (WO-C5: only cockpit is implemented; the
+// default/military/civilian stubs all aliased cockpitTheme and had no picker UI).
 const themes: Record<ThemeName, GameTheme> = {
   cockpit: cockpitTheme,
-  default: cockpitTheme, // For now, default to cockpit
-  military: cockpitTheme, // TODO: Implement other themes
-  civilian: cockpitTheme, // TODO: Implement other themes
 };
 
 interface ThemeProviderProps {
