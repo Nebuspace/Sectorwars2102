@@ -1050,6 +1050,49 @@ const GameDashboard: React.FC = () => {
     return base + (rate / 86400) * elapsedS;
   };
 
+  // WO-STORAGEDTO: the enforced per-resource storage cap (storageCap) and the
+  // last server-stamped overflow event (overflowWarning) come straight from the
+  // planet DTO. 0/absent = uncapped (un-citadeled colony) — show no bar in that
+  // case (matches the server, which leaves an L0 colony unclamped). The bar +
+  // warning let a player see they're about to start WASTING production at the cap.
+  const storageCap: number = Number(landedPlanetDetail?.storageCap ?? 0);
+  // A storage status per commodity: fill ratio (0..1), days until the cap is hit
+  // at the current production rate (null = never / no rate / no cap), and the
+  // at/near-cap flags that drive the warning badge.
+  type StorageStatus = {
+    capped: boolean;       // a positive cap is in force
+    ratio: number;         // 0..1 fill against the cap
+    daysUntilFull: number | null;
+    atCap: boolean;        // already at/over the cap — production is being WASTED
+    nearCap: boolean;      // >= 90% — about to start wasting
+  };
+  const storageStatus = (key: 'fuel' | 'organics' | 'equipment'): StorageStatus => {
+    if (!(storageCap > 0)) {
+      return { capped: false, ratio: 0, daysUntilFull: null, atCap: false, nearCap: false };
+    }
+    const stock = projectedStock(key);
+    const ratio = Math.min(1, Math.max(0, stock / storageCap));
+    const rate = Number(landedPlanetDetail?.productionRates?.[key] ?? 0); // per day
+    const atCap = stock >= storageCap;
+    const room = Math.max(0, storageCap - stock);
+    const daysUntilFull = !atCap && rate > 0 ? room / rate : null;
+    return { capped: true, ratio, daysUntilFull, atCap, nearCap: ratio >= 0.9 };
+  };
+  // Whether the server flagged any commodity overflow at the most recent tick —
+  // an authoritative "you ARE losing production" signal (vs the projected nearCap).
+  const overflowWarning = landedPlanetDetail?.overflowWarning;
+  const overflowResources: string[] = overflowWarning && typeof overflowWarning === 'object'
+    ? Object.keys(overflowWarning.resources || {})
+    : [];
+  const fmtDaysUntilFull = (d: number | null): string => {
+    if (d === null) return '';
+    if (d < 1) {
+      const hrs = Math.max(1, Math.round(d * 24));
+      return `~${hrs}h to cap`;
+    }
+    return `~${Math.round(d)}d to cap`;
+  };
+
   // Planetary-ops notice (upgrade/safe outcomes), auto-dismissed like the
   // colonist transfer notice
   const [opsNotice, setOpsNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -2964,12 +3007,23 @@ const GameDashboard: React.FC = () => {
                                   <div className="empty-state">Colony ledger unavailable</div>
                                 ) : (
                                   <>
+                                    {/* WO-STORAGEDTO: server-authoritative overflow banner —
+                                        the production tick flagged these commodities as
+                                        WASTING output at the storage cap last tick. */}
+                                    {overflowResources.length > 0 && (
+                                      <div className="storage-overflow-banner" role="alert" title="Production is being wasted at the storage cap — upgrade the citadel to expand storage, or ship goods out.">
+                                        ⚠️ Storage full: {overflowResources.join(', ')} — output above the cap is being wasted.
+                                      </div>
+                                    )}
                                     <div className="allocation-sliders">
                                       {([
                                         { key: 'fuel' as const, icon: '⛽', name: 'Fuel' },
                                         { key: 'organics' as const, icon: '🌿', name: 'Organics' },
                                         { key: 'equipment' as const, icon: '⚙️', name: 'Equipment' }
-                                      ]).map(({ key, icon, name }) => (
+                                      ]).map(({ key, icon, name }) => {
+                                        const ss = storageStatus(key);
+                                        const stock = Math.floor(projectedStock(key));
+                                        return (
                                         <div className="alloc-row" key={key}>
                                           <span className="alloc-icon">{icon}</span>
                                           <span className="alloc-name">{name}</span>
@@ -2985,11 +3039,29 @@ const GameDashboard: React.FC = () => {
                                           />
                                           <span className="alloc-pct">{allocations[key].toLocaleString()}</span>
                                           <span className="alloc-rate">+{Number(allocRates?.[key] ?? 0).toLocaleString()}/day</span>
-                                          <span className="alloc-stored" title={`${name} in colony stockpile (accruing live)`}>
-                                            📦 {Math.floor(projectedStock(key)).toLocaleString()}
-                                          </span>
+                                          {/* WO-STORAGEDTO: storage bar + at/near-cap state. Only
+                                              shown when a cap is in force (citadel L>=1). */}
+                                          {ss.capped ? (
+                                            <span
+                                              className={`alloc-storage-cell${ss.atCap ? ' at-cap' : ss.nearCap ? ' near-cap' : ''}`}
+                                              title={`${stock.toLocaleString()} / ${storageCap.toLocaleString()} stored${ss.atCap ? ' — AT CAP, production wasted' : ss.daysUntilFull !== null ? ` — ${fmtDaysUntilFull(ss.daysUntilFull)}` : ''}`}
+                                            >
+                                              <span className="alloc-storage-bar">
+                                                <span className="alloc-storage-fill" style={{ width: `${Math.round(ss.ratio * 100)}%` }} />
+                                              </span>
+                                              <span className="alloc-storage-text">
+                                                📦 {stock.toLocaleString()}/{storageCap.toLocaleString()}
+                                                {ss.atCap ? ' ⛔' : ss.daysUntilFull !== null ? ` · ${fmtDaysUntilFull(ss.daysUntilFull)}` : ''}
+                                              </span>
+                                            </span>
+                                          ) : (
+                                            <span className="alloc-stored" title={`${name} in colony stockpile (accruing live; no storage cap until a citadel is built)`}>
+                                              📦 {stock.toLocaleString()}
+                                            </span>
+                                          )}
                                         </div>
-                                      ))}
+                                        );
+                                      })}
                                     </div>
                                     <div className="allocation-header" style={{ opacity: 0.8 }}>
                                       Unassigned: {Math.max(0, allocBudget - allocations.fuel - allocations.organics - allocations.equipment).toLocaleString()} of {allocBudget.toLocaleString()} workforce

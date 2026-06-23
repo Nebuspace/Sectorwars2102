@@ -20,7 +20,7 @@ from src.services.structures import _via_settle_guard
 from src.models.player import Player
 from src.models.planet import Planet, PlanetType, player_planets
 from src.models.sector import Sector
-from src.models.ship import Ship
+from src.models.ship import Ship, effective_cargo_capacity
 from src.models.genesis_device import GenesisDevice, GenesisType, GenesisStatus, PlanetFormation
 from src.models.team import Team
 
@@ -1640,7 +1640,11 @@ class PlanetaryService:
 
         ship_cargo = ship.cargo or {}
         contents: Dict[str, int] = dict(ship_cargo.get("contents") or {})
-        capacity = int(ship_cargo.get("capacity", 0) or 0)
+        # WO-CARGOHELPER: the besieger's hold ceiling must honour the Cargo-Hold
+        # ship-mod bonus (ship-systems.md §2.4: +30%/level) — read the effective
+        # capacity (effective_cargo_capacity, models/ship.py), never the raw
+        # JSONB `capacity`, so a +cargo module lets the besieger skim more plunder.
+        capacity = effective_cargo_capacity(ship)
         used = sum(int(q) for q in contents.values() if isinstance(q, (int, float)))
         remaining = max(0, capacity - used)
         if remaining <= 0:
@@ -2170,6 +2174,20 @@ class PlanetaryService:
                 "research": int((planet.active_events or {}).get("research_points", 0))
                 if isinstance(planet.active_events, dict) else 0,
             },
+            # WO-STORAGEDTO: surface the enforced per-resource storage cap so the
+            # client can render a storage-bar + at/near-cap warning. The cap is the
+            # citadel-derived figure the production tick already clamps each
+            # commodity stockpile to (storage_cap_for ← CITADEL_LEVELS safe_storage,
+            # production-tick.md "Storage caps"). 0 = uncapped (un-citadeled L0).
+            "storageCap": storage_cap_for(planet.citadel_level or 0),
+            # The last storage-overflow event the production tick stamped into
+            # active_events when a stockpile hit the cap and excess was WASTED
+            # ("not stored, not transferred"). None when nothing overflowed at the
+            # most recent tick — the client raises the at-cap warning off this.
+            "overflowWarning": (
+                (planet.active_events or {}).get("overflow_warning")
+                if isinstance(planet.active_events, dict) else None
+            ),
             "lastProductionAt": planet.last_production.isoformat() if planet.last_production else None,
             "allocations": {
                 "fuel": planet.fuel_allocation or 0,
