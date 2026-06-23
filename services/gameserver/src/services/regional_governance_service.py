@@ -389,6 +389,228 @@ class RegionalGovernanceService:
             logger.info(f"Lazily expired {expired} treaty(ies) for region {region_id}")
         return expired
 
+    # =====================================================================
+    # Treaty lifecycle CRUD (propose / accept / reject / terminate).
+    #
+    # Canon (sw2102-docs SYSTEMS/regional-governance.md "Inter-region
+    # treaties"): a treaty is a BILATERAL agreement between two regions with an
+    # explicit lifecycle. Before this slice only GET /my-region/treaties +
+    # _expire_stale_treaties (lazy expiry) existed — there was NO way to create
+    # or end a treaty. This builds the lifecycle ONLY; what a treaty DOES
+    # (effect-application) is DEFERRED.
+    #
+    # State machine (the `status` column is a plain String(50); we use the
+    # SAME lowercase literals the existing lazy-expiry path already writes —
+    # 'active' / 'expired' — so existing treaty rows and the active-count
+    # queries are byte-for-byte UNAFFECTED):
+    #
+    #   propose    -> 'proposed'  (region_a = proposer, region_b = counterparty)
+    #   accept     'proposed' -> 'active'
+    #   reject     'proposed' -> 'rejected'
+    #   terminate  'active'   -> 'terminated'
+    #   (expire    'active'   -> 'expired'   — _expire_stale_treaties, unchanged)
+    #
+    # Uniqueness: at most ONE LIVE treaty (proposed OR active) between a given
+    # pair of regions, in EITHER direction — order-independent, type-agnostic
+    # (a stricter rule than the DB's order+type UniqueConstraint, which stays a
+    # backstop). The rules live here; the calling ROUTE owns db.commit() — these
+    # methods FLUSH only (a route returning without committing silently rolls
+    # the change back).
+    # =====================================================================
+
+    # Treaty status literals (lowercase, matching the existing lazy-expiry path).
+    TREATY_PROPOSED = "proposed"
+    TREATY_ACTIVE = "active"
+    TREATY_REJECTED = "rejected"
+    TREATY_TERMINATED = "terminated"
+    TREATY_EXPIRED = "expired"
+    # The two "live" states that block a duplicate proposal between a pair.
+    _TREATY_LIVE_STATUSES = (TREATY_PROPOSED, TREATY_ACTIVE)
+
+    @staticmethod
+    def _serialize_treaty(treaty: RegionalTreaty) -> Dict[str, Any]:
+        """Shape a RegionalTreaty for the lifecycle CRUD responses."""
+        return {
+            "id": str(treaty.id),
+            "region_a_id": str(treaty.region_a_id),
+            "region_b_id": str(treaty.region_b_id),
+            "treaty_type": treaty.treaty_type,
+            "terms": treaty.terms,
+            "status": treaty.status,
+            "signed_at": treaty.signed_at.isoformat() if treaty.signed_at else None,
+            "expires_at": treaty.expires_at.isoformat() if treaty.expires_at else None,
+        }
+
+    @staticmethod
+    async def _live_treaty_between(
+        db: AsyncSession,
+        region_a_id: uuid.UUID,
+        region_b_id: uuid.UUID,
+    ) -> Optional[RegionalTreaty]:
+        """Return a LIVE (proposed/active) treaty between this pair of regions in
+        EITHER direction, or None. Order-independent so (A,B) and (B,A) are the
+        same pair."""
+        return await db.scalar(
+            select(RegionalTreaty).where(
+                and_(
+                    or_(
+                        and_(
+                            RegionalTreaty.region_a_id == region_a_id,
+                            RegionalTreaty.region_b_id == region_b_id,
+                        ),
+                        and_(
+                            RegionalTreaty.region_a_id == region_b_id,
+                            RegionalTreaty.region_b_id == region_a_id,
+                        ),
+                    ),
+                    RegionalTreaty.status.in_(
+                        RegionalGovernanceService._TREATY_LIVE_STATUSES
+                    ),
+                )
+            )
+        )
+
+    @staticmethod
+    async def propose_treaty(
+        db: AsyncSession,
+        proposer_region_id: uuid.UUID,
+        counterparty_region_id: uuid.UUID,
+        treaty_type: str,
+        terms: Optional[Dict[str, Any]] = None,
+        expires_at: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Propose a new treaty FROM proposer_region TO counterparty_region.
+
+        The proposing region becomes region_a (the offeror); the counterparty is
+        region_b. Born in 'proposed' status — it does nothing until the
+        counterparty's owner ACCEPTS it. Validations:
+          - the two regions must differ (ERR_SAME_REGION_TREATY — the DB CHECK is
+            the backstop),
+          - the counterparty region must exist (ERR_REGION_NOT_FOUND),
+          - no LIVE (proposed/active) treaty may already exist between the pair in
+            either direction (ERR_TREATY_ALREADY_EXISTS).
+
+        FLUSHES only — the calling ROUTE owns db.commit(). Returns {ok, code,
+        treaty}."""
+        if proposer_region_id == counterparty_region_id:
+            return {"ok": False, "code": "ERR_SAME_REGION_TREATY"}
+
+        counterparty = await db.scalar(
+            select(Region.id).where(Region.id == counterparty_region_id)
+        )
+        if counterparty is None:
+            return {"ok": False, "code": "ERR_REGION_NOT_FOUND"}
+
+        existing = await RegionalGovernanceService._live_treaty_between(
+            db, proposer_region_id, counterparty_region_id
+        )
+        if existing is not None:
+            return {"ok": False, "code": "ERR_TREATY_ALREADY_EXISTS"}
+
+        # A DEAD row at the exact (a, b, type) would trip the DB UniqueConstraint
+        # on insert — so re-propose by RESETTING that row to proposed. A rejected/
+        # terminated/expired treaty between the same pair can be re-offered (the
+        # live-treaty check above already ruled out an active/proposed one).
+        dead = await db.scalar(
+            select(RegionalTreaty).where(
+                RegionalTreaty.region_a_id == proposer_region_id,
+                RegionalTreaty.region_b_id == counterparty_region_id,
+                RegionalTreaty.treaty_type == treaty_type,
+            )
+        )
+        if dead is not None:
+            dead.status = RegionalGovernanceService.TREATY_PROPOSED
+            dead.terms = terms or {}
+            dead.expires_at = expires_at
+            treaty = dead
+        else:
+            treaty = RegionalTreaty(
+                region_a_id=proposer_region_id,
+                region_b_id=counterparty_region_id,
+                treaty_type=treaty_type,
+                terms=terms or {},
+                status=RegionalGovernanceService.TREATY_PROPOSED,
+                expires_at=expires_at,
+            )
+            db.add(treaty)
+        try:
+            # FLUSH surfaces the DB UniqueConstraint / CHECK to the route before
+            # it returns success; the route commits.
+            await db.flush()
+        except IntegrityError:
+            # The DB order+type UniqueConstraint (or the != CHECK) tripped — a
+            # concurrent proposer raced us, or a same-type row already exists in
+            # this exact direction. Roll back and report the duplicate.
+            await db.rollback()
+            return {"ok": False, "code": "ERR_TREATY_ALREADY_EXISTS"}
+        return {
+            "ok": True,
+            "code": "TREATY_PROPOSED",
+            "treaty": RegionalGovernanceService._serialize_treaty(treaty),
+        }
+
+    @staticmethod
+    async def accept_treaty(
+        db: AsyncSession,
+        treaty: RegionalTreaty,
+    ) -> Dict[str, Any]:
+        """Accept a PROPOSED treaty (counterparty's owner): 'proposed' -> 'active'.
+
+        Caller owns the authorization (the route verifies the actor owns the
+        COUNTERPARTY region — region_b — since the proposer cannot accept their
+        own offer). Idempotent reject: a non-proposed treaty is ERR_TREATY_NOT_PROPOSED.
+        FLUSHES only — the route commits. Returns {ok, code, treaty}."""
+        if treaty.status != RegionalGovernanceService.TREATY_PROPOSED:
+            return {"ok": False, "code": "ERR_TREATY_NOT_PROPOSED"}
+        treaty.status = RegionalGovernanceService.TREATY_ACTIVE
+        await db.flush()
+        return {
+            "ok": True,
+            "code": "TREATY_ACCEPTED",
+            "treaty": RegionalGovernanceService._serialize_treaty(treaty),
+        }
+
+    @staticmethod
+    async def reject_treaty(
+        db: AsyncSession,
+        treaty: RegionalTreaty,
+    ) -> Dict[str, Any]:
+        """Reject a PROPOSED treaty (counterparty's owner): 'proposed' -> 'rejected'.
+
+        Caller owns the authorization (route verifies the actor owns region_b).
+        A non-proposed treaty is ERR_TREATY_NOT_PROPOSED. FLUSHES only — the route
+        commits. Returns {ok, code, treaty}."""
+        if treaty.status != RegionalGovernanceService.TREATY_PROPOSED:
+            return {"ok": False, "code": "ERR_TREATY_NOT_PROPOSED"}
+        treaty.status = RegionalGovernanceService.TREATY_REJECTED
+        await db.flush()
+        return {
+            "ok": True,
+            "code": "TREATY_REJECTED",
+            "treaty": RegionalGovernanceService._serialize_treaty(treaty),
+        }
+
+    @staticmethod
+    async def terminate_treaty(
+        db: AsyncSession,
+        treaty: RegionalTreaty,
+    ) -> Dict[str, Any]:
+        """Terminate an ACTIVE treaty (either region's owner): 'active' -> 'terminated'.
+
+        Caller owns the authorization (route verifies the actor owns region_a OR
+        region_b — either signatory may unilaterally exit an active treaty). A
+        non-active treaty is ERR_TREATY_NOT_ACTIVE. FLUSHES only — the route
+        commits. Returns {ok, code, treaty}."""
+        if treaty.status != RegionalGovernanceService.TREATY_ACTIVE:
+            return {"ok": False, "code": "ERR_TREATY_NOT_ACTIVE"}
+        treaty.status = RegionalGovernanceService.TREATY_TERMINATED
+        await db.flush()
+        return {
+            "ok": True,
+            "code": "TREATY_TERMINATED",
+            "treaty": RegionalGovernanceService._serialize_treaty(treaty),
+        }
+
     @staticmethod
     async def get_regional_stats(db: AsyncSession, region_id: uuid.UUID) -> Dict[str, Any]:
         """Get comprehensive statistics for a region"""

@@ -62,6 +62,20 @@ _VOTE_ERROR_STATUS = {
 }
 
 
+# Map treaty-lifecycle service rejection codes to HTTP status (WO-TREATY). A
+# missing region/treaty is 404; a same-region proposal or other validation
+# failure is 400; a state-machine conflict (already exists, wrong state for the
+# transition) is 409. Owner-authorization (403) is enforced at the route, not
+# returned as a service code.
+_TREATY_ERROR_STATUS = {
+    "ERR_REGION_NOT_FOUND": 404,
+    "ERR_SAME_REGION_TREATY": 400,
+    "ERR_TREATY_ALREADY_EXISTS": 409,
+    "ERR_TREATY_NOT_PROPOSED": 409,
+    "ERR_TREATY_NOT_ACTIVE": 409,
+}
+
+
 # Map region-invite service rejection codes to HTTP status (WO-IL3). A
 # non-owner trying to mint/list/revoke is 403 (the security-relevant denial);
 # validation failures are 400; cap hits are 409 (state conflict, retry later).
@@ -166,6 +180,22 @@ class TariffSet(BaseModel):
     ``trading_service.set_region_tariff`` and returns the persisted clamped value
     — a request above the cap is accepted but stored at the cap, not rejected."""
     rate: float = Field(..., description="Requested tariff rate (clamped to the E-F2 cap on write)")
+
+
+class TreatyPropose(BaseModel):
+    """Owner request to PROPOSE a treaty to another region (WO-TREATY).
+
+    The proposing region is resolved server-side from the caller's owned region
+    (never trusted from the body); ``counterparty_region_id`` is the offeree.
+    ``treaty_type`` is a free-form label (the model column is String(50));
+    ``terms`` is the agreement payload (effect-application is DEFERRED — terms
+    are stored, not yet interpreted). ``expires_at`` is optional; when set, the
+    existing lazy + sweep expiry flips an accepted treaty to 'expired' once
+    past."""
+    counterparty_region_id: uuid.UUID
+    treaty_type: str = Field(..., max_length=50)
+    terms: Dict[str, Any] = Field(default_factory=dict)
+    expires_at: Optional[datetime] = None
 
 
 def _serialize_invite(invite: RegionInvite) -> Dict[str, Any]:
@@ -589,6 +619,168 @@ async def get_regional_treaties(
         }
         for treaty, partner_name in treaties
     ]
+
+
+# =====================================================================
+# Treaty lifecycle CRUD — owner-gated propose / accept / reject / terminate
+# (WO-TREATY). Before this slice only GET /my-region/treaties + lazy expiry
+# existed; there was no way to CREATE or END a treaty. Effect-application (what
+# a treaty DOES) is DEFERRED — this is the lifecycle ONLY.
+#
+# AUTHORIZATION (mirrors the owner-scoped governance routes): every transition
+# is gated on the caller OWNING the relevant region, re-checked server-side
+# against Region.owner_id — never trusted from the body:
+#   - propose:   caller owns a region (the proposer = region_a); the body names
+#                only the counterparty.
+#   - accept/reject: caller owns the COUNTERPARTY (region_b) — the offeree
+#                decides (a proposer cannot accept their own offer).
+#   - terminate: caller owns EITHER signatory (region_a OR region_b) — either
+#                side may unilaterally exit an active treaty.
+# THE ROUTE OWNS db.commit() — the service methods only flush; a return without
+# this commit silently rolls back the lifecycle change.
+# =====================================================================
+
+async def _fetch_treaty_or_404(db: AsyncSession, treaty_id: uuid.UUID) -> RegionalTreaty:
+    """Fetch a treaty row (404 if missing) for the lifecycle transitions."""
+    treaty = await db.scalar(
+        select(RegionalTreaty).where(RegionalTreaty.id == treaty_id)
+    )
+    if treaty is None:
+        raise HTTPException(status_code=404, detail="Treaty not found")
+    return treaty
+
+
+async def _require_region_owner(
+    db: AsyncSession, user: User, region_id: uuid.UUID
+) -> Region:
+    """Verify the user owns the SPECIFIC region_id (403 otherwise), re-checked
+    server-side against Region.owner_id. A NULL owner_id (unowned hub region)
+    never matches a real user id, so hubs are safely excluded. 404 if the region
+    does not exist."""
+    region = await db.scalar(select(Region).where(Region.id == region_id))
+    if region is None:
+        raise HTTPException(status_code=404, detail="Region not found")
+    if region.owner_id is None or region.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Not the region owner")
+    return region
+
+
+@router.post("/my-region/treaties", status_code=201)
+async def propose_treaty(
+    body: TreatyPropose,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Propose a treaty FROM the caller's owned region TO another region.
+
+    Owner-scoped: the proposing region is the caller's own region
+    (verify_region_owner) — the proposer is never trusted from the body, only the
+    counterparty is. Born 'proposed'; it does nothing until the counterparty's
+    owner accepts. 400 if proposing to one's own region; 404 if the counterparty
+    region does not exist; 409 if a live (proposed/active) treaty already exists
+    between the pair (either direction)."""
+    region = await verify_region_owner(db, current_user)
+
+    result = await RegionalGovernanceService.propose_treaty(
+        db,
+        proposer_region_id=region.id,
+        counterparty_region_id=body.counterparty_region_id,
+        treaty_type=body.treaty_type,
+        terms=body.terms,
+        expires_at=body.expires_at,
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_TREATY_PROPOSE_FAILED")
+        raise HTTPException(
+            status_code=_TREATY_ERROR_STATUS.get(code, 400), detail=code
+        )
+    # THE ROUTE OWNS db.commit() — the service only flushed the new row.
+    await db.commit()
+    return {"message": "Treaty proposed successfully", "treaty": result["treaty"]}
+
+
+@router.post("/treaties/{treaty_id}/accept")
+async def accept_treaty(
+    treaty_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Accept a PROPOSED treaty (the COUNTERPARTY region's owner only).
+
+    The caller must own region_b (the offeree) — a proposer cannot accept their
+    own offer (403 otherwise). 'proposed' -> 'active'. 404 if the treaty does not
+    exist; 409 if it is not in the proposed state."""
+    treaty = await _fetch_treaty_or_404(db, treaty_id)
+    # Only the counterparty (region_b) may accept.
+    await _require_region_owner(db, current_user, treaty.region_b_id)
+
+    result = await RegionalGovernanceService.accept_treaty(db, treaty)
+    if not result.get("ok"):
+        code = result.get("code", "ERR_TREATY_ACCEPT_FAILED")
+        raise HTTPException(
+            status_code=_TREATY_ERROR_STATUS.get(code, 400), detail=code
+        )
+    await db.commit()
+    return {"message": "Treaty accepted successfully", "treaty": result["treaty"]}
+
+
+@router.post("/treaties/{treaty_id}/reject")
+async def reject_treaty(
+    treaty_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Reject a PROPOSED treaty (the COUNTERPARTY region's owner only).
+
+    The caller must own region_b (the offeree) — 403 otherwise. 'proposed' ->
+    'rejected'. 404 if the treaty does not exist; 409 if it is not in the
+    proposed state."""
+    treaty = await _fetch_treaty_or_404(db, treaty_id)
+    await _require_region_owner(db, current_user, treaty.region_b_id)
+
+    result = await RegionalGovernanceService.reject_treaty(db, treaty)
+    if not result.get("ok"):
+        code = result.get("code", "ERR_TREATY_REJECT_FAILED")
+        raise HTTPException(
+            status_code=_TREATY_ERROR_STATUS.get(code, 400), detail=code
+        )
+    await db.commit()
+    return {"message": "Treaty rejected successfully", "treaty": result["treaty"]}
+
+
+@router.post("/treaties/{treaty_id}/terminate")
+async def terminate_treaty(
+    treaty_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Terminate an ACTIVE treaty (EITHER signatory region's owner).
+
+    The caller must own region_a OR region_b — either side may unilaterally exit
+    an active treaty (403 otherwise). 'active' -> 'terminated'. 404 if the treaty
+    does not exist; 409 if it is not in the active state."""
+    treaty = await _fetch_treaty_or_404(db, treaty_id)
+    # Either signatory's owner may terminate. Resolve both candidate regions and
+    # require ownership of at least one; re-checked server-side.
+    region_a = await db.scalar(select(Region).where(Region.id == treaty.region_a_id))
+    region_b = await db.scalar(select(Region).where(Region.id == treaty.region_b_id))
+    owns_either = (
+        (region_a is not None and region_a.owner_id is not None
+         and region_a.owner_id == current_user.id)
+        or (region_b is not None and region_b.owner_id is not None
+            and region_b.owner_id == current_user.id)
+    )
+    if not owns_either:
+        raise HTTPException(status_code=403, detail="Not a signatory region owner")
+
+    result = await RegionalGovernanceService.terminate_treaty(db, treaty)
+    if not result.get("ok"):
+        code = result.get("code", "ERR_TREATY_TERMINATE_FAILED")
+        raise HTTPException(
+            status_code=_TREATY_ERROR_STATUS.get(code, 400), detail=code
+        )
+    await db.commit()
+    return {"message": "Treaty terminated successfully", "treaty": result["treaty"]}
 
 
 @router.put("/my-region/culture")
