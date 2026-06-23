@@ -488,6 +488,15 @@ _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 # Galactic-Citizen Re-Bake.
 _CITIZEN_REBAKE_LOCK_KEY = 0x47435242  # 'GCRB'
 
+# DISTINCT advisory-lock key for the stale-presence sweep (WO-PRESWEEP). Idempotent
+# (re-removing an absent player is a no-op), so it serializes only vs another
+# presence pass. 'PRSW'.
+_PRESENCE_SWEEP_LOCK_KEY = 0x50525357
+# Cadence + staleness window for the presence sweep. Coarse — a lingering who's-here
+# entry is cosmetic, not urgent. STALE window is NO-CANON (no canon presence-TTL).
+PRESENCE_SWEEP_CHECK_SECONDS = 5 * 60
+PRESENCE_STALE_MINUTES = 30
+
 # Mask to a signed-63-bit non-negative range. pg_try_advisory_xact_lock(bigint)
 # takes a signed 64-bit key; staying inside the low 63 bits keeps the value
 # non-negative so a stable hash never overflows or collides with Postgres'
@@ -2113,12 +2122,22 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     self-gated to once per canonical day by a durable Galaxy.state anchor — so
     the region dashboard's activity figure is no longer permanently zero.
 
-    Returns {opened, tallied, enacted, rejected, regions_recomputed}.
+    Phase 5 EXPIRES stale treaties (WO-TREATY): any 'active' treaty past its
+    expires_at is flipped to 'expired' here on the sweep — GALAXY-WIDE, not
+    scoped to a region — so a treaty in an UNOPENED region (whose owner never
+    issues a GET /my-region/treaties) still expires. Previously the ONLY thing
+    that flipped a stale treaty was RegionalGovernanceService._expire_stale_treaties,
+    invoked lazily on read; an unread region's treaties therefore never expired.
+    The flip uses the SAME 'active' -> 'expired' literals as the lazy path, so a
+    treaty caught by either path is byte-identical.
+
+    Returns {auto_created, opened, tallied, enacted, rejected,
+    regions_recomputed, treaties_expired}.
     """
     from src.core.database import SessionLocal
     from src.models.region import (
         Region, RegionStatus, RegionalElection, RegionalPolicy, RegionalVote,
-        RegionalPolicyVote, RegionalTreasuryEntry,
+        RegionalPolicyVote, RegionalTreasuryEntry, RegionalTreaty,
         RegionalMembership, ElectionStatus, PolicyStatus,
     )
     from src.models.planet import Planet, player_planets
@@ -2133,11 +2152,11 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
         RECURRING_ELECTION_POSITION, ELECTION_VOTING_WINDOW_DAYS,
         ELECTION_SCHEDULED_LEAD_DAYS,
     )
-    from sqlalchemy import func as sa_func
+    from sqlalchemy import func as sa_func, update
     from sqlalchemy.orm.attributes import flag_modified
 
     result = {"auto_created": 0, "opened": 0, "tallied": 0, "enacted": 0,
-              "rejected": 0, "regions_recomputed": 0}
+              "rejected": 0, "regions_recomputed": 0, "treaties_expired": 0}
     now = datetime.utcnow()
 
     db = SessionLocal()
@@ -2560,6 +2579,40 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
             logger.exception(
                 "Governance sweep: active_players_30d recompute phase failed"
             )
+            db.rollback()
+
+        # --- Phase 5: expire stale treaties (WO-TREATY) ----------------------
+        # GALAXY-WIDE expiry of every 'active' treaty past its expires_at, so a
+        # treaty in an UNOPENED region (whose owner never reads it) still
+        # expires. Mirrors RegionalGovernanceService._expire_stale_treaties's
+        # 'active' -> 'expired' transition but is NOT region-scoped — the lazy
+        # read path only ever touched the region being read. Idempotent (a clean
+        # no-op once nothing is past its expiry); a failure here must NEVER break
+        # the governance sweep proper.
+        try:
+            expired_result = db.execute(
+                update(RegionalTreaty)
+                .where(
+                    RegionalTreaty.status == "active",
+                    RegionalTreaty.expires_at.isnot(None),
+                    RegionalTreaty.expires_at < now,
+                )
+                .values(status="expired")
+            )
+            expired_count = expired_result.rowcount or 0
+            if expired_count:
+                db.commit()
+                result["treaties_expired"] += expired_count
+                logger.info(
+                    "Governance sweep: expired %d stale treaty(ies)",
+                    expired_count,
+                )
+            else:
+                # Nothing flipped — settle the no-op statement so the advisory
+                # lock is not held on an idle transaction.
+                db.commit()
+        except Exception:
+            logger.exception("Governance sweep: treaty expiry phase failed")
             db.rollback()
 
         # Final commit closes out any open (no-op) transaction so the advisory
@@ -4408,6 +4461,82 @@ def _run_citizen_rebake_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def _run_presence_sweep_sync() -> Dict[str, int]:
+    """WO-PRESWEEP — remove offline players from ``Sector.players_present``.
+
+    A presence entry is written on movement (movement_service
+    _update_player_presence) but only removed when the player MOVES again — so a
+    player who logs out / goes idle lingers in the who's-here list forever. This
+    sweep drops any entry whose player has not been active (``last_game_login`` —
+    updated on turn-spend, turn_service.py) within ``PRESENCE_STALE_MINUTES``.
+
+    DISCIPLINE: own SessionLocal; xact advisory lock so a 2nd instance skips;
+    candidate query (only non-empty presence lists); per-sector commit + isolated
+    try/except. IDEMPOTENT — re-removing an already-absent player is a no-op, so
+    the lock-releases-on-first-commit property is harmless here. Reads a wall-clock
+    last-seen, mutates only the JSONB list. No migration, no new row.
+    """
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy.orm.attributes import flag_modified
+    from src.core.database import SessionLocal
+
+    db = SessionLocal()
+    swept = 0
+    sectors_touched = 0
+    try:
+        got = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _PRESENCE_SWEEP_LOCK_KEY},
+        ).scalar()
+        if not got:
+            db.rollback()
+            return {"presence_entries_swept": 0, "sectors": 0}
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=PRESENCE_STALE_MINUTES)
+        sectors = (
+            db.query(Sector)
+            .filter(text("jsonb_array_length(players_present) > 0"))
+            .all()
+        )
+        for sec in sectors:
+            try:
+                entries = list(sec.players_present or [])
+                pids = [
+                    e.get("player_id") for e in entries
+                    if isinstance(e, dict) and e.get("player_id")
+                ]
+                if not pids:
+                    db.rollback()
+                    continue
+                rows = (
+                    db.query(Player.id, Player.last_game_login)
+                    .filter(Player.id.in_(pids))
+                    .all()
+                )
+                fresh = {
+                    str(pid) for pid, lgl in rows
+                    if lgl is not None and lgl >= cutoff
+                }
+                kept = [e for e in entries if e.get("player_id") in fresh]
+                removed = len(entries) - len(kept)
+                if removed > 0:
+                    sec.players_present = kept
+                    flag_modified(sec, "players_present")
+                    db.commit()
+                    swept += removed
+                    sectors_touched += 1
+                else:
+                    db.rollback()
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "presence sweep: sector %s failed (loop continues)",
+                    getattr(sec, "id", "?"),
+                )
+        return {"presence_entries_swept": swept, "sectors": sectors_touched}
+    finally:
+        db.close()
+
+
 async def _run_aria_prune_async() -> Dict[str, int]:
     """ASYNC daily ARIA storage-prune pass (WO-F16).
 
@@ -5088,3 +5217,21 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: citizen re-bake sweep pass crashed (loop continues)")
+
+        # Stale-presence sweep (WO-PRESWEEP) — drop offline players from
+        # Sector.players_present so the who's-here list isn't polluted by players
+        # who logged out / went idle (keyed on last_game_login).
+        if elapsed % PRESENCE_SWEEP_CHECK_SECONDS == 0:
+            try:
+                pres = await asyncio.to_thread(_run_presence_sweep_sync)
+                if pres.get("presence_entries_swept"):
+                    logger.info(
+                        "NPC scheduler: presence sweep — removed %d stale entr(y/ies) "
+                        "across %d sector(s)",
+                        pres.get("presence_entries_swept", 0),
+                        pres.get("sectors", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: presence sweep crashed (loop continues)")
