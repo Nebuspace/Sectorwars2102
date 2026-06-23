@@ -223,6 +223,21 @@ SHIELD_GENERATOR_LEVELS = {
 # (no migration) and settled lazily on read, mirroring the defense-building queue.
 SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL = 6
 
+# Production buildings (factory/farm/mine/defense/research) cap at level 10 — the
+# canon ceiling. Each level grants +10% production via the (1 + level * 0.1) bonus
+# in _calculate_production_rates, so level 10 = +100% (the documented maximum).
+# Without this cap, upgrade_building accepted ANY target_level, letting a player
+# drive a building to e.g. level 50 (+500% production) and blow past the ceiling —
+# an economic-integrity hole. The upgrade is time-based (1h per level climbed) and
+# stored as a JSONB anchor on planet.active_events['building_upgrade'] (no
+# migration), settled lazily on read, mirroring the shield-generator upgrade.
+MAX_BUILDING_LEVEL = 10
+BUILDING_UPGRADE_HOURS_PER_LEVEL = 1
+# The five production-building columns upgrade_building can target. Mirrors the
+# maps in _get_building_level / _set_building_level (single source of truth for the
+# accepted building_type values).
+BUILDING_LEVEL_TYPES = ("factory", "farm", "mine", "defense", "research")
+
 # Colony specialization multipliers (ADR-0087). Single source of truth, shared
 # with combat_service for the defense multiplier. "production" scales commodity
 # output (applied in _calculate_production_rates); "defense" scales the planet's
@@ -560,6 +575,12 @@ class PlanetaryService:
         # Lazily apply colonist growth (population growth is NOT one of the spine's three clocks,
         # §9 — it stays a pre-settle lazy call), then settle the planetary clocks.
         changed = self.apply_population_growth(planet)
+
+        # Lazy advance-on-read for a time-based building upgrade whose timer has
+        # elapsed: bump the level BEFORE settle()/production-rate formatting so the
+        # new +10%/level bonus is reflected the moment the build completes (mirrors
+        # the shield-generator settle).
+        changed = self._settle_building_upgrade(planet, datetime.now(UTC)) or changed
 
         # Siege LIFECYCLE stays BEFORE settle() (§5.2): _detect_siege may LIFT a stale siege
         # (enemies gone OR owner present) — canon (defense.md) requires owner ABSENCE, so the owner
@@ -1126,8 +1147,20 @@ class PlanetaryService:
         building_type: str,
         target_level: int
     ) -> Dict[str, Any]:
-        """Upgrade a building on a planet."""
-        # Verify ownership
+        """Upgrade a building on a planet.
+
+        Time-based (1h per level climbed): credits are charged up front; the
+        building level advances only when the build timer elapses, settled lazily
+        on read via _settle_building_upgrade (mirrors the shield-generator
+        upgrade). The level is capped at MAX_BUILDING_LEVEL (the canon ceiling) so
+        production can never exceed the documented +100% maximum.
+        """
+        if building_type not in BUILDING_LEVEL_TYPES:
+            raise ValueError(f"Unknown building type: {building_type}")
+
+        # Lock the planet row + verify ownership so two concurrent upgrades can't
+        # both pass the "none in progress" gate and stack anchors (mirrors the
+        # shield-generator lock).
         planet = self.db.query(Planet).join(
             player_planets,
             Planet.id == player_planets.c.planet_id
@@ -1136,44 +1169,80 @@ class PlanetaryService:
                 Planet.id == planet_id,
                 player_planets.c.player_id == player_id
             )
-        ).first()
-        
+        ).with_for_update().first()
+
         if not planet:
             raise ValueError("Planet not found or not owned by player")
-            
+
+        # Settle any already-finished building upgrade FIRST so a completed-but-
+        # unsettled build doesn't block the next one (mirrors the shield path).
+        now = datetime.now(UTC)
+        self._settle_building_upgrade(planet, now)
+
+        in_progress = self._get_building_upgrade(planet)
+        if in_progress:
+            raise ValueError(
+                f"Building upgrade already in progress "
+                f"({in_progress.get('building_type')} to level {in_progress.get('to')})"
+            )
+
         # Get current building level
         current_level = self._get_building_level(planet, building_type)
-        
+
         if target_level <= current_level:
             raise ValueError(f"Target level must be higher than current level ({current_level})")
-            
+
+        # Reject anything above the canon ceiling: buildings cap at level 10
+        # (= +100% production via the (1 + level * 0.1) rate bonus in
+        # _calculate_production_rates). Without this gate, upgrade_building accepted
+        # ANY target_level, so a player could drive a building to level 50 (+500%
+        # production), blowing past the documented max-10 ceiling — an
+        # economic-integrity hole. Reject (rather than silently clamp) so the caller
+        # is never charged for a level it won't receive.
+        if target_level > MAX_BUILDING_LEVEL:
+            raise ValueError(
+                f"Building level cannot exceed {MAX_BUILDING_LEVEL} "
+                f"(requested {target_level})"
+            )
+
         # Calculate upgrade cost
         cost = self._calculate_upgrade_cost(building_type, current_level, target_level)
-        
+
         # Lock player for credit deduction
         player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        if not player:
+            raise ValueError("Player not found")
         if player.credits < cost["credits"]:
             raise ValueError("Insufficient credits for upgrade")
-            
-        # Deduct cost
+
+        # Charge credits now; the level advances on completion (settle). The level
+        # is NOT applied here — _settle_building_upgrade advances it once the timer
+        # elapses, honoring completionTime (previously the level changed instantly
+        # while a completionTime was reported but never enforced).
         player.credits -= cost["credits"]
-        
-        # Update building level
-        self._set_building_level(planet, building_type, target_level)
-        
-        # Calculate completion time (1 hour per level)
-        completion_time = datetime.utcnow() + timedelta(hours=(target_level - current_level))
-        
+        build_hours = (target_level - current_level) * BUILDING_UPGRADE_HOURS_PER_LEVEL
+        completion_time = now + timedelta(hours=build_hours)
+        self._set_building_upgrade(planet, {
+            "building_type": building_type,
+            "from": current_level,
+            "to": target_level,
+            "started_at": now.isoformat(),
+            "complete_at": completion_time.isoformat(),
+        })
+
         self.db.commit()
-        
+
         return {
             "success": True,
             "buildingType": building_type,
+            "upgrading": True,
+            "fromLevel": current_level,
             "newLevel": target_level,
+            "maxLevel": MAX_BUILDING_LEVEL,
             "completionTime": completion_time.isoformat(),
             "cost": cost
         }
-        
+
     def update_defenses(
         self,
         planet_id: UUID,
@@ -1780,6 +1849,62 @@ class PlanetaryService:
         logger.info(
             "Shield generator upgrade completed to level %s (%s) on planet %s (id=%s)",
             to_level, info["name"], planet.name, planet.id,
+        )
+        return True
+
+    def _get_building_upgrade(self, planet: Planet) -> Optional[Dict[str, Any]]:
+        """Return the in-progress building-upgrade anchor from active_events, or None."""
+        events = planet.active_events
+        if isinstance(events, dict):
+            bu = events.get("building_upgrade")
+            return dict(bu) if isinstance(bu, dict) else None
+        return None
+
+    def _set_building_upgrade(self, planet: Planet, data: Optional[Dict[str, Any]]) -> None:
+        """Persist (data) or clear (None) the building-upgrade anchor in active_events JSONB."""
+        events = planet.active_events
+        if not isinstance(events, dict):
+            events = {"legacy_events": events} if events else {}
+        events = dict(events)
+        if data is None:
+            events.pop("building_upgrade", None)
+        else:
+            events["building_upgrade"] = data
+        planet.active_events = events
+
+    def _settle_building_upgrade(self, planet: Planet, now: datetime) -> bool:
+        """Apply a building upgrade whose build timer has elapsed (lazy advance-on-read).
+
+        Mirrors _settle_shield_upgrade: when the timer is done the building level
+        advances to the target (clamped to MAX_BUILDING_LEVEL as a defensive guard)
+        and the anchor clears. Returns True if anything changed so the caller can
+        persist.
+        """
+        bu = self._get_building_upgrade(planet)
+        if not bu:
+            return False
+        building_type = bu.get("building_type")
+        if building_type not in BUILDING_LEVEL_TYPES:
+            # Malformed/unknown anchor: clear it rather than strand the planet.
+            self._set_building_upgrade(planet, None)
+            return True
+        complete_at = bu.get("complete_at")
+        done = True
+        if complete_at:
+            try:
+                done = now >= datetime.fromisoformat(complete_at)
+            except (ValueError, TypeError):
+                done = True  # malformed timestamp: settle rather than strand the upgrade
+        if not done:
+            return False
+        current = self._get_building_level(planet, building_type)
+        to_level = max(0, min(MAX_BUILDING_LEVEL, int(bu.get("to", current))))
+        self._set_building_level(planet, building_type, to_level)
+        self._set_building_upgrade(planet, None)
+        self.db.flush()
+        logger.info(
+            "Building upgrade completed: %s to level %s on planet %s (id=%s)",
+            building_type, to_level, planet.name, planet.id,
         )
         return True
 
@@ -2415,54 +2540,31 @@ class PlanetaryService:
         }
         
     def _get_buildings_data(self, planet: Planet) -> List[Dict[str, Any]]:
-        """Get building data for a planet."""
+        """Get building data for a planet.
+
+        Surfaces any in-progress time-based building upgrade (the
+        active_events['building_upgrade'] anchor) so the UI can show the pending
+        level + completionTime. The building being upgraded is included even at
+        level 0 (e.g. a first-time build) so the in-progress upgrade is visible.
+        """
+        upgrade = self._get_building_upgrade(planet)
+        upgrade_type = upgrade.get("building_type") if upgrade else None
+
         buildings = []
-        
-        # Factory
-        if planet.factory_level and planet.factory_level > 0:
+        for building_type in BUILDING_LEVEL_TYPES:
+            level = self._get_building_level(planet, building_type)
+            is_upgrading = building_type == upgrade_type
+            # Show a building if it exists (level > 0) OR has an upgrade in flight.
+            if level <= 0 and not is_upgrading:
+                continue
             buildings.append({
-                "type": "factory",
-                "level": planet.factory_level,
-                "upgrading": False,
-                "completionTime": None
+                "type": building_type,
+                "level": level,
+                "upgrading": is_upgrading,
+                "upgradingToLevel": upgrade.get("to") if is_upgrading else None,
+                "completionTime": upgrade.get("complete_at") if is_upgrading else None,
             })
-            
-        # Farm
-        if planet.farm_level and planet.farm_level > 0:
-            buildings.append({
-                "type": "farm",
-                "level": planet.farm_level,
-                "upgrading": False,
-                "completionTime": None
-            })
-            
-        # Mine
-        if planet.mine_level and planet.mine_level > 0:
-            buildings.append({
-                "type": "mine",
-                "level": planet.mine_level,
-                "upgrading": False,
-                "completionTime": None
-            })
-            
-        # Defense
-        if planet.defense_level and planet.defense_level > 0:
-            buildings.append({
-                "type": "defense",
-                "level": planet.defense_level,
-                "upgrading": False,
-                "completionTime": None
-            })
-            
-        # Research
-        if planet.research_level and planet.research_level > 0:
-            buildings.append({
-                "type": "research",
-                "level": planet.research_level,
-                "upgrading": False,
-                "completionTime": None
-            })
-            
+
         return buildings
         
     def _get_building_level(self, planet: Planet, building_type: str) -> int:
