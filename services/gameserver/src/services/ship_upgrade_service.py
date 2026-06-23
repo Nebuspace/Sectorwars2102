@@ -411,26 +411,35 @@ class ShipUpgradeService:
             "name": "Genesis Containment Module",
             "description": "Increases genesis-device capacity (genesis-capable hulls only).",
         },
-        # cargo + drone: ported but INERT — written, not (yet) consumed (fix D).
+        # cargo: now CONSUMED. The cargo_bonus_percent bake into
+        # cargo._capacity_bonus_percent (see _apply_module_effects) is read by
+        # models/ship.py effective_cargo_capacity(), which WO-SM made the single
+        # cargo-capacity reader (trade / mining / salvage / planetary / warp-gate).
+        # The `inert` marker is therefore removed — the module's effect is live.
         "cargo": {
             "base_cost": 3000,
             "base_effects": {"cargo_bonus_percent": 30},
             "compatible_ships": None,
             "requires": None,
             "slot_class": None,
-            "inert": True,  # [NO-CANON] baked into cargo._capacity_bonus_percent; no kernel consumer change
             "name": "Cargo Module",
-            "description": "Increases cargo capacity (effect baked; consumer wiring is a separate WO).",
+            "description": "Increases cargo capacity (consumed via effective_cargo_capacity).",
         },
+        # drone: STILL INERT. The drone_capacity_bonus bake has no scalar Ship
+        # column, and the live consumer (drone_service._drone_bay_bonus) reads the
+        # Drone Bay level out of Ship.upgrades[DRONE_BAY] — the legacy UpgradeType
+        # JSONB — NOT the module bake. So a drone MODULE is fitted-and-baked but its
+        # capacity bonus is never read. Making it live needs a module-aware
+        # drone-capacity source (a separate WO); kept `inert` until then.
         "drone": {
             "base_cost": 10000,
             "base_effects": {"drone_capacity_bonus": 2},
             "compatible_ships": None,
             "requires": None,
             "slot_class": None,
-            "inert": True,  # [NO-CANON] no consumer EXISTS for drone capacity; effect tracked, never read
+            "inert": True,  # [NO-CANON] module bake unread — consumer reads Ship.upgrades[DRONE_BAY], not the bake
             "name": "Drone Bay Module",
-            "description": "Increases drone capacity (NO consumer wired — net-new wiring is a separate WO).",
+            "description": "Increases drone capacity (module bake NOT yet consumed — consumer reads the legacy upgrade level; wiring is a separate WO).",
         },
         # --- ported from EQUIPMENT_DEFINITIONS (the 4 player equipment plug-ins) ---
         "harvester": {

@@ -30,6 +30,13 @@ class TeamMember(Base):
     can_invite = Column(Boolean, nullable=False, default=False)
     can_kick = Column(Boolean, nullable=False, default=False)
     can_manage_treasury = Column(Boolean, nullable=False, default=False)
+    # can_manage_missions: a RESERVED, not-yet-gating team permission. It is set by
+    # the role logic (LEADER/OFFICER get it in team_service) and surfaced in the
+    # teams API, but no team-mission feature reads it as a gate yet — there is no
+    # TeamMission model/route. (Distinct from the now-removed NPC faction-mission
+    # surface; this is the player-team mission permission for a planned feature.)
+    # Kept rather than dropped because removing the DB column requires a migration;
+    # left in place + documented until the team-mission feature lands or is cut.
     can_manage_missions = Column(Boolean, nullable=False, default=False)
     can_manage_alliances = Column(Boolean, nullable=False, default=False)
     

@@ -156,6 +156,20 @@ class Planet(Base):
     landing_rights = Column(JSONB, nullable=True)
     description = Column(String, nullable=True)
 
+    # PL4b abandonment / reclamation markers + the deferred planet tax axis
+    # (DB columns added in migration d7a2f1c9e3b5 — all additive + nullable).
+    # Declared here so the ORM and any model-reader see them; abandonment_service
+    # remains the SINGLE WRITER of reclaimable_at/abandoned_at and reaches them via
+    # raw text() SQL on the same transaction — those raw helpers keep working
+    # unchanged now that the columns are also visible on the ORM model.
+    #   tax_rate       — INERT this slice (no taxable event wired yet). NULL ⇒ 0.0;
+    #                    the [0.00, 0.20] clamp lives in planetary_service.clamp_tax_rate.
+    #   reclaimable_at — inactivity-reclaim flag (NULL ⇒ not flagged).
+    #   abandoned_at   — audit stamp for the moment ownership reverted (forensics only).
+    tax_rate = Column(Float, nullable=True)
+    reclaimable_at = Column(DateTime(timezone=True), nullable=True)
+    abandoned_at = Column(DateTime(timezone=True), nullable=True)
+
     # Siege information
     under_siege = Column(Boolean, nullable=False, default=False)
     siege_started_at = Column(DateTime(timezone=True), nullable=True)
