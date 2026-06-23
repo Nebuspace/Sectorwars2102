@@ -56,6 +56,7 @@ from src.api.routes.construction import router as construction_router
 from src.api.routes.port_ownership import router as port_ownership_router
 from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
+from src.api.routes.refining import router as refining_router
 from src.api.routes.warp_gates import router as warp_gates_router
 from src.api.routes.nav import router as nav_router
 from src.api.routes.medals import router as medals_router
@@ -149,6 +150,10 @@ api_router.include_router(research_cockpit_router, tags=["research-cockpit"])
 # (router carries its own /quantum prefix — no other router claims /quantum,
 # so no mount-order shadowing)
 api_router.include_router(quantum_router, tags=["quantum"])
+# Shard → Crystal refining (5 Shards + 10,000 cr → 1 Quantum Crystal): the
+# ONLY player-driven source of Quantum Crystals (router carries its own
+# /refining prefix; distinct from the 1:1 /quantum/refine-charge jump charge)
+api_router.include_router(refining_router, tags=["refining"])
 # Player warp gates: three-phase construction ritual (ADR-0029) + sector
 # structure listing (router carries its own /warp-gates prefix; traversal
 # itself rides the normal /player/move endpoints via MovementService)
