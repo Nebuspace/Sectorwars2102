@@ -53,7 +53,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.game_time import scaled_deadline
-from src.services.turn_service import spend_turns
+from src.services.turn_service import regenerate_turns, spend_turns
 from src.models.player import Player
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.sector import Sector, SectorType, sector_warps
@@ -97,6 +97,12 @@ REFINE_MIN_STATION_CLASS = 3
 # scaled the SAME way scan/jump compute their cooldown_until (scaled_deadline).
 HARVEST_COOLDOWN_HOURS = 2.0
 
+# Turn cost charged per harvest attempt — mirrors mining_service.harvest's
+# regenerate_turns -> afford-check -> spend_turns model so a harvest is never
+# a free action. The canon magnitude is doc-split (15 vs 8); 8 is the
+# conservative value pending the orchestrator's doc reconcile [NO-CANON 8-vs-15].
+HARVEST_NEBULA_TURN_COST = 8
+
 # § Harvest mechanics resolution step 4: "Roll crit ~ uniform(0, 1) < 0.02."
 HARVEST_CRIT_RATE = 0.02
 # § Resolution step 4: "multiply yield by the nebula's critical multiplier
@@ -122,13 +128,10 @@ _HARVEST_YIELD_BANDS: Dict[str, Tuple[int, int]] = {
 # (emergent_reputation_service FACTION code map). One emergent-action dispatch
 # per whole 3-shard block — mirrors apply_trade_volume_rep's per-block model.
 HARVEST_NS_REP_SHARDS_PER_BLOCK = 3
-# Emergent-action key the per-block Nova award dispatches. NOTE: this action is
-# NOT YET registered in emergent_reputation_service.EMERGENT_ACTIONS (that file
-# is out of this lane); until the orchestrator adds it the dispatcher logs a
-# warning and returns {"success": False} WITHOUT raising — the harvest still
-# succeeds and the rep wiring activates the instant the one-line action entry
-# lands (the codebase's "defined-but-unwired-but-ready" pattern). Flagged in the
-# WO report as a cross-lane follow-up.
+# Emergent-action key the per-block Nova award dispatches. This action IS now
+# registered in emergent_reputation_service.EMERGENT_ACTIONS, so each per-block
+# dispatch fires a real Nova Scientific Institute rep award. apply_emergent_action
+# is flush-only and never raises, so a rep hiccup can never break the harvest path.
 HARVEST_NS_EMERGENT_ACTION = "HARVEST_NEBULA_SHARDS_NS"
 
 # Secrets-backed RNG — canon § Anti-cheat ("Yield rolls use a cryptographically
@@ -803,12 +806,14 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     § Harvest mechanics / § Nebula types and field strengths).
 
     Locks the player + piloted ship row FOR UPDATE, gates on the nebula
-    sector + fitted harvester + the 2h per-ship harvest cooldown, rolls the
-    shard yield from the canon band for the cluster's nebula type (secrets
-    RNG) with the 2% crit (×2, or ×5 for Obsidian), credits
-    ``player.quantum_shards``, awards Nova Scientific Institute rep (+1 per 3
-    shards), and arms the 2h cooldown (canonical, scaled via scaled_deadline
-    the same way scan/jump compute theirs).
+    sector + fitted harvester + the 2h per-ship harvest cooldown, regenerates
+    then spends ``HARVEST_NEBULA_TURN_COST`` turns (rejecting with
+    ``insufficient_turns`` before any shards are granted), rolls the shard yield
+    from the canon band for the cluster's nebula type (secrets RNG) with the 2%
+    crit (×2, or ×5 for Obsidian), credits ``player.quantum_shards``, awards
+    Nova Scientific Institute rep (+1 per 3 shards), and arms the 2h cooldown
+    (canonical, scaled via scaled_deadline the same way scan/jump compute
+    theirs).
 
     KERNEL SCOPE: the per-sector soft-cap depletion (Max-gated) is deferred —
     not implemented here. FLUSH-ONLY: the route owns db.commit().
@@ -873,6 +878,19 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
             "not_a_nebula: this nebula's field type is uncharted — no harvest band"
         )
 
+    # CHARGE TURNS — regenerate (the frozen hook) INSIDE the player+ship lock,
+    # then afford-check, then spend, all BEFORE granting any shards. Mirrors
+    # mining_service.harvest's regenerate_turns -> check -> spend_turns model so
+    # a harvest is never a free action. Reject cleanly (no shards granted, no
+    # cooldown armed) if the player can't afford it.
+    regenerate_turns(db, player)
+    if (player.turns or 0) < HARVEST_NEBULA_TURN_COST:
+        raise QuantumError(
+            "insufficient_turns: a nebula harvest costs "
+            f"{HARVEST_NEBULA_TURN_COST} turns; you have {player.turns or 0}"
+        )
+    spend_turns(player, HARVEST_NEBULA_TURN_COST)
+
     # ROLL — shard yield from the canon band (inclusive), secrets RNG.
     lo, hi = band
     shard_yield = _RNG.randint(lo, hi)
@@ -918,6 +936,8 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
         "crit": crit,
         "nebula_type": nebula_type,
         "quantum_shards": player.quantum_shards,
+        "turns_spent": HARVEST_NEBULA_TURN_COST,
+        "remaining_turns": player.turns or 0,
         "harvest_cooldown_until": _iso_or_none(ship.quantum_harvest_cooldown_until),
     }
 
