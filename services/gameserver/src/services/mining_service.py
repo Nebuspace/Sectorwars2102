@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
-from src.models.ship import Ship, ShipStatus
+from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
 from src.models.sector import Sector, SectorType
 from src.models.faction import FactionType
 from src.models.claim_license import ClaimLicense
@@ -358,9 +358,11 @@ class MiningService:
         # with a 50-unit default when 'capacity' is absent. There is NO
         # Ship.max_cargo column — max_cargo lives on ShipSpecification — so the
         # capacity must come from the JSONB (or the 50 default), never ship.*.
+        # The ceiling MUST honor the Cargo-Hold ship-mod bonus, so read the
+        # effective (post-bonus) capacity, not the raw base (ship.py:166).
         cargo = ship.cargo if isinstance(ship.cargo, dict) else {}
         cargo_used = cargo.get("used", 0) or 0
-        cargo_capacity = cargo.get("capacity", 50)
+        cargo_capacity = effective_cargo_capacity(ship)
         free_cargo = cargo_capacity - cargo_used
         if free_cargo < 1:
             return {

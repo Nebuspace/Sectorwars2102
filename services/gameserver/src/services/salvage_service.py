@@ -30,6 +30,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from src.models.player import Player
 from src.models.sector import Sector
 from src.models.cargo_wreck import CargoWreck
+from src.models.ship import effective_cargo_capacity
 
 # ADR-0007: the salvage grace / Suspect window is 1 hour from wreck birth.
 GRACE_WINDOW = timedelta(hours=1)
@@ -93,7 +94,9 @@ def salvage_wreck(db: Session, player: Player, wreck_id) -> Dict:
                             detail="No active ship to salvage into")
     cargo = ship.cargo or dict(_DEFAULT_CARGO)
     used = cargo.get("used", 0)
-    capacity = cargo.get("capacity", _DEFAULT_CARGO["capacity"])
+    # The pickup ceiling MUST honor the Cargo-Hold ship-mod bonus, so read the
+    # effective (post-bonus) capacity, not the raw base (ship.py:166).
+    capacity = effective_cargo_capacity(ship)
     free = capacity - used
     if free <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
