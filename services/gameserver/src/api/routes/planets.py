@@ -1764,6 +1764,10 @@ class CitadelCommodityRequest(BaseModel):
     amount: int = Field(..., gt=0)
 
 
+class CitadelAutoDepositRequest(BaseModel):
+    enabled: bool
+
+
 @router.get("/{planetId}/citadel")
 async def get_citadel_info(
     planetId: str,
@@ -1910,6 +1914,28 @@ async def citadel_withdraw_commodity(
     result = service.withdraw_commodity_from_safe(planet_id, player.id, request.commodity, request.amount)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("message", "Withdrawal failed"))
+    db.commit()
+    return result
+
+
+@router.post("/{planetId}/citadel/auto-deposit")
+async def citadel_set_auto_deposit(
+    planetId: str,
+    request: CitadelAutoDepositRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Toggle auto-deposit of commodities into the protected citadel safe."""
+    try:
+        planet_id = UUID(planetId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid planet ID format")
+
+    from src.services.citadel_service import CitadelService
+    service = CitadelService(db)
+    result = service.set_auto_deposit(planet_id, player.id, request.enabled)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Auto-deposit toggle failed"))
     db.commit()
     return result
 

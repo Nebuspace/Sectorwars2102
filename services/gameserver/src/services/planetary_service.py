@@ -595,6 +595,15 @@ class PlanetaryService:
         # each on its own inner anchor in its own clock domain (no `now` threaded in).
         from src.services.structures import settle
         changed = settle(planet, db=self.db).changed or changed
+
+        # AUTO-DEPOSIT sweep (owner-only path — ownership verified at top): when the
+        # safe_auto_deposit flag is ON, move on-hand commodities into the protected
+        # safe within the same commit block so the moved goods persist with this
+        # read's accrual. No-op (returns {}) when the flag is off, so default
+        # behaviour is unchanged. FLUSH-only inside; OR its truthiness into `changed`
+        # so the commit below fires when anything moved.
+        from src.services.citadel_service import CitadelService
+        changed = bool(CitadelService(self.db).auto_deposit_to_safe(planet)) or changed
         if changed:
             try:
                 self.db.commit()

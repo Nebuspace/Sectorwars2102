@@ -552,6 +552,7 @@ const GameDashboard: React.FC = () => {
     withdrawFromSafe,
     depositCommodityToSafe,
     withdrawCommodityFromSafe,
+    setCitadelAutoDeposit,
     getPlanetDefenseInfo,
     upgradeShields,
     exploreCurrentLocation,
@@ -1242,6 +1243,30 @@ const GameDashboard: React.FC = () => {
 
   // --- Commodity safe storage (move planet stockpile <-> protected safe) ---
   const [commodityBusy, setCommodityBusy] = useState<string | null>(null);
+  const [autoDepositBusy, setAutoDepositBusy] = useState(false);
+
+  // Toggle "auto-deposit production into safe" (opt-in, default OFF). The server
+  // is authoritative on the resulting flag — merge it back into citadelInfo so
+  // the checkbox reflects the persisted state.
+  const handleToggleAutoDeposit = async (enabled: boolean) => {
+    if (!landedPlanet || autoDepositBusy) return;
+    setAutoDepositBusy(true);
+    try {
+      const result = await setCitadelAutoDeposit(landedPlanet.id, enabled);
+      const next = typeof result?.auto_deposit === 'boolean' ? result.auto_deposit : enabled;
+      setCitadelInfo((prev: any) => (prev ? { ...prev, auto_deposit: next } : prev));
+      setOpsNotice({
+        type: 'success',
+        message: next
+          ? 'Auto-deposit enabled — production will be swept into the safe.'
+          : 'Auto-deposit disabled.',
+      });
+    } catch (error: any) {
+      setOpsNotice({ type: 'error', message: error?.response?.data?.detail || 'Could not change auto-deposit' });
+    } finally {
+      setAutoDepositBusy(false);
+    }
+  };
   // Planet stockpile keys (fuel/organics/equipment) -> safe commodity keys.
   const SAFE_COMMODITIES: { stock: 'fuel' | 'organics' | 'equipment'; safe: string; icon: string; name: string }[] = [
     { stock: 'fuel', safe: 'fuel_ore', icon: '⛽', name: 'Fuel Ore' },
@@ -3121,7 +3146,26 @@ const GameDashboard: React.FC = () => {
                                   </div>
                                   {/* Protected commodity storage: move planet stockpile <-> safe */}
                                   <div className="safe-commodities">
-                                    <div className="sc-head">📦 Stored Goods <span className="sc-hint">(protected from raiders)</span></div>
+                                    <div className="sc-head">
+                                      📦 Stored Goods <span className="sc-hint">(protected from raiders)</span>
+                                      <label
+                                        className="sc-hint"
+                                        style={{ float: 'right', display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: autoDepositBusy ? 'wait' : 'pointer' }}
+                                        title="When on, new production is automatically swept into the safe up to the cr-equivalent cap"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={!!citadelInfo?.auto_deposit}
+                                          disabled={autoDepositBusy}
+                                          onChange={(e) => handleToggleAutoDeposit(e.target.checked)}
+                                          style={{ accentColor: '#7dd3fc', cursor: autoDepositBusy ? 'wait' : 'pointer' }}
+                                        />
+                                        Auto-deposit production into safe
+                                      </label>
+                                    </div>
+                                    <div className="sc-hint" style={{ marginBottom: '4px' }}>
+                                      Production fills the planet stockpile (right number) — Store it here, or enable auto-deposit, to protect it from raiders.
+                                    </div>
                                     {SAFE_COMMODITIES.map(({ stock, safe, icon, name }) => {
                                       const inSafe = Number(citadelInfo?.safe_commodities?.[safe] ?? 0);
                                       const onPlanet = Math.floor(projectedStock(stock));
@@ -3129,6 +3173,19 @@ const GameDashboard: React.FC = () => {
                                       const room = Math.max(0, safeCapacity - safeTotalValue);
                                       const canStore = unitVal > 0 ? Math.min(onPlanet, Math.floor(room / unitVal)) : 0;
                                       const busy = commodityBusy === safe;
+                                      // Computed reason the Store button is greyed (clearer than a generic
+                                      // "nothing to store" — distinguishes a full safe, a planet type that
+                                      // yields none, an unstaffed line, and sub-1-unit accrual).
+                                      const rate = Number(landedPlanetDetail?.productionRates?.[stock] ?? 0); // per day
+                                      const allocation = Number(landedPlanetDetail?.allocations?.[stock] ?? 0);
+                                      const storeDisabledTitle =
+                                        onPlanet >= 1 && room < unitVal
+                                          ? 'Safe full (cr-equivalent cap reached)'
+                                          : allocation > 0 && rate <= 0
+                                            ? `This world produces no ${name}`
+                                            : rate <= 0
+                                              ? `No production — assign workforce to ${name}`
+                                              : `Producing ${Math.round(rate)}/day — under 1 unit stored so far`;
                                       return (
                                         <div className="sc-row" key={safe}>
                                           <span className="sc-name">{icon} {name}</span>
@@ -3136,7 +3193,7 @@ const GameDashboard: React.FC = () => {
                                           <button
                                             className="safe-btn sc-btn"
                                             disabled={busy || canStore < 1}
-                                            title={canStore < 1 ? 'Nothing to store, or safe full' : `Store ${canStore.toLocaleString()} (${unitVal} cr/unit)`}
+                                            title={canStore < 1 ? storeDisabledTitle : `Store ${canStore.toLocaleString()} (${unitVal} cr/unit)`}
                                             onClick={() => moveCommoditySafe('store', safe, canStore)}
                                           >
                                             {busy ? '…' : '▲ Store'}
@@ -3144,7 +3201,7 @@ const GameDashboard: React.FC = () => {
                                           <button
                                             className="safe-btn sc-btn"
                                             disabled={busy || inSafe < 1}
-                                            title={inSafe < 1 ? 'None in safe' : `Take all ${inSafe.toLocaleString()}`}
+                                            title={inSafe < 1 ? `Safe holds no ${name}` : `Take all ${inSafe.toLocaleString()}`}
                                             onClick={() => moveCommoditySafe('take', safe, inSafe)}
                                           >
                                             {busy ? '…' : '▼ Take'}

@@ -347,6 +347,11 @@ class CitadelService:
             "safe_commodities": self._get_safe_commodities(planet),
             "safe_total_value": self._safe_total_value(planet),
             "commodity_values": COMMODITY_CREDIT_VALUE,
+            # AUTO-DEPOSIT: opt-in flag (default OFF) that, when on, sweeps the
+            # planet's commodity stockpile into the protected safe on each owner
+            # read (planetary_service.get_planet_details), bounded by the same
+            # shared cr-equivalent cap as a manual deposit.
+            "auto_deposit": self._get_auto_deposit(planet),
             "drone_capacity": current_info["drone_capacity"],
             "is_upgrading": getattr(planet, "citadel_upgrading", False) or False,
         }
@@ -819,6 +824,33 @@ class CitadelService:
             total += int(qty) * COMMODITY_CREDIT_VALUE.get(commodity, 0)
         return total
 
+    def _get_auto_deposit(self, planet: Planet) -> bool:
+        """Read the safe auto-deposit opt-in flag from planet.active_events JSONB.
+
+        Missing key / non-dict active_events ⇒ False (default OFF — canon
+        "optional"). Mirrors _get_safe_commodities' defensive JSONB read.
+        """
+        events = planet.active_events
+        if isinstance(events, dict):
+            return bool(events.get("safe_auto_deposit", False))
+        return False
+
+    def _set_auto_deposit_flag(self, planet: Planet, enabled: bool) -> None:
+        """Persist the safe auto-deposit flag into planet.active_events JSONB.
+
+        Coerces active_events to a dict first (mirrors _set_safe_commodities) so a
+        legacy list / None value never strands the flag; flag_modified ensures
+        SQLAlchemy detects the in-place JSONB mutation.
+        """
+        from sqlalchemy.orm.attributes import flag_modified
+        events = planet.active_events
+        if not isinstance(events, dict):
+            events = {"legacy_events": events} if events else {}
+        events = dict(events)
+        events["safe_auto_deposit"] = bool(enabled)
+        planet.active_events = events
+        flag_modified(planet, "active_events")
+
     def deposit_commodity_to_safe(
         self, planet_id: uuid.UUID, player_id: uuid.UUID, commodity: str, amount: int
     ) -> Dict[str, Any]:
@@ -937,6 +969,97 @@ class CitadelService:
             "planet_stockpile": int(getattr(planet, commodity, 0) or 0),
             "safe_total_value": self._safe_total_value(planet),
         }
+
+    def set_auto_deposit(
+        self, planet_id: uuid.UUID, player_id: uuid.UUID, enabled: bool
+    ) -> Dict[str, Any]:
+        """Toggle the safe auto-deposit flag on a planet you own.
+
+        Owner-only and requires a citadel (level >= 1), mirroring the manual
+        deposit_commodity_to_safe gate. FLUSH only — the ROUTE owns the commit
+        (gameserver convention: route commits, service flushes). The flag lives
+        at planet.active_events['safe_auto_deposit'] and defaults OFF (opt-in).
+        """
+        planet = (
+            self.db.query(Planet)
+            .filter(Planet.id == planet_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not planet:
+            return {"success": False, "message": "Planet not found"}
+        if planet.owner_id != player_id:
+            return {"success": False, "message": "You do not own this planet"}
+        if (getattr(planet, "citadel_level", 0) or 0) < 1:
+            return {"success": False, "message": "Planet does not have a citadel"}
+
+        self._set_auto_deposit_flag(planet, enabled)
+        self.db.flush()
+
+        logger.info(
+            f"Player {player_id} set citadel safe auto-deposit to {bool(enabled)} "
+            f"on planet {planet_id}"
+        )
+        return {"success": True, "auto_deposit": bool(enabled)}
+
+    def auto_deposit_to_safe(self, planet: Planet) -> Dict[str, int]:
+        """Sweep the planet's commodity stockpile into the protected citadel safe.
+
+        Runs only when the safe_auto_deposit flag is ON and the planet has a
+        citadel (level >= 1); otherwise a no-op returning {} so default behaviour
+        is byte-identical to today. For each of fuel_ore/organics/equipment, move
+        as much on-hand stock into the safe as the SHARED cr-equivalent cap allows,
+        recomputing the running safe total as we go so all three commodities
+        respect ONE pool in a single pass.
+
+        Idempotent / never mints: it only MOVES existing units (decrement the
+        stockpile column, increment safe_commodities), capped by what's on hand and
+        by the remaining room. FLUSH only — the CALLER owns the commit.
+        """
+        if not self._get_auto_deposit(planet):
+            return {}
+        level = int(getattr(planet, "citadel_level", 0) or 0)
+        if level < 1:
+            return {}
+
+        capacity = CITADEL_LEVELS[level]["safe_storage"]
+        commodities = self._get_safe_commodities(planet)
+        # Shared running cr-equiv total — recomputed once, then adjusted per move so
+        # the cap is respected across all three commodities in one pass.
+        running_total = self._safe_total_value(planet)
+        moved: Dict[str, int] = {}
+
+        # `commodities` is a DETACHED local copy (fresh dict from
+        # _get_safe_commodities); it is persisted exactly ONCE after the loop via
+        # _set_safe_commodities. Do NOT introduce a per-commodity early
+        # return/break between the setattr (stockpile decrement) and that
+        # post-loop persist, or a decrement would commit while its matching safe
+        # increment stays stranded in this un-persisted local dict (a real
+        # mint/loss). Keep all moves in one pass, persist once. (R1, WO-CITADEL)
+        for commodity in ("fuel_ore", "organics", "equipment"):
+            unit_value = COMMODITY_CREDIT_VALUE.get(commodity, 0)
+            if unit_value <= 0:
+                continue
+            on_hand = int(getattr(planet, commodity, 0) or 0)
+            if on_hand <= 0:
+                continue
+            room = max(0, capacity - running_total)
+            depositable = min(on_hand, room // unit_value)
+            if depositable <= 0:
+                continue
+            commodities[commodity] = commodities.get(commodity, 0) + depositable
+            setattr(planet, commodity, on_hand - depositable)
+            running_total += depositable * unit_value
+            moved[commodity] = depositable
+
+        if moved:
+            self._set_safe_commodities(planet, commodities)
+            self.db.flush()
+            logger.info(
+                f"Auto-deposit swept {moved} into citadel safe on planet {planet.id}"
+            )
+        return moved
 
     def _get_defense_buildings(self, planet: Planet) -> Dict[str, int]:
         """Extract defense_buildings sub-dict from planet.active_events JSONB.

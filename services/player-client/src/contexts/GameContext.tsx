@@ -339,6 +339,7 @@ interface GameContextType {
   withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
   depositCommodityToSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
   withdrawCommodityFromSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
+  setCitadelAutoDeposit: (planetId: string, enabled: boolean) => Promise<any>;
   deployMines: (quantity: number) => Promise<any>;
   // Planetary defenses — shield generator status/upgrade
   getPlanetDefenseInfo: (planetId: string) => Promise<any>;
@@ -1285,6 +1286,20 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  // Toggle auto-deposit of production into the protected safe (opt-in, default
+  // OFF). POST /planets/{id}/citadel/auto-deposit {enabled}. Owner-only,
+  // requires citadel_level >= 1. Returns { success: true, auto_deposit: bool }.
+  const setCitadelAutoDeposit = async (planetId: string, enabled: boolean) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/auto-deposit`, { enabled });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error setting citadel auto-deposit:', error);
+      throw error;
+    }
+  };
+
   // Lay armored mines in the current sector (open space). POST /armory/deploy.
   const deployMines = async (quantity: number) => {
     if (!user || !playerState) throw new Error('Not authenticated');
@@ -1753,6 +1768,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     withdrawFromSafe,
     depositCommodityToSafe,
     withdrawCommodityFromSafe,
+    setCitadelAutoDeposit,
     deployMines,
     getPlanetDefenseInfo,
     upgradeShields,

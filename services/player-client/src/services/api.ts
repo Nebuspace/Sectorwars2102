@@ -522,6 +522,16 @@ export const citadelAPI = {
       method: 'POST',
       body: JSON.stringify({ amount }),
     }),
+
+  // Toggle "auto-deposit production into safe" (opt-in, default OFF). When ON,
+  // each read-path settle sweeps the planet stockpile into the protected safe
+  // up to the shared cr-equivalent cap. Owner-only, requires citadel_level >= 1
+  // (400 otherwise). Returns { success: true, auto_deposit: bool }.
+  setAutoDeposit: (planetId: string, enabled: boolean) =>
+    apiRequest(`/api/v1/planets/${planetId}/citadel/auto-deposit`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
 };
 
 // Planet Grid APIs (CRT-2) — the authoritative citadel grid the player manages.
