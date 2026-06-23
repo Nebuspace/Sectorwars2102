@@ -2069,12 +2069,22 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
 def _run_governance_sweep_sync() -> Dict[str, int]:
     """Drive the regional democratic loop forward on the canonical clock.
 
-    Three idempotent phases mirroring the planetary advance sweep's discipline
-    (own session, xact advisory lock, per-row with_for_update + per-row commit,
+    Idempotent phases mirroring the planetary advance sweep's discipline (own
+    session, xact advisory lock, per-row with_for_update + per-row commit,
     per-row failure isolation):
 
+      0. AUTO-CREATE due recurring elections: for every active region whose last
+         RECURRING_ELECTION_POSITION (governor) election ENDED >= the region's
+         election_frequency_days ago (or that has never held one, gauged from
+         region.created_at), and that has no in-flight (PENDING/ACTIVE) governor
+         election, open the NEXT one in the SCHEDULED phase (status PENDING with
+         voting_opens_at = now + lead, voting_closes_at = opens + 7d). This is
+         the entry edge of the state machine (canon "Election scheduling") —
+         citizens then self-nominate during the SCHEDULED window before Phase 1
+         flips it ACTIVE and locks the candidate list.
       1. OPEN due elections: PENDING elections whose voting_opens_at has passed
-         become ACTIVE (so voting can begin).
+         become ACTIVE (so voting can begin) — this IS the SCHEDULED -> ACTIVE
+         transition that locks the candidate list.
       2. CLOSE + TALLY elections past voting_closes_at: ACTIVE -> COMPLETED with
          the winner persisted to results, RegionalElection.winner_id AND the
          single-seat Region.{position}_id column (governor_id / ambassador_id)
@@ -2107,7 +2117,7 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     """
     from src.core.database import SessionLocal
     from src.models.region import (
-        Region, RegionalElection, RegionalPolicy, RegionalVote,
+        Region, RegionStatus, RegionalElection, RegionalPolicy, RegionalVote,
         RegionalPolicyVote, RegionalTreasuryEntry,
         RegionalMembership, ElectionStatus, PolicyStatus,
     )
@@ -2120,12 +2130,14 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
         determine_election_winner, enact_changes_onto_region,
         compute_treasury_adjustment,
         ELECTION_TALLYING, POLICY_VOTERS_KEY,
+        RECURRING_ELECTION_POSITION, ELECTION_VOTING_WINDOW_DAYS,
+        ELECTION_SCHEDULED_LEAD_DAYS,
     )
     from sqlalchemy import func as sa_func
     from sqlalchemy.orm.attributes import flag_modified
 
-    result = {"opened": 0, "tallied": 0, "enacted": 0, "rejected": 0,
-              "regions_recomputed": 0}
+    result = {"auto_created": 0, "opened": 0, "tallied": 0, "enacted": 0,
+              "rejected": 0, "regions_recomputed": 0}
     now = datetime.utcnow()
 
     db = SessionLocal()
@@ -2136,6 +2148,79 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
         ).scalar()
         if not got_lock:
             return result
+
+        # --- Phase 0: auto-create due recurring elections --------------------
+        # Canon "Election scheduling": for every active region whose previous
+        # governor election ended >= election_frequency_days ago (gauged from
+        # region.created_at if it has never held one) and that has no in-flight
+        # (PENDING/ACTIVE) governor election, open the NEXT governor election in
+        # the SCHEDULED phase (PENDING). voting_opens_at is set a lead-window in
+        # the future so citizens can self-nominate before Phase 1 flips it ACTIVE
+        # and locks the candidate list. Reproduce-exactly: a manually-created
+        # election (born ACTIVE for the same position) registers as in-flight, so
+        # the auto-scheduler never duplicates it.
+        recurring_regions = (
+            db.query(Region.id, Region.election_frequency_days, Region.created_at)
+            .filter(Region.status == RegionStatus.ACTIVE)
+            .all()
+        )
+        for (rid, freq_days, created_at) in recurring_regions:
+            try:
+                # An in-flight (PENDING or ACTIVE) governor election blocks a new
+                # one — at most one live election per position (canon step 3).
+                in_flight = (
+                    db.query(RegionalElection.id)
+                    .filter(
+                        RegionalElection.region_id == rid,
+                        RegionalElection.position == RECURRING_ELECTION_POSITION,
+                        RegionalElection.status.in_(
+                            [ElectionStatus.PENDING, ElectionStatus.ACTIVE]
+                        ),
+                    )
+                    .first()
+                )
+                if in_flight is not None:
+                    continue
+
+                # The most recent terminal governor election's close time anchors
+                # the cadence; with none on record, fall back to region birth so a
+                # never-elected region opens its first election once it is old
+                # enough.
+                last_close = (
+                    db.query(sa_func.max(RegionalElection.voting_closes_at))
+                    .filter(
+                        RegionalElection.region_id == rid,
+                        RegionalElection.position == RECURRING_ELECTION_POSITION,
+                    )
+                    .scalar()
+                )
+                anchor = last_close or created_at
+                if anchor is None:
+                    continue
+                freq = int(freq_days or 90)
+                if (now - anchor) < timedelta(days=freq):
+                    continue
+
+                voting_opens_at = now + timedelta(days=ELECTION_SCHEDULED_LEAD_DAYS)
+                voting_closes_at = voting_opens_at + timedelta(
+                    days=ELECTION_VOTING_WINDOW_DAYS
+                )
+                new_election = RegionalElection(
+                    region_id=rid,
+                    position=RECURRING_ELECTION_POSITION,
+                    candidates=[],
+                    voting_opens_at=voting_opens_at,
+                    voting_closes_at=voting_closes_at,
+                    status=ElectionStatus.PENDING,
+                )
+                db.add(new_election)
+                db.commit()
+                result["auto_created"] += 1
+            except Exception:
+                logger.exception(
+                    "Governance sweep: auto-create failed for region %s", rid
+                )
+                db.rollback()
 
         # --- Phase 1: open due PENDING elections -----------------------------
         due_open = (
@@ -4625,16 +4710,18 @@ async def npc_scheduler_loop() -> None:
             try:
                 gov = await asyncio.to_thread(_run_governance_sweep_sync)
                 if (
-                    gov.get("opened")
+                    gov.get("auto_created")
+                    or gov.get("opened")
                     or gov.get("tallied")
                     or gov.get("enacted")
                     or gov.get("rejected")
                 ):
                     logger.info(
-                        "NPC scheduler: governance sweep — %d opened, "
-                        "%d tallied, %d enacted, %d rejected",
-                        gov.get("opened", 0), gov.get("tallied", 0),
-                        gov.get("enacted", 0), gov.get("rejected", 0),
+                        "NPC scheduler: governance sweep — %d auto-created, "
+                        "%d opened, %d tallied, %d enacted, %d rejected",
+                        gov.get("auto_created", 0), gov.get("opened", 0),
+                        gov.get("tallied", 0), gov.get("enacted", 0),
+                        gov.get("rejected", 0),
                     )
             except asyncio.CancelledError:
                 raise

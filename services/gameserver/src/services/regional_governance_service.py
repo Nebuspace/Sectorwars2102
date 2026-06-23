@@ -80,6 +80,29 @@ ELECTION_TALLYING = "tallying"
 # never written again.
 POLICY_VOTERS_KEY = "_voters"
 
+# --- Candidate self-registration + recurring-election cadence (canon
+# SYSTEMS/regional-governance.md "Candidate registration" / "Election
+# scheduling") --------------------------------------------------------------
+#
+# A citizen may self-nominate while an election is in its SCHEDULED phase
+# (modelled by the existing PENDING status — the pre-voting window where
+# voting_opens_at has not yet been reached). The candidate list LOCKS the moment
+# the sweep advances the election PENDING -> ACTIVE (canon "Cutoff: candidates
+# lock when state advances to ACTIVE"). Eligibility: a region citizen whose
+# membership reputation_score >= MIN_CANDIDACY_REP (canon default 0).
+MIN_CANDIDACY_REP = 0
+
+# Recurring-election cadence (canon: Region.election_frequency_days base cadence,
+# default 90 days; default voting window 7 days). The auto-scheduler opens the
+# next governor election once the prior governor election ENDED >= the region's
+# election_frequency_days ago. SCHEDULED_LEAD_DAYS is the candidate-registration
+# window between auto-creation (voting_opens_at) and the start of voting — the
+# election is born PENDING/SCHEDULED with voting_opens_at = now + this lead so
+# citizens have a window to self-nominate before the candidate list locks.
+RECURRING_ELECTION_POSITION = "governor"
+ELECTION_VOTING_WINDOW_DAYS = 7
+ELECTION_SCHEDULED_LEAD_DAYS = 7
+
 
 # ---------------------------------------------------------------------------
 # Pure, session-agnostic governance helpers
@@ -1163,6 +1186,89 @@ class RegionalGovernanceService:
             "code": "VOTE_RECORDED",
             "vote_id": str(vote.id),
             "weight": float(membership.voting_power),
+        }
+
+    @staticmethod
+    async def register_candidate(
+        db: AsyncSession,
+        region: Region,
+        election: RegionalElection,
+        nominee: Player,
+        platform: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Self-nominate as a candidate in a SCHEDULED election (canon
+        SYSTEMS/regional-governance.md "Candidate registration").
+
+        Canon validations:
+        - election belongs to this region,
+        - election is still in its SCHEDULED phase (modelled by PENDING — once
+          the sweep advances it to ACTIVE the candidate list is LOCKED, canon
+          "Cutoff: candidates lock when state advances to ACTIVE"),
+        - the nominee is a region CITIZEN whose membership reputation_score is
+          >= MIN_CANDIDACY_REP (a colony owner who is a citizen on the roll
+          qualifies — same WO-CF PATH A on-ramp the vote path uses),
+        - the nominee is not already a registered candidate (idempotent reject).
+
+        On success the nominee's player_id (+ optional platform) is appended to
+        the election.candidates JSONB and the mutation is flagged for SQLAlchemy.
+        FLUSHES only — the calling ROUTE owns db.commit() (a route that returns
+        without committing silently rolls this back).
+        """
+        if election.region_id != region.id:
+            return {"ok": False, "code": "ERR_ELECTION_NOT_IN_REGION"}
+        # The SCHEDULED (candidate-registration) phase is the PENDING status: the
+        # pre-voting window before the sweep flips it ACTIVE and locks the list.
+        if election.status != ElectionStatus.PENDING:
+            return {"ok": False, "code": "ERR_CANDIDATES_LOCKED"}
+
+        # Eligibility: a region citizen (membership row OR colony on-ramp) whose
+        # reputation clears the candidacy floor. Reuse the colony on-ramp so a
+        # citizen-by-colony can stand without a manually-upgraded membership row.
+        membership = await RegionalGovernanceService._get_voting_membership(
+            db, region.id, nominee.id
+        )
+        if (membership is None) or (
+            membership.membership_type != MembershipType.CITIZEN.value
+        ):
+            grant = await RegionalGovernanceService.grant_citizenship_for_colony(
+                db, nominee.id, region.id
+            )
+            if grant.get("ok"):
+                membership = await RegionalGovernanceService._get_voting_membership(
+                    db, region.id, nominee.id
+                )
+        if membership is None:
+            return {"ok": False, "code": "ERR_NOT_A_MEMBER"}
+        if membership.membership_type != MembershipType.CITIZEN.value:
+            return {"ok": False, "code": "ERR_NOT_A_CITIZEN"}
+        if int(membership.reputation_score or 0) < MIN_CANDIDACY_REP:
+            return {"ok": False, "code": "ERR_INSUFFICIENT_REPUTATION"}
+
+        # Already a registered candidate? (idempotent reject). The candidates
+        # JSONB carries either dicts ({"player_id": ...}) or bare id strings.
+        existing_ids = {
+            str(c.get("player_id")) if isinstance(c, dict) else str(c)
+            for c in (election.candidates or [])
+        }
+        if str(nominee.id) in existing_ids:
+            return {"ok": False, "code": "ERR_ALREADY_CANDIDATE"}
+
+        from sqlalchemy.orm.attributes import flag_modified
+
+        entry: Dict[str, Any] = {"player_id": str(nominee.id)}
+        if platform:
+            entry["platform"] = platform
+        election.candidates = list(election.candidates or []) + [entry]
+        flag_modified(election, "candidates")
+        # FLUSH only — the route commits. Flushing surfaces any constraint error
+        # to the route before it returns success.
+        await db.flush()
+        return {
+            "ok": True,
+            "code": "CANDIDATE_REGISTERED",
+            "election_id": str(election.id),
+            "candidate_id": str(nominee.id),
+            "candidate_count": len(election.candidates),
         }
 
     @staticmethod

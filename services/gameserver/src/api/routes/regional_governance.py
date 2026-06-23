@@ -54,6 +54,11 @@ _VOTE_ERROR_STATUS = {
     "ERR_UNKNOWN_CANDIDATE": 400,
     "ERR_NO_COLONY_IN_REGION": 403,
     "ERR_MEMBERSHIP_UPSERT_FAILED": 409,
+    # Candidate self-registration (canon "Candidate registration").
+    "ERR_CANDIDATES_LOCKED": 409,
+    "ERR_NOT_A_CITIZEN": 403,
+    "ERR_INSUFFICIENT_REPUTATION": 403,
+    "ERR_ALREADY_CANDIDATE": 409,
 }
 
 
@@ -128,6 +133,13 @@ class CulturalUpdate(BaseModel):
 
 class ElectionVoteCast(BaseModel):
     candidate_id: str
+
+
+class CandidateRegister(BaseModel):
+    """A citizen's self-nomination in a SCHEDULED election (canon "Candidate
+    registration"). The nominee is the calling player; an optional short
+    platform statement is attached to the candidates JSONB entry."""
+    platform: Optional[str] = Field(default=None, max_length=500)
 
 
 class PolicyVoteCast(BaseModel):
@@ -675,6 +687,42 @@ async def cast_election_vote(
         raise HTTPException(
             status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
         )
+    return result
+
+
+@router.post("/{region_id}/elections/{election_id}/candidates")
+async def register_election_candidate(
+    region_id: uuid.UUID,
+    election_id: uuid.UUID,
+    body: CandidateRegister,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Self-nominate as a candidate in a SCHEDULED election (canon "Candidate
+    registration"). A region citizen with reputation >= MIN_CANDIDACY_REP may
+    register while the election is still PENDING/SCHEDULED; the candidate list
+    locks the moment the governance sweep advances it to ACTIVE. NOT
+    owner-scoped — any eligible citizen may stand."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+
+    election = await db.scalar(
+        select(RegionalElection).where(RegionalElection.id == election_id)
+    )
+    if election is None or election.region_id != region.id:
+        raise HTTPException(status_code=404, detail="Election not found in this region")
+
+    result = await RegionalGovernanceService.register_candidate(
+        db, region, election, player, body.platform
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_CANDIDATE_REJECTED")
+        raise HTTPException(
+            status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    # THE ROUTE OWNS db.commit() — the service only flushed. A return without
+    # this commit silently rolls back the appended candidate.
+    await db.commit()
     return result
 
 
