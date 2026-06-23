@@ -5,9 +5,11 @@ in the ship.maintenance JSONB; it decays per real day by hull class and drives a
 performance-band penalty. Decay is applied lazily (advance-on-read), mirroring
 PlanetaryService.apply_population_growth / the market regen anchor — no scheduler.
 
-v1 CONSUMES the combat-effectiveness band in combat. The speed / fuel modifiers
-and the per-jump failure roll are canon but design-stage (not yet applied) — the
-status payload flags them honestly rather than pretending they bite.
+The combat-effectiveness band is consumed in combat, and the speed band is now
+consumed in the move-cost path (WO-MAINTBANDS, movement_service). The fuel
+modifier stays unconsumed because the game has no per-move fuel sink (movement
+costs turns, not fuel); the status payload reports applied-vs-unconsumed effects
+honestly rather than pretending the fuel band bites.
 """
 from datetime import datetime, timezone
 import logging

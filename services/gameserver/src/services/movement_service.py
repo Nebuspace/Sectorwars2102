@@ -1226,8 +1226,60 @@ class MovementService:
         elif ship and getattr(ship, 'warp_capable', False):
             turn_cost = max(1, int(turn_cost * 0.8))  # 20% reduction for warp-capable ships
 
+        # Maintenance performance-band SPEED modifier (ships.md:68-75), applied
+        # to natural-tunnel traversal exactly like the warp path. The neutral
+        # "Good" band leaves this unchanged. NOT applied to the player-gate
+        # branch above — gates are 0-turn flat with no multipliers
+        # (warp-gates.md), the same reason they skip the warp-capable reduction.
+        turn_cost = max(1, int(turn_cost * self._maintenance_speed_multiplier(ship)))
+
         return True, turn_cost, "Warp tunnel available"
     
+    def _maintenance_speed_multiplier(self, ship: Optional[Ship]) -> float:
+        """Turn-cost multiplier from the ship's maintenance performance band's
+        SPEED modifier (ships.md:68-75 "Performance bands" — the Speed column).
+
+        Canon reads the band's ``speed`` as a fractional SPEED change: a faster
+        ship (positive speed, e.g. Pristine +0.05) reaches a sector for fewer
+        turns; a slower ship (negative speed, e.g. Worn -0.05 / Critical -0.50)
+        costs more. Turn cost is therefore scaled by ``1 / (1 + speed)`` so the
+        relationship is reciprocal to speed:
+
+            Pristine (+0.05) -> 1/1.05 ≈ 0.952  (cheaper)
+            Good     ( 0.00) -> 1/1.00  = 1.000  (UNCHANGED — reproduce-exactly)
+            Worn     (-0.05) -> 1/0.95 ≈ 1.053  (pricier)
+            Critical (-0.50) -> 1/0.50  = 2.000  (double cost)
+
+        The neutral "Good" band (75-89%, speed 0.0) returns exactly 1.0 so a
+        ship in good condition costs exactly as it did before this wiring. The
+        denominator is floored defensively (a hypothetical speed <= -1 would
+        otherwise divide by zero); canon's worst band is -0.50 so the floor
+        never bites in practice. Best-effort: a maintenance-read hiccup leaves
+        the cost unchanged (multiplier 1.0) and never strands a move.
+
+        Imports ``maintenance_band`` + ``effective_condition`` lazily, mirroring
+        combat_service's ``from src.services.maintenance_service import
+        combat_multiplier`` in-function import pattern.
+        """
+        if ship is None:
+            return 1.0
+        try:
+            from src.services.maintenance_service import (
+                maintenance_band,
+                effective_condition,
+            )
+            band = maintenance_band(effective_condition(ship))
+            speed = float(band.get("speed", 0.0) or 0.0)
+            if speed == 0.0:
+                return 1.0  # neutral band — exactly unchanged
+            denom = 1.0 + speed
+            if denom <= 0.0:
+                denom = 0.01  # defensive: never divide by zero (canon worst is -0.50)
+            return 1.0 / denom
+        except Exception as e:
+            logger.error("Maintenance speed-band read failed (cost unchanged): %s", e)
+            return 1.0
+
     def _calculate_warp_cost(self, from_sector: Sector, to_sector: Sector, ship: Optional[Ship]) -> int:
         """Calculate turn cost for a direct warp between sectors."""
         # Find the warp connection details. Try the forward direction first;
@@ -1270,7 +1322,14 @@ class MovementService:
             if ship.current_speed < ship.base_speed:
                 speed_ratio = ship.current_speed / ship.base_speed
                 base_cost = int(base_cost * (2 - speed_ratio))  # 1.0-2.0x multiplier based on speed
-        
+
+        # Maintenance performance-band SPEED modifier (ships.md:68-75). A worn
+        # ship moves slower (costs more turns); a pristine ship moves faster
+        # (costs fewer). The neutral "Good" band leaves this exactly 1.0, so a
+        # ship in good condition is unchanged. Applied AFTER the ship-type and
+        # current_speed adjustments, before the floor, as the final cost factor.
+        base_cost = int(base_cost * self._maintenance_speed_multiplier(ship))
+
         # No turn cost can be less than 1
         return max(1, base_cost)
     

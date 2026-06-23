@@ -908,9 +908,11 @@ def _maintenance_status(ship: Ship, condition: float, station: Station = None) -
             "failure_pct": round(band["failure"] * 100),
             "failure_tier": band["failure_tier"],
         },
-        # Honesty: v1 applies only the combat-effectiveness band; the speed/fuel
-        # modifiers and the per-jump failure roll are canon but not yet wired.
-        "applied_effects": ["combat"],
+        # Honesty: the combat-effectiveness band is consumed in combat, and the
+        # speed band is now consumed in the move-cost path (WO-MAINTBANDS). The
+        # fuel modifier has no consuming surface — movement costs turns, not fuel
+        # — so it stays unconsumed by design, not oversight.
+        "applied_effects": ["combat", "speed"],
         "repair_options": options,
     }
 
