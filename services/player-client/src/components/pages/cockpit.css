@@ -205,6 +205,25 @@
   cursor: not-allowed;
   box-shadow: none;
 }
+
+/* EXPANDED-state Lift Off: when the surface vista is expanded the green
+   landed-min-bar (which carries the OTHER, flex-child Lift Off) is display:none,
+   so this instance is rendered as a direct child of .cockpit-windshield instead.
+   Without positioning it is a normal flex child of the windshield's
+   center-aligned flex box, so it floats mid-scene. Anchor it to a corner of the
+   vista so it reads as a fixed cockpit control (parity with the absolutely-
+   positioned HUD chips + the bottom-center .bay-minimize-btn). The windshield is
+   position:relative (above), and the top-right/bottom-right/top-left corners are
+   taken by HUD chips; the bottom-left corner is free, so dock it there. Scoped
+   with the `.expanded` modifier so the green-bar instance (a flex child of
+   .landed-min-actions, which is fine) is untouched. */
+.landed-min-liftoff.expanded {
+  position: absolute;
+  bottom: 8px;
+  left: 14px;
+  z-index: 6;
+  backdrop-filter: blur(3px);
+}
 .cockpit-mode.landed-min .bay-minimize-btn { display: none; }
 
 /* Build-progress beacon in the minimized-surface strip (amber construction). */

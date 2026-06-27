@@ -103,14 +103,26 @@
      chain isn't reliably definite (short tabs fit by luck), so bound the tab
      body directly to the viewport minus the cockpit chrome + vitals strip +
      tab bar; the active panel scrolls INTERNALLY (cp-body / section overflow).
-     ~230px ≈ windshield chrome + vitals strip + tabbar + paddings; scales with
-     the viewport so 1920x1080 gets a taller body. (WO-COCKPIT-TABBED fit fix.) */
+     The chrome above the tab body depends on the windshield state:
+       - MINIMIZED (.landed-min): the surface vista collapses to the thin 34px
+         green identity strip, so chrome ≈ helm rail (44px) + console/monitor/
+         header paddings + vitals strip + tabbar ≈ 230px (the historical value).
+       - EXPANDED (default landed): the vista is the full glass band
+         (flex:0 0 clamp(240px,34vh,380px) ≈ 306px at 1440x900), so chrome is
+         ~272px TALLER (306-34) ≈ 502px. The old flat 230px treated the body as
+         if the band were always minimized, leaving it ~272px too tall in the
+         (default) expanded state → short tabs could push the PAGE past the fold.
+     So scope the subtracted chrome to a class-keyed var: default EXPANDED, with
+     .cockpit-mode.landed-min overriding it back to the minimized value below.
+     The var scales with the viewport (vh in the band) so a taller window gets a
+     correspondingly taller tab body. (WO-COCKPIT-TABBED fit fix; landed-chrome
+     state fix.) */
   /* Definite height (not just max-height) so the `flex:1 1 0` panel bodies
      resolve their grow against a definite box — a short tab (Research/Production)
      fills the console height instead of collapsing to a header strip, and a tall
      tab (Terraform/Grid) is still capped + scrolls internally. */
-  height: calc(100vh - 230px);
-  max-height: calc(100vh - 230px);
+  height: calc(100vh - var(--landed-chrome, 502px));
+  max-height: calc(100vh - var(--landed-chrome, 502px));
   /* `overflow:hidden` clips, it does not scroll: with `max-height` alone (no
      definite height) a `flex:1 1 auto` child sizes to content first, so a tall
      tab (Terraform's L1–L5 card stack — the first tab whose content genuinely
@@ -119,6 +131,14 @@
      because this is itself a `flex:1 1 auto; min-height:0` item (above) and the
      active panel scrolls INTERNALLY (cp-body / section overflow) instead. */
   overflow: hidden;
+}
+
+/* MINIMIZED windshield: the surface vista has collapsed to the 34px green
+   strip, so ~272px less chrome sits above the tab body — restore the historical
+   230px subtraction. (Scoped to the app-root class GameDashboard toggles when
+   landedChromeMin is on; the default rule above covers the EXPANDED state.) */
+.cockpit-mode.landed-min .colony-mgmt-console .cmc-body {
+  --landed-chrome: 230px;
 }
 
 /* A panel mounted as the active tab fills the body (overriding the fixed-height

@@ -302,11 +302,20 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         setPopupPlot(null);
         return;
       }
+      // Non-placeable empty cell (hazard / uncleared): nothing to build here —
+      // the cell is already styled not-allowed, so don't open the build popup.
+      const plot = plotAt.get(`${x},${y}`);
+      const cleared = plot?.cleared !== false; // default cleared unless explicitly false
+      const hazard = plot?.hazard ?? null;
+      if (!cleared || hazard) {
+        return;
+      }
       // Empty/placeable cell: open the catalog popup targeting THIS plot.
       setSelectedBuildingId(null);
+      setActionMessage(null);
       setPopupPlot({ x, y });
     },
-    [buildingIdForCell],
+    [buildingIdForCell, plotAt],
   );
 
   // ----- Render -----
@@ -518,6 +527,14 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
               </button>
             </div>
 
+            {/* Placement errors (server reject: 400/402/403) surface INSIDE the
+                popup so they aren't hidden behind the scrim. */}
+            {actionMessage?.kind === 'err' && (
+              <div className="grid-popup-error" role="alert">
+                <span aria-hidden="true">⚠️</span> {actionMessage.text}
+              </div>
+            )}
+
             <div className="catalog-list">
               {catalog.length === 0 && (
                 <div className="catalog-empty">No placeable buildings available.</div>
@@ -593,7 +610,10 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         </div>
       )}
 
-      {actionMessage && (
+      {/* While the build popup is open its errors render INSIDE it (above), so
+          don't also echo an error here behind the scrim. Success messages (popup
+          already closed) and out-of-popup errors (e.g. decommission) still show. */}
+      {actionMessage && !(popupPlot && actionMessage.kind === 'err') && (
         <div className={`grid-message ${actionMessage.kind === 'err' ? 'err' : 'ok'}`}>
           {actionMessage.text}
         </div>

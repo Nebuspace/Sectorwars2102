@@ -168,12 +168,6 @@
   text-align: right;
 }
 
-.active-progress-label {
-  font-size: 0.72rem;
-  color: #aaffcc;
-  font-variant-numeric: tabular-nums;
-}
-
 .active-complete-note {
   font-size: 0.74rem;
   font-weight: 600;

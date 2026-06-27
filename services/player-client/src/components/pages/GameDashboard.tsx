@@ -2145,7 +2145,7 @@ const GameDashboard: React.FC = () => {
                   (CSS), so exactly one Lift Off is ever visible. (WO 129-C fix.) */}
               <button
                 type="button"
-                className="landed-min-liftoff"
+                className="landed-min-liftoff expanded"
                 onClick={handleLeavePlanet}
                 disabled={helmBusy}
                 title="Lift off and depart this planet"
