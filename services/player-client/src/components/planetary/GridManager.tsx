@@ -161,11 +161,11 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
-  // PLACE flow: pick a building kind, then click an empty plot to place it.
-  const [selectedKind, setSelectedKind] = useState<string | null>(null);
+  // PLACE flow (plot-first): click an empty plot → open the catalog popup
+  // targeting THAT plot → pick a kind → place it there → close.
+  const [popupPlot, setPopupPlot] = useState<{ x: number; y: number } | null>(null);
   // DECOMMISSION flow: a selected placed building (id).
   const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(null);
-  const [catalogOpen, setCatalogOpen] = useState(true);
 
   const fetchGrid = useCallback(async () => {
     try {
@@ -183,6 +183,16 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
   useEffect(() => {
     fetchGrid();
   }, [fetchGrid]);
+
+  // ESC closes the build popup (placing nothing).
+  useEffect(() => {
+    if (!popupPlot) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPopupPlot(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [popupPlot]);
 
   // ----- Normalize the (defensively-read) view into stable locals -----
 
@@ -229,28 +239,23 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
     [plotAt],
   );
 
-  const selectedEntry = useMemo(
-    () => catalog.find((e) => e.kind === selectedKind) ?? null,
-    [catalog, selectedKind],
-  );
-
   // ----- Actions -----
 
   const handlePlace = useCallback(
-    async (x: number, y: number) => {
-      if (!selectedEntry || actionLoading) return;
+    async (entry: CatalogEntry, x: number, y: number) => {
+      if (actionLoading) return;
       try {
         setActionLoading(true);
         setActionMessage(null);
-        const res = await gridAPI.place(planetId, selectedEntry.kind, x, y, 1);
+        const res = await gridAPI.place(planetId, entry.kind, x, y, 1);
         const deferred = res?.materials_deferred
           ? ' (materials charge deferred — credits only)'
           : '';
         setActionMessage({
           kind: 'ok',
-          text: `${selectedEntry.name || selectedEntry.kind} enqueued at (${x},${y})${deferred}.`,
+          text: `${entry.name || entry.kind} enqueued at (${x},${y})${deferred}.`,
         });
-        setSelectedKind(null);
+        setPopupPlot(null);
         await fetchGrid();
         onUpdate?.();
       } catch (err: any) {
@@ -261,7 +266,7 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         setActionLoading(false);
       }
     },
-    [selectedEntry, actionLoading, planetId, fetchGrid, onUpdate],
+    [actionLoading, planetId, fetchGrid, onUpdate],
   );
 
   const handleDecommission = useCallback(
@@ -292,17 +297,16 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
     (x: number, y: number) => {
       const occupant = buildingIdForCell(x, y);
       if (occupant) {
-        // Toggle decommission selection on an occupied cell.
+        // Occupied cell: toggle decommission selection (unchanged behavior).
         setSelectedBuildingId((cur) => (cur === occupant ? null : occupant));
-        setSelectedKind(null);
+        setPopupPlot(null);
         return;
       }
-      // Empty cell: if a kind is armed, place it; otherwise no-op.
-      if (selectedKind) {
-        handlePlace(x, y);
-      }
+      // Empty/placeable cell: open the catalog popup targeting THIS plot.
+      setSelectedBuildingId(null);
+      setPopupPlot({ x, y });
     },
-    [buildingIdForCell, selectedKind, handlePlace],
+    [buildingIdForCell],
   );
 
   // ----- Render -----
@@ -365,11 +369,9 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
       </div>
 
       <div className="grid-hint">
-        {selectedKind
-          ? `Click an empty plot to place ${selectedEntry?.name || selectedKind}. Click an armed building again to cancel.`
-          : selectedBuildingId
-            ? 'Building selected — decommission it below, or click another plot.'
-            : 'Pick a building from the catalog, then click an empty plot. Click a placed building to decommission it.'}
+        {selectedBuildingId
+          ? 'Building selected — decommission it below, or click another plot.'
+          : 'Click an empty plot to choose a building to place. Click a placed building to decommission it.'}
       </div>
 
       {/* PRIMARY ACTION — the plot grid (scroll-law: rendered first, full width). */}
@@ -393,6 +395,8 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
             const cleared = plot?.cleared !== false; // default cleared unless explicitly false
             const isSelectedBuilding = occupantId && occupantId === selectedBuildingId;
             const operational = occupant ? buildingComplete(occupant) == null : false;
+            const isPopupTarget = !!popupPlot && popupPlot.x === x && popupPlot.y === y;
+            const isPlaceable = !occupantId && cleared && !hazard && !offGrid;
             const cls = [
               'grid-cell',
               offGrid ? 'off-grid' : '',
@@ -400,7 +404,8 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
               hazard ? 'hazard' : '',
               !cleared ? 'uncleared' : '',
               isSelectedBuilding ? 'selected' : '',
-              selectedKind && !occupantId && cleared && !hazard ? 'placeable' : '',
+              isPlaceable ? 'placeable' : '',
+              isPopupTarget ? 'popup-target' : '',
               occupant && !operational ? 'building-pending' : '',
             ]
               .filter(Boolean)
@@ -421,9 +426,7 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
                         ? `Hazard (${hazard.kind || 'blocked'}) — must be cleared before building`
                         : !cleared
                           ? 'Uncleared plot'
-                          : selectedKind
-                            ? `Place ${selectedEntry?.name || selectedKind} here`
-                            : `Empty plot (${x},${y})`
+                          : `Empty plot (${x},${y}) — click to choose a building`
                 }
               >
                 {isAnchor && occupant ? (
@@ -485,95 +488,110 @@ const GridManager: React.FC<GridManagerProps> = ({ planetId, playerCredits, onUp
         </div>
       )}
 
-      {/* CATALOG — collapsible list of placeable kinds with cost + gate state. */}
-      <div className="grid-catalog">
-        <button
-          type="button"
-          className="catalog-toggle"
-          onClick={() => setCatalogOpen((o) => !o)}
-          aria-expanded={catalogOpen}
+      {/* BUILD POPUP — plot-first: opened by clicking an empty plot, lists the
+          placeable catalog; picking an affordable/ungated kind places it on the
+          clicked plot via the existing place flow, then closes. */}
+      {popupPlot && (
+        <div
+          className="grid-popup-overlay"
+          role="presentation"
+          onClick={() => setPopupPlot(null)}
         >
-          <span>Build Catalog ({catalog.length})</span>
-          <span className="catalog-chevron">{catalogOpen ? '▾' : '▸'}</span>
-        </button>
+          <div
+            className="grid-popup"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Build on plot (${popupPlot.x}, ${popupPlot.y})`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="grid-popup-header">
+              <span className="grid-popup-title">
+                Build on plot ({popupPlot.x},{popupPlot.y})
+              </span>
+              <button
+                type="button"
+                className="grid-popup-close"
+                aria-label="Close build menu"
+                onClick={() => setPopupPlot(null)}
+              >
+                ✕
+              </button>
+            </div>
 
-        {catalogOpen && (
-          <div className="catalog-list">
-            {catalog.length === 0 && (
-              <div className="catalog-empty">No placeable buildings available.</div>
-            )}
-            {catalog.map((entry) => {
-              const gate = techGateOf(entry);
-              const gated = gate != null && !researched.has(gate);
-              const credits = level1Credits(entry);
-              const materials = level1Materials(entry);
-              const canAfford = playerCredits >= credits;
-              const [w, h] = footprintOf(entry);
-              const isArmed = selectedKind === entry.kind;
-              const minCit = entry.min_citadel_level ?? entry.minCitadelLevel;
-              const belowMinCitadel = typeof minCit === 'number' && citadelLevel < minCit;
-              const disabled = gated || actionLoading || belowMinCitadel;
-              const reason = gated
-                ? `Requires research: ${gate}`
-                : belowMinCitadel
-                  ? `Requires citadel L${minCit}`
-                  : !canAfford
-                    ? `Need ${credits.toLocaleString()} cr (you have ${playerCredits.toLocaleString()})`
-                    : isArmed
-                      ? 'Armed — click an empty plot to place'
-                      : `Arm ${entry.name || entry.kind} for placement`;
-              return (
-                <button
-                  key={entry.kind}
-                  type="button"
-                  className={`catalog-item${isArmed ? ' armed' : ''}${gated ? ' gated' : ''}${!canAfford && !gated && !belowMinCitadel ? ' unaffordable' : ''}`}
-                  disabled={disabled}
-                  onClick={() => setSelectedKind(isArmed ? null : entry.kind)}
-                  title={reason}
-                >
-                  <span className="item-icon" aria-hidden="true">
-                    {DOMAIN_ICON[entry.domain || ''] || '🏗️'}
-                  </span>
-                  <span className="item-body">
-                    <span className="item-name">{entry.name || entry.kind}</span>
-                    <span className="item-meta">
-                      <span className="item-domain">
-                        {DOMAIN_LABEL[entry.domain || ''] || entry.domain || ''}
-                      </span>
-                      <span className="item-footprint" title={`Footprint ${w}×${h} plots`}>
-                        {w}×{h}
-                      </span>
+            <div className="catalog-list">
+              {catalog.length === 0 && (
+                <div className="catalog-empty">No placeable buildings available.</div>
+              )}
+              {catalog.map((entry) => {
+                const gate = techGateOf(entry);
+                const gated = gate != null && !researched.has(gate);
+                const credits = level1Credits(entry);
+                const materials = level1Materials(entry);
+                const canAfford = playerCredits >= credits;
+                const [w, h] = footprintOf(entry);
+                const minCit = entry.min_citadel_level ?? entry.minCitadelLevel;
+                const belowMinCitadel = typeof minCit === 'number' && citadelLevel < minCit;
+                const disabled = gated || actionLoading || belowMinCitadel || !canAfford;
+                const reason = gated
+                  ? `Requires research: ${gate}`
+                  : belowMinCitadel
+                    ? `Requires citadel L${minCit}`
+                    : !canAfford
+                      ? `Need ${credits.toLocaleString()} cr (you have ${playerCredits.toLocaleString()})`
+                      : `Place ${entry.name || entry.kind} on (${popupPlot.x},${popupPlot.y})`;
+                return (
+                  <button
+                    key={entry.kind}
+                    type="button"
+                    className={`catalog-item${gated ? ' gated' : ''}${!canAfford && !gated && !belowMinCitadel ? ' unaffordable' : ''}`}
+                    disabled={disabled}
+                    onClick={() => handlePlace(entry, popupPlot.x, popupPlot.y)}
+                    title={reason}
+                  >
+                    <span className="item-icon" aria-hidden="true">
+                      {DOMAIN_ICON[entry.domain || ''] || '🏗️'}
                     </span>
-                    <span className="item-cost">
-                      <span className={`cost-credits${!canAfford && !gated ? ' short' : ''}`}>
-                        💰 {compact(credits)}
-                      </span>
-                      {materials.map(([mat, amt]) => (
-                        <span key={mat} className="cost-material" title={`${amt} ${mat.replace(/_/g, ' ')}`}>
-                          {matLabel(mat)} {compact(amt)}
+                    <span className="item-body">
+                      <span className="item-name">{entry.name || entry.kind}</span>
+                      <span className="item-meta">
+                        <span className="item-domain">
+                          {DOMAIN_LABEL[entry.domain || ''] || entry.domain || ''}
                         </span>
-                      ))}
-                    </span>
-                  </span>
-                  <span className="item-state">
-                    {gated ? (
-                      <span className="item-gated" title={`Requires research node: ${gate}`}>
-                        🔒 Requires research: {gate}
+                        <span className="item-footprint" title={`Footprint ${w}×${h} plots`}>
+                          {w}×{h}
+                        </span>
                       </span>
-                    ) : belowMinCitadel ? (
-                      <span className="item-gated">🏰 Requires L{minCit}</span>
-                    ) : isArmed ? (
-                      <span className="item-armed">✓ Armed</span>
-                    ) : (
-                      <span className="item-arrow">＋</span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
+                      <span className="item-cost">
+                        <span className={`cost-credits${!canAfford && !gated ? ' short' : ''}`}>
+                          💰 {compact(credits)}
+                        </span>
+                        {materials.map(([mat, amt]) => (
+                          <span key={mat} className="cost-material" title={`${amt} ${mat.replace(/_/g, ' ')}`}>
+                            {matLabel(mat)} {compact(amt)}
+                          </span>
+                        ))}
+                      </span>
+                    </span>
+                    <span className="item-state">
+                      {gated ? (
+                        <span className="item-gated" title={`Requires research node: ${gate}`}>
+                          🔒 Requires research: {gate}
+                        </span>
+                      ) : belowMinCitadel ? (
+                        <span className="item-gated">🏰 Requires L{minCit}</span>
+                      ) : !canAfford ? (
+                        <span className="item-gated">💰 Short</span>
+                      ) : (
+                        <span className="item-arrow">＋</span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {actionMessage && (
         <div className={`grid-message ${actionMessage.kind === 'err' ? 'err' : 'ok'}`}>
