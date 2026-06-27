@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { shipAPI } from '../../services/api';
+import { formatCredits } from '../../utils/formatters';
 import './maintenance-manager.css';
 
 // Canon shape (ships.md): condition 0-100 decays per real day by hull class and
@@ -141,7 +142,7 @@ const MaintenanceManager: React.FC<MaintenanceManagerProps> = ({ shipId, playerC
               <div key={opt.tier} className={`mnt-tier-card ${!opt.available ? 'unavailable' : ''}`}>
                 <div className="mnt-tier-name">{TIER_LABEL[opt.tier] ?? opt.tier}</div>
                 <div className="mnt-tier-note">{TIER_NOTE[opt.tier]}</div>
-                <div className="mnt-tier-cost">{opt.cost_to_full.toLocaleString()} cr</div>
+                <div className="mnt-tier-cost">{formatCredits(opt.cost_to_full)}</div>
                 {opt.available ? (
                   <button className="mnt-buy" disabled={disabled} onClick={() => repair(opt.tier)}>
                     {busyTier === opt.tier ? '…' : c >= 99.95 ? 'Pristine' : afford ? 'Service' : 'Too costly'}

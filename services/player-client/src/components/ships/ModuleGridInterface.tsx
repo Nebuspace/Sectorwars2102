@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { shipUpgradeAPI } from '../../services/api';
+import { formatCredits } from '../../utils/formatters';
 import './module-grid-interface.css';
 
 // ============================================================================
@@ -228,7 +229,7 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
       setActionMessage(null);
       const result = await shipUpgradeAPI.removeModule(ship.id, slotIndex);
       if (result.success) {
-        setActionMessage(result.message || `Module stripped (salvage refund ${(result.refund ?? 0).toLocaleString()} cr).`);
+        setActionMessage(result.message || `Module stripped (salvage refund ${formatCredits(result.refund ?? 0)}).`);
         if (typeof result.remaining_credits === 'number') setCredits(result.remaining_credits);
         setAction(null);
         await fetchModules();
@@ -318,7 +319,7 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
               🌌 Galactic Citizen
             </span>
           )}
-          <span className="mgi-credits">Credits: {credits.toLocaleString()}</span>
+          <span className="mgi-credits">{formatCredits(credits)}</span>
         </div>
       </div>
 
@@ -479,11 +480,11 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
                               key={tier}
                               className="mgi-tier-btn"
                               disabled={actionLoading || tooPoor}
-                              title={tooPoor ? `Need ${cost.toLocaleString()} cr` : undefined}
+                              title={tooPoor ? `Need ${formatCredits(cost)}` : undefined}
                               onClick={() => handleInstall(action.slot.i, fam.cls, tier)}
                             >
                               <span className="mgi-tier-label">{TIER_LABEL[tier]}</span>
-                              <span className="mgi-tier-cost">{cost.toLocaleString()} cr</span>
+                              <span className="mgi-tier-cost">{formatCredits(cost)}</span>
                             </button>
                           );
                         })}
@@ -513,7 +514,7 @@ const ModuleGridInterface: React.FC<ModuleGridInterfaceProps> = ({ ship, playerC
                 Pulling a module is a salvage operation — you only get back the salvage
                 fraction (~25%) of its price, not the full cost.
                 {estRefund !== null && (
-                  <> You'll get back roughly <strong>{estRefund.toLocaleString()} cr</strong>.</>
+                  <> You'll get back roughly <strong>{formatCredits(estRefund)}</strong>.</>
                 )}
               </p>
               <div className="mgi-confirm-actions">

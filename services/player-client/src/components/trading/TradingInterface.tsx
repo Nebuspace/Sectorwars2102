@@ -5,6 +5,7 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
+import { formatCredits } from '../../utils/formatters';
 import HaggleDesk from './HaggleDesk';
 import './trading-interface.css';
 
@@ -335,14 +336,14 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   const formatTenure = (hours: number): string =>
     hours < 1 ? '<1h' : `${Math.round(hours)}h`;
 
-  // 'pay 5× fee: 500cr' when the multiplier is clean, else just the cost
+  // 'pay 5× fee: ₡500' when the multiplier is clean, else just the cost
   const formatBumpCost = (): string => {
     if (!dockFull) return '';
     const fee = slipsByStation[dockFull.stationId]?.fee;
     if (fee && dockFull.bump_cost % fee === 0) {
-      return `pay ${dockFull.bump_cost / fee}× fee: ${formatCredits(dockFull.bump_cost)}cr`;
+      return `pay ${dockFull.bump_cost / fee}× fee: ${formatCredits(dockFull.bump_cost)}`;
     }
-    return `pay ${formatCredits(dockFull.bump_cost)}cr`;
+    return `pay ${formatCredits(dockFull.bump_cost)}`;
   };
 
   const handleBump = async () => {
@@ -517,10 +518,6 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     }
   };
 
-  const formatCredits = (amount: number): string => {
-    return new Intl.NumberFormat().format(amount);
-  };
-
   // --- Station tariff math (follows routes/trading.py) ---
   // The market endpoint reports the EFFECTIVE tax rate: 0 means genuinely
   // untaxed (unowned station), non-zero is the owner's lever. Prices from
@@ -600,7 +597,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                       </button>
                       {slips && (
                         <div className={`port-slips-line ${slipsFull ? 'full' : ''}`.trim()}>
-                          Transient slips: {slips.occupied}/{slips.capacity} occupied · fee {formatCredits(slips.fee)}cr
+                          Transient slips: {slips.occupied}/{slips.capacity} occupied · fee {formatCredits(slips.fee)}
                           {slipsFull && typeof (slips as any).estimated_wait_minutes === 'number' && (
                             <> · Estimated wait: ~{(slips as any).estimated_wait_minutes} min</>
                           )}
@@ -764,7 +761,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
             </div>
 
             <div className="player-status-bar">
-              <span className="status-credits">💰 Credits: {formatCredits(playerState?.credits || 0)}</span>
+              <span className="status-credits">{formatCredits(playerState?.credits || 0)}</span>
               <span className="status-cargo">📦 Cargo: {getCargoUsed()} / {getCargoCapacity()}</span>
             </div>
 

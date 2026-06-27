@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
+import { formatCredits } from '../../utils/formatters';
 import './port-office-venue.css';
 
 // =====================================================================
@@ -504,15 +505,15 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       return;
     }
     if (floor > 0 && bid < floor) {
-      setBuyError(`Bids below the list price are not accepted. The floor is ${floor.toLocaleString()} cr.`);
+      setBuyError(`Bids below the list price are not accepted. The floor is ${formatCredits(floor)}.`);
       return;
     }
     if (bid > BID_CEILING) {
-      setBuyError(`The Port Authority clamps station prices at ${BID_CEILING.toLocaleString()} cr — bids above the statutory clamp are not accepted.`);
+      setBuyError(`The Port Authority clamps station prices at ${formatCredits(BID_CEILING)} — bids above the statutory clamp are not accepted.`);
       return;
     }
     if (bid > credits) {
-      setBuyError(`Insufficient credits to escrow this bid. Need ${bid.toLocaleString()}, have ${credits.toLocaleString()}.`);
+      setBuyError(`Insufficient credits to escrow this bid. Need ${formatCredits(bid)}, have ${formatCredits(credits)}.`);
       return;
     }
     setBuySuccess(null);
@@ -520,7 +521,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     if (result !== null) {
       const newCredits = creditsFromResponse(result);
       if (newCredits !== null) onCreditsSet(newCredits);
-      setBuySuccess(`Offer filed under seal — ${bid.toLocaleString()} cr escrowed with the Port Authority.`);
+      setBuySuccess(`Offer filed under seal — ${formatCredits(bid)} escrowed with the Port Authority.`);
       setBidInput('');
       await fetchListing();
     }
@@ -554,7 +555,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
       return;
     }
     if (amount > vault) {
-      setConsoleError(`The vault holds ${vault.toLocaleString()} cr — you cannot withdraw more than that.`);
+      setConsoleError(`The vault holds ${formatCredits(vault)} — you cannot withdraw more than that.`);
       return;
     }
     setConsoleSuccess(null);
@@ -562,7 +563,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
     if (result !== null) {
       const newCredits = creditsFromResponse(result);
       if (newCredits !== null) onCreditsSet(newCredits);
-      setConsoleSuccess(`${amount.toLocaleString()} cr transferred from the station vault to your account.`);
+      setConsoleSuccess(`${formatCredits(amount)} transferred from the station vault to your account.`);
       setWithdrawInput('');
       await Promise.allSettled([fetchOwner(), fetchListing()]);
     }
@@ -655,7 +656,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
               {listing.listPrice !== null && (
                 <div className="po-term-row">
                   <span>List price</span>
-                  <span>{listing.listPrice.toLocaleString()} cr</span>
+                  <span>{formatCredits(listing.listPrice)}</span>
                 </div>
               )}
               {listing.offersCount !== null && (
@@ -734,7 +735,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
               <div className="po-my-offer">
                 <span className="po-my-offer-label">📜 Your sealed offer</span>
                 <span className="po-my-offer-amount">
-                  {myOffer.bidAmount !== null ? `${myOffer.bidAmount.toLocaleString()} cr` : 'filed'}
+                  {myOffer.bidAmount !== null ? formatCredits(myOffer.bidAmount) : 'filed'}
                 </span>
                 <span className="po-my-offer-status">
                   {myOffer.status ? myOffer.status.replace(/_/g, ' ').toUpperCase() : 'IN ESCROW'}
@@ -742,7 +743,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
               </div>
             ) : (
               <div className="po-bid-row">
-                <label htmlFor="po-bid-input">Sealed bid (cr)</label>
+                <label htmlFor="po-bid-input">Sealed bid (₡)</label>
                 <input
                   id="po-bid-input"
                   type="number"
@@ -750,7 +751,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                   max={BID_CEILING}
                   value={bidInput}
                   onChange={e => setBidInput(e.target.value)}
-                  placeholder={listing.listPrice !== null ? `${listing.listPrice.toLocaleString()} minimum` : 'Bid amount'}
+                  placeholder={listing.listPrice !== null ? `${formatCredits(listing.listPrice)} minimum` : 'Bid amount'}
                   disabled={Boolean(busyAction)}
                 />
                 <button
@@ -853,15 +854,15 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                 aria-valuemin={0}
                 aria-valuemax={gaugeMax}
                 aria-valuenow={vault}
-                aria-label={`Station vault: ${vault.toLocaleString()} credits`}
-                title={`${gaugePct.toFixed(1)}% of the ${gaugeMax.toLocaleString()} cr gauge scale`}
+                aria-label={`Station vault: ${formatCredits(vault)}`}
+                title={`${gaugePct.toFixed(1)}% of the ${formatCredits(gaugeMax)} gauge scale`}
               >
                 <div className="po-vault-fill" style={{ width: `${gaugePct}%` }} />
                 <div className="po-vault-segments" aria-hidden="true" />
               </div>
               <div className="po-vault-readout">
-                <span className="po-vault-amount">{vault.toLocaleString()}</span>
-                <span className="po-vault-capacity">cr in the vault</span>
+                <span className="po-vault-amount">{formatCredits(vault)}</span>
+                <span className="po-vault-capacity">in the vault</span>
               </div>
               <div className="po-withdraw-row">
                 <input
@@ -909,19 +910,19 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                 {myStation.revenue30d !== null && (
                   <div className="po-term-row">
                     <span>Trailing 30 days</span>
-                    <span>{myStation.revenue30d.toLocaleString()} cr</span>
+                    <span>{formatCredits(myStation.revenue30d)}</span>
                   </div>
                 )}
                 {myStation.revenue90d !== null && (
                   <div className="po-term-row">
                     <span>Trailing 90 days</span>
-                    <span>{myStation.revenue90d.toLocaleString()} cr</span>
+                    <span>{formatCredits(myStation.revenue90d)}</span>
                   </div>
                 )}
                 {myStation.acquisitionCost !== null && (
                   <div className="po-term-row">
                     <span>Acquisition cost</span>
-                    <span>{myStation.acquisitionCost.toLocaleString()} cr</span>
+                    <span>{formatCredits(myStation.acquisitionCost)}</span>
                   </div>
                 )}
               </div>
@@ -930,7 +931,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                   {myStation.monthly.map(m => (
                     <div key={m.label} className="po-term-row">
                       <span>{m.label}</span>
-                      <span>{m.amount.toLocaleString()} cr</span>
+                      <span>{formatCredits(m.amount)}</span>
                     </div>
                   ))}
                 </div>
@@ -973,7 +974,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
                 <div
                   className={`po-share-fill${m.sharePct > 50 ? ' over' : ''}${m.qualifies ? ' qualifies' : ''}`}
                   style={{ height: `${m.sharePct}%` }}
-                  title={`${m.sharePct.toFixed(1)}% of station volume${m.totalVolume !== null ? ` (${m.totalVolume.toLocaleString()} cr total)` : ''}${m.hostile === true ? ' — hostile pricing' : ''}${m.qualifies ? ' — qualifying month' : ''}`}
+                  title={`${m.sharePct.toFixed(1)}% of station volume${m.totalVolume !== null ? ` (${formatCredits(m.totalVolume)} total)` : ''}${m.hostile === true ? ' — hostile pricing' : ''}${m.qualifies ? ' — qualifying month' : ''}`}
                 />
               )}
               <div className="po-share-threshold" aria-hidden="true" />
@@ -1075,7 +1076,7 @@ const PortOfficeVenue: React.FC<PortOfficeVenueProps> = ({
               {takeover.forcedSalePrice !== null && (
                 <div className="po-term-row">
                   <span>Forced-sale price on the table</span>
-                  <span>{takeover.forcedSalePrice.toLocaleString()} cr</span>
+                  <span>{formatCredits(takeover.forcedSalePrice)}</span>
                 </div>
               )}
               {counterOpen && takeover.counterExpiresAt &&

@@ -5,6 +5,7 @@ import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
 import { InsuranceManager, MaintenanceManager, ModuleGridInterface } from '../ships';
+import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -1217,9 +1218,9 @@ const SpaceDockInterface: React.FC = () => {
         return;
       }
       const result = await response.json();
-      const cost = (result.cost_paid_cr ?? 0).toLocaleString();
+      const cost = formatCredits(result.cost_paid_cr ?? 0);
       const expires = result.expires_at ? new Date(result.expires_at).toLocaleString() : 'soon';
-      setLicenseSuccess(`Claim filed for ${cost} cr — license valid until ${expires}.`);
+      setLicenseSuccess(`Claim filed for ${cost} — license valid until ${expires}.`);
       Promise.allSettled([refreshPlayerState(), fetchShipData()]);
     } catch (error) {
       console.error('Claim license error:', error);
@@ -1257,9 +1258,9 @@ const SpaceDockInterface: React.FC = () => {
       }
       const result = await response.json();
       const mult = typeof result.yield_multiplier === 'number' ? `${result.yield_multiplier}× yield` : '';
-      const cost = (result.cost_paid ?? 0).toLocaleString();
+      const cost = formatCredits(result.cost_paid ?? 0);
       setLaserSuccess(
-        `${result.message || `Mining Laser upgraded to level ${result.new_level}`} — ${cost} cr${mult ? ` (${mult})` : ''}.`
+        `${result.message || `Mining Laser upgraded to level ${result.new_level}`} — ${cost}${mult ? ` (${mult})` : ''}.`
       );
       if (typeof result.remaining_credits === 'number') {
         setLocalCredits(result.remaining_credits);
@@ -1430,7 +1431,7 @@ const SpaceDockInterface: React.FC = () => {
         setLocalCredits(result.remaining_credits);
         updatePlayerCredits(result.remaining_credits);
       }
-      setBmSuccess(`Acquired ${result.quantity} × ${prettyCommodity(listing.commodity)} for ${(result.total_cost ?? 0).toLocaleString()} cr.`);
+      setBmSuccess(`Acquired ${result.quantity} × ${prettyCommodity(listing.commodity)} for ${formatCredits(result.total_cost ?? 0)}.`);
       // Re-price the catalog (fresh haggle quotes) and sync ship cargo state.
       fetchBlackMarketCatalog(stationId);
       Promise.allSettled([refreshPlayerState(), fetchShipData()]);
@@ -1475,11 +1476,11 @@ const SpaceDockInterface: React.FC = () => {
       }
       if (result.detected) {
         // Bust: cargo confiscated, fine levied, heat flipped.
-        const fine = (result.fine ?? 0).toLocaleString();
+        const fine = formatCredits(result.fine ?? 0);
         const heat = result.heat === 'wanted' ? 'You are now WANTED.' : 'You are now a SUSPECT.';
-        setBmDetected(`Detected! ${result.confiscated_units ?? 0} units of contraband confiscated — fine of ${fine} cr levied. ${heat}`);
+        setBmDetected(`Detected! ${result.confiscated_units ?? 0} units of contraband confiscated — fine of ${fine} levied. ${heat}`);
       } else {
-        setBmSuccess(`Sold ${result.quantity} × ${prettyCommodity(listing.commodity)} for ${(result.sale_value ?? 0).toLocaleString()} cr. (No one was watching... this time.)`);
+        setBmSuccess(`Sold ${result.quantity} × ${prettyCommodity(listing.commodity)} for ${formatCredits(result.sale_value ?? 0)}. (No one was watching... this time.)`);
       }
       fetchBlackMarketCatalog(stationId);
       Promise.allSettled([refreshPlayerState(), fetchShipData()]);
@@ -1581,7 +1582,7 @@ const SpaceDockInterface: React.FC = () => {
                         <h4>{prettyCommodity(listing.commodity)}</h4>
                         <div className="bm-item-stats">
                           <span className="bm-stat">severity: {listing.severity}</span>
-                          <span className="bm-stat">~{listing.indicative_unit_price.toLocaleString()} cr/unit</span>
+                          <span className="bm-stat">~{formatCredits(listing.indicative_unit_price)}/unit</span>
                           {held > 0 && <span className="bm-stat">held: {held}</span>}
                         </div>
                       </div>
@@ -1600,7 +1601,7 @@ const SpaceDockInterface: React.FC = () => {
                           disabled={anyBusy}
                           aria-label={`Quantity of ${prettyCommodity(listing.commodity)}`}
                         />
-                        <span className="bm-price">{totalBuy.toLocaleString()} cr</span>
+                        <span className="bm-price">{formatCredits(totalBuy)}</span>
                         <button
                           className="bm-buy-btn"
                           onClick={() => buyContraband(listing, qty)}
@@ -1644,11 +1645,11 @@ const SpaceDockInterface: React.FC = () => {
                 onClick={handleRegistryLookup}
                 disabled={registryLoading || !registryQueryName.trim()}
               >
-                {registryLoading ? 'Querying...' : 'Pay 50,000 cr — Query'}
+                {registryLoading ? 'Querying...' : `Pay ${formatCredits(50000)} — Query`}
               </button>
             </div>
             <div className="bm-registry-meta">
-              <span className="bm-price">50,000 cr</span>
+              <span className="bm-price">{formatCredits(50000)}</span>
               <span className="bm-registry-caveat">Clandestine worlds never appear.</span>
             </div>
 
@@ -1810,7 +1811,7 @@ const SpaceDockInterface: React.FC = () => {
                 <h3>Cosmic Slots</h3>
                 <p>Match symbols to win big! Jackpot pays 50x</p>
                 <div className="game-stats">
-                  <span>Min Bet: 10 cr</span>
+                  <span>Min Bet: {formatCredits(10)}</span>
                   <span>Max Win: 50x</span>
                 </div>
               </div>
@@ -1820,7 +1821,7 @@ const SpaceDockInterface: React.FC = () => {
                 <h3>Nebula Dice</h3>
                 <p>Bet high, low, or exact. Avoid the Void!</p>
                 <div className="game-stats">
-                  <span>Min Bet: 10 cr</span>
+                  <span>Min Bet: {formatCredits(10)}</span>
                   <span>Max Win: 35x</span>
                 </div>
               </div>
@@ -1830,7 +1831,7 @@ const SpaceDockInterface: React.FC = () => {
                 <h3>Stellar Blackjack</h3>
                 <p>Beat the dealer to 21 without busting!</p>
                 <div className="game-stats">
-                  <span>Min Bet: 10 cr</span>
+                  <span>Min Bet: {formatCredits(10)}</span>
                   <span>Blackjack: 3:2</span>
                 </div>
               </div>
@@ -1840,8 +1841,8 @@ const SpaceDockInterface: React.FC = () => {
                 <h3>Sector Sweep</h3>
                 <p>Pick sectors, match the draw, win the jackpot!</p>
                 <div className="game-stats">
-                  <span>Ticket: 100 cr</span>
-                  <span>Jackpot: 1M cr</span>
+                  <span>Ticket: {formatCredits(100)}</span>
+                  <span>Jackpot: {formatCredits(1000000)}</span>
                 </div>
               </div>
             </div>
@@ -1877,8 +1878,8 @@ const SpaceDockInterface: React.FC = () => {
               <div className="slot-result">
                 {lastWin !== null && (
                   <div className={`win-display ${lastWin > 0 ? 'winner' : lastWin < 0 ? 'loser' : 'push'}`}>
-                    {lastWin > 0 ? `WIN! +${lastWin.toLocaleString()} credits!` :
-                     lastWin < 0 ? `Lost ${Math.abs(lastWin).toLocaleString()} credits` :
+                    {lastWin > 0 ? `WIN! +${formatCredits(lastWin)}!` :
+                     lastWin < 0 ? `Lost ${formatCredits(Math.abs(lastWin))}` :
                      'No match - try again!'}
                   </div>
                 )}
@@ -1963,8 +1964,8 @@ const SpaceDockInterface: React.FC = () => {
               <div className="dice-result">
                 {lastWin !== null && (
                   <div className={`win-display ${lastWin > 0 ? 'winner' : 'loser'}`}>
-                    {lastWin > 0 ? `WIN! +${lastWin.toLocaleString()} credits!` :
-                     `Lost ${Math.abs(lastWin).toLocaleString()} credits`}
+                    {lastWin > 0 ? `WIN! +${formatCredits(lastWin)}!` :
+                     `Lost ${formatCredits(Math.abs(lastWin))}`}
                   </div>
                 )}
               </div>
@@ -2131,7 +2132,7 @@ const SpaceDockInterface: React.FC = () => {
                       {blackjackGame.result === 'bust' && '💥 BUST!'}
                       {lastWin !== null && (
                         <div className="result-amount">
-                          {lastWin > 0 ? `+${lastWin.toLocaleString()}` : lastWin.toLocaleString()} credits
+                          {lastWin > 0 ? `+${formatCredits(lastWin)}` : formatCredits(lastWin)}
                         </div>
                       )}
                     </div>
@@ -2187,7 +2188,7 @@ const SpaceDockInterface: React.FC = () => {
                   </div>
 
                   <div className="current-bet-display">
-                    Current Bet: {betAmount.toLocaleString()} cr
+                    Current Bet: {formatCredits(betAmount)}
                   </div>
                 </div>
               )}
@@ -2265,9 +2266,9 @@ const SpaceDockInterface: React.FC = () => {
                     {isJackpot ? (
                       <div className="jackpot-win">🎉 JACKPOT! 🎉</div>
                     ) : lotteryMatches && lotteryMatches > 0 ? (
-                      `${lotteryMatches} Match${lotteryMatches > 1 ? 'es' : ''}! +${lastWin?.toLocaleString()} credits!`
+                      `${lotteryMatches} Match${lotteryMatches > 1 ? 'es' : ''}! +${formatCredits(lastWin)}!`
                     ) : (
-                      `No matches. Lost ${betAmount.toLocaleString()} credits`
+                      `No matches. Lost ${formatCredits(betAmount)}`
                     )}
                   </div>
                 </div>
@@ -2422,7 +2423,7 @@ const SpaceDockInterface: React.FC = () => {
                         </div>
                         {ship.purchasable ? (
                           <>
-                            <div className="ship-price">{ship.base_cost.toLocaleString()} cr</div>
+                            <div className="ship-price">{formatCredits(ship.base_cost)}</div>
                             <button
                               className="buy-ship-btn"
                               onClick={() => {
@@ -2477,15 +2478,15 @@ const SpaceDockInterface: React.FC = () => {
                 <div className="confirm-cost-rows">
                   <div className="confirm-cost-row">
                     <span>Cost</span>
-                    <span>{confirmShip.base_cost.toLocaleString()} cr</span>
+                    <span>{formatCredits(confirmShip.base_cost)}</span>
                   </div>
                   <div className="confirm-cost-row">
                     <span>Your credits</span>
-                    <span>{displayCredits.toLocaleString()} cr</span>
+                    <span>{formatCredits(displayCredits)}</span>
                   </div>
                   <div className={`confirm-cost-row balance${displayCredits - confirmShip.base_cost < 0 ? ' negative' : ''}`}>
                     <span>After purchase</span>
-                    <span>{(displayCredits - confirmShip.base_cost).toLocaleString()} cr</span>
+                    <span>{formatCredits(displayCredits - confirmShip.base_cost)}</span>
                   </div>
                 </div>
                 {shipPurchaseError && (
@@ -2615,7 +2616,7 @@ const SpaceDockInterface: React.FC = () => {
                 </ul>
               </div>
               <div className="device-footer">
-                <div className="device-price">{GENESIS_DEVICE_PRICE.toLocaleString()} cr</div>
+                <div className="device-price">{formatCredits(GENESIS_DEVICE_PRICE)}</div>
                 <button
                   className="purchase-device-btn"
                   onClick={() => purchaseGenesisDevice()}
@@ -2689,7 +2690,7 @@ const SpaceDockInterface: React.FC = () => {
           )}
         </div>
         <div className="eq-purchase">
-          <span className="eq-price">{item.price.toLocaleString()} cr</span>
+          <span className="eq-price">{formatCredits(item.price)}</span>
           <div className="qty-controls">
             <input
               type="number"
@@ -2713,7 +2714,7 @@ const SpaceDockInterface: React.FC = () => {
             </button>
           </div>
           {qty > 1 && !gated && (
-            <span className="eq-total">Total: {totalCost.toLocaleString()} cr</span>
+            <span className="eq-total">Total: {formatCredits(totalCost)}</span>
           )}
         </div>
       </div>
@@ -2932,7 +2933,7 @@ const SpaceDockInterface: React.FC = () => {
                     ? '—'
                     : atFullCondition
                       ? 'No repairs needed'
-                      : `${repairCost.toLocaleString()} cr`}
+                      : formatCredits(repairCost)}
                 </span>
                 <button
                   className="service-btn"

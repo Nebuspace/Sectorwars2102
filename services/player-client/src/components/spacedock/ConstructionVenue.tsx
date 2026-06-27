@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
+import { formatCredits } from '../../utils/formatters';
 import './construction-venue.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -635,7 +636,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
       return;
     }
     if (credits < confirmQuote.deposit) {
-      setReserveError(`Insufficient credits for the deposit. Need ${confirmQuote.deposit.toLocaleString()}, have ${credits.toLocaleString()}`);
+      setReserveError(`Insufficient credits for the deposit. Need ${formatCredits(confirmQuote.deposit)}, have ${formatCredits(credits)}`);
       return;
     }
 
@@ -837,11 +838,11 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
         <div className="cq-rows">
           <div className="cq-row">
             <span>Total cost</span>
-            <span>{quote.total_cost.toLocaleString()} cr</span>
+            <span>{formatCredits(quote.total_cost)}</span>
           </div>
           <div className="cq-row">
             <span>Deposit</span>
-            <span>{quote.deposit.toLocaleString()} cr</span>
+            <span>{formatCredits(quote.deposit)}</span>
           </div>
           <div className="cq-row">
             <span>Build time</span>
@@ -850,7 +851,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
           {typeof quote.daily_rent === 'number' && (
             <div className="cq-row">
               <span>Slip rent / day</span>
-              <span>{quote.daily_rent.toLocaleString()} cr</span>
+              <span>{formatCredits(quote.daily_rent)}</span>
             </div>
           )}
         </div>
@@ -973,7 +974,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
         <h5>🏠 Pay Slip Rent</h5>
         {rentOwed > 0 && (
           <div className="cr-rent-owed">
-            Currently owed: {rentOwed.toLocaleString()} cr
+            Currently owed: {formatCredits(rentOwed)}
             {forfeitDays !== null && overdueDays > 0 && (
               <> — {overdueDays.toFixed(1)} day{overdueDays === 1 ? '' : 's'} overdue (build forfeits at {forfeitDays})</>
             )}
@@ -1005,7 +1006,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
         </div>
         {dailyRate !== null ? (
           <div className="cr-rent-preview">
-            {days} day{days === 1 ? '' : 's'} × {dailyRate.toLocaleString()} cr = <strong>{(days * dailyRate).toLocaleString()} cr</strong>
+            {days} day{days === 1 ? '' : 's'} × {formatCredits(dailyRate)} = <strong>{formatCredits(days * dailyRate)}</strong>
           </div>
         ) : (
           <div className="cr-rent-preview">
@@ -1146,7 +1147,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
 
         {canPayRent && rentOwed > 0 && (
           <div className="cr-rent-warning">
-            🏠 Rent owed: <strong>{rentOwed.toLocaleString()} cr</strong>
+            🏠 Rent owed: <strong>{formatCredits(rentOwed)}</strong>
           </div>
         )}
 
@@ -1203,7 +1204,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
                   {milestone.paid ? '✓' : '•'} {prettyShipType(milestone.name)}
                 </span>
                 {typeof milestone.amount === 'number' && (
-                  <span className="cr-milestone-amount">{milestone.amount.toLocaleString()} cr</span>
+                  <span className="cr-milestone-amount">{formatCredits(milestone.amount)}</span>
                 )}
                 {!milestone.paid && firstUnpaid && milestone.name === firstUnpaid.name && (
                   <button
@@ -1421,7 +1422,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
               The deposit places your order in the build queue. When a slip frees up you get a
               24-hour hold — pay the Keel Laid milestone
               {typeof confirmQuote.milestones?.keel_laid === 'number'
-                ? ` (${confirmQuote.milestones.keel_laid.toLocaleString()} cr)`
+                ? ` (${formatCredits(confirmQuote.milestones.keel_laid)})`
                 : ''} to confirm it and start construction. The balance is settled through
               milestones while you deliver materials from your cargo hold.
             </p>
@@ -1439,11 +1440,11 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
             <div className="confirm-cost-rows">
               <div className="confirm-cost-row">
                 <span>Deposit due now</span>
-                <span>{confirmQuote.deposit.toLocaleString()} cr</span>
+                <span>{formatCredits(confirmQuote.deposit)}</span>
               </div>
               <div className="confirm-cost-row">
                 <span>Total build cost</span>
-                <span>{confirmQuote.total_cost.toLocaleString()} cr</span>
+                <span>{formatCredits(confirmQuote.total_cost)}</span>
               </div>
               <div className="confirm-cost-row">
                 <span>Build time</span>
@@ -1451,11 +1452,11 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
               </div>
               <div className="confirm-cost-row">
                 <span>Your credits</span>
-                <span>{credits.toLocaleString()} cr</span>
+                <span>{formatCredits(credits)}</span>
               </div>
               <div className={`confirm-cost-row balance${credits - confirmQuote.deposit < 0 ? ' negative' : ''}`}>
                 <span>After deposit</span>
-                <span>{(credits - confirmQuote.deposit).toLocaleString()} cr</span>
+                <span>{formatCredits(credits - confirmQuote.deposit)}</span>
               </div>
             </div>
             {renderResourceBundle(confirmQuote.resources_required)}
@@ -1515,11 +1516,11 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
               <div className="confirm-cost-rows">
                 <div className="confirm-cost-row">
                   <span>Credits paid so far</span>
-                  <span>{creditsPaid.toLocaleString()} cr</span>
+                  <span>{formatCredits(creditsPaid)}</span>
                 </div>
                 <div className="confirm-cost-row balance">
                   <span>Estimated refund ({hullPaid ? '70%' : '50%'})</span>
-                  <span>{estRefund.toLocaleString()} cr</span>
+                  <span>{formatCredits(estRefund)}</span>
                 </div>
               </div>
             )}

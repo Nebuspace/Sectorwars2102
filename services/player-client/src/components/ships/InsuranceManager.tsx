@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { shipAPI } from '../../services/api';
+import { formatCredits } from '../../utils/formatters';
 import './insurance-manager.css';
 
 // Canon shape (ADR-0081 premiums, ADR-0061 payout): 3 tiers, one-time premium,
@@ -99,11 +100,11 @@ const InsuranceManager: React.FC<InsuranceManagerProps> = ({ shipId, playerCredi
             <span>Current coverage:</span>
             <strong>{TIER_LABEL[status.current_tier] ?? status.current_tier}</strong>
             {status.current_tier !== 'NONE' && (
-              <span className="ins-payout">pays out {status.current_payout_amount.toLocaleString()} cr</span>
+              <span className="ins-payout">pays out {formatCredits(status.current_payout_amount)}</span>
             )}
           </div>
           <p className="ins-note">
-            Ship value {status.purchase_value.toLocaleString()} cr · premium paid once, coverage lasts the hull's
+            Ship value {formatCredits(status.purchase_value)} · premium paid once, coverage lasts the hull's
             lifetime · no refunds, no claims, no cancellation.
           </p>
 
@@ -120,12 +121,12 @@ const InsuranceManager: React.FC<InsuranceManagerProps> = ({ shipId, playerCredi
                   <div className="ins-tier-name">{TIER_LABEL[t.tier]}</div>
                   <div className="ins-tier-stat">
                     <span>Pays out</span>
-                    <strong>{t.payout_amount.toLocaleString()} cr</strong>
+                    <strong>{formatCredits(t.payout_amount)}</strong>
                     <em>({Math.round(t.net_payout_pct * 100)}%)</em>
                   </div>
                   <div className="ins-tier-stat">
                     <span>Premium</span>
-                    <strong>{t.premium_full.toLocaleString()} cr</strong>
+                    <strong>{formatCredits(t.premium_full)}</strong>
                     <em>({Math.round(t.premium_pct * 100)}%)</em>
                   </div>
                   {isCurrent ? (
@@ -139,8 +140,8 @@ const InsuranceManager: React.FC<InsuranceManagerProps> = ({ shipId, playerCredi
                       {busyTier === t.tier
                         ? '…'
                         : status.current_tier === 'NONE'
-                          ? `Insure · ${t.upgrade_cost!.toLocaleString()} cr`
-                          : `Upgrade · ${t.upgrade_cost!.toLocaleString()} cr`}
+                          ? `Insure · ${formatCredits(t.upgrade_cost!)}`
+                          : `Upgrade · ${formatCredits(t.upgrade_cost!)}`}
                     </button>
                   ) : (
                     <div className="ins-owned-badge">Included</div>

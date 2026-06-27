@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { haggleAPI } from '../../services/api';
+import { formatCredits } from '../../utils/formatters';
 import './haggle-desk.css';
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -87,9 +88,6 @@ interface HaggleDeskProps {
   /** Fired once a price is accepted; parent fires the actual buy/sell. */
   onAccepted: (agreedPrice: number) => void;
 }
-
-const fmt = (n: number): string =>
-  new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(n);
 
 const HaggleDesk: React.FC<HaggleDeskProps> = ({
   stationId,
@@ -344,23 +342,23 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
           <div className="haggle-band-card">
             <div className="haggle-band-row">
               <span>Fair price</span>
-              <span className="haggle-band-val">{fmt(activeBand.fair_price)} cr</span>
+              <span className="haggle-band-val">{formatCredits(activeBand.fair_price)}</span>
             </div>
             <div className="haggle-band-row">
               <span>They accept {side === 'buy' ? 'from' : 'up to'}</span>
               <span className="haggle-band-val accept">
-                {fmt(activeBand.accept_threshold)} cr
+                {formatCredits(activeBand.accept_threshold)}
               </span>
             </div>
             <div className="haggle-band-row">
               <span>They walk {side === 'buy' ? 'below' : 'above'}</span>
               <span className="haggle-band-val reject">
-                {fmt(activeBand.reject_threshold)} cr
+                {formatCredits(activeBand.reject_threshold)}
               </span>
             </div>
             {clamp && (
               <div className="haggle-clamp-note">
-                Offers accepted between {fmt(clamp.min)}–{fmt(clamp.max)} cr/unit
+                Offers accepted between {formatCredits(clamp.min)}–{formatCredits(clamp.max)}/unit
               </div>
             )}
           </div>
@@ -370,7 +368,7 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
             lastResult.counter_price != null && (
               <div className="haggle-counter-line" role="status">
                 The trader counters at{' '}
-                <strong>{fmt(lastResult.counter_price)} cr/unit</strong>.
+                <strong>{formatCredits(lastResult.counter_price)}/unit</strong>.
               </div>
             )}
 
@@ -398,13 +396,13 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
             </div>
             {offerOutOfRange && clamp && (
               <div className="haggle-offer-warn">
-                Offer must be between {fmt(clamp.min)} and {fmt(clamp.max)} cr.
+                Offer must be between {formatCredits(clamp.min)} and {formatCredits(clamp.max)}.
               </div>
             )}
             <div className="haggle-offer-total">
               You'd {directionWord}{' '}
               <strong>
-                {Number.isFinite(offerNum) ? fmt(offerNum * quantity) : '—'} cr
+                {Number.isFinite(offerNum) ? formatCredits(offerNum * quantity) : '—'}
               </strong>{' '}
               total for ×{quantity}.
             </div>
@@ -425,8 +423,8 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
           <span className="haggle-outcome-icon">🤝</span>
           <h4>Deal struck</h4>
           <p className="haggle-agreed">
-            Agreed at <strong>{fmt(lastResult.agreed_price)} cr/unit</strong> ·
-            total <strong>{fmt(lastResult.agreed_price * quantity)} cr</strong>{' '}
+            Agreed at <strong>{formatCredits(lastResult.agreed_price)}/unit</strong> ·
+            total <strong>{formatCredits(lastResult.agreed_price * quantity)}</strong>{' '}
             for ×{quantity}.
           </p>
           <p className="haggle-agreed-note">
@@ -468,7 +466,7 @@ const HaggleDesk: React.FC<HaggleDeskProps> = ({
             {lastResult?.counter_price != null && (
               <>
                 {' '}— their last word was{' '}
-                <strong>{fmt(lastResult.counter_price)} cr/unit</strong>
+                <strong>{formatCredits(lastResult.counter_price)}/unit</strong>
               </>
             )}
             . The desk is briefly on cooldown; trade at the posted price for now.
