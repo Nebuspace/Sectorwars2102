@@ -111,8 +111,12 @@
    layout). rail + MFD-A + MFD-B at a NATURAL width (--sidebar-w, ~320–420px,
    NOT half the screen), inset below the band + helm rail and spanning to the
    screen bottom. Opaque CRT backing. Scrolling stays INSIDE each MFD page body
-   (mfd.css), never at this level. */
-.game-sidebar {
+   (mfd.css), never at this level.
+   Selector is `.game-container .game-sidebar` (0,2,0) so `position:absolute` +
+   the full-height geometry beat `.hud-panel { position:relative }` (0,1,0,
+   imported AFTER game-layout.css) — otherwise the sidebar fell back to relative,
+   sized to content, rendered SHORT and left a bottom-left gap (id=149 re-prove). */
+.game-container .game-sidebar {
   position: absolute;
   top: calc(var(--band-h) + var(--helm-h));
   left: 0;
