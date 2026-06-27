@@ -31,6 +31,7 @@ import { CombatInterface } from './components/combat'
 import { PlanetManager } from './components/planetary'
 import { ShipSelector } from './components/ships'
 import { TradingInterface } from './components/trading'
+import PlayerInfo from './components/player/PlayerInfo'
 
 interface ApiResponse {
   message?: string;
@@ -652,6 +653,11 @@ function App() {
               <Route path="/game/ships" element={
                 <ProtectedRoute>
                   <ShipSelector />
+                </ProtectedRoute>
+              } />
+              <Route path="/game/player" element={
+                <ProtectedRoute>
+                  <PlayerInfo />
                 </ProtectedRoute>
               } />
               <Route path="/game/trading" element={

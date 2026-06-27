@@ -12,6 +12,7 @@ import { InputValidator, SecurityAudit } from '../../utils/security/inputValidat
 import { formatShipType } from '../../utils/formatters';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
+import { useEmbedded } from '../cockpit/EmbeddedContext';
 import './ship-selector.css';
 
 interface ShipSelectorProps {
@@ -20,14 +21,18 @@ interface ShipSelectorProps {
 }
 
 /* HANGAR console shell (Law 3) — module-level so React never remounts the
-   frame (or the children) when the component re-renders between states. */
-const HangarShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <GameLayout>
+   frame (or the children) when the component re-renders between states.
+   When EMBEDDED (id=144, inside PlayerInfo) it renders just the framed
+   instrument and skips GameLayout so two cockpit shells never nest. */
+const HangarShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const embedded = useEmbedded();
+  const instrument = (
     <CockpitInstrument title="HANGAR" accent="#9EC5FF" subtitle="FLEET REGISTRY">
       {children}
     </CockpitInstrument>
-  </GameLayout>
-);
+  );
+  return embedded ? instrument : <GameLayout>{instrument}</GameLayout>;
+};
 
 export const ShipSelector: React.FC<ShipSelectorProps> = ({
   onShipSelected,

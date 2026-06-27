@@ -5,19 +5,24 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import type { Planet } from '../../types/planetary';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
+import { useEmbedded } from '../cockpit/EmbeddedContext';
 import EmptyState from '../common/EmptyState';
 import './planet-manager.css';
 
 /* COLONIAL REGISTRY console shell (Law 3) — module-level so the monitor
    frame keeps its identity across scanning/error/empty/registry branches
-   (the scan spinner swaps INSIDE the frame, never unmounting it). */
-const ColonialShell: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <GameLayout>
+   (the scan spinner swaps INSIDE the frame, never unmounting it).
+   When EMBEDDED (id=144, inside PlayerInfo) it renders just the framed
+   instrument and skips GameLayout so two cockpit shells never nest. */
+const ColonialShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const embedded = useEmbedded();
+  const instrument = (
     <CockpitInstrument title="COLONIAL REGISTRY" accent="#7B2FFF" subtitle="PLANETARY OPERATIONS">
       {children}
     </CockpitInstrument>
-  </GameLayout>
-);
+  );
+  return embedded ? instrument : <GameLayout>{instrument}</GameLayout>;
+};
 
 /**
  * Optional planet fields surfaced by newer gameserver payloads.
