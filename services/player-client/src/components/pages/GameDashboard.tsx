@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
 import { useGame, type MoveOption } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
@@ -921,6 +922,16 @@ const GameDashboard: React.FC = () => {
     return typeof aboard === 'number' && aboard > 0 ? Math.floor(aboard) : 0;
   }, [currentShip]);
 
+  // Router nav for the "Manage Colony" affordance → COLONIES (PlanetManager).
+  const navigate = useNavigate();
+
+  // opsRefresh: a shared "ops changed, refetch" signal bumped after the player's
+  // own mutations (colonist transfer, citadel ops, building work) so the landed
+  // console reflects them without a full reload. Declared here so BOTH the
+  // landed-detail poll below and the citadel/defense telemetry effect can depend
+  // on it. (WO-COCKPIT-UX A — refresh on own mutations.)
+  const [opsRefresh, setOpsRefresh] = useState(0);
+
   // Detailed planet data (colonists / maxColonists) — the detail endpoint only
   // answers for planets the player owns, so render gracefully when absent
   const [landedPlanetDetail, setLandedPlanetDetail] = useState<any>(null);
@@ -930,11 +941,20 @@ const GameDashboard: React.FC = () => {
       setLandedPlanetDetail(null);
       return;
     }
-    getPlanetDetails(landedPlanet.id)
-      .then((detail: any) => { if (!cancelled) setLandedPlanetDetail(detail); })
-      .catch(() => { if (!cancelled) setLandedPlanetDetail(null); });
-    return () => { cancelled = true; };
-  }, [landedPlanet?.id, isLandedPlanetMine]);
+    const planetId = landedPlanet.id;
+    const fetchDetail = () => {
+      getPlanetDetails(planetId)
+        .then((detail: any) => { if (!cancelled) setLandedPlanetDetail(detail); })
+        .catch(() => { if (!cancelled) setLandedPlanetDetail(null); });
+    };
+    fetchDetail();
+    // Poll ~15s so production / stockpile / colonist / citadel accrual shows in
+    // the landed cockpit without a full browser reload; pause while the tab is
+    // hidden to avoid background churn. opsRefresh in deps re-fetches on the
+    // player's own mutations. (WO-COCKPIT-UX A)
+    const iv = setInterval(() => { if (!document.hidden) fetchDetail(); }, 15000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [landedPlanet?.id, isLandedPlanetMine, opsRefresh]);
 
   // Colonists on the landed planet (detail when owned, sector snapshot otherwise)
   const landedPlanetColonists: number =
@@ -962,7 +982,6 @@ const GameDashboard: React.FC = () => {
   const [defenseInfo, setDefenseInfo] = useState<any>(null);
   const [defenseBuildings, setDefenseBuildings] = useState<any[]>([]);
   const [buildingBusy, setBuildingBusy] = useState<string | null>(null);
-  const [opsRefresh, setOpsRefresh] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -1364,6 +1383,10 @@ const GameDashboard: React.FC = () => {
         colonists: typeof result?.planet_colonists === 'number' ? result.planet_colonists : prev.colonists,
         maxColonists: typeof result?.max_colonists === 'number' ? result.max_colonists : prev.maxColonists
       } : prev);
+      // Re-fetch authoritative detail + citadel/defense telemetry after the
+      // mutation (production rates, morale, derived fields the optimistic merge
+      // above doesn't cover). (WO-COCKPIT-UX A — refresh on own mutation.)
+      setOpsRefresh((n) => n + 1);
       setTransferModal(null);
     } catch (error: any) {
       setTransferNotice({
@@ -3016,6 +3039,15 @@ const GameDashboard: React.FC = () => {
                                   >
                                     <span>📤</span> Embark
                                   </button>
+                                  {isLandedPlanetMine && (
+                                    <button
+                                      className="transfer-btn manage-colony"
+                                      title="Open the full colony console — Grid, Citadel, Research, Terraforming"
+                                      onClick={() => navigate('/game/planets')}
+                                    >
+                                      <span>🏛️</span> Manage Colony
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                               {shipColonists > 0 && (
