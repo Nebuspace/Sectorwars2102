@@ -291,6 +291,34 @@ class TerraformingService:
             self.db.commit()
             self.db.refresh(planet)
 
+        # Reconcile-on-read (defensive completion). settle()'s terraform step
+        # advances the LEGACY project (substep 1) and then, separately, writes
+        # the AUTHORITATIVE grid-derived habitability_score (substep 3). Those
+        # two writes are decoupled: the grid field can lift habitability to or
+        # past the legacy terraforming_target without _advance_terraforming
+        # re-checking the post-grid value, and a legacy/stale project may
+        # already sit at/over its target on read with too few accrued ticks to
+        # trip the advance-path completion. In either case the project is in an
+        # invalid state — current habitability >= target while still active —
+        # so finalize it here. _complete_terraforming raises to max(current,
+        # target) (never regresses the grid value) and clears all terraforming
+        # state (active=False, target/start cleared, progress=100, active_events
+        # entry removed). Idempotent: once active is False this never re-fires.
+        if (
+            planet.terraforming_active
+            and planet.terraforming_target is not None
+            and planet.habitability_score is not None
+            and planet.habitability_score >= planet.terraforming_target
+        ):
+            self._complete_terraforming(planet)
+            self.db.commit()
+            self.db.refresh(planet)
+            logger.info(
+                "Reconcile-on-read completed terraforming on planet %s "
+                "(id=%s): current habitability >= target while active.",
+                planet.name, planet.id
+            )
+
         if not planet.terraforming_active:
             return {
                 "active": False,
