@@ -86,42 +86,38 @@
   flex: 1;
   overflow: hidden;
   position: relative;
-  /* Band = full-width top strip (% of the already scale-correct container, so
-     no extra svh math); console = bottom-left width, responsive ~half with a
-     min so the controls never crush. */
+  /* Max's exact in-flight inverted-L (id=149 REDEFINED): a full-width band on
+     top, a NARROW full-height sidebar on the left below it, and the instrument
+     DECK (the 3 console monitors) as a bottom strip spanning the FULL width
+     RIGHT of the sidebar. The scene shows through the band + the right-of-sidebar
+     area ABOVE the deck = the ⌐. (% of the already scale-correct container.) */
   --band-h: 20%;
-  /* ~half the width in space (Max: "half viewport / half console"), with a min
-     so controls never crush and a cap so it doesn't swallow ultrawide screens.
-     At 1440 → 720px (50%); 1920 → 760px. Starting value for browser tuning. */
-  --console-w: clamp(360px, 50%, 760px);
-  /* The helm action rail (DOCK/LAND/UNDOCK/LIFT OFF) is a full-width strip just
-     below the band; the console region starts below it. */
+  /* Full-width helm rail (DOCK/LAND/UNDOCK/LIFT OFF) just below the band. */
   --helm-h: 44px;
-  /* Lower area = below the band + helm strip; the rail+MFD take its top
-     fraction, the cockpit-console the rest (both on one opaque backing). */
-  --console-rail-h: 0.48;
+  /* NARROW natural sidebar (rail + MFD-A/B), NOT half the screen. */
+  --sidebar-w: clamp(300px, 25%, 420px);
+  /* Deck height — the bottom instrument strip, right of the sidebar. */
+  --deck-h: 38%;
 }
 
-/* DOCKED / LANDED: the solid console fills the whole lower area and the right
-   viewport column collapses (Max ruling (a)). GameLayout sets .console-expand
-   on the container from playerState (is_docked || is_landed). */
+/* DOCKED / LANDED: the deck fills the FULL right-of-sidebar height (the trade /
+   planetary terminal needs the room); the upper-right scene collapses. GameLayout
+   sets .console-expand on the container from playerState (is_docked||is_landed). */
 .game-container.console-expand {
-  --console-w: 100%;
+  --deck-h: calc(100% - var(--band-h) - var(--helm-h));
 }
 
-/* Bottom-left console — rail + MFD (WO-INVERTED-L). Inset below the full-width
-   band and pinned bottom-left as the TOP segment of the opaque console column;
-   .cockpit-console (GameDashboard) takes the segment below it on the SAME
-   opaque backing, so the two read as one console with two internal scrolls
-   (Orchestrator reaffirmation 1). Width = --console-w (responsive ~half;
-   100% docked/landed; 0 when the edge-toggle collapses the console).
-   Scrolling stays INSIDE each MFD page body (mfd.css), never at this level. */
+/* SIDEBAR — narrow, full-height left column (id=149 REDEFINED, Max's exact
+   layout). rail + MFD-A + MFD-B at a NATURAL width (--sidebar-w, ~320–420px,
+   NOT half the screen), inset below the band + helm rail and spanning to the
+   screen bottom. Opaque CRT backing. Scrolling stays INSIDE each MFD page body
+   (mfd.css), never at this level. */
 .game-sidebar {
   position: absolute;
   top: calc(var(--band-h) + var(--helm-h));
   left: 0;
-  width: var(--console-w);
-  height: calc((100% - var(--band-h) - var(--helm-h)) * var(--console-rail-h));
+  bottom: 0;
+  width: var(--sidebar-w);
   z-index: 20;
   transition: width 0.3s ease;
   overflow: hidden;
@@ -129,23 +125,19 @@
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.75rem;
-  /* OPAQUE CRT backing — Max: solid console block, no scene behind it. The
-     bottom stop (#1a1d24) MATCHES .cockpit-console's top stop so the two
-     segments read as one continuous console (no seam); the console drops its
-     border-top at the join (cockpit.css). */
-  background: linear-gradient(180deg, #131b2c 0%, #1a1d24 100%);
+  /* OPAQUE CRT backing — solid, no scene behind the sidebar. */
+  background: linear-gradient(180deg, #131b2c 0%, #0f1620 100%);
   border-right: 2px solid rgba(77, 132, 253, 0.2);
   box-shadow: 4px 0 24px rgba(0, 0, 0, 0.55);
   box-sizing: border-box;
 }
 
-/* The edge-toggle collapses the WHOLE console (rail+MFD AND cockpit-console)
-   by zeroing the shared width — the logout/settings reachability that the old
-   slim rail-peek protected now lives in the always-on HUD, so a clean collapse
-   is safe (WO-INVERTED-L supersedes id=139 item-3 peek). GameLayout sets
+/* The edge-toggle collapses the sidebar (width 0) to reclaim the left column
+   for scene + deck — logout/settings now live in the always-on HUD, so a clean
+   collapse is safe. The deck's left edge follows --sidebar-w. GameLayout sets
    .console-collapsed on the container from !sidebarOpen. */
 .game-container.console-collapsed {
-  --console-w: 0px;
+  --sidebar-w: 0px;
 }
 
 /* MFD console layout: rail fixed top, screens share the leftover height.
@@ -410,7 +402,9 @@
    the edge-toggle hit-target is also tuned by viewport. */
 @media (max-width: 768px) {
   .game-container {
-    --console-w: clamp(220px, 70%, 360px);
+    /* Narrower sidebar + shorter deck so the scene/viewport keeps room. */
+    --sidebar-w: clamp(220px, 40%, 300px);
+    --deck-h: 34%;
   }
 
   .sidebar-toggle {

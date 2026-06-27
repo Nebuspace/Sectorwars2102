@@ -1016,66 +1016,39 @@
    ============================================ */
 
 .cockpit-console {
-  /* WO-INVERTED-L: the BOTTOM segment of the opaque console column — pinned
-     bottom-left, directly under the rail+MFD sidebar, on the SAME opaque CRT
-     backing so the two read as one console (Orchestrator reaffirmation 1).
-     In the narrow space view (--console-w ~half) the three monitors STACK in a
-     single column and the console scrolls INTERNALLY (SCROLL LAW); when
-     docked/landed the console fills the lower area and the monitors return to
-     the wide 3-up grid (see .console-expand below). Magnitudes (--console-rail-h
-     split, widths) are starting values for browser tuning. */
+  /* DECK (id=149 REDEFINED — Max's exact layout): the instrument strip at the
+     BOTTOM, spanning the FULL width RIGHT of the narrow sidebar (left:
+     --sidebar-w → right:0). The 3 monitors (NAV warp-graph + course PLOT ·
+     PLANETARY · COMMS) lay out side-by-side in a WIDE 3-up grid with a real row
+     height (grid-template-rows:1fr → each .monitor-screen fills, no header-only
+     collapse). Scene shows in the right-of-sidebar area ABOVE this deck = the ⌐.
+     Docked/landed raise the top to fill the full right-of-sidebar height (the
+     container's --deck-h goes full under .console-expand). */
   position: absolute;
-  left: 0;
-  top: calc(
-    var(--band-h) + var(--helm-h) +
-      (100% - var(--band-h) - var(--helm-h)) * var(--console-rail-h)
-  );
+  left: var(--sidebar-w);
+  right: 0;
+  top: calc(100% - var(--deck-h));
   bottom: 0;
-  width: var(--console-w);
   z-index: 20;
   box-sizing: border-box;
-  transition: width 0.3s ease;
-  /* OPAQUE CRT backing (id=149 fix). Use an explicit background-COLOR, not only
-     a gradient: a gradient is background-image, so background-color stayed
-     transparent and — fading to near-black #0a0d12 — the in-flight console read
-     as a "dead black void" with the scene showing through. Solid #1a1d24 base
-     MATCHES the rail+MFD sidebar's bottom stop so the two read as ONE continuous
-     console; a subtle translucent sheen→shade overlay keeps the metal feel
-     without going near-black or re-opening the void. Opaque in ALL states. */
+  transition: left 0.3s ease, top 0.3s ease;
+  /* OPAQUE CRT backing — explicit background-COLOR (not only a gradient, which
+     is background-image and leaves background-color transparent → read as a
+     void, id=149). Subtle translucent sheen→shade overlay for the metal feel. */
   background-color: #1a1d24;
   background-image: linear-gradient(
     180deg,
     rgba(255, 255, 255, 0.015) 0%,
     rgba(0, 0, 0, 0.22) 100%
   );
-  border-right: 2px solid rgba(77, 132, 253, 0.2);
+  border-top: 2px solid rgba(77, 132, 253, 0.2);
   display: grid;
-  grid-template-columns: 1fr;
-  /* In-flight the 3 console monitors (NAV warp-graph + course PLOT · PLANETARY ·
-     COMMS) STACK single-column. They're flex columns whose .monitor-screen is
-     flex:1 — under max-content rows they collapse to just the header = the
-     "empty dark box" void (id=149). minmax(220px,auto) gives each a usable
-     height (content renders); the console scrolls internally (SCROLL LAW) when
-     the stack exceeds the console height. Docked/landed override this with the
-     wide 3-up grid (.console-expand below). */
-  grid-auto-rows: minmax(220px, auto);
-  gap: 0.4rem;
-  padding: 0.5rem;
-  /* Uniform inner vignette for monitor depth — NOT a directional top-shadow,
-     which would darken the rail↔console join and re-introduce a soft seam
-     (the matched #1a1d24 stops + dropped border make the join continuous). */
-  box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.45);
-  overflow-x: hidden;
-  overflow-y: auto;
-}
-
-/* DOCKED / LANDED: the console fills the lower area (--console-w = 100%) and the
-   monitors return to the wide 3-up grid (Max ruling (a) + reaffirmation 2). */
-.game-container.console-expand .cockpit-console {
-  grid-template-columns: minmax(360px, 460px) minmax(0, 1fr) minmax(280px, 340px);
-  grid-auto-rows: auto;
+  grid-template-columns: minmax(240px, 460px) minmax(0, 1fr) minmax(220px, 340px);
   grid-template-rows: 1fr;
-  overflow-y: hidden;
+  gap: 0;
+  padding: 0.5rem;
+  box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
 }
 
 /* WO-INVERTED-L retires the 34px green-bar collapse: the band is always present
