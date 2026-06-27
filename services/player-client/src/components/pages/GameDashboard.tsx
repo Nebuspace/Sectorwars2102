@@ -2823,7 +2823,7 @@ const GameDashboard: React.FC = () => {
                                 !citadelInfo || citadelInfo.citadel_level < 1
                                   ? 'No citadel safe — establish an Outpost (Citadel Level 1)'
                                   : onPlanet >= 1 && room < unitVal
-                                    ? 'Safe full (cr-equivalent cap reached)'
+                                    ? `The vault is full — it holds your credits AND stored goods together, valued in credits, up to ${safeCapacity.toLocaleString()}. Withdraw credits or goods to make room.`
                                     : allocation > 0 && rate <= 0
                                       ? `This world produces no ${name}`
                                       : rate <= 0

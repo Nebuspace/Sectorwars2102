@@ -226,8 +226,26 @@ const CoupledColonistSliders: React.FC<CoupledColonistSlidersProps> = ({
     return (rate / cur) * newValue;
   };
 
+  /**
+   * Magnetic detent at the "free-pool-exhausted" boundary.
+   *
+   * For the dragged role, `headroom = value + idle` is the head-count at which it
+   * has consumed the entire unallocated idle pool but has NOT yet started stealing
+   * from the other two roles — the natural "free growth" landing point. We make
+   * that point momentarily STICKY: if the raw requested value lands within a small
+   * threshold (~2% of the slider range) of it, snap exactly to it so it's easy to
+   * stop right where free growth ends. Momentary, not a wall: a value clearly past
+   * the threshold passes straight through (the user can always drag into the
+   * steal-from-donors zone). Only the dragged role's coupling math runs — the snap
+   * just adjusts which value we feed into the unchanged `coupleAllocation`.
+   */
   const onSlide = (role: ProdRole, requested: number) => {
-    onSetAll(coupleAllocation(allocations, role, requested, budget));
+    const headroom = Math.min(budget, allocations[role] + idle);
+    // Snap window: ~2% of the full range, min 1 colonist so tiny budgets still snap.
+    const snapWindow = Math.max(1, Math.round(budget * 0.02));
+    const snapped =
+      idle > 0 && Math.abs(requested - headroom) <= snapWindow ? headroom : requested;
+    onSetAll(coupleAllocation(allocations, role, snapped, budget));
   };
 
   const disabled = budget <= 0;
@@ -272,6 +290,24 @@ const CoupledColonistSliders: React.FC<CoupledColonistSlidersProps> = ({
         {ROLES.map(({ key, icon, label, color }) => {
           const value = allocations[key];
           const pct = budget > 0 ? (value / budget) * 100 : 0;
+          // Free-headroom point: the value at which this role would absorb the
+          // ENTIRE idle pool but not yet steal from the other two (= value + idle,
+          // capped at budget). When the thumb is LEFT of it (idle > 0) we paint a
+          // highlighted band from the thumb to this point — the "free" growth the
+          // role can take before it starts pulling donors down. The detent (in
+          // onSlide) makes landing exactly on this point sticky.
+          const headroom = Math.min(budget, value + idle);
+          const headroomPct = budget > 0 ? (headroom / budget) * 100 : 0;
+          const hasHeadroom = idle > 0 && headroomPct > pct;
+          // Highlight band colour: the role colour at low opacity so it reads as
+          // "same resource, but free/available" rather than a different channel.
+          const headroomColor = `color-mix(in srgb, ${color} 38%, transparent)`;
+          const trackBg = hasHeadroom
+            ? `linear-gradient(to right,
+                ${color} 0%, ${color} ${pct}%,
+                ${headroomColor} ${pct}%, ${headroomColor} ${headroomPct}%,
+                rgba(255,255,255,0.08) ${headroomPct}%, rgba(255,255,255,0.08) 100%)`
+            : `linear-gradient(to right, ${color} 0%, ${color} ${pct}%, rgba(255,255,255,0.08) ${pct}%, rgba(255,255,255,0.08) 100%)`;
           const pv = previewRate(key, value);
           return (
             <div className="cp-slider-row" key={key}>
@@ -288,11 +324,9 @@ const CoupledColonistSliders: React.FC<CoupledColonistSlidersProps> = ({
                 max={Math.max(1, budget)}
                 value={value}
                 disabled={disabled}
-                aria-label={`${label} workforce, ${fmt(value)} of ${fmt(budget)} colonists`}
+                aria-label={`${label} workforce, ${fmt(value)} of ${fmt(budget)} colonists${hasHeadroom ? `, ${fmt(idle)} free before reallocating others` : ''}`}
                 onChange={(e) => onSlide(key, parseInt(e.target.value, 10) || 0)}
-                style={{
-                  background: `linear-gradient(to right, ${color} 0%, ${color} ${pct}%, rgba(255,255,255,0.08) ${pct}%, rgba(255,255,255,0.08) 100%)`,
-                }}
+                style={{ background: trackBg }}
               />
               <div className="cp-slider-preview">
                 {pv === null ? (

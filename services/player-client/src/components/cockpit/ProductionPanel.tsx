@@ -25,6 +25,7 @@ export interface ProductionLine {
   storeDisabledTitle: string;
 }
 
+
 export interface ProductionPanelProps {
   /** Live production lines, projected off the realtime poll (landedPlanetDetail). */
   lines: ProductionLine[];
@@ -129,52 +130,55 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
       error={allocError}
     />
 
-    <div className="cp-stockpile-head">
-      <span className="cp-sp-title">Planet stockpile</span>
-      <span className="cp-sp-warn" title="The planet stockpile is raidable. Production flows here, not into the safe. Store goods to the citadel safe to protect them.">
-        UNPROTECTED
-      </span>
+    <div className="cp-stockpile-section">
+      <div className="cp-stockpile-head">
+        <span className="cp-sp-title">Planet Stockpile</span>
+        <span className="cp-sp-warn" title="The planet stockpile is raidable. Production flows here, not into the safe. Store goods to the citadel safe to protect them.">
+          UNPROTECTED
+        </span>
+      </div>
+
+      {lines.length === 0 ? (
+        <div className="cp-empty">Colony ledger unavailable</div>
+      ) : (
+        <div className="cp-production-lines">
+          {lines.map((l) => (
+            <div className="cp-prod-row" key={l.key}>
+              <span className="cp-prod-icon">{l.icon}</span>
+              <span className="cp-prod-name">{l.name}</span>
+              <span className="cp-prod-stock">
+                📦 <RollingStock value={l.stock} />
+                {l.capped ? `/${l.cap.toLocaleString()}` : ''}
+                <span className="cp-prod-rate"> +{Math.round(l.rate).toLocaleString()}/day</span>
+              </span>
+              <button
+                type="button"
+                className="cp-store-btn"
+                disabled={l.storeBusy || l.canStore < 1}
+                title={l.canStore < 1 ? l.storeDisabledTitle : `Store ${l.canStore.toLocaleString()} to the citadel safe (raid-proof)`}
+                onClick={() => onStoreToSafe(l.key, l.canStore)}
+              >
+                {l.storeBusy ? '…' : '🔐 Store'}
+              </button>
+              {l.capped && (
+                <div className="cp-prod-bar">
+                  <div
+                    className={`cp-prod-bar-fill${l.atCap ? ' at-cap' : l.nearCap ? ' near-cap' : ''}`}
+                    style={{ width: `${Math.round(l.ratio * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {overflowResources.length > 0 && (
+        <div className="cp-prod-overflow" role="alert">
+          ⚠️ Storage full: {overflowResources.join(', ')} — output above the cap is wasted.
+        </div>
+      )}
     </div>
 
-    {lines.length === 0 ? (
-      <div className="cp-empty">Colony ledger unavailable</div>
-    ) : (
-      <div className="cp-production-lines">
-        {lines.map((l) => (
-          <div className="cp-prod-row" key={l.key}>
-            <span className="cp-prod-icon">{l.icon}</span>
-            <span className="cp-prod-name">{l.name}</span>
-            <span className="cp-prod-stock">
-              📦 <RollingStock value={l.stock} />
-              {l.capped ? `/${l.cap.toLocaleString()}` : ''}
-              <span className="cp-prod-rate"> +{Math.round(l.rate).toLocaleString()}/day</span>
-            </span>
-            <button
-              type="button"
-              className="cp-store-btn"
-              disabled={l.storeBusy || l.canStore < 1}
-              title={l.canStore < 1 ? l.storeDisabledTitle : `Store ${l.canStore.toLocaleString()} to the citadel safe (raid-proof)`}
-              onClick={() => onStoreToSafe(l.key, l.canStore)}
-            >
-              {l.storeBusy ? '…' : '🔐 Store'}
-            </button>
-            {l.capped && (
-              <div className="cp-prod-bar">
-                <div
-                  className={`cp-prod-bar-fill${l.atCap ? ' at-cap' : l.nearCap ? ' near-cap' : ''}`}
-                  style={{ width: `${Math.round(l.ratio * 100)}%` }}
-                />
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    )}
-    {overflowResources.length > 0 && (
-      <div className="cp-prod-overflow" role="alert">
-        ⚠️ Storage full: {overflowResources.join(', ')} — output above the cap is wasted.
-      </div>
-    )}
     <div className="cp-actions">
       <button type="button" className="cp-action-btn" onClick={onOpenSpecialization} title="Choose a colony specialization">
         🎯 Specialization

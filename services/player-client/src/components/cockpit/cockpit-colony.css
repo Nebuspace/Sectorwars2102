@@ -93,11 +93,24 @@
      .cockpit-mode.landed-min overriding it back to the minimized value below.
      The var scales with the viewport (vh in the band) so a taller window gets a
      correspondingly taller tab body. (WO-COCKPIT-TABBED fit fix; landed-chrome
-     state fix.) */
+     state fix.)
+
+     EXPANDED chrome MUST TRACK THE BAND, not be a flat px. The old flat 502px
+     was correct only at 1440x900 (34vh = 306px band + ~196px fixed chrome =
+     502px). At taller windows the band grows with vh while 502 stayed put: at
+     1920x1080 the band is 34vh = 367px, so the real chrome is 367 + 196 = 563px,
+     but the flat 502 under-subtracted by ~61px → .cmc-body ran ~61px too tall →
+     PAGE OVERFLOW. Fix: make the var the SAME band clamp + the fixed (non-band)
+     chrome, so it scales lockstep with the windshield:
+       fixed chrome = 502 (old, derived at 1440x900) − 306 (34vh of 900) = 196px
+       --landed-chrome = calc(clamp(240px,34vh,380px) + 196px)
+     Check: 1440x900 → 306 + 196 = 502px (identical to old, short tabs still fill);
+            1920x1080 → 367 + 196 = 563px (was 502 → no more ~61px overflow). */
   /* Definite height (not just max-height) so the `flex:1 1 0` panel bodies
      resolve their grow against a definite box — a short tab (Research/Production)
      fills the console height instead of collapsing to a header strip, and a tall
      tab (Terraform/Grid) is still capped + scrolls internally. */
+  --landed-chrome: calc(clamp(240px, 34vh, 380px) + 196px);
   height: calc(100vh - var(--landed-chrome, 502px));
   max-height: calc(100vh - var(--landed-chrome, 502px));
   /* `overflow:hidden` clips, it does not scroll: with `max-height` alone (no
@@ -488,19 +501,32 @@
   color: #fca5a5;
 }
 
+/* ── Planet Stockpile section — visually distinct lower half of the panel ──
+   margin-top:auto pushes the whole stockpile block to the BOTTOM of the flex
+   column panel body, leaving a clear gap below the allocation sliders above.
+   A top border + extra top padding separate the two halves so "allocate
+   workforce" (top) and "what the colony is holding" (bottom) read as distinct
+   sections. (Round-4 Production-tab polish, item B.) */
+.cp-stockpile-section {
+  margin-top: auto;
+  padding-top: 0.65rem;
+  border-top: 1px solid color-mix(in srgb, var(--panel-accent) 22%, transparent);
+}
+
 /* ── Stockpile header + Store→Safe affordance + rolling tick ── */
 .cp-stockpile-head {
   display: flex;
   align-items: baseline;
   gap: 0.4rem;
-  margin: 0.1rem 0 0.3rem;
+  margin: 0 0 0.45rem;
   font-family: 'Courier New', monospace;
 }
 .cp-sp-title {
-  font-size: 0.6rem;
+  font-size: 0.78rem;
+  font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: #cbd5e1;
 }
 .cp-sp-warn {
   font-size: 0.52rem;

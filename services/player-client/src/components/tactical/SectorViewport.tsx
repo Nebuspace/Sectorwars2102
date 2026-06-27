@@ -104,6 +104,15 @@ const SectorViewport: React.FC<SectorViewportProps> = ({
     const rect = canvas.getBoundingClientRect();
     const { x: mouseX, y: mouseY } = toBufferCoords(canvas, rect, event.clientX, event.clientY, uiScale);
 
+    // Display-space pointer offset (CSS pixels relative to the canvas box). The
+    // tooltip lives in `.viewport-overlay`, a display-space overlay positioned
+    // via `left`/`top` in px, so it must be placed from these coords — NOT the
+    // drawing-buffer coords above (those are for hit-testing only). At
+    // uiScale=1 with buffer == display size these coincide; at scale≠1 they
+    // diverge by the buffer/display ratio, which is exactly the offset we drop.
+    const displayX = event.clientX - rect.left;
+    const displayY = event.clientY - rect.top;
+
     // Check if mouse is over any entity
     const hoveredItem = entityPositionsRef.current.find(entity => {
       const dx = mouseX - entity.x;
@@ -113,7 +122,7 @@ const SectorViewport: React.FC<SectorViewportProps> = ({
     });
 
     if (hoveredItem) {
-      setHoveredEntity({ type: hoveredItem.type, name: hoveredItem.name, x: mouseX, y: mouseY });
+      setHoveredEntity({ type: hoveredItem.type, name: hoveredItem.name, x: displayX, y: displayY });
       canvas.style.cursor = 'pointer';
     } else {
       setHoveredEntity(null);

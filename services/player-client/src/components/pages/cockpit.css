@@ -3074,17 +3074,43 @@
 .safe-commodities .sc-hint { color: var(--text-secondary, #9aa); font-size: 0.58rem; }
 .safe-commodities .sc-row {
   display: grid;
-  grid-template-columns: 1fr auto auto auto;
+  grid-template-columns: 1fr auto auto;
   align-items: center;
   gap: 6px;
-  padding: 2px 0;
+  padding: 3px 0;
   font-family: 'Courier New', monospace;
   font-size: 0.68rem;
 }
-.safe-commodities .sc-name { color: var(--text-primary, #e0e0e0); }
+.safe-commodities .sc-name {
+  color: var(--text-primary, #e0e0e0);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.safe-commodities .sc-name .sc-cmdty { color: var(--text-primary, #e0e0e0); }
+.safe-commodities .sc-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+/* Explicit, labelled counts replace the old slashed "0 / 29872" pair so a glance
+   tells the player what's protected (in safe) vs raidable (on planet). */
+.safe-commodities .sc-count.protected { color: #7dd3fc; }
+.safe-commodities .sc-count.raidable { color: var(--text-secondary, #9aa); }
+/* Legacy single-cell qty styles, retained for any other callers. */
 .safe-commodities .sc-qty { color: #7dd3fc; font-variant-numeric: tabular-nums; text-align: right; }
 .safe-commodities .sc-qty em { color: var(--text-secondary, #9aa); font-style: normal; }
 .safe-commodities .sc-btn { padding: 2px 8px; font-size: 0.62rem; white-space: nowrap; }
+/* One-line shared-vault explainer under the cap bar (stays one line; no page scroll). */
+.safe-vault-explainer {
+  margin: 0;
+  font-size: 0.6rem;
+  line-height: 1.3;
+  color: var(--text-secondary, #9aa);
+}
 /* Auto-deposit toggle sits at the right of the Stored-Goods header row. */
 .safe-commodities .sc-head {
   display: flex;

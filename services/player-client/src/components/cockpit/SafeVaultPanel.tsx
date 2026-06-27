@@ -166,6 +166,11 @@ const SafeVaultPanel: React.FC<SafeVaultPanelProps> = ({
         <div className="vault-bar-fill" style={{ width: `${capPct}%` }} />
       </div>
 
+      {/* ── One-line shared-vault explainer ── */}
+      <p className="safe-vault-explainer">
+        One vault: your credits and stored goods share a single capacity (goods valued at market price).
+      </p>
+
       {/* ── Credit deposit / withdraw (relocated here from the Citadel tab) ── */}
       <div className="safe-credit-io">
         <div className="sc-head">
@@ -279,7 +284,7 @@ const SafeVaultPanel: React.FC<SafeVaultPanelProps> = ({
           const allocation = Number(landedPlanetDetail?.allocations?.[stock] ?? 0);
           const storeDisabledTitle =
             onPlanet >= 1 && room < unitVal
-              ? 'Safe full (cr-equivalent cap reached)'
+              ? `The vault is full — it holds your credits AND stored goods together, valued in credits, up to ${safeCapacity.toLocaleString()}. Withdraw credits or goods to make room.`
               : allocation > 0 && rate <= 0
                 ? `This world produces no ${name}`
                 : rate <= 0
@@ -287,9 +292,16 @@ const SafeVaultPanel: React.FC<SafeVaultPanelProps> = ({
                   : `Producing ${Math.round(rate)}/day — under 1 unit stored so far`;
           return (
             <div className="sc-row" key={safe}>
-              <span className="sc-name">{icon} {name}</span>
-              <span className="sc-qty" title="In safe / on planet stockpile">
-                {inSafe.toLocaleString()} <em>/ {onPlanet.toLocaleString()}</em>
+              <span className="sc-name">
+                <span className="sc-cmdty">{icon} {name}</span>
+                <span className="sc-counts">
+                  <span className="sc-count protected" title="Stored in the vault — protected from raiders">
+                    In safe: {inSafe.toLocaleString()}
+                  </span>
+                  <span className="sc-count raidable" title="Sitting in the planet stockpile — raidable">
+                    On planet: {onPlanet.toLocaleString()}
+                  </span>
+                </span>
               </span>
               <button
                 className="safe-btn sc-btn"
