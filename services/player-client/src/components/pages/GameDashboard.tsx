@@ -2150,6 +2150,11 @@ const GameDashboard: React.FC = () => {
                 <div className="hud-value-secondary">
                   {landedPlanet?.type?.replace(/_/g, ' ').toUpperCase() || 'UNKNOWN TYPE'}
                 </div>
+                {/* id=152: show the SECTOR on the landed card too (consistent
+                    with the in-flight card's prominent "SECTOR n"). */}
+                <div className="hud-value-secondary">
+                  SECTOR {currentSector ? (currentSector.sector_number || currentSector.sector_id) : '—'}
+                </div>
               </HudChip>
 
               <HudChip id="owner" className="top-right" pill={<>👤 {ownerText}</>}>

@@ -246,17 +246,30 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               {...(isInitialLoad ? { inert: '' } : {})}
             >
               <PlayerVitalsHud />
-              {/* Windshield minimize/expand toggle (id=151) — only while
-                  docked/landed, where minimizing hands room to the console. */}
-              {grounded && (
+              {/* Windshield minimize/expand (id=151 + id=151b) — only while
+                  docked/landed. MINIMIZED: a CENTERED, labeled "Expand Viewport"
+                  button (prominent — Max couldn't see the corner glyph).
+                  EXPANDED: the slim ▴ corner minimize. */}
+              {grounded && windshieldMin && (
+                <button
+                  type="button"
+                  className="windshield-expand"
+                  onClick={toggleWindshield}
+                  aria-label="Expand viewport"
+                  title="Expand the viewport"
+                >
+                  ⤢ Expand Viewport
+                </button>
+              )}
+              {grounded && !windshieldMin && (
                 <button
                   type="button"
                   className="windshield-toggle"
                   onClick={toggleWindshield}
-                  aria-label={windshieldMin ? 'Expand viewport' : 'Minimize viewport'}
-                  title={windshieldMin ? 'Expand viewport' : 'Minimize viewport — give the console more room'}
+                  aria-label="Minimize viewport"
+                  title="Minimize viewport — give the console more room"
                 >
-                  {windshieldMin ? '⤢' : '▴'}
+                  ▴
                 </button>
               )}
               {children}

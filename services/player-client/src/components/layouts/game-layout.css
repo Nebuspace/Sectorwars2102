@@ -149,7 +149,9 @@
    the helm + sidebar + deck; with .console-expand the deck (terminal) grows to
    fill it. The HUD stays readable in the thin band; the toggle restores it. */
 .game-container.windshield-min {
-  --band-h: 52px;
+  /* A touch taller so the always-on HUD (top) and the centered "Expand
+     Viewport" button (id=151b) both fit in the thin band. */
+  --band-h: 60px;
 }
 
 /* Minimize / expand-viewport toggle — small button pinned to the band top-right
@@ -177,6 +179,38 @@
 .windshield-toggle:hover {
   background: rgba(0, 217, 255, 0.15);
   box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+
+/* CENTERED, prominent "Expand Viewport" button shown only while MINIMIZED
+   (id=151b — Max couldn't find the corner glyph). Horizontally centered in the
+   thin band, just below the always-on HUD; a real labeled button. */
+.windshield-expand {
+  position: absolute;
+  top: 1.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 37;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.95rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-primary, #00d9ff);
+  background: rgba(0, 12, 20, 0.82);
+  border: 1px solid rgba(0, 217, 255, 0.5);
+  border-radius: 4px;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
+}
+
+.windshield-expand:hover {
+  background: rgba(0, 217, 255, 0.18);
+  box-shadow: 0 0 16px rgba(0, 217, 255, 0.5);
 }
 
 /* MFD console layout: rail fixed top, screens share the leftover height.
