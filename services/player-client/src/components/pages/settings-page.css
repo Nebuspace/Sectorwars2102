@@ -12,6 +12,26 @@
   max-width: 760px;
 }
 
+/* Exit control — returns to the cockpit so the screen is never a dead end. */
+.settings-back-btn {
+  align-self: flex-start;
+  background: var(--surface-primary, #141a24);
+  color: var(--instrument-accent, #00d9ff);
+  border: 1px solid var(--instrument-accent, #00d9ff);
+  border-radius: 0.35rem;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.settings-back-btn:hover {
+  background: rgba(0, 217, 255, 0.15);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.35);
+}
+
 .settings-section {
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid var(--border-color, #334155);
@@ -68,22 +88,15 @@
   flex: 0 0 auto;
 }
 
-.settings-select {
-  background: var(--surface-primary, #141a24);
-  color: var(--text-color, #e2e8f0);
-  border: 1px solid var(--border-color, #334155);
-  border-radius: 0.35rem;
-  padding: 0.45rem 0.75rem;
-  font-size: 0.95rem;
-  font-family: inherit;
+.settings-range {
+  width: 220px;
+  max-width: 50vw;
+  accent-color: var(--instrument-accent, #00d9ff);
   cursor: pointer;
-  min-width: 6rem;
 }
 
-.settings-select:focus {
+.settings-range:focus {
   outline: none;
-  border-color: var(--instrument-accent, #00d9ff);
-  box-shadow: 0 0 0 2px rgba(0, 217, 255, 0.25);
 }
 
 .settings-current-value {

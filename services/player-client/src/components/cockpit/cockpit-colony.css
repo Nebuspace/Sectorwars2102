@@ -502,13 +502,13 @@
 }
 
 /* ── Planet Stockpile section — visually distinct lower half of the panel ──
-   margin-top:auto pushes the whole stockpile block to the BOTTOM of the flex
-   column panel body, leaving a clear gap below the allocation sliders above.
-   A top border + extra top padding separate the two halves so "allocate
+   A top border + extra top padding/margin separate the two halves so "allocate
    workforce" (top) and "what the colony is holding" (bottom) read as distinct
-   sections. (Round-4 Production-tab polish, item B.) */
+   sections. (Round-4 Production-tab polish, item B.) Note: a bottom-pin via
+   margin-top:auto would be inert here — the panel body (.cp-body) is display:block,
+   not a flex column — so the separation is done with the border + spacing instead. */
 .cp-stockpile-section {
-  margin-top: auto;
+  margin-top: 0.9rem;
   padding-top: 0.65rem;
   border-top: 1px solid color-mix(in srgb, var(--panel-accent) 22%, transparent);
 }

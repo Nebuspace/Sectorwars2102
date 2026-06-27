@@ -1,4 +1,5 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useSettings } from '../../contexts/SettingsContext';
@@ -13,20 +14,16 @@ import './settings-page.css';
  * Display, hosts the global UI Scale control which applies live and persists.
  */
 
-/** UI-scale presets, as {label, fraction} pairs. */
-const UI_SCALE_OPTIONS: { label: string; value: number }[] = [
-  { label: '80%', value: 0.8 },
-  { label: '90%', value: 0.9 },
-  { label: '100%', value: 1.0 },
-  { label: '110%', value: 1.1 },
-  { label: '125%', value: 1.25 },
-  { label: '150%', value: 1.5 },
-];
+// UI scale bounds for the slider (fractions). Default 1.0 = 100%.
+const UI_SCALE_MIN = 0.6;
+const UI_SCALE_MAX = 1.2;
+const UI_SCALE_STEP = 0.05;
 
 const SettingsPage: React.FC = () => {
   const { uiScale, setUiScale } = useSettings();
+  const navigate = useNavigate();
 
-  const handleScaleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleScaleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const next = parseFloat(e.target.value);
     if (Number.isFinite(next)) setUiScale(next);
   };
@@ -42,6 +39,17 @@ const SettingsPage: React.FC = () => {
         subtitle={'CLIENT CONFIGURATION'}
       >
         <div className="settings-page">
+          {/* Exit control — without this a player who opens /game/settings is
+              trapped (must use browser-back). Returns to the cockpit. */}
+          <button
+            type="button"
+            className="settings-back-btn"
+            onClick={() => navigate('/game')}
+            title="Return to the game"
+          >
+            ← Back to game
+          </button>
+
           <section className="settings-section">
             <div className="settings-section-header">
               <h3 className="settings-section-title">DISPLAY</h3>
@@ -49,26 +57,25 @@ const SettingsPage: React.FC = () => {
 
             <div className="settings-row">
               <div className="settings-row-label">
-                <label htmlFor="ui-scale-select" className="settings-label">
+                <label htmlFor="ui-scale-range" className="settings-label">
                   UI Scale
                 </label>
                 <p className="settings-hint">
-                  Scale the entire interface up or down. Applies instantly.
+                  Scale the entire interface up or down (60%–120%). Applies instantly.
                 </p>
               </div>
               <div className="settings-row-control">
-                <select
-                  id="ui-scale-select"
-                  className="settings-select"
+                <input
+                  id="ui-scale-range"
+                  type="range"
+                  className="settings-range"
+                  min={UI_SCALE_MIN}
+                  max={UI_SCALE_MAX}
+                  step={UI_SCALE_STEP}
                   value={uiScale}
                   onChange={handleScaleChange}
-                >
-                  {UI_SCALE_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                  aria-valuetext={currentPercent}
+                />
                 <span className="settings-current-value" aria-live="polite">
                   {currentPercent}
                 </span>
