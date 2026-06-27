@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
@@ -79,6 +80,7 @@ const MFDAlertWiring: React.FC = () => {
 
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -229,6 +231,14 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             </div>
           </div>
           <div className="game-header-right">
+            <button
+              className="cockpit-btn settings-nav-btn"
+              onClick={() => navigate('/game/settings')}
+              aria-label="Settings"
+              title="Settings"
+            >
+              <span className="settings-nav-icon" aria-hidden="true">⚙️</span>
+            </button>
             <UserProfile />
           </div>
         </header>

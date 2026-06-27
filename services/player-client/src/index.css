@@ -53,6 +53,18 @@ html, body {
   max-height: 100vh;
 }
 
+/* Global UI scale (SettingsContext → --ui-scale on :root).
+   Applied to the app shell (#root) rather than html/body so the
+   browser reflows the whole interface uniformly. `zoom` (not
+   transform:scale) keeps layout flow intact — no transform-origin or
+   overflow side-effects. Fallback 1 means: before SettingsContext sets
+   the var (and at 100%) this is a pure no-op — zoom:1 changes nothing
+   and introduces no scrollbar. #root still fills the viewport because
+   the html/body overflow lock + the shell's own 100vh sizing hold. */
+#root {
+  zoom: var(--ui-scale, 1);
+}
+
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;

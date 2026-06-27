@@ -157,6 +157,38 @@
   gap: var(--space-md);
 }
 
+/* ⚙️ Settings entry point — mirrors the sidebar-toggle chrome so the
+   helm rail reads as one consistent control set. */
+.settings-nav-btn {
+  width: 50px;
+  height: 50px;
+  background: linear-gradient(145deg, #1A1A22, #151519);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-primary);
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+}
+
+.settings-nav-btn:hover {
+  border-color: var(--color-primary);
+  box-shadow: var(--glow-primary);
+  transform: scale(1.05);
+}
+
+.settings-nav-icon {
+  transition: transform var(--transition-normal);
+  line-height: 1;
+}
+
+.settings-nav-btn:hover .settings-nav-icon {
+  transform: scale(1.2) rotate(45deg);
+}
+
 .sidebar-toggle {
   width: 50px;
   height: 50px;
