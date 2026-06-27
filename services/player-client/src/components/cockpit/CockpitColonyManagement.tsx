@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { gameAPI } from '../../services/api';
 import type { Planet } from '../../types/planetary';
 import { BuildingManager } from '../planetary/BuildingManager';
 import { DefenseConfiguration } from '../planetary/DefenseConfiguration';
 import { GenesisDeployment } from '../planetary/GenesisDeployment';
-import { ColonySpecialization as ColonySpecializationComponent } from '../planetary/ColonySpecialization';
+import SpecializationDrawer from '../planetary/SpecializationDrawer';
 import { SiegeStatusMonitor } from '../planetary/SiegeStatusMonitor';
 import CitadelPanel from './CitadelPanel';
 import GridPanel from './GridPanel';
@@ -201,7 +202,9 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
             role="tab"
             aria-selected={tab === t.key}
             className={`cmc-tab${tab === t.key ? ' active' : ''}`}
-            onClick={() => setTab(t.key)}
+            // Switching tabs dismisses the Specialization drawer so its
+            // absolute inset:0 overlay can't cover a different tab's panel.
+            onClick={() => { setTab(t.key); setShowSpecialization(false); }}
           >
             <span className="cmc-tab-icon" aria-hidden="true">{t.icon}</span>
             <span className="cmc-tab-label">{t.label}</span>
@@ -267,10 +270,29 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
         )}
         {tab === 'defense' && (defenseTab ?? <div className="cp-empty">Defense telemetry unavailable</div>)}
         {tab === 'safe' && (safeTab ?? <div className="cp-empty">Vault telemetry unavailable</div>)}
+
+        {/* Specialization is an IN-TAB DRAWER (position:absolute inside .cmc-body)
+            rather than a position:fixed modal — fixes the trapped-fixed sizing /
+            chrome-bleed bug (design-brief #6). It overlays the active tab region
+            and is sized by the tab body. Opened from the Production tab's button. */}
+        {showSpecialization && ownedPlanet && (
+          <SpecializationDrawer
+            planet={ownedPlanet}
+            onUpdate={(p) => handleModalUpdate(p)}
+            onClose={() => setShowSpecialization(false)}
+          />
+        )}
       </div>
 
-      {/* ── The action modals (relocated from PlanetManager) ── */}
-      {showBuildings && ownedPlanet && (
+      {/* ── The action modals (relocated from PlanetManager) ──
+          Each is portaled to document.body so its position:fixed .modal-overlay
+          escapes the transformed/backdrop-filter cockpit ancestor (which would
+          otherwise become the containing block and trap it to the monitor panel
+          — the same root cause the Specialization drawer fixes, design-brief #6).
+          Their internal logic is unchanged; only WHERE they mount differs.
+          (Mirrors the createPortal pattern the colonist-transfer modal uses in
+          GameDashboard.) */}
+      {showBuildings && ownedPlanet && createPortal(
         <div className="modal-overlay" onClick={() => setShowBuildings(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <BuildingManager
@@ -279,10 +301,11 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
               onClose={() => setShowBuildings(false)}
             />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {showDefense && ownedPlanet && (
+      {showDefense && ownedPlanet && createPortal(
         <div className="modal-overlay" onClick={() => setShowDefense(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <DefenseConfiguration
@@ -291,10 +314,11 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
               onClose={() => setShowDefense(false)}
             />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {showGenesis && (
+      {showGenesis && createPortal(
         <div className="modal-overlay" onClick={() => setShowGenesis(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <GenesisDeployment
@@ -305,22 +329,11 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
               onClose={() => setShowGenesis(false)}
             />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {showSpecialization && ownedPlanet && (
-        <div className="modal-overlay" onClick={() => setShowSpecialization(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <ColonySpecializationComponent
-              planet={ownedPlanet}
-              onUpdate={(p) => handleModalUpdate(p)}
-              onClose={() => setShowSpecialization(false)}
-            />
-          </div>
-        </div>
-      )}
-
-      {showSiege && ownedPlanet && (
+      {showSiege && ownedPlanet && createPortal(
         <div className="modal-overlay" onClick={() => setShowSiege(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <SiegeStatusMonitor
@@ -329,7 +342,8 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
               onClose={() => setShowSiege(false)}
             />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

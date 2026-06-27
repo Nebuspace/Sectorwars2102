@@ -93,6 +93,11 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Positioning context for the in-tab SpecializationDrawer (position:absolute),
+     so the drawer overlays this tab region and is sized by the tab body rather
+     than the transformed/backdrop-filter cockpit ancestor (the old trapped-fixed
+     bug, design-brief #6). */
+  position: relative;
   /* Definite viewport-relative cap so NO tab (esp. the tall construction Grid)
      can push the PAGE past the 1440x900 fold. The flex `height:100%` ancestor
      chain isn't reliably definite (short tabs fit by luck), so bound the tab

@@ -9,7 +9,7 @@ interface ColonySpecializationProps {
   onClose?: () => void;
 }
 
-interface SpecializationInfo {
+export interface SpecializationInfo {
   type: ColonySpecializationType;
   name: string;
   icon: string;
@@ -33,7 +33,7 @@ interface SpecializationInfo {
 // production multipliers, the defense multiplier (combat damage-reduction +
 // shield HP), and the research-point yield. Specialization is a TRADE-OFF, so
 // penalties are shown, not hidden.
-const SPECIALIZATIONS: SpecializationInfo[] = [
+export const SPECIALIZATIONS: SpecializationInfo[] = [
   {
     type: 'agricultural',
     name: 'Agricultural Colony',
@@ -132,11 +132,19 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
   }
 ];
 
-export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({ 
-  planet, 
-  onUpdate,
-  onClose 
-}) => {
+/**
+ * useColonySpecialization — the shared selection + apply logic for choosing a
+ * colony specialization. Extracted verbatim from the original modal component so
+ * BOTH the modal (ColonySpecialization) and the in-tab SpecializationDrawer use
+ * the exact same state machine, requirement checks, and server call (no
+ * divergence in the spec rules / percentages / endpoint). Only the surrounding
+ * SHELL/LAYOUT differs between the two consumers.
+ */
+export const useColonySpecialization = (
+  planet: Planet,
+  onUpdate?: (planet: Planet) => void,
+  onClose?: () => void,
+) => {
   const [selectedSpec, setSelectedSpec] = useState<ColonySpecializationType | null>(
     planet.specialization || null
   );
@@ -184,7 +192,7 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
 
     const selectedInfo = SPECIALIZATIONS.find(s => s.type === selectedSpec)!;
     const requirements = meetsRequirements(selectedInfo);
-    
+
     if (!requirements.meets) {
       setError(`Missing requirements: ${requirements.missing.join(', ')}`);
       return;
@@ -196,10 +204,10 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
       setSuccessMessage(null);
 
       const response = await gameAPI.planetary.specializePlanet(planet.id, selectedSpec);
-      
+
       if (response.success) {
         setSuccessMessage(`Colony specialized as ${selectedInfo.name}!`);
-        
+
         // Update parent component
         if (onUpdate) {
           const updatedPlanet = {
@@ -208,7 +216,7 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
           };
           onUpdate(updatedPlanet);
         }
-        
+
         // Close after success
         setTimeout(() => {
           if (onClose) onClose();
@@ -220,6 +228,36 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
       setChanging(false);
     }
   };
+
+  return {
+    selectedSpec,
+    setSelectedSpec,
+    changing,
+    error,
+    successMessage,
+    currentSpec,
+    selectedSpecInfo,
+    meetsRequirements,
+    handleSpecialize,
+  };
+};
+
+export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
+  planet,
+  onUpdate,
+  onClose
+}) => {
+  const {
+    selectedSpec,
+    setSelectedSpec,
+    changing,
+    error,
+    successMessage,
+    currentSpec,
+    selectedSpecInfo,
+    meetsRequirements,
+    handleSpecialize,
+  } = useColonySpecialization(planet, onUpdate, onClose);
 
   return (
     <div className="colony-specialization">
