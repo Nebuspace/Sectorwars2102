@@ -4,7 +4,6 @@ import { gameAPI } from '../../services/api';
 import type { Planet } from '../../types/planetary';
 import { BuildingManager } from '../planetary/BuildingManager';
 import { DefenseConfiguration } from '../planetary/DefenseConfiguration';
-import { GenesisDeployment } from '../planetary/GenesisDeployment';
 import SpecializationDrawer from '../planetary/SpecializationDrawer';
 import { SiegeStatusMonitor } from '../planetary/SiegeStatusMonitor';
 import CitadelPanel from './CitadelPanel';
@@ -12,7 +11,7 @@ import GridPanel from './GridPanel';
 import TerraformPanel from './TerraformPanel';
 import ResearchPanel from './ResearchPanel';
 import ProductionPanel, { type ProductionLine } from './ProductionPanel';
-import type { RoleAllocation, ProdRole } from './CoupledColonistSliders';
+import type { RoleAllocation, ProdRole, PerColonistRates } from './CoupledColonistSliders';
 import '../planetary/planet-manager.css'; // .modal-overlay / .modal-content
 import './cockpit-colony.css';
 
@@ -41,6 +40,8 @@ export interface CockpitColonyManagementProps {
   allocations: RoleAllocation;
   /** Server-confirmed per-day production rates per role. */
   productionRates: Partial<Record<ProdRole, number>> | null | undefined;
+  /** Per-colonist baseline yield per role (for the honest, drag-tracking preview). */
+  perColonistRates?: PerColonistRates;
   /** Workforce budget — citadel cap clamped to colonists. */
   allocBudget: number;
   /** Total colonists on the planet (may exceed the workforce cap). */
@@ -103,6 +104,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   overflowResources,
   allocations,
   productionRates,
+  perColonistRates,
   allocBudget,
   totalColonists,
   onSetAllocations,
@@ -165,7 +167,6 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   // old "Allocate Workforce" modal is gone; reallocation is canon free + instant.)
   const [showBuildings, setShowBuildings] = useState(false);
   const [showDefense, setShowDefense] = useState(false);
-  const [showGenesis, setShowGenesis] = useState(false);
   const [showSpecialization, setShowSpecialization] = useState(false);
   const [showSiege, setShowSiege] = useState(false);
 
@@ -210,15 +211,9 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
             <span className="cmc-tab-label">{t.label}</span>
           </button>
         ))}
-        {/* Genesis is a cross-colony action, not a tab — keep it always reachable. */}
-        <button
-          type="button"
-          className="cmc-genesis-btn"
-          onClick={() => setShowGenesis(true)}
-          title="Deploy a Genesis Device to seed a new colony in an empty sector"
-        >
-          🌌 Genesis
-        </button>
+        {/* Genesis is a SPACE action (seed a NEW colony in an EMPTY sector) — it
+            belongs to the ship/Cargo context, not the cockpit of a planet you're
+            standing on. Deploy lives on the ship Cargo MFD (CargoPage). */}
       </div>
 
       <div className="cmc-body" role="tabpanel">
@@ -260,6 +255,7 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
             onOpenSpecialization={() => setShowSpecialization(true)}
             allocations={allocations}
             productionRates={productionRates}
+            perColonistRates={perColonistRates}
             allocBudget={allocBudget}
             totalColonists={totalColonists}
             onSetAllocations={onSetAllocations}
@@ -312,21 +308,6 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
               planet={ownedPlanet}
               onUpdate={(p) => handleModalUpdate(p)}
               onClose={() => setShowDefense(false)}
-            />
-          </div>
-        </div>,
-        document.body,
-      )}
-
-      {showGenesis && createPortal(
-        <div className="modal-overlay" onClick={() => setShowGenesis(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <GenesisDeployment
-              onSuccess={() => {
-                setShowGenesis(false);
-                handleModalUpdate();
-              }}
-              onClose={() => setShowGenesis(false)}
             />
           </div>
         </div>,

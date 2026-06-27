@@ -21,6 +21,7 @@ import CitizenshipBadge from '../governance/CitizenshipBadge';
 import RegionInvitePanel from '../governance/RegionInvitePanel';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
+import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import { regionOwnerAPI } from '../../services/api';
 import apiClient from '../../services/apiClient';
@@ -1581,6 +1582,33 @@ const GameDashboard: React.FC = () => {
     persistAllocations(landedPlanet.id, clamped);
   };
 
+  // Per-colonist baseline yield for the sliders' HONEST, drag-tracking preview.
+  // Built from the STABLE server-confirmed pair: the last persisted allocation
+  // (confirmedAllocations.current — the optimistic-edit revert target) and the
+  // productionRates that pair with it (allocRates, refreshed only on persist /
+  // seed; falls back to the live poll's rates before the first persist). Both
+  // reflect the SAME persisted state, so rate/allocation is the true per-colonist
+  // yield. The slider then multiplies by the LIVE head-count, so the preview is
+  // linear in the dragged value instead of collapsing to the stale current rate.
+  // A role whose confirmed allocation is 0 (or whose rate is non-finite) has no
+  // measured signal → null → the UI shows "—". Recomputed when the confirmed
+  // baseline changes (keyed on allocRates + the poll), which is exactly when the
+  // ref is updated alongside setAllocRates.
+  const perColonistRates: PerColonistRates = useMemo(() => {
+    const rates = allocRates ?? landedPlanetDetail?.productionRates;
+    if (!rates) return null;
+    const base = confirmedAllocations.current;
+    const roles: ProdRole[] = ['fuel', 'organics', 'equipment'];
+    const out: Partial<Record<ProdRole, number | null>> = {};
+    for (const role of roles) {
+      const alloc = Number(base?.[role] ?? 0);
+      const rate = Number(rates?.[role] ?? 0);
+      out[role] = alloc > 0 && Number.isFinite(rate) ? rate / alloc : null;
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allocRates, landedPlanetDetail]);
+
   // The station we're docked at — drives the docked scene HUD chips and the
   // helm rail legend (same resolution order the old bay header used).
   const dockedStation = useMemo(() => (
@@ -3016,6 +3044,7 @@ const GameDashboard: React.FC = () => {
                                 overflowResources={overflowResources}
                                 allocations={allocations}
                                 productionRates={allocRates ?? landedPlanetDetail?.productionRates}
+                                perColonistRates={perColonistRates}
                                 allocBudget={allocBudget}
                                 totalColonists={landedPlanetColonists}
                                 onSetAllocations={handleSetAllocations}

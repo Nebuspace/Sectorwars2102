@@ -8,11 +8,30 @@ export interface RoleAllocation {
   equipment: number;
 }
 
+/**
+ * Per-colonist daily yield per role, derived from a STABLE server-confirmed
+ * baseline pair (the last persisted allocation + the productionRates that pair
+ * with it) in GameDashboard. A role whose confirmed allocation is 0 has no
+ * measured per-colonist signal and is omitted (null) — never a fabricated /
+ * Infinity / NaN number. The honest preview is simply this rate × the LIVE
+ * slider head-count, so it tracks the dragged hypothetical linearly instead of
+ * collapsing to the stale current rate.
+ */
+export type PerColonistRates = Partial<Record<ProdRole, number | null>> | null | undefined;
+
 export interface CoupledColonistSlidersProps {
   /** Current per-role colonist head-counts (optimistic, server-confirmed on persist). */
   allocations: RoleAllocation;
-  /** Server-confirmed per-day production rate per role (used for the honest preview). */
+  /** Server-confirmed per-day production rate per role (used for the preset weighting). */
   productionRates: Partial<Record<ProdRole, number>> | null | undefined;
+  /**
+   * Per-colonist daily yield per role from the STABLE server-confirmed baseline
+   * (confirmedAllocation + the productionRates that pair with it), computed once
+   * in GameDashboard. The honest preview multiplies this by the LIVE slider value
+   * so it tracks the drag linearly. A role with a 0 / unknown baseline is null →
+   * the UI shows "—". When absent, the slider falls back to the legacy preview.
+   */
+  perColonistRates?: PerColonistRates;
   /** Workforce budget — the citadel cap (maxColonists), already clamped to colonists. */
   budget: number;
   /** Total colonists on the planet (may exceed budget → surplus is idle). */
@@ -117,6 +136,7 @@ export function coupleAllocation(
 const CoupledColonistSliders: React.FC<CoupledColonistSlidersProps> = ({
   allocations,
   productionRates,
+  perColonistRates,
   budget,
   totalColonists,
   onSetAll,
@@ -170,14 +190,36 @@ const CoupledColonistSliders: React.FC<CoupledColonistSlidersProps> = ({
   }, [allocations, productionRates, budget]);
 
   /**
-   * Honest preview of a slider's output at `newValue`, using the SERVER-DERIVED
-   * per-colonist rate (rate / current-allocation × newValue). Single source of
-   * truth — never the old ColonistAllocator math, which omitted building / citadel
-   * / specialization / gourmet multipliers and lied on 0-yield worlds.
-   * Divide-by-zero guard: if nothing is currently allocated to the role there is
-   * no measured per-colonist rate, so we return null → the UI shows "—".
+   * Honest preview of a slider's output at the LIVE head-count `newValue`.
+   *
+   * The per-colonist rate is taken from a STABLE, server-confirmed baseline pair
+   * (`perColonistRates` = confirmedProductionRate / confirmedAllocation, computed
+   * once in GameDashboard) and multiplied by the live slider value. Because the
+   * baseline denominator is the CONFIRMED allocation — not the optimistic one —
+   * the preview is linear in the dragged value and tracks the hypothetical output
+   * during a drag instead of algebraically collapsing to the stale current rate.
+   *
+   * Single source of truth — never the old ColonistAllocator math, which omitted
+   * building / citadel / specialization / gourmet multipliers and lied on
+   * 0-yield worlds.
+   *
+   * Divide-by-zero / no-signal guard: a role with no measured baseline yield
+   * (confirmed allocation was 0, or the value is non-finite) is null here, so the
+   * UI shows "—" and we never fabricate an Infinity / NaN number.
+   *
+   * Legacy fallback: if the baseline map is absent entirely (older caller), fall
+   * back to the previous (rate / current-allocation × newValue) form so the
+   * component degrades gracefully rather than blanking.
    */
   const previewRate = (role: ProdRole, newValue: number): number | null => {
+    if (perColonistRates !== null && perColonistRates !== undefined) {
+      const perCol = perColonistRates[role];
+      if (perCol === null || perCol === undefined || !Number.isFinite(perCol)) {
+        return null; // no measured baseline yield — don't fabricate a number
+      }
+      return perCol * newValue;
+    }
+    // Legacy fallback (no baseline map supplied).
     const rate = Number(productionRates?.[role] ?? 0);
     const cur = allocations[role];
     if (cur <= 0) return null; // no signal — don't fabricate a number

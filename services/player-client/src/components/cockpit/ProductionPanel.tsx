@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import CockpitPanel from './CockpitPanel';
-import CoupledColonistSliders, { type RoleAllocation, type ProdRole } from './CoupledColonistSliders';
+import CoupledColonistSliders, { type RoleAllocation, type ProdRole, type PerColonistRates } from './CoupledColonistSliders';
 
 export interface ProductionLine {
   key: 'fuel' | 'organics' | 'equipment';
@@ -36,6 +36,8 @@ export interface ProductionPanelProps {
   allocations: RoleAllocation;
   /** Server-confirmed per-day production rates per role. */
   productionRates: Partial<Record<ProdRole, number>> | null | undefined;
+  /** Per-colonist baseline yield per role (for the honest, drag-tracking preview). */
+  perColonistRates?: PerColonistRates;
   /** Workforce budget — citadel cap clamped to colonists. */
   allocBudget: number;
   /** Total colonists on the planet (may exceed budget). */
@@ -107,6 +109,7 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
   onOpenSpecialization,
   allocations,
   productionRates,
+  perColonistRates,
   allocBudget,
   totalColonists,
   onSetAllocations,
@@ -118,6 +121,7 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({
     <CoupledColonistSliders
       allocations={allocations}
       productionRates={productionRates}
+      perColonistRates={perColonistRates}
       budget={allocBudget}
       totalColonists={totalColonists}
       onSetAll={onSetAllocations}

@@ -62,29 +62,6 @@
 
 .colony-mgmt-console .cmc-tab-icon { font-size: 0.85rem; }
 
-.colony-mgmt-console .cmc-genesis-btn {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.32rem 0.6rem;
-  font-family: 'Courier New', monospace;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: color-mix(in srgb, #c084fc 70%, #ffffff 30%);
-  background: rgba(124, 110, 255, 0.12);
-  border: 1px solid rgba(124, 110, 255, 0.45);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.12s ease, box-shadow 0.12s ease;
-}
-
-.colony-mgmt-console .cmc-genesis-btn:hover {
-  background: rgba(124, 110, 255, 0.25);
-  box-shadow: 0 0 8px rgba(124, 110, 255, 0.4);
-}
 
 /* The active panel's region — flex-fills the rest of the console height. The
    single child panel scrolls internally (cp-body / sub-section overflow). */
