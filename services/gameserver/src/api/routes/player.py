@@ -14,6 +14,8 @@ from src.models.warp_tunnel import WarpTunnel
 from src.services.movement_service import MovementService
 from src.services.ranking_service import RankingService
 from src.services.ship_service import ShipService
+from src.services.bounty_service import BountyService
+from src.services import turn_service
 
 router = APIRouter(
     prefix="/player",
@@ -45,6 +47,10 @@ class PlayerStateResponse(BaseModel):
     reputation_tier: str = "Neutral"
     name_color: str = "#FFFFFF"
     military_rank: str = "Recruit"
+
+    # HUD enrichment (WO-PLAYERINFO id=142) — additive read fields:
+    turn_regen_per_hour: float = 0.0  # effective turns/hour (turn_service)
+    bounty_total: int = 0             # credits on this player's head
 
 class ShipResponse(BaseModel):
     id: str
@@ -230,7 +236,9 @@ async def get_player_state(
         personal_reputation=player.personal_reputation,
         reputation_tier=player.reputation_tier,
         name_color=player.name_color,
-        military_rank=player.military_rank
+        military_rank=player.military_rank,
+        turn_regen_per_hour=turn_service.effective_regen_per_hour(db, player),
+        bounty_total=BountyService(db).total_active_bounty_on(player),
     )
 
 @router.get("/ships", response_model=List[ShipResponse])

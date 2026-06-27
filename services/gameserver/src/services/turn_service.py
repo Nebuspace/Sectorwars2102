@@ -87,6 +87,17 @@ def _medal_turn_regen_bonus(db: Session, player: Player) -> float:
         return 0.0
 
 
+def effective_regen_per_hour(db: Session, player: Player) -> float:
+    """The player's current effective turn-regen rate in turns/HOUR, using the
+    EXACT composition regenerate_turns() applies — BASE_REGEN_RATE × the
+    (aria + medal) multiplier, hard-clamped to 1.5× (ADR-0004 / WO-CG). Surfaced
+    for the HUD (WO-PLAYERINFO id=142). Display-only: does NOT advance turns,
+    move the anchor, or touch the cap. ≈ 41.67 t/hr at 1.0×, 62.5 t/hr at 1.5×."""
+    aria_multiplier = _aria_bonus_multiplier(player)
+    aria_multiplier = min(1.5, aria_multiplier + _medal_turn_regen_bonus(db, player))
+    return BASE_REGEN_RATE * 3600.0 * aria_multiplier
+
+
 def regenerate_turns(db: Session, player: Player) -> Dict[str, Any]:
     """Lazily advance ``Player.turns`` for real time elapsed (ADR-0004).
 

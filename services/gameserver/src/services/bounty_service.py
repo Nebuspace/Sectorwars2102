@@ -108,6 +108,19 @@ class BountyService:
         player.settings["bounties"] = bounties
         flag_modified(player, "settings")
 
+    def total_active_bounty_on(self, player: Player) -> int:
+        """Total credits currently on this player's head (WO-PLAYERINFO id=142):
+        the summed amounts of active PLAYER-placed bounties (escrowed in
+        Player.settings["bounties"]) PLUS the system-bounty pot (0 for a
+        non-criminal). Read-only; robust to missing/garbage entries."""
+        placed = 0
+        for b in self._get_bounties(player):
+            try:
+                placed += int(b.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        return max(0, placed) + self.get_system_bounty_pot(player)
+
     # --- WO-BN stored system-bounty pot (Player.settings JSONB) -------------
 
     @staticmethod
