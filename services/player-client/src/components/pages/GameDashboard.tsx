@@ -2034,7 +2034,7 @@ const GameDashboard: React.FC = () => {
           {/* LANDED STATE — planet-surface vista scene. GLASS LAW: the band
               hosts canvas scenery + absolutely-anchored HUD chips ONLY. The
               vitals/status/rename console moved to PLANETARY OPERATIONS
-              COMMAND below; LIFT OFF lives on the helm rail. */}
+              COMMAND below; LIFT OFF lives on the green landed bar. */}
           {playerState?.is_landed && !playerState?.is_docked && (() => {
             const habitability = Math.max(0, Math.min(100, landedPlanet?.habitability_score ?? 0));
             // Only assert ownership once the planet record resolves —
@@ -2105,6 +2105,21 @@ const GameDashboard: React.FC = () => {
               >
                 ▴ MINIMIZE SURFACE
               </button>
+              {/* Lift Off must stay reachable in the EXPANDED surface state too —
+                  the green landed-min-bar (which carries the other Lift Off) is
+                  display:none until the surface is minimized (auto after 3.5s or
+                  manual), so without this the player can't depart while the vista
+                  is expanded. Expanded + minimized chrome are mutually exclusive
+                  (CSS), so exactly one Lift Off is ever visible. (WO 129-C fix.) */}
+              <button
+                type="button"
+                className="landed-min-liftoff"
+                onClick={handleLeavePlanet}
+                disabled={helmBusy}
+                title="Lift off and depart this planet"
+              >
+                {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
+              </button>
 
               {/* Collapsed strip (shown only when minimized via CSS): planet
                   identity + expand affordance. */}
@@ -2120,14 +2135,28 @@ const GameDashboard: React.FC = () => {
                   const remainMs = endMs ? Math.max(0, endMs - nowMs) : 0;
                   return <span className="landed-min-build" title="Citadel construction in progress">🏗️ {Math.round(pct)}% · {fmtBuildCountdown(remainMs)}</span>;
                 })()}
-                <button
-                  type="button"
-                  className="landed-min-expand"
-                  onClick={() => setLandedChromeMin(false)}
-                  title="Expand the surface view"
-                >
-                  ⤢ EXPAND SURFACE
-                </button>
+                <span className="landed-min-actions">
+                  <button
+                    type="button"
+                    className="landed-min-expand"
+                    onClick={() => setLandedChromeMin(false)}
+                    title="Expand the surface view"
+                  >
+                    ⤢ EXPAND SURFACE
+                  </button>
+                  {/* The single landing-level LIFT OFF lives here on the green
+                      bar (WO 129-C); the gray helm-rail landed line and the
+                      vitals-strip Lift Off were removed so there is exactly one. */}
+                  <button
+                    type="button"
+                    className="landed-min-liftoff"
+                    onClick={handleLeavePlanet}
+                    disabled={helmBusy}
+                    title="Lift off and depart this planet"
+                  >
+                    {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
+                  </button>
+                </span>
               </div>
             </>
             );
@@ -2397,26 +2426,21 @@ const GameDashboard: React.FC = () => {
           )}
         </div>
 
-        {/* HELM ACTION RAIL — the always-visible home of the primary state
-            actions (SCROLL LAW): DOCK / LAND in flight, UNDOCK while docked,
-            LIFT OFF while landed. Scenery click-throughs and the PLANETARY
-            monitor affordances remain as alternate triggers. */}
+        {/* HELM ACTION RAIL — the home of the primary state actions (SCROLL
+            LAW): DOCK / LAND in flight, UNDOCK while docked. While LANDED the
+            rail is suppressed: the single LIFT OFF lives on the green landed
+            bar (WO 129-C), so the gray rail is not rendered on the surface. */}
+        {!(playerState?.is_landed && !playerState?.is_docked) && (
         <div className="helm-rail">
           <div className="helm-state">
-            {playerState?.is_landed && !playerState?.is_docked ? (
-              <>LANDED ON {(landedPlanet?.name || 'PLANET').toUpperCase()}</>
-            ) : playerState?.is_docked ? (
+            {playerState?.is_docked ? (
               <>DOCKED AT {(dockedStation?.name || (isDockedAtSpaceDock ? 'SPACEDOCK' : 'STATION')).toUpperCase()}</>
             ) : (
               <>IN FLIGHT{currentSector ? ` — SECTOR ${currentSector.sector_number || currentSector.sector_id}` : ''}</>
             )}
           </div>
           <div className={`helm-actions${helmBusy ? ' busy' : ''}`}>
-            {playerState?.is_landed && !playerState?.is_docked ? (
-              <button className="helm-btn liftoff" onClick={handleLeavePlanet} disabled={helmBusy}>
-                {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
-              </button>
-            ) : playerState?.is_docked ? (
+            {playerState?.is_docked ? (
               <button className="helm-btn undock" onClick={handleUndock} disabled={helmBusy}>
                 {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
               </button>
@@ -2490,6 +2514,7 @@ const GameDashboard: React.FC = () => {
             )}
           </div>
         </div>
+        )}
 
         {/* CONSOLE - Metal panel with embedded monitors */}
         <div className="cockpit-console">
@@ -2605,9 +2630,10 @@ const GameDashboard: React.FC = () => {
                             in the old tall header, the standalone habitability/
                             population readout, AND the colonist-transfer panel
                             (Disembark/Embark) so the page never stacks them as
-                            separate sections. Planet name (+ rename) · type · Hab%
-                            · Pop/cap · Credits · Defense, then the primary actions:
-                            Disembark / Embark / Lift Off. */}
+                            separate sections. Planet name (+ rename) · type ·
+                            Habitability · Population/cap · Credits · Defense, then
+                            the labeled Colonist Transfer group (counts + Disembark /
+                            Embark). Lift Off lives on the green landed bar. */}
                         <div className="planet-vitals-strip">
                           <span className="pvs-icon" aria-hidden="true">{planetIcon}</span>
                           {renamingPlanet && currentPlanet ? (() => {
@@ -2652,41 +2678,44 @@ const GameDashboard: React.FC = () => {
                           )}
 
                           <span className="pvs-stat type">{currentPlanet?.type?.toUpperCase().replace('_', ' ') || 'UNKNOWN'}</span>
-                          <span className="pvs-stat"><span className="pvs-label">Hab</span><span className="pvs-val">{habitability}%</span></span>
-                          <span className="pvs-stat"><span className="pvs-label">Pop</span><span className="pvs-val green">{population.toLocaleString()}{maxPopulation > 0 ? ` / ${maxPopulation.toLocaleString()}` : ''}</span></span>
-                          <span className="pvs-stat"><span className="pvs-label">Credits</span><span className="pvs-val">{(playerState?.credits ?? 0).toLocaleString()}</span></span>
-                          <span className="pvs-stat"><span className="pvs-label">Defense</span><span className="pvs-val">{defenseInfo?.damageReduction ?? '—'}</span></span>
-                          {shipColonists > 0 && (
-                            <span className="pvs-stat" title="Colonists aboard your ship"><span className="pvs-label">Aboard</span><span className="pvs-val">{shipColonists.toLocaleString()}</span></span>
-                          )}
+                          <span className="pvs-stat" title="Planet habitability"><span className="pvs-label">Habitability</span><span className="pvs-val">{habitability}%</span></span>
+                          <span className="pvs-stat" title="Colonists living on this planet (current / capacity)"><span className="pvs-label">Population</span><span className="pvs-val green">{population.toLocaleString()}{maxPopulation > 0 ? ` / ${maxPopulation.toLocaleString()}` : ''}</span></span>
+                          <span className="pvs-stat" title="Your credits"><span className="pvs-label">Credits</span><span className="pvs-val">{(playerState?.credits ?? 0).toLocaleString()}</span></span>
+                          <span className="pvs-stat" title="Planetary defense damage reduction"><span className="pvs-label">Defense</span><span className="pvs-val">{defenseInfo?.damageReduction ?? '—'}</span></span>
 
-                          <div className="pvs-actions">
-                            <button
-                              className="pvs-btn disembark"
-                              disabled={!isLandedPlanetMine || shipColonists === 0}
-                              title={
-                                !isLandedPlanetMine ? 'Disembark requires landing on a planet you own'
-                                  : shipColonists === 0 ? 'No colonists aboard your ship' : 'Ship → Planet'
-                              }
-                              onClick={() => openTransferModal('disembark')}
-                            >
-                              📥 Disembark
-                            </button>
-                            <button
-                              className="pvs-btn embark"
-                              disabled={!isLandedPlanetMine || landedPlanetColonists === 0}
-                              title={
-                                !isLandedPlanetMine ? 'You can only embark colonists from a planet you own'
-                                  : landedPlanetColonists === 0 ? 'No colonists on this planet to embark' : 'Planet → Ship'
-                              }
-                              onClick={() => openTransferModal('embark')}
-                            >
-                              📤 Embark
-                            </button>
-                            <button className="pvs-btn liftoff" onClick={handleLeavePlanet} disabled={helmBusy} title="Lift off and depart this planet">
-                              {helmBusy ? '🚀 Departing…' : '🚀 Lift Off'}
-                            </button>
-                          </div>
+                          {/* COLONIST TRANSFER (WO 130-B) — counts + the two move
+                              actions on ONE labeled row so the relationship reads
+                              plainly: where colonists are now, and how to move them.
+                              Ownership/empty-count gating preserved from b7a77f8. */}
+                          <span className="pvs-transfer" title="Move colonists between your ship and the colony">
+                            <span className="pvs-transfer-label">Colonist Transfer</span>
+                            <span className="pvs-stat" title="Colonists living on this planet"><span className="pvs-label">On planet</span><span className="pvs-val green">{landedPlanetColonists.toLocaleString()}</span></span>
+                            <span className="pvs-stat" title="Colonists aboard your ship"><span className="pvs-label">Aboard your ship</span><span className="pvs-val">{shipColonists.toLocaleString()}</span></span>
+                            <span className="pvs-transfer-actions">
+                              <button
+                                className="pvs-btn disembark"
+                                disabled={!isLandedPlanetMine || shipColonists === 0}
+                                title={
+                                  !isLandedPlanetMine ? 'Disembark requires landing on a planet you own'
+                                    : shipColonists === 0 ? 'No colonists aboard your ship' : 'Move colonists from your ship to the colony'
+                                }
+                                onClick={() => openTransferModal('disembark')}
+                              >
+                                ⬇ Disembark to planet
+                              </button>
+                              <button
+                                className="pvs-btn embark"
+                                disabled={!isLandedPlanetMine || landedPlanetColonists === 0}
+                                title={
+                                  !isLandedPlanetMine ? 'You can only embark colonists from a planet you own'
+                                    : landedPlanetColonists === 0 ? 'No colonists on this planet to embark' : 'Move colonists from the colony to your ship'
+                                }
+                                onClick={() => openTransferModal('embark')}
+                              >
+                                ⬆ Embark to ship
+                              </button>
+                            </span>
+                          </span>
                         </div>
 
                         {/* Notices (rename / upgrade / vault / transfer outcomes) —

@@ -150,6 +150,22 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const toggleSidebar = () => {
     setSidebarOpen(!sidebarOpen);
   };
+
+  // ── Auto-collapse the sidebar on landing (WO 129-B) ──────────────────
+  // Landing hands the full band to the planetary console, so the nav rail
+  // is dead weight; auto-collapse it on the landing TRANSITION and restore
+  // it on lift-off. Mirrors the windshield landed-min auto-behavior. We key
+  // off the is_landed edge (tracked via a ref) — not every render — so the
+  // manual ◀/▶ toggle is never fought while the player stays landed.
+  const prevIsLandedRef = React.useRef<boolean>(!!playerState?.is_landed);
+  React.useEffect(() => {
+    const isLanded = !!playerState?.is_landed;
+    if (isLanded !== prevIsLandedRef.current) {
+      // close on the false→true (land) edge, open on the true→false (lift-off) edge
+      setSidebarOpen(!isLanded);
+      prevIsLandedRef.current = isLanded;
+    }
+  }, [playerState?.is_landed]);
   
   return (
     <div className="game-layout-wrapper">

@@ -100,7 +100,19 @@
      tab bar; the active panel scrolls INTERNALLY (cp-body / section overflow).
      ~230px ≈ windshield chrome + vitals strip + tabbar + paddings; scales with
      the viewport so 1920x1080 gets a taller body. (WO-COCKPIT-TABBED fit fix.) */
+  /* Definite height (not just max-height) so the `flex:1 1 0` panel bodies
+     resolve their grow against a definite box — a short tab (Research/Production)
+     fills the console height instead of collapsing to a header strip, and a tall
+     tab (Terraform/Grid) is still capped + scrolls internally. */
+  height: calc(100vh - 230px);
   max-height: calc(100vh - 230px);
+  /* `overflow:hidden` clips, it does not scroll: with `max-height` alone (no
+     definite height) a `flex:1 1 auto` child sizes to content first, so a tall
+     tab (Terraform's L1–L5 card stack — the first tab whose content genuinely
+     exceeds the cap) grows the inner body past the cap and is merely clipped,
+     while the unbounded console column lets the page grow. The cap binds
+     because this is itself a `flex:1 1 auto; min-height:0` item (above) and the
+     active panel scrolls INTERNALLY (cp-body / section overflow) instead. */
   overflow: hidden;
 }
 
@@ -112,11 +124,14 @@
 }
 
 .colony-mgmt-console .cmc-body > .cockpit-panel > .cp-body {
-  flex: 1 1 auto;
+  /* flex-basis:0 (not auto) so the body resolves its size from the viewport-
+     capped flex parent rather than from its own content — without this a tall
+     manager (Terraform's L1–L5 stack, the construction Grid) sizes the body to
+     content and pushes the page; with it the body fills the cap and any
+     overflow scrolls INTERNALLY. */
+  flex: 1 1 0;
   height: auto;
   min-height: 0;
-  /* The active tab's panel scrolls within the (now viewport-capped) body so a
-     tall manager — the construction Grid especially — never grows the page. */
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -213,6 +228,15 @@
   max-width: none;
   width: 100%;
 }
+
+/* Compact the terraforming L1–L5 cards inside the cockpit tab so more fit
+   before the (now-bound) internal scroll kicks in. Scoped under .cp-body so the
+   standalone /game/planets TerraformingPanel keeps its roomier spacing. The
+   hard containment above does the real work; this just reduces how soon the
+   scrollbar appears at 1440x900. */
+.cockpit-panel .cp-body .terraforming-levels { gap: 5px; }
+.cockpit-panel .cp-body .terraforming-level-card { padding: 6px 8px; gap: 4px; }
+.cockpit-panel .cp-body .terraforming-levels-intro { margin-bottom: 6px; }
 
 /* The construction grid sets its columns inline as repeat(cols, 1fr); in the
    wide cockpit tab that blows each aspect-ratio:1 plot up to ~300px so the board

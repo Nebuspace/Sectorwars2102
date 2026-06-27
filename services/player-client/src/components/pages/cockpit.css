@@ -171,6 +171,40 @@
   background: rgba(0, 255, 127, 0.22);
   box-shadow: 0 0 8px rgba(0, 255, 127, 0.4);
 }
+/* Right-hand action cluster on the green landed bar: EXPAND SURFACE + the
+   single LIFT OFF (WO 129-C). */
+.landed-min-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* LIFT OFF lives on the green bar — amber so it reads as the depart action,
+   distinct from the green expand affordance beside it. */
+.landed-min-liftoff {
+  flex-shrink: 0;
+  background: rgba(251, 191, 36, 0.12);
+  color: #fde68a;
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.landed-min-liftoff:hover:not(:disabled) {
+  background: rgba(251, 191, 36, 0.24);
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.4);
+}
+.landed-min-liftoff:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
 .cockpit-mode.landed-min .bay-minimize-btn { display: none; }
 
 /* Build-progress beacon in the minimized-surface strip (amber construction). */
@@ -2252,12 +2286,34 @@
 
 .planet-vitals-strip .pvs-val.green { color: #86efac; }
 
-/* Push the action buttons to the far right of the strip. */
-.planet-vitals-strip .pvs-actions {
+/* COLONIST TRANSFER group (WO 130-B) — a single labeled cluster pushed to
+   the far right of the strip: a title, the two counts, then the two move
+   buttons, all on one line so the relationship reads plainly. */
+.planet-vitals-strip .pvs-transfer {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  margin-left: auto;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid rgba(125, 211, 252, 0.25);
+  border-radius: 5px;
+  background: rgba(0, 30, 50, 0.4);
+}
+
+.planet-vitals-strip .pvs-transfer-label {
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+  white-space: nowrap;
+}
+
+.planet-vitals-strip .pvs-transfer-actions {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  margin-left: auto;
 }
 
 .planet-vitals-strip .pvs-btn {
@@ -2285,17 +2341,6 @@
 }
 
 .planet-vitals-strip .pvs-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.planet-vitals-strip .pvs-btn.liftoff {
-  color: #fde68a;
-  border-color: rgba(251, 191, 36, 0.5);
-  background: rgba(251, 191, 36, 0.12);
-}
-
-.planet-vitals-strip .pvs-btn.liftoff:hover:not(:disabled) {
-  background: rgba(251, 191, 36, 0.24);
-  box-shadow: 0 0 8px rgba(251, 191, 36, 0.4);
-}
 
 /* Header - Compact single row */
 .planet-header {
