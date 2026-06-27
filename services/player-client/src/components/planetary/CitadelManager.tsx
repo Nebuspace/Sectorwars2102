@@ -110,8 +110,6 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
   const [citadel, setCitadel] = useState<CitadelInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [depositAmount, setDepositAmount] = useState('');
-  const [withdrawAmount, setWithdrawAmount] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
@@ -160,42 +158,6 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
       onUpdate?.();
     } catch (err: any) {
       setActionMessage(err.message || 'Upgrade failed');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleDeposit = async () => {
-    const amount = parseInt(depositAmount);
-    if (!amount || amount <= 0 || actionLoading) return;
-    try {
-      setActionLoading(true);
-      setActionMessage(null);
-      await citadelAPI.deposit(planetId, amount);
-      setActionMessage(`Deposited ${amount.toLocaleString()} credits`);
-      setDepositAmount('');
-      await fetchCitadel();
-      onUpdate?.();
-    } catch (err: any) {
-      setActionMessage(err.message || 'Deposit failed');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleWithdraw = async () => {
-    const amount = parseInt(withdrawAmount);
-    if (!amount || amount <= 0 || actionLoading) return;
-    try {
-      setActionLoading(true);
-      setActionMessage(null);
-      await citadelAPI.withdraw(planetId, amount);
-      setActionMessage(`Withdrew ${amount.toLocaleString()} credits`);
-      setWithdrawAmount('');
-      await fetchCitadel();
-      onUpdate?.();
-    } catch (err: any) {
-      setActionMessage(err.message || 'Withdraw failed');
     } finally {
       setActionLoading(false);
     }
@@ -425,66 +387,9 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
         </div>
       </div>
 
-      {/* Safe Storage Controls */}
-      <div className="citadel-storage-controls">
-        <div className="storage-action">
-          <input
-            type="number"
-            placeholder="Amount"
-            value={depositAmount}
-            onChange={(e) => setDepositAmount(e.target.value)}
-            min="1"
-            className="storage-input"
-            disabled={level === 0}
-            title={level === 0 ? 'Build an Outpost (L1) to unlock safe storage' : 'Credits to deposit into the safe'}
-          />
-          <button
-            onClick={handleDeposit}
-            disabled={actionLoading || !depositAmount || level === 0}
-            className="citadel-btn deposit-btn"
-            title={
-              level === 0
-                ? 'Build an Outpost (L1) to unlock safe storage'
-                : !depositAmount
-                  ? 'Enter an amount to deposit'
-                  : actionLoading
-                    ? 'Action in progress'
-                    : 'Deposit credits into safe storage'
-            }
-          >
-            Deposit
-          </button>
-        </div>
-        <div className="storage-action">
-          <input
-            type="number"
-            placeholder="Amount"
-            value={withdrawAmount}
-            onChange={(e) => setWithdrawAmount(e.target.value)}
-            min="1"
-            max={safeCredits.toString()}
-            className="storage-input"
-            disabled={safeCredits === 0}
-            title={safeCredits === 0 ? 'No credits in safe storage to withdraw' : 'Credits to withdraw from the safe'}
-          />
-          <button
-            onClick={handleWithdraw}
-            disabled={actionLoading || !withdrawAmount || safeCredits === 0}
-            className="citadel-btn withdraw-btn"
-            title={
-              safeCredits === 0
-                ? 'No credits in safe storage to withdraw'
-                : !withdrawAmount
-                  ? 'Enter an amount to withdraw'
-                  : actionLoading
-                    ? 'Action in progress'
-                    : 'Withdraw credits from safe storage'
-            }
-          >
-            Withdraw
-          </button>
-        </div>
-      </div>
+      {/* Credit deposit / withdraw now lives on the Safe tab's unified vault
+          (SafeVaultPanel) alongside commodity store/take — one vault, one
+          cr-equivalent cap. The gauge above stays as a read-only reference. */}
 
       {/* Upgrade Section */}
       {next && !citadel.is_upgrading && (

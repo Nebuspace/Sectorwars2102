@@ -21,6 +21,7 @@ import CitizenshipBadge from '../governance/CitizenshipBadge';
 import RegionInvitePanel from '../governance/RegionInvitePanel';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
+import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import { regionOwnerAPI } from '../../services/api';
 import apiClient from '../../services/apiClient';
 import './game-dashboard.css';
@@ -1217,43 +1218,44 @@ const GameDashboard: React.FC = () => {
     }
   };
 
-  // --- Citadel safe (credits only — CitadelService stores nothing else) ---
-  const [safeAction, setSafeAction] = useState<'deposit' | 'withdraw' | null>(null);
-  const [safeAmount, setSafeAmount] = useState(1);
+  // --- Citadel safe — credit deposit / withdraw ---
+  // The safe is ONE shared credit-equivalent vault: it holds credits AND
+  // commodities under a single cap (no per-resource safe caps). These handlers
+  // feed the unified SafeVaultPanel on the Safe tab; the panel owns the amount +
+  // direction inputs and calls these with a validated amount.
   const [safeBusy, setSafeBusy] = useState(false);
 
   const safeCredits: number = Number(citadelInfo?.safe_credits ?? 0);
   const safeCapacity: number = Number(citadelInfo?.safe_storage ?? 0);
   // Total cr-equivalent value in the safe (credits + commodities) for the cap bar.
   const safeTotalValue: number = Number(citadelInfo?.safe_total_value ?? safeCredits);
-  // Deposit is capped by both wallet and remaining vault headroom
-  // (CitadelService.deposit_to_safe rejects beyond-capacity deposits)
-  const safeMax = safeAction === 'deposit'
-    ? Math.max(0, Math.min(playerState?.credits ?? 0, safeCapacity - safeCredits))
-    : safeCredits;
 
-  const openSafeAction = (action: 'deposit' | 'withdraw') => {
-    const max = action === 'deposit'
-      ? Math.max(0, Math.min(playerState?.credits ?? 0, safeCapacity - safeCredits))
-      : safeCredits;
-    setSafeAmount(Math.max(1, max));
-    setSafeAction(action);
-  };
-
-  const handleSafeConfirm = async () => {
-    if (!landedPlanet || !safeAction || safeBusy || safeAmount < 1) return;
+  // Shared credit deposit/withdraw runner. `delta` is signed in cr-equivalent
+  // terms (+amount on deposit, -amount on withdraw) so the cap bar's total tracks
+  // the move even when the server response omits safe_total_value.
+  const runSafeCredits = async (
+    dir: 'deposit' | 'withdraw',
+    amount: number,
+  ) => {
+    if (!landedPlanet || safeBusy || amount < 1) return;
     setSafeBusy(true);
     try {
-      const result = safeAction === 'deposit'
-        ? await depositToSafe(landedPlanet.id, safeAmount)
-        : await withdrawFromSafe(landedPlanet.id, safeAmount);
-      // safe_balance in the response is authoritative — no refetch needed
+      const result = dir === 'deposit'
+        ? await depositToSafe(landedPlanet.id, amount)
+        : await withdrawFromSafe(landedPlanet.id, amount);
+      const delta = dir === 'deposit' ? amount : -amount;
+      // safe_balance in the response is authoritative for the credit side; keep
+      // the cr-equivalent total in step (use the server figure if it sends one).
       setCitadelInfo((prev: any) => prev ? {
         ...prev,
-        safe_credits: typeof result?.safe_balance === 'number' ? result.safe_balance : prev.safe_credits
+        safe_credits: typeof result?.safe_balance === 'number' ? result.safe_balance : prev.safe_credits + delta,
+        safe_total_value: typeof result?.safe_total_value === 'number'
+          ? result.safe_total_value
+          : Number(prev.safe_total_value ?? prev.safe_credits ?? 0) + delta,
       } : prev);
       setOpsNotice({ type: 'success', message: result?.message || 'Vault transaction complete.' });
-      setSafeAction(null);
+      // depositToSafe/withdrawFromSafe already refreshPlayerState() internally
+      // (the wallet-bounded credit max recomputes off that) — no extra fetch here.
     } catch (error: any) {
       // Show the server's gating message verbatim (capacity, balance, level)
       setOpsNotice({
@@ -1264,6 +1266,9 @@ const GameDashboard: React.FC = () => {
       setSafeBusy(false);
     }
   };
+
+  const handleDepositCredits = (amount: number) => runSafeCredits('deposit', amount);
+  const handleWithdrawCredits = (amount: number) => runSafeCredits('withdraw', amount);
 
   // --- Commodity safe storage (move planet stockpile <-> protected safe) ---
   const [commodityBusy, setCommodityBusy] = useState<string | null>(null);
@@ -2970,110 +2975,30 @@ const GameDashboard: React.FC = () => {
                             </div>
                             );
 
-                            // SAFE tab body — the Citadel-Safe PROTECTED COMMODITY
-                            // STORAGE (store/take of stockpiled goods into the
-                            // raider-proof safe + the auto-deposit toggle). Credit
-                            // deposit/withdraw lives in the cockpit Citadel panel.
-                            // Requires citadel level >= 1.
+                            // SAFE tab body — the UNIFIED citadel-safe vault: the
+                            // single cr-equivalent cap bar, CREDIT deposit/withdraw
+                            // (with 25/50/75/Max presets), per-commodity store/take,
+                            // and the auto-deposit sweep toggle. One vault, one cap
+                            // (credits + commodities). Requires citadel level >= 1.
                             const safeTabBody = (
-                          <div className="planet-section storage full-width">
-                            <div className="safe-header">
-                              <h4>🔐 Citadel Safe</h4>
-                              {citadelInfo && citadelInfo.citadel_level >= 1 ? (
-                                <>
-                                  <div className="safe-credits">
-                                    <span className="credits-label">💰</span>
-                                    <span className="credits-value">{safeCredits.toLocaleString()}</span>
-                                    <span className="credits-text">credits</span>
-                                  </div>
-                                  <span className="safe-cap">{safeTotalValue.toLocaleString()} / {safeCapacity.toLocaleString()} cr-equiv</span>
-                                  <div className="vault-bar" title={`${safeTotalValue.toLocaleString()} / ${safeCapacity.toLocaleString()} cr-equivalent (credits + stored goods)`}>
-                                    <div className="vault-bar-fill" style={{ width: `${safeCapacity > 0 ? Math.min(100, (safeTotalValue / safeCapacity) * 100) : 0}%` }} />
-                                  </div>
-                                  {/* Credit deposit / withdraw lives in the cockpit
-                                      Citadel panel (CitadelManager) — not duplicated
-                                      here. This section keeps only the UNIQUE protected
-                                      commodity storage (store/take + auto-deposit). */}
-                                  {/* Protected commodity storage: move planet stockpile <-> safe */}
-                                  <div className="safe-commodities">
-                                    <div className="sc-head">
-                                      📦 Stored Goods <span className="sc-hint">(protected from raiders)</span>
-                                      <label
-                                        className="sc-hint"
-                                        style={{ float: 'right', display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: autoDepositBusy ? 'wait' : 'pointer' }}
-                                        title="When on, new production is automatically swept into the safe up to the cr-equivalent cap"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={!!citadelInfo?.auto_deposit}
-                                          disabled={autoDepositBusy}
-                                          onChange={(e) => handleToggleAutoDeposit(e.target.checked)}
-                                          style={{ accentColor: '#7dd3fc', cursor: autoDepositBusy ? 'wait' : 'pointer' }}
-                                        />
-                                        Auto-deposit production into safe
-                                      </label>
-                                    </div>
-                                    <div className="sc-hint" style={{ marginBottom: '4px' }}>
-                                      Production fills the planet stockpile (right number) — Store it here, or enable auto-deposit, to protect it from raiders.
-                                    </div>
-                                    {SAFE_COMMODITIES.map(({ stock, safe, icon, name }) => {
-                                      const inSafe = Number(citadelInfo?.safe_commodities?.[safe] ?? 0);
-                                      const onPlanet = Math.floor(projectedStock(stock));
-                                      const unitVal = Number(citadelInfo?.commodity_values?.[safe] ?? 0);
-                                      const room = Math.max(0, safeCapacity - safeTotalValue);
-                                      const canStore = unitVal > 0 ? Math.min(onPlanet, Math.floor(room / unitVal)) : 0;
-                                      const busy = commodityBusy === safe;
-                                      // Computed reason the Store button is greyed (clearer than a generic
-                                      // "nothing to store" — distinguishes a full safe, a planet type that
-                                      // yields none, an unstaffed line, and sub-1-unit accrual).
-                                      const rate = Number(landedPlanetDetail?.productionRates?.[stock] ?? 0); // per day
-                                      const allocation = Number(landedPlanetDetail?.allocations?.[stock] ?? 0);
-                                      const storeDisabledTitle =
-                                        onPlanet >= 1 && room < unitVal
-                                          ? 'Safe full (cr-equivalent cap reached)'
-                                          : allocation > 0 && rate <= 0
-                                            ? `This world produces no ${name}`
-                                            : rate <= 0
-                                              ? `No production — assign workforce to ${name}`
-                                              : `Producing ${Math.round(rate)}/day — under 1 unit stored so far`;
-                                      return (
-                                        <div className="sc-row" key={safe}>
-                                          <span className="sc-name">{icon} {name}</span>
-                                          <span className="sc-qty" title="In safe / on planet">{inSafe.toLocaleString()} <em>/ {onPlanet.toLocaleString()}</em></span>
-                                          <button
-                                            className="safe-btn sc-btn"
-                                            disabled={busy || canStore < 1}
-                                            title={canStore < 1 ? storeDisabledTitle : `Store ${canStore.toLocaleString()} (${unitVal} cr/unit)`}
-                                            onClick={() => moveCommoditySafe('store', safe, canStore)}
-                                          >
-                                            {busy ? '…' : '▲ Store'}
-                                          </button>
-                                          <button
-                                            className="safe-btn sc-btn"
-                                            disabled={busy || inSafe < 1}
-                                            title={inSafe < 1 ? `Safe holds no ${name}` : `Take all ${inSafe.toLocaleString()}`}
-                                            onClick={() => moveCommoditySafe('take', safe, inSafe)}
-                                          >
-                                            {busy ? '…' : '▼ Take'}
-                                          </button>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </>
-                              ) : (
-                                <div className="safe-credits">
-                                  <span className="credits-text">
-                                    {!isLandedPlanetMine
-                                      ? 'Vault access requires planetary ownership'
-                                      : citadelInfo
-                                        ? 'No citadel safe — establish an Outpost (Citadel Level 1) to unlock credit storage'
-                                        : 'Vault telemetry unavailable'}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
+                              <SafeVaultPanel
+                                isOwned={isLandedPlanetMine}
+                                citadelInfo={citadelInfo}
+                                landedPlanetDetail={landedPlanetDetail}
+                                playerCredits={playerState?.credits ?? 0}
+                                safeCredits={safeCredits}
+                                safeCapacity={safeCapacity}
+                                safeTotalValue={safeTotalValue}
+                                onDepositCredits={handleDepositCredits}
+                                onWithdrawCredits={handleWithdrawCredits}
+                                creditBusy={safeBusy}
+                                commodities={SAFE_COMMODITIES}
+                                projectedStock={projectedStock}
+                                onMoveCommodity={moveCommoditySafe}
+                                commodityBusy={commodityBusy}
+                                onToggleAutoDeposit={handleToggleAutoDeposit}
+                                autoDepositBusy={autoDepositBusy}
+                              />
                             );
 
                             return (
