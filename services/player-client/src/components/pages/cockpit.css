@@ -1035,13 +1035,18 @@
   z-index: 20;
   box-sizing: border-box;
   transition: width 0.3s ease;
-  /* Top stop (#1a1d24) MATCHES the sidebar's bottom stop and the border-top is
-     dropped, so the rail+MFD segment and this segment read as ONE console. */
-  background: linear-gradient(
+  /* OPAQUE CRT backing (id=149 fix). Use an explicit background-COLOR, not only
+     a gradient: a gradient is background-image, so background-color stayed
+     transparent and — fading to near-black #0a0d12 — the in-flight console read
+     as a "dead black void" with the scene showing through. Solid #1a1d24 base
+     MATCHES the rail+MFD sidebar's bottom stop so the two read as ONE continuous
+     console; a subtle translucent sheen→shade overlay keeps the metal feel
+     without going near-black or re-opening the void. Opaque in ALL states. */
+  background-color: #1a1d24;
+  background-image: linear-gradient(
     180deg,
-    #1a1d24 0%,
-    #0f1117 50%,
-    #0a0d12 100%
+    rgba(255, 255, 255, 0.015) 0%,
+    rgba(0, 0, 0, 0.22) 100%
   );
   border-right: 2px solid rgba(77, 132, 253, 0.2);
   display: grid;
