@@ -154,6 +154,16 @@
   --band-h: 60px;
 }
 
+/* LANDED + EXPANDED (id=151c): open the windshield LARGE so the planet-surface
+   scene (the LANDMASS, not just sky) is visible — a short band crops the
+   full-bleed scene to its top (sky). The colony console is pushed down (still
+   present below). Minimized falls back to windshield-min's thin bar (console
+   gets the room). Mutually exclusive with .windshield-min (that is the
+   minimized state). [P] tune the % if Max wants more/less scene. */
+.game-container.landed-expanded {
+  --band-h: 65%;
+}
+
 /* Minimize / expand-viewport toggle — small button pinned to the band top-right
    (inside .main-viewport; z above the HUD/helm, below alerts). */
 .windshield-toggle {

@@ -207,6 +207,8 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
           }${sidebarOpen ? '' : ' console-collapsed'}${
             windshieldMin && grounded ? ' windshield-min' : ''
+          }${
+            playerState?.is_landed && !windshieldMin ? ' landed-expanded' : ''
           }`}
         >
           {/* Left console (NEON15): route rail on top, then two MFD
