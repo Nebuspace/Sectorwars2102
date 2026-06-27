@@ -201,6 +201,15 @@
   width: 100%;
 }
 
+/* The construction grid sets its columns inline as repeat(cols, 1fr); in the
+   wide cockpit tab that blows each aspect-ratio:1 plot up to ~300px so the board
+   runs off-page. Cap the board width so plots stay compact and the whole grid
+   fits the tab (cell ≈ max-width / cols, scales for larger citadel grids). */
+.cockpit-panel .cp-body .grid-board {
+  max-width: 360px;
+  margin-left: 0;
+}
+
 /* ── Panel action buttons (open the modals) ── */
 .cockpit-panel .cp-actions {
   display: flex;
