@@ -706,14 +706,17 @@
   max-width: 600px;
 }
 
-/* Anchor normalization (GLASS LAW): opposing chips cap at 42% of the band
+/* Anchor normalization (GLASS LAW): opposing chips cap at 34% of the band
    so left/right pairs can never collide, even at 1440x850 with long
-   region / station / planet names — the name lines ellipsize instead. */
+   region / station / planet names — the name lines ellipsize instead. The
+   34% cap (down from 42%) also leaves a wide-enough central gap for the
+   top-center .player-vitals-hud strip: gap = 0.32*W - 48px (~310px at the
+   1440 sidebar-open width), clearing the HUD's 280px cap. (id=139 item 1) */
 .hud-overlay.top-left,
 .hud-overlay.bottom-left,
 .hud-overlay.top-right,
 .hud-overlay.bottom-right {
-  max-width: 42%;
+  max-width: 34%;
 }
 
 /* Entity-name readout inside a chip — smaller than the SECTOR numerals,

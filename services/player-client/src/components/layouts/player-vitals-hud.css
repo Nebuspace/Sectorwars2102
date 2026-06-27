@@ -7,7 +7,7 @@
    cockpit controls beneath it; only .pvh-refresh re-enables pointer events. */
 .player-vitals-hud {
   position: absolute;
-  top: 0.4rem;
+  top: 0.3rem;
   left: 50%;
   transform: translateX(-50%);
   z-index: 30;
@@ -15,7 +15,13 @@
   gap: 0.6rem;
   align-items: center;
   pointer-events: none;
-  max-width: min(54%, 640px);
+  /* Narrow centered strip: it carries only 4 compact readouts (CRED/TURN/
+     DRONE/MINE), so it must fit the gap between the top-left LOCATION chip and
+     the top-right status chip (each capped 34% of the band — see cockpit.css).
+     Gap = (1 - 2*0.34)*W - 2*1.5rem = 0.32*W - 48px. At the narrowest relevant
+     container (1440 viewport, sidebar open => W=1120) the gap is ~310px, so a
+     280px cap clears both chips; wider containers only widen the gap. */
+  max-width: min(34%, 280px);
   background: rgba(0, 10, 16, 0.38);
   border: 1px solid rgba(0, 217, 255, 0.25);
   border-radius: 4px;

@@ -50,14 +50,22 @@
    (cockpit-components.css, same specificity but imported later) — otherwise the
    toggle stays in-flow at the top of .game-content and (with main{gap:4rem})
    pushes the viewport down ~102px, leaving an empty band above it. */
+/* Slim flush-edge tab (id=139 item 2): a 38x38 square inset 0.5rem at the
+   viewport's left-center stole scene clicks there. Shrunk to a 14x44 vertical
+   tab pinned FLUSH to the left edge (left:0) and rounded only on its inner
+   (right) corners, so its click-stealing footprint drops from 38x38=1444px^2
+   to 14x44=616px^2 and sits against the rail seam instead of over the scene. */
 .cockpit-btn.sidebar-edge-toggle {
   position: absolute;
-  left: 0.5rem;
+  left: 0;
   top: 50%;
   transform: translateY(-50%);
   z-index: 40;
-  width: 38px;
-  height: 38px;
+  width: 14px;
+  height: 44px;
+  min-width: 0; /* override .cockpit-btn min sizing so the slim width holds */
+  padding: 0;
+  border-radius: 0 6px 6px 0;
 }
 
 .sidebar-edge-toggle:hover {
@@ -99,10 +107,40 @@
   width: 320px;
 }
 
+/* Collapsed = slim RAIL PEEK, not width:0 (id=139 item 3). On landing the
+   sidebar auto-collapses (GameLayout WO-129-B) so the console gets the band;
+   but a width:0 sidebar also hid SET + Logout behind the edge-toggle, leaving
+   them unreachable while landed. Instead the closed sidebar shrinks to a slim
+   peek that still shows the route rail's keys (CMD..SVC, incl. SET) reflowed
+   to one column, the pilot row, and the full-width Logout key — so Settings +
+   Logout stay one click away without re-opening the full 320px console. The
+   two MFD screens hide (the console owns that data while landed). */
 .game-sidebar.closed {
-  width: 0;
-  padding: 0;
+  width: 60px;
+  padding: 0.5rem 0.35rem;
   overflow: hidden;
+}
+
+/* Peek hides the heavyweight MFD bodies — only the navigation rail peeks. */
+.game-sidebar.closed .mfd-screen {
+  display: none;
+}
+
+/* Reflow the 4-wide route grid to a single column so every key (incl. SET)
+   fits the slim peek width and stays tappable. */
+.game-sidebar.closed .route-rail {
+  padding: 4px;
+}
+
+.game-sidebar.closed .rr-grid {
+  grid-template-columns: 1fr;
+}
+
+/* Tighten the full-width Logout key so "LOGOUT" fits the ~45px peek key width
+   without wrapping past its fixed 22px height. */
+.game-sidebar.closed .rr-key-logout {
+  letter-spacing: 0.06em;
+  white-space: nowrap;
 }
 
 /* MFD console layout: rail fixed top, screens share the leftover height.
