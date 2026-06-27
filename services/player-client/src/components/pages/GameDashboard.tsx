@@ -1343,19 +1343,29 @@ const GameDashboard: React.FC = () => {
   const [isTransferring, setIsTransferring] = useState(false);
   const [transferNotice, setTransferNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  // Colonist disembark ceiling = the LOWER of the citadel headcount cap
+  // (baseMaxColonists) and the habitability demographic cap (maxPopulation) —
+  // the server enforces BOTH (planets.py:982 citadel + :993 habitability; settle
+  // clamps to min). NOT maxColonists/effectiveMaxColonists (habitability-scaled
+  // DISPLAY value, not enforced) and NOT maxPopulation alone (misses the citadel
+  // cap). Using baseMaxColonists alone over-filled the Max preset → server 400 when
+  // habitability was the binding cap. (WO-LANDED-VITALS-FIX)
+  const colonistHardCap = Math.min(
+    Number(landedPlanetDetail?.baseMaxColonists ?? Infinity),
+    Number(landedPlanetDetail?.maxPopulation ?? Infinity),
+  );
+  // Colonists you can still unload before hitting that lower cap.
+  const transferHeadroom = Number.isFinite(colonistHardCap)
+    ? Math.max(0, colonistHardCap - Number(landedPlanetDetail?.colonists ?? 0))
+    : 0;
+
   const transferMax = useMemo(() => {
     if (transferModal === 'disembark') {
       let max = shipColonists;
-      // Disembark fills toward the HARD citadel headcount cap (baseMaxColonists,
-      // e.g. 1,000 at L1 Outpost — ADR-0035), NOT the habitability-scaled
-      // workforce limiter (`maxColonists` = effectiveMaxColonists). Colonists
-      // above the workforce cap settle fine; the surplus is just idle until
-      // habitability/citadel rises. The server enforces colonists <= citadel
-      // cap on the transfer route, so gating the modal on the effective cap
-      // wrongly clamps disembark to 0 whenever colonists exceed the scaled value.
-      const hardCap = Number(landedPlanetDetail?.baseMaxColonists ?? landedPlanetDetail?.maxColonists);
-      if (Number.isFinite(hardCap) && typeof landedPlanetDetail?.colonists === 'number') {
-        max = Math.min(max, Math.max(0, hardCap - landedPlanetDetail.colonists));
+      // Clamp to colonistHardCap (the lower of citadel & habitability caps) so the
+      // Max preset, the "Room to add" readout, and the server all agree.
+      if (Number.isFinite(colonistHardCap) && typeof landedPlanetDetail?.colonists === 'number') {
+        max = Math.min(max, Math.max(0, colonistHardCap - landedPlanetDetail.colonists));
       }
       return max;
     }
@@ -1363,7 +1373,7 @@ const GameDashboard: React.FC = () => {
       return landedPlanetColonists;
     }
     return 0;
-  }, [transferModal, shipColonists, landedPlanetDetail, landedPlanetColonists]);
+  }, [transferModal, shipColonists, landedPlanetDetail, landedPlanetColonists, colonistHardCap]);
 
   // Default the modal to a full load when it opens
   useEffect(() => {
@@ -2741,8 +2751,10 @@ const GameDashboard: React.FC = () => {
 
                           <span className="pvs-stat type">{currentPlanet?.type?.toUpperCase().replace('_', ' ') || 'UNKNOWN'}</span>
                           <span className="pvs-stat" title="Planet habitability"><span className="pvs-label">Habitability</span><span className="pvs-val">{habitability}%</span></span>
-                          <span className="pvs-stat" title="Colonists living on this planet (current / capacity)"><span className="pvs-label">Population</span><span className="pvs-val green">{population.toLocaleString()}{maxPopulation > 0 ? ` / ${maxPopulation.toLocaleString()}` : ''}</span></span>
-                          <span className="pvs-stat" title="Your credits"><span className="pvs-label">Credits</span><span className="pvs-val">{(playerState?.credits ?? 0).toLocaleString()}</span></span>
+                          <span className="pvs-stat" title="Total residents living on this planet"><span className="pvs-label">Population</span><span className="pvs-val green">{population.toLocaleString()}</span></span>
+                          {isLandedPlanetMine && citadelInfo && (
+                            <span className="pvs-stat" title="Protected credits in this colony's citadel safe"><span className="pvs-label">Safe</span><span className="pvs-val">{safeCredits.toLocaleString()} cr{safeCapacity > 0 ? ` / ${safeCapacity.toLocaleString()}` : ''}</span></span>
+                          )}
                           <span className="pvs-stat" title="Planetary defense damage reduction"><span className="pvs-label">Defense</span><span className="pvs-val">{defenseInfo?.damageReduction ?? '—'}</span></span>
 
                           {/* COLONIST TRANSFER (WO 130-B) — counts + the two move
@@ -2753,28 +2765,31 @@ const GameDashboard: React.FC = () => {
                             <span className="pvs-transfer-label">Colonist Transfer</span>
                             <span className="pvs-stat" title="Colonists living on this planet"><span className="pvs-label">On planet</span><span className="pvs-val green">{landedPlanetColonists.toLocaleString()}</span></span>
                             <span className="pvs-stat" title="Colonists aboard your ship"><span className="pvs-label">Aboard your ship</span><span className="pvs-val">{shipColonists.toLocaleString()}</span></span>
+                            {isLandedPlanetMine && (
+                              <span className="pvs-stat" title="Colonists you can still unload before this colony's cap — the lower of citadel & habitability limits"><span className="pvs-label">Room to add</span><span className="pvs-val">{transferHeadroom.toLocaleString()}</span></span>
+                            )}
                             <span className="pvs-transfer-actions">
                               <button
                                 className="pvs-btn disembark"
                                 disabled={!isLandedPlanetMine || shipColonists === 0}
                                 title={
-                                  !isLandedPlanetMine ? 'Disembark requires landing on a planet you own'
-                                    : shipColonists === 0 ? 'No colonists aboard your ship' : 'Move colonists from your ship to the colony'
+                                  !isLandedPlanetMine ? 'Unloading colonists requires landing on a planet you own'
+                                    : shipColonists === 0 ? 'No colonists aboard your ship' : 'Move colonists from your ship down to the colony'
                                 }
                                 onClick={() => openTransferModal('disembark')}
                               >
-                                ⬇ Disembark to planet
+                                ⬇ Unload colonists → colony
                               </button>
                               <button
                                 className="pvs-btn embark"
                                 disabled={!isLandedPlanetMine || landedPlanetColonists === 0}
                                 title={
-                                  !isLandedPlanetMine ? 'You can only embark colonists from a planet you own'
-                                    : landedPlanetColonists === 0 ? 'No colonists on this planet to embark' : 'Move colonists from the colony to your ship'
+                                  !isLandedPlanetMine ? 'Loading colonists requires landing on a planet you own'
+                                    : landedPlanetColonists === 0 ? 'No colonists on this planet to load' : 'Move colonists from the colony up to your ship'
                                 }
                                 onClick={() => openTransferModal('embark')}
                               >
-                                ⬆ Embark to ship
+                                ⬆ Load colonists → ship
                               </button>
                             </span>
                           </span>
@@ -3330,7 +3345,7 @@ const GameDashboard: React.FC = () => {
           >
             <div className="colonist-modal" onClick={(e) => e.stopPropagation()}>
               <div className="colonist-modal-header">
-                <h3>{transferModal === 'disembark' ? '📥 DISEMBARK COLONISTS' : '📤 EMBARK COLONISTS'}</h3>
+                <h3>{transferModal === 'disembark' ? '📥 UNLOAD COLONISTS TO PLANET' : '📤 LOAD COLONISTS TO SHIP'}</h3>
                 <button
                   className="colonist-modal-close"
                   onClick={() => setTransferModal(null)}
@@ -3434,7 +3449,7 @@ const GameDashboard: React.FC = () => {
                 >
                   {isTransferring
                     ? 'TRANSFERRING…'
-                    : transferModal === 'disembark' ? 'CONFIRM DISEMBARK' : 'CONFIRM EMBARK'}
+                    : transferModal === 'disembark' ? 'CONFIRM UNLOAD' : 'CONFIRM LOAD'}
                 </button>
               </div>
             </div>
