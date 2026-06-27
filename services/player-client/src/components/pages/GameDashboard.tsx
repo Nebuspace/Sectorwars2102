@@ -2707,6 +2707,53 @@ const GameDashboard: React.FC = () => {
 
                         {/* Main content: 2 columns on top, full-width safe at bottom */}
                         <div className="planet-content">
+                          {/* COLONY MANAGEMENT — Screen 2 of the cockpit redesign.
+                              SCROLL LAW (WO-COCKPIT-SCROLLLAW): hoisted to the TOP of
+                              the content area so a landed owner sees the management HUD
+                              above the fold at 1440×900 — the vitals dial / vault /
+                              transfer / production chrome now render BELOW it. Only a
+                              landed colony you OWN surfaces the full management depth
+                              (citadel ladder / grid / terraform / research / live
+                              production + the 6 action modals) as cockpit-native HUD
+                              panels. The PRODUCTION panel ticks live off the realtime
+                              poll (landedPlanetDetail) via the projected lines — no
+                              extra fetch. */}
+                          {isLandedPlanetMine && currentPlanet && (() => {
+                            const prodLines: ProductionLine[] = ([
+                              { key: 'fuel' as const, icon: '⛽', name: 'Fuel' },
+                              { key: 'organics' as const, icon: '🌿', name: 'Organics' },
+                              { key: 'equipment' as const, icon: '⚙️', name: 'Equipment' },
+                            ]).map(({ key, icon, name }) => {
+                              const ss = storageStatus(key);
+                              return {
+                                key,
+                                icon,
+                                name,
+                                stock: projectedStock(key),
+                                rate: Number(landedPlanetDetail?.productionRates?.[key] ?? 0),
+                                ratio: ss.ratio,
+                                capped: ss.capped,
+                                nearCap: ss.nearCap,
+                                atCap: ss.atCap,
+                                cap: storageCap,
+                              };
+                            });
+                            return (
+                              <CockpitColonyManagement
+                                planetId={String(landedPlanet.id)}
+                                planetType={currentPlanet?.type}
+                                playerCredits={playerState?.credits ?? 0}
+                                citadelInfo={citadelInfo}
+                                landedPlanetDetail={landedPlanetDetail}
+                                habitabilityScore={currentPlanet?.habitability_score ?? habitability}
+                                underSiege={!!(landedPlanet as any)?.under_siege || !!(landedPlanetDetail as any)?.underSiege}
+                                productionLines={landedPlanetDetail ? prodLines : []}
+                                overflowResources={overflowResources}
+                                onOpsChange={() => setOpsRefresh(n => n + 1)}
+                              />
+                            );
+                          })()}
+
                           {/* VITALS — relocated from the old landed band (it used to
                               clip inside the glass); habitability dial + population /
                               colonist bars + colony status, tinted per planet type */}
@@ -3310,49 +3357,6 @@ const GameDashboard: React.FC = () => {
                             )}
                           </div>
                         </div>
-
-                        {/* COLONY MANAGEMENT — Screen 2 of the cockpit redesign.
-                            Only a landed colony you OWN surfaces the full
-                            management depth (citadel ladder / grid / terraform /
-                            research / live production + the 6 action modals) as
-                            cockpit-native HUD panels. The PRODUCTION panel ticks
-                            live off the realtime poll (landedPlanetDetail) via the
-                            projected lines below — no extra fetch. */}
-                        {isLandedPlanetMine && currentPlanet && (() => {
-                          const prodLines: ProductionLine[] = ([
-                            { key: 'fuel' as const, icon: '⛽', name: 'Fuel' },
-                            { key: 'organics' as const, icon: '🌿', name: 'Organics' },
-                            { key: 'equipment' as const, icon: '⚙️', name: 'Equipment' },
-                          ]).map(({ key, icon, name }) => {
-                            const ss = storageStatus(key);
-                            return {
-                              key,
-                              icon,
-                              name,
-                              stock: projectedStock(key),
-                              rate: Number(landedPlanetDetail?.productionRates?.[key] ?? 0),
-                              ratio: ss.ratio,
-                              capped: ss.capped,
-                              nearCap: ss.nearCap,
-                              atCap: ss.atCap,
-                              cap: storageCap,
-                            };
-                          });
-                          return (
-                            <CockpitColonyManagement
-                              planetId={String(landedPlanet.id)}
-                              planetType={currentPlanet?.type}
-                              playerCredits={playerState?.credits ?? 0}
-                              citadelInfo={citadelInfo}
-                              landedPlanetDetail={landedPlanetDetail}
-                              habitabilityScore={currentPlanet?.habitability_score ?? habitability}
-                              underSiege={!!(landedPlanet as any)?.under_siege || !!(landedPlanetDetail as any)?.underSiege}
-                              productionLines={landedPlanetDetail ? prodLines : []}
-                              overflowResources={overflowResources}
-                              onOpsChange={() => setOpsRefresh(n => n + 1)}
-                            />
-                          );
-                        })()}
 
                       </div>
                     );
