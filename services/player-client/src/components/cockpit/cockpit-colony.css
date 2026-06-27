@@ -110,9 +110,14 @@
      resolve their grow against a definite box — a short tab (Research/Production)
      fills the console height instead of collapsing to a header strip, and a tall
      tab (Terraform/Grid) is still capped + scrolls internally. */
-  --landed-chrome: calc(clamp(240px, 34vh, 380px) + 196px);
-  height: calc(100vh - var(--landed-chrome, 502px));
-  max-height: calc(100vh - var(--landed-chrome, 502px));
+  /* vh terms are scale-compensated (--svh / --svh1) so the cap fills the REAL
+     viewport at any UI scale — raw vh under #root's zoom shrinks with scale and
+     leaves a gap / clips. The band's 34vh matches the (also-compensated)
+     windshield clamp; the 196px fixed chrome stays raw (it scales with zoom like
+     the helm rail it accounts for). (WO-UISCALE-VH) */
+  --landed-chrome: calc(clamp(240px, calc(34 * var(--svh1, 1vh)), 380px) + 196px);
+  height: calc(var(--svh, 100vh) - var(--landed-chrome, 502px));
+  max-height: calc(var(--svh, 100vh) - var(--landed-chrome, 502px));
   /* `overflow:hidden` clips, it does not scroll: with `max-height` alone (no
      definite height) a `flex:1 1 auto` child sizes to content first, so a tall
      tab (Terraform's L1–L5 card stack — the first tab whose content genuinely

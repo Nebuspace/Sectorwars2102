@@ -359,8 +359,9 @@
   max-width: 420px;
   /* Cap to the smaller of the overlaid region (100%) and the viewport-minus-
      chrome (so a tall content-sized .grid-manager can't let the popup exceed the
-     1440x900 fold). Either way a long catalog scrolls INTERNALLY (SCROLL LAW). */
-  max-height: min(100%, calc(100vh - 120px));
+     fold). vh compensated (--svh) so it tracks the real viewport under #root's
+     zoom at any UI scale. Either way a long catalog scrolls INTERNALLY. */
+  max-height: min(100%, calc(var(--svh, 100vh) - 120px));
   display: flex;
   flex-direction: column;
   /* Explicit OPAQUE background (token with a hard fallback) — guaranteed solid. */

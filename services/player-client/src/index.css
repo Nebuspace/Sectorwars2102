@@ -20,6 +20,18 @@
      solid backing (WO-COCKPIT-TABBED). */
   --surface-primary: #141a24;
   --hover-bg: #334155;
+
+  /* Scale-compensated viewport height. #root applies `zoom: var(--ui-scale)`,
+     so a raw `vh` used INSIDE #root resolves against the unzoomed viewport and
+     is THEN scaled by zoom — at 80% scale `100vh` renders at 80% of the real
+     viewport (empty band below + content clipped). These vars are defined on
+     :root (OUTSIDE the zoom, where vh = the real viewport), so a length of
+     `100vh / scale` rendered inside #root scales back up to the full viewport.
+     Swap in-#root layout `vh` for these; leave html/body (outside #root) and
+     cosmetic font `vw` (which SHOULD scale with the UI) on raw units.
+     --svh1 = a single compensated vh unit (use `calc(N * var(--svh1))`). */
+  --svh: calc(100vh / var(--ui-scale, 1));
+  --svh1: calc(1vh / var(--ui-scale, 1));
   
   /* Game Colors */
   --health-good: #10b981;
@@ -80,7 +92,9 @@ body {
   max-width: 1200px;
   margin: 0 auto;
   padding: var(--space-xl);
-  min-height: 100vh;
+  /* Compensated: .container is inside #root (zoomed) — raw 100vh would shrink
+     with UI scale. (WO-UISCALE-VH) */
+  min-height: var(--svh, 100vh);
   display: flex;
   flex-direction: column;
 }

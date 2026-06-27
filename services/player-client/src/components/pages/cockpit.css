@@ -29,8 +29,11 @@
   width: 100%;
   /* GLASS LAW: the band is a fixed clamp — tall enough for the scene +
      HUD chips at 1440x850, capped so the console monitors and the helm
-     rail always fit below it at 1710x947 without clipping. */
-  flex: 0 0 clamp(240px, 34vh, 380px);
+     rail always fit below it at 1710x947 without clipping.
+     The 34vh is scale-compensated (34 * --svh1) so the band stays 34% of the
+     REAL viewport under #root's zoom, keeping the .cmc-body cap math (which
+     subtracts this band) consistent at any UI scale. (WO-UISCALE-VH) */
+  flex: 0 0 clamp(240px, calc(34 * var(--svh1, 1vh)), 380px);
   min-height: 0;
   overflow: hidden;
   background: #000;

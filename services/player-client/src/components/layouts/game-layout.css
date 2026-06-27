@@ -3,7 +3,10 @@
 .game-layout {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* The in-#root app shell must fill the REAL viewport at any UI scale — raw
+     100vh would shrink to scale×viewport under #root's zoom, leaving an empty
+     band below + clipping content. (WO-UISCALE-VH) */
+  height: var(--svh, 100vh);
   position: relative;
   z-index: 1;
 }
