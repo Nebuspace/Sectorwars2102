@@ -2581,14 +2581,6 @@ const GameDashboard: React.FC = () => {
                     // (GLASS LAW: flow content lives in the console, not the glass)
                     const habitability = Math.max(0, Math.min(100, currentPlanet?.habitability_score ?? 0));
                     const maxPopulation = currentPlanet?.max_population ?? 0;
-                    const detailColonists = typeof landedPlanetDetail?.colonists === 'number' ? landedPlanetDetail.colonists : null;
-                    // Headcount bar shows settled colonists against the HARD citadel
-                    // cap (baseMaxColonists), so it reads e.g. "941 / 1,000" and never
-                    // exceeds 100%. The habitability-scaled workforce limiter
-                    // (maxColonists/effective) governs production sliders, not headcount.
-                    const detailMaxColonists = typeof landedPlanetDetail?.baseMaxColonists === 'number'
-                      ? landedPlanetDetail.baseMaxColonists
-                      : (typeof landedPlanetDetail?.maxColonists === 'number' ? landedPlanetDetail.maxColonists : null);
                     const shieldGen = defenseInfo?.shieldGenerator || null;
                     // The Planet model has no drone column — deployed fighters
                     // fill that role (see PlanetaryService.update_defenses note)
@@ -2609,95 +2601,104 @@ const GameDashboard: React.FC = () => {
 
                     return (
                       <div className="planet-ui">
-                        {/* Header with planet name, terraform, and key stats */}
-                        <div className="planet-header">
-                          <div className="planet-title">
-                            <span className="planet-icon-lg">{planetIcon}</span>
-                            <div className="planet-name-block">
-                              <span className="planet-name">
-                                {currentPlanet?.name || 'Unknown Planet'}
-                                {isLandedPlanetMine && currentPlanet && !renamingPlanet && (
-                                  <button
-                                    className="rename-planet-btn"
-                                    onClick={() => {
-                                      setRenameValue(currentPlanet.name || '');
-                                      setRenamingPlanet(true);
-                                    }}
-                                    title="Rename your planet"
-                                  >
-                                    ✏️
-                                  </button>
-                                )}
+                        {/* COMPACT VITALS STRIP — ONE slim always-visible row. Folds
+                            in the old tall header, the standalone habitability/
+                            population readout, AND the colonist-transfer panel
+                            (Disembark/Embark) so the page never stacks them as
+                            separate sections. Planet name (+ rename) · type · Hab%
+                            · Pop/cap · Credits · Defense, then the primary actions:
+                            Disembark / Embark / Lift Off. */}
+                        <div className="planet-vitals-strip">
+                          <span className="pvs-icon" aria-hidden="true">{planetIcon}</span>
+                          {renamingPlanet && currentPlanet ? (() => {
+                            const trimmed = renameValue.trim();
+                            // ✓ is meaningless when the name is empty or unchanged.
+                            const canConfirm = !!trimmed && trimmed !== currentPlanet.name;
+                            const confirmRename = () => {
+                              if (canConfirm) handleRenamePlanet(currentPlanet.id, trimmed);
+                              setRenamingPlanet(false);
+                            };
+                            return (
+                              <span className="planet-rename-form" role="form" aria-label="Rename planet">
+                                <input
+                                  className="planet-rename-input"
+                                  value={renameValue}
+                                  maxLength={60}
+                                  autoFocus
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') { e.preventDefault(); confirmRename(); }
+                                    else if (e.key === 'Escape') { e.preventDefault(); setRenamingPlanet(false); }
+                                  }}
+                                  aria-label="New planet name"
+                                />
+                                <button className="rename-planet-btn" onClick={confirmRename} disabled={!canConfirm} title="Confirm rename">✓</button>
+                                <button className="rename-planet-btn" onClick={() => setRenamingPlanet(false)} title="Cancel rename">✕</button>
                               </span>
-                              {renamingPlanet && currentPlanet && (() => {
-                                const trimmed = renameValue.trim();
-                                // ✓ is meaningless when the name is empty or
-                                // unchanged — disable it so the only outcomes
-                                // are a real rename or an explicit cancel.
-                                const canConfirm = !!trimmed && trimmed !== currentPlanet.name;
-                                const confirmRename = () => {
-                                  if (canConfirm) {
-                                    handleRenamePlanet(currentPlanet.id, trimmed);
-                                  }
-                                  setRenamingPlanet(false);
-                                };
-                                return (
-                                <span className="planet-rename-form" role="form" aria-label="Rename planet">
-                                  <input
-                                    className="planet-rename-input"
-                                    value={renameValue}
-                                    maxLength={60}
-                                    autoFocus
-                                    onChange={(e) => setRenameValue(e.target.value)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') {
-                                        e.preventDefault();
-                                        confirmRename();
-                                      } else if (e.key === 'Escape') {
-                                        e.preventDefault();
-                                        setRenamingPlanet(false);
-                                      }
-                                    }}
-                                    aria-label="New planet name"
-                                  />
-                                  <button
-                                    className="rename-planet-btn"
-                                    onClick={confirmRename}
-                                    disabled={!canConfirm}
-                                    title="Confirm rename"
-                                  >
-                                    ✓
-                                  </button>
-                                  <button
-                                    className="rename-planet-btn"
-                                    onClick={() => setRenamingPlanet(false)}
-                                    title="Cancel rename"
-                                  >
-                                    ✕
-                                  </button>
-                                </span>
-                                );
-                              })()}
-                              <span className="planet-meta">{currentPlanet?.type?.toUpperCase().replace('_', ' ') || 'UNKNOWN'} • Hab: {currentPlanet?.habitability_score || 0}%</span>
-                            </div>
-                          </div>
-                          {/* Planetary-ops notice (rename / upgrade / vault outcomes)
-                              sits adjacent to the planet title so a rename
-                              confirmation lands where the player just acted —
-                              not buried down in the citadel section. */}
-                          {opsNotice && (
-                            <div className={`transfer-notice ${opsNotice.type}`} role="status">
-                              {opsNotice.message}
-                            </div>
+                            );
+                          })() : (
+                            <span className="pvs-name">
+                              {currentPlanet?.name || 'Unknown Planet'}
+                              {isLandedPlanetMine && currentPlanet && (
+                                <button
+                                  className="rename-planet-btn"
+                                  onClick={() => { setRenameValue(currentPlanet.name || ''); setRenamingPlanet(true); }}
+                                  title="Rename your planet"
+                                >
+                                  ✏️
+                                </button>
+                              )}
+                            </span>
                           )}
-                          <div className="planet-stats">
-                            <div className="stat"><span className="label">Population</span><span className="value green">{population.toLocaleString()}</span></div>
-                            {/* Server-computed damage reduction (defense_level × per-level factor) */}
-                            <div className="stat"><span className="label">Defense</span><span className="value">{defenseInfo?.damageReduction ?? '—'}</span></div>
+
+                          <span className="pvs-stat type">{currentPlanet?.type?.toUpperCase().replace('_', ' ') || 'UNKNOWN'}</span>
+                          <span className="pvs-stat"><span className="pvs-label">Hab</span><span className="pvs-val">{habitability}%</span></span>
+                          <span className="pvs-stat"><span className="pvs-label">Pop</span><span className="pvs-val green">{population.toLocaleString()}{maxPopulation > 0 ? ` / ${maxPopulation.toLocaleString()}` : ''}</span></span>
+                          <span className="pvs-stat"><span className="pvs-label">Credits</span><span className="pvs-val">{(playerState?.credits ?? 0).toLocaleString()}</span></span>
+                          <span className="pvs-stat"><span className="pvs-label">Defense</span><span className="pvs-val">{defenseInfo?.damageReduction ?? '—'}</span></span>
+                          {shipColonists > 0 && (
+                            <span className="pvs-stat" title="Colonists aboard your ship"><span className="pvs-label">Aboard</span><span className="pvs-val">{shipColonists.toLocaleString()}</span></span>
+                          )}
+
+                          <div className="pvs-actions">
+                            <button
+                              className="pvs-btn disembark"
+                              disabled={!isLandedPlanetMine || shipColonists === 0}
+                              title={
+                                !isLandedPlanetMine ? 'Disembark requires landing on a planet you own'
+                                  : shipColonists === 0 ? 'No colonists aboard your ship' : 'Ship → Planet'
+                              }
+                              onClick={() => openTransferModal('disembark')}
+                            >
+                              📥 Disembark
+                            </button>
+                            <button
+                              className="pvs-btn embark"
+                              disabled={!isLandedPlanetMine || landedPlanetColonists === 0}
+                              title={
+                                !isLandedPlanetMine ? 'You can only embark colonists from a planet you own'
+                                  : landedPlanetColonists === 0 ? 'No colonists on this planet to embark' : 'Planet → Ship'
+                              }
+                              onClick={() => openTransferModal('embark')}
+                            >
+                              📤 Embark
+                            </button>
+                            <button className="pvs-btn liftoff" onClick={handleLeavePlanet} disabled={helmBusy} title="Lift off and depart this planet">
+                              {helmBusy ? '🚀 Departing…' : '🚀 Lift Off'}
+                            </button>
                           </div>
                         </div>
 
-                        {/* Main content: 2 columns on top, full-width safe at bottom */}
+                        {/* Notices (rename / upgrade / vault / transfer outcomes) —
+                            slim line directly under the strip, where the player acted. */}
+                        {opsNotice && (
+                          <div className={`transfer-notice ${opsNotice.type}`} role="status">{opsNotice.message}</div>
+                        )}
+                        {transferNotice && (
+                          <div className={`transfer-notice ${transferNotice.type}`} role="status">{transferNotice.message}</div>
+                        )}
+
+                        {/* Main content: the tabbed management console fills the rest. */}
                         <div className="planet-content">
                           {/* COLONY MANAGEMENT — Screen 2 of the cockpit redesign.
                               SCROLL LAW (WO-COCKPIT-SCROLLLAW): hoisted to the TOP of
@@ -2730,81 +2731,14 @@ const GameDashboard: React.FC = () => {
                                 cap: storageCap,
                               };
                             });
-                            return (
-                              <CockpitColonyManagement
-                                planetId={String(landedPlanet.id)}
-                                planetType={currentPlanet?.type}
-                                playerCredits={playerState?.credits ?? 0}
-                                citadelInfo={citadelInfo}
-                                landedPlanetDetail={landedPlanetDetail}
-                                habitabilityScore={currentPlanet?.habitability_score ?? habitability}
-                                underSiege={!!(landedPlanet as any)?.under_siege || !!(landedPlanetDetail as any)?.underSiege}
-                                productionLines={landedPlanetDetail ? prodLines : []}
-                                overflowResources={overflowResources}
-                                onOpsChange={() => setOpsRefresh(n => n + 1)}
-                              />
-                            );
-                          })()}
-
-                          {/* VITALS — relocated from the old landed band (it used to
-                              clip inside the glass); habitability dial + population /
-                              colonist bars + colony status, tinted per planet type */}
-                          <div className={`planet-section vitals ${getPlanetTintClass(currentPlanet?.type)}`}>
-                            <div className="planet-vitals">
-                              <div
-                                className="vital-dial"
-                                style={{ '--dial-pct': habitability } as React.CSSProperties}
-                                title={`Habitability: ${habitability}%`}
-                              >
-                                <div className="dial-face">
-                                  <span className="dial-value">{habitability}%</span>
-                                </div>
-                                <span className="dial-label">Habitability</span>
-                              </div>
-                              <div className="vital-bars">
-                                <div className="vital-bar-row" title="Planetary population">
-                                  <span className="vital-bar-label">Population</span>
-                                  <div className="vital-bar-track">
-                                    <div
-                                      className="vital-bar-fill population"
-                                      style={{ width: `${maxPopulation > 0 ? Math.min(100, (population / maxPopulation) * 100) : (population > 0 ? 100 : 0)}%` }}
-                                    ></div>
-                                  </div>
-                                  <span className="vital-bar-value">
-                                    {population.toLocaleString()}{maxPopulation > 0 ? ` / ${maxPopulation.toLocaleString()}` : ''}
-                                  </span>
-                                </div>
-                                {detailColonists !== null && (
-                                  <div className="vital-bar-row" title="Colonist workforce">
-                                    <span className="vital-bar-label">Colonists</span>
-                                    <div className="vital-bar-track">
-                                      <div
-                                        className="vital-bar-fill colonists"
-                                        style={{ width: `${detailMaxColonists && detailMaxColonists > 0 ? Math.min(100, (detailColonists / detailMaxColonists) * 100) : (detailColonists > 0 ? 100 : 0)}%` }}
-                                      ></div>
-                                    </div>
-                                    <span className="vital-bar-value">
-                                      {detailColonists.toLocaleString()}{detailMaxColonists && detailMaxColonists > 0 ? ` / ${detailMaxColonists.toLocaleString()}` : ''}
-                                    </span>
-                                  </div>
-                                )}
-                                <div className="vital-bar-row status">
-                                  <span className="vital-bar-label">Status</span>
-                                  <span className="vital-bar-value">{currentPlanet?.status?.toUpperCase() || 'UNKNOWN'}</span>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* COLONY OPS — the slim controls the cockpit HUD console
-                              does NOT cover: the in-progress citadel CANCEL, the
-                              shield-generator upgrade (distinct from raw defense
-                              counts), the server-authoritative defense-building
-                              catalog, and colonist transfer (disembark/embark).
-                              Citadel level/upgrade, vault credits, terraform, grid,
-                              research, allocation + live production all live in the
-                              CockpitColonyManagement console above. */}
-                          <div className="planet-top-row">
+                            // DEFENSE-OPS tab body — the slim controls the cockpit
+                            // HUD panels do NOT cover: the in-progress citadel CANCEL,
+                            // the shield-generator upgrade (distinct from raw defense
+                            // counts), and the server-authoritative defense-building
+                            // catalog. Rendered here in GameDashboard's closure so the
+                            // existing handlers + live telemetry keep working, then
+                            // handed to the tabbed console as the Defense tab.
+                            const defenseTabBody = (
                             <div className="planet-section defense">
                               <h4>🛡️ Defense Ops</h4>
                               {citadelInfo?.is_upgrading && (() => {
@@ -2955,68 +2889,14 @@ const GameDashboard: React.FC = () => {
                                 </div>
                               )}
                             </div>
-                            <div className="planet-section production">
-                              <h4>👥 Colonist Transfer</h4>
+                            );
 
-                              {/* Colonist Transfer — ship ↔ planet (disembark /
-                                  embark). UNIQUE: not surfaced anywhere in the
-                                  cockpit HUD console. Workforce ALLOCATION lives in
-                                  the cockpit Production panel (ColonistAllocator). */}
-                              <div className="colonist-transfer">
-                                <div className="transfer-info">
-                                  <span className="pop-count">{Math.floor(population / 1000)}K</span>
-                                  <span className="pop-label">Population</span>
-                                </div>
-                                <div className="transfer-actions">
-                                  <button
-                                    className="transfer-btn disembark"
-                                    disabled={!isLandedPlanetMine || shipColonists === 0}
-                                    title={
-                                      !isLandedPlanetMine
-                                        ? 'Disembark requires landing on a planet you own'
-                                        : shipColonists === 0
-                                          ? 'No colonists aboard your ship'
-                                          : 'Ship → Planet'
-                                    }
-                                    onClick={() => openTransferModal('disembark')}
-                                  >
-                                    <span>📥</span> Disembark
-                                  </button>
-                                  <button
-                                    className="transfer-btn embark"
-                                    disabled={!isLandedPlanetMine || landedPlanetColonists === 0}
-                                    title={
-                                      !isLandedPlanetMine
-                                        ? 'You can only embark colonists from a planet you own'
-                                        : landedPlanetColonists === 0
-                                          ? 'No colonists on this planet to embark'
-                                          : 'Planet → Ship'
-                                    }
-                                    onClick={() => openTransferModal('embark')}
-                                  >
-                                    <span>📤</span> Embark
-                                  </button>
-                                </div>
-                              </div>
-                              {shipColonists > 0 && (
-                                <div className="colonists-aboard">
-                                  👥 {shipColonists.toLocaleString()} colonists aboard
-                                </div>
-                              )}
-                              {transferNotice && (
-                                <div className={`transfer-notice ${transferNotice.type}`} role="status">
-                                  {transferNotice.message}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Bottom Row: Full-width Citadel Safe — PROTECTED COMMODITY
-                              STORAGE only. Credit deposit/withdraw moved to the cockpit
-                              Citadel panel (CitadelManager); what remains here is the
-                              UNIQUE store/take of stockpiled goods into the raider-proof
-                              safe + the auto-deposit toggle, which the HUD does not
-                              cover. Requires citadel level >= 1. */}
+                            // SAFE tab body — the Citadel-Safe PROTECTED COMMODITY
+                            // STORAGE (store/take of stockpiled goods into the
+                            // raider-proof safe + the auto-deposit toggle). Credit
+                            // deposit/withdraw lives in the cockpit Citadel panel.
+                            // Requires citadel level >= 1.
+                            const safeTabBody = (
                           <div className="planet-section storage full-width">
                             <div className="safe-header">
                               <h4>🔐 Citadel Safe</h4>
@@ -3115,6 +2995,25 @@ const GameDashboard: React.FC = () => {
                               )}
                             </div>
                           </div>
+                            );
+
+                            return (
+                              <CockpitColonyManagement
+                                planetId={String(landedPlanet.id)}
+                                planetType={currentPlanet?.type}
+                                playerCredits={playerState?.credits ?? 0}
+                                citadelInfo={citadelInfo}
+                                landedPlanetDetail={landedPlanetDetail}
+                                habitabilityScore={currentPlanet?.habitability_score ?? habitability}
+                                underSiege={!!(landedPlanet as any)?.under_siege || !!(landedPlanetDetail as any)?.underSiege}
+                                productionLines={landedPlanetDetail ? prodLines : []}
+                                overflowResources={overflowResources}
+                                onOpsChange={() => setOpsRefresh(n => n + 1)}
+                                defenseTab={defenseTabBody}
+                                safeTab={safeTabBody}
+                              />
+                            );
+                          })()}
                         </div>
 
                       </div>

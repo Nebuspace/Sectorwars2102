@@ -12,6 +12,13 @@
   --border-color: #334155;
   --container-bg: #1e293b;
   --surface-bg: #1e293b;
+  /* Opaque modal/panel surface. Referenced by the colony modals
+     (colonist-allocator, building-manager, defense-configuration,
+     genesis-deployment, siege-status-monitor, colony-specialization) for their
+     background — was only ever defined scoped to .colony-specialization, so the
+     other five rendered transparent. Promoted to :root so every modal has a
+     solid backing (WO-COCKPIT-TABBED). */
+  --surface-primary: #141a24;
   --hover-bg: #334155;
   
   /* Game Colors */

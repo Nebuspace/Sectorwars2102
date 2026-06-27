@@ -15,6 +15,9 @@ import ProductionPanel, { type ProductionLine } from './ProductionPanel';
 import '../planetary/planet-manager.css'; // .modal-overlay / .modal-content
 import './cockpit-colony.css';
 
+/** The tabs of the landed-colony management console. */
+type ColonyTab = 'citadel' | 'grid' | 'terraform' | 'research' | 'production' | 'defense' | 'safe';
+
 export interface CockpitColonyManagementProps {
   /** Landed planet id (string). The cockpit gates this on landed + owned. */
   planetId: string;
@@ -35,10 +38,23 @@ export interface CockpitColonyManagementProps {
   overflowResources: string[];
   /** Bump the caller's opsRefresh so the landed poll re-fetches after a mutation. */
   onOpsChange: () => void;
+  /**
+   * The DEFENSE-OPS tab body — rendered by the caller (GameDashboard) so the
+   * shield-upgrade / citadel-cancel / defense-building controls keep their
+   * existing handlers + live telemetry from the landed closure. Folded in here
+   * as a tab so the page no longer stacks it as a separate section.
+   */
+  defenseTab?: React.ReactNode;
+  /**
+   * The SAFE tab body — the Citadel-Safe protected-commodity store/take + the
+   * auto-deposit toggle, rendered by the caller for the same reason as above.
+   */
+  safeTab?: React.ReactNode;
 }
 
 /**
- * CockpitColonyManagement — Screen 2 of the colony-cockpit redesign.
+ * CockpitColonyManagement — Screen 2 of the colony-cockpit redesign, now a
+ * TABBED management console.
  *
  * The full colony-management depth, surfaced as cockpit-native HUD panels woven
  * into the landed planet console (GameDashboard, gated on isLandedPlanetMine).
@@ -47,6 +63,11 @@ export interface CockpitColonyManagementProps {
  * aesthetic, and relocates all 6 action modals (allocator, buildings, defense,
  * genesis, specialization, siege) here so nothing the old PlanetManager could
  * do is lost — just relocated.
+ *
+ * A tab bar selects ONE panel at a time; the active panel renders in a region
+ * sized to the remaining viewport height (flex:1 + min-height:0 + overflow on
+ * the tab body), so the whole landed view fits 1440x900 with no page scroll —
+ * only a single overflowing panel scrolls internally.
  *
  * The 6 modals operate on the RICH owned-Planet object (the same shape
  * /planets/owned returns, which the modals were written against); we fetch it
@@ -63,10 +84,15 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   productionLines,
   overflowResources,
   onOpsChange,
+  defenseTab,
+  safeTab,
 }) => {
   // The rich owned-Planet object for the modals (the landed poll's detail shape
   // is not the same as the /planets/owned shape the modals were written for).
   const [ownedPlanet, setOwnedPlanet] = useState<Planet | null>(null);
+
+  // Active management tab. Citadel is the default landing tab.
+  const [tab, setTab] = useState<ColonyTab>('citadel');
 
   const loadOwnedPlanet = useCallback(() => {
     let cancelled = false;
@@ -127,58 +153,87 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
         ? ownedPlanet!.buildings.length
         : null;
 
+  // Tab definitions — the active one renders its panel; a glanceable readout
+  // appears on each tab so the player keeps the key vital without leaving it.
+  const tabs: { key: ColonyTab; label: string; icon: string }[] = [
+    { key: 'citadel', label: 'Citadel', icon: '⬡' },
+    { key: 'grid', label: 'Grid', icon: '▦' },
+    { key: 'terraform', label: 'Terraform', icon: '🌍' },
+    { key: 'research', label: 'Research', icon: '⟳' },
+    { key: 'production', label: 'Production', icon: '🏭' },
+    { key: 'defense', label: 'Defense', icon: '🛡️' },
+    { key: 'safe', label: 'Safe', icon: '🔐' },
+  ];
+
   return (
-    <div className="colony-mgmt-region">
-      <div className="cmr-heading">
-        ⬡ Colony Management — landed console
+    <div className="colony-mgmt-console">
+      <div className="cmc-tabbar" role="tablist" aria-label="Colony management">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            className={`cmc-tab${tab === t.key ? ' active' : ''}`}
+            onClick={() => setTab(t.key)}
+          >
+            <span className="cmc-tab-icon" aria-hidden="true">{t.icon}</span>
+            <span className="cmc-tab-label">{t.label}</span>
+          </button>
+        ))}
+        {/* Genesis is a cross-colony action, not a tab — keep it always reachable. */}
         <button
           type="button"
-          className="cp-action-btn"
-          style={{ flex: '0 0 auto', marginLeft: '0.6rem', verticalAlign: 'middle' }}
+          className="cmc-genesis-btn"
           onClick={() => setShowGenesis(true)}
           title="Deploy a Genesis Device to seed a new colony in an empty sector"
         >
-          🌌 Deploy Genesis
+          🌌 Genesis
         </button>
       </div>
 
-      {/* Row 1 — Citadel · Grid · Terraform */}
-      <div className="colony-mgmt-row row-1">
-        <CitadelPanel
-          planetId={planetId}
-          playerCredits={playerCredits}
-          stationedDrones={stationedDrones}
-          citadelLevel={citadelLevel}
-          underSiege={underSiege}
-          onUpdate={handlePanelUpdate}
-          onOpenBuildings={() => setShowBuildings(true)}
-          onOpenDefense={() => setShowDefense(true)}
-          onOpenSiege={() => setShowSiege(true)}
-        />
-        <GridPanel
-          planetId={planetId}
-          playerCredits={playerCredits}
-          placed={placed}
-          onUpdate={handlePanelUpdate}
-        />
-        <TerraformPanel
-          planetId={planetId}
-          planetType={planetType}
-          playerCredits={playerCredits}
-          habitabilityScore={habitabilityScore}
-          onUpdate={handlePanelUpdate}
-        />
-      </div>
-
-      {/* Row 2 — Research flywheel · Production (live) */}
-      <div className="colony-mgmt-row row-2">
-        <ResearchPanel />
-        <ProductionPanel
-          lines={productionLines}
-          overflowResources={overflowResources}
-          onOpenAllocator={() => setShowAllocator(true)}
-          onOpenSpecialization={() => setShowSpecialization(true)}
-        />
+      <div className="cmc-body" role="tabpanel">
+        {tab === 'citadel' && (
+          <CitadelPanel
+            planetId={planetId}
+            playerCredits={playerCredits}
+            stationedDrones={stationedDrones}
+            citadelLevel={citadelLevel}
+            underSiege={underSiege}
+            onUpdate={handlePanelUpdate}
+            onOpenBuildings={() => setShowBuildings(true)}
+            onOpenDefense={() => setShowDefense(true)}
+            onOpenSiege={() => setShowSiege(true)}
+          />
+        )}
+        {tab === 'grid' && (
+          <GridPanel
+            planetId={planetId}
+            playerCredits={playerCredits}
+            placed={placed}
+            onUpdate={handlePanelUpdate}
+          />
+        )}
+        {tab === 'terraform' && (
+          <TerraformPanel
+            planetId={planetId}
+            planetType={planetType}
+            playerCredits={playerCredits}
+            habitabilityScore={habitabilityScore}
+            onUpdate={handlePanelUpdate}
+          />
+        )}
+        {tab === 'research' && <ResearchPanel />}
+        {tab === 'production' && (
+          <ProductionPanel
+            lines={productionLines}
+            overflowResources={overflowResources}
+            onOpenAllocator={() => setShowAllocator(true)}
+            onOpenSpecialization={() => setShowSpecialization(true)}
+          />
+        )}
+        {tab === 'defense' && (defenseTab ?? <div className="cp-empty">Defense telemetry unavailable</div>)}
+        {tab === 'safe' && (safeTab ?? <div className="cp-empty">Vault telemetry unavailable</div>)}
       </div>
 
       {/* ── The 6 action modals (relocated from PlanetManager) ── */}

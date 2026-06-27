@@ -8,48 +8,113 @@
    the CRT palette. Accent comes in per-panel via --panel-accent.
    ============================================ */
 
-.colony-mgmt-region {
+/* ── Tabbed management console (Screen 2 reimagined to fit 1440x900) ──
+   A fixed tab bar selects ONE panel; the tab body flex-fills the remaining
+   viewport height so the whole landed view never scrolls the page — only the
+   single active panel scrolls internally. */
+.colony-mgmt-console {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  margin: 0.6rem 0 0 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0 0;
 }
 
-.colony-mgmt-region .cmr-heading {
+.colony-mgmt-console .cmc-tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.colony-mgmt-console .cmc-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.6rem;
   font-family: 'Courier New', monospace;
   font-size: 0.62rem;
   font-weight: 700;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #7dd3fc;
-  text-shadow: 0 0 8px rgba(125, 211, 252, 0.5);
-  opacity: 0.9;
-  padding: 0 0.2rem;
+  background: rgba(0, 20, 35, 0.6);
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+  white-space: nowrap;
 }
 
-/* Row 1 = three compact panels; Row 2 = two wider panels. Collapse to a
-   single column on narrow consoles so nothing clips inside the glass. */
-.colony-mgmt-row {
-  display: grid;
-  gap: 0.5rem;
+.colony-mgmt-console .cmc-tab:hover {
+  background: rgba(0, 30, 50, 0.8);
+  color: #bae6fd;
 }
 
-.colony-mgmt-row.row-1 {
-  grid-template-columns: repeat(3, 1fr);
+.colony-mgmt-console .cmc-tab.active {
+  color: #001018;
+  background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 100%);
+  border-color: #7dd3fc;
+  box-shadow: 0 0 10px rgba(125, 211, 252, 0.5);
 }
 
-.colony-mgmt-row.row-2 {
-  grid-template-columns: 3fr 4fr;
+.colony-mgmt-console .cmc-tab-icon { font-size: 0.85rem; }
+
+.colony-mgmt-console .cmc-genesis-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.32rem 0.6rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, #c084fc 70%, #ffffff 30%);
+  background: rgba(124, 110, 255, 0.12);
+  border: 1px solid rgba(124, 110, 255, 0.45);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
 }
 
-@media (max-width: 1100px) {
-  .colony-mgmt-row.row-1 { grid-template-columns: 1fr 1fr; }
-  .colony-mgmt-row.row-2 { grid-template-columns: 1fr; }
+.colony-mgmt-console .cmc-genesis-btn:hover {
+  background: rgba(124, 110, 255, 0.25);
+  box-shadow: 0 0 8px rgba(124, 110, 255, 0.4);
 }
 
-@media (max-width: 720px) {
-  .colony-mgmt-row.row-1,
-  .colony-mgmt-row.row-2 { grid-template-columns: 1fr; }
+/* The active panel's region — flex-fills the rest of the console height. The
+   single child panel scrolls internally (cp-body / sub-section overflow). */
+.colony-mgmt-console .cmc-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* A panel mounted as the active tab fills the body (overriding the fixed-height
+   grid sizing the panels used when they were stacked). */
+.colony-mgmt-console .cmc-body > .cockpit-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.colony-mgmt-console .cmc-body > .cockpit-panel > .cp-body {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+
+/* The Defense / Safe tab bodies are plain sections (no cockpit-panel wrapper) —
+   give them a scroll box so an overlong list never grows the page. */
+.colony-mgmt-console .cmc-body > .planet-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* ── Panel frame — small instrument bezel, accent-tinted LED header ── */

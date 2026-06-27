@@ -2004,8 +2004,13 @@
 
 .planetary-ops-content {
   padding: 0.5rem !important;
-  overflow-y: auto;
-  overflow-x: hidden;
+  /* The landed-owned view fits 1440x900 with no page scroll: the tabbed colony
+     console scrolls internally, so this outer area clips. A non-owned / not-yet-
+     owned landed view is short and fits without a scrollbar. */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   height: 100%;
   max-height: 100%;
 }
@@ -2180,8 +2185,116 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   padding: 0.5rem;
   gap: 0.25rem;
+  overflow: hidden; /* the tab body is the only scroller — the page never scrolls */
+}
+
+/* ── COMPACT VITALS STRIP — one slim always-visible row (replaces the tall
+   header + the habitability/population donut + the colonist-transfer panel) ── */
+.planet-vitals-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.85rem;
+  flex-shrink: 0;
+  padding: 0.4rem 0.7rem;
+  background: linear-gradient(135deg, rgba(0, 30, 50, 0.9) 0%, rgba(0, 15, 35, 0.95) 100%);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+}
+
+.planet-vitals-strip .pvs-icon { font-size: 1.15rem; line-height: 1; }
+
+.planet-vitals-strip .pvs-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #e6f6ff;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+  white-space: nowrap;
+}
+
+.planet-vitals-strip .pvs-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.planet-vitals-strip .pvs-stat.type {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #7dd3fc;
+  opacity: 0.85;
+}
+
+.planet-vitals-strip .pvs-label {
+  font-size: 0.55rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6c8aa3;
+}
+
+.planet-vitals-strip .pvs-val {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #d8ecff;
+}
+
+.planet-vitals-strip .pvs-val.green { color: #86efac; }
+
+/* Push the action buttons to the far right of the strip. */
+.planet-vitals-strip .pvs-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+.planet-vitals-strip .pvs-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.32rem 0.6rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #bae6fd;
+  background: rgba(0, 30, 50, 0.7);
+  border: 1px solid rgba(125, 211, 252, 0.4);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.planet-vitals-strip .pvs-btn:hover:not(:disabled) {
+  background: rgba(0, 45, 70, 0.9);
+  box-shadow: 0 0 8px rgba(125, 211, 252, 0.35);
+}
+
+.planet-vitals-strip .pvs-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.planet-vitals-strip .pvs-btn.liftoff {
+  color: #fde68a;
+  border-color: rgba(251, 191, 36, 0.5);
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.planet-vitals-strip .pvs-btn.liftoff:hover:not(:disabled) {
+  background: rgba(251, 191, 36, 0.24);
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.4);
 }
 
 /* Header - Compact single row */
@@ -2374,9 +2487,11 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  /* The tabbed console inside owns its own internal scroll; the page must not
+     scroll, so this fill region clips rather than scrolling. */
+  overflow: hidden;
   margin: 0;
   padding: 0;
 }
