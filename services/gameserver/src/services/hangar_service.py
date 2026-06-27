@@ -321,6 +321,12 @@ class HangarService:
         docking_pilot.is_landed = False
         docking_pilot.current_port_id = None
         docking_pilot.current_planet_id = None
+        # WO-DOCK-500 Leg 1: stowing a port-docked ship into a Carrier implicitly
+        # undocks its pilot; release the docking-slip occupancy or it orphans and
+        # 500s the next dock. (Launch/jettison FROM a hangar never held a port
+        # slip, so those paths need no release.)
+        from src.services.docking_service import release as _release_docking_slip
+        _release_docking_slip(self.db, None, docking_pilot)
 
         flag_modified(carrier, "hangar")
         logger.info(

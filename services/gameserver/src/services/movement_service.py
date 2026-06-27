@@ -1408,6 +1408,12 @@ class MovementService:
         player.is_landed = False  # Player is no longer landed on a planet
         player.current_port_id = None  # Clear dangling port reference
         player.current_planet_id = None  # Clear dangling planet reference
+        # WO-DOCK-500 Leg 1: warping away from a port is an implicit undock, so
+        # release the docking-slip occupancy too — otherwise the row orphans and
+        # the next dock 500s on the UNIQUE player_id (the trading /undock path
+        # already releases; warp/quantum/hangar/tow did not).
+        from src.services.docking_service import release as _release_docking_slip
+        _release_docking_slip(self.db, None, player)
         
         # Update ship position
         if player.current_ship:

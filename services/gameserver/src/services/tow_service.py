@@ -425,6 +425,10 @@ class TowService:
                 pilot.is_landed = False
                 pilot.current_port_id = None
                 pilot.current_planet_id = None
+                # WO-DOCK-500 Leg 1: a tow ride-along out of a port implicitly
+                # undocks the pilot; release the slip or it orphans + 500s redock.
+                from src.services.docking_service import release as _release_docking_slip
+                _release_docking_slip(self.db, None, pilot)
         logger.info(
             "Tow ride-along: hauler %s carried towed %s to sector %s",
             hauler.id, towed.id, destination_sector_id,

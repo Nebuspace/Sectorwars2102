@@ -519,6 +519,15 @@ def acquire(db: Session, station: Station, player: Player, ship_id: Optional[UUI
             db.query(DockingQueueEntry).filter(
                 DockingQueueEntry.player_id == player.id
             ).delete(synchronize_session=False)
+            # WO-DOCK-500 Leg 2 (idempotent dock): a player holds at most ONE
+            # occupancy (player_id is UNIQUE). Clear any pre-existing / orphan
+            # row galaxy-wide before granting — otherwise a stale slip (e.g. an
+            # undock-by-warp/quantum/hangar that failed to release it) collides
+            # on INSERT and 500s the dock. This is an immediate SQL DELETE (like
+            # the queue purge above), so it runs before the INSERT below.
+            db.query(DockingSlipOccupancy).filter(
+                DockingSlipOccupancy.player_id == player.id
+            ).delete(synchronize_session=False)
             occupancy = DockingSlipOccupancy(
                 station_id=station.id,
                 player_id=player.id,

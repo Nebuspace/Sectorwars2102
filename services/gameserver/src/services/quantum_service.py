@@ -721,6 +721,10 @@ def jump(
         player.is_landed = False
         player.current_port_id = None
         player.current_planet_id = None
+        # WO-DOCK-500 Leg 1: a quantum jump out of a port is an implicit undock;
+        # release the docking-slip occupancy or it orphans and 500s the next dock.
+        from src.services.docking_service import release as _release_docking_slip
+        _release_docking_slip(db, None, player)
         ship.sector_id = destination.sector_id
 
         # Tractor tow ride-along through the QJ (WO-AF; ships.md:358). The towed
