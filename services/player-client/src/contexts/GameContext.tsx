@@ -261,6 +261,10 @@ export interface PlayerState {
   reputation_tier: string;
   name_color: string;
   military_rank: string;
+
+  // HUD enrichment (WO-PLAYERINFO id=142) — additive read fields:
+  turn_regen_per_hour?: number; // effective turns/hour
+  bounty_total?: number;        // credits on this player's head
 }
 
 interface GameContextType {

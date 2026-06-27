@@ -122,6 +122,33 @@
   text-shadow: 0 0 8px rgba(251, 191, 36, 0.35);
 }
 
+/* Turn-regen subscript (id=145d) — small green accent after the turns value;
+   hover the TRN chip for time-to-full (title). */
+.pvh-regen {
+  margin-left: 0.3rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--health-good, #10b981);
+  opacity: 0.85;
+}
+
+/* DRONES group (id=145b) — ATK (⚔) + DEF (🛡) under ONE "DRONES" label so they
+   read as attack/defense drones, not generic stats. */
+.pvh-drones .pvh-v {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+.pvh-drone {
+  white-space: nowrap;
+}
+
+/* Bounty chip (id=145e) — only rendered when a bounty is on the player's head;
+   danger-red so it reads as a threat-on-you, not a credit balance. */
+.pvh-bounty .pvh-v {
+  color: var(--health-danger, #ef4444);
+  text-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
 /* RIGHT — logout. The control re-enables pointer events. */
 .pvh-logout {
   flex: 0 1 auto;
