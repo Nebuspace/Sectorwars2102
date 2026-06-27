@@ -9,7 +9,7 @@ import './route-rail.css';
 const NAV_ITEMS: Array<{ to: string; mnemonic: string; label: string; accent: string }> = [
   { to: '/game', mnemonic: 'CMD', label: 'COMMAND', accent: '#00D9FF' },
   { to: '/game/map', mnemonic: 'NAV', label: 'NAV CHART', accent: '#00D9FF' },
-  { to: '/game/ships', mnemonic: 'HGR', label: 'HANGAR', accent: '#9EC5FF' },
+  { to: '/game/player', mnemonic: 'PLY', label: 'PLAYER INFO', accent: '#9EC5FF' },
   { to: '/game/settings', mnemonic: 'SET', label: 'SETTINGS', accent: '#9AA7B4' },
   { to: '/game/planets', mnemonic: 'COL', label: 'COLONIES', accent: '#7B2FFF' },
   { to: '/game/combat', mnemonic: 'WPN', label: 'WEAPONS', accent: '#FF4D6D' },

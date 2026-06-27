@@ -9,6 +9,7 @@
 import React from 'react';
 import { useGame } from '../../../contexts/GameContext';
 import type { MoveOption } from '../../../contexts/GameContext';
+import { useAutopilot } from '../../../contexts/AutopilotContext';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty, MFDInsufficient } from '../atoms';
 import './pages-ops.css';
 
@@ -28,6 +29,10 @@ const ExitRow: React.FC<{ move: MoveOption; tunnel: boolean }> = ({ move, tunnel
 
 const NavPositionPage: React.FC = () => {
   const { currentSector, availableMoves } = useGame();
+  // id=147: autopilot hop-costs rehomed here from the retired TURN softkey.
+  const { course, currentHopIndex } = useAutopilot();
+  const nextHop =
+    course && currentHopIndex < course.hops.length ? course.hops[currentHopIndex] : null;
 
   const { warps, tunnels } = availableMoves;
 
@@ -50,6 +55,17 @@ const NavPositionPage: React.FC = () => {
             {currentSector.region_name ? (
               <MFDField label="REGION" value={currentSector.region_name} />
             ) : null}
+          </>
+        )}
+
+        {nextHop && (
+          <>
+            <div className="mfd-page-section-label">AUTOPILOT COURSE</div>
+            <MFDField label="NEXT HOP" value={nextHop.name} accent />
+            <MFDField label="HOP COST" value={`${nextHop.turn_cost} T`} />
+            {typeof course?.total_turns === 'number' && (
+              <MFDField label="COURSE TOTAL" value={`${course.total_turns} T`} />
+            )}
           </>
         )}
 
