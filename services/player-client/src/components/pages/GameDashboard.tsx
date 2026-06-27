@@ -1306,8 +1306,16 @@ const GameDashboard: React.FC = () => {
   const transferMax = useMemo(() => {
     if (transferModal === 'disembark') {
       let max = shipColonists;
-      if (typeof landedPlanetDetail?.maxColonists === 'number' && typeof landedPlanetDetail?.colonists === 'number') {
-        max = Math.min(max, Math.max(0, landedPlanetDetail.maxColonists - landedPlanetDetail.colonists));
+      // Disembark fills toward the HARD citadel headcount cap (baseMaxColonists,
+      // e.g. 1,000 at L1 Outpost — ADR-0035), NOT the habitability-scaled
+      // workforce limiter (`maxColonists` = effectiveMaxColonists). Colonists
+      // above the workforce cap settle fine; the surplus is just idle until
+      // habitability/citadel rises. The server enforces colonists <= citadel
+      // cap on the transfer route, so gating the modal on the effective cap
+      // wrongly clamps disembark to 0 whenever colonists exceed the scaled value.
+      const hardCap = Number(landedPlanetDetail?.baseMaxColonists ?? landedPlanetDetail?.maxColonists);
+      if (Number.isFinite(hardCap) && typeof landedPlanetDetail?.colonists === 'number') {
+        max = Math.min(max, Math.max(0, hardCap - landedPlanetDetail.colonists));
       }
       return max;
     }
@@ -2553,7 +2561,13 @@ const GameDashboard: React.FC = () => {
                     const habitability = Math.max(0, Math.min(100, currentPlanet?.habitability_score ?? 0));
                     const maxPopulation = currentPlanet?.max_population ?? 0;
                     const detailColonists = typeof landedPlanetDetail?.colonists === 'number' ? landedPlanetDetail.colonists : null;
-                    const detailMaxColonists = typeof landedPlanetDetail?.maxColonists === 'number' ? landedPlanetDetail.maxColonists : null;
+                    // Headcount bar shows settled colonists against the HARD citadel
+                    // cap (baseMaxColonists), so it reads e.g. "941 / 1,000" and never
+                    // exceeds 100%. The habitability-scaled workforce limiter
+                    // (maxColonists/effective) governs production sliders, not headcount.
+                    const detailMaxColonists = typeof landedPlanetDetail?.baseMaxColonists === 'number'
+                      ? landedPlanetDetail.baseMaxColonists
+                      : (typeof landedPlanetDetail?.maxColonists === 'number' ? landedPlanetDetail.maxColonists : null);
                     const shieldGen = defenseInfo?.shieldGenerator || null;
                     // The Planet model has no drone column — deployed fighters
                     // fill that role (see PlanetaryService.update_defenses note)
