@@ -99,7 +99,10 @@
 /* The body scrolls internally so a deep manager (grid / research) never
    blows out the landed console's own scroll. */
 .cockpit-panel .cp-body {
-  flex: 1 1 0;
+  /* Size to content (capped + scrolled at max-height) rather than flexing to a
+     zero-basis in a height-less grid row — flex:1 1 0 collapsed every panel to
+     just its header strip, clipping the manager body (SCROLL-LAW recheck). */
+  flex: 0 0 auto;
   min-height: 0;
   max-height: 360px;
   overflow-y: auto;
