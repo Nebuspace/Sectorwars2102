@@ -19,8 +19,11 @@ export interface SettingsContextType {
 const UI_SCALE_STORAGE_KEY = 'uiScale';
 const DEFAULT_UI_SCALE = 1.0;
 /** Allowed scale fractions; anything outside this set falls back to default. */
-const MIN_UI_SCALE = 0.5;
-const MAX_UI_SCALE = 2.0;
+// Matches the Settings UI-scale slider range. A previously-persisted value from
+// the old discrete select (which offered 1.25 / 1.5) is clamped into this range
+// on read so the slider thumb and the % label can't disagree.
+const MIN_UI_SCALE = 0.6;
+const MAX_UI_SCALE = 1.2;
 
 /**
  * Read + sanitize the persisted scale. Guards against absent / corrupt /
@@ -32,10 +35,11 @@ const readStoredUiScale = (): number => {
     const raw = localStorage.getItem(UI_SCALE_STORAGE_KEY);
     if (raw === null) return DEFAULT_UI_SCALE;
     const parsed = parseFloat(raw);
-    if (!Number.isFinite(parsed) || parsed < MIN_UI_SCALE || parsed > MAX_UI_SCALE) {
-      return DEFAULT_UI_SCALE;
-    }
-    return parsed;
+    if (!Number.isFinite(parsed)) return DEFAULT_UI_SCALE;
+    // Clamp (don't reject) so an out-of-range persisted value — e.g. an old
+    // 1.25/1.5 from the pre-slider select — snaps to the nearest slider bound
+    // (1.2) rather than the thumb pinning at max while the label shows 150%.
+    return Math.min(MAX_UI_SCALE, Math.max(MIN_UI_SCALE, parsed));
   } catch {
     // localStorage can throw (private mode / disabled) — fall back gracefully.
     return DEFAULT_UI_SCALE;

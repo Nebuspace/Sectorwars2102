@@ -1354,10 +1354,12 @@ const GameDashboard: React.FC = () => {
     Number(landedPlanetDetail?.baseMaxColonists ?? Infinity),
     Number(landedPlanetDetail?.maxPopulation ?? Infinity),
   );
-  // Colonists you can still unload before hitting that lower cap.
-  const transferHeadroom = Number.isFinite(colonistHardCap)
+  // Colonists you can still unload before hitting that lower cap. null until the
+  // landed detail (with the cap fields) has loaded, so the readout shows '—'
+  // instead of a transient/misleading 0.
+  const transferHeadroom: number | null = (landedPlanetDetail && Number.isFinite(colonistHardCap))
     ? Math.max(0, colonistHardCap - Number(landedPlanetDetail?.colonists ?? 0))
-    : 0;
+    : null;
 
   const transferMax = useMemo(() => {
     if (transferModal === 'disembark') {
@@ -1405,8 +1407,8 @@ const GameDashboard: React.FC = () => {
       setTransferNotice({
         type: 'success',
         message: result?.message || (action === 'disembark'
-          ? `${transferQuantity.toLocaleString()} colonists disembarked to ${landedPlanet.name}`
-          : `${transferQuantity.toLocaleString()} colonists embarked from ${landedPlanet.name}`)
+          ? `${transferQuantity.toLocaleString()} colonists unloaded to ${landedPlanet.name}`
+          : `${transferQuantity.toLocaleString()} colonists loaded from ${landedPlanet.name}`)
       });
       // Sync the detail panel from the authoritative server response
       setLandedPlanetDetail((prev: any) => prev ? {
@@ -2677,7 +2679,6 @@ const GameDashboard: React.FC = () => {
                     // Vitals telemetry relocated from the old landed band
                     // (GLASS LAW: flow content lives in the console, not the glass)
                     const habitability = Math.max(0, Math.min(100, currentPlanet?.habitability_score ?? 0));
-                    const maxPopulation = currentPlanet?.max_population ?? 0;
                     const shieldGen = defenseInfo?.shieldGenerator || null;
                     // The Planet model has no drone column — deployed fighters
                     // fill that role (see PlanetaryService.update_defenses note)
@@ -2766,7 +2767,7 @@ const GameDashboard: React.FC = () => {
                             <span className="pvs-stat" title="Colonists living on this planet"><span className="pvs-label">On planet</span><span className="pvs-val green">{landedPlanetColonists.toLocaleString()}</span></span>
                             <span className="pvs-stat" title="Colonists aboard your ship"><span className="pvs-label">Aboard your ship</span><span className="pvs-val">{shipColonists.toLocaleString()}</span></span>
                             {isLandedPlanetMine && (
-                              <span className="pvs-stat" title="Colonists you can still unload before this colony's cap — the lower of citadel & habitability limits"><span className="pvs-label">Room to add</span><span className="pvs-val">{transferHeadroom.toLocaleString()}</span></span>
+                              <span className="pvs-stat" title="Colonists you can still unload before this colony's cap — the lower of citadel & habitability limits"><span className="pvs-label">Room to add</span><span className="pvs-val">{transferHeadroom !== null ? transferHeadroom.toLocaleString() : '—'}</span></span>
                             )}
                             <span className="pvs-transfer-actions">
                               <button

@@ -29,7 +29,13 @@
      `100vh / scale` rendered inside #root scales back up to the full viewport.
      Swap in-#root layout `vh` for these; leave html/body (outside #root) and
      cosmetic font `vw` (which SHOULD scale with the UI) on raw units.
-     --svh1 = a single compensated vh unit (use `calc(N * var(--svh1))`). */
+     --svh1 = a single compensated vh unit (use `calc(N * var(--svh1))`).
+     ACCEPTED LIMITATION (id=138, lowest-pri): the in-game SHELL is compensated,
+     but non-shell full-vh surfaces (landing/auth pages, some modal max-heights)
+     still use raw `vh`, so at the slider's max 120% they can overflow/clip.
+     They're outside the cockpit shell + the slider is bounded 60–120%, so the
+     impact is minor; a broader sweep is deferred rather than risk-swapping ~70
+     non-shell vh usages (some font `vw` must stay raw). */
   --svh: calc(100vh / var(--ui-scale, 1));
   --svh1: calc(1vh / var(--ui-scale, 1));
   
