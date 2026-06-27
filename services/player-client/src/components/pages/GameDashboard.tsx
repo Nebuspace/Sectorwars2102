@@ -2690,14 +2690,6 @@ const GameDashboard: React.FC = () => {
                               {opsNotice.message}
                             </div>
                           )}
-                          <TerraformHeaderPanel
-                            planetId={currentPlanet?.id}
-                            isOwned={!!currentPlanet && isLandedPlanetMine}
-                            habitability={currentPlanet?.habitability_score || 0}
-                            credits={playerState?.credits ?? 0}
-                            planetOrganics={projectedStock('organics')}
-                            planetEquipment={projectedStock('equipment')}
-                          />
                           <div className="planet-stats">
                             <div className="stat"><span className="label">Population</span><span className="value green">{population.toLocaleString()}</span></div>
                             {/* Server-computed damage reduction (defense_level × per-level factor) */}
@@ -2804,23 +2796,17 @@ const GameDashboard: React.FC = () => {
                             </div>
                           </div>
 
-                          {/* Top Row: Defense & Production side by side */}
+                          {/* COLONY OPS — the slim controls the cockpit HUD console
+                              does NOT cover: the in-progress citadel CANCEL, the
+                              shield-generator upgrade (distinct from raw defense
+                              counts), the server-authoritative defense-building
+                              catalog, and colonist transfer (disembark/embark).
+                              Citadel level/upgrade, vault credits, terraform, grid,
+                              research, allocation + live production all live in the
+                              CockpitColonyManagement console above. */}
                           <div className="planet-top-row">
                             <div className="planet-section defense">
-                              <h4>🛡️ Citadel Defense Systems</h4>
-                              <div className="citadel-banner">
-                                <span className="citadel-icon">🏰</span>
-                                {citadelInfo ? (
-                                  <>
-                                    <span className="citadel-name">{citadelInfo.citadel_name}</span>
-                                    <span className="citadel-level">Level {citadelInfo.citadel_level}</span>
-                                  </>
-                                ) : (
-                                  <span className="citadel-name">
-                                    {isLandedPlanetMine ? 'Citadel telemetry unavailable' : 'Citadel status — owner access only'}
-                                  </span>
-                                )}
-                              </div>
+                              <h4>🛡️ Defense Ops</h4>
                               {citadelInfo?.is_upgrading && (() => {
                                 const startMs = citadelInfo.upgrade_started_at ? new Date(citadelInfo.upgrade_started_at).getTime() : null;
                                 const endMs = citadelInfo.upgrade_complete_at ? new Date(citadelInfo.upgrade_complete_at).getTime() : null;
@@ -2861,6 +2847,9 @@ const GameDashboard: React.FC = () => {
                                   </div>
                                 );
                               })()}
+                              {/* Shield-generator readout pairs with the unique
+                                  shield-upgrade control below (drone/turret/citadel
+                                  telemetry now lives in the cockpit Citadel panel). */}
                               <div className="defense-grid">
                                 <div className="defense-item">
                                   <span>🛡️</span>
@@ -2874,19 +2863,6 @@ const GameDashboard: React.FC = () => {
                                       ? `L${shieldGen?.upgrade?.fromLevel ?? shieldGen?.level} → L${shieldGen?.upgrade?.toLevel} · ${shieldRemain} left`
                                       : `Shields L${shieldGen?.level ?? '—'}`}
                                   </span>
-                                </div>
-                                <div className="defense-item">
-                                  <span>🤖</span>
-                                  <span>
-                                    {droneCount !== null ? droneCount : '—'}
-                                    {citadelInfo ? ` / ${Number(citadelInfo.drone_capacity ?? 0)}` : ''}
-                                  </span>
-                                  <span className="sublabel">Drones</span>
-                                </div>
-                                <div className="defense-item">
-                                  <span>🔫</span>
-                                  <span>{turretCount !== null ? turretCount : '—'}</span>
-                                  <span className="sublabel">Turrets</span>
                                 </div>
                               </div>
                               <div className="section-actions">
@@ -2913,31 +2889,10 @@ const GameDashboard: React.FC = () => {
                                     <span className="btn-sublabel">→ L{shieldGen.nextUpgrade.level} · {Number(shieldGen.nextUpgrade.cost).toLocaleString()} cr · {shieldGen.nextUpgrade.buildHours}h</span>
                                   )}
                                 </button>
-                                {/* No "Deploy Drones" control: the only candidate endpoint
-                                    (PUT /planets/{id}/defenses → update_defenses) overwrites
-                                    raw counts with no inventory or cost semantics — wiring a
-                                    one-click free-set would be an economy cheat, not a
-                                    deployment. Removed rather than left dead. */}
-                                <button
-                                  className="section-btn upgrade"
-                                  disabled={!isLandedPlanetMine || !citadelInfo || citadelInfo.is_upgrading || !citadelInfo.next_level || upgradeBusy}
-                                  title={
-                                    !isLandedPlanetMine
-                                      ? 'Citadel upgrades require planetary ownership'
-                                      : !citadelInfo
-                                        ? 'Citadel telemetry unavailable'
-                                        : citadelInfo.is_upgrading
-                                          ? 'An upgrade is already in progress'
-                                          : !citadelInfo.next_level
-                                            ? 'Citadel is at maximum level'
-                                            : citadelInfo.citadel_level === 0
-                                              ? 'Establish an Outpost (Level 1) — free'
-                                              : `Upgrade to L${citadelInfo.next_level.level} ${citadelInfo.next_level.name} — ${Number(citadelInfo.next_level.upgrade_cost).toLocaleString()} credits + resources, ${citadelInfo.next_level.upgrade_hours}h`
-                                  }
-                                  onClick={() => setConfirmUpgrade('citadel')}
-                                >
-                                  🏗️ Upgrade Citadel
-                                </button>
+                                {/* Citadel upgrade lives in the cockpit Citadel panel
+                                    (CitadelManager) — not duplicated here. The only
+                                    candidate "Deploy Drones" endpoint sets raw counts
+                                    with no cost semantics, so it stays out too. */}
                               </div>
                               {/* Inline confirm — native confirm()/alert() are forbidden */}
                               {confirmUpgrade === 'shields' && shieldGen?.nextUpgrade && (
@@ -2947,52 +2902,6 @@ const GameDashboard: React.FC = () => {
                                   <div className="section-actions" style={{ marginTop: '4px' }}>
                                     <button className="section-btn upgrade" onClick={handleUpgradeShields} disabled={upgradeBusy}>
                                       {upgradeBusy ? 'UPGRADING…' : '✓ Confirm'}
-                                    </button>
-                                    <button className="section-btn" onClick={() => setConfirmUpgrade(null)} disabled={upgradeBusy}>
-                                      ✕ Cancel
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
-                              {confirmUpgrade === 'citadel' && citadelInfo?.next_level && (
-                                <div className="transfer-notice" role="alertdialog" aria-label="Confirm citadel upgrade">
-                                  {citadelInfo.citadel_level === 0 ? (
-                                    <>Establish an Outpost (Level 1)? This is free and immediate.</>
-                                  ) : (
-                                    <>
-                                      Upgrade citadel to L{citadelInfo.next_level.level} {citadelInfo.next_level.name} for{' '}
-                                      {Number(citadelInfo.next_level.upgrade_cost).toLocaleString()} credits
-                                      {citadelInfo.next_level.resource_cost && (
-                                        <>
-                                          {' '}+ {Object.entries(citadelInfo.next_level.resource_cost as Record<string, number>)
-                                            .map(([res, amt]) => `${Number(amt).toLocaleString()} ${res.replace(/_/g, ' ')}`)
-                                            .join(', ')}
-                                        </>
-                                      )}
-                                      ? Takes {citadelInfo.next_level.upgrade_hours}h.
-                                    </>
-                                  )}
-                                  {citadelInfo.citadel_level !== 0 && (() => {
-                                    const upCost = Number(citadelInfo.next_level.upgrade_cost || 0);
-                                    const haveCredits = (playerState?.credits ?? 0) >= upCost;
-                                    const reqPop = Number(citadelInfo.max_population || 0);
-                                    const havePop = population >= reqPop;
-                                    return (
-                                      <ul className="preflight">
-                                        <li className={haveCredits ? 'ok' : 'no'}>
-                                          {haveCredits ? '✓' : '✗'} Credits {(playerState?.credits ?? 0).toLocaleString()} / {upCost.toLocaleString()}
-                                        </li>
-                                        {reqPop > 0 && (
-                                          <li className={havePop ? 'ok' : 'no'}>
-                                            {havePop ? '✓' : '✗'} Population {Math.floor(population).toLocaleString()} / {reqPop.toLocaleString()}
-                                          </li>
-                                        )}
-                                      </ul>
-                                    );
-                                  })()}
-                                  <div className="section-actions" style={{ marginTop: '4px' }}>
-                                    <button className="section-btn upgrade" onClick={handleUpgradeCitadel} disabled={upgradeBusy}>
-                                      {upgradeBusy ? 'WORKING…' : '✓ Confirm'}
                                     </button>
                                     <button className="section-btn" onClick={() => setConfirmUpgrade(null)} disabled={upgradeBusy}>
                                       ✕ Cancel
@@ -3047,9 +2956,12 @@ const GameDashboard: React.FC = () => {
                               )}
                             </div>
                             <div className="planet-section production">
-                              <h4>👥 Population & Production</h4>
+                              <h4>👥 Colonist Transfer</h4>
 
-                              {/* Colonist Transfer */}
+                              {/* Colonist Transfer — ship ↔ planet (disembark /
+                                  embark). UNIQUE: not surfaced anywhere in the
+                                  cockpit HUD console. Workforce ALLOCATION lives in
+                                  the cockpit Production panel (ColonistAllocator). */}
                               <div className="colonist-transfer">
                                 <div className="transfer-info">
                                   <span className="pop-count">{Math.floor(population / 1000)}K</span>
@@ -3096,98 +3008,15 @@ const GameDashboard: React.FC = () => {
                                   {transferNotice.message}
                                 </div>
                               )}
-
-                              {/* Production Allocation — colonist headcounts assigned to
-                                  fuel/organics/equipment (the only allocations the backend
-                                  stores; ore/terraform sliders were UI fiction). Rates are
-                                  the server's productionRates (per day). */}
-                              <div className="allocation-section">
-                                <div className="allocation-header">
-                                  Production Allocation
-                                  {allocSyncing && (
-                                    <span style={{ marginLeft: '8px', opacity: 0.7, fontSize: '0.85em' }}>syncing…</span>
-                                  )}
-                                </div>
-                                {!isLandedPlanetMine ? (
-                                  <div className="empty-state">Allocation control requires planetary ownership</div>
-                                ) : !landedPlanetDetail ? (
-                                  <div className="empty-state">Colony ledger unavailable</div>
-                                ) : (
-                                  <>
-                                    {/* WO-STORAGEDTO: server-authoritative overflow banner —
-                                        the production tick flagged these commodities as
-                                        WASTING output at the storage cap last tick. */}
-                                    {overflowResources.length > 0 && (
-                                      <div className="storage-overflow-banner" role="alert" title="Production is being wasted at the storage cap — upgrade the citadel to expand storage, or ship goods out.">
-                                        ⚠️ Storage full: {overflowResources.join(', ')} — output above the cap is being wasted.
-                                      </div>
-                                    )}
-                                    <div className="allocation-sliders">
-                                      {([
-                                        { key: 'fuel' as const, icon: '⛽', name: 'Fuel' },
-                                        { key: 'organics' as const, icon: '🌿', name: 'Organics' },
-                                        { key: 'equipment' as const, icon: '⚙️', name: 'Equipment' }
-                                      ]).map(({ key, icon, name }) => {
-                                        const ss = storageStatus(key);
-                                        const stock = Math.floor(projectedStock(key));
-                                        return (
-                                        <div className="alloc-row" key={key}>
-                                          <span className="alloc-icon">{icon}</span>
-                                          <span className="alloc-name">{name}</span>
-                                          <input
-                                            type="range"
-                                            min="0"
-                                            max={Math.max(0, allocBudget)}
-                                            value={allocations[key]}
-                                            onChange={(e) => handleAllocationChange(key, parseInt(e.target.value) || 0)}
-                                            className={`alloc-slider ${key}`}
-                                            disabled={allocBudget === 0}
-                                            title={`Colonists assigned to ${name.toLowerCase()} production`}
-                                          />
-                                          <span className="alloc-pct">{allocations[key].toLocaleString()}</span>
-                                          <span className="alloc-rate">+{Number(allocRates?.[key] ?? 0).toLocaleString()}/day</span>
-                                          {/* WO-STORAGEDTO: storage bar + at/near-cap state. Only
-                                              shown when a cap is in force (citadel L>=1). */}
-                                          {ss.capped ? (
-                                            <span
-                                              className={`alloc-storage-cell${ss.atCap ? ' at-cap' : ss.nearCap ? ' near-cap' : ''}`}
-                                              title={`${stock.toLocaleString()} / ${storageCap.toLocaleString()} stored${ss.atCap ? ' — AT CAP, production wasted' : ss.daysUntilFull !== null ? ` — ${fmtDaysUntilFull(ss.daysUntilFull)}` : ''}`}
-                                            >
-                                              <span className="alloc-storage-bar">
-                                                <span className="alloc-storage-fill" style={{ width: `${Math.round(ss.ratio * 100)}%` }} />
-                                              </span>
-                                              <span className="alloc-storage-text">
-                                                📦 {stock.toLocaleString()}/{storageCap.toLocaleString()}
-                                                {ss.atCap ? ' ⛔' : ss.daysUntilFull !== null ? ` · ${fmtDaysUntilFull(ss.daysUntilFull)}` : ''}
-                                              </span>
-                                            </span>
-                                          ) : (
-                                            <span className="alloc-stored" title={`${name} in colony stockpile (accruing live; no storage cap until a citadel is built)`}>
-                                              📦 {stock.toLocaleString()}
-                                            </span>
-                                          )}
-                                        </div>
-                                        );
-                                      })}
-                                    </div>
-                                    <div className="allocation-header" style={{ opacity: 0.8 }}>
-                                      Unassigned: {Math.max(0, allocBudget - allocations.fuel - allocations.organics - allocations.equipment).toLocaleString()} of {allocBudget.toLocaleString()} workforce
-                                    </div>
-                                    {allocError && (
-                                      <div className="transfer-notice error" role="alert">{allocError}</div>
-                                    )}
-                                  </>
-                                )}
-                              </div>
                             </div>
                           </div>
 
-                          {/* Bottom Row: Full-width Citadel Safe.
-                              The safe holds CREDITS ONLY (planet.citadel_safe_credits,
-                              capacity CITADEL_LEVELS[level].safe_storage) — the old
-                              16-commodity grid was pure fiction and is gone. Deposits
-                              require citadel level >= 1 (CitadelService.deposit_to_safe:
-                              "Planet does not have a citadel"). */}
+                          {/* Bottom Row: Full-width Citadel Safe — PROTECTED COMMODITY
+                              STORAGE only. Credit deposit/withdraw moved to the cockpit
+                              Citadel panel (CitadelManager); what remains here is the
+                              UNIQUE store/take of stockpiled goods into the raider-proof
+                              safe + the auto-deposit toggle, which the HUD does not
+                              cover. Requires citadel level >= 1. */}
                           <div className="planet-section storage full-width">
                             <div className="safe-header">
                               <h4>🔐 Citadel Safe</h4>
@@ -3202,30 +3031,10 @@ const GameDashboard: React.FC = () => {
                                   <div className="vault-bar" title={`${safeTotalValue.toLocaleString()} / ${safeCapacity.toLocaleString()} cr-equivalent (credits + stored goods)`}>
                                     <div className="vault-bar-fill" style={{ width: `${safeCapacity > 0 ? Math.min(100, (safeTotalValue / safeCapacity) * 100) : 0}%` }} />
                                   </div>
-                                  <div className="safe-header-actions">
-                                    <button
-                                      className="safe-btn deposit"
-                                      disabled={safeBusy || Math.min(playerState?.credits ?? 0, safeCapacity - safeCredits) < 1}
-                                      title={
-                                        safeCapacity - safeCredits < 1
-                                          ? 'Safe is at capacity — upgrade the citadel to expand storage'
-                                          : (playerState?.credits ?? 0) < 1
-                                            ? 'No credits to deposit'
-                                            : 'Deposit credits into the vault'
-                                      }
-                                      onClick={() => openSafeAction('deposit')}
-                                    >
-                                      📥 Deposit
-                                    </button>
-                                    <button
-                                      className="safe-btn withdraw"
-                                      disabled={safeBusy || safeCredits < 1}
-                                      title={safeCredits < 1 ? 'Vault is empty' : 'Withdraw credits from the vault'}
-                                      onClick={() => openSafeAction('withdraw')}
-                                    >
-                                      📤 Withdraw
-                                    </button>
-                                  </div>
+                                  {/* Credit deposit / withdraw lives in the cockpit
+                                      Citadel panel (CitadelManager) — not duplicated
+                                      here. This section keeps only the UNIQUE protected
+                                      commodity storage (store/take + auto-deposit). */}
                                   {/* Protected commodity storage: move planet stockpile <-> safe */}
                                   <div className="safe-commodities">
                                     <div className="sc-head">
@@ -3305,56 +3114,6 @@ const GameDashboard: React.FC = () => {
                                 </div>
                               )}
                             </div>
-                            {safeAction && citadelInfo && (
-                              <div
-                                className="safe-inline-form"
-                                role="form"
-                                aria-label={safeAction === 'deposit' ? 'Deposit credits' : 'Withdraw credits'}
-                                style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '6px 0' }}
-                              >
-                                <span>{safeAction === 'deposit' ? '📥 Deposit' : '📤 Withdraw'}</span>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={Math.max(1, safeMax)}
-                                  value={safeAmount}
-                                  onChange={(e) => setSafeAmount(Math.max(1, Math.min(safeMax, parseInt(e.target.value) || 1)))}
-                                  className="colonist-qty-input"
-                                  style={{ width: '120px' }}
-                                  disabled={safeBusy}
-                                />
-                                <div className="safe-presets">
-                                  {[25, 50, 75].map((pct) => (
-                                    <button
-                                      key={pct}
-                                      className="safe-btn preset"
-                                      onClick={() => setSafeAmount(Math.max(1, Math.min(safeMax, Math.floor((safeMax * pct) / 100))))}
-                                      disabled={safeBusy || safeMax < 1}
-                                      title={`${pct}% of ${safeMax.toLocaleString()}`}
-                                    >
-                                      {pct}%
-                                    </button>
-                                  ))}
-                                </div>
-                                <button
-                                  className="safe-btn"
-                                  onClick={() => setSafeAmount(Math.max(1, safeMax))}
-                                  disabled={safeBusy || safeMax < 1}
-                                >
-                                  Max ({safeMax.toLocaleString()})
-                                </button>
-                                <button
-                                  className={`safe-btn ${safeAction}`}
-                                  onClick={handleSafeConfirm}
-                                  disabled={safeBusy || safeAmount < 1 || safeAmount > safeMax}
-                                >
-                                  {safeBusy ? 'PROCESSING…' : '✓ Confirm'}
-                                </button>
-                                <button className="safe-btn" onClick={() => setSafeAction(null)} disabled={safeBusy}>
-                                  ✕ Cancel
-                                </button>
-                              </div>
-                            )}
                           </div>
                         </div>
 
