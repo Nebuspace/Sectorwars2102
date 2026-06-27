@@ -1,5 +1,6 @@
 /* PlayerVitalsHud — always-on HUD bar over the full-width windshield band
-   (WO-INVERTED-L). Three zones: name (left) · vitals (center) · logout (right).
+   (WO-INVERTED-L + WO-PLAYERINFO id=145). Three zones: name (left) · vitals
+   (center, SINGLE-ROW inline) · logout (right).
 
    The bar spans the band edge-to-edge and is click-through (pointer-events:
    none) so it never intercepts scene clicks; only the center vitals strip
@@ -40,21 +41,25 @@
   pointer-events: none;
 }
 
-/* CENTER — the vitals readout strip (keeps the original centered-strip CRT
-   chrome: translucent backing, cyan border, scan-line sheen, blur). */
+/* CENTER — SINGLE-ROW inline vitals strip (Max: "too tall, make it wider").
+   Keeps the CRT chrome (translucent backing, cyan border, scan-line, blur) but
+   lays the stats out on ONE horizontal line. */
 .pvh-vitals {
   position: relative;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
-  gap: 0.6rem;
+  flex-direction: row;
   align-items: center;
+  gap: 0.9rem;
   background: rgba(0, 10, 16, 0.38);
   border: 1px solid rgba(0, 217, 255, 0.25);
   border-radius: 4px;
   backdrop-filter: blur(3px);
   box-shadow: 0 0 14px rgba(0, 217, 255, 0.12);
-  padding: 0.25rem 0.6rem;
+  padding: 0.2rem 0.7rem;
   overflow: hidden;
+  white-space: nowrap;
   pointer-events: none;
 }
 
@@ -73,6 +78,48 @@
   );
   opacity: 0.5;
   border-radius: inherit;
+}
+
+/* One inline stat: LABEL value on a single baseline. */
+.pvh-stat {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.28rem;
+  white-space: nowrap;
+}
+
+.pvh-k {
+  font-size: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+.pvh-v {
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.3px;
+}
+
+/* Capacity denominator on the TRN value — dimmer + smaller. */
+.pvh-sub {
+  font-size: 0.7em;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+/* Credits — the ₡ glyph IS the label (no 'CRED'); amber money tint. */
+.pvh-credits {
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.3px;
+  color: var(--credits-color, #fbbf24);
+  text-shadow: 0 0 8px rgba(251, 191, 36, 0.35);
 }
 
 /* RIGHT — logout. The control re-enables pointer events. */
@@ -103,43 +150,6 @@
 .pvh-logout-btn:hover {
   background: rgba(255, 77, 109, 0.22);
   box-shadow: 0 0 10px rgba(255, 77, 109, 0.4);
-}
-
-/* Stat chip: label stacked above the readout. Compact rem sizing so the
-   strip stays slim inside the band. */
-.player-vitals-hud .header-stat {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.05rem;
-  min-width: 3rem;
-}
-
-.player-vitals-hud .header-stat-label {
-  font-size: 0.5rem;
-  font-weight: 600;
-  letter-spacing: 0.15em;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  line-height: 1;
-}
-
-/* Reuse the global .data-readout/.credits/.turns (cockpit-components.css)
-   colors + glow, but tighten the size for the in-band strip. */
-.player-vitals-hud .data-readout {
-  font-size: 0.85rem;
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: 0.3px;
-}
-
-/* Capacity denominator on the TURN chip — dimmer + smaller than the value. */
-.player-vitals-hud .data-readout .data-readout-max {
-  font-size: 0.7em;
-  font-weight: 600;
-  opacity: 0.6;
 }
 
 /* The strip is click-through; the refresh control alone takes pointer events. */

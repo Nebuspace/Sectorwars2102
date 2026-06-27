@@ -2,21 +2,21 @@ import React from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import LogoutButton from '../auth/LogoutButton';
+import { formatCredits } from '../../utils/formatters';
 import './player-vitals-hud.css';
 
 /**
- * PlayerVitalsHud — the always-on cockpit HUD that overlays the full-width
- * windshield band (WO-INVERTED-L, id=139 addendum). Three zones across the band:
+ * PlayerVitalsHud — the always-on cockpit HUD overlaying the full-width
+ * windshield band (WO-INVERTED-L + WO-PLAYERINFO id=145). Three zones:
  *   • commander NAME (left) — tinted by playerState.name_color;
- *   • live vitals CRED / TURN / DRONE / MINE (center) — the CRT readout strip;
+ *   • live vitals (center) — a SINGLE-ROW inline strip (Max: "too tall, make it
+ *     wider"): ₡credits · TRN turns(/max) · ATK/DEF drones · MINE;
  *   • LOGOUT (right) — reuses the shared LogoutButton.
  *
- * The bar itself is click-through (pointer-events: none) so it never steals
- * scene clicks; only the logout control and the failure-only refresh re-enable
- * pointer events. All sizing is rem so the HUD rides the #root UI-scale zoom.
- * The commander name + Logout were relocated here from the route rail (the rail
- * .rr-pilot row and rail LogoutButton are removed) so logout is always visible
- * regardless of console state.
+ * Credits use the shared ₡ glyph (formatCredits, id=148) — never 'CRED'/'cr'.
+ * The bar is click-through (pointer-events:none); only logout / the
+ * failure-only refresh re-enable pointer events. All sizing is rem so the HUD
+ * rides the #root UI-scale zoom.
  */
 const PlayerVitalsHud: React.FC = () => {
   const { user } = useAuth();
@@ -33,27 +33,30 @@ const PlayerVitalsHud: React.FC = () => {
       </div>
 
       <div className="pvh-vitals">
-        <div className="header-stat">
-          <span className="header-stat-label">CRED</span>
-          <span className="data-readout credits">{playerState?.credits?.toLocaleString() || '0'}</span>
-        </div>
-        <div className="header-stat">
-          <span className="header-stat-label">TURN</span>
-          <span className="data-readout turns">
+        <span className="pvh-stat pvh-credits" title="Credits">
+          {formatCredits(playerState?.credits)}
+        </span>
+        <span className="pvh-stat" title="Turns">
+          <span className="pvh-k">TRN</span>
+          <span className="pvh-v">
             {playerState?.turns?.toLocaleString() || '0'}
             {typeof playerState?.max_turns === 'number' && (
-              <span className="data-readout-max">/{playerState.max_turns.toLocaleString()}</span>
+              <span className="pvh-sub">/{playerState.max_turns.toLocaleString()}</span>
             )}
           </span>
-        </div>
-        <div className="header-stat">
-          <span className="header-stat-label">DRONE</span>
-          <span className="data-readout">{playerState?.defense_drones || '0'}</span>
-        </div>
-        <div className="header-stat">
-          <span className="header-stat-label">MINE</span>
-          <span className="data-readout">{playerState?.mines || '0'}</span>
-        </div>
+        </span>
+        <span className="pvh-stat" title="Attack drones (current ship)">
+          <span className="pvh-k">ATK</span>
+          <span className="pvh-v">{playerState?.attack_drones ?? 0}</span>
+        </span>
+        <span className="pvh-stat" title="Defense drones (current ship)">
+          <span className="pvh-k">DEF</span>
+          <span className="pvh-v">{playerState?.defense_drones ?? 0}</span>
+        </span>
+        <span className="pvh-stat" title="Mines">
+          <span className="pvh-k">MINE</span>
+          <span className="pvh-v">{playerState?.mines ?? 0}</span>
+        </span>
         {!playerState && !isLoading && (
           <button
             onClick={refreshPlayerState}
