@@ -1,0 +1,274 @@
+/* ============================================
+   COCKPIT COLONY MANAGEMENT — landed-cockpit HUD panels (Screen 2)
+   Surfaces the full colony-management depth (Citadel / Grid / Terraform /
+   Research / Production) as cockpit-native HUD instruments woven into the
+   landed planet console (GameDashboard, gated on isLandedPlanetMine).
+   Each panel re-uses an existing manager's data/API logic inside a small
+   instrument-frame header; the panel body hosts that manager re-skinned to
+   the CRT palette. Accent comes in per-panel via --panel-accent.
+   ============================================ */
+
+.colony-mgmt-region {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0 0;
+}
+
+.colony-mgmt-region .cmr-heading {
+  font-family: 'Courier New', monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+  text-shadow: 0 0 8px rgba(125, 211, 252, 0.5);
+  opacity: 0.9;
+  padding: 0 0.2rem;
+}
+
+/* Row 1 = three compact panels; Row 2 = two wider panels. Collapse to a
+   single column on narrow consoles so nothing clips inside the glass. */
+.colony-mgmt-row {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.colony-mgmt-row.row-1 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.colony-mgmt-row.row-2 {
+  grid-template-columns: 3fr 4fr;
+}
+
+@media (max-width: 1100px) {
+  .colony-mgmt-row.row-1 { grid-template-columns: 1fr 1fr; }
+  .colony-mgmt-row.row-2 { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .colony-mgmt-row.row-1,
+  .colony-mgmt-row.row-2 { grid-template-columns: 1fr; }
+}
+
+/* ── Panel frame — small instrument bezel, accent-tinted LED header ── */
+.cockpit-panel {
+  --panel-accent: #00d9ff;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: rgba(0, 5, 10, 0.85);
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 28%, transparent);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.7),
+    0 0 6px color-mix(in srgb, var(--panel-accent) 12%, transparent);
+  overflow: hidden;
+}
+
+.cockpit-panel .cp-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--panel-accent);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--panel-accent) 70%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 35%, transparent);
+  background: color-mix(in srgb, var(--panel-accent) 6%, transparent);
+  flex-shrink: 0;
+}
+
+.cockpit-panel .cp-title { white-space: nowrap; }
+
+.cockpit-panel .cp-readout {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: color-mix(in srgb, var(--panel-accent) 60%, #ffffff 25%);
+  white-space: nowrap;
+}
+
+/* The body scrolls internally so a deep manager (grid / research) never
+   blows out the landed console's own scroll. */
+.cockpit-panel .cp-body {
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.45rem 0.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--panel-accent) 30%, transparent) rgba(0, 0, 0, 0.5);
+}
+
+.cockpit-panel .cp-body::-webkit-scrollbar { width: 7px; }
+.cockpit-panel .cp-body::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.5); }
+.cockpit-panel .cp-body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--panel-accent) 30%, transparent);
+  border-radius: 4px;
+}
+
+/* The wrapped managers draw their own bordered cards; inside a cockpit panel
+   the panel IS the chrome, so strip the redundant outer card. Scoped under
+   .cp-body so the standalone /game/planets usage is untouched. */
+.cockpit-panel .cp-body .citadel-manager,
+.cockpit-panel .cp-body .grid-manager,
+.cockpit-panel .cp-body .terraforming-panel,
+.cockpit-panel .cp-body .empire-research-panel {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  max-width: none;
+  width: 100%;
+}
+
+/* ── Panel action buttons (open the modals) ── */
+.cockpit-panel .cp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid color-mix(in srgb, var(--panel-accent) 18%, transparent);
+}
+
+.cp-action-btn {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.45rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--panel-accent) 70%, #ffffff 30%);
+  background: color-mix(in srgb, var(--panel-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 35%, transparent);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.cp-action-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--panel-accent) 22%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--panel-accent) 30%, transparent);
+}
+
+.cp-action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.cp-action-btn.danger {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.1);
+}
+.cp-action-btn.danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.22);
+  box-shadow: 0 0 8px rgba(248, 113, 113, 0.3);
+}
+
+/* ── PRODUCTION live panel ── */
+.cp-production-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.cp-prod-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.72rem;
+}
+
+.cp-prod-icon { font-size: 0.95rem; }
+
+.cp-prod-name {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #cbd5e1;
+  font-size: 0.62rem;
+}
+
+.cp-prod-stock {
+  text-align: right;
+  color: #7dd3fc;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cp-prod-rate {
+  font-size: 0.58rem;
+  color: #86efac;
+  letter-spacing: 0.05em;
+}
+
+.cp-prod-bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.cp-prod-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #34d399, #7dd3fc);
+  transition: width 0.6s linear;
+}
+
+.cp-prod-bar-fill.near-cap { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
+.cp-prod-bar-fill.at-cap { background: linear-gradient(90deg, #f87171, #ef4444); }
+
+.cp-prod-overflow {
+  margin-top: 0.35rem;
+  font-size: 0.58rem;
+  letter-spacing: 0.05em;
+  color: #fca5a5;
+}
+
+.cp-live-tag {
+  font-size: 0.5rem;
+  letter-spacing: 0.2em;
+  color: #34d399;
+  text-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
+  animation: cp-live-pulse 2s ease-in-out infinite;
+}
+
+@keyframes cp-live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.cp-empty {
+  font-family: 'Courier New', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  color: #64748b;
+  text-align: center;
+  padding: 0.6rem 0;
+}
+
+/* ── Siege flag on the citadel panel header ── */
+.cp-siege-flag {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #fca5a5;
+  animation: cp-live-pulse 1.2s ease-in-out infinite;
+}

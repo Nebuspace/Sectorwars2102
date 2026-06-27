@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
 import { useGame, type MoveOption } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
@@ -20,6 +19,8 @@ import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
 import CitizenshipBadge from '../governance/CitizenshipBadge';
 import RegionInvitePanel from '../governance/RegionInvitePanel';
+import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
+import type { ProductionLine } from '../cockpit/ProductionPanel';
 import { regionOwnerAPI } from '../../services/api';
 import apiClient from '../../services/apiClient';
 import './game-dashboard.css';
@@ -921,9 +922,6 @@ const GameDashboard: React.FC = () => {
     const aboard = cargo?.contents?.colonists ?? cargo?.colonists;
     return typeof aboard === 'number' && aboard > 0 ? Math.floor(aboard) : 0;
   }, [currentShip]);
-
-  // Router nav for the "Manage Colony" affordance → COLONIES (PlanetManager).
-  const navigate = useNavigate();
 
   // opsRefresh: a shared "ops changed, refetch" signal bumped after the player's
   // own mutations (colonist transfer, citadel ops, building work) so the landed
@@ -3039,15 +3037,6 @@ const GameDashboard: React.FC = () => {
                                   >
                                     <span>📤</span> Embark
                                   </button>
-                                  {isLandedPlanetMine && (
-                                    <button
-                                      className="transfer-btn manage-colony"
-                                      title="Open the full colony console — Grid, Citadel, Research, Terraforming"
-                                      onClick={() => navigate('/game/planets')}
-                                    >
-                                      <span>🏛️</span> Manage Colony
-                                    </button>
-                                  )}
                                 </div>
                               </div>
                               {shipColonists > 0 && (
@@ -3321,6 +3310,49 @@ const GameDashboard: React.FC = () => {
                             )}
                           </div>
                         </div>
+
+                        {/* COLONY MANAGEMENT — Screen 2 of the cockpit redesign.
+                            Only a landed colony you OWN surfaces the full
+                            management depth (citadel ladder / grid / terraform /
+                            research / live production + the 6 action modals) as
+                            cockpit-native HUD panels. The PRODUCTION panel ticks
+                            live off the realtime poll (landedPlanetDetail) via the
+                            projected lines below — no extra fetch. */}
+                        {isLandedPlanetMine && currentPlanet && (() => {
+                          const prodLines: ProductionLine[] = ([
+                            { key: 'fuel' as const, icon: '⛽', name: 'Fuel' },
+                            { key: 'organics' as const, icon: '🌿', name: 'Organics' },
+                            { key: 'equipment' as const, icon: '⚙️', name: 'Equipment' },
+                          ]).map(({ key, icon, name }) => {
+                            const ss = storageStatus(key);
+                            return {
+                              key,
+                              icon,
+                              name,
+                              stock: projectedStock(key),
+                              rate: Number(landedPlanetDetail?.productionRates?.[key] ?? 0),
+                              ratio: ss.ratio,
+                              capped: ss.capped,
+                              nearCap: ss.nearCap,
+                              atCap: ss.atCap,
+                              cap: storageCap,
+                            };
+                          });
+                          return (
+                            <CockpitColonyManagement
+                              planetId={String(landedPlanet.id)}
+                              planetType={currentPlanet?.type}
+                              playerCredits={playerState?.credits ?? 0}
+                              citadelInfo={citadelInfo}
+                              landedPlanetDetail={landedPlanetDetail}
+                              habitabilityScore={currentPlanet?.habitability_score ?? habitability}
+                              underSiege={!!(landedPlanet as any)?.under_siege || !!(landedPlanetDetail as any)?.underSiege}
+                              productionLines={landedPlanetDetail ? prodLines : []}
+                              overflowResources={overflowResources}
+                              onOpsChange={() => setOpsRefresh(n => n + 1)}
+                            />
+                          );
+                        })()}
 
                       </div>
                     );

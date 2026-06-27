@@ -1,18 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { gameAPI } from '../../services/api';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
-import type { Planet, ColonySpecialization } from '../../types/planetary';
-import { ColonistAllocator } from './ColonistAllocator';
-import { BuildingManager } from './BuildingManager';
-import { DefenseConfiguration } from './DefenseConfiguration';
-import { GenesisDeployment } from './GenesisDeployment';
-import { ColonySpecialization as ColonySpecializationComponent } from './ColonySpecialization';
-import { SiegeStatusMonitor } from './SiegeStatusMonitor';
-import CitadelManager from './CitadelManager';
-import GridManager from './GridManager';
-import TerraformingPanel from './TerraformingPanel';
-import EmpireResearchPanel from '../research/EmpireResearchPanel';
+import type { Planet } from '../../types/planetary';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import EmptyState from '../common/EmptyState';
@@ -31,32 +21,22 @@ const ColonialShell: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
 /**
  * Optional planet fields surfaced by newer gameserver payloads.
- * All reads are defensive — panels render gracefully when absent.
+ * All reads are defensive — the roster renders gracefully when absent.
  */
 interface PlanetExtras {
-  morale?: number;
   population?: number;
   maxPopulation?: number;
   max_population?: number;
-  isPopulationHub?: boolean;
-  is_population_hub?: boolean;
-  lastGrowthAt?: string;
-  last_growth_at?: string;
   habitability_score?: number;
   habitability?: {
     score?: number;
     effectiveMaxColonists?: number;
-    growthMultiplier?: number;
-    moraleBonus?: number;
   };
-  terraforming?: {
-    active?: boolean;
-    target?: number | string;
-    progress?: number;
-    startedAt?: string;
-  } | null;
-  terraforming_active?: boolean;
-  terraforming_target?: number | string;
+  // Citadel level is used server-side for production/storage math but is not
+  // (yet) part of the /planets/owned list payload; read it defensively in case
+  // a future payload surfaces it under either casing.
+  citadelLevel?: number;
+  citadel_level?: number;
 }
 
 type PlanetWithExtras = Planet & PlanetExtras;
@@ -77,105 +57,99 @@ const getMaxPopulation = (planet: PlanetWithExtras): number | null => {
   return hab !== null ? hab * 1000 : null;
 };
 
-const isTerraformingActive = (planet: PlanetWithExtras): boolean =>
-  Boolean(planet.terraforming?.active ?? planet.terraforming_active);
-
-const getTerraformingTarget = (planet: PlanetWithExtras): number | string | null =>
-  planet.terraforming?.target ?? planet.terraforming_target ?? null;
-
-const isPopulationHub = (planet: PlanetWithExtras): boolean =>
-  Boolean(planet.isPopulationHub ?? planet.is_population_hub);
-
-/** Canon growth formula: colonists x 0.01 x habitability/100 per day. */
-const getGrowthPerDay = (planet: PlanetWithExtras): number | null => {
-  const hab = getHabitabilityScore(planet);
-  if (hab === null) return null;
-  return planet.colonists * 0.01 * (hab / 100);
+const getCitadelLevel = (planet: PlanetWithExtras): number | null => {
+  const lvl = planet.citadelLevel ?? planet.citadel_level;
+  return typeof lvl === 'number' ? lvl : null;
 };
 
-/** Map raw planet type strings onto theme keys (TERRAN/OCEANIC/DESERT/ICE/VOLCANIC/BARREN...). */
-const normalizePlanetType = (type: string): string => {
-  const t = (type || '').toLowerCase();
-  if (t === 'frozen' || t === 'glacial' || t === 'arctic') return 'ice';
-  return t;
+/** Efficiency = share of colonists actually assigned to production (matches ProductionDashboard). */
+const getEfficiency = (planet: Planet): number =>
+  Math.max(0, 100 - (planet.allocations?.unused ?? 0));
+
+/** Parse the (string) sectorId into the numeric id moveToSector expects. */
+const getNumericSectorId = (planet: Planet): number | null => {
+  const raw = (planet as PlanetWithExtras & { sector_id?: string | number }).sector_id ?? planet.sectorId;
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(n) ? n : null;
 };
 
 const habitabilityBand = (score: number): 'low' | 'mid' | 'high' =>
   score < 40 ? 'low' : score < 70 ? 'mid' : 'high';
 
-interface HabitabilityRingProps {
-  score: number | null;
-  terraformingActive: boolean;
-  terraformingTarget: number | string | null;
-}
+const efficiencyBand = (eff: number): 'low' | 'mid' | 'high' =>
+  eff < 50 ? 'low' : eff < 75 ? 'mid' : 'high';
 
-/** SVG radial gauge: red <40, amber <70, green >=70; pulses while terraforming. */
-const HabitabilityRing: React.FC<HabitabilityRingProps> = ({
-  score,
-  terraformingActive,
-  terraformingTarget,
-}) => {
-  const radius = 26;
-  const circumference = 2 * Math.PI * radius;
-  const filled = score !== null ? (score / 100) * circumference : 0;
-  const band = score !== null ? habitabilityBand(score) : 'unknown';
+const formatNumber = (num: number): string => {
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
+  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+  return Math.round(num).toString();
+};
 
-  return (
-    <div
-      className={`habitability-ring hab-${band} ${terraformingActive ? 'terraforming' : ''}`}
-      title={
-        score !== null
-          ? `Habitability ${score}/100${terraformingActive ? ` — terraforming in progress${terraformingTarget !== null ? ` (target: ${terraformingTarget})` : ''}` : ''}`
-          : 'Habitability unknown'
-      }
-    >
-      <svg viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Habitability gauge">
-        <circle className="ring-track" cx="32" cy="32" r={radius} fill="none" strokeWidth="5" />
-        <circle
-          className="ring-value"
-          cx="32"
-          cy="32"
-          r={radius}
-          fill="none"
-          strokeWidth="5"
-          strokeLinecap="round"
-          strokeDasharray={`${filled} ${circumference - filled}`}
-          transform="rotate(-90 32 32)"
-        />
-        <text className="ring-score" x="32" y="31" textAnchor="middle" dominantBaseline="central">
-          {score !== null ? score : '—'}
-        </text>
-        <text className="ring-caption" x="32" y="44" textAnchor="middle">HAB</text>
-      </svg>
-      {terraformingActive && (
-        <span className="terraforming-tag">
-          ⬆ Terraforming{terraformingTarget !== null ? ` → ${terraformingTarget}` : ''}
-        </span>
-      )}
-    </div>
-  );
+type SortKey =
+  | 'name'
+  | 'sector'
+  | 'citadel'
+  | 'population'
+  | 'fuel'
+  | 'organics'
+  | 'equipment'
+  | 'habitability'
+  | 'efficiency';
+
+const COLUMNS: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
+  { key: 'name', label: 'Colony', align: 'left' },
+  { key: 'sector', label: 'Sector', align: 'left' },
+  { key: 'citadel', label: 'Citadel', align: 'right' },
+  { key: 'population', label: 'Population / Cap', align: 'right' },
+  { key: 'fuel', label: '⛽ Fuel', align: 'right' },
+  { key: 'organics', label: '🌿 Org', align: 'right' },
+  { key: 'equipment', label: '⚙️ Equip', align: 'right' },
+  { key: 'habitability', label: 'Hab', align: 'right' },
+  { key: 'efficiency', label: 'Eff', align: 'right' },
+];
+
+const sortValue = (planet: PlanetWithExtras, key: SortKey): number | string => {
+  switch (key) {
+    case 'name':
+      return planet.name.toLowerCase();
+    case 'sector':
+      return (planet.sectorName || '').toLowerCase();
+    case 'citadel':
+      return getCitadelLevel(planet) ?? -1;
+    case 'population':
+      return getPopulation(planet);
+    case 'fuel':
+      return planet.productionRates.fuel;
+    case 'organics':
+      return planet.productionRates.organics;
+    case 'equipment':
+      return planet.productionRates.equipment;
+    case 'habitability':
+      return getHabitabilityScore(planet) ?? -1;
+    case 'efficiency':
+      return getEfficiency(planet);
+  }
 };
 
 export const PlanetManager: React.FC = () => {
-  const { playerState } = useGame();
-  // CRT-T1.5-9 §5.1: the colony refresh is now SERVER-PUSHED, not locally guessed.
+  const { moveToSector } = useGame();
+  // CRT-T1.5-9 §5.1: the colony refresh is SERVER-PUSHED, not locally guessed.
   // A genesis_progress (formation finished) or planetary_update frame bumps this
   // counter in WebSocketContext; the effect below re-fetches /planets/owned when
   // it changes — replacing the client-side formation setInterval that guessed
   // completion from a timer.
   const { planetaryEventSignal } = useWebSocket();
   const [planets, setPlanets] = useState<Planet[]>([]);
-  const [selectedPlanet, setSelectedPlanet] = useState<Planet | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [showAllocator, setShowAllocator] = useState(false);
-  const [showBuildingManager, setShowBuildingManager] = useState(false);
-  const [showDefenseConfig, setShowDefenseConfig] = useState(false);
-  const [showGenesisDeployment, setShowGenesisDeployment] = useState(false);
-  const [showSpecialization, setShowSpecialization] = useState(false);
-  const [showSiegeMonitor, setShowSiegeMonitor] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'citadel' | 'grid' | 'terraforming' | 'research'>('overview');
+
+  // Travel state: which colony's "Set course" is in flight (disables its button).
+  const [coursePlanetId, setCoursePlanetId] = useState<string | null>(null);
+
+  // Sort state for the roster table.
+  const [sortBy, setSortBy] = useState<SortKey>('population');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
   // COLONY scan loading state: show a spinner while the registry loads, then
   // fall back to a retry affordance if nothing arrives within 10s. apiRequest
@@ -187,11 +161,11 @@ export const PlanetManager: React.FC = () => {
   // Display-only clock for the genesis terraforming countdown bar (ticks `nowMs`
   // once a second only while a planet is still forming, purely to animate the
   // remaining-time readout + progress fill). CRT-T1.5-9 §5.1: this no longer
-  // GUESSES completion from the timer and self-refetches — the authoritative
-  // "formation finished" signal arrives as a server-pushed genesis_progress
-  // frame (see the planetaryEventSignal effect below). This clock just paints.
+  // GUESSES completion from the timer — the authoritative "formation finished"
+  // signal arrives as a server-pushed genesis_progress frame (see the
+  // planetaryEventSignal effect below). This clock just paints.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  const anyForming = planets.some((p: any) => p?.formationStatus === 'forming');
+  const anyForming = planets.some((p) => (p as Planet).formationStatus === 'forming');
   useEffect(() => {
     if (!anyForming) return;
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -199,10 +173,8 @@ export const PlanetManager: React.FC = () => {
   }, [anyForming]);
 
   // CRT-T1.5-9 §5.1: re-fetch the colony registry whenever the server pushes a
-  // genesis_progress (formation complete) or planetary_update frame. This is the
-  // dropped-frame fix's payoff — "the world ticks on screen" without a guessed
-  // local timer. Skip the initial mount (signal 0); the mount effect below owns
-  // the first load.
+  // genesis_progress (formation complete) or planetary_update frame. Skip the
+  // initial mount (signal 0); the mount effect below owns the first load.
   const planetaryEventRef = useRef(planetaryEventSignal);
   useEffect(() => {
     if (planetaryEventSignal === planetaryEventRef.current) return;
@@ -244,11 +216,6 @@ export const PlanetManager: React.FC = () => {
       const response = await gameAPI.planetary.getOwnedPlanets();
       if (requestId !== loadRequestId.current) return;
       setPlanets(response.planets || []);
-
-      // Select first planet by default
-      if (response.planets && response.planets.length > 0 && !selectedPlanet) {
-        setSelectedPlanet(response.planets[0]);
-      }
     } catch (err) {
       if (requestId !== loadRequestId.current) return;
       setError('Failed to load planets');
@@ -259,10 +226,6 @@ export const PlanetManager: React.FC = () => {
         setRefreshing(false);
       }
     }
-  };
-
-  const handlePlanetSelect = (planet: Planet) => {
-    setSelectedPlanet(planet);
   };
 
   const handleRefresh = () => {
@@ -277,22 +240,33 @@ export const PlanetManager: React.FC = () => {
     loadPlanets();
   };
 
-  const handlePlanetUpdate = (updatedPlanet: Planet) => {
-    setPlanets(prevPlanets => 
-      prevPlanets.map(p => p.id === updatedPlanet.id ? updatedPlanet : p)
-    );
-    setSelectedPlanet(updatedPlanet);
+  // "Set course" — hand off to the existing travel flow. moveToSector takes a
+  // numeric sector id; the in-sector land flow takes over once we arrive.
+  const handleSetCourse = async (planet: Planet) => {
+    const sectorId = getNumericSectorId(planet);
+    if (sectorId === null) {
+      setError(`No sector coordinates for ${planet.name}`);
+      return;
+    }
+    setCoursePlanetId(planet.id);
+    try {
+      await moveToSector(sectorId);
+    } catch (err) {
+      console.error('Error setting course:', err);
+      // moveToSector surfaces its own error into GameContext; nothing else to do.
+    } finally {
+      setCoursePlanetId(null);
+    }
   };
 
-  const getSpecializationIcon = (spec?: ColonySpecialization) => {
-    const icons = {
-      agricultural: '🌾',
-      industrial: '🏭',
-      military: '⚔️',
-      research: '🔬',
-      balanced: '⚖️'
-    };
-    return spec ? icons[spec] : '🌍';
+  const handleSort = (key: SortKey) => {
+    if (sortBy === key) {
+      setSortOrder(order => (order === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(key);
+      // Text columns default ascending; numeric columns default descending.
+      setSortOrder(key === 'name' || key === 'sector' ? 'asc' : 'desc');
+    }
   };
 
   const getPlanetTypeIcon = (type: string) => {
@@ -309,6 +283,39 @@ export const PlanetManager: React.FC = () => {
     };
     return icons[(type || '').toLowerCase()] || '🪐';
   };
+
+  // Empire totals header (reuses the ProductionDashboard metric model).
+  const totals = useMemo(() => {
+    return planets.reduce(
+      (acc, p) => {
+        acc.fuel += p.productionRates.fuel;
+        acc.organics += p.productionRates.organics;
+        acc.equipment += p.productionRates.equipment;
+        acc.population += getPopulation(p as PlanetWithExtras);
+        acc.efficiency += getEfficiency(p);
+        return acc;
+      },
+      { fuel: 0, organics: 0, equipment: 0, population: 0, efficiency: 0 }
+    );
+  }, [planets]);
+
+  const avgEfficiency = planets.length > 0 ? Math.round(totals.efficiency / planets.length) : 0;
+  const siegedCount = planets.filter(p => p.underSiege).length;
+
+  const sortedPlanets = useMemo(() => {
+    const arr = [...planets] as PlanetWithExtras[];
+    arr.sort((a, b) => {
+      const av = sortValue(a, sortBy);
+      const bv = sortValue(b, sortBy);
+      if (typeof av === 'string' && typeof bv === 'string') {
+        return sortOrder === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      return sortOrder === 'asc'
+        ? (av as number) - (bv as number)
+        : (bv as number) - (av as number);
+    });
+    return arr;
+  }, [planets, sortBy, sortOrder]);
 
   if (loading) {
     return (
@@ -334,7 +341,7 @@ export const PlanetManager: React.FC = () => {
     );
   }
 
-  if (error) {
+  if (error && planets.length === 0) {
     return (
       <ColonialShell>
         <div className="planet-manager error">
@@ -352,635 +359,184 @@ export const PlanetManager: React.FC = () => {
   if (planets.length === 0) {
     return (
       <ColonialShell>
-      <div className="planet-manager empty">
-        <EmptyState
-          icon="🌌"
-          title="No Planets Owned"
-          message="You don't own any planets yet. Deploy a Genesis Device to create your first colony!"
-          action={{
-            label: '🌌 Deploy Genesis Device',
-            onClick: () => setShowGenesisDeployment(true)
-          }}
-        />
-
-        {showGenesisDeployment && (
-          <div className="modal-overlay" onClick={() => setShowGenesisDeployment(false)}>
-            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-              <GenesisDeployment
-                onSuccess={() => {
-                  setShowGenesisDeployment(false);
-                  loadPlanets();
-                }}
-                onClose={() => setShowGenesisDeployment(false)}
-              />
-            </div>
-          </div>
-        )}
-      </div>
+        <div className="planet-manager empty">
+          <EmptyState
+            icon="🌌"
+            title="No Planets Owned"
+            message="You don't own any planets yet. Deploy a Genesis Device from your ship to create your first colony!"
+          />
+        </div>
       </ColonialShell>
     );
   }
 
   return (
     <ColonialShell>
-    <div className="planet-manager">
-      {/* Planet List Sidebar */}
-      <div className="planet-list">
-        <div className="planet-list-header">
-          <h3>Your Colonies ({planets.length})</h3>
-          <div className="header-actions">
-            <button
-              onClick={() => setShowGenesisDeployment(true)}
-              className="genesis-mini-button"
-              title="Deploy a Genesis Device to seed a new colony in an empty sector"
-              aria-label="Deploy Genesis Device"
-            >
-              🌌 Deploy Genesis
-            </button>
+      <div className="planet-manager roster">
+        {/* Empire totals header */}
+        <div className="roster-header">
+          <div className="roster-title">
+            <h3>Colony Roster ({planets.length})</h3>
+            <span className="roster-subtitle">
+              Read-only fleet glance · set course to land and manage in the cockpit
+            </span>
+          </div>
+          <div className="roster-totals">
+            <span className="roster-total" title="Total fuel production across all colonies">
+              ⛽ {formatNumber(totals.fuel)}/day
+            </span>
+            <span className="roster-total" title="Total organics production across all colonies">
+              🌿 {formatNumber(totals.organics)}/day
+            </span>
+            <span className="roster-total" title="Total equipment production across all colonies">
+              ⚙️ {formatNumber(totals.equipment)}/day
+            </span>
+            <span className="roster-total" title="Total population across all colonies">
+              🌐 {formatNumber(totals.population)}
+            </span>
+            <span className="roster-total" title="Average production efficiency">
+              ⚡ {avgEfficiency}%
+            </span>
+            {siegedCount > 0 && (
+              <span className="roster-total siege" title="Colonies currently under siege">
+                ⚠ {siegedCount} under siege
+              </span>
+            )}
             <button
               onClick={handleRefresh}
               className="refresh-button"
               disabled={refreshing}
-              title={refreshing ? 'Refresh in progress' : 'Refresh planet data'}
-              aria-label={refreshing ? 'Refresh in progress' : 'Refresh planet data'}
+              title={refreshing ? 'Refresh in progress' : 'Refresh colony registry'}
+              aria-label={refreshing ? 'Refresh in progress' : 'Refresh colony registry'}
             >
               {refreshing ? '🔄' : '🔃'}
             </button>
           </div>
         </div>
-        
-        <div className="planet-items">
-          {planets.map(planet => {
-            const forming = (planet as any).formationStatus === 'forming';
-            const startMs = (planet as any).formationStartedAt ? new Date((planet as any).formationStartedAt).getTime() : null;
-            const endMs = (planet as any).formationCompleteAt ? new Date((planet as any).formationCompleteAt).getTime() : null;
+
+        {/* Roster table */}
+        <div className="roster-table" role="table" aria-label="Owned colonies">
+          <div className="roster-row roster-row-head" role="row">
+            {COLUMNS.map(col => (
+              <button
+                key={col.key}
+                role="columnheader"
+                className={`roster-th ${col.align === 'right' ? 'right' : ''} ${sortBy === col.key ? 'active' : ''}`}
+                onClick={() => handleSort(col.key)}
+                aria-sort={sortBy === col.key ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}
+              >
+                {col.label}
+                {sortBy === col.key && <span className="sort-arrow">{sortOrder === 'asc' ? ' ↑' : ' ↓'}</span>}
+              </button>
+            ))}
+            <span className="roster-th right action-col" role="columnheader">Action</span>
+          </div>
+
+          {sortedPlanets.map(planet => {
+            const forming = (planet as Planet).formationStatus === 'forming';
+            const startMs = planet.formationStartedAt ? new Date(planet.formationStartedAt).getTime() : null;
+            const endMs = planet.formationCompleteAt ? new Date(planet.formationCompleteAt).getTime() : null;
             const remainMs = endMs ? Math.max(0, endMs - nowMs) : 0;
             const pct = (forming && startMs && endMs && endMs > startMs)
               ? Math.min(100, Math.max(0, ((nowMs - startMs) / (endMs - startMs)) * 100))
               : 0;
-            return (
-            <div
-              key={planet.id}
-              className={`planet-item ${selectedPlanet?.id === planet.id ? 'selected' : ''} ${planet.underSiege ? 'under-siege' : ''} ${forming ? 'forming' : ''}`}
-              data-planet-type={normalizePlanetType(planet.planetType)}
-              onClick={() => handlePlanetSelect(planet)}
-            >
-              <div className="planet-item-header">
-                <span className="planet-icon planet-icon-badge">
-                  {forming ? '🌱' : getPlanetTypeIcon(planet.planetType)}
-                </span>
-                <span className="planet-name">{planet.name}</span>
-                {forming && <span className="forming-indicator" title="Genesis terraforming in progress">🌱</span>}
-                {planet.underSiege && <span className="siege-indicator">🚨</span>}
-              </div>
 
-              {forming ? (
-                <div className="planet-forming">
-                  <div className="forming-head">
-                    <span className="forming-label">TERRAFORMING</span>
-                    <span className="forming-remain">{endMs ? `${fmtFormationLeft(remainMs)} left` : 'forming…'}</span>
-                  </div>
-                  <div className="forming-bar"><div className="forming-bar-fill" style={{ width: `${pct}%` }} /></div>
-                  <div className="info-row">
-                    <span className="label">Sector:</span>
-                    <span className="value">{planet.sectorName}</span>
-                  </div>
-                  <div className="forming-note">Invulnerable while forming · usable when complete</div>
+            const hab = getHabitabilityScore(planet);
+            const citadel = getCitadelLevel(planet);
+            const population = getPopulation(planet);
+            const maxPopulation = getMaxPopulation(planet);
+            const eff = getEfficiency(planet);
+            const courseInFlight = coursePlanetId === planet.id;
+            const canSetCourse = getNumericSectorId(planet) !== null && !forming;
+
+            if (forming) {
+              return (
+                <div
+                  key={planet.id}
+                  className="roster-row forming"
+                  role="row"
+                >
+                  <span className="roster-td colony-cell" role="cell">
+                    <span className="planet-icon-badge">🌱</span>
+                    <span className="colony-name">{planet.name}</span>
+                  </span>
+                  <span className="roster-td" role="cell">{planet.sectorName}</span>
+                  <span className="roster-td forming-cell" role="cell" style={{ gridColumn: '3 / -1' }}>
+                    <div className="forming-head">
+                      <span className="forming-label">TERRAFORMING</span>
+                      <span className="forming-remain">{endMs ? `${fmtFormationLeft(remainMs)} left` : 'forming…'}</span>
+                    </div>
+                    <div className="forming-bar"><div className="forming-bar-fill" style={{ width: `${pct}%` }} /></div>
+                    <div className="forming-note">Invulnerable while forming · usable when complete</div>
+                  </span>
                 </div>
-              ) : (
-                <>
-                  <div className="planet-item-info">
-                    <div className="info-row">
-                      <span className="label">Sector:</span>
-                      <span className="value">{planet.sectorName}</span>
-                    </div>
-                    <div className="info-row">
-                      <span className="label">Colonists:</span>
-                      <span className="value">
-                        {planet.colonists.toLocaleString()} / {planet.maxColonists.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="info-row">
-                      <span className="label">Specialization:</span>
-                      <span className="value">
-                        {getSpecializationIcon(planet.specialization)} {planet.specialization || 'None'}
-                      </span>
-                    </div>
-                  </div>
+              );
+            }
 
-                  <div className="planet-item-production">
-                    <div className="production-mini">
-                      <span title="Fuel">⛽ {planet.productionRates.fuel}</span>
-                      <span title="Organics">🌿 {planet.productionRates.organics}</span>
-                      <span title="Equipment">⚙️ {planet.productionRates.equipment}</span>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
+            return (
+              <div
+                key={planet.id}
+                className={`roster-row ${planet.underSiege ? 'under-siege' : ''}`}
+                role="row"
+              >
+                <span className="roster-td colony-cell" role="cell">
+                  <span className="planet-icon-badge" data-planet-type={(planet.planetType || '').toLowerCase()}>
+                    {getPlanetTypeIcon(planet.planetType)}
+                  </span>
+                  <span className="colony-name">{planet.name}</span>
+                  {planet.underSiege && <span className="siege-indicator" title="Under siege">⚠</span>}
+                </span>
+
+                <span className="roster-td" role="cell">{planet.sectorName}</span>
+
+                <span className="roster-td right" role="cell">
+                  {citadel !== null ? `Lv${citadel}` : '—'}
+                </span>
+
+                <span className="roster-td right pop-cell" role="cell">
+                  {formatNumber(population)}
+                  {maxPopulation !== null && (
+                    <span className="pop-cap"> / {formatNumber(maxPopulation)}</span>
+                  )}
+                </span>
+
+                <span className="roster-td right" role="cell">{planet.productionRates.fuel}</span>
+                <span className="roster-td right" role="cell">{planet.productionRates.organics}</span>
+                <span className="roster-td right" role="cell">{planet.productionRates.equipment}</span>
+
+                <span className="roster-td right" role="cell">
+                  {hab !== null ? (
+                    <span className={`hab-pill hab-${habitabilityBand(hab)}`}>{hab}</span>
+                  ) : '—'}
+                </span>
+
+                <span className="roster-td right" role="cell">
+                  <span className={`eff-pill eff-${efficiencyBand(eff)}`}>{eff}%</span>
+                </span>
+
+                <span className="roster-td right action-col" role="cell">
+                  <button
+                    className="set-course-button"
+                    onClick={() => handleSetCourse(planet)}
+                    disabled={!canSetCourse || courseInFlight}
+                    title={
+                      canSetCourse
+                        ? `Set course for ${planet.sectorName} — land to manage in the cockpit`
+                        : 'Sector coordinates unavailable'
+                    }
+                  >
+                    {courseInFlight ? '⏳ Plotting…' : '🚀 Set course'}
+                  </button>
+                </span>
+              </div>
             );
           })}
         </div>
+
+        {error && (
+          <div className="roster-error" role="alert">{error}</div>
+        )}
       </div>
-
-      {/* Planet Details */}
-      {selectedPlanet && (
-        <div className="planet-details">
-          <div
-            className="planet-header"
-            data-planet-type={normalizePlanetType(selectedPlanet.planetType)}
-          >
-            <div className="planet-header-title">
-              <span
-                className="planet-icon-badge header-badge"
-                data-planet-type={normalizePlanetType(selectedPlanet.planetType)}
-              >
-                {getPlanetTypeIcon(selectedPlanet.planetType)}
-              </span>
-              <h2>{selectedPlanet.name}</h2>
-              {isPopulationHub(selectedPlanet as PlanetWithExtras) && (
-                <span
-                  className="hub-badge"
-                  title="Population hub — this colony anchors regional growth"
-                >
-                  ⭐ HUB
-                </span>
-              )}
-            </div>
-            {selectedPlanet.underSiege && (
-              <div className="siege-warning">
-                <span className="siege-icon">🚨</span>
-                <span>PLANET UNDER SIEGE!</span>
-                <button
-                  className="siege-status-button"
-                  onClick={() => setShowSiegeMonitor(true)}
-                >
-                  View Status
-                </button>
-              </div>
-            )}
-            <HabitabilityRing
-              score={getHabitabilityScore(selectedPlanet as PlanetWithExtras)}
-              terraformingActive={isTerraformingActive(selectedPlanet as PlanetWithExtras)}
-              terraformingTarget={getTerraformingTarget(selectedPlanet as PlanetWithExtras)}
-            />
-          </div>
-
-          <div className="planet-tabs" role="tablist" aria-label="Planet management tabs">
-            <button
-              role="tab"
-              aria-selected={activeTab === 'overview'}
-              className={`planet-tab ${activeTab === 'overview' ? 'active' : ''}`}
-              onClick={() => setActiveTab('overview')}
-            >
-              🌐 Overview
-            </button>
-            <button
-              role="tab"
-              aria-selected={activeTab === 'citadel'}
-              className={`planet-tab ${activeTab === 'citadel' ? 'active' : ''}`}
-              onClick={() => setActiveTab('citadel')}
-            >
-              🏰 Citadel
-            </button>
-            <button
-              role="tab"
-              aria-selected={activeTab === 'grid'}
-              className={`planet-tab ${activeTab === 'grid' ? 'active' : ''}`}
-              onClick={() => setActiveTab('grid')}
-            >
-              🏗️ Grid
-            </button>
-            <button
-              role="tab"
-              aria-selected={activeTab === 'terraforming'}
-              className={`planet-tab ${activeTab === 'terraforming' ? 'active' : ''}`}
-              onClick={() => setActiveTab('terraforming')}
-            >
-              🌱 Terraforming
-            </button>
-            {/* CRT-T1.5-9 §5.4: the empire-level "Citadel Research" cockpit. It is
-                empire-wide (matching where the governor + copay live), not a
-                per-planet gauge — but it lives here beside the citadel/grid tabs,
-                the home of the Citadel⋈Research loop it surfaces. */}
-            <button
-              role="tab"
-              aria-selected={activeTab === 'research'}
-              className={`planet-tab ${activeTab === 'research' ? 'active' : ''}`}
-              onClick={() => setActiveTab('research')}
-            >
-              🔬 Citadel Research
-            </button>
-          </div>
-
-          {activeTab === 'citadel' && (
-            <div className="planet-overview citadel-tab-content">
-              <CitadelManager
-                planetId={selectedPlanet.id}
-                playerCredits={playerState?.credits ?? 0}
-                stationedDrones={selectedPlanet.defenses?.drones}
-                onUpdate={loadPlanets}
-              />
-            </div>
-          )}
-
-          {activeTab === 'grid' && (
-            <div className="planet-overview citadel-tab-content">
-              <GridManager
-                planetId={selectedPlanet.id}
-                playerCredits={playerState?.credits ?? 0}
-                onUpdate={loadPlanets}
-              />
-            </div>
-          )}
-
-          {activeTab === 'terraforming' && (
-            <div className="planet-overview citadel-tab-content">
-              <TerraformingPanel
-                planetId={selectedPlanet.id}
-                planetType={selectedPlanet.planetType}
-                playerCredits={playerState?.credits ?? 0}
-                habitabilityScore={getHabitabilityScore(selectedPlanet as PlanetWithExtras)}
-                onUpdate={loadPlanets}
-              />
-            </div>
-          )}
-
-          {/* Empire-level R&D cockpit — reads the empire summary + generated
-              offers, independent of which planet is selected (§5.4). */}
-          {activeTab === 'research' && (
-            <div className="planet-overview citadel-tab-content">
-              <EmpireResearchPanel />
-            </div>
-          )}
-
-          {activeTab === 'overview' && (
-          <div className="planet-overview">
-            {(() => {
-              const extended = selectedPlanet as PlanetWithExtras;
-              const habScore = getHabitabilityScore(extended);
-              const population = getPopulation(extended);
-              const maxPopulation = getMaxPopulation(extended);
-              const growth = getGrowthPerDay(extended);
-              const workforcePct = selectedPlanet.maxColonists > 0
-                ? Math.min(100, (selectedPlanet.colonists / selectedPlanet.maxColonists) * 100)
-                : 0;
-              const populationPct = maxPopulation && maxPopulation > 0
-                ? Math.min(100, (population / maxPopulation) * 100)
-                : 0;
-              const workforceWithinPopPct = maxPopulation && maxPopulation > 0
-                ? Math.min(100, (selectedPlanet.colonists / maxPopulation) * 100)
-                : 0;
-              return (
-                <div className="overview-section population-panel">
-                  <h3>Population</h3>
-                  <div className="dual-ceiling">
-                    <div className="ceiling-bar-group">
-                      <div className="ceiling-bar-header">
-                        <span
-                          className="ceiling-label workforce"
-                          title="Working colonists, capped by citadel level"
-                        >
-                          👥 Workforce
-                        </span>
-                        <span className="ceiling-numbers">
-                          {selectedPlanet.colonists.toLocaleString()} / {selectedPlanet.maxColonists.toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="ceiling-bar">
-                        <div
-                          className="ceiling-fill workforce"
-                          style={{ width: `${workforcePct}%` }}
-                        />
-                      </div>
-                    </div>
-                    {maxPopulation !== null ? (
-                      <div className="ceiling-bar-group">
-                        <div className="ceiling-bar-header">
-                          <span
-                            className="ceiling-label population"
-                            title="Total inhabitants, capped by habitability (habitability × 1,000)"
-                          >
-                            🌐 Population
-                          </span>
-                          <span className="ceiling-numbers">
-                            {population.toLocaleString()} / {maxPopulation.toLocaleString()}
-                          </span>
-                        </div>
-                        <div className="ceiling-bar layered">
-                          <div
-                            className="ceiling-fill population"
-                            style={{ width: `${populationPct}%` }}
-                          />
-                          <div
-                            className="ceiling-fill workforce-overlay"
-                            style={{ width: `${workforceWithinPopPct}%` }}
-                            title="Workforce share of total population"
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="ceiling-unavailable">
-                        Population ceiling unavailable — habitability data missing
-                      </div>
-                    )}
-                  </div>
-                  {growth !== null && habScore !== null && (
-                    <div className="growth-line">
-                      ≈ +{Math.round(growth).toLocaleString()}/day at current habitability ({habScore}/100)
-                    </div>
-                  )}
-                  {typeof extended.morale === 'number' && (
-                    <div className="morale-line" title="Colony morale — drops under siege; planet becomes vulnerable at 0">
-                      Morale: <span className={`morale-value ${extended.morale <= 25 ? 'critical' : extended.morale <= 50 ? 'low' : 'good'}`}>
-                        {extended.morale}%
-                      </span>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-            <div className="overview-section">
-              <h3>Colony Information</h3>
-              <div className="info-grid">
-                <div className="info-item">
-                  <span className="label">Type:</span>
-                  <span className="value">{selectedPlanet.planetType}</span>
-                </div>
-                <div className="info-item">
-                  <span className="label">Location:</span>
-                  <span className="value">{selectedPlanet.sectorName}</span>
-                </div>
-                <div className="info-item">
-                  <span className="label">Specialization:</span>
-                  <span className="value">
-                    {getSpecializationIcon(selectedPlanet.specialization)} 
-                    {selectedPlanet.specialization || 'None'}
-                  </span>
-                </div>
-                <div className="info-item">
-                  <span className="label">Workforce:</span>
-                  <span className="value">
-                    {selectedPlanet.colonists.toLocaleString()} / {selectedPlanet.maxColonists.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="overview-section">
-              <h3>Production Rates</h3>
-              <div className="production-grid">
-                <div className="production-item">
-                  <span className="resource-icon">⛽</span>
-                  <span className="resource-name">Fuel</span>
-                  <span className="resource-value">{selectedPlanet.productionRates.fuel}/day</span>
-                </div>
-                <div className="production-item">
-                  <span className="resource-icon">🌿</span>
-                  <span className="resource-name">Organics</span>
-                  <span className="resource-value">{selectedPlanet.productionRates.organics}/day</span>
-                </div>
-                <div className="production-item">
-                  <span className="resource-icon">⚙️</span>
-                  <span className="resource-name">Equipment</span>
-                  <span className="resource-value">{selectedPlanet.productionRates.equipment}/day</span>
-                </div>
-                <div className="production-item">
-                  <span className="resource-icon">👥</span>
-                  <span className="resource-name">Colonists</span>
-                  <span className="resource-value">+{selectedPlanet.productionRates.colonists}/day</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="overview-section">
-              <h3>Colonist Assignments</h3>
-              <div className="allocation-bars">
-                {(() => {
-                  const total = Math.max(1, selectedPlanet.colonists);
-                  const pct = (heads: number) => Math.min(100, (Math.max(0, heads) / total) * 100);
-                  const rows = [
-                    { key: 'fuel', label: '⛽ Fuel Production', heads: selectedPlanet.allocations.fuel },
-                    { key: 'organics', label: '🌿 Organics Production', heads: selectedPlanet.allocations.organics },
-                    { key: 'equipment', label: '⚙️ Equipment Production', heads: selectedPlanet.allocations.equipment },
-                    { key: 'unused', label: '💤 Idle', heads: selectedPlanet.allocations.unused },
-                  ];
-                  return rows.map(row => (
-                    <div className="allocation-item" key={row.key}>
-                      <span className="allocation-label">{row.label}</span>
-                      <div className="allocation-bar">
-                        <div
-                          className={`allocation-fill ${row.key}`}
-                          style={{ width: `${pct(row.heads)}%` }}
-                        />
-                        <span className="allocation-value">
-                          {Math.max(0, row.heads).toLocaleString()} colonists
-                        </span>
-                      </div>
-                    </div>
-                  ));
-                })()}
-              </div>
-            </div>
-
-            <div className="overview-section">
-              <h3>Buildings</h3>
-              <div className="buildings-grid">
-                {selectedPlanet.buildings.map(building => (
-                  <div key={building.type} className={`building-item ${building.upgrading ? 'upgrading' : ''}`}>
-                    <div className="building-icon">
-                      {building.type === 'factory' && '🏭'}
-                      {building.type === 'farm' && '🌾'}
-                      {building.type === 'mine' && '⛏️'}
-                      {building.type === 'defense' && '🛡️'}
-                      {building.type === 'research' && '🔬'}
-                    </div>
-                    <div className="building-info">
-                      <span className="building-name">{building.type}</span>
-                      <span className="building-level">Level {building.level}</span>
-                    </div>
-                    {building.upgrading && (
-                      <div className="upgrade-progress">
-                        <div className="progress-bar">
-                          <div className="progress-fill" style={{ width: '30%' }} />
-                        </div>
-                        <span className="upgrade-time">Upgrading...</span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="overview-section">
-              <h3>Planetary Defenses</h3>
-              <div className="defense-grid">
-                <div className="defense-item">
-                  <span className="defense-icon">🔫</span>
-                  <span className="defense-name">Turrets</span>
-                  <span className="defense-value">{selectedPlanet.defenses.turrets}</span>
-                </div>
-                <div className="defense-item">
-                  <span className="defense-icon">🛡️</span>
-                  <span className="defense-name">Shields</span>
-                  <span className="defense-value">{selectedPlanet.defenses.shields}</span>
-                </div>
-                <div className="defense-item">
-                  <span className="defense-icon">✈️</span>
-                  <span className="defense-name">Drones</span>
-                  <span className="defense-value">{selectedPlanet.defenses.drones}</span>
-                </div>
-              </div>
-            </div>
-
-            {selectedPlanet.underSiege && selectedPlanet.siegeDetails && (
-              <div className="overview-section siege-section">
-                <h3>Siege Status</h3>
-                <div className="siege-details">
-                  <div className="siege-info">
-                    <span className="label">Attacker:</span>
-                    <span className="value">{selectedPlanet.siegeDetails.attackerName}</span>
-                  </div>
-                  <div className="siege-info">
-                    <span className="label">Phase:</span>
-                    <span className="value phase-{selectedPlanet.siegeDetails.phase}">
-                      {selectedPlanet.siegeDetails.phase.toUpperCase()}
-                    </span>
-                  </div>
-                  <div className="siege-info">
-                    <span className="label">Defense Effectiveness:</span>
-                    <span className="value">{selectedPlanet.siegeDetails.defenseEffectiveness}%</span>
-                  </div>
-                  {selectedPlanet.siegeDetails.casualties && (
-                    <div className="siege-casualties">
-                      <span className="label">Casualties:</span>
-                      <span className="casualty">
-                        👥 {selectedPlanet.siegeDetails.casualties.colonists} colonists
-                      </span>
-                      <span className="casualty">
-                        ✈️ {selectedPlanet.siegeDetails.casualties.drones} drones
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-          )}
-
-          <div className="planet-actions">
-            <button
-              className="action-button allocate"
-              onClick={() => setShowAllocator(true)}
-              title="Assign colonists to production roles"
-            >
-              📊 Manage Allocations
-            </button>
-            <button
-              className="action-button upgrade"
-              onClick={() => setShowBuildingManager(true)}
-              title="Upgrade planetary buildings"
-            >
-              🔨 Upgrade Buildings
-            </button>
-            <button
-              className="action-button defense"
-              onClick={() => setShowDefenseConfig(true)}
-              title="Configure turrets, shields, and drones"
-            >
-              🛡️ Configure Defenses
-            </button>
-            <button
-              className="action-button specialize"
-              onClick={() => setShowSpecialization(true)}
-              title="Choose a colony specialization"
-            >
-              🎯 Set Specialization
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Colonist Allocator Modal */}
-      {showAllocator && selectedPlanet && (
-        <div className="modal-overlay" onClick={() => setShowAllocator(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <ColonistAllocator
-              planet={selectedPlanet}
-              onUpdate={handlePlanetUpdate}
-              onClose={() => setShowAllocator(false)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Building Manager Modal */}
-      {showBuildingManager && selectedPlanet && (
-        <div className="modal-overlay" onClick={() => setShowBuildingManager(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <BuildingManager
-              planet={selectedPlanet}
-              onUpdate={handlePlanetUpdate}
-              onClose={() => setShowBuildingManager(false)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Defense Configuration Modal */}
-      {showDefenseConfig && selectedPlanet && (
-        <div className="modal-overlay" onClick={() => setShowDefenseConfig(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <DefenseConfiguration
-              planet={selectedPlanet}
-              onUpdate={handlePlanetUpdate}
-              onClose={() => setShowDefenseConfig(false)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Genesis Deployment Modal */}
-      {showGenesisDeployment && (
-        <div className="modal-overlay" onClick={() => setShowGenesisDeployment(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <GenesisDeployment
-              onSuccess={() => {
-                setShowGenesisDeployment(false);
-                loadPlanets();
-              }}
-              onClose={() => setShowGenesisDeployment(false)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Colony Specialization Modal */}
-      {showSpecialization && selectedPlanet && (
-        <div className="modal-overlay" onClick={() => setShowSpecialization(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <ColonySpecializationComponent
-              planet={selectedPlanet}
-              onUpdate={handlePlanetUpdate}
-              onClose={() => setShowSpecialization(false)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Siege Status Monitor Modal */}
-      {showSiegeMonitor && selectedPlanet && (
-        <div className="modal-overlay" onClick={() => setShowSiegeMonitor(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <SiegeStatusMonitor
-              planet={selectedPlanet}
-              onUpdate={handlePlanetUpdate}
-              onClose={() => setShowSiegeMonitor(false)}
-            />
-          </div>
-        </div>
-      )}
-    </div>
     </ColonialShell>
   );
 };

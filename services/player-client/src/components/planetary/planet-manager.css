@@ -1212,3 +1212,324 @@
 @media (prefers-reduced-motion: reduce) {
   .planet-item .forming-indicator, .planet-forming .forming-bar-fill { animation: none; }
 }
+
+/* ============================================
+   COLONY ROSTER — read-only fleet glance + travel board.
+   Replaces the dual-pane list/detail layout: deep management
+   now lives in the landed cockpit. This screen is sortable
+   columns + a "Set course" travel action per colony.
+   ============================================ */
+
+.planet-manager.roster {
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  overflow: auto;
+}
+
+.roster-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-primary, rgba(123, 47, 255, 0.3));
+}
+
+.roster-title h3 {
+  margin: 0;
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+}
+
+.roster-subtitle {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--text-secondary, #99a);
+}
+
+.roster-totals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.roster-total {
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  background: var(--surface-secondary, rgba(123, 47, 255, 0.08));
+  border: 1px solid var(--border-secondary, rgba(123, 47, 255, 0.25));
+  border-radius: var(--radius-sm, 6px);
+  white-space: nowrap;
+}
+
+.roster-total.siege {
+  color: #ffb000;
+  border-color: rgba(255, 176, 0, 0.5);
+  background: rgba(255, 176, 0, 0.08);
+}
+
+/* Table: CSS grid so columns stay aligned across rows.
+   Columns: name · sector · citadel · pop/cap · fuel · org · equip · hab · eff · action */
+.roster-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-primary, rgba(123, 47, 255, 0.3));
+  border-radius: var(--radius-md, 8px);
+  overflow: hidden;
+}
+
+.roster-row {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 1.6fr)  /* colony */
+    minmax(90px, 1fr)     /* sector */
+    72px                  /* citadel */
+    minmax(110px, 1.1fr)  /* pop/cap */
+    64px 64px 64px        /* fuel / org / equip */
+    56px                  /* hab */
+    64px                  /* eff */
+    minmax(120px, 0.9fr); /* action */
+  align-items: center;
+  gap: var(--space-xs, 6px);
+  padding: 8px var(--space-md, 12px);
+  border-bottom: 1px solid var(--border-secondary, rgba(123, 47, 255, 0.12));
+}
+
+.roster-row:last-child {
+  border-bottom: none;
+}
+
+.roster-row:not(.roster-row-head):hover {
+  background: var(--surface-secondary, rgba(123, 47, 255, 0.06));
+}
+
+.roster-row-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-secondary, rgba(10, 6, 24, 0.95));
+}
+
+.roster-th {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #99a);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.roster-th.right {
+  text-align: right;
+  justify-self: end;
+}
+
+.roster-th:hover {
+  color: var(--text-primary);
+}
+
+.roster-th.active {
+  color: #00d9ff;
+}
+
+.roster-th.action-col {
+  cursor: default;
+}
+
+.sort-arrow {
+  font-size: 0.7rem;
+}
+
+.roster-td {
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.roster-td.right {
+  text-align: right;
+  justify-self: end;
+}
+
+.colony-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.colony-cell .colony-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.colony-cell .planet-icon-badge {
+  flex: 0 0 auto;
+  font-size: 1rem;
+}
+
+.pop-cell .pop-cap {
+  color: var(--text-secondary, #99a);
+  font-size: 0.74rem;
+}
+
+.roster-row.under-siege {
+  background: rgba(255, 59, 48, 0.06);
+  box-shadow: inset 3px 0 0 var(--error-color, #ff3b30);
+}
+
+.roster-row.under-siege .siege-indicator {
+  color: #ff3b30;
+  font-size: 0.9rem;
+}
+
+/* Habitability / efficiency pills — color-banded readouts */
+.hab-pill,
+.eff-pill {
+  display: inline-block;
+  min-width: 34px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.hab-pill.hab-low,
+.eff-pill.eff-low {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.hab-pill.hab-mid,
+.eff-pill.eff-mid {
+  color: #ffb000;
+  background: rgba(255, 176, 0, 0.12);
+}
+
+.hab-pill.hab-high,
+.eff-pill.eff-high {
+  color: #51cf66;
+  background: rgba(81, 207, 102, 0.12);
+}
+
+/* Set course travel action */
+.set-course-button {
+  padding: 5px 12px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.set-course-button:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.18);
+  border-color: rgba(0, 217, 255, 0.7);
+}
+
+.set-course-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Forming (genesis terraforming) row — spans the data columns with a progress bar */
+.roster-row.forming .forming-cell {
+  text-align: left;
+  justify-self: stretch;
+}
+
+.roster-row.forming .forming-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.roster-row.forming .forming-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #b9afff;
+}
+
+.roster-row.forming .forming-remain {
+  font-size: 0.7rem;
+  color: #d8d2ff;
+  font-variant-numeric: tabular-nums;
+}
+
+.roster-row.forming .forming-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(123, 47, 255, 0.18);
+  overflow: hidden;
+}
+
+.roster-row.forming .forming-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #7B2FFF, #b9afff);
+  background-size: 14px 100%;
+  animation: pm-forming-march 0.9s linear infinite;
+  transition: width 1s linear;
+}
+
+.roster-row.forming .forming-note {
+  font-size: 0.62rem;
+  color: var(--text-secondary, #99a);
+  margin-top: 3px;
+}
+
+.roster-error {
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.8rem;
+  color: #ffb000;
+  background: rgba(255, 176, 0, 0.08);
+  border: 1px solid rgba(255, 176, 0, 0.4);
+  border-radius: var(--radius-sm, 6px);
+}
+
+@media (max-width: 760px) {
+  /* Drop the production breakdown columns on narrow screens; keep the
+     glance-critical columns + the travel action. */
+  .roster-row {
+    grid-template-columns:
+      minmax(120px, 1.6fr)
+      minmax(70px, 1fr)
+      60px
+      minmax(90px, 1fr)
+      52px
+      minmax(110px, 0.9fr);
+  }
+  .roster-th:nth-child(5),  /* fuel */
+  .roster-th:nth-child(6),  /* org */
+  .roster-th:nth-child(7),  /* equip */
+  .roster-td:nth-child(5),
+  .roster-td:nth-child(6),
+  .roster-td:nth-child(7) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .roster-row.forming .forming-bar-fill { animation: none; }
+}
