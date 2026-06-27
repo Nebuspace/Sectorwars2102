@@ -115,9 +115,10 @@
      leaves a gap / clips. The band's 34vh matches the (also-compensated)
      windshield clamp; the 196px fixed chrome stays raw (it scales with zoom like
      the helm rail it accounts for). (WO-UISCALE-VH) */
-  --landed-chrome: calc(clamp(240px, calc(34 * var(--svh1, 1vh)), 380px) + 196px);
-  height: calc(var(--svh, 100vh) - var(--landed-chrome, 502px));
-  max-height: calc(var(--svh, 100vh) - var(--landed-chrome, 502px));
+  /* 116px fixed chrome (was 196px — the 80px top header it included is gone). */
+  --landed-chrome: calc(clamp(240px, calc(34 * var(--svh1, 1vh)), 380px) + 116px);
+  height: calc(var(--svh, 100vh) - var(--landed-chrome, 422px));
+  max-height: calc(var(--svh, 100vh) - var(--landed-chrome, 422px));
   /* `overflow:hidden` clips, it does not scroll: with `max-height` alone (no
      definite height) a `flex:1 1 auto` child sizes to content first, so a tall
      tab (Terraform's L1–L5 card stack — the first tab whose content genuinely
@@ -133,7 +134,7 @@
    230px subtraction. (Scoped to the app-root class GameDashboard toggles when
    landedChromeMin is on; the default rule above covers the EXPANDED state.) */
 .cockpit-mode.landed-min .colony-mgmt-console .cmc-body {
-  --landed-chrome: 230px;
+  --landed-chrome: 150px; /* was 230px — minus the removed 80px top header */
 }
 
 /* A panel mounted as the active tab fills the body (overriding the fixed-height

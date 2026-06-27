@@ -46,7 +46,11 @@
    onto the left edge of the viewport. Reuses the .sidebar-toggle chrome
    (gradient/border/hover) and overrides only position + size so it sits
    compactly at the viewport's left, vertically centered, above content. */
-.sidebar-edge-toggle {
+/* Two-class selector so `position:absolute` outranks `.cockpit-btn{position:relative}`
+   (cockpit-components.css, same specificity but imported later) — otherwise the
+   toggle stays in-flow at the top of .game-content and (with main{gap:4rem})
+   pushes the viewport down ~102px, leaving an empty band above it. */
+.cockpit-btn.sidebar-edge-toggle {
   position: absolute;
   left: 0.5rem;
   top: 50%;
