@@ -166,7 +166,28 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       prevIsLandedRef.current = isLanded;
     }
   }, [playerState?.is_landed]);
-  
+
+  // ── Windshield minimize / expand (id=151) ────────────────────────────
+  // Docked/landed hand the lower area to the station/colony console, so AUTO-
+  // minimize the windshield band on the dock/land EDGE — shrinking --band-h at
+  // the container so the helm + sidebar + deck rise and the console gets the
+  // reclaimed vertical space (SCROLL LAW) — and restore it on the undock/
+  // lift-off edge. A manual toggle (button in the band) lets the player expand
+  // the scene back at will. Keyed off the edge (ref), not every render, so the
+  // manual toggle isn't fought while the player stays grounded. (Restores the
+  // retired green-bar minimize, recomposed for the inverted-L.)
+  const grounded = !!(playerState?.is_docked || playerState?.is_landed);
+  const [windshieldMin, setWindshieldMin] = useState(false);
+  const prevGroundedRef = React.useRef<boolean>(grounded);
+  React.useEffect(() => {
+    const g = !!(playerState?.is_docked || playerState?.is_landed);
+    if (g !== prevGroundedRef.current) {
+      setWindshieldMin(g); // minimize on dock/land, restore on undock/lift-off
+      prevGroundedRef.current = g;
+    }
+  }, [playerState?.is_docked, playerState?.is_landed]);
+  const toggleWindshield = () => setWindshieldMin((m) => !m);
+
   return (
     <div className="game-layout-wrapper">
       {/* Cockpit-wide realtime medal toast: consumes the medal_awarded WS event
@@ -184,7 +205,9 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
         <div
           className={`game-container${
             playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
-          }${sidebarOpen ? '' : ' console-collapsed'}`}
+          }${sidebarOpen ? '' : ' console-collapsed'}${
+            windshieldMin && grounded ? ' windshield-min' : ''
+          }`}
         >
           {/* Left console (NEON15): route rail on top, then two MFD
               screens splitting the remaining height. MFDProvider hosts
@@ -223,6 +246,19 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               {...(isInitialLoad ? { inert: '' } : {})}
             >
               <PlayerVitalsHud />
+              {/* Windshield minimize/expand toggle (id=151) — only while
+                  docked/landed, where minimizing hands room to the console. */}
+              {grounded && (
+                <button
+                  type="button"
+                  className="windshield-toggle"
+                  onClick={toggleWindshield}
+                  aria-label={windshieldMin ? 'Expand viewport' : 'Minimize viewport'}
+                  title={windshieldMin ? 'Expand viewport' : 'Minimize viewport — give the console more room'}
+                >
+                  {windshieldMin ? '⤢' : '▴'}
+                </button>
+              )}
               {children}
             </div>
             {isInitialLoad && (

@@ -144,6 +144,41 @@
   --sidebar-w: 0px;
 }
 
+/* WINDSHIELD MINIMIZE (id=151): docked/landed shrink the band to a thin bar so
+   the station/colony console gets the reclaimed room. Shrinking --band-h raises
+   the helm + sidebar + deck; with .console-expand the deck (terminal) grows to
+   fill it. The HUD stays readable in the thin band; the toggle restores it. */
+.game-container.windshield-min {
+  --band-h: 52px;
+}
+
+/* Minimize / expand-viewport toggle — small button pinned to the band top-right
+   (inside .main-viewport; z above the HUD/helm, below alerts). */
+.windshield-toggle {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.5rem;
+  z-index: 36;
+  pointer-events: auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  line-height: 1;
+  color: var(--color-primary, #00d9ff);
+  background: rgba(0, 10, 16, 0.55);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.windshield-toggle:hover {
+  background: rgba(0, 217, 255, 0.15);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+
 /* MFD console layout: rail fixed top, screens share the leftover height.
    Descendant (not child) selectors so an extra provider wrapper between
    the aside and the screens can never silently break the split. */
