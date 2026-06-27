@@ -89,6 +89,38 @@ const VesselPage: React.FC = () => {
             value={playerState ? playerState.attack_drones : '—'}
           />
         </div>
+        {/* GENESIS BAY on STATUS (id=143): mirror CRGO's slot-grid + count so a
+            ship's genesis devices are visible on STAT too. Read-only here — the
+            deploy affordance stays prominent on CRGO (CargoPage). */}
+        {(() => {
+          const maxGenesis = num(currentShip.max_genesis_devices) ?? 0;
+          const loadedGenesis = num(currentShip.genesis_devices) ?? 0;
+          if (maxGenesis <= 0) return null;
+          return (
+            <div className="mfd-page-section">
+              <div className="mfd-page-section-title">GENESIS BAY</div>
+              <div className="mfd-page-genesis-row">
+                <div className="mfd-page-genesis-slots">
+                  {Array.from({ length: maxGenesis }, (_, i) => {
+                    const loaded = i < loadedGenesis;
+                    return (
+                      <span
+                        key={i}
+                        className={`mfd-page-genesis-slot ${loaded ? 'loaded' : 'empty'}`}
+                        title={loaded ? 'Genesis Device Loaded' : 'Empty Slot'}
+                      >
+                        {loaded ? '◉' : '○'}
+                      </span>
+                    );
+                  })}
+                </div>
+                <span className={`mfd-page-genesis-count${loadedGenesis > 0 ? ' active' : ''}`}>
+                  {loadedGenesis} / {maxGenesis}
+                </span>
+              </div>
+            </div>
+          );
+        })()}
         {failureText && (
           <div className="mfd-page-warnline" role="alert">
             {failureText} FAILURE DETECTED
