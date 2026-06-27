@@ -332,10 +332,16 @@ class TerraformingService:
                 "availableLevels": self.get_terraforming_levels()
             }
 
-        # Calculate estimated ticks remaining
+        # Calculate estimated ticks remaining. avg_increment is the canonical
+        # per-cycle habitability gain (_calculate_increment: 1 + pop//1000,
+        # capped at TERRAFORMING_MAX_INCREMENT) — the SAME number the lazy
+        # advance path applies, so the client can label speed without
+        # recomputing a different mechanic. population is the colonist/population
+        # count that formula reads.
         habitability_remaining = planet.terraforming_target - planet.habitability_score
         avg_increment = self._calculate_increment(planet)
         estimated_ticks = max(1, int(habitability_remaining / avg_increment)) if avg_increment > 0 else None
+        population = max(planet.colonists or 0, planet.population or 0)
 
         # Level identity from the project metadata (additive — lets clients
         # render the real ladder entry instead of inventing one)
@@ -393,6 +399,12 @@ class TerraformingService:
             "estimatedTicksRemaining": estimated_ticks,
             "tickPeriodHours": round(tick_period_hours, 4) if tick_period_hours is not None else None,
             "estimatedCompletion": estimated_completion,
+            # Canonical per-cycle speed inputs (additive): pointsPerCycle is the
+            # increment _calculate_increment computed above; population is the
+            # count that formula scales on. The client labels speed from these
+            # instead of recomputing or falling back to opaque "points/tick".
+            "pointsPerCycle": avg_increment,
+            "population": population,
             "populationBonus": self._get_population_bonus_description(planet)
         }
 
