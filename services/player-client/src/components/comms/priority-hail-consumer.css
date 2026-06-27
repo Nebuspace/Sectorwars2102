@@ -10,7 +10,7 @@
 /* --- Toast stack: top-right, above the viewport, non-blocking --- */
 .phc-toast-stack {
   position: fixed;
-  top: 4.5rem; /* clear of the game-header bar */
+  top: 1rem; /* the game-header bar was removed (WO-PLAYER-TOPUI); sit near the top */
   right: 1rem;
   z-index: 9000;
   display: flex;

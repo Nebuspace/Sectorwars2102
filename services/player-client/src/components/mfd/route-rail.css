@@ -104,6 +104,22 @@
   color: color-mix(in srgb, var(--rr-accent) 90%, #ffffff);
 }
 
+/* Pilot identity row — sits between the route grid and the logout key,
+   tinted by the player's chosen name_color (falls back to console cyan). */
+.rr-pilot {
+  width: 100%;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--pilot-color, #00d9ff);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 2px 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rr-key {
     transition: none;

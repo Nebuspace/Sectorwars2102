@@ -1,6 +1,8 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import LogoutButton from '../auth/LogoutButton';
+import { useAuth } from '../../contexts/AuthContext';
+import { useGame } from '../../contexts/GameContext';
 import './route-rail.css';
 
 /* SHIP SYSTEMS rail — one key per console route, each carrying its Law-5
@@ -11,7 +13,7 @@ const NAV_ITEMS: Array<{ to: string; mnemonic: string; label: string; accent: st
   { to: '/game', mnemonic: 'CMD', label: 'COMMAND', accent: '#00D9FF' },
   { to: '/game/map', mnemonic: 'NAV', label: 'NAV CHART', accent: '#00D9FF' },
   { to: '/game/ships', mnemonic: 'HGR', label: 'HANGAR', accent: '#9EC5FF' },
-  { to: '/game/trading', mnemonic: 'TRD', label: 'TRADE', accent: '#FFB000' },
+  { to: '/game/settings', mnemonic: 'SET', label: 'SETTINGS', accent: '#9AA7B4' },
   { to: '/game/planets', mnemonic: 'COL', label: 'COLONIES', accent: '#7B2FFF' },
   { to: '/game/combat', mnemonic: 'WPN', label: 'WEAPONS', accent: '#FF4D6D' },
   { to: '/game/team', mnemonic: 'CRW', label: 'CREW', accent: '#00FF7F' },
@@ -23,6 +25,8 @@ const NAV_ITEMS: Array<{ to: string; mnemonic: string; label: string; accent: st
    survives a page fault (contract rule 4). */
 const RouteRail: React.FC = () => {
   const location = useLocation();
+  const { user } = useAuth();
+  const { playerState } = useGame();
 
   return (
     <nav className="route-rail" aria-label="Ship systems">
@@ -43,6 +47,13 @@ const RouteRail: React.FC = () => {
             </Link>
           );
         })}
+      </div>
+      <div
+        className="rr-pilot"
+        title={user?.username}
+        style={{ '--pilot-color': playerState?.name_color || '#00D9FF' } as React.CSSProperties}
+      >
+        {user?.username || '—'}
       </div>
       <LogoutButton className="rr-key rr-key-logout" />
     </nav>

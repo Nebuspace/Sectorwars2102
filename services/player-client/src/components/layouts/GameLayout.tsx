@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
-import UserProfile from '../auth/UserProfile';
+import PlayerVitalsHud from './PlayerVitalsHud';
 import { MFDProvider, useMFD } from '../mfd/MFDContext';
 import MFDScreen from '../mfd/MFDScreen';
 import { SIDEBAR_A, SIDEBAR_B } from '../mfd/sidebarScreens';
@@ -80,7 +79,6 @@ const MFDAlertWiring: React.FC = () => {
 
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -179,70 +177,6 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
           action-interrupting modal — per messaging.md "Priority levels". */}
       <PriorityHailConsumer />
       <div className="game-layout">
-        <header className="game-header hud-panel">
-          <div className="game-header-left">
-            <button
-              className="cockpit-btn sidebar-toggle"
-              onClick={toggleSidebar}
-              aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-              title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-            >
-              <span className="toggle-icon">{sidebarOpen ? '◀' : '▶'}</span>
-            </button>
-            <h1 className="game-title">
-              <span className="title-main">SECTOR WARS</span>
-              <span className="title-year">2102</span>
-            </h1>
-          </div>
-          <div className="header-commander-bar">
-            <div className="header-commander-name">
-              {user?.username || '—'}
-              {!playerState && !isLoading && (
-                <button
-                  onClick={refreshPlayerState}
-                  className="refresh-btn header-refresh-btn"
-                  title="Refresh player state"
-                  aria-label="Refresh"
-                >
-                  ⟳
-                </button>
-              )}
-            </div>
-            <div className="header-stat">
-              <span className="header-stat-label">CRED</span>
-              <span className="data-readout credits">{playerState?.credits?.toLocaleString() || '0'}</span>
-            </div>
-            <div className="header-stat">
-              <span className="header-stat-label">TURN</span>
-              <span className="data-readout turns">
-                {playerState?.turns?.toLocaleString() || '0'}
-                {typeof playerState?.max_turns === 'number' && (
-                  <span className="data-readout-max">/{playerState.max_turns.toLocaleString()}</span>
-                )}
-              </span>
-            </div>
-            <div className="header-stat">
-              <span className="header-stat-label">DRONE</span>
-              <span className="data-readout">{playerState?.defense_drones || '0'}</span>
-            </div>
-            <div className="header-stat">
-              <span className="header-stat-label">MINE</span>
-              <span className="data-readout">{playerState?.mines || '0'}</span>
-            </div>
-          </div>
-          <div className="game-header-right">
-            <button
-              className="cockpit-btn settings-nav-btn"
-              onClick={() => navigate('/game/settings')}
-              aria-label="Settings"
-              title="Settings"
-            >
-              <span className="settings-nav-icon" aria-hidden="true">⚙️</span>
-            </button>
-            <UserProfile />
-          </div>
-        </header>
-
         <div className="game-container">
           {/* Left console (NEON15): route rail on top, then two MFD
               screens splitting the remaining height. MFDProvider hosts
@@ -257,6 +191,17 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
           </aside>
 
           <main className="game-content" aria-busy={isInitialLoad}>
+            {/* Sidebar toggle, relocated from the deleted top header to the
+                left edge of the viewport (the rail still owns the commander
+                name). Keeps the original handler + ◀/▶ icon. */}
+            <button
+              className="cockpit-btn sidebar-toggle sidebar-edge-toggle"
+              onClick={toggleSidebar}
+              aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+              title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+            >
+              <span className="toggle-icon">{sidebarOpen ? '◀' : '▶'}</span>
+            </button>
             {/* Children render UNCONDITIONALLY — never unmounted by a
                 background refresh (see cockpit-stability note above).
                 During the initial-load overlay the viewport is `inert`
@@ -269,6 +214,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               // initial-load overlay can't be tab-focused.
               {...(isInitialLoad ? { inert: '' } : {})}
             >
+              <PlayerVitalsHud />
               {children}
             </div>
             {isInitialLoad && (

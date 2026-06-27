@@ -1,0 +1,103 @@
+/* PlayerVitalsHud — viewport-anchored vitals strip.
+
+   Self-contained: it must NOT depend on the page-scoped .hud-overlay or on
+   any of the deleted top-header rules. All sizing is in rem so the strip
+   rides the #root UI-scale zoom (WO-UISCALE-VH) like the rest of the cockpit.
+   The strip is click-through (pointer-events: none) so it never intercepts
+   cockpit controls beneath it; only .pvh-refresh re-enables pointer events. */
+.player-vitals-hud {
+  position: absolute;
+  top: 0.4rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  pointer-events: none;
+  max-width: min(54%, 640px);
+  background: rgba(0, 10, 16, 0.38);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 4px;
+  backdrop-filter: blur(3px);
+  box-shadow: 0 0 14px rgba(0, 217, 255, 0.12);
+  padding: 0.25rem 0.6rem;
+  overflow: hidden;
+}
+
+/* Scan-line sheen — CRT idiom, decorative only. */
+.player-vitals-hud::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 217, 255, 0.05) 0,
+    rgba(0, 217, 255, 0.05) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  opacity: 0.5;
+  border-radius: inherit;
+}
+
+/* Stat chip: label stacked above the readout. Compact rem sizing so the
+   strip stays slim inside the viewport. */
+.player-vitals-hud .header-stat {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  min-width: 3rem;
+}
+
+.player-vitals-hud .header-stat-label {
+  font-size: 0.5rem;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* Reuse the global .data-readout/.credits/.turns (cockpit-components.css)
+   colors + glow, but tighten the size for the in-viewport strip. */
+.player-vitals-hud .data-readout {
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.3px;
+}
+
+/* Capacity denominator on the TURN chip — dimmer + smaller than the value. */
+.player-vitals-hud .data-readout .data-readout-max {
+  font-size: 0.7em;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+/* The strip is click-through; the refresh control alone takes pointer events. */
+.pvh-refresh {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  background: transparent;
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 50%;
+  width: 1.4rem;
+  height: 1.4rem;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--color-primary);
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+}
+
+.pvh-refresh:hover {
+  background: rgba(0, 217, 255, 0.12);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
