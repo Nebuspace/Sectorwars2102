@@ -177,7 +177,15 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
           action-interrupting modal — per messaging.md "Priority levels". */}
       <PriorityHailConsumer />
       <div className="game-layout">
-        <div className="game-container">
+        {/* WO-INVERTED-L: .console-expand → docked/landed make the opaque
+            console fill the lower area (right viewport column collapses);
+            .console-collapsed → the edge-toggle hides the console for an
+            unobstructed scene (rail-peek retired; logout lives in the HUD). */}
+        <div
+          className={`game-container${
+            playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
+          }${sidebarOpen ? '' : ' console-collapsed'}`}
+        >
           {/* Left console (NEON15): route rail on top, then two MFD
               screens splitting the remaining height. MFDProvider hosts
               page selection/alert state plus the alert wiring effects. */}

@@ -1,8 +1,5 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import LogoutButton from '../auth/LogoutButton';
-import { useAuth } from '../../contexts/AuthContext';
-import { useGame } from '../../contexts/GameContext';
 import './route-rail.css';
 
 /* SHIP SYSTEMS rail — one key per console route, each carrying its Law-5
@@ -25,8 +22,6 @@ const NAV_ITEMS: Array<{ to: string; mnemonic: string; label: string; accent: st
    survives a page fault (contract rule 4). */
 const RouteRail: React.FC = () => {
   const location = useLocation();
-  const { user } = useAuth();
-  const { playerState } = useGame();
 
   return (
     <nav className="route-rail" aria-label="Ship systems">
@@ -48,14 +43,6 @@ const RouteRail: React.FC = () => {
           );
         })}
       </div>
-      <div
-        className="rr-pilot"
-        title={user?.username}
-        style={{ '--pilot-color': playerState?.name_color || '#00D9FF' } as React.CSSProperties}
-      >
-        {user?.username || '—'}
-      </div>
-      <LogoutButton className="rr-key rr-key-logout" />
     </nav>
   );
 };

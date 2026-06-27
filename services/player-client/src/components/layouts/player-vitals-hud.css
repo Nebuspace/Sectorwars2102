@@ -1,27 +1,53 @@
-/* PlayerVitalsHud — viewport-anchored vitals strip.
+/* PlayerVitalsHud — always-on HUD bar over the full-width windshield band
+   (WO-INVERTED-L). Three zones: name (left) · vitals (center) · logout (right).
 
-   Self-contained: it must NOT depend on the page-scoped .hud-overlay or on
-   any of the deleted top-header rules. All sizing is in rem so the strip
-   rides the #root UI-scale zoom (WO-UISCALE-VH) like the rest of the cockpit.
-   The strip is click-through (pointer-events: none) so it never intercepts
-   cockpit controls beneath it; only .pvh-refresh re-enables pointer events. */
+   The bar spans the band edge-to-edge and is click-through (pointer-events:
+   none) so it never intercepts scene clicks; only the center vitals strip
+   carries the CRT chrome, and only .pvh-logout / .pvh-refresh re-enable pointer
+   events. All sizing is rem so the HUD rides the #root UI-scale zoom. */
 .player-vitals-hud {
   position: absolute;
   top: 0.3rem;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
   z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.25rem 0.8rem;
+  pointer-events: none;
+}
+
+/* LEFT — commander name, tinted by playerState.name_color (relocated from the
+   route rail .rr-pilot). Display-only. */
+.pvh-name {
+  position: relative;
+  z-index: 1;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 30%;
+  color: var(--pilot-color, #00d9ff);
+  font-family: var(--font-primary, inherit);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--pilot-color, #00d9ff) 55%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* CENTER — the vitals readout strip (keeps the original centered-strip CRT
+   chrome: translucent backing, cyan border, scan-line sheen, blur). */
+.pvh-vitals {
+  position: relative;
+  flex: 0 0 auto;
   display: flex;
   gap: 0.6rem;
   align-items: center;
-  pointer-events: none;
-  /* Narrow centered strip: it carries only 4 compact readouts (CRED/TURN/
-     DRONE/MINE), so it must fit the gap between the top-left LOCATION chip and
-     the top-right status chip (each capped 34% of the band — see cockpit.css).
-     Gap = (1 - 2*0.34)*W - 2*1.5rem = 0.32*W - 48px. At the narrowest relevant
-     container (1440 viewport, sidebar open => W=1120) the gap is ~310px, so a
-     280px cap clears both chips; wider containers only widen the gap. */
-  max-width: min(34%, 280px);
   background: rgba(0, 10, 16, 0.38);
   border: 1px solid rgba(0, 217, 255, 0.25);
   border-radius: 4px;
@@ -29,10 +55,11 @@
   box-shadow: 0 0 14px rgba(0, 217, 255, 0.12);
   padding: 0.25rem 0.6rem;
   overflow: hidden;
+  pointer-events: none;
 }
 
 /* Scan-line sheen — CRT idiom, decorative only. */
-.player-vitals-hud::before {
+.pvh-vitals::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -48,8 +75,38 @@
   border-radius: inherit;
 }
 
+/* RIGHT — logout. The control re-enables pointer events. */
+.pvh-logout {
+  flex: 0 1 auto;
+  display: flex;
+  justify-content: flex-end;
+  max-width: 30%;
+  pointer-events: none;
+}
+
+.pvh-logout-btn {
+  pointer-events: auto;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.25rem 0.7rem;
+  background: rgba(255, 77, 109, 0.12);
+  color: #ff8da3;
+  border: 1px solid rgba(255, 77, 109, 0.45);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.pvh-logout-btn:hover {
+  background: rgba(255, 77, 109, 0.22);
+  box-shadow: 0 0 10px rgba(255, 77, 109, 0.4);
+}
+
 /* Stat chip: label stacked above the readout. Compact rem sizing so the
-   strip stays slim inside the viewport. */
+   strip stays slim inside the band. */
 .player-vitals-hud .header-stat {
   position: relative;
   z-index: 1;
@@ -70,7 +127,7 @@
 }
 
 /* Reuse the global .data-readout/.credits/.turns (cockpit-components.css)
-   colors + glow, but tighten the size for the in-viewport strip. */
+   colors + glow, but tighten the size for the in-band strip. */
 .player-vitals-hud .data-readout {
   font-size: 0.85rem;
   font-weight: 700;

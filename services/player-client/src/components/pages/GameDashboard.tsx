@@ -1918,7 +1918,11 @@ const GameDashboard: React.FC = () => {
 
   return (
     <GameLayout>
-      <div className={`game-dashboard cockpit-mode${dockedChromeMin && playerState?.is_docked ? ' docked-min' : ''}${landedChromeMin && playerState?.is_landed ? ' landed-min' : ''}`}>
+      {/* WO-INVERTED-L: the windshield band is ALWAYS present (the 34px
+          green-bar collapse is retired). Docked/landed now EXPAND the console
+          via .console-expand on the container (GameLayout), not by collapsing
+          the scene — so .docked-min/.landed-min are no longer applied here. */}
+      <div className="game-dashboard cockpit-mode">
         {/* System Alerts - Float over cockpit */}
         {error && (
           <div className="cockpit-alert error">

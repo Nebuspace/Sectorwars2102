@@ -9,8 +9,11 @@
   height: 100%;
   max-height: 100%;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  /* WO-INVERTED-L: positioning context for the full-bleed windshield (the
+     single scene canvas) + the absolutely-placed opaque console segments.
+     Children are positioned, not flowed, so the scene can sit behind the
+     console while the console masks the bottom-left. */
+  position: relative;
 }
 
 /* Override main-viewport padding for cockpit mode */
@@ -20,29 +23,35 @@
   margin: 0 !important;
 }
 
+/* WO-INVERTED-L: cockpit mode makes .game-dashboard the positioning ancestor of
+   the absolute windshield/console/helm-rail, so the base hud-boot transform +
+   filter (game-dashboard.css) would scale them and form a transient stacking
+   context on every mount. Disable the boot animation in cockpit mode only
+   (non-cockpit dashboard variants keep it). */
+.game-dashboard.cockpit-mode {
+  animation: none;
+}
+
 /* ============================================
    WINDSHIELD - Full immersive viewport
    ============================================ */
 
 .cockpit-windshield {
-  position: relative;
-  width: 100%;
-  /* GLASS LAW: the band is a fixed clamp — tall enough for the scene +
-     HUD chips at 1440x850, capped so the console monitors and the helm
-     rail always fit below it at 1710x947 without clipping.
-     The 34vh is scale-compensated (34 * --svh1) so the band stays 34% of the
-     REAL viewport under #root's zoom, keeping the .cmc-body cap math (which
-     subtracts this band) consistent at any UI scale. (WO-UISCALE-VH) */
-  flex: 0 0 clamp(240px, calc(34 * var(--svh1, 1vh)), 380px);
-  min-height: 0;
+  /* WO-INVERTED-L: the SINGLE full-bleed scene canvas. Fills the whole
+     dashboard (= the whole container) and sits at the BACK (z:1); the opaque
+     console overlays its bottom-left, so the visible scene reads as the
+     inverted-L (full-width top band + right column). No longer a fixed top
+     band and no flex-basis collapse — the band is just the part of this
+     full-bleed scene above the console, ~--band-h tall. */
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   overflow: hidden;
   background: #000;
-  /* Vertically center the sector display within the band */
+  /* Let the scene fill the full bleed (was centered for the small band). */
   display: flex;
-  align-items: center;
-  justify-content: center;
-  /* Animate the band height so the docked-minimize glides (see .docked-min) */
-  transition: flex-basis 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+  align-items: stretch;
+  justify-content: stretch;
 }
 
 /* DOCKED-MINIMIZE: a few seconds after docking the low-value station-bay
@@ -859,8 +868,18 @@
    ============================================ */
 
 .helm-rail {
-  flex: 0 0 44px;
-  height: 44px;
+  /* WO-INVERTED-L: was an in-flow 44px flex strip between the band and console;
+     since .cockpit-mode is no longer a flex column, it is pinned as a full-width
+     strip just below the band (the same "between band and console" position),
+     ALWAYS visible above the scene + console (z:35 > console z:20). The console
+     region starts below it (top includes --helm-h). DOCK/LAND/UNDOCK/LIFT OFF
+     stay reachable in every state. */
+  position: absolute;
+  top: var(--band-h);
+  left: 0;
+  right: 0;
+  height: var(--helm-h);
+  z-index: 35;
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -870,9 +889,8 @@
   border-bottom: 1px solid rgba(0, 0, 0, 0.8);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   font-family: 'Courier New', monospace;
-  position: relative;
-  z-index: 15;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 /* Compact state legend — IN FLIGHT / DOCKED AT … / LANDED ON … */
@@ -998,38 +1016,64 @@
    ============================================ */
 
 .cockpit-console {
-  /* Fill whatever vertical space the windshield (flex: 0 0 40%) leaves.
-     Using `flex: 1 1 0` + `min-height: 0` is the canonical pattern for a
-     flex child that hosts an inner grid: without `min-height: 0` the
-     grid's intrinsic row height (driven by content) pushes the console
-     past its parent, so the bottom monitor edges clip beyond the
-     viewport. With it, the grid is forced into the parent's leftover
-     height and the row's `overflow-y: auto` actually engages. */
-  flex: 1 1 0;
-  min-height: 0;
+  /* WO-INVERTED-L: the BOTTOM segment of the opaque console column — pinned
+     bottom-left, directly under the rail+MFD sidebar, on the SAME opaque CRT
+     backing so the two read as one console (Orchestrator reaffirmation 1).
+     In the narrow space view (--console-w ~half) the three monitors STACK in a
+     single column and the console scrolls INTERNALLY (SCROLL LAW); when
+     docked/landed the console fills the lower area and the monitors return to
+     the wide 3-up grid (see .console-expand below). Magnitudes (--console-rail-h
+     split, widths) are starting values for browser tuning. */
+  position: absolute;
+  left: 0;
+  top: calc(
+    var(--band-h) + var(--helm-h) +
+      (100% - var(--band-h) - var(--helm-h)) * var(--console-rail-h)
+  );
+  bottom: 0;
+  width: var(--console-w);
+  z-index: 20;
+  box-sizing: border-box;
+  transition: width 0.3s ease;
+  /* Top stop (#1a1d24) MATCHES the sidebar's bottom stop and the border-top is
+     dropped, so the rail+MFD segment and this segment read as ONE console. */
   background: linear-gradient(
     180deg,
     #1a1d24 0%,
     #0f1117 50%,
     #0a0d12 100%
   );
-  border-top: 3px solid #2a2f3a;
+  border-right: 2px solid rgba(77, 132, 253, 0.2);
   display: grid;
-  /* Elastic columns: fixed 460/340 floors summed past the row's width on a
-     1440-wide window (sidebar leaves ~1120), shoving the COMMS header off
-     the right edge. minmax() keeps the 1710 layout identical while letting
-     every column shrink before anything overflows. */
-  grid-template-columns: minmax(360px, 460px) minmax(0, 1fr) minmax(280px, 340px);
-  /* Single explicit row so monitors fill the console height instead of
-     auto-sizing to their content (which is what was overflowing). */
-  grid-template-rows: 1fr;
+  grid-template-columns: 1fr;
+  grid-auto-rows: max-content;
   gap: 0;
   padding: 0.5rem;
-  box-shadow:
-    inset 0 8px 12px rgba(0, 0, 0, 0.6),
-    0 -4px 20px rgba(0, 0, 0, 0.8);
-  position: relative;
-  overflow: hidden;
+  /* Uniform inner vignette for monitor depth — NOT a directional top-shadow,
+     which would darken the rail↔console join and re-introduce a soft seam
+     (the matched #1a1d24 stops + dropped border make the join continuous). */
+  box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.45);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* DOCKED / LANDED: the console fills the lower area (--console-w = 100%) and the
+   monitors return to the wide 3-up grid (Max ruling (a) + reaffirmation 2). */
+.game-container.console-expand .cockpit-console {
+  grid-template-columns: minmax(360px, 460px) minmax(0, 1fr) minmax(280px, 340px);
+  grid-auto-rows: auto;
+  grid-template-rows: 1fr;
+  overflow-y: hidden;
+}
+
+/* WO-INVERTED-L retires the 34px green-bar collapse: the band is always present
+   and docked/landed EXPAND the console instead. GameDashboard no longer applies
+   .docked-min/.landed-min, so the windshield-collapse rules above never fire;
+   hide the now-defunct "minimize surface / bay" buttons (the min-bars they
+   toggled never render). LIFT OFF stays — it lives in .landed-surface-controls,
+   not on a min-bar. */
+.bay-minimize-btn {
+  display: none !important;
 }
 
 /* Metallic texture overlay */
@@ -1440,7 +1484,11 @@
    ============================================ */
 
 @media (max-width: 1400px) {
-  .cockpit-console {
+  /* WO-INVERTED-L: the 3-up grid only applies when the console is EXPANDED
+     (docked/landed, --console-w:100%). In the narrow space console the base
+     single-column stack + internal scroll holds, so this must NOT re-impose
+     three columns there (it would overflow --console-w). */
+  .game-container.console-expand .cockpit-console {
     grid-template-columns: 380px 1fr 300px;
   }
 
@@ -1457,7 +1505,7 @@
      The grid rows use minmax(0, 1fr) so each monitor shrinks
      correctly inside the flex-constrained console; without min-track-
      size 0, the rows default to min-content and overflow again. */
-  .cockpit-console {
+  .game-container.console-expand .cockpit-console {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.5rem;

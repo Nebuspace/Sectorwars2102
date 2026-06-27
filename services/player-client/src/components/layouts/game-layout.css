@@ -73,74 +73,79 @@
   transform: translateY(-50%) scale(1.05);
 }
 
-/* Game container */
+/* Game container — inverted-L contract (WO-INVERTED-L).
+   Positioning context for a SINGLE full-bleed scene layer (.game-content)
+   behind everything, with an OPAQUE console (sidebar rail+MFD stacked with
+   .cockpit-console) overlaying the bottom-left. The scene shows through ONLY
+   the full-width top band + the right column → visible scene = inverted-L (⌐);
+   never behind the console (Max: "solid console block, no scene behind").
+   Magnitudes (--band-h / --console-w / the rail-vs-console split) are starting
+   values for the Orchestrator's browser-prove tuning. */
 .game-container {
-  display: flex;
+  display: block;
   flex: 1;
   overflow: hidden;
   position: relative;
+  /* Band = full-width top strip (% of the already scale-correct container, so
+     no extra svh math); console = bottom-left width, responsive ~half with a
+     min so the controls never crush. */
+  --band-h: 20%;
+  /* ~half the width in space (Max: "half viewport / half console"), with a min
+     so controls never crush and a cap so it doesn't swallow ultrawide screens.
+     At 1440 → 720px (50%); 1920 → 760px. Starting value for browser tuning. */
+  --console-w: clamp(360px, 50%, 760px);
+  /* The helm action rail (DOCK/LAND/UNDOCK/LIFT OFF) is a full-width strip just
+     below the band; the console region starts below it. */
+  --helm-h: 44px;
+  /* Lower area = below the band + helm strip; the rail+MFD take its top
+     fraction, the cockpit-console the rest (both on one opaque backing). */
+  --console-rail-h: 0.48;
 }
 
-/* Sidebar — MFD console stack (NEON15). No longer a scrolling card
-   column: it hosts the fixed route rail on top and two MFD screens that
-   split the remaining height 50/50. Scrolling happens INSIDE each MFD
-   page body (mfd.css), never at the sidebar level, so the old sidebar
-   scrollbar theming is gone with the cards it served. */
+/* DOCKED / LANDED: the solid console fills the whole lower area and the right
+   viewport column collapses (Max ruling (a)). GameLayout sets .console-expand
+   on the container from playerState (is_docked || is_landed). */
+.game-container.console-expand {
+  --console-w: 100%;
+}
+
+/* Bottom-left console — rail + MFD (WO-INVERTED-L). Inset below the full-width
+   band and pinned bottom-left as the TOP segment of the opaque console column;
+   .cockpit-console (GameDashboard) takes the segment below it on the SAME
+   opaque backing, so the two read as one console with two internal scrolls
+   (Orchestrator reaffirmation 1). Width = --console-w (responsive ~half;
+   100% docked/landed; 0 when the edge-toggle collapses the console).
+   Scrolling stays INSIDE each MFD page body (mfd.css), never at this level. */
 .game-sidebar {
-  width: 320px;
+  position: absolute;
+  top: calc(var(--band-h) + var(--helm-h));
+  left: 0;
+  width: var(--console-w);
+  height: calc((100% - var(--band-h) - var(--helm-h)) * var(--console-rail-h));
+  z-index: 20;
   transition: width 0.3s ease;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.75rem;
-  background: linear-gradient(180deg,
-    rgba(19, 27, 44, 0.98) 0%,
-    rgba(10, 10, 15, 0.98) 100%);
+  /* OPAQUE CRT backing — Max: solid console block, no scene behind it. The
+     bottom stop (#1a1d24) MATCHES .cockpit-console's top stop so the two
+     segments read as one continuous console (no seam); the console drops its
+     border-top at the join (cockpit.css). */
+  background: linear-gradient(180deg, #131b2c 0%, #1a1d24 100%);
   border-right: 2px solid rgba(77, 132, 253, 0.2);
-  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
-  position: relative;
-  z-index: 10;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.55);
+  box-sizing: border-box;
 }
 
-.game-sidebar.open {
-  width: 320px;
-}
-
-/* Collapsed = slim RAIL PEEK, not width:0 (id=139 item 3). On landing the
-   sidebar auto-collapses (GameLayout WO-129-B) so the console gets the band;
-   but a width:0 sidebar also hid SET + Logout behind the edge-toggle, leaving
-   them unreachable while landed. Instead the closed sidebar shrinks to a slim
-   peek that still shows the route rail's keys (CMD..SVC, incl. SET) reflowed
-   to one column, the pilot row, and the full-width Logout key — so Settings +
-   Logout stay one click away without re-opening the full 320px console. The
-   two MFD screens hide (the console owns that data while landed). */
-.game-sidebar.closed {
-  width: 60px;
-  padding: 0.5rem 0.35rem;
-  overflow: hidden;
-}
-
-/* Peek hides the heavyweight MFD bodies — only the navigation rail peeks. */
-.game-sidebar.closed .mfd-screen {
-  display: none;
-}
-
-/* Reflow the 4-wide route grid to a single column so every key (incl. SET)
-   fits the slim peek width and stays tappable. */
-.game-sidebar.closed .route-rail {
-  padding: 4px;
-}
-
-.game-sidebar.closed .rr-grid {
-  grid-template-columns: 1fr;
-}
-
-/* Tighten the full-width Logout key so "LOGOUT" fits the ~45px peek key width
-   without wrapping past its fixed 22px height. */
-.game-sidebar.closed .rr-key-logout {
-  letter-spacing: 0.06em;
-  white-space: nowrap;
+/* The edge-toggle collapses the WHOLE console (rail+MFD AND cockpit-console)
+   by zeroing the shared width — the logout/settings reachability that the old
+   slim rail-peek protected now lives in the always-on HUD, so a clean collapse
+   is safe (WO-INVERTED-L supersedes id=139 item-3 peek). GameLayout sets
+   .console-collapsed on the container from !sidebarOpen. */
+.game-container.console-collapsed {
+  --console-w: 0px;
 }
 
 /* MFD console layout: rail fixed top, screens share the leftover height.
@@ -264,19 +269,24 @@
   display: inline-block;
 }
 
-/* Main content area — height-locked column (Law 2: 100vh minus header is
-   enforced by the flex chain .game-layout > .game-container > here, all
-   overflow:hidden; the document never scrolls). */
+/* Main content area = the SINGLE full-bleed scene layer (WO-INVERTED-L).
+   Absolutely fills the whole container so the windshield canvas spans the full
+   width (top band) and shows through the right column; the opaque console
+   overlays the bottom-left above it. Transparent so the canvas reads through;
+   the document never scrolls (Law 2 — overflow:hidden holds). */
 .game-content {
-  flex: 1;
-  position: relative;
+  position: absolute;
+  inset: 0;
+  /* NO z-index here: a positive z-index would make .game-content a stacking
+     context and trap its descendants (console z:20, HUD z:30, edge-toggle z:40)
+     beneath the container-level .game-sidebar (z:20). With z:auto the scene's
+     own z:1 layers it behind the console while the console/HUD/toggle stay
+     coplanar with the sidebar in the root context. */
   overflow: hidden;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: linear-gradient(135deg,
-    rgba(10, 10, 15, 0.95) 0%,
-    rgba(13, 13, 20, 0.95) 100%);
+  background: transparent;
 }
 
 .main-viewport {
@@ -394,31 +404,13 @@
   }
 }
 
-/* Responsive design */
-@media (max-width: 1024px) {
-  .game-sidebar {
-    width: 280px;
-  }
-
-  .game-sidebar.open {
-    width: 280px;
-  }
-}
-
+/* Responsive design — the console width is --console-w (clamp ~half with a min
+   so controls never crush), so the old fixed sidebar-width breakpoints are gone.
+   On narrow viewports drop the console min so it doesn't swallow the scene; only
+   the edge-toggle hit-target is also tuned by viewport. */
 @media (max-width: 768px) {
-  .game-sidebar {
-    position: absolute;
-    top: 0;
-    left: 0;
-    height: 100%;
-    z-index: 10;
-    width: 300px;
-    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.5);
-  }
-
-  .game-sidebar.closed {
-    transform: translateX(-100%);
-    width: 300px;
+  .game-container {
+    --console-w: clamp(220px, 70%, 360px);
   }
 
   .sidebar-toggle {
@@ -432,17 +424,5 @@
     width: 40px;
     height: 40px;
     font-size: 1rem;
-  }
-
-  .game-sidebar {
-    width: 260px;
-  }
-
-  .game-sidebar.closed {
-    width: 260px;
-  }
-
-  .main-viewport {
-    padding: var(--space-md);
   }
 }
