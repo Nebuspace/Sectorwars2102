@@ -40,6 +40,7 @@
 .planet-section {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap; /* id=141: icon + details stay on ONE row, never stack */
   gap: 0.4rem;
   padding: 0.3rem 0.5rem;
   border-radius: 4px;
@@ -94,6 +95,7 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 0.2rem;
+  min-width: 0; /* let .planet-name ellipsis-truncate instead of pushing width */
 }
 
 .planet-name {
@@ -101,9 +103,18 @@
   font-weight: 700;
   color: #9333ea;
   line-height: 1.2;
+  /* id=141: TRUNCATE (ellipsis) instead of break-word wrapping — a long name
+     wrapping grew the details block and read as the icon "stacking" above the
+     name at narrow cockpit widths. nowrap + ellipsis keeps the planet row a
+     single line so the icon stays beside the name; needs the min-width:0 chain
+     (.planet-section / .planet-details / .planet-name-line) to shrink. */
+  display: block;
+  align-self: stretch;
+  min-width: 0;
   max-width: 100%;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .planet-hub-tag {
