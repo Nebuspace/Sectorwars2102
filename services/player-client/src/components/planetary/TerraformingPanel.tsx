@@ -100,6 +100,13 @@ interface TerraformingStatus {
   durationHours?: number;
   level?: number;
   levelName?: string;
+  // Speed-readout inputs (used if present). Canon: speed = points per cycle =
+  // 1 + population / 1000, capped at 3. We prefer a backend-supplied numeric
+  // speed; otherwise we derive it from population so the UI never recomputes a
+  // different mechanic than the server.
+  population?: number | null;
+  pointsPerCycle?: number | null;
+  speed?: number | null;
   // Backend may echo the planet's current type on the status payload; the
   // capstone falls back to this when the prop is not supplied.
   planetType?: string;
@@ -109,6 +116,17 @@ interface TerraformingStatus {
 const TERRAFORMING_MIN_TARGET = 90;
 /** Cancellation refunds this fraction of the credit cost (mirrors gameserver). */
 const CANCEL_REFUND_PERCENT = 50;
+/**
+ * Canon terraform-speed model (FEATURES/planets/terraforming.md):
+ *   speed = points per cycle = 1 + population / TERRAFORMING_POPULATION_SCALE,
+ *   floored at the base increment and capped at the max increment.
+ * These mirror terraforming_service.py; we only use them to *label* the speed
+ * the status reports, or to derive it from population when the backend doesn't
+ * send a numeric speed. We never advance the mechanic differently than canon.
+ */
+const TERRAFORMING_BASE_INCREMENT = 1;
+const TERRAFORMING_MAX_INCREMENT = 3;
+const TERRAFORMING_POPULATION_SCALE = 1000;
 
 /**
  * Biome reclassification map for the terraform capstone (CRT-3 / PL2).
@@ -186,7 +204,30 @@ const formatTimeRemaining = (ms: number): string => {
   if (days > 0) parts.push(`${days}d`);
   if (hours > 0) parts.push(`${hours}h`);
   parts.push(`${minutes}m`);
-  return `${parts.join(' ')} remaining`;
+  return `≈ ${parts.join(' ')} remaining`;
+};
+
+/**
+ * Resolve the project's speed (habitability points per cycle) for display.
+ * Prefers a backend-supplied numeric (`speed` / `pointsPerCycle`); otherwise
+ * derives it from population via the canon formula. Returns null if neither is
+ * available so the caller can fall back to a generic label rather than a NaN.
+ */
+const resolveSpeed = (status: TerraformingStatus | null): number | null => {
+  const supplied =
+    typeof status?.speed === 'number'
+      ? status.speed
+      : typeof status?.pointsPerCycle === 'number'
+        ? status.pointsPerCycle
+        : null;
+  if (supplied !== null && Number.isFinite(supplied)) {
+    return Math.round(supplied);
+  }
+  if (typeof status?.population === 'number' && Number.isFinite(status.population)) {
+    const derived = TERRAFORMING_BASE_INCREMENT + Math.floor(status.population / TERRAFORMING_POPULATION_SCALE);
+    return Math.min(TERRAFORMING_MAX_INCREMENT, Math.max(TERRAFORMING_BASE_INCREMENT, derived));
+  }
+  return null;
 };
 
 interface TerraformingPanelProps {
@@ -269,14 +310,16 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
     fetchStatus();
   }, [fetchStatus]);
 
-  // While a project is active, silently refresh every 60s so progress
-  // and the time-remaining readout stay honest.
+  // While a project is active, silently re-read status every 15s so the live
+  // progress figure visibly ticks up (the backend advances habitability lazily
+  // on read) and the time-remaining readout stays honest. 15s mirrors the
+  // landed-cockpit re-fetch cadence.
   useEffect(() => {
     if (availability !== 'available' || !status?.active) return;
     const interval = window.setInterval(() => {
       setNowMs(Date.now());
       fetchStatus(true);
-    }, 60_000);
+    }, 15_000);
     return () => window.clearInterval(interval);
   }, [availability, status?.active, fetchStatus]);
 
@@ -382,21 +425,35 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
 
   const currentHab = status?.currentHabitability ?? habitabilityScore ?? null;
   const isActive = Boolean(status?.active);
+  const target =
+    typeof status?.terraformingTarget === 'number' ? status.terraformingTarget : null;
+  // Raw progress percentage toward the target, kept as a float for the 2-dp
+  // readout. Clamped to 0–100 so a slightly-over float never overflows the bar.
   const progress =
     typeof status?.progress === 'number' ? Math.min(100, Math.max(0, status.progress)) : null;
 
+  // Guard: a project whose habitability has reached/passed its target (or whose
+  // progress reads 100) is effectively done — show a completing state and never
+  // render "→ goal N" below the current value (which would read backward).
+  const reachedTarget =
+    isActive &&
+    ((currentHab !== null && target !== null && currentHab >= target) ||
+      (progress !== null && progress >= 100));
+
+  // Speed: habitability points gained per cycle (canon: 1 + pop/1000, cap 3).
+  const speed = resolveSpeed(status);
+
   // Time remaining, best-effort: prefer an explicit completion timestamp,
   // else derive from startedAt + durationHours when the backend provides it.
+  // Never surface raw "ticks" — that is an implementation word, not player-facing.
   let timeRemaining: string | null = null;
-  if (isActive) {
+  if (isActive && !reachedTarget) {
     const completionMs = status?.estimatedCompletion ? Date.parse(status.estimatedCompletion) : NaN;
     if (Number.isFinite(completionMs)) {
       timeRemaining = formatTimeRemaining(completionMs - nowMs);
     } else if (status?.startedAt && typeof status.durationHours === 'number') {
       const endMs = Date.parse(status.startedAt) + status.durationHours * 3_600_000;
       if (Number.isFinite(endMs)) timeRemaining = formatTimeRemaining(endMs - nowMs);
-    } else if (typeof status?.estimatedTicksRemaining === 'number') {
-      timeRemaining = `≈ ${status.estimatedTicksRemaining} ticks remaining`;
     }
   }
 
@@ -432,15 +489,24 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
           </div>
           <div className="terraforming-active-info">
             <span className="active-title">
-              Terraforming in progress
+              {reachedTarget ? 'Terraforming complete' : 'Terraforming in progress'}
               {typeof status?.levelName === 'string' ? ` — ${status.levelName}` : ''}
             </span>
             <span className="active-target">
-              {currentHab !== null ? `Habitability ${currentHab}` : 'Habitability rising'}
-              {typeof status?.terraformingTarget === 'number'
-                ? ` → target ${status.terraformingTarget}`
-                : ''}
+              {currentHab !== null ? (
+                <>
+                  Habitability {currentHab}/100
+                  {!reachedTarget && target !== null ? ` → goal ${target}/100` : ''}
+                </>
+              ) : (
+                'Habitability rising'
+              )}
             </span>
+            {reachedTarget && (
+              <span className="active-complete-note">
+                Target reached — finalizing this world.
+              </span>
+            )}
             {progress !== null && (
               <div className="terraforming-progress-row">
                 <div
@@ -453,12 +519,21 @@ const TerraformingPanel: React.FC<TerraformingPanelProps> = ({
                 >
                   <div className="terraforming-progress-fill" style={{ width: `${progress}%` }} />
                 </div>
-                <span className="terraforming-progress-pct">{Math.round(progress)}%</span>
+                <span className="terraforming-progress-pct">{progress.toFixed(2)}%</span>
               </div>
             )}
+            {progress !== null && (
+              <span className="active-progress-label">{progress.toFixed(2)}% complete</span>
+            )}
             {timeRemaining && <span className="active-time">{timeRemaining}</span>}
-            {status?.populationBonus && (
-              <span className="active-bonus">{status.populationBonus}</span>
+            {!reachedTarget && (
+              <span className="active-bonus">
+                {speed !== null
+                  ? `Speed: ${speed} habitability/cycle — rises with population (${TERRAFORMING_POPULATION_SCALE.toLocaleString()} colonists for +1, cap ${TERRAFORMING_MAX_INCREMENT})`
+                  : status?.populationBonus
+                    ? status.populationBonus
+                    : `Speed rises with population (${TERRAFORMING_POPULATION_SCALE.toLocaleString()} colonists for +1 habitability/cycle, cap ${TERRAFORMING_MAX_INCREMENT})`}
+              </span>
             )}
             <button
               onClick={handleCancel}
