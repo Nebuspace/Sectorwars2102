@@ -1,6 +1,29 @@
 /* Colony Specialization Styles */
 
+/* This component was ported with admin-ui design tokens that the player-client
+   never defined, so its modal rendered transparent/unstyled (no background
+   backing — hard to read). Define the palette here (inherits to all children)
+   in the cockpit CRT/dark theme so the modal is solid and legible. */
 .colony-specialization {
+  --bg-primary: #0a0d12;
+  --bg-secondary: #11151c;
+  --surface-primary: #141a24;
+  --surface-secondary: #1a2230;
+  --surface-tertiary: #232c3b;
+  --border-primary: #2a3647;
+  --border-secondary: #1f2735;
+  --text-primary: #e6edf3;
+  --text-secondary: #9fb2c4;
+  --text-tertiary: #6c7d90;
+  --accent-primary: #00d9ff;
+  --accent-secondary: #7dd3fc;
+  --success-color: #34c759;
+  --warning-color: #f5a623;
+  --error-color: #ff453a;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
   width: 100%;
   max-width: 1200px;
   margin: 0 auto;
