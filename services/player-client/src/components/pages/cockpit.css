@@ -1051,8 +1051,15 @@
   border-right: 2px solid rgba(77, 132, 253, 0.2);
   display: grid;
   grid-template-columns: 1fr;
-  grid-auto-rows: max-content;
-  gap: 0;
+  /* In-flight the 3 console monitors (NAV warp-graph + course PLOT · PLANETARY ·
+     COMMS) STACK single-column. They're flex columns whose .monitor-screen is
+     flex:1 — under max-content rows they collapse to just the header = the
+     "empty dark box" void (id=149). minmax(220px,auto) gives each a usable
+     height (content renders); the console scrolls internally (SCROLL LAW) when
+     the stack exceeds the console height. Docked/landed override this with the
+     wide 3-up grid (.console-expand below). */
+  grid-auto-rows: minmax(220px, auto);
+  gap: 0.4rem;
   padding: 0.5rem;
   /* Uniform inner vignette for monitor depth — NOT a directional top-shadow,
      which would darken the rail↔console join and re-introduce a soft seam
