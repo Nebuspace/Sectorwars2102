@@ -206,22 +206,32 @@
   box-shadow: none;
 }
 
-/* EXPANDED-state Lift Off: when the surface vista is expanded the green
-   landed-min-bar (which carries the OTHER, flex-child Lift Off) is display:none,
-   so this instance is rendered as a direct child of .cockpit-windshield instead.
-   Without positioning it is a normal flex child of the windshield's
-   center-aligned flex box, so it floats mid-scene. Anchor it to a corner of the
-   vista so it reads as a fixed cockpit control (parity with the absolutely-
-   positioned HUD chips + the bottom-center .bay-minimize-btn). The windshield is
-   position:relative (above), and the top-right/bottom-right/top-left corners are
-   taken by HUD chips; the bottom-left corner is free, so dock it there. Scoped
-   with the `.expanded` modifier so the green-bar instance (a flex child of
-   .landed-min-actions, which is fine) is untouched. */
-.landed-min-liftoff.expanded {
+/* EXPANDED-state surface controls — Minimize Surface + Lift Off grouped as an
+   ABSOLUTE corner cluster over the vista (Max + Orchestrator placement decision,
+   superseding the earlier bottom-left dock). Anchored top-right, offset BELOW
+   the owner HUD chip (.hud-overlay.top-right sits at top/right:1.5rem) so it
+   clears it. Both buttons are corner controls over the surface, so neither
+   pushes/overlaps the planet viewport. .cockpit-windshield is position:relative.
+   Scoped to the landed render's cluster, so the shared docked-bay
+   .bay-minimize-btn (bottom-center) is untouched. */
+.landed-surface-controls {
   position: absolute;
-  bottom: 8px;
-  left: 14px;
-  z-index: 6;
+  top: 3.4rem;
+  right: 1.5rem;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Inside the cluster the buttons flow normally (override their standalone
+   absolute positioning — the docked bay-minimize-btn, NOT in this cluster,
+   keeps its bottom-center anchor). */
+.landed-surface-controls .bay-minimize-btn,
+.landed-surface-controls .landed-min-liftoff.expanded {
+  position: static;
+  transform: none;
+  bottom: auto;
+  left: auto;
   backdrop-filter: blur(3px);
 }
 .cockpit-mode.landed-min .bay-minimize-btn { display: none; }

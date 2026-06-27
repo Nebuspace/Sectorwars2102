@@ -2127,31 +2127,33 @@ const GameDashboard: React.FC = () => {
                 </div>
               </HudChip>
 
-              {/* Manual minimize — collapse the surface vista to give the
-                  planetary console the band (parity with the docked bay). */}
-              <button
-                type="button"
-                className="bay-minimize-btn"
-                onClick={() => setLandedChromeMin(true)}
-                title="Minimize the surface view — expand the planetary console"
-              >
-                ▴ MINIMIZE SURFACE
-              </button>
-              {/* Lift Off must stay reachable in the EXPANDED surface state too —
-                  the green landed-min-bar (which carries the other Lift Off) is
-                  display:none until the surface is minimized (auto after 3.5s or
-                  manual), so without this the player can't depart while the vista
-                  is expanded. Expanded + minimized chrome are mutually exclusive
-                  (CSS), so exactly one Lift Off is ever visible. (WO 129-C fix.) */}
-              <button
-                type="button"
-                className="landed-min-liftoff expanded"
-                onClick={handleLeavePlanet}
-                disabled={helmBusy}
-                title="Lift off and depart this planet"
-              >
-                {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
-              </button>
+              {/* Expanded-surface corner controls — Minimize Surface + Lift Off
+                  grouped as an absolute corner cluster OVER the vista (Max +
+                  Orchestrator placement decision) so neither pushes/overlaps the
+                  surface viewport. Scoped to the landed render, so the shared
+                  docked-bay minimize button is unaffected. Lift Off must stay
+                  reachable here because the green landed-min-bar (the other Lift
+                  Off) is display:none until the surface minimizes — the two
+                  chromes are mutually exclusive, so exactly one Lift Off shows. */}
+              <div className="landed-surface-controls">
+                <button
+                  type="button"
+                  className="bay-minimize-btn"
+                  onClick={() => setLandedChromeMin(true)}
+                  title="Minimize the surface view — expand the planetary console"
+                >
+                  ▴ MINIMIZE SURFACE
+                </button>
+                <button
+                  type="button"
+                  className="landed-min-liftoff expanded"
+                  onClick={handleLeavePlanet}
+                  disabled={helmBusy}
+                  title="Lift off and depart this planet"
+                >
+                  {helmBusy ? '🚀 DEPARTING…' : '🚀 LIFT OFF & DEPART'}
+                </button>
+              </div>
 
               {/* Collapsed strip (shown only when minimized via CSS): planet
                   identity + expand affordance. */}
