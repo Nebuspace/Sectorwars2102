@@ -62,9 +62,15 @@ const getCitadelLevel = (planet: PlanetWithExtras): number | null => {
   return typeof lvl === 'number' ? lvl : null;
 };
 
-/** Efficiency = share of colonists actually assigned to production (matches ProductionDashboard). */
-const getEfficiency = (planet: Planet): number =>
-  Math.max(0, 100 - (planet.allocations?.unused ?? 0));
+/** Efficiency = % of colonists actually assigned to production. `unused` is a
+ *  raw colonist COUNT (colonists - allocated), so the share is
+ *  (colonists - unused) / colonists, not `100 - unused`. (matches ProductionDashboard) */
+const getEfficiency = (planet: Planet): number => {
+  const colonists = planet.colonists ?? 0;
+  if (colonists <= 0) return 0;
+  const unused = planet.allocations?.unused ?? 0;
+  return Math.max(0, Math.min(100, Math.round((100 * (colonists - unused)) / colonists)));
+};
 
 /** Parse the (string) sectorId into the numeric id moveToSector expects. */
 const getNumericSectorId = (planet: Planet): number | null => {

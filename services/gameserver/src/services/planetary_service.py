@@ -2290,6 +2290,10 @@ class PlanetaryService:
             "population": planet.population or 0,
             "maxPopulation": max_population_for(planet.habitability_score),
             "isPopulationHub": bool(planet.is_population_hub),
+            # Citadel tier (ADR-0035 workforce ladder). Surfaced on the list DTO
+            # so the COLONIES roster can show a per-colony citadel level without a
+            # per-row citadel fetch (WO-ROSTER-CITADEL-COL).
+            "citadelLevel": planet.citadel_level or 0,
             "habitability": {
                 "score": planet.habitability_score,
                 "effectiveMaxColonists": habitability_effects["effectiveMaxColonists"],
