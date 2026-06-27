@@ -1,13 +1,14 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import CockpitPanel from './CockpitPanel';
+import CoupledColonistSliders, { type RoleAllocation, type ProdRole } from './CoupledColonistSliders';
 
 export interface ProductionLine {
   key: 'fuel' | 'organics' | 'equipment';
   icon: string;
   name: string;
-  /** Live projected stockpile (already ticking via the caller's clock). */
+  /** Live projected stockpile (already ticking + clamped by the caller's clock). */
   stock: number;
-  /** Production rate per day. */
+  /** Production rate per real day (86400s). */
   rate: number;
   /** Storage fill ratio 0..1 (0 when uncapped). */
   ratio: number;
@@ -16,6 +17,12 @@ export interface ProductionLine {
   atCap: boolean;
   /** Per-resource storage cap (0 when uncapped). */
   cap: number;
+  /** How much of this resource can be stored to the safe right now (0 = none). */
+  canStore: number;
+  /** True while a store-to-safe call is in flight for this resource. */
+  storeBusy: boolean;
+  /** Reason the Store button is disabled (for the title), when canStore < 1. */
+  storeDisabledTitle: string;
 }
 
 export interface ProductionPanelProps {
@@ -23,26 +30,108 @@ export interface ProductionPanelProps {
   lines: ProductionLine[];
   /** Commodities the server flagged as overflowing at the last tick. */
   overflowResources: string[];
-  /** Open the Colonist Allocator modal (full workforce assignment). */
-  onOpenAllocator: () => void;
   /** Open the Colony Specialization modal. */
   onOpenSpecialization: () => void;
+  /** Current per-role colonist head-counts (optimistic). */
+  allocations: RoleAllocation;
+  /** Server-confirmed per-day production rates per role. */
+  productionRates: Partial<Record<ProdRole, number>> | null | undefined;
+  /** Workforce budget — citadel cap clamped to colonists. */
+  allocBudget: number;
+  /** Total colonists on the planet (may exceed budget). */
+  totalColonists: number;
+  /** Persist a full allocation via the revived inline persister. */
+  onSetAllocations: (next: RoleAllocation) => void;
+  /** True while an allocation persist is in flight. */
+  allocSyncing?: boolean;
+  /** Verbatim server error from the last failed allocation persist. */
+  allocError?: string | null;
+  /** Store the given resource's storable amount into the citadel safe. */
+  onStoreToSafe: (key: 'fuel' | 'organics' | 'equipment', amount: number) => void;
 }
 
 const fmt = (n: number) => Math.floor(n).toLocaleString();
 
 /**
- * ProductionPanel — the PRODUCTION HUD instrument. Ticks LIVE off
- * landedPlanetDetail (the 15s realtime poll + the caller's per-second
- * projection clock) — no extra fetch. Surfaces fuel / organics / equipment
- * stockpiles + rates + storage fill, plus the Allocator modal.
+ * RollingStock — renders a number whose digits visibly ROLL toward the live
+ * target. Eases the displayed value toward `value` on each animation frame so
+ * the stockpile climbs smoothly on screen between the ~1s projection ticks. No
+ * extra fetch — purely a visual smoothing of the value the caller already feeds.
  */
-const ProductionPanel: React.FC<ProductionPanelProps> = ({ lines, overflowResources, onOpenAllocator, onOpenSpecialization }) => (
-  <CockpitPanel
-    title="Production"
-    accent="#7dd3fc"
-    readout={<span className="cp-live-tag">┄ LIVE ┄</span>}
-  >
+const RollingStock: React.FC<{ value: number }> = ({ value }) => {
+  const [shown, setShown] = useState(value);
+  const shownRef = useRef(value);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const target = value;
+    const step = () => {
+      const cur = shownRef.current;
+      const diff = target - cur;
+      if (Math.abs(diff) < 0.5) {
+        shownRef.current = target;
+        setShown(target);
+        rafRef.current = null;
+        return;
+      }
+      // ease ~18% of the gap per frame → a visible roll that settles quickly
+      const nextVal = cur + diff * 0.18;
+      shownRef.current = nextVal;
+      setShown(nextVal);
+      rafRef.current = window.requestAnimationFrame(step);
+    };
+    if (rafRef.current === null) {
+      rafRef.current = window.requestAnimationFrame(step);
+    }
+    return () => {
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [value]);
+
+  return <span className="cp-roll" aria-live="off">{fmt(shown)}</span>;
+};
+
+/**
+ * ProductionPanel — the PRODUCTION HUD instrument. Ticks LIVE off
+ * landedPlanetDetail (the 15s realtime poll + the caller's per-second clamped
+ * projection) — no extra fetch. Surfaces the coupled colonist sliders + presets
+ * + idle meter, the rolling stockpile readouts (clearly labelled UNPROTECTED with
+ * a Store→Safe affordance), storage fill, and the Specialization modal.
+ */
+const ProductionPanel: React.FC<ProductionPanelProps> = ({
+  lines,
+  overflowResources,
+  onOpenSpecialization,
+  allocations,
+  productionRates,
+  allocBudget,
+  totalColonists,
+  onSetAllocations,
+  allocSyncing,
+  allocError,
+  onStoreToSafe,
+}) => (
+  <CockpitPanel title="Production" accent="#7dd3fc" readout={<span className="cp-live-tag">┄ LIVE ┄</span>}>
+    <CoupledColonistSliders
+      allocations={allocations}
+      productionRates={productionRates}
+      budget={allocBudget}
+      totalColonists={totalColonists}
+      onSetAll={onSetAllocations}
+      syncing={allocSyncing}
+      error={allocError}
+    />
+
+    <div className="cp-stockpile-head">
+      <span className="cp-sp-title">Planet stockpile</span>
+      <span className="cp-sp-warn" title="The planet stockpile is raidable. Production flows here, not into the safe. Store goods to the citadel safe to protect them.">
+        UNPROTECTED
+      </span>
+    </div>
+
     {lines.length === 0 ? (
       <div className="cp-empty">Colony ledger unavailable</div>
     ) : (
@@ -52,10 +141,19 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({ lines, overflowResour
             <span className="cp-prod-icon">{l.icon}</span>
             <span className="cp-prod-name">{l.name}</span>
             <span className="cp-prod-stock">
-              📦 {fmt(l.stock)}
+              📦 <RollingStock value={l.stock} />
               {l.capped ? `/${l.cap.toLocaleString()}` : ''}
-              <span className="cp-prod-rate"> +{Math.round(l.rate).toLocaleString()}/d</span>
+              <span className="cp-prod-rate"> +{Math.round(l.rate).toLocaleString()}/day</span>
             </span>
+            <button
+              type="button"
+              className="cp-store-btn"
+              disabled={l.storeBusy || l.canStore < 1}
+              title={l.canStore < 1 ? l.storeDisabledTitle : `Store ${l.canStore.toLocaleString()} to the citadel safe (raid-proof)`}
+              onClick={() => onStoreToSafe(l.key, l.canStore)}
+            >
+              {l.storeBusy ? '…' : '🔐 Store'}
+            </button>
             {l.capped && (
               <div className="cp-prod-bar">
                 <div
@@ -74,9 +172,6 @@ const ProductionPanel: React.FC<ProductionPanelProps> = ({ lines, overflowResour
       </div>
     )}
     <div className="cp-actions">
-      <button type="button" className="cp-action-btn" onClick={onOpenAllocator} title="Assign colonists to production roles">
-        📊 Allocate Workforce
-      </button>
       <button type="button" className="cp-action-btn" onClick={onOpenSpecialization} title="Choose a colony specialization">
         🎯 Specialization
       </button>

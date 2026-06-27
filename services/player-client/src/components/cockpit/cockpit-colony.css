@@ -303,7 +303,7 @@
 
 .cp-prod-row {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.5rem;
   font-family: 'Courier New', monospace;
@@ -363,6 +363,175 @@
   text-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
   animation: cp-live-pulse 2s ease-in-out infinite;
 }
+
+/* ── Coupled colonist sliders (in-tab workforce allocation) ── */
+.cp-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 18%, transparent);
+}
+
+.cp-workforce-meter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.55rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.66rem;
+}
+.cp-wm-main {
+  font-weight: 700;
+  color: #7dd3fc;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+}
+.cp-wm-idle { color: #94a3b8; letter-spacing: 0.04em; }
+.cp-wm-surplus { color: #fbbf24; letter-spacing: 0.04em; }
+.cp-wm-sync { color: #64748b; font-style: italic; margin-left: auto; }
+
+.cp-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.cp-preset-btn {
+  flex: 0 1 auto;
+  padding: 0.22rem 0.4rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: color-mix(in srgb, var(--panel-accent) 75%, #ffffff 25%);
+  background: color-mix(in srgb, var(--panel-accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 30%, transparent);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.cp-preset-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--panel-accent) 22%, transparent);
+}
+.cp-preset-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.cp-slider-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.cp-slider-row { display: flex; flex-direction: column; gap: 0.18rem; }
+.cp-slider-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: 'Courier New', monospace;
+  font-size: 0.62rem;
+}
+.cp-slider-label {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #cbd5e1;
+}
+.cp-slider-count {
+  font-weight: 700;
+  color: #e2e8f0;
+  font-variant-numeric: tabular-nums;
+}
+.cp-slider-input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+.cp-slider-input:disabled { opacity: 0.4; cursor: not-allowed; }
+.cp-slider-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  border: 2px solid #0f172a;
+  box-shadow: 0 0 6px rgba(125, 211, 252, 0.6);
+  cursor: pointer;
+}
+.cp-slider-input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  border: 2px solid #0f172a;
+  box-shadow: 0 0 6px rgba(125, 211, 252, 0.6);
+  cursor: pointer;
+}
+.cp-slider-input:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel-accent) 60%, transparent);
+}
+.cp-slider-preview {
+  font-family: 'Courier New', monospace;
+  font-size: 0.56rem;
+  letter-spacing: 0.04em;
+}
+.cp-pv-val { color: #86efac; }
+.cp-pv-none { color: #64748b; }
+
+.cp-slider-error {
+  font-family: 'Courier New', monospace;
+  font-size: 0.58rem;
+  color: #fca5a5;
+}
+
+/* ── Stockpile header + Store→Safe affordance + rolling tick ── */
+.cp-stockpile-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0.1rem 0 0.3rem;
+  font-family: 'Courier New', monospace;
+}
+.cp-sp-title {
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+.cp-sp-warn {
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #fca5a5;
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.12);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+}
+.cp-roll {
+  font-variant-numeric: tabular-nums;
+  transition: color 0.2s ease;
+}
+.cp-store-btn {
+  font-family: 'Courier New', monospace;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.35rem;
+  color: color-mix(in srgb, var(--panel-accent) 78%, #ffffff 22%);
+  background: color-mix(in srgb, var(--panel-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 32%, transparent);
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease;
+}
+.cp-store-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--panel-accent) 24%, transparent);
+}
+.cp-store-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 @keyframes cp-live-pulse {
   0%, 100% { opacity: 1; }

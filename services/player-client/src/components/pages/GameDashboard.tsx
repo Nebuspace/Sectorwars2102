@@ -1064,8 +1064,15 @@ const GameDashboard: React.FC = () => {
     const rate = Number(landedPlanetDetail?.productionRates?.[key] ?? 0); // per day
     const anchorIso = landedPlanetDetail?.lastProductionAt;
     if (!anchorIso || rate <= 0) return base;
-    const elapsedS = Math.max(0, (prodNow - new Date(anchorIso).getTime()) / 1000);
-    return base + (rate / 86400) * elapsedS;
+    // Clamp the projection to the SERVER's 24h accrual window so the on-screen
+    // climb never out-runs what the server would actually grant on the next read
+    // (the server caps lazy accrual at 24h of elapsed time).
+    const elapsedS = Math.min(86400, Math.max(0, (prodNow - new Date(anchorIso).getTime()) / 1000));
+    const projected = base + (rate / 86400) * elapsedS;
+    // And never display above the storage cap — output past the cap is wasted, not
+    // banked, so the readout would otherwise show stock that doesn't exist.
+    const cap = Number(landedPlanetDetail?.storageCap ?? 0);
+    return cap > 0 ? Math.min(projected, cap) : projected;
   };
 
   // WO-STORAGEDTO: the enforced per-resource storage cap (storageCap) and the
@@ -1314,6 +1321,16 @@ const GameDashboard: React.FC = () => {
     }
   };
 
+  // Store a planet-stockpile resource straight into the citadel safe from the
+  // Production panel — reuses the EXISTING deposit-commodity flow (moveCommoditySafe
+  // → depositCommodityToSafe), mapping the stockpile key to its safe key. No new
+  // endpoint; identical to the Safe tab's "Store" button.
+  const storeStockToSafe = (key: 'fuel' | 'organics' | 'equipment', amount: number) => {
+    const safeKey = SAFE_COMMODITIES.find((c) => c.stock === key)?.safe;
+    if (!safeKey || amount < 1) return;
+    moveCommoditySafe('store', safeKey, amount);
+  };
+
   // --- Colonist transfer modal (quantity pattern mirrors the trading modal) ---
   const [transferModal, setTransferModal] = useState<'disembark' | 'embark' | null>(null);
   const [transferQuantity, setTransferQuantity] = useState(1);
@@ -1536,17 +1553,27 @@ const GameDashboard: React.FC = () => {
     }, 800);
   };
 
-  const handleAllocationChange = (resource: 'fuel' | 'organics' | 'equipment', newValue: number) => {
+  // Set all three allocations at once (coupled sliders + presets). The coupling
+  // math already conserves the workforce budget exactly; we defensively clamp the
+  // SUM to allocBudget (proportional scale-down on the rare overshoot) and route
+  // through the SAME optimistic/debounced/revert-on-fail persister.
+  const handleSetAllocations = (next: { fuel: number; organics: number; equipment: number }) => {
     if (!landedPlanet || !isLandedPlanetMine) return;
-    // Clamp so the three allocations never exceed the citadel workforce cap
-    // (allocBudget), not the raw colonist headcount — surplus colonists can't work.
-    const othersTotal = (['fuel', 'organics', 'equipment'] as const)
-      .filter(r => r !== resource)
-      .reduce((sum, r) => sum + allocations[r], 0);
-    const clamped = Math.max(0, Math.min(newValue, Math.max(0, allocBudget - othersTotal)));
-    const next = { ...allocations, [resource]: clamped };
-    setAllocations(next);
-    persistAllocations(landedPlanet.id, next);
+    let { fuel, organics, equipment } = {
+      fuel: Math.max(0, Math.round(next.fuel)),
+      organics: Math.max(0, Math.round(next.organics)),
+      equipment: Math.max(0, Math.round(next.equipment)),
+    };
+    const sum = fuel + organics + equipment;
+    if (allocBudget > 0 && sum > allocBudget) {
+      const k = allocBudget / sum;
+      fuel = Math.floor(fuel * k);
+      organics = Math.floor(organics * k);
+      equipment = Math.floor(equipment * k);
+    }
+    const clamped = { fuel, organics, equipment };
+    setAllocations(clamped);
+    persistAllocations(landedPlanet.id, clamped);
   };
 
   // The station we're docked at — drives the docked scene HUD chips and the
@@ -2747,17 +2774,40 @@ const GameDashboard: React.FC = () => {
                               { key: 'equipment' as const, icon: '⚙️', name: 'Equipment' },
                             ]).map(({ key, icon, name }) => {
                               const ss = storageStatus(key);
+                              // Store-to-safe affordance: same computation the Safe
+                              // tab uses (room left in the cr-equiv vault / unit value).
+                              const safeKey = SAFE_COMMODITIES.find((c) => c.stock === key)?.safe;
+                              const onPlanet = Math.floor(projectedStock(key));
+                              const unitVal = Number(citadelInfo?.commodity_values?.[safeKey ?? ''] ?? 0);
+                              const room = Math.max(0, safeCapacity - safeTotalValue);
+                              const canStore = unitVal > 0 ? Math.min(onPlanet, Math.floor(room / unitVal)) : 0;
+                              const storeBusy = !!safeKey && commodityBusy === safeKey;
+                              const rate = Number(landedPlanetDetail?.productionRates?.[key] ?? 0);
+                              const allocation = Number(landedPlanetDetail?.allocations?.[key] ?? 0);
+                              const storeDisabledTitle =
+                                !citadelInfo || citadelInfo.citadel_level < 1
+                                  ? 'No citadel safe — establish an Outpost (Citadel Level 1)'
+                                  : onPlanet >= 1 && room < unitVal
+                                    ? 'Safe full (cr-equivalent cap reached)'
+                                    : allocation > 0 && rate <= 0
+                                      ? `This world produces no ${name}`
+                                      : rate <= 0
+                                        ? `No production — assign workforce to ${name}`
+                                        : 'Under 1 unit produced so far';
                               return {
                                 key,
                                 icon,
                                 name,
                                 stock: projectedStock(key),
-                                rate: Number(landedPlanetDetail?.productionRates?.[key] ?? 0),
+                                rate,
                                 ratio: ss.ratio,
                                 capped: ss.capped,
                                 nearCap: ss.nearCap,
                                 atCap: ss.atCap,
                                 cap: storageCap,
+                                canStore,
+                                storeBusy,
+                                storeDisabledTitle,
                               };
                             });
                             // DEFENSE-OPS tab body — the slim controls the cockpit
@@ -3037,6 +3087,14 @@ const GameDashboard: React.FC = () => {
                                 underSiege={!!(landedPlanet as any)?.under_siege || !!(landedPlanetDetail as any)?.underSiege}
                                 productionLines={landedPlanetDetail ? prodLines : []}
                                 overflowResources={overflowResources}
+                                allocations={allocations}
+                                productionRates={allocRates ?? landedPlanetDetail?.productionRates}
+                                allocBudget={allocBudget}
+                                totalColonists={landedPlanetColonists}
+                                onSetAllocations={handleSetAllocations}
+                                allocSyncing={allocSyncing}
+                                allocError={allocError}
+                                onStoreToSafe={storeStockToSafe}
                                 onOpsChange={() => setOpsRefresh(n => n + 1)}
                                 defenseTab={defenseTabBody}
                                 safeTab={safeTabBody}

@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { gameAPI } from '../../services/api';
 import type { Planet } from '../../types/planetary';
-import { ColonistAllocator } from '../planetary/ColonistAllocator';
 import { BuildingManager } from '../planetary/BuildingManager';
 import { DefenseConfiguration } from '../planetary/DefenseConfiguration';
 import { GenesisDeployment } from '../planetary/GenesisDeployment';
@@ -12,6 +11,7 @@ import GridPanel from './GridPanel';
 import TerraformPanel from './TerraformPanel';
 import ResearchPanel from './ResearchPanel';
 import ProductionPanel, { type ProductionLine } from './ProductionPanel';
+import type { RoleAllocation, ProdRole } from './CoupledColonistSliders';
 import '../planetary/planet-manager.css'; // .modal-overlay / .modal-content
 import './cockpit-colony.css';
 
@@ -36,6 +36,22 @@ export interface CockpitColonyManagementProps {
   productionLines: ProductionLine[];
   /** Commodities the server flagged as overflowing last tick. */
   overflowResources: string[];
+  /** Current per-role colonist head-counts (optimistic). */
+  allocations: RoleAllocation;
+  /** Server-confirmed per-day production rates per role. */
+  productionRates: Partial<Record<ProdRole, number>> | null | undefined;
+  /** Workforce budget — citadel cap clamped to colonists. */
+  allocBudget: number;
+  /** Total colonists on the planet (may exceed the workforce cap). */
+  totalColonists: number;
+  /** Persist a full allocation via the revived inline persister. */
+  onSetAllocations: (next: RoleAllocation) => void;
+  /** True while an allocation persist is in flight. */
+  allocSyncing?: boolean;
+  /** Verbatim server error from the last failed allocation persist. */
+  allocError?: string | null;
+  /** Store a resource's storable amount into the citadel safe (reuses deposit flow). */
+  onStoreToSafe: (key: 'fuel' | 'organics' | 'equipment', amount: number) => void;
   /** Bump the caller's opsRefresh so the landed poll re-fetches after a mutation. */
   onOpsChange: () => void;
   /**
@@ -60,9 +76,10 @@ export interface CockpitColonyManagementProps {
  * into the landed planet console (GameDashboard, gated on isLandedPlanetMine).
  * Reuses the existing managers' data/API logic verbatim (CitadelManager /
  * GridManager / TerraformingPanel / EmpireResearchPanel) re-skinned to the CRT
- * aesthetic, and relocates all 6 action modals (allocator, buildings, defense,
- * genesis, specialization, siege) here so nothing the old PlanetManager could
- * do is lost — just relocated.
+ * aesthetic, and relocates the action modals (buildings, defense, genesis,
+ * specialization, siege) here so nothing the old PlanetManager could do is lost.
+ * Workforce allocation is now an in-tab control on the Production panel (the
+ * coupled colonist sliders), so it is no longer a modal.
  *
  * A tab bar selects ONE panel at a time; the active panel renders in a region
  * sized to the remaining viewport height (flex:1 + min-height:0 + overflow on
@@ -83,6 +100,14 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   underSiege,
   productionLines,
   overflowResources,
+  allocations,
+  productionRates,
+  allocBudget,
+  totalColonists,
+  onSetAllocations,
+  allocSyncing,
+  allocError,
+  onStoreToSafe,
   onOpsChange,
   defenseTab,
   safeTab,
@@ -135,7 +160,8 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
   }, [loadOwnedPlanet, onOpsChange]);
 
   // ── Modal visibility ──
-  const [showAllocator, setShowAllocator] = useState(false);
+  // (Workforce allocation is now an in-tab control on the Production panel — the
+  // old "Allocate Workforce" modal is gone; reallocation is canon free + instant.)
   const [showBuildings, setShowBuildings] = useState(false);
   const [showDefense, setShowDefense] = useState(false);
   const [showGenesis, setShowGenesis] = useState(false);
@@ -228,27 +254,22 @@ const CockpitColonyManagement: React.FC<CockpitColonyManagementProps> = ({
           <ProductionPanel
             lines={productionLines}
             overflowResources={overflowResources}
-            onOpenAllocator={() => setShowAllocator(true)}
             onOpenSpecialization={() => setShowSpecialization(true)}
+            allocations={allocations}
+            productionRates={productionRates}
+            allocBudget={allocBudget}
+            totalColonists={totalColonists}
+            onSetAllocations={onSetAllocations}
+            allocSyncing={allocSyncing}
+            allocError={allocError}
+            onStoreToSafe={onStoreToSafe}
           />
         )}
         {tab === 'defense' && (defenseTab ?? <div className="cp-empty">Defense telemetry unavailable</div>)}
         {tab === 'safe' && (safeTab ?? <div className="cp-empty">Vault telemetry unavailable</div>)}
       </div>
 
-      {/* ── The 6 action modals (relocated from PlanetManager) ── */}
-      {showAllocator && ownedPlanet && (
-        <div className="modal-overlay" onClick={() => setShowAllocator(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <ColonistAllocator
-              planet={ownedPlanet}
-              onUpdate={(p) => handleModalUpdate(p)}
-              onClose={() => setShowAllocator(false)}
-            />
-          </div>
-        </div>
-      )}
-
+      {/* ── The action modals (relocated from PlanetManager) ── */}
       {showBuildings && ownedPlanet && (
         <div className="modal-overlay" onClick={() => setShowBuildings(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
