@@ -1,0 +1,329 @@
+/* Drone Operations Tab - dark admin design language
+   Tokens mirrored from fleet-operations.css / fleet-management.css
+   (var(--container-bg), var(--bg-color), var(--border-color),
+   var(--primary-color), var(--accent-color), var(--text-color),
+   var(--radius-*)). */
+
+/* Section wrapper rendered by CombatOverview */
+.drone-operations-section {
+  margin-top: 2.5rem;
+}
+
+.drone-operations-section-title {
+  margin: 0 0 1.25rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary, var(--text-color));
+}
+
+.drone-operations {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+/* Inline alert banner (no native dialogs) */
+.drone-ops-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-lg);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.drone-ops-alert.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.drone-ops-alert .drone-ops-alert-spacer {
+  flex: 1;
+}
+
+.drone-ops-alert button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.drone-ops-alert button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Loading / empty states */
+.drone-ops-loading,
+.drone-ops-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2.5rem;
+  color: var(--text-color);
+  opacity: 0.75;
+  font-size: 1rem;
+  background: var(--container-bg);
+  border: 2px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+/* Toolbar */
+.drone-ops-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.drone-ops-refresh-btn {
+  padding: 0.6rem 1.25rem;
+  border: 2px solid var(--accent-color);
+  border-radius: var(--radius-lg);
+  background: var(--accent-color);
+  color: white;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.drone-ops-refresh-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.drone-ops-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Stats summary row */
+.drone-ops-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1.25rem;
+}
+
+.drone-ops-stat {
+  background: var(--bg-color);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+}
+
+.drone-ops-stat:hover {
+  transform: translateY(-3px);
+  border-color: var(--primary-color);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.drone-ops-stat-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  color: var(--text-color);
+  opacity: 0.8;
+  margin-bottom: 0.5rem;
+}
+
+.drone-ops-stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--primary-color);
+  line-height: 1;
+}
+
+.drone-ops-stat-value.danger {
+  color: #ef4444;
+}
+
+.drone-ops-stat-sub {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-color);
+  opacity: 0.7;
+}
+
+/* Section panels */
+.drone-ops-panel {
+  background: var(--bg-color);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.drone-ops-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 2px solid var(--primary-color);
+  padding-bottom: 0.75rem;
+}
+
+.drone-ops-panel-header h4 {
+  margin: 0;
+  color: var(--primary-color);
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.drone-ops-count {
+  background: var(--container-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-color);
+}
+
+/* By-type chips */
+.drone-ops-type-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.drone-ops-type-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.9rem;
+  background: var(--container-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.drone-ops-type-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-color);
+  text-transform: capitalize;
+}
+
+.drone-ops-type-count {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--primary-color);
+  font-family: monospace;
+}
+
+/* Tables */
+.drone-ops-table-container {
+  overflow-x: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+}
+
+.drone-ops-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--container-bg);
+}
+
+.drone-ops-table th,
+.drone-ops-table td {
+  padding: 0.85rem 1.25rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.drone-ops-table th {
+  background: var(--bg-color);
+  color: var(--primary-color);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.75rem;
+}
+
+.drone-ops-table tbody tr:hover {
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.drone-ops-table .mono {
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+/* Status badges */
+.drone-ops-badge {
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--radius-md);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--primary-color);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.drone-ops-badge.battle {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.drone-ops-badge.deployed {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+  border-color: rgba(234, 179, 8, 0.3);
+}
+
+.drone-ops-badge.active {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--accent-color);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+/* Action buttons */
+.drone-ops-action-btn {
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.drone-ops-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.drone-ops-action-btn.recall {
+  border: 1px solid #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.drone-ops-action-btn.recall:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.drone-ops-action-btn.restore {
+  border: 1px solid var(--accent-color);
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--accent-color);
+}
+
+.drone-ops-action-btn.restore:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.2);
+}

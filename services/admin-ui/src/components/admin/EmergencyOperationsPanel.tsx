@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../../utils/auth';
 import { PlayerModel } from '../../types/playerManagement';
 import './emergency-operations-panel.css';
 
@@ -33,9 +32,16 @@ const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({
 }) => {
   const [selectedOperation, setSelectedOperation] = useState<string>('');
   const [operationData, setOperationData] = useState<any>({});
-  const [isExecuting, setIsExecuting] = useState(false);
+  const [isExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<string>('');
   const [_playerInfo, setPlayerInfo] = useState<any>(null);
+
+  // Emergency operations are disabled: the backend routes
+  // POST /api/v1/admin/players/emergency-operation and
+  // GET /api/v1/admin/players/{id}/extended do not exist. The form stays
+  // visible to document intent but cannot execute.
+  const EMERGENCY_OP_ENDPOINT = 'POST /api/v1/admin/players/emergency-operation';
+  const EXTENDED_ENDPOINT = 'GET /api/v1/admin/players/{id}/extended';
 
   const operations: EmergencyOperation[] = [
     {
@@ -153,18 +159,12 @@ const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({
     }
   ];
 
+  // Extended player info is not fetched: the backend route
+  // (EXTENDED_ENDPOINT) does not exist, so we do not issue a dead read.
+  // The panel renders from the player props already passed in.
   useEffect(() => {
-    loadExtendedPlayerInfo();
+    setPlayerInfo(null);
   }, [player.id]);
-
-  const loadExtendedPlayerInfo = async () => {
-    try {
-      const response = await api.get(`/api/v1/admin/players/${player.id}/extended`);
-      setPlayerInfo(response.data);
-    } catch (error) {
-      console.error('Failed to load extended player info:', error);
-    }
-  };
 
   const handleFieldChange = (fieldName: string, value: any) => {
     setOperationData((prev: any) => ({
@@ -173,78 +173,12 @@ const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({
     }));
   };
 
-  const executeOperation = async () => {
-    if (!selectedOperation) {
-      alert('Please select an operation');
-      return;
-    }
-
-    const operation = operations.find(op => op.id === selectedOperation);
-    if (!operation) return;
-
-    // Validate required fields
-    const missingFields = (operation.fields || [])
-      .filter(field => field.required && !operationData[field.name])
-      .map(field => field.label);
-
-    if (missingFields.length > 0) {
-      alert(`Please fill in the following required fields: ${missingFields.join(', ')}`);
-      return;
-    }
-
-    // Special confirmation for critical operations
-    if (operation.severity === 'critical') {
-      const confirmText = `EMERGENCY ${operation.name.toUpperCase()}`;
-      const userInput = prompt(`This is a CRITICAL operation. Type "${confirmText}" to confirm:`);
-      if (userInput !== confirmText) {
-        alert('Operation cancelled - confirmation text did not match');
-        return;
-      }
-    } else {
-      if (!confirm(`Are you sure you want to execute "${operation.name}" for ${player.username}?`)) {
-        return;
-      }
-    }
-
-    setIsExecuting(true);
-    setExecutionResult('');
-
-    try {
-      const requestData = {
-        operation: selectedOperation,
-        player_id: player.id,
-        data: operationData,
-        admin_reason: `Emergency operation: ${operation.name}`
-      };
-
-      await api.post('/api/v1/admin/players/emergency-operation', requestData);
-      
-      setExecutionResult(`✅ ${operation.name} completed successfully`);
-      
-      // Update player data based on operation
-      const updatedPlayer = { ...player };
-      if (selectedOperation === 'reset_turns') {
-        updatedPlayer.turns = operationData.turn_amount || 1000;
-      } else if (selectedOperation === 'emergency_credits') {
-        updatedPlayer.credits += operationData.credit_amount || 0;
-      } else if (selectedOperation === 'clear_debt' && player.credits < 0) {
-        updatedPlayer.credits = 0;
-      } else if (selectedOperation === 'ban_account') {
-        updatedPlayer.status = 'banned';
-      }
-      
-      onUpdate(updatedPlayer);
-      
-      // Reload extended player info
-      await loadExtendedPlayerInfo();
-
-    } catch (error: any) {
-      console.error('Emergency operation failed:', error);
-      const errorMessage = error.response?.data?.detail || 'Operation failed';
-      setExecutionResult(`❌ Operation failed: ${errorMessage}`);
-    } finally {
-      setIsExecuting(false);
-    }
+  // Disabled: the emergency-operation backend endpoint does not exist.
+  // Rather than wiring a dead write, this surfaces an inline notice.
+  const executeOperation = () => {
+    setExecutionResult(
+      `⚠ Emergency operations are unavailable: the backend endpoint ${EMERGENCY_OP_ENDPOINT} is not implemented.`
+    );
   };
 
   const groupedOperations = operations.reduce((groups, operation) => {
@@ -278,6 +212,19 @@ const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({
       </div>
 
       <div className="panel-content">
+        <div
+          role="note"
+          style={{
+            margin: '0 0 16px 0', padding: '10px 12px',
+            background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+            borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+          }}
+        >
+          Emergency operations are unavailable: the backend endpoints{' '}
+          <code style={{ color: '#fde68a' }}>{EMERGENCY_OP_ENDPOINT}</code> and{' '}
+          <code style={{ color: '#fde68a' }}>{EXTENDED_ENDPOINT}</code> are not implemented.
+          The controls below are shown to document intended capability.
+        </div>
         {/* Current Player Status */}
         <div className="player-status-card">
           <h4>Current Status</h4>
@@ -301,7 +248,7 @@ const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({
             <div className="status-item">
               <span className="label">Last Login:</span>
               <span className="value">
-                {new Date(player.activity.last_login).toLocaleString()}
+                {player.activity.last_login ? new Date(player.activity.last_login).toLocaleString() : '—'}
               </span>
             </div>
           </div>
@@ -402,12 +349,13 @@ const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({
         <button onClick={onClose} className="btn btn-secondary" disabled={isExecuting}>
           Close
         </button>
-        <button 
-          onClick={executeOperation} 
+        <button
+          onClick={executeOperation}
           className={`btn ${selectedOp?.severity === 'critical' ? 'btn-critical' : 'btn-danger'}`}
-          disabled={!selectedOperation || isExecuting}
+          disabled
+          title={`Disabled — missing backend endpoint ${EMERGENCY_OP_ENDPOINT}`}
         >
-          {isExecuting ? 'Executing...' : selectedOp ? `Execute ${selectedOp.name}` : 'Select Operation'}
+          {selectedOp ? `Execute ${selectedOp.name}` : 'Select Operation'}
         </button>
       </div>
     </div>

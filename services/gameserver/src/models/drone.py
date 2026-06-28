@@ -26,7 +26,8 @@ class DroneType(str, enum.Enum):
 
 
 class DroneStatus(str, enum.Enum):
-    """Status of a deployed drone."""
+    """Status of a drone."""
+    IDLE = "idle"  # Created but not deployed to any sector
     DEPLOYED = "deployed"
     COMBAT = "combat"
     RETURNING = "returning"
@@ -61,7 +62,7 @@ class Drone(Base):
     speed = Column(Float, default=1.0, nullable=False)
     
     # Deployment information
-    status = Column(String(50), default=DroneStatus.DEPLOYED.value)
+    status = Column(String(50), default=DroneStatus.IDLE.value)
     sector_id = Column(UUID(as_uuid=True), ForeignKey("sectors.id", ondelete="SET NULL"), nullable=True, index=True)
     deployed_at = Column(DateTime, nullable=True)
     last_action = Column(DateTime, nullable=True)

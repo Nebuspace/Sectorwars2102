@@ -1,0 +1,58 @@
+/* Shared EmptyState component - dark sci-fi tone */
+.empty-state-container {
+  text-align: center;
+  padding: var(--space-xl);
+  background: var(--container-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.empty-state-icon {
+  display: block;
+  font-size: 3rem;
+  margin-bottom: var(--space-lg);
+}
+
+.empty-state-title {
+  margin: 0 0 var(--space-md) 0;
+  color: var(--text-color);
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.empty-state-message {
+  margin: 0 auto var(--space-lg) auto;
+  max-width: 32rem;
+  color: var(--text-color);
+  opacity: 0.75;
+  line-height: 1.6;
+}
+
+.empty-state-action {
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all var(--transition-normal);
+}
+
+.empty-state-action:hover {
+  opacity: 0.9;
+  transform: translateY(-2px);
+}
+
+.empty-state-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.empty-state-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  justify-content: center;
+}

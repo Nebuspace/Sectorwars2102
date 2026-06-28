@@ -7,6 +7,30 @@
   color: var(--text-primary);
 }
 
+/* Treasury balance figure (replaces the legacy <value> element) */
+.treasury-balance .resource-item .amount {
+  display: block;
+  color: var(--primary-green);
+  font-size: 18px;
+  font-weight: bold;
+}
+
+/* Treasury-managed resources are server-fed; show them muted */
+.resource-item.readonly {
+  opacity: 0.7;
+}
+
+/* Inline success feedback (pairs with .form-error from team-manager.css) */
+.success-message {
+  background: rgba(0, 255, 157, 0.12);
+  border: 1px solid var(--primary-green);
+  color: var(--primary-green);
+  padding: 10px 12px;
+  border-radius: 4px;
+  margin: 12px 0;
+  font-size: 14px;
+}
+
 .sharing-header {
   margin-bottom: 25px;
 }
@@ -365,6 +389,79 @@
   font-size: 11px;
   color: var(--text-secondary);
   opacity: 0.6;
+}
+
+/* Treasury transaction history (ledger) */
+.treasury-history {
+  margin-top: 25px;
+  border-top: 1px solid rgba(0, 255, 157, 0.2);
+  padding-top: 18px;
+}
+
+.treasury-history h4 {
+  color: var(--primary-green);
+  margin-bottom: 12px;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.history-table th {
+  text-align: left;
+  color: var(--text-secondary);
+  font-weight: 600;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(0, 255, 157, 0.25);
+}
+
+.history-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.history-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-table .num.credit {
+  color: var(--primary-green);
+}
+
+.history-table .num.debit {
+  color: #ff8a65;
+}
+
+.history-table .when {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.kind-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid rgba(0, 255, 157, 0.3);
+  color: var(--text-secondary);
+}
+
+.kind-badge.deposit {
+  color: var(--primary-green);
+  border-color: var(--primary-green);
+}
+
+.kind-badge.withdraw,
+.kind-badge.transfer,
+.kind-badge.tax,
+.kind-badge.payout {
+  color: #ff8a65;
+  border-color: rgba(255, 138, 101, 0.5);
 }
 
 /* Responsive Design */

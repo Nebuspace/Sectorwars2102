@@ -1,0 +1,108 @@
+/* SettingsPage — client configuration console.
+   Renders inside CockpitInstrument's .screen-hud-content, which already
+   owns the single internal scroll region (Law 2: the document never
+   scrolls). This page only lays out sections; it must not introduce its
+   own page-level scroll. */
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1rem 1.25rem;
+  max-width: 760px;
+}
+
+/* Exit control — returns to the cockpit so the screen is never a dead end. */
+.settings-back-btn {
+  align-self: flex-start;
+  background: var(--surface-primary, #141a24);
+  color: var(--instrument-accent, #00d9ff);
+  border: 1px solid var(--instrument-accent, #00d9ff);
+  border-radius: 0.35rem;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.settings-back-btn:hover {
+  background: rgba(0, 217, 255, 0.15);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.35);
+}
+
+.settings-section {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-color, #334155);
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.settings-section-header {
+  border-bottom: 1px solid var(--border-color, #334155);
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+}
+
+.settings-section-title {
+  margin: 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--instrument-accent, #00d9ff);
+}
+
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.settings-row-label {
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+
+.settings-label {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-color, #e2e8f0);
+}
+
+.settings-hint {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-color, #e2e8f0);
+  opacity: 0.65;
+}
+
+.settings-row-control {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 0 0 auto;
+}
+
+.settings-range {
+  width: 220px;
+  max-width: 50vw;
+  accent-color: var(--instrument-accent, #00d9ff);
+  cursor: pointer;
+}
+
+.settings-range:focus {
+  outline: none;
+}
+
+.settings-current-value {
+  min-width: 3.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--instrument-accent, #00d9ff);
+}

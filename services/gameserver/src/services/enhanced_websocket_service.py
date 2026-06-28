@@ -27,7 +27,7 @@ from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 import jwt as jose_jwt
 from jwt import PyJWTError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, func
 import redis.asyncio as redis
 
 # Import existing services
@@ -374,7 +374,6 @@ class EnhancedWebSocketService:
                     "price_change_24h": snapshot.price_change_24h,
                     "price_change_percent": snapshot.price_change_percent,
                     "bid_ask_spread": snapshot.bid_ask_spread,
-                    "market_depth": snapshot.market_depth,
                     "sector_prices": snapshot.sector_prices,
                     "last_transaction": snapshot.last_transaction.isoformat(),
                     "prediction": snapshot.ai_prediction
@@ -493,7 +492,7 @@ class EnhancedWebSocketService:
                     return {"success": False, "error": "Station ID required or ship must be docked"}
             
             station = await db.get(Station, station_id)
-            if not port:
+            if not station:
                 return {"success": False, "error": "Station not found"}
             
             # Verify player is in the same sector as the port
@@ -735,6 +734,8 @@ class EnhancedWebSocketService:
             await self.send_message(player_id, {
                 "type": "aria_response",
                 "conversation_id": conversation_id,
+                # (send_message stamps a top-level "timestamp" on every outbound
+                # frame, so this path already satisfies ARIAResponseMessage.)
                 "data": {
                     "message": response.get("response", ""),
                     "confidence": response.get("confidence", 0.95),
@@ -982,6 +983,35 @@ class EnhancedWebSocketService:
             "code": code,
             "message": error_message
         })
+
+    async def send_medal_awarded(self, user_id: str, medal_data: Dict[str, Any]):
+        """Push a player-scoped ``medal_awarded`` frame to a freshly-decorated pilot.
+
+        The single realtime helper for WO-B7: when ``medal_service.award_medal``
+        records a GENUINE new ``player_medals`` row, the player who earned the
+        medal should learn of it live (a toast + the MedalShowcase refresh). This
+        mirrors the existing player-scoped event helpers on the base
+        ``ConnectionManager`` (``send_turn_pool_update`` / ``send_hostile_detected``
+        / ``send_new_message_notification``): a typed message stamped with a
+        top-level ``timestamp``, flat-spread payload, delivered via
+        ``send_personal_message``.
+
+        ``user_id`` is the owning ``User.id`` string (the key
+        ``send_personal_message`` routes on — NOT the ``Player.id``); the caller
+        resolves ``player.user_id`` before invoking. ``medal_data`` carries the
+        catalog metadata (``medal_id``, ``medal_name``, ``medal_category``,
+        ``medal_tier``, ``medal_description``, ``medal_icon``, ``awarded_via``).
+
+        Routed through the base ``connection_manager`` rather than ``send_message``
+        because this is a server-originated push: it carries no inbound
+        session_id/signature handshake, exactly like the sibling event helpers.
+        """
+        message = {
+            "type": "medal_awarded",
+            "timestamp": datetime.now(UTC).isoformat(),
+            **medal_data,
+        }
+        await self.connection_manager.send_personal_message(user_id, message)
     
     async def _handle_heartbeat(self, player_id: str):
         """Handle heartbeat message"""

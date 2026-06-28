@@ -1,0 +1,332 @@
+/* SpecializationDrawer — an IN-TAB drawer (position:absolute) that overlays the
+   active Production tab region inside .cmc-body, instead of a position:fixed
+   modal trapped by the transformed/backdrop-filter cockpit ancestor. Sized by
+   the tab body (not the viewport/monitor); obeys the SCROLL LAW — the drawer
+   body scrolls INTERNALLY, the page never does. */
+
+.spec-drawer-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  animation: spec-drawer-fade 0.18s ease-out;
+}
+
+.spec-drawer {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #141a24;
+  border: 1px solid #2a3647;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  animation: spec-drawer-slide 0.2s ease-out;
+}
+
+/* Header — fixed; body scrolls under it. */
+.spec-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #11151c;
+  border-bottom: 1px solid #2a3647;
+  flex: 0 0 auto;
+}
+
+.spec-drawer-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #e6edf3;
+  letter-spacing: 0.02em;
+}
+
+.spec-drawer-close {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid #1f2735;
+  border-radius: 4px;
+  color: #9fb2c4;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.spec-drawer-close:hover {
+  background: #ff453a;
+  border-color: #ff453a;
+  color: #fff;
+}
+
+/* Scrolling body. */
+.spec-drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.spec-drawer-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #11151c;
+  border: 1px solid #1f2735;
+  border-radius: 6px;
+}
+
+.spec-drawer-current-icon { font-size: 1.6rem; }
+
+.spec-drawer-current-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.spec-drawer-current-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #00d9ff;
+}
+
+.spec-drawer-current-text strong { color: #e6edf3; font-size: 0.95rem; }
+
+.spec-drawer-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.spec-drawer-msg.error {
+  background: rgba(255, 69, 58, 0.1);
+  border: 1px solid #ff453a;
+  color: #ff453a;
+}
+
+.spec-drawer-msg.success {
+  background: rgba(52, 199, 89, 0.1);
+  border: 1px solid #34c759;
+  color: #34c759;
+}
+
+/* Compact 2-column picker grid (replaces full-width stacked cards). */
+.spec-drawer-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.spec-drawer-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  text-align: left;
+  background: #11151c;
+  border: 2px solid #1f2735;
+  border-radius: 8px;
+  color: #e6edf3;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+
+.spec-drawer-card:hover:not(:disabled) {
+  border-color: #00d9ff;
+  transform: translateY(-1px);
+}
+
+.spec-drawer-card.selected {
+  border-color: #00d9ff;
+  background: #1a2230;
+  box-shadow: 0 0 14px rgba(0, 217, 255, 0.3);
+}
+
+.spec-drawer-card.unavailable {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.spec-drawer-card.current {
+  border-color: #34c759;
+  background: rgba(52, 199, 89, 0.06);
+  cursor: default;
+}
+
+.spec-drawer-card:disabled { cursor: not-allowed; }
+
+.spec-drawer-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.spec-drawer-card-icon { font-size: 1.4rem; }
+
+.spec-drawer-card-name {
+  flex: 1;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.spec-drawer-badge {
+  padding: 2px 6px;
+  background: #34c759;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.spec-drawer-card-desc {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #9fb2c4;
+  line-height: 1.4;
+}
+
+.spec-drawer-benefits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.spec-drawer-benefits li {
+  position: relative;
+  padding-left: 16px;
+  font-size: 0.78rem;
+  color: #9fb2c4;
+}
+
+.spec-drawer-benefits li::before {
+  content: '✓';
+  position: absolute;
+  left: 2px;
+  color: #34c759;
+}
+
+.spec-drawer-reqs { margin-top: 2px; }
+
+.spec-drawer-reqs .met {
+  font-size: 0.76rem;
+  color: #34c759;
+  font-weight: 500;
+}
+
+.spec-drawer-reqs .missing {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.spec-drawer-reqs .missing li {
+  position: relative;
+  padding-left: 16px;
+  font-size: 0.74rem;
+  color: #ff453a;
+}
+
+.spec-drawer-reqs .missing li::before {
+  content: '✗';
+  position: absolute;
+  left: 2px;
+  color: #ff453a;
+}
+
+.spec-drawer-summary {
+  padding: 8px 12px;
+  background: #11151c;
+  border: 1px solid #f5a623;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: #f5a623;
+}
+
+/* Footer actions — fixed at bottom. */
+.spec-drawer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #11151c;
+  border-top: 1px solid #2a3647;
+  flex: 0 0 auto;
+}
+
+.spec-drawer-btn {
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+
+.spec-drawer-btn.primary {
+  background: #00d9ff;
+  color: #0a0d12;
+  border-color: #00d9ff;
+}
+
+.spec-drawer-btn.primary:hover:not(:disabled) {
+  background: #7dd3fc;
+}
+
+.spec-drawer-btn.secondary {
+  background: #1a2230;
+  color: #e6edf3;
+  border-color: #1f2735;
+}
+
+.spec-drawer-btn.secondary:hover:not(:disabled) {
+  border-color: #00d9ff;
+}
+
+.spec-drawer-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 880px) {
+  .spec-drawer-grid { grid-template-columns: 1fr; }
+}
+
+@keyframes spec-drawer-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes spec-drawer-slide {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spec-drawer-scrim,
+  .spec-drawer {
+    animation-duration: 0.01s;
+  }
+}

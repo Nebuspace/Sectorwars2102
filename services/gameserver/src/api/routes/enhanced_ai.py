@@ -382,27 +382,17 @@ async def chat_with_ai(
     """
     try:
         ai_service = EnhancedAIService(db)
-        
-        # Create conversation context
-        conversation_context = None
-        if request.conversation_id:
-            try:
-                conversation_context = ConversationContext(
-                    session_id=request.conversation_id,
-                    conversation_type=request.conversation_type,
-                    player_id=player_id,
-                    assistant_id="", # Will be populated by service
-                    security_level=SecurityLevel.STANDARD
-                )
-            except ValueError:
-                # Invalid conversation ID format, start new conversation
-                pass
-        
-        # Process conversation
+
+        # Let the service build the ConversationContext: only it has the
+        # authenticated assistant id, and ConversationContext validation rejects
+        # an empty assistant_id (a pre-built context with assistant_id="" raised
+        # a ValidationError — not a ValueError, so the old guard never caught it —
+        # breaking every threaded follow-up query). Pass the client's
+        # conversation_id so the service can continue the thread when valid.
         response_data = await ai_service.process_natural_language_query(
             player_id=uuid.UUID(player_id),
             user_input=request.message,
-            conversation_context=conversation_context
+            conversation_id=request.conversation_id,
         )
         
         await db.commit()

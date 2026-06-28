@@ -54,7 +54,11 @@ export const ProductionDashboard: React.FC<ProductionDashboardProps> = ({
       acc.organics += planet.productionRates.organics;
       acc.equipment += planet.productionRates.equipment;
       acc.colonists += planet.productionRates.colonists;
-      acc.efficiency += (100 - planet.allocations.unused);
+      // Efficiency = % of colonists assigned to production. `unused` is a raw
+      // colonist COUNT, so the share is (colonists - unused) / colonists.
+      acc.efficiency += planet.colonists > 0
+        ? (100 * (planet.colonists - planet.allocations.unused)) / planet.colonists
+        : 0;
       return acc;
     }, { fuel: 0, organics: 0, equipment: 0, colonists: 0, efficiency: 0 });
 
@@ -94,8 +98,8 @@ export const ProductionDashboard: React.FC<ProductionDashboardProps> = ({
           bValue = b.productionRates[selectedResource];
           break;
         case 'efficiency':
-          aValue = 100 - a.allocations.unused;
-          bValue = 100 - b.allocations.unused;
+          aValue = a.colonists > 0 ? (100 * (a.colonists - a.allocations.unused)) / a.colonists : 0;
+          bValue = b.colonists > 0 ? (100 * (b.colonists - b.allocations.unused)) / b.colonists : 0;
           break;
       }
 

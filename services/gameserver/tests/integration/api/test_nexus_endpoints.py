@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from src.models.region import Region
 from src.models.sector import Sector
 from src.models.planet import Planet
-from src.models.port import Port
+from src.models.station import Station, StationClass, StationType
 from src.core.config import settings
 
 
@@ -401,16 +401,15 @@ class TestNexusEndpointsWithComplexData:
                 sectors.append(sector)
                 db.add(sector)
                 
-                # Add some ports and planets
-                if i % 10 == 0:  # Every 10th sector gets a port
-                    port = Port(
+                # Add some stations and planets
+                if i % 10 == 0:  # Every 10th sector gets a station
+                    station = Station(
+                        name=f"Nexus Station {i}",
                         sector_id=i,
-                        region_id=nexus_region.id,
-                        port_class='A' if district_type == 'commerce_central' else 'B',
-                        port_type='Trade Hub' if district_type == 'commerce_central' else 'Industrial',
-                        docking_fee=500 if district_type == 'commerce_central' else 300
+                        station_class=StationClass.CLASS_6 if district_type == 'commerce_central' else StationClass.CLASS_3,
+                        type=StationType.TRADING if district_type == 'commerce_central' else StationType.INDUSTRIAL
                     )
-                    db.add(port)
+                    db.add(station)
                 
                 if i % 15 == 0:  # Every 15th sector gets a planet
                     planet = Planet(

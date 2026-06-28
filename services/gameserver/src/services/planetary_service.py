@@ -5,17 +5,22 @@ This service manages planetary colonization, resource allocation,
 building construction, defenses, and sieges.
 """
 
+import math
 from typing import Dict, Any, Optional, List
 from uuid import UUID, uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_, func, text
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.exc import OperationalError
 import logging
 
+from src.core.game_time import canonical_hours_since
+from src.services.structures import _via_settle_guard
 from src.models.player import Player
-from src.models.planet import Planet, player_planets
+from src.models.planet import Planet, PlanetType, player_planets
 from src.models.sector import Sector
-from src.models.ship import Ship
+from src.models.ship import Ship, effective_cargo_capacity
 from src.models.genesis_device import GenesisDevice, GenesisType, GenesisStatus, PlanetFormation
 from src.models.team import Team
 
@@ -25,26 +30,499 @@ logger = logging.getLogger(__name__)
 SIEGE_TURNS_THRESHOLD = 3       # Consecutive turns enemies must be present to trigger siege
 SIEGE_MORALE_LOSS_PER_TURN = 5  # Morale % lost per turn under siege
 SIEGE_PRODUCTION_PENALTY = 0.25 # 25% production reduction during siege
-DEFENSE_UPGRADE_COST = 1000     # Credits per defense level
+
+# Low-habitability resource-cost penalty (WO-F5; canon anchor
+# FEATURES/planets/colonization.md "Low-habitability resource cost penalty",
+# lines 211-213). A marginally habitable world spends extra on life support and
+# environmental control, so its NET output is lower than an identical hospitable
+# world. There is no separate consumption/upkeep ledger in this service — the
+# production-rate formula yields the per-day NET the colony banks — so the canon
+# "+20% resource costs" is realized here by netting the three commodity output
+# rates DOWN by the same fraction (the extra cost is paid out of output), applied
+# exactly like SIEGE_PRODUCTION_PENALTY's siege_multiplier just below it.
+#
+# NO-CANON: the doc marks this 📐 Design-only and the threshold/percentage are
+# given as a TARGET ("< 30", "+20%"), not a settled rule. LOW_HABITABILITY_
+# THRESHOLD = 30 and LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20 are the WO/doc
+# target values — FLAGGED for DECISIONS, not invented. Below the threshold the
+# colony already DECLINES in population (HABITABILITY_GROWTH_THRESHOLD = 20);
+# this penalty additionally taxes commodity output across the marginal band
+# (hab < 30), so a hab-20 world both shrinks AND nets ~20% less than a hab-50
+# world with identical allocations/buildings.
+LOW_HABITABILITY_THRESHOLD = 30           # NO-CANON: target threshold (doc line 213)
+LOW_HABITABILITY_PRODUCTION_PENALTY = 0.20  # NO-CANON: target "+20% resource costs"
+
+# --- PL4b TAX-RATE BOUNDS (DEFERRED, COLUMN-ONLY — I11) ----------------------
+# Planet.tax_rate ships as a NULLABLE, INERT column (migration d7a2f1c9e3b5).
+# Its taxable event — a team-mate withdrawing stockpiled resources from a planet
+# into ship cargo — has NO route in code yet (the one resource-egress route,
+# citadel withdraw-commodity, is owner-only), so NO tax logic is wired this
+# slice (PL4b master §1 / §7). These bounds CODIFY the canon clamp for the
+# follow-on WO that first builds the withdrawal route, then taxes the skim:
+#   - NULL ⇒ 0.0 (backward-compatible: every existing planet is untaxed, I1)
+#   - any explicit value is clamped fail-CLOSED to [0.00, 0.20] (canon
+#     colonization.md:249; reject out-of-range rather than silently truncate).
+# clamp_tax_rate is a PURE, INERT helper — it is intentionally NOT called from
+# any live path (there is no setter route this slice); it exists so the follow-on
+# reuses one bounds definition instead of re-deriving it.
+TAX_RATE_MIN = 0.00
+TAX_RATE_MAX = 0.20
+
+
+def clamp_tax_rate(value: Optional[float]) -> float:
+    """Resolve a planet tax_rate to a valid, in-bounds float (PL4b, DEFERRED).
+
+    NULL/None ⇒ 0.0 (the untaxed backward-compatible default, I1). Any explicit
+    value is bounded to [TAX_RATE_MIN, TAX_RATE_MAX]. PURE + INERT — not wired to
+    any live skim this slice; the taxable event does not exist yet (master §7)."""
+    if value is None:
+        return 0.0
+    return max(TAX_RATE_MIN, min(TAX_RATE_MAX, float(value)))
+# ADR-0076 retired the flat DEFENSE_UPGRADE_COST=1000/level path (upgrade_defense);
+# citadel level unlocks tiers and defense_unit_price (per added unit) prices them.
 DEFENSE_MAX_LEVEL = 10          # Maximum defense level
-DEFENSE_DAMAGE_REDUCTION_PER_LEVEL = 0.10  # 10% damage reduction per level
+# Per-unit credit cost to ADD planetary defense units (ADR-0076 "Scaled defense
+# pricing", Accepted). The price is no longer flat: it scales with citadel level
+# and planet type so that fortified, hostile-terrain worlds cost meaningfully
+# more to garrison. The server MUST charge the scaled price or the UI's "you can
+# afford this" gate is a lie and defenses are an economic faucet. Reducing units
+# is free (no refund); Genesis pre-installed defenses stay free (they are seeded
+# directly, never routed through update_defenses).
+#
+#   per-unit price = round_to_nearest_10(
+#       BASE[unit] x CITADEL_MULT[citadel_level] x PLANET_MOD[planet_type]
+#   )
+#
+# Worked examples (ADR-0076):
+#   L1 turret  Terran     = round(500 x 1.0 x 0.75) = 380   (375 -> 380, half-up)
+#   L5 turret  Gas Giant  =       500 x 3.0 x 1.5   = 2250
+#   L5 fighter Gas Giant  =      2000 x 3.0 x 1.5   = 9000
+DEFENSE_UNIT_BASE_COST = {"turrets": 500, "shields": 1000, "fighters": 2000}
+
+# Citadel-level price multiplier (ADR-0076). citadel_level <= 1 or null -> 1.0;
+# anything above 5 clamps to the L5 multiplier.
+DEFENSE_CITADEL_MULT = {1: 1.0, 2: 1.25, 3: 1.6, 4: 2.2, 5: 3.0}
+
+# Planet-type price multiplier (ADR-0076), keyed by PlanetType enum.
+# Terran/Oceanic 0.75 (hospitable) · Mountainous/Arctic 1.0 · Desert/Volcanic
+# 1.25 · Gas Giant/Barren 1.5 (most hostile). Any PlanetType NOT listed here
+# falls back to 1.0 — this default is NO-CANON (ADR-0076 names only the eight
+# types above), so it is FLAGGED: ICE, JUNGLE, TROPICAL, ARTIFICIAL currently
+# resolve to the 1.0 tier by this fallback rather than by an explicit canon rule.
+DEFENSE_PLANET_MOD = {
+    PlanetType.TERRAN: 0.75,
+    PlanetType.OCEANIC: 0.75,
+    PlanetType.MOUNTAINOUS: 1.0,
+    PlanetType.ARCTIC: 1.0,
+    PlanetType.DESERT: 1.25,
+    PlanetType.VOLCANIC: 1.25,
+    PlanetType.GAS_GIANT: 1.5,
+    PlanetType.BARREN: 1.5,
+}
+# NO-CANON fallback for any PlanetType not in DEFENSE_PLANET_MOD (see note above).
+DEFENSE_PLANET_MOD_DEFAULT = 1.0
+
+
+def defense_unit_price(unit_type: str, citadel_level: Optional[int], planet_type) -> int:
+    """ADR-0076 scaled per-unit price for adding one planetary defense unit.
+
+        price = round_to_nearest_10(BASE x CITADEL_MULT x PLANET_MOD)
+
+    citadel_level <= 1 or None -> the L1 (1.0) multiplier; > 5 clamps to L5 (3.0).
+    planet_type accepts a PlanetType enum member (resolved directly) or its
+    string value/name (resolved leniently); unrecognized types use the NO-CANON
+    1.0 default. Rounding is HALF-UP to the nearest 10 (e.g. 375 -> 380).
+    """
+    base = DEFENSE_UNIT_BASE_COST[unit_type]
+
+    # Citadel multiplier: clamp the level into the 1..5 table.
+    level = citadel_level or 0
+    if level <= 1:
+        citadel_mult = DEFENSE_CITADEL_MULT[1]
+    elif level >= 5:
+        citadel_mult = DEFENSE_CITADEL_MULT[5]
+    else:
+        citadel_mult = DEFENSE_CITADEL_MULT[level]
+
+    # Planet-type multiplier: accept the enum directly, else resolve a string.
+    planet_mod = None
+    if isinstance(planet_type, PlanetType):
+        planet_mod = DEFENSE_PLANET_MOD.get(planet_type)
+    elif planet_type is not None:
+        key = str(planet_type).upper().replace(" ", "_").replace("-", "_")
+        for member in PlanetType:
+            if member.value == key or member.name == key:
+                planet_mod = DEFENSE_PLANET_MOD.get(member)
+                break
+    if planet_mod is None:
+        planet_mod = DEFENSE_PLANET_MOD_DEFAULT
+
+    raw = base * citadel_mult * planet_mod
+    # Round HALF-UP to the nearest 10 using integer arithmetic (avoids the
+    # banker's-rounding surprise the stdlib round() would give on a *.5 boundary).
+    return int((raw + 5) // 10) * 10
+# Canon: DOCS/API/v1/sectors-planets.aispec — siege morale loss is
+# "mitigated by 0.05 × defense_level", i.e. 5% damage reduction per level
+DEFENSE_DAMAGE_REDUCTION_PER_LEVEL = 0.05
+
+# Lazy siege cadence. Canon (FEATURES/planets/defense.md "Siege") defines the
+# per-turn effects (SIEGE_MORALE_LOSS_PER_TURN, defense mitigation) but never
+# a wall-clock length for a siege "turn" — apply_siege_effects was written
+# for a turn-processing scheduler that does not exist. NO-CANON: one siege
+# turn = 24 canonical hours (one canonical day), matching the daily cadence
+# of production and colonist growth; an undefended planet (100 morale,
+# 5/turn) becomes capture-vulnerable after ~20 canonical days under siege.
+# Runs through GAME_TIME_SCALE like every other duration.
+SIEGE_TURN_HOURS = 24.0
+
+# Siege stockpile plunder (FEATURES/planets/defense.md "Siege" → "Resource theft":
+# "a fraction of generated commodities should transfer to the besieger" — was
+# 📐 Design-only, "penalty is applied but no transfer". This is that transfer.
+# Each APPLIED siege turn skims a small fraction of the besieged planet's
+# stockpiles (fuel_ore / organics / equipment) into the besieger's hold. It runs
+# inside _apply_siege_turn, which fires EXACTLY ONCE per applied siege turn (the
+# advance_siege anchor — siege_turns — guarantees a turn is applied at most once),
+# so the skim is idempotent across Loop-A re-reads / scheduler sweeps: no
+# double-skim, no skim per Loop-A pass.
+#
+# NO-CANON: defense.md says "a fraction" but gives no number. SIEGE_STOCKPILE_
+# SKIM_FRACTION = 0.05 (5% of each stockpile commodity per applied siege turn) is
+# a deliberately CONSERVATIVE choice — at 5%/day a stockpile decays geometrically
+# (≈ half drained after ~14 siege turns), so a sustained siege meaningfully bleeds
+# the colony without instantly emptying it on the first applied turn. FLAGGED for
+# DECISIONS; easier to raise than to claw back an over-tuned plunder faucet.
+SIEGE_STOCKPILE_SKIM_FRACTION = 0.05  # NO-CANON: stockpile fraction skimmed per applied siege turn
+# The three plunderable planetary stockpile columns and the cargo-contents key
+# each maps to (matching combat_service._transfer_cargo's commodity contents).
+SIEGE_STOCKPILE_COMMODITIES = (
+    ("fuel_ore", "ore"),
+    ("organics", "organics"),
+    ("equipment", "equipment"),
+)
 
 # Shield Generator Levels (0-10)
 # Uses planet.defense_shields to track generator level, planet.shields for strength
+# Per-step credit costs and equipment costs from FEATURES/planets/defense.md:133-142.
+# Cumulative L0→L10 = 5,235,000 cr + 523,500 equipment (matches canon totals).
 SHIELD_GENERATOR_MAX_LEVEL = 10
 SHIELD_GENERATOR_LEVELS = {
-    0: {"name": "No Shields", "strength": 0, "regen_per_hour": 0, "cost": 0},
-    1: {"name": "Basic Shield", "strength": 1000, "regen_per_hour": 100, "cost": 50000},
-    2: {"name": "Reinforced Shield", "strength": 2500, "regen_per_hour": 250, "cost": 100000},
-    3: {"name": "Military Shield", "strength": 5000, "regen_per_hour": 500, "cost": 200000},
-    4: {"name": "Advanced Shield", "strength": 10000, "regen_per_hour": 1000, "cost": 350000},
-    5: {"name": "Heavy Shield", "strength": 15000, "regen_per_hour": 1500, "cost": 500000},
-    6: {"name": "Fortress Shield", "strength": 25000, "regen_per_hour": 2500, "cost": 750000},
-    7: {"name": "Citadel Shield", "strength": 35000, "regen_per_hour": 3500, "cost": 1000000},
-    8: {"name": "Planetary Shield", "strength": 50000, "regen_per_hour": 5000, "cost": 1500000},
-    9: {"name": "Quantum Shield", "strength": 65000, "regen_per_hour": 6500, "cost": 2000000},
-    10: {"name": "Impervious Shield", "strength": 75000, "regen_per_hour": 7500, "cost": 3000000},
+    0:  {"name": "No Shields",       "strength": 0,     "regen_per_hour": 0,    "cost": 0,         "equipment_cost": 0},
+    1:  {"name": "Basic Shield",     "strength": 1000,  "regen_per_hour": 100,  "cost": 10000,     "equipment_cost": 1000},
+    2:  {"name": "Reinforced Shield","strength": 2500,  "regen_per_hour": 250,  "cost": 25000,     "equipment_cost": 2500},
+    3:  {"name": "Military Shield",  "strength": 5000,  "regen_per_hour": 500,  "cost": 50000,     "equipment_cost": 5000},
+    4:  {"name": "Advanced Shield",  "strength": 10000, "regen_per_hour": 1000, "cost": 100000,    "equipment_cost": 10000},
+    5:  {"name": "Heavy Shield",     "strength": 15000, "regen_per_hour": 1500, "cost": 200000,    "equipment_cost": 20000},
+    6:  {"name": "Fortress Shield",  "strength": 20000, "regen_per_hour": 2500, "cost": 400000,    "equipment_cost": 40000},
+    7:  {"name": "Citadel Shield",   "strength": 30000, "regen_per_hour": 3500, "cost": 700000,    "equipment_cost": 70000},
+    8:  {"name": "Planetary Shield", "strength": 40000, "regen_per_hour": 5000, "cost": 1000000,   "equipment_cost": 100000},
+    9:  {"name": "Quantum Shield",   "strength": 50000, "regen_per_hour": 6500, "cost": 1250000,   "equipment_cost": 125000},
+    10: {"name": "Impervious Shield","strength": 75000, "regen_per_hour": 7500, "cost": 1500000,   "equipment_cost": 150000},
 }
+
+# Shield-generator upgrades are time-based (ADR-0086): upgrading to level N takes
+# N x 6 hours (L1 = 6h ... L10 = 60h). Stored as a JSONB anchor on
+# planet.active_events['shield_upgrade'] = {from, to, started_at, complete_at}
+# (no migration) and settled lazily on read, mirroring the defense-building queue.
+SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL = 6
+
+# Production buildings (factory/farm/mine/defense/research) cap at level 10 — the
+# canon ceiling. Each level grants +10% production via the (1 + level * 0.1) bonus
+# in _calculate_production_rates, so level 10 = +100% (the documented maximum).
+# Without this cap, upgrade_building accepted ANY target_level, letting a player
+# drive a building to e.g. level 50 (+500% production) and blow past the ceiling —
+# an economic-integrity hole. The upgrade is time-based (1h per level climbed) and
+# stored as a JSONB anchor on planet.active_events['building_upgrade'] (no
+# migration), settled lazily on read, mirroring the shield-generator upgrade.
+MAX_BUILDING_LEVEL = 10
+BUILDING_UPGRADE_HOURS_PER_LEVEL = 1
+# The five production-building columns upgrade_building can target. Mirrors the
+# maps in _get_building_level / _set_building_level (single source of truth for the
+# accepted building_type values).
+BUILDING_LEVEL_TYPES = ("factory", "farm", "mine", "defense", "research")
+
+# Colony specialization multipliers (ADR-0087). Single source of truth, shared
+# with combat_service for the defense multiplier. "production" scales commodity
+# output (applied in _calculate_production_rates); "defense" scales the planet's
+# damage reduction + shield HP in combat (combat_service._calculate_planetary_
+# defense_reduction); "research" scales the research-point yield below. Balanced
+# is a +10% all-round generalist (no longer a no-op).
+SPECIALIZATION_BONUSES = {
+    "agricultural": {
+        "production": {"fuel": 0.8, "organics": 1.5, "equipment": 0.8, "colonists": 1.2},
+        "defense": 0.9, "research": 0.8,
+    },
+    "industrial": {
+        "production": {"fuel": 0.9, "organics": 0.8, "equipment": 1.5, "colonists": 0.9},
+        "defense": 1.0, "research": 0.9,
+    },
+    "military": {
+        "production": {"fuel": 0.9, "organics": 0.9, "equipment": 1.1, "colonists": 0.8},
+        "defense": 1.5, "research": 0.8,
+    },
+    "research": {
+        "production": {"fuel": 0.8, "organics": 0.8, "equipment": 0.9, "colonists": 0.9},
+        "defense": 0.8, "research": 1.5,
+    },
+    "balanced": {
+        "production": {"fuel": 1.1, "organics": 1.1, "equipment": 1.1, "colonists": 1.1},
+        "defense": 1.1, "research": 1.1,
+    },
+}
+
+# Research-point yield (ADR-0087): a research planet accrues research points per
+# day from its Research Lab level, scaled by the specialization research
+# multiplier (+ citadel bonus, − siege). Accrued lazily into
+# active_events['research_points'] (JSONB, no migration), mirroring commodity
+# production. NOTE: the SINK for research points (what they unlock) is an open
+# design decision — see DECISIONS colony-research-points-sink.
+RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY = 25
+
+# T1.5-1 PER-PLANET RP BACKSTOP (CRT-4 / CRT-T15-MASTER §2.3) — defense-in-depth.
+# The per-empire flywheel governor (research_service.governed_rp at the sweep) is
+# PRIMARY; this is the seatbelt: even if the per-empire SUM has an aggregation bug,
+# the lab-spread exploit (keep each planet just under the empire cap × N planets) is
+# dead because a single planet's marginal RP/lab is log-compressed at the MINT once
+# research_level passes LAB_DIMINISH_N. A planet under the threshold mints linearly
+# (level × 25/day) exactly as today; past it, further lab levels yield diminishing RP.
+#
+# REPRODUCE-EXACTLY OFF-SWITCH: LAB_DIMINISH_N = math.inf → no level is ever past the
+# threshold → the rate is the plain linear (level × 25) mint, byte-identical to today.
+# Ship the RULED finite value AND keep inf reachable via the constant (reversible).
+LAB_DIMINISH_N = 10.0  # per-planet RP-diminish threshold in lab levels (Orch default; inf = off)
+
+
+def _diminished_lab_levels(research_level: float) -> float:
+    """The effective lab-level count after the per-planet diminishing backstop (§2.3).
+
+    Below LAB_DIMINISH_N: returns research_level unchanged (linear mint, == today).
+    Above it: the levels past the threshold are log-compressed so a single planet can
+    never run away on lab count alone. LAB_DIMINISH_N = inf → returns research_level
+    unchanged for ALL inputs (reproduce-exactly).
+    """
+    level = research_level or 0
+    if level <= LAB_DIMINISH_N:
+        return float(level)
+    excess = level - LAB_DIMINISH_N
+    return LAB_DIMINISH_N + math.log1p(excess)
+
+# Canon daily colonist growth (FEATURES/planets/colonization.md "Population
+# growth"): colonist_rate = colonists × 0.01 × (habitability_score / 100),
+# i.e. base growth = 1% per day, scaled linearly by habitability.
+DAILY_GROWTH_BASE = 0.01
+SECONDS_PER_DAY = 86400.0
+
+# Surplus-pioneer faucet (FEATURES/economy/lifecycle.md §1.4 "Colonist sales"):
+# an owned, colonized planet produces SURPLUS PIONEERS over time (births,
+# retirees seeking transit, voluntary outbound migrants). These accrue into
+# planet.active_events['surplus_pioneers'] (a running integer counter; JSONB, no
+# migration) on the production tick, with sub-unit progress banked in
+# production_carry['surplus_pioneers']. The accrued surplus is sold at a Class-0
+# Pioneer Office (pioneer_service.sell_planet_surplus) at 30-80 cr/pioneer.
+#
+# Canon TARGET (lifecycle.md §1.4): "a fully-developed planet should yield
+# 1,000-5,000 cr/day in pioneer-export contracts." The accrual is proportional
+# to the colony's working population so a fresh 100-colonist outpost yields a
+# trickle while a developed L4/L5 colony (50,000-200,000 colonists) hits the
+# band. At a representative colonist-sale price of ~55 cr (midpoint of the 30-80
+# range), 1,000-5,000 cr/day == ~18-91 pioneers/day. The rate below puts a
+# 50,000-colonist developed world at 50,000 × 0.0005 = 25 pioneers/day ≈ ~1,375
+# cr/day — deliberately near the LOW edge of the canon band (easier to raise
+# than to claw back an over-minted faucet).
+#
+# NO-CANON: the exact per-colonist surplus rate is not specified — canon gives
+# only the cr/day TARGET band, not a pioneers/colonist coefficient. This value
+# is FLAGGED for DECISIONS; it is bounded by, and consistent with, the canon
+# target band above. See WO-PL3-v2 report.
+SURPLUS_PIONEER_RATE_PER_DAY = 0.0005  # NO-CANON: pioneers/colonist/day (faucet)
+
+# Habitability ZERO-CROSSING for natural population growth (WO-AH, Max-ruled:
+# "growth is a function of habitability — ABOVE a threshold → GROW, BELOW it →
+# DECLINE"). CANON anchor: FEATURES/planets/colonization.md line 95 — "BARREN and
+# ICE planets have negative natural growth … the colony shrinks" — and the same
+# doc's design note (line 186): "the production tick needs an explicit decline
+# branch when habitability_score < threshold (e.g., < 20)."
+#
+# HABITABILITY_GROWTH_THRESHOLD is that crossing point. AT or ABOVE it the
+# colony grows on the unchanged canon formula (so genesis worlds, hab 40–90, and
+# every other habitable world grow EXACTLY as before — no behavioral change for
+# them). BELOW it the colony declines. THRESHOLD = 20 is the value the canon
+# design note literally suggests; it makes the harsh worlds shrink (nexus
+# generation: BARREN 10–40, VOLCANIC 10–30, low-end ICE) while keeping genesis
+# worlds and every DESERT-or-better world firmly positive.
+#
+# DAILY_DECLINE_BASE is the per-day decline slope: the rate scales with how far
+# BELOW the threshold a world sits, so a near-uninhabitable hab-0 BARREN shrinks
+# faster than a hab-19 marginal world, and a freshly-terraformed world hovering
+# just under the threshold barely loses anyone before crossing into growth.
+# Daily decline = -colonists × DAILY_DECLINE_BASE × (THRESHOLD − habitability)/100.
+# Worst case (hab 0, BARREN): -colonists × 0.01 × 20/100 = -0.2%/day — exactly the
+# canon-table magnitude for ICE (line 89) and twice the BARREN figure (line 88);
+# the slope keeps decline gentle and recoverable, never a cliff. NO-CANON: the
+# exact THRESHOLD (20) and DECLINE_BASE (0.01) values are flagged for DECISIONS;
+# they are bounded by, and consistent with, the canon decline note above.
+HABITABILITY_GROWTH_THRESHOLD = 20
+DAILY_DECLINE_BASE = 0.01
+
+# Per-tick elapsed cap. CANON: SYSTEMS/planetary-production-tick.md "Failure
+# modes" — "Tick scheduler runs late (huge elapsed) | Cap elapsed at 24 hours
+# per tick to prevent runaway growth." The lazy advance-on-read realization of
+# the tick must honor the same cap: a planet idle for days credits at most 24h
+# of production/growth on the next tick. Combined with invariant 4
+# (`last_production` monotonically non-decreasing) the canon semantics are:
+# advance the durable anchor by ONLY the consumed elapsed (min(elapsed, cap)),
+# NOT to now — so the backlog naturally drains 24h per subsequent tick rather
+# than being silently forfeited. Applies to both production accrual and
+# population growth so the two anchors behave identically.
+MAX_TICK_ELAPSED_SECONDS = 86400.0  # 24 hours
+
+# Gourmet-food luxury production bonus (WO-G14). A planet that holds a positive
+# gourmet_food stockpile (a real economy commodity — see
+# core/commodity_economy.py / models/resource.py GOURMET_FOOD) feeds its
+# colonists a luxury diet that lifts both colonist growth and commodity output by
+# GOURMET_FOOD_PRODUCTION_BONUS while supplied, consuming
+# GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY units per colonist per day (i.e. 1
+# unit per 1000 colonists per day). No bonus and no consumption when the
+# stockpile is absent or non-positive.
+#
+# The planet has no gourmet_food COLUMN; per the WO it lives in the existing
+# planet stockpile JSONB. We use active_events['gourmet_food'] — the same JSONB
+# catch-all that already holds research_points / surplus_pioneers / production
+# counters — so no migration is needed.
+#
+# NO-CANON: the +5% magnitude and the 1u/1000-colonists/day consumption rate are
+# not specified in canon (gourmet_food appears in the economy/trading layer, not
+# in a documented colony-feeding rule); both are FLAGGED for DECISIONS.
+GOURMET_FOOD_STOCKPILE_KEY = "gourmet_food"
+GOURMET_FOOD_PRODUCTION_BONUS = 0.05  # NO-CANON: +5% to growth + commodity output
+GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY = 0.001  # NO-CANON: 1u / 1000 colonists / day
+
+
+def _read_gourmet_food_stockpile(planet: "Planet") -> int:
+    """Read a planet's gourmet_food stockpile from the active_events JSONB.
+
+    Defensive: a missing key, a non-dict active_events, or a malformed/None
+    value all read as 0 (no bonus, no consumption, never an exception). Negative
+    junk is clamped to 0.
+    """
+    events = planet.active_events
+    if not isinstance(events, dict):
+        return 0
+    try:
+        return max(int(events.get(GOURMET_FOOD_STOCKPILE_KEY, 0) or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+# Per-PlanetType production-efficiency multipliers. CANON: the planet-type
+# efficiency table in FEATURES/planets/production.md ("Planet-type efficiency
+# table") and the matching column block in FEATURES/planets/colonization.md
+# ("Planet types"). The doc names the welcome-world type "TERRA"; the enum
+# (models/planet.py:PlanetType) spells it "TERRAN" — mapped to the documented
+# TERRA row (0/0/0: a Capital welcome world doesn't produce). The table folds
+# directly into _calculate_production_rates as a per-resource multiplier on top
+# of building / specialization / citadel / siege modifiers.
+#
+# CANON GAP (flagged, NOT invented): PlanetType also defines GAS_GIANT, JUNGLE,
+# ARCTIC and TROPICAL, which the canon efficiency table does not list. Per the
+# WO-O instruction ("If a specific type's number isn't in canon, FLAG it and use
+# a neutral 1.0"), each of those four gets a neutral {1.0, 1.0, 1.0} and is
+# recorded in NEUTRAL_TYPE_EFFICIENCY_TYPES so the gap is auditable rather than
+# silently guessed. See DECISIONS write-back note in the WO-O report.
+TYPE_EFFICIENCY = {
+    # type:                 fuel,  organics, equipment
+    PlanetType.TERRAN:      {"fuel": 0.0, "organics": 0.0, "equipment": 0.0},
+    PlanetType.MOUNTAINOUS: {"fuel": 0.6, "organics": 0.4, "equipment": 1.5},
+    PlanetType.OCEANIC:     {"fuel": 1.5, "organics": 0.4, "equipment": 0.6},
+    PlanetType.DESERT:      {"fuel": 0.4, "organics": 1.5, "equipment": 0.6},
+    PlanetType.VOLCANIC:    {"fuel": 1.0, "organics": 0.0, "equipment": 2.0},
+    PlanetType.BARREN:      {"fuel": 0.0, "organics": 0.0, "equipment": 1.5},
+    PlanetType.ICE:         {"fuel": 0.8, "organics": 1.2, "equipment": 0.5},
+}
+# Neutral 1.0 fallback for the four enum types absent from the canon table.
+NEUTRAL_TYPE_EFFICIENCY = {"fuel": 1.0, "organics": 1.0, "equipment": 1.0}
+NEUTRAL_TYPE_EFFICIENCY_TYPES = (
+    PlanetType.GAS_GIANT,
+    PlanetType.JUNGLE,
+    PlanetType.ARCTIC,
+    PlanetType.TROPICAL,
+)
+
+
+def type_efficiency_for(planet_type) -> Dict[str, float]:
+    """Per-resource production multiplier for a PlanetType (canon table above).
+
+    Returns a neutral {1.0, 1.0, 1.0} for any type not in the canon table
+    (the four flagged GAP types, or a NULL/unknown type from legacy data) so an
+    un-canonized planet type never zeroes or inflates production by accident.
+    """
+    return TYPE_EFFICIENCY.get(planet_type, NEUTRAL_TYPE_EFFICIENCY)
+
+
+def max_colonists_for(citadel_level: int) -> int:
+    """Citadel-tier workforce ceiling per ADR-0035.
+
+    "`max_colonists` — citadel-tier workforce cap. Driven by citadel level,
+    with the per-tier values defined by `citadel_service.CITADEL_LEVELS`:
+    L1 Outpost = 1,000, L2 = 5,000, L3 = 15,000, L4 = 50,000,
+    L5 Planetary Capital = 200,000."
+
+    Note: CITADEL_LEVELS stores this tier value under the legacy key
+    "max_population", but per ADR-0035 it governs max_colonists (the
+    workforce cap), never the habitability-derived demographic cap.
+    """
+    from src.services.citadel_service import CITADEL_LEVELS
+    level = citadel_level or 0
+    info = CITADEL_LEVELS.get(level, CITADEL_LEVELS[0])
+    return info["max_population"]
+
+
+def storage_cap_for(citadel_level: int) -> int:
+    """Per-resource commodity storage cap, derived from the citadel tier.
+
+    CANON: SYSTEMS/planetary-production-tick.md "Storage caps" — the production
+    tick clamps each commodity stockpile to a per-resource maximum, and "the
+    excess is wasted (not stored, not transferred)" with an `overflow_warning`
+    event surfaced. Invariant 2: fuel_ore/organics/equipment are "≥ 0, bounded
+    by their respective caps."
+
+    Cap source — CITADEL_LEVELS[level]["safe_storage"]: the only concrete,
+    shipped per-level capacity figure in code (L1 100k → L5 50M, mirroring how
+    `max_colonists_for` reads `max_population` from the same table). Applied as a
+    PER-RESOURCE cap, matching the per-commodity `cap_fuel/cap_organics/
+    cap_equipment` shape of the canon formula (production-tick.md:142-144,178-180).
+
+    [NO-CANON divergence — FLAGGED, not invented]: the canon "Storage caps"
+    formula is `cap = base_cap * (1 + storage_level * 0.5)`, parameterised by a
+    `base_cap` and a *storage-building* `storage_level`. Neither a base_cap
+    constant nor a storage-building model/level exists in code today, so there is
+    no way to evaluate that formula. This helper substitutes the in-code
+    `safe_storage` per-tier figure as the cap until a storage-building tier lands
+    (at which point the canon multiplier `(1 + storage_level * 0.5)` can layer on
+    top of this base). Propose DECISIONS entry: ratify safe_storage as the
+    commodity storage base_cap, or define the missing base_cap/storage_level.
+
+    Edge case (production-tick.md:223): a non-positive cap "due to
+    misconfiguration" is treated as no cap (return 0 → callers skip clamping).
+    An un-citadeled planet (level 0, safe_storage 0) is therefore left UNCAPPED,
+    which reproduces today's behaviour exactly for citadel-less colonies — the
+    cap only binds once a player has actually built a citadel (level ≥ 1, where
+    safe_storage is positive). This avoids the destructive alternative of
+    clamping a producing L0 colony to ~0 and discarding all of its output.
+    """
+    from src.services.citadel_service import CITADEL_LEVELS
+    level = citadel_level or 0
+    info = CITADEL_LEVELS.get(level, CITADEL_LEVELS[0])
+    cap = int(info.get("safe_storage", 0) or 0)
+    return cap if cap > 0 else 0
+
+
+def max_population_for(habitability_score: int) -> int:
+    """Habitability-derived demographic ceiling per ADR-0035.
+
+    "Canonical formula: `max_population = habitability_score × 1,000`."
+    Recomputed (fresh evaluation, never a multiplicative shrink) whenever
+    habitability changes — e.g. terraforming completion.
+    """
+    return max(0, habitability_score or 0) * 1000
 
 
 class PlanetaryService:
@@ -85,9 +563,544 @@ class PlanetaryService:
         
         if not planet:
             raise ValueError("Planet not found or not owned by player")
-            
+
+        # This is a hot read endpoint that now WRITES (lazy growth + production
+        # accrual commit on every read). Fail fast under row-lock contention so a
+        # leaked FOR UPDATE lock elsewhere can never hang all planet reads into a
+        # 504 cascade — on timeout we serve the data without persisting accrual
+        # (the un-advanced anchor makes the next read catch up).
+        try:
+            self.db.execute(text("SET LOCAL lock_timeout = '3s'"))
+        except OperationalError:
+            self.db.rollback()
+
+        # Lazily apply colonist growth (population growth is NOT one of the spine's three clocks,
+        # §9 — it stays a pre-settle lazy call), then settle the planetary clocks.
+        changed = self.apply_population_growth(planet)
+
+        # Lazy advance-on-read for a time-based building upgrade whose timer has
+        # elapsed: bump the level BEFORE settle()/production-rate formatting so the
+        # new +10%/level bonus is reflected the moment the build completes (mirrors
+        # the shield-generator settle).
+        changed = self._settle_building_upgrade(planet, datetime.now(UTC)) or changed
+
+        # Siege LIFECYCLE stays BEFORE settle() (§5.2): _detect_siege may LIFT a stale siege
+        # (enemies gone OR owner present) — canon (defense.md) requires owner ABSENCE, so the owner
+        # standing on the planet (the common case for this owner-facing read) must LIFT, not decay.
+        # settle()'s siege substep only ADVANCES morale on a siege that STILL holds; it never
+        # starts/lifts. _detect_siege commits its own state change.
+        if planet.under_siege:
+            self._detect_siege(planet, planet.owner_id or player_id)
+
+        # CRT WO-K1a cutover: ONE planetary tick replaces the direct apply_resource_production +
+        # advance_siege calls — production + (held) siege morale + terraforming + research faucet,
+        # each on its own inner anchor in its own clock domain (no `now` threaded in).
+        from src.services.structures import settle
+        changed = settle(planet, db=self.db).changed or changed
+
+        # AUTO-DEPOSIT sweep (owner-only path — ownership verified at top): when the
+        # safe_auto_deposit flag is ON, move on-hand commodities into the protected
+        # safe within the same commit block so the moved goods persist with this
+        # read's accrual. No-op (returns {}) when the flag is off, so default
+        # behaviour is unchanged. FLUSH-only inside; OR its truthiness into `changed`
+        # so the commit below fires when anything moved.
+        from src.services.citadel_service import CitadelService
+        changed = bool(CitadelService(self.db).auto_deposit_to_safe(planet)) or changed
+        if changed:
+            try:
+                self.db.commit()
+            except OperationalError:
+                # Row-lock timeout (a leaked/long lock held the planet row):
+                # abandon this read's accrual rather than 504. Re-fetch the
+                # planet so formatting reflects committed DB state.
+                self.db.rollback()
+                planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
+                if not planet:
+                    raise ValueError("Planet not found or not owned by player")
+                logger.warning(
+                    f"get_planet_details: lock timeout on planet {planet_id}; "
+                    f"served without persisting lazy accrual"
+                )
+
         return self._format_planet_data(planet)
-        
+
+    def apply_population_growth(self, planet: Planet) -> bool:
+        """Lazily apply canon colonist growth/decline since planet.last_growth_at.
+
+        Canon daily formula (FEATURES/planets/colonization.md "Population
+        growth"): colonist_rate = colonists × 0.01 × (habitability_score/100),
+        pro-rated here by elapsed wall-clock time.
+
+        Habitability ZERO-CROSSING (WO-AH, Max-ruled): growth is a function of
+        habitability with a crossing point at HABITABILITY_GROWTH_THRESHOLD.
+        At/above the threshold the colony GROWS on the unchanged canon formula
+        (habitable worlds behave exactly as before). Below it the colony
+        DECLINES — colonists are lost at -colonists × DAILY_DECLINE_BASE ×
+        (THRESHOLD − habitability)/100 per day, realizing the canon promise
+        (colonization.md line 95) that BARREN/ICE worlds shrink without
+        immigration or terraforming. Terraforming a harsh world past the
+        threshold flips the same colony from decline back into growth.
+
+        Decline floors `colonists` at 0 — a colony can shrink toward
+        abandonment but never goes negative, and the planet row is never
+        deleted here. The owned-planet abandonment/reclaim lifecycle (PL4b) is
+        now built in ``abandonment_service`` — that module reverts a planet to
+        unowned (preserving structures/citadel/population/resources) on either
+        the voluntary ``POST /planets/{id}/abandon`` path or the involuntary
+        inactivity-reclaim path; this growth pass remains population-only and
+        never touches ownership.
+
+        Ceilings enforced per ADR-0035 ("Runtime invariants"):
+          - colonists ≤ max_colonists (citadel cap)
+          - population ≤ max_population (habitability cap)
+          - colonists ≤ population (working-age subset)
+
+        Anchor pattern (mirrors turn-regen): only the time that produced
+        whole colonists is consumed from the anchor; the fractional
+        remainder stays banked so slow-growing colonies are never robbed
+        of sub-colonist progress. The anchor is never reset without the
+        accrued growth being applied first.
+
+        Returns True if any state changed (growth applied or anchor
+        initialized/advanced) so callers know to commit.
+        """
+        now = datetime.now(UTC)
+
+        if planet.last_growth_at is None:
+            # First read since the column landed: anchor now, accrue later.
+            planet.last_growth_at = now
+            return True
+
+        anchor = planet.last_growth_at
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+
+        elapsed_seconds = (now - anchor).total_seconds()
+        if elapsed_seconds <= 0:
+            return False
+
+        # 24h per-tick elapsed cap (CANON: planetary-production-tick.md "Failure
+        # modes"). A planet idle for days credits at most 24h of growth per tick;
+        # the growth branch below advances the anchor by only the consumed
+        # (capped) window so any > 24h backlog drains 24h per subsequent read
+        # rather than producing a runaway jump. The short-circuit branches
+        # (siege / nothing-to-grow / at-ceiling) advance straight to `now`
+        # because they produce nothing — there is no backlog worth draining.
+        capped_elapsed = min(elapsed_seconds, MAX_TICK_ELAPSED_SECONDS)
+
+        # Siege halts population growth (colonization.md "Other growth
+        # modifiers"); besieged time yields nothing, so advance the anchor.
+        if planet.under_siege:
+            planet.last_growth_at = now
+            return True
+
+        colonists = planet.colonists or 0
+        habitability = max(planet.habitability_score or 0, 0)
+
+        if colonists <= 0:
+            # No colonists to grow or lose; keep the anchor current so future
+            # colonists don't grow (or decline) retroactively.
+            planet.last_growth_at = now
+            return True
+
+        # ── Habitability zero-crossing (WO-AH) ─────────────────────────────
+        # Below the threshold the colony DECLINES; the harsh world cannot
+        # sustain its population until terraforming raises habitability past
+        # the crossing point. This branch fully owns the below-threshold case
+        # (its own anchor banking + floor-at-0) and returns; the growth path
+        # below runs only for at/above-threshold worlds, unchanged.
+        if habitability < HABITABILITY_GROWTH_THRESHOLD:
+            decline_per_day = (
+                colonists
+                * DAILY_DECLINE_BASE
+                * ((HABITABILITY_GROWTH_THRESHOLD - habitability) / 100.0)
+            )
+            decline_per_second = decline_per_day / SECONDS_PER_DAY
+            # capped_elapsed already honors the 24h per-tick cap so a colony
+            # idle for days loses at most one capped window per read, draining
+            # any backlog 24h per subsequent read (mirrors the growth path).
+            lost = int(decline_per_second * capped_elapsed)
+            if lost <= 0:
+                # Not enough elapsed time to lose a whole colonist yet — leave
+                # the anchor untouched so the remainder keeps accruing.
+                return False
+
+            # Floor at 0: a colony shrinks toward abandonment but never goes
+            # negative, and the planet row is never deleted here.
+            if lost >= colonists:
+                lost = colonists
+                planet.last_growth_at = now
+            else:
+                # Consume only the whole-colonist time; bank the remainder so a
+                # slow decline is never robbed of sub-colonist progress.
+                seconds_consumed = lost / decline_per_second
+                planet.last_growth_at = anchor + timedelta(seconds=seconds_consumed)
+
+            planet.colonists = colonists - lost
+            # Mirror the loss in the demographic total so a declining colony
+            # actually shrinks on screen; keep population >= colonists (the
+            # working-age subset never exceeds the total).
+            planet.population = max(planet.colonists, (planet.population or 0) - lost)
+            logger.debug(
+                f"Lazy decline on planet {planet.id}: -{lost} colonists "
+                f"(now {planet.colonists}, habitability {habitability} "
+                f"< threshold {HABITABILITY_GROWTH_THRESHOLD})"
+            )
+            return True
+        # ───────────────────────────────────────────────────────────────────
+
+        rate_per_day = colonists * DAILY_GROWTH_BASE * (habitability / 100.0)
+        # WO-G14: a positive gourmet_food stockpile lifts REALIZED colonist
+        # growth by +5% — applied HERE (the path that actually advances
+        # planet.colonists), so the bonus is real and not just the display rate
+        # shown by _calculate_production_rates. Growth-only: the below-threshold
+        # decline branch above is intentionally unaffected (a luxury diet speeds
+        # growth, it does not halt decay). apply_resource_production charges the
+        # matching per-colonist food cost on the same tick.
+        if _read_gourmet_food_stockpile(planet) > 0:
+            rate_per_day *= (1 + GOURMET_FOOD_PRODUCTION_BONUS)
+        if rate_per_day <= 0:
+            # Nothing can grow (zero habitability at/above threshold is
+            # impossible, but guard anyway); keep the anchor current.
+            planet.last_growth_at = now
+            return True
+
+        # Dual ceilings (ADR-0035): growth stops at whichever cap binds first.
+        workforce_cap = (
+            max_colonists_for(planet.citadel_level)
+            if (planet.citadel_level or 0) >= 1
+            else (planet.max_colonists or 0)
+        )
+        ceiling = min(workforce_cap, max_population_for(planet.habitability_score))
+        headroom = ceiling - colonists
+        if headroom <= 0:
+            # Already at (or beyond, via legacy data) the ceiling — banked
+            # time is worthless, advance the anchor.
+            planet.last_growth_at = now
+            return True
+
+        rate_per_second = rate_per_day / SECONDS_PER_DAY
+        gained = int(rate_per_second * capped_elapsed)
+        if gained <= 0:
+            # Not enough elapsed time for a whole colonist yet — leave the
+            # anchor untouched so the remainder keeps accruing.
+            return False
+
+        if gained >= headroom:
+            # Ceiling reached: surplus accrual is discarded, anchor moves to now.
+            gained = headroom
+            planet.last_growth_at = now
+        else:
+            # Consume only the whole-colonist time; bank the remainder.
+            seconds_consumed = gained / rate_per_second
+            planet.last_growth_at = anchor + timedelta(seconds=seconds_consumed)
+
+        planet.colonists = colonists + gained
+        # Simplification: total demographic tracks the workforce floor
+        # (population = max(population, colonists)); dependents beyond the
+        # workforce are not modeled yet. The growth ceiling above already
+        # respects max_population, and pre-existing populations are never
+        # shrunk here.
+        planet.population = max(planet.population or 0, planet.colonists)
+
+        logger.debug(
+            f"Lazy growth on planet {planet.id}: +{gained} colonists "
+            f"(now {planet.colonists}, ceiling {ceiling})"
+        )
+        return True
+
+    def apply_resource_production(self, planet: Planet, *, _via_settle: bool = False) -> bool:
+        """Lazily accrue commodity production since planet.last_production.
+
+        Mirrors apply_population_growth: production rates from
+        _calculate_production_rates (per-day, already including building,
+        specialization, citadel and siege modifiers) are pro-rated by elapsed
+        wall-clock time and added to the planet's fuel_ore/organics/equipment
+        stockpiles. This is the lazy advance-on-read realization of the
+        documented production tick (SYSTEMS/planetary-production-tick.md) — no
+        scheduler.
+
+        Sub-unit progress is banked exactly in a per-resource fractional carry
+        stored in planet.active_events['production_carry'] (JSONB, no migration),
+        so a fast resource never robs a slow one of its accruing fraction when
+        the anchor advances.
+
+        Storage caps (CANON: production-tick.md "Storage caps" / invariant 2):
+        each commodity stockpile is clamped to the citadel-derived per-resource
+        cap (``storage_cap_for`` ← CITADEL_LEVELS safe_storage). When this tick's
+        accrual would push a stockpile past the cap, the excess is WASTED ("not
+        stored, not transferred") and recorded under
+        active_events['overflow_warning'] so the read layer can raise a
+        `planet.overflow_warning`. An un-citadeled planet (level 0, cap 0) is left
+        uncapped — reproducing today's behaviour exactly for citadel-less
+        colonies; the cap only binds once a citadel exists (level ≥ 1). A
+        stockpile already sitting above the cap is never retroactively trimmed —
+        the clamp only refuses NEW accrual past the cap. The citadel safe remains
+        the separate protected, cr-equivalent-pooled store (citadel_service).
+
+        Returns True if any state changed (whole units accrued, or the anchor
+        was initialized/advanced) so callers know to commit.
+
+        ``_via_settle`` (CRT spine, WO-K1a): the structures.settle() spine passes True; any other
+        caller (direct/legacy, legit while DORMANT pre-cutover) leaves it False. Post-cutover a
+        False call is a stray surviving clock-writer — the guard makes it loud under tests (I5).
+        ``now`` is NOT a spine value here: this body reads its OWN wall-clock anchor as shipped.
+        """
+        _via_settle_guard("apply_resource_production", _via_settle)
+        now = datetime.now(UTC)
+
+        if planet.last_production is None:
+            # First read since the column landed: anchor now, accrue later.
+            planet.last_production = now
+            return True
+
+        anchor = planet.last_production
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+
+        elapsed_seconds = (now - anchor).total_seconds()
+        if elapsed_seconds <= 0:
+            return False
+
+        # 24h per-tick elapsed cap (CANON: planetary-production-tick.md "Failure
+        # modes" — "Cap elapsed at 24 hours per tick to prevent runaway growth").
+        # A planet idle for days accrues at most 24h of production on this tick;
+        # crucially the anchor advances by ONLY the consumed window (anchor +
+        # capped_elapsed), NOT to now — so a 72h-idle planet yields 24h now and
+        # the remaining backlog drains 24h per subsequent tick (invariant 4:
+        # last_production monotonically non-decreasing). Advancing to now would
+        # silently forfeit the excess. The production_carry fractional bank below
+        # is preserved unchanged and reflects exactly this 24h window.
+        capped_elapsed = min(elapsed_seconds, MAX_TICK_ELAPSED_SECONDS)
+
+        rates = self._calculate_production_rates(planet)
+        # Map production-rate keys to stockpile columns.
+        resource_cols = (("fuel", "fuel_ore"), ("organics", "organics"), ("equipment", "equipment"))
+        research_rate = rates.get("research", 0) or 0  # ADR-0087 research-point yield
+
+        # Surplus-pioneer faucet (lifecycle.md §1.4): an OWNED, colonized colony
+        # produces surplus pioneers proportional to its working population. Gated
+        # on ownership (owner_id set), live colonists, and NOT under siege (a
+        # besieged colony exports no one — mirrors colonist_rate=0 under siege).
+        # Shares this method's idempotent anchor/carry so it can never
+        # double-accrue across a settle()+read on the same window.
+        surplus_rate = 0.0
+        if (
+            planet.owner_id is not None
+            and (planet.colonists or 0) > 0
+            and not planet.under_siege
+        ):
+            surplus_rate = (planet.colonists or 0) * SURPLUS_PIONEER_RATE_PER_DAY
+
+        if (
+            all((rates.get(key, 0) or 0) <= 0 for key, _ in resource_cols)
+            and research_rate <= 0
+            and surplus_rate <= 0
+        ):
+            # Nothing producing (no commodity allocation AND no research lab AND
+            # no surplus-pioneer faucet); keep the anchor current so a later
+            # allocation doesn't accrue retroactively. No backlog to drain when
+            # nothing is produced, so advancing fully to now is correct here (no
+            # runaway risk).
+            planet.last_production = now
+            return True
+
+        events = planet.active_events if isinstance(planet.active_events, dict) else {}
+        carry = dict(events.get("production_carry", {})) if isinstance(events.get("production_carry"), dict) else {}
+
+        gains = {}
+        for key, col in resource_cols:
+            rate_per_day = rates.get(key, 0) or 0
+            produced = carry.get(col, 0.0) + rate_per_day * (capped_elapsed / SECONDS_PER_DAY)
+            gained = int(produced)
+            gains[col] = (gained, produced - gained)
+
+        # Research points accrue into a running active_events counter (no column);
+        # the fractional remainder shares the production_carry dict under 'research'.
+        research_produced = carry.get("research", 0.0) + research_rate * (capped_elapsed / SECONDS_PER_DAY)
+        research_gained = int(research_produced)
+
+        # Surplus pioneers accrue into a running active_events counter (no column),
+        # exactly like research points; the fractional remainder shares the
+        # production_carry dict under 'surplus_pioneers'. (lifecycle.md §1.4)
+        surplus_produced = carry.get("surplus_pioneers", 0.0) + surplus_rate * (capped_elapsed / SECONDS_PER_DAY)
+        surplus_gained = int(surplus_produced)
+
+        # Gourmet-food luxury consumption (WO-G14). When the planet holds a
+        # positive gourmet_food stockpile, the +5% production bonus applied in
+        # _calculate_production_rates is "paid for" by consuming
+        # GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY units per colonist per day
+        # (= 1u / 1000 colonists / day), pro-rated to this tick's elapsed window
+        # in exactly the same units as every other accrual above
+        # (rate × capped_elapsed/SECONDS_PER_DAY). The sub-unit remainder banks
+        # in the shared production_carry under 'gourmet_food', mirroring research
+        # / surplus_pioneers, so consumption is idempotent across a settle()+read
+        # on the same window and never double-charges.
+        #
+        # Dry-stockpile handling: the WHOLE-unit decrement is clamped to the
+        # stockpile on hand (`min(consumed_whole, stockpile)`) so the stockpile
+        # can never go negative. If it runs dry mid-tick the bonus was already
+        # granted for this window (the rate was computed when the stockpile was
+        # positive) — we simply consume what's left and the stockpile reaches 0;
+        # the NEXT tick reads 0, grants no bonus, and consumes nothing. We do NOT
+        # bank a fractional carry once the stockpile is empty, so an exhausted
+        # colony's JSONB doesn't accumulate a phantom debt.
+        gourmet_stock = _read_gourmet_food_stockpile(planet)
+        gourmet_consumed_whole = 0
+        gourmet_remainder = 0.0
+        if gourmet_stock > 0:
+            gourmet_to_consume = (
+                carry.get(GOURMET_FOOD_STOCKPILE_KEY, 0.0)
+                + (planet.colonists or 0)
+                * GOURMET_FOOD_CONSUMED_PER_COLONIST_PER_DAY
+                * (capped_elapsed / SECONDS_PER_DAY)
+            )
+            gourmet_consumed_whole = min(int(gourmet_to_consume), gourmet_stock)
+            # Only bank a remainder while the stockpile is still supplied; once it
+            # would run dry, drop the fraction so no phantom debt persists.
+            if gourmet_consumed_whole < gourmet_stock:
+                gourmet_remainder = gourmet_to_consume - int(gourmet_to_consume)
+            else:
+                gourmet_remainder = 0.0
+
+        if (
+            sum(g for g, _ in gains.values())
+            + research_gained
+            + surplus_gained
+            + gourmet_consumed_whole
+        ) <= 0:
+            # Not enough elapsed time for a whole unit of anything yet (including
+            # a whole unit of gourmet consumption); leave the anchor (and stored
+            # carry) untouched so fractions keep banking against the growing
+            # elapsed window.
+            return False
+
+        # Per-resource storage cap (CANON: production-tick.md "Storage caps" /
+        # invariant 2). Each commodity stockpile is clamped to the citadel-derived
+        # cap; any excess this tick is WASTED ("not stored, not transferred") and
+        # the overflow is recorded so the read/notification layer can surface a
+        # `planet.overflow_warning` event. A non-positive cap (un-citadeled L0)
+        # means "uncapped" — reproduces today's behaviour for citadel-less
+        # colonies exactly (see storage_cap_for's docstring). A stockpile already
+        # at/over the cap (e.g. deposited above it before caps existed) is left
+        # untouched here — the clamp only refuses NEW accrual past the cap, never
+        # retroactively confiscates pre-existing stock (max(new, current_over_cap)).
+        cap = storage_cap_for(planet.citadel_level or 0)
+        overflow = {}
+        for col, (gained, remainder) in gains.items():
+            if gained > 0:
+                current = getattr(planet, col) or 0
+                proposed = current + gained
+                if cap > 0 and proposed > cap:
+                    # Clamp to the cap but never below what's already on hand, so a
+                    # stockpile sitting above the cap is not retroactively trimmed.
+                    new_stock = max(current, cap)
+                    wasted = proposed - new_stock
+                    if wasted > 0:
+                        overflow[col] = wasted
+                    setattr(planet, col, new_stock)
+                else:
+                    setattr(planet, col, proposed)
+            carry[col] = remainder
+
+        carry["research"] = research_produced - research_gained
+        # Bank the surplus-pioneer fractional remainder only when the faucet is
+        # active or already carrying — don't pollute every researching planet's
+        # carry dict with a 0.0 surplus key.
+        if surplus_rate > 0 or "surplus_pioneers" in carry:
+            carry["surplus_pioneers"] = surplus_produced - surplus_gained
+
+        # Bank the gourmet-food fractional remainder only while supplied; clear a
+        # stale carry once the stockpile is exhausted (gourmet_remainder is 0.0
+        # both when nothing is held and when the stockpile just ran dry).
+        if gourmet_stock > 0:
+            if gourmet_remainder > 0:
+                carry[GOURMET_FOOD_STOCKPILE_KEY] = gourmet_remainder
+            else:
+                carry.pop(GOURMET_FOOD_STOCKPILE_KEY, None)
+        else:
+            carry.pop(GOURMET_FOOD_STOCKPILE_KEY, None)
+
+        new_events = dict(events)
+        new_events["production_carry"] = carry
+        # Decrement the gourmet_food stockpile by the whole units consumed this
+        # tick (already clamped to never exceed the stockpile on hand). When the
+        # remaining stockpile reaches 0, drop the key entirely so an exhausted
+        # colony's JSONB stays clean (mirrors the "don't pollute with a 0" idiom
+        # used for research_points / surplus_pioneers above).
+        if gourmet_consumed_whole > 0:
+            remaining_gourmet = gourmet_stock - gourmet_consumed_whole
+            if remaining_gourmet > 0:
+                new_events[GOURMET_FOOD_STOCKPILE_KEY] = remaining_gourmet
+            else:
+                new_events.pop(GOURMET_FOOD_STOCKPILE_KEY, None)
+        # Only stamp research_points on planets that actually research (or already
+        # carry the key) — don't pollute every producing planet's JSONB with a 0.
+        if research_gained > 0 or "research_points" in events:
+            new_events["research_points"] = int(events.get("research_points", 0) or 0) + research_gained
+        # Likewise stamp surplus_pioneers only when whole pioneers accrued or the
+        # counter already exists, so an empty/un-owned planet's JSONB stays clean.
+        if surplus_gained > 0 or "surplus_pioneers" in events:
+            new_events["surplus_pioneers"] = int(events.get("surplus_pioneers", 0) or 0) + surplus_gained
+        # Storage-overflow surfacing (CANON: production-tick.md "Storage caps" —
+        # "Surface as `overflow_warning` event"). When this tick wasted any
+        # commodity at the cap, stamp a per-resource record (units wasted + the
+        # cap + a wall-clock stamp) under `overflow_warning` in the planet's
+        # active_events JSONB (no migration — same store as production_carry), so
+        # the read/notification layer can raise `planet.overflow_warning`. When no
+        # overflow occurred this tick, clear a stale marker so the JSONB doesn't
+        # carry a phantom warning forward (mirrors the "don't pollute with a 0"
+        # idiom used for research_points / surplus_pioneers above).
+        if overflow:
+            new_events["overflow_warning"] = {
+                "resources": overflow,
+                "cap": cap,
+                "at": now.isoformat(),
+            }
+        else:
+            new_events.pop("overflow_warning", None)
+        planet.active_events = new_events
+        # Advance the anchor by ONLY the consumed (capped) window, not to now, so
+        # a backlog > 24h drains 24h per subsequent tick rather than being
+        # silently forfeited (CANON: ≤24h production per tick; invariant 4:
+        # last_production monotonically non-decreasing). When elapsed ≤ 24h this
+        # is exactly `now` (anchor + elapsed_seconds), preserving the prior
+        # behavior for the common case.
+        planet.last_production = anchor + timedelta(seconds=capped_elapsed)
+
+        logger.debug(
+            f"Lazy production on planet {planet.id}: "
+            + ", ".join(f"+{g} {c}" for c, (g, _) in gains.items() if g > 0)
+            + (f", +{research_gained} research" if research_gained > 0 else "")
+            + (f", +{surplus_gained} surplus_pioneers" if surplus_gained > 0 else "")
+        )
+        return True
+
+    def realize_production(self, planet: Planet, *, _via_settle: bool = False) -> bool:
+        """Force-advance one planet's commodity production to the canonical now.
+
+        Scheduler/admin-facing alias for the lazy advance-on-read accrual
+        (apply_resource_production). Extracted so the production sweep and the
+        admin /tick endpoint can drive a planet's production forward WITHOUT a
+        player read of get_planet_details, exactly as terraforming/siege use
+        _advance_terraforming / advance_siege off the read path.
+
+        Idempotency is inherited unchanged from apply_resource_production: the
+        durable per-planet anchor is planet.last_production, with sub-unit
+        progress banked in active_events['production_carry']. Only the elapsed
+        time that produced whole units is consumed from the anchor; running it
+        twice in quick succession (e.g. scheduler sweep + admin tick + a player
+        read) accrues exactly elapsed × rate once and is a no-op thereafter —
+        never double-counting. Mutates the planet; the CALLER commits (mirrors
+        the terraforming/siege advance methods the sweep already drives).
+
+        Returns True if any state changed (units accrued, or the anchor was
+        initialized/advanced) so the caller knows to commit.
+        """
+        # Thin force-alias: pass the spine token straight through to the engine (so a
+        # settle()-driven force-advance does not trip its own guard).
+        return self.apply_resource_production(planet, _via_settle=_via_settle)
+
     def allocate_colonists(
         self,
         planet_id: UUID,
@@ -145,8 +1158,20 @@ class PlanetaryService:
         building_type: str,
         target_level: int
     ) -> Dict[str, Any]:
-        """Upgrade a building on a planet."""
-        # Verify ownership
+        """Upgrade a building on a planet.
+
+        Time-based (1h per level climbed): credits are charged up front; the
+        building level advances only when the build timer elapses, settled lazily
+        on read via _settle_building_upgrade (mirrors the shield-generator
+        upgrade). The level is capped at MAX_BUILDING_LEVEL (the canon ceiling) so
+        production can never exceed the documented +100% maximum.
+        """
+        if building_type not in BUILDING_LEVEL_TYPES:
+            raise ValueError(f"Unknown building type: {building_type}")
+
+        # Lock the planet row + verify ownership so two concurrent upgrades can't
+        # both pass the "none in progress" gate and stack anchors (mirrors the
+        # shield-generator lock).
         planet = self.db.query(Planet).join(
             player_planets,
             Planet.id == player_planets.c.planet_id
@@ -155,51 +1180,87 @@ class PlanetaryService:
                 Planet.id == planet_id,
                 player_planets.c.player_id == player_id
             )
-        ).first()
-        
+        ).with_for_update().first()
+
         if not planet:
             raise ValueError("Planet not found or not owned by player")
-            
+
+        # Settle any already-finished building upgrade FIRST so a completed-but-
+        # unsettled build doesn't block the next one (mirrors the shield path).
+        now = datetime.now(UTC)
+        self._settle_building_upgrade(planet, now)
+
+        in_progress = self._get_building_upgrade(planet)
+        if in_progress:
+            raise ValueError(
+                f"Building upgrade already in progress "
+                f"({in_progress.get('building_type')} to level {in_progress.get('to')})"
+            )
+
         # Get current building level
         current_level = self._get_building_level(planet, building_type)
-        
+
         if target_level <= current_level:
             raise ValueError(f"Target level must be higher than current level ({current_level})")
-            
+
+        # Reject anything above the canon ceiling: buildings cap at level 10
+        # (= +100% production via the (1 + level * 0.1) rate bonus in
+        # _calculate_production_rates). Without this gate, upgrade_building accepted
+        # ANY target_level, so a player could drive a building to level 50 (+500%
+        # production), blowing past the documented max-10 ceiling — an
+        # economic-integrity hole. Reject (rather than silently clamp) so the caller
+        # is never charged for a level it won't receive.
+        if target_level > MAX_BUILDING_LEVEL:
+            raise ValueError(
+                f"Building level cannot exceed {MAX_BUILDING_LEVEL} "
+                f"(requested {target_level})"
+            )
+
         # Calculate upgrade cost
         cost = self._calculate_upgrade_cost(building_type, current_level, target_level)
-        
+
         # Lock player for credit deduction
         player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        if not player:
+            raise ValueError("Player not found")
         if player.credits < cost["credits"]:
             raise ValueError("Insufficient credits for upgrade")
-            
-        # Deduct cost
+
+        # Charge credits now; the level advances on completion (settle). The level
+        # is NOT applied here — _settle_building_upgrade advances it once the timer
+        # elapses, honoring completionTime (previously the level changed instantly
+        # while a completionTime was reported but never enforced).
         player.credits -= cost["credits"]
-        
-        # Update building level
-        self._set_building_level(planet, building_type, target_level)
-        
-        # Calculate completion time (1 hour per level)
-        completion_time = datetime.utcnow() + timedelta(hours=(target_level - current_level))
-        
+        build_hours = (target_level - current_level) * BUILDING_UPGRADE_HOURS_PER_LEVEL
+        completion_time = now + timedelta(hours=build_hours)
+        self._set_building_upgrade(planet, {
+            "building_type": building_type,
+            "from": current_level,
+            "to": target_level,
+            "started_at": now.isoformat(),
+            "complete_at": completion_time.isoformat(),
+        })
+
         self.db.commit()
-        
+
         return {
             "success": True,
             "buildingType": building_type,
+            "upgrading": True,
+            "fromLevel": current_level,
             "newLevel": target_level,
+            "maxLevel": MAX_BUILDING_LEVEL,
             "completionTime": completion_time.isoformat(),
             "cost": cost
         }
-        
+
     def update_defenses(
         self,
         planet_id: UUID,
         player_id: UUID,
         turrets: Optional[int] = None,
         shields: Optional[int] = None,
-        drones: Optional[int] = None
+        fighters: Optional[int] = None
     ) -> Dict[str, Any]:
         """Update planetary defenses."""
         # Verify ownership
@@ -216,19 +1277,70 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found or not owned by player")
 
-        # Update defenses if provided
-        if turrets is not None:
-            planet.defense_turrets = max(0, turrets)
-        if shields is not None:
-            planet.defense_shields = max(0, shields)
-        if drones is not None:
-            planet.defense_drones = max(0, drones)
+        # Lock the planet row before reading its defense counts: the cost is a
+        # read-then-overwrite (absolute targets), so without the lock two
+        # concurrent saves could each price against the same stale baseline and
+        # the player-row lock would then serialize a double deduction (a
+        # player-harming overcharge). Lock order here is planet→player; no other
+        # method locks player→planet-row, so this cannot deadlock.
+        planet = self.db.query(Planet).filter(
+            Planet.id == planet.id
+        ).with_for_update().first()
 
-        # Calculate total defense power
+        # Price the upgrade: only ADDED units cost credits (decreases are free,
+        # no refund). ADR-0076 scaled pricing — each added unit is charged the
+        # citadel- and planet-type-scaled per-unit price (defense_unit_price),
+        # not a flat rate. Mirrors the client DefenseConfiguration cost so the
+        # UI's affordability gate is honest. Without this, defenses are free.
+        new_turrets = max(0, turrets) if turrets is not None else planet.defense_turrets
+        new_shields = max(0, shields) if shields is not None else planet.defense_shields
+        new_fighters = max(0, fighters) if fighters is not None else planet.defense_fighters
+        cost = (
+            defense_unit_price("turrets", planet.citadel_level, planet.type)
+            * max(0, new_turrets - (planet.defense_turrets or 0))
+            + defense_unit_price("shields", planet.citadel_level, planet.type)
+            * max(0, new_shields - (planet.defense_shields or 0))
+            + defense_unit_price("fighters", planet.citadel_level, planet.type)
+            * max(0, new_fighters - (planet.defense_fighters or 0))
+        )
+
+        if cost > 0:
+            # Lock the player row before reading/deducting credits (economic
+            # integrity — same pattern as the rest of this service).
+            player = self.db.query(Player).filter(
+                Player.id == player_id
+            ).with_for_update().first()
+            if not player:
+                raise ValueError("Player not found")
+            if (player.credits or 0) < cost:
+                raise ValueError(
+                    f"Insufficient credits: defense upgrade costs {cost:,}, "
+                    f"you have {int(player.credits or 0):,}"
+                )
+            player.credits -= cost
+
+        # Update defenses if provided.
+        # Note: the Planet model has no defense_drones column; deployed
+        # fighters (defense_fighters) are the drone-equivalent here.
+        if turrets is not None:
+            planet.defense_turrets = new_turrets
+        if shields is not None:
+            planet.defense_shields = new_shields
+        if fighters is not None:
+            planet.defense_fighters = new_fighters
+
+        # Calculate total defense power. The citadel contributes a passive
+        # defensive garrison on top of the deployed units (WO-G6): the full
+        # value of the current citadel level, plus — WHILE an upgrade is in
+        # progress — 50% of the next level's passive-defense delta (the other
+        # 50% lands on completion when citadel_level increments). Idle citadels
+        # add only their current-level value; no citadel adds nothing.
+        from src.services.citadel_service import citadel_passive_defense_rating
         defense_power = (
             planet.defense_turrets * 10 +
             planet.defense_shields * 5 +
-            planet.defense_drones * 2
+            planet.defense_fighters * 2 +
+            citadel_passive_defense_rating(planet)
         )
 
         self.db.commit()
@@ -239,9 +1351,10 @@ class PlanetaryService:
             "defenses": {
                 "turrets": planet.defense_turrets,
                 "shields": planet.defense_shields,
-                "drones": planet.defense_drones
+                "drones": planet.defense_fighters
             },
-            "defensePower": defense_power
+            "defensePower": defense_power,
+            "creditsSpent": cost
         }
         
     def deploy_genesis_device(
@@ -305,7 +1418,7 @@ class PlanetaryService:
             sector_id=sector_id,
             planet_type=planet_type,
             colonists=100,  # Start with 100 colonists
-            max_colonists=10000,  # Base max
+            max_colonists=1000,  # L1-scale default per ADR-0035
             fuel_ore=100,
             organics=100,
             equipment=100,
@@ -389,8 +1502,20 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found or not owned by player")
 
-        # Run siege detection to get current state
+        # Settle accrued morale decay BEFORE re-evaluating siege validity (S1):
+        # if the siege is about to lift this read, the turns that already elapsed under it must
+        # still be applied — detecting first would clear siege_started_at and silently forgive that
+        # decay. CRT WO-K1a: settle() advances the held siege (+ other clocks, each idempotent).
+        from src.services.structures import settle
+        _settle_res = settle(planet, db=self.db)
+
+        # Run siege detection to get current state (may lift the siege)
         siege_info = self._detect_siege(planet, player_id)
+
+        if _settle_res.changed:
+            # settle() mutated clocks (morale/siege_turns/production/terraform); _detect_siege
+            # already committed its own changes, so persist the settle too.
+            self.db.commit()
 
         if not planet.under_siege:
             return {
@@ -405,7 +1530,11 @@ class PlanetaryService:
             "underSiege": True,
             "siegeDetails": {
                 "siegeStartedAt": planet.siege_started_at.isoformat() if planet.siege_started_at else None,
-                "siegeTurns": planet.siege_turns,
+                # Display turns = turns actually applied since onset (S4):
+                # siege_turns carries the escalation threshold as a baseline,
+                # so subtract it so the client shows "siege turns elapsed", not
+                # the internal counter that starts at SIEGE_TURNS_THRESHOLD.
+                "siegeTurns": max(0, (planet.siege_turns or 0) - SIEGE_TURNS_THRESHOLD),
                 "attackerId": str(planet.siege_attacker_id) if planet.siege_attacker_id else None,
                 "enemyShips": siege_info.get("enemy_ship_count", 0),
                 "effects": {
@@ -440,11 +1569,22 @@ class PlanetaryService:
             return {"underSiege": False, "changed": False}
 
         owner_id = owner_record[0]
+
+        # Settle accrued morale decay BEFORE re-evaluating siege validity (S1), so a siege that
+        # lifts this turn still applies the elapsed decay rather than forgiving it when
+        # _detect_siege clears siege_started_at. CRT WO-K1a: settle() advances the held siege.
+        from src.services.structures import settle
+        _settle_res = settle(planet, db=self.db)
+
         siege_info = self._detect_siege(planet, owner_id)
+
+        if _settle_res.changed:
+            # _detect_siege committed its own changes; persist the settle too.
+            self.db.commit()
 
         return {
             "underSiege": planet.under_siege,
-            "changed": siege_info.get("state_changed", False),
+            "changed": siege_info.get("state_changed", False) or ("siege" in _settle_res.steps_changed),
             "morale": planet.morale,
             "isVulnerable": planet.morale <= 0
         }
@@ -462,6 +1602,20 @@ class PlanetaryService:
         if not planet.under_siege:
             return {"applied": False, "reason": "Planet is not under siege"}
 
+        effects_applied = self._apply_siege_turn(planet)
+
+        self.db.commit()
+
+        return {
+            "applied": True,
+            "effects": effects_applied
+        }
+
+    def _apply_siege_turn(self, planet: Planet) -> Dict[str, Any]:
+        """
+        One siege turn's effects (canon numbers from defense.md "Siege").
+        Mutates the planet; the caller commits.
+        """
         effects_applied = {}
 
         # 1. Morale decreases by SIEGE_MORALE_LOSS_PER_TURN per turn
@@ -488,81 +1642,282 @@ class PlanetaryService:
                 f"planet is now vulnerable to capture"
             )
 
+        # 5. Resource theft (defense.md "Siege" → "Resource theft"): skim a small
+        # fraction of the besieged planet's stockpiles to the besieger this turn.
+        # This is the ONE per-applied-siege-turn path, so the skim happens exactly
+        # once per turn (idempotent across Loop-A re-reads — no double-skim).
+        plundered = self._skim_siege_stockpiles(planet)
+        if plundered:
+            effects_applied["stockpilePlunder"] = plundered
+
         # Increment siege turn counter
         planet.siege_turns = (planet.siege_turns or 0) + 1
         effects_applied["siegeTurns"] = planet.siege_turns
 
-        self.db.commit()
+        return effects_applied
 
-        return {
-            "applied": True,
-            "effects": effects_applied
-        }
+    def _skim_siege_stockpiles(self, planet: Planet) -> Dict[str, int]:
+        """Transfer a conservative fraction of the besieged planet's stockpiles to
+        the besieger (defense.md "Siege" → "Resource theft").
 
-    def upgrade_defense(
-        self,
-        planet_id: UUID,
-        player_id: UUID
-    ) -> Dict[str, Any]:
+        Called from _apply_siege_turn — i.e. exactly ONCE per APPLIED siege turn
+        (siege_turns is the applied-turn marker; advance_siege only applies the
+        pending = elapsed - applied delta), so this is idempotent: no double-skim
+        across Loop-A re-reads or scheduler sweeps.
+
+        Skims SIEGE_STOCKPILE_SKIM_FRACTION of each plunderable stockpile column
+        (fuel_ore / organics / equipment) off the planet and deposits the looted
+        commodities into the besieger's current ship hold, clamped to the ship's
+        remaining cargo capacity (mirroring combat_service._transfer_cargo so the
+        plunder cannot overflow the besieger's hold). The planet row is already
+        held by the siege path (the caller's settle()/read lock); the besieger row
+        + ship row are locked here before any mutation. Nothing leaves the planet
+        unless it is accepted by the besieger's hold — credits/units are conserved.
+
+        Returns the per-commodity amounts actually moved (empty if nothing moved).
         """
-        Upgrade a planet's defense level by one.
-        Costs DEFENSE_UPGRADE_COST credits per level.
-        Max defense level is DEFENSE_MAX_LEVEL.
-        Each level adds DEFENSE_DAMAGE_REDUCTION_PER_LEVEL damage reduction during siege.
+        attacker_id = planet.siege_attacker_id
+        if not attacker_id:
+            return {}
+
+        # Compute the would-be skim per stockpile column FIRST; if the planet has
+        # nothing worth taking, do no work (and acquire no locks).
+        wanted: Dict[str, int] = {}  # cargo-contents key -> qty wanted off the planet
+        col_for_key: Dict[str, str] = {}  # cargo-contents key -> planet column name
+        for column, cargo_key in SIEGE_STOCKPILE_COMMODITIES:
+            stock = int(getattr(planet, column, 0) or 0)
+            if stock <= 0:
+                continue
+            take = int(stock * SIEGE_STOCKPILE_SKIM_FRACTION)
+            if take <= 0:
+                continue
+            wanted[cargo_key] = take
+            col_for_key[cargo_key] = column
+        if not wanted:
+            return {}
+
+        # Lock the besieger (player row) THEN the ship row before mutating — same
+        # lock order combat uses (planet row already held by the caller).
+        besieger = (
+            self.db.query(Player)
+            .filter(Player.id == attacker_id)
+            .with_for_update()
+            .first()
+        )
+        if not besieger or not besieger.current_ship_id:
+            # Besieger gone or in no ship to receive cargo — skim nothing this turn
+            # (defense.md says "transfer to the besieger"; with no hold, no transfer).
+            return {}
+
+        ship = (
+            self.db.query(Ship)
+            .filter(Ship.id == besieger.current_ship_id)
+            .with_for_update()
+            .first()
+        )
+        if not ship:
+            return {}
+
+        ship_cargo = ship.cargo or {}
+        contents: Dict[str, int] = dict(ship_cargo.get("contents") or {})
+        # WO-CARGOHELPER: the besieger's hold ceiling must honour the Cargo-Hold
+        # ship-mod bonus (ship-systems.md §2.4: +30%/level) — read the effective
+        # capacity (effective_cargo_capacity, models/ship.py), never the raw
+        # JSONB `capacity`, so a +cargo module lets the besieger skim more plunder.
+        capacity = effective_cargo_capacity(ship)
+        used = sum(int(q) for q in contents.values() if isinstance(q, (int, float)))
+        remaining = max(0, capacity - used)
+        if remaining <= 0:
+            return {}
+
+        moved: Dict[str, int] = {}
+        for cargo_key, take in wanted.items():
+            if remaining <= 0:
+                break
+            move = min(take, remaining)
+            if move <= 0:
+                continue
+            column = col_for_key[cargo_key]
+            # Remove from the planet stockpile (never below zero) ...
+            current_stock = int(getattr(planet, column, 0) or 0)
+            move = min(move, current_stock)
+            if move <= 0:
+                continue
+            setattr(planet, column, current_stock - move)
+            # ... and add to the besieger's hold.
+            contents[cargo_key] = int(contents.get(cargo_key, 0)) + move
+            remaining -= move
+            moved[cargo_key] = move
+
+        if not moved:
+            return {}
+
+        ship_cargo["contents"] = contents
+        ship_cargo["used"] = sum(int(q) for q in contents.values())
+        ship.cargo = ship_cargo
+        flag_modified(ship, "cargo")
+
+        logger.info(
+            "Siege plunder: planet %s skimmed %s to besieger %s (ship %s)",
+            planet.id, moved, besieger.id, ship.id,
+        )
+        return moved
+
+    def advance_siege(self, planet: Planet, *, _via_settle: bool = False) -> bool:
         """
-        # Verify ownership
-        planet = self.db.query(Planet).join(
-            player_planets,
-            Planet.id == player_planets.c.planet_id
-        ).filter(
-            and_(
-                Planet.id == planet_id,
-                player_planets.c.player_id == player_id
-            )
-        ).first()
+        Advance siege progression: apply every siege turn accrued since the
+        siege began (same lazy advance-on-read pattern as colonist growth and
+        terraforming). Driven both on read AND on a fixed cadence by the
+        npc_scheduler planetary-advance sweep, so a besieged planet keeps
+        losing morale even when its owner never re-opens the planet screen.
+        Time-accurate and idempotent, so the two paths reconcile cleanly
+        regardless of which runs first.
 
-        if not planet:
-            raise ValueError("Planet not found or not owned by player")
+        Anchor arithmetic: `siege_turns` doubles as the applied-turn marker.
+        At siege onset _detect_siege leaves it exactly at
+        SIEGE_TURNS_THRESHOLD (the escalation counter that triggered the
+        siege), so turns applied since onset = siege_turns - threshold.
+        Elapsed turns derive from siege_started_at via canonical hours
+        (GAME_TIME_SCALE-aware) at SIEGE_TURN_HOURS per turn.
 
-        current_level = planet.defense_level or 0
+        Mutates the planet (morale, siege_turns); caller commits.
+        Returns True if any turns were applied.
 
-        if current_level >= DEFENSE_MAX_LEVEL:
-            raise ValueError(f"Defense is already at maximum level ({DEFENSE_MAX_LEVEL})")
+        ``_via_settle`` (CRT spine): True from structures.settle()'s siege substep; reads its OWN
+        canonical anchor (siege_started_at) as shipped — no spine ``now`` threaded in.
+        """
+        _via_settle_guard("advance_siege", _via_settle)
+        if not planet.under_siege or not planet.siege_started_at:
+            return False
 
-        # Cost scales with level: base_cost * (current_level + 1)
-        upgrade_cost = DEFENSE_UPGRADE_COST * (current_level + 1)
+        elapsed_turns = int(
+            canonical_hours_since(planet.siege_started_at) // SIEGE_TURN_HOURS
+        )
+        applied_turns = max(0, (planet.siege_turns or 0) - SIEGE_TURNS_THRESHOLD)
+        pending = elapsed_turns - applied_turns
+        if pending <= 0:
+            return False
 
-        # Lock player for credit deduction
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
-        if not player:
-            raise ValueError("Player not found")
+        # Morale floors at 0, so very old sieges converge quickly; the cap
+        # only guards against pathological anchors.
+        applied = min(pending, 1000)
+        for _ in range(applied):
+            self._apply_siege_turn(planet)
 
-        if player.credits < upgrade_cost:
-            raise ValueError(
-                f"Insufficient credits. Need {upgrade_cost}, have {player.credits}"
-            )
+        # Report the capped, actually-applied count (S4) — logging `pending`
+        # would overstate the work for a pathologically old anchor.
+        logger.info(
+            f"Lazy siege advance on planet {planet.name} (id={planet.id}): "
+            f"{applied} turn(s) applied, morale now {planet.morale}"
+        )
+        return True
 
-        # Deduct credits and upgrade
-        player.credits -= upgrade_cost
-        new_level = current_level + 1
-        planet.defense_level = new_level
+    def _get_shield_upgrade(self, planet: Planet) -> Optional[Dict[str, Any]]:
+        """Return the in-progress shield-upgrade anchor from active_events, or None."""
+        events = planet.active_events
+        if isinstance(events, dict):
+            su = events.get("shield_upgrade")
+            return dict(su) if isinstance(su, dict) else None
+        return None
 
-        # Calculate new damage reduction
-        damage_reduction = new_level * DEFENSE_DAMAGE_REDUCTION_PER_LEVEL
+    def _set_shield_upgrade(self, planet: Planet, data: Optional[Dict[str, Any]]) -> None:
+        """Persist (data) or clear (None) the shield-upgrade anchor in active_events JSONB."""
+        events = planet.active_events
+        if not isinstance(events, dict):
+            events = {"legacy_events": events} if events else {}
+        events = dict(events)
+        if data is None:
+            events.pop("shield_upgrade", None)
+        else:
+            events["shield_upgrade"] = data
+        planet.active_events = events
 
-        self.db.commit()
-        self.db.refresh(planet)
-        self.db.refresh(player)
+    def _settle_shield_upgrade(self, planet: Planet, now: datetime) -> bool:
+        """Apply a shield upgrade whose build timer has elapsed (lazy advance-on-read).
 
-        return {
-            "success": True,
-            "defenseLevel": new_level,
-            "maxLevel": DEFENSE_MAX_LEVEL,
-            "damageReduction": f"{int(damage_reduction * 100)}%",
-            "creditsCost": upgrade_cost,
-            "creditsRemaining": player.credits,
-            "nextUpgradeCost": DEFENSE_UPGRADE_COST * (new_level + 1) if new_level < DEFENSE_MAX_LEVEL else None
-        }
+        Mirrors the citadel/defense-building lazy-settle: when the timer is done the
+        generator level + shield strength advance to the target and the anchor clears.
+        Returns True if anything changed so the caller can persist.
+        """
+        su = self._get_shield_upgrade(planet)
+        if not su:
+            return False
+        complete_at = su.get("complete_at")
+        done = True
+        if complete_at:
+            try:
+                done = now >= datetime.fromisoformat(complete_at)
+            except (ValueError, TypeError):
+                done = True  # malformed timestamp: settle rather than strand the upgrade
+        if not done:
+            return False
+        to_level = max(0, min(SHIELD_GENERATOR_MAX_LEVEL, int(su.get("to", planet.defense_shields or 0))))
+        info = SHIELD_GENERATOR_LEVELS.get(to_level, SHIELD_GENERATOR_LEVELS[0])
+        planet.defense_shields = to_level
+        planet.shields = info["strength"]
+        self._set_shield_upgrade(planet, None)
+        self.db.flush()
+        logger.info(
+            "Shield generator upgrade completed to level %s (%s) on planet %s (id=%s)",
+            to_level, info["name"], planet.name, planet.id,
+        )
+        return True
+
+    def _get_building_upgrade(self, planet: Planet) -> Optional[Dict[str, Any]]:
+        """Return the in-progress building-upgrade anchor from active_events, or None."""
+        events = planet.active_events
+        if isinstance(events, dict):
+            bu = events.get("building_upgrade")
+            return dict(bu) if isinstance(bu, dict) else None
+        return None
+
+    def _set_building_upgrade(self, planet: Planet, data: Optional[Dict[str, Any]]) -> None:
+        """Persist (data) or clear (None) the building-upgrade anchor in active_events JSONB."""
+        events = planet.active_events
+        if not isinstance(events, dict):
+            events = {"legacy_events": events} if events else {}
+        events = dict(events)
+        if data is None:
+            events.pop("building_upgrade", None)
+        else:
+            events["building_upgrade"] = data
+        planet.active_events = events
+
+    def _settle_building_upgrade(self, planet: Planet, now: datetime) -> bool:
+        """Apply a building upgrade whose build timer has elapsed (lazy advance-on-read).
+
+        Mirrors _settle_shield_upgrade: when the timer is done the building level
+        advances to the target (clamped to MAX_BUILDING_LEVEL as a defensive guard)
+        and the anchor clears. Returns True if anything changed so the caller can
+        persist.
+        """
+        bu = self._get_building_upgrade(planet)
+        if not bu:
+            return False
+        building_type = bu.get("building_type")
+        if building_type not in BUILDING_LEVEL_TYPES:
+            # Malformed/unknown anchor: clear it rather than strand the planet.
+            self._set_building_upgrade(planet, None)
+            return True
+        complete_at = bu.get("complete_at")
+        done = True
+        if complete_at:
+            try:
+                done = now >= datetime.fromisoformat(complete_at)
+            except (ValueError, TypeError):
+                done = True  # malformed timestamp: settle rather than strand the upgrade
+        if not done:
+            return False
+        current = self._get_building_level(planet, building_type)
+        to_level = max(0, min(MAX_BUILDING_LEVEL, int(bu.get("to", current))))
+        self._set_building_level(planet, building_type, to_level)
+        self._set_building_upgrade(planet, None)
+        self.db.flush()
+        logger.info(
+            "Building upgrade completed: %s to level %s on planet %s (id=%s)",
+            building_type, to_level, planet.name, planet.id,
+        )
+        return True
 
     def upgrade_shield_generator(
         self,
@@ -570,13 +1925,15 @@ class PlanetaryService:
         player_id: UUID
     ) -> Dict[str, Any]:
         """
-        Upgrade a planet's shield generator by one level.
+        Begin a time-based shield-generator upgrade (ADR-0086).
 
         Shield generators provide planetary shields that absorb damage during
         attacks and sieges. Each level increases shield strength, regeneration
         rate, and cost. Uses planet.defense_shields to track the generator level
         and planet.shields for the current shield strength value.
 
+        Credits are charged up front; the level + strength advance only when the
+        build timer (target level x 6 hours) elapses, settled lazily on read.
         Levels 0-10, with costs ranging from 50,000 to 3,000,000 credits.
         """
         # Lock planet + verify ownership to prevent concurrent upgrade races
@@ -593,6 +1950,21 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found or not owned by player")
 
+        # Settle any already-finished upgrade FIRST so a completed-but-unsettled
+        # build doesn't block the next one.  Commit the settlement immediately
+        # (isolated, same as get_defense_info:2050-2051) so the completed level-
+        # advance is durable even if the subsequent credit/equipment check fails
+        # and the new-upgrade charge transaction is rolled back.
+        now = datetime.now(UTC)
+        if self._settle_shield_upgrade(planet, now):
+            self.db.commit()
+
+        if self._get_shield_upgrade(planet):
+            su = self._get_shield_upgrade(planet)
+            raise ValueError(
+                f"Shield generator upgrade already in progress (to level {su.get('to')})"
+            )
+
         current_level = planet.defense_shields or 0
 
         if current_level >= SHIELD_GENERATOR_MAX_LEVEL:
@@ -603,8 +1975,9 @@ class PlanetaryService:
         next_level = current_level + 1
         next_level_info = SHIELD_GENERATOR_LEVELS[next_level]
         upgrade_cost = next_level_info["cost"]
+        equipment_cost = next_level_info["equipment_cost"]
 
-        # Lock player for credit deduction
+        # Lock player for credit deduction (planet already locked above via with_for_update)
         player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
         if not player:
             raise ValueError("Player not found")
@@ -614,37 +1987,55 @@ class PlanetaryService:
                 f"Insufficient credits. Need {upgrade_cost:,}, have {player.credits:,}"
             )
 
-        # Deduct credits and upgrade
+        # Equipment is drawn from planet stockpile (planet.equipment column)
+        planet_equipment = planet.equipment or 0
+        if planet_equipment < equipment_cost:
+            raise ValueError(
+                f"Insufficient equipment on planet. Need {equipment_cost:,}, have {planet_equipment:,}"
+            )
+
+        # Charge credits + equipment up front; level/strength advance on completion (settle).
         player.credits -= upgrade_cost
-        planet.defense_shields = next_level
-        planet.shields = next_level_info["strength"]
+        if equipment_cost > 0:
+            planet.equipment = planet_equipment - equipment_cost
+        build_hours = next_level * SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL
+        complete_at = now + timedelta(hours=build_hours)
+        self._set_shield_upgrade(planet, {
+            "from": current_level,
+            "to": next_level,
+            "started_at": now.isoformat(),
+            "complete_at": complete_at.isoformat(),
+        })
 
-        self.db.commit()
-        self.db.refresh(planet)
-        self.db.refresh(player)
-
-        # Determine next upgrade info (if not at max)
-        further_upgrade_cost = None
-        if next_level < SHIELD_GENERATOR_MAX_LEVEL:
-            further_upgrade_cost = SHIELD_GENERATOR_LEVELS[next_level + 1]["cost"]
+        # Flush only — caller (route) owns the commit, mirroring the citadel upgrade pattern.
+        self.db.flush()
 
         logger.info(
-            f"Shield generator upgraded to level {next_level} "
-            f"({next_level_info['name']}) on planet {planet.name} (id={planet.id})"
+            "Shield generator upgrade started: level %s -> %s (%s), %sh, %s cr + %s equipment, "
+            "on planet %s (id=%s)",
+            current_level, next_level, next_level_info["name"], build_hours,
+            upgrade_cost, equipment_cost, planet.name, planet.id,
         )
 
         return {
             "success": True,
+            "upgrading": True,
             "shieldGenerator": {
-                "level": next_level,
+                "fromLevel": current_level,
+                "toLevel": next_level,
                 "maxLevel": SHIELD_GENERATOR_MAX_LEVEL,
                 "name": next_level_info["name"],
                 "strength": next_level_info["strength"],
                 "regenPerHour": next_level_info["regen_per_hour"],
             },
+            "buildHours": build_hours,
+            "startedAt": now.isoformat(),
+            "completeAt": complete_at.isoformat(),
+            "remainingSeconds": build_hours * 3600,
             "creditsCost": upgrade_cost,
+            "equipmentCost": equipment_cost,
             "creditsRemaining": player.credits,
-            "nextUpgradeCost": further_upgrade_cost,
+            "equipmentRemaining": planet.equipment,
         }
 
     def get_defense_info(self, planet_id: UUID) -> Dict[str, Any]:
@@ -659,16 +2050,47 @@ class PlanetaryService:
         if not planet:
             raise ValueError("Planet not found")
 
+        # Lazy advance-on-read: apply a shield upgrade whose timer has elapsed.
+        now = datetime.now(UTC)
+        if self._settle_shield_upgrade(planet, now):
+            self.db.commit()
+
         # Shield generator info
         shield_level = planet.defense_shields or 0
         shield_info = SHIELD_GENERATOR_LEVELS.get(shield_level, SHIELD_GENERATOR_LEVELS[0])
 
-        # Next level upgrade cost
+        # In-progress timed upgrade (ADR-0086), if any
+        upgrade_block = None
+        su = self._get_shield_upgrade(planet)
+        if su:
+            complete_at = su.get("complete_at")
+            remaining_seconds = 0
+            if complete_at:
+                try:
+                    remaining_seconds = max(
+                        0, int((datetime.fromisoformat(complete_at) - now).total_seconds())
+                    )
+                except (ValueError, TypeError):
+                    remaining_seconds = 0
+            to_level = int(su.get("to", shield_level + 1))
+            to_info = SHIELD_GENERATOR_LEVELS.get(to_level, {})
+            upgrade_block = {
+                "fromLevel": int(su.get("from", shield_level)),
+                "toLevel": to_level,
+                "toName": to_info.get("name"),
+                "startedAt": su.get("started_at"),
+                "completeAt": complete_at,
+                "remainingSeconds": remaining_seconds,
+            }
+
+        # Next level upgrade costs (only meaningful when not already upgrading)
         next_upgrade_cost = None
+        next_upgrade_equipment_cost = None
         next_level_info = None
         if shield_level < SHIELD_GENERATOR_MAX_LEVEL:
             next_level_info = SHIELD_GENERATOR_LEVELS[shield_level + 1]
             next_upgrade_cost = next_level_info["cost"]
+            next_upgrade_equipment_cost = next_level_info["equipment_cost"]
 
         # Defense level info
         defense_level = planet.defense_level or 0
@@ -690,7 +2112,11 @@ class PlanetaryService:
                     "strength": next_level_info["strength"],
                     "regenPerHour": next_level_info["regen_per_hour"],
                     "cost": next_upgrade_cost,
+                    "equipmentCost": next_upgrade_equipment_cost,
+                    "buildHours": (shield_level + 1) * SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL,
                 } if next_level_info else None,
+                "isUpgrading": upgrade_block is not None,
+                "upgrade": upgrade_block,
             },
             "defenseLevel": defense_level,
             "maxDefenseLevel": DEFENSE_MAX_LEVEL,
@@ -711,6 +2137,12 @@ class PlanetaryService:
 
         if not planet.under_siege:
             return {"success": True, "message": "Planet was not under siege"}
+
+        # Settle pending morale decay BEFORE clearing siege state (S1): the turns that elapsed
+        # while the siege stood are earned and must be applied; clearing siege_started_at first
+        # would discard them. CRT WO-K1a: settle() credits the held siege's final turns.
+        from src.services.structures import settle
+        settle(planet, db=self.db)
 
         planet.under_siege = False
         planet.siege_started_at = None
@@ -755,6 +2187,8 @@ class PlanetaryService:
             and_(
                 Ship.sector_id == planet.sector_id,
                 Ship.owner_id != owner_id,
+                # NPC hulls excluded explicitly — previously only an accidental side effect of the NULL owner_id failing the != comparison
+                Ship.is_npc == False,
                 Ship.is_active == True,
                 Ship.is_destroyed == False
             )
@@ -787,6 +2221,12 @@ class PlanetaryService:
                     planet.siege_started_at = datetime.utcnow()
                     # Record the first enemy ship's owner as the attacker
                     planet.siege_attacker_id = enemy_ships[0].owner_id
+                    # Pin the counter to exactly the threshold at onset (S4):
+                    # advance_siege derives applied_turns as
+                    # siege_turns - threshold, so any escalation overshoot left
+                    # here would be mistaken for already-applied decay turns,
+                    # silently bypassing morale loss on a re-siege after a lift.
+                    planet.siege_turns = SIEGE_TURNS_THRESHOLD
                     result["state_changed"] = True
                     logger.info(
                         f"Siege begun on planet {planet.name} (id={planet.id}) "
@@ -832,7 +2272,8 @@ class PlanetaryService:
         if planet.under_siege:
             siege_details = {
                 "siegeStartedAt": planet.siege_started_at.isoformat() if planet.siege_started_at else None,
-                "siegeTurns": planet.siege_turns or 0,
+                # Applied-turns display (S4): subtract the threshold baseline.
+                "siegeTurns": max(0, (planet.siege_turns or 0) - SIEGE_TURNS_THRESHOLD),
                 "attackerId": str(planet.siege_attacker_id) if planet.siege_attacker_id else None,
                 "effects": {
                     "moraleLossPerTurn": SIEGE_MORALE_LOSS_PER_TURN,
@@ -868,6 +2309,14 @@ class PlanetaryService:
             "colonists": planet.colonists,
             "maxColonists": habitability_effects["effectiveMaxColonists"],
             "baseMaxColonists": habitability_effects["baseMaxColonists"],
+            # Dual-ceiling demographic side (ADR-0035) for the colony UI
+            "population": planet.population or 0,
+            "maxPopulation": max_population_for(planet.habitability_score),
+            "isPopulationHub": bool(planet.is_population_hub),
+            # Citadel tier (ADR-0035 workforce ladder). Surfaced on the list DTO
+            # so the COLONIES roster can show a per-colony citadel level without a
+            # per-row citadel fetch (WO-ROSTER-CITADEL-COL).
+            "citadelLevel": planet.citadel_level or 0,
             "habitability": {
                 "score": planet.habitability_score,
                 "effectiveMaxColonists": habitability_effects["effectiveMaxColonists"],
@@ -876,6 +2325,31 @@ class PlanetaryService:
             },
             "morale": planet.morale,
             "productionRates": production_rates,
+            # Current commodity stockpiles + the accrual anchor so the client can
+            # project a live per-second count between polls (keys match productionRates).
+            "stockpiles": {
+                "fuel": planet.fuel_ore or 0,
+                "organics": planet.organics or 0,
+                "equipment": planet.equipment or 0,
+                # ADR-0087 research-point yield (accrued in active_events; no column).
+                "research": int((planet.active_events or {}).get("research_points", 0))
+                if isinstance(planet.active_events, dict) else 0,
+            },
+            # WO-STORAGEDTO: surface the enforced per-resource storage cap so the
+            # client can render a storage-bar + at/near-cap warning. The cap is the
+            # citadel-derived figure the production tick already clamps each
+            # commodity stockpile to (storage_cap_for ← CITADEL_LEVELS safe_storage,
+            # production-tick.md "Storage caps"). 0 = uncapped (un-citadeled L0).
+            "storageCap": storage_cap_for(planet.citadel_level or 0),
+            # The last storage-overflow event the production tick stamped into
+            # active_events when a stockpile hit the cap and excess was WASTED
+            # ("not stored, not transferred"). None when nothing overflowed at the
+            # most recent tick — the client raises the at-cap warning off this.
+            "overflowWarning": (
+                (planet.active_events or {}).get("overflow_warning")
+                if isinstance(planet.active_events, dict) else None
+            ),
+            "lastProductionAt": planet.last_production.isoformat() if planet.last_production else None,
             "allocations": {
                 "fuel": planet.fuel_allocation or 0,
                 "organics": planet.organics_allocation or 0,
@@ -886,17 +2360,23 @@ class PlanetaryService:
             "defenses": {
                 "turrets": planet.defense_turrets or 0,
                 "shields": planet.defense_shields or 0,
-                "drones": planet.defense_drones or 0,
+                # No defense_drones column on Planet; fighters fill that role
+                "drones": planet.defense_fighters or 0,
                 "defenseLevel": defense_level,
                 "maxDefenseLevel": DEFENSE_MAX_LEVEL,
                 "damageReduction": f"{int(damage_reduction * 100)}%"
             },
             "terraforming": terraforming_details,
+            # Genesis formation state so the Colonial Registry can show a live
+            # "forming — Nh remaining" readout (genesis-devices.md formation UI).
+            "formationStatus": getattr(planet, "formation_status", None),
+            "formationStartedAt": planet.formation_started_at.isoformat() if getattr(planet, "formation_started_at", None) else None,
+            "formationCompleteAt": planet.formation_complete_at.isoformat() if getattr(planet, "formation_complete_at", None) else None,
             "underSiege": planet.under_siege,
             "siegeDetails": siege_details,
             "isVulnerable": planet.morale <= 0
         }
-        
+
     def _calculate_production_rates(self, planet: Planet) -> Dict[str, float]:
         """Calculate production rates based on allocations, buildings, habitability, and siege state."""
         base_rate = 10  # Base production per colonist per day
@@ -911,12 +2391,32 @@ class PlanetaryService:
         organics_rate = (planet.organics_allocation or 0) * base_rate * (1 + farm_level * 0.1)
         equipment_rate = (planet.equipment_allocation or 0) * base_rate * (1 + factory_level * 0.1)
 
+        # Planet-type efficiency (CANON: FEATURES/planets/production.md formula
+        # `resource += ... × planet_type_efficiency × ...`; per-type table in
+        # production.md / colonization.md). A VOLCANIC world produces 0 organics
+        # and 2× equipment; a TERRA(N) welcome world produces nothing. Applied
+        # to the three commodity rates only — colonist growth is governed by the
+        # habitability formula below, and the per-type growth bias is captured
+        # there via habitability_score (the per-type negative-growth branch is
+        # design-only per colonization.md, so not enforced here).
+        type_eff = type_efficiency_for(planet.type)
+        fuel_rate *= type_eff["fuel"]
+        organics_rate *= type_eff["organics"]
+        equipment_rate *= type_eff["equipment"]
+
         # Colonist growth rate (1% per day base), scaled by habitability
         habitability = max(planet.habitability_score or 0, 1)
         habitability_multiplier = habitability / 100.0
         colonist_rate = planet.colonists * 0.01 * habitability_multiplier
 
+        # Research-point yield (ADR-0087): driven by the Research Lab level.
+        # T1.5-1 per-planet backstop (§2.3): the lab-count is log-compressed past
+        # LAB_DIMINISH_N so a single planet can't run away on lab spread; with
+        # LAB_DIMINISH_N=inf this is the plain linear (level × 25) mint == today.
+        research_rate = _diminished_lab_levels(planet.research_level or 0) * RESEARCH_POINTS_PER_LAB_LEVEL_PER_DAY
+
         # Apply specialization bonuses
+        research_mult = 1.0
         if planet.specialization:
             bonuses = self._calculate_specialization_bonuses(planet.specialization)
             production_bonus = bonuses["production"]
@@ -925,6 +2425,103 @@ class PlanetaryService:
             organics_rate *= production_bonus.get("organics", 1.0)
             equipment_rate *= production_bonus.get("equipment", 1.0)
             colonist_rate *= production_bonus.get("colonists", 1.0)
+            research_mult = bonuses.get("research", 1.0)
+            research_rate *= research_mult
+
+        # Citadel passive production bonus: +5% per citadel level (citadels.md
+        # "Per-level passive bonuses"). Applies to commodity output, not growth.
+        citadel_level = planet.citadel_level or 0
+        if citadel_level > 0:
+            citadel_multiplier = 1 + 0.05 * citadel_level
+            fuel_rate *= citadel_multiplier
+            organics_rate *= citadel_multiplier
+            equipment_rate *= citadel_multiplier
+            research_rate *= citadel_multiplier
+
+        # CRT-T1.5-2 Overclock directive (§3.2): a player-bought, perishable
+        # Citadel-Research directive lifts ONE planet's production by +15% for its
+        # duration. The effect is point-of-use READ here at the moment production is
+        # consumed (leaf-discipline — research_service.active_overclock_multiplier is
+        # a pure read of the owner's research_ledger.contracts[]; the effect is NEVER
+        # written onto the planet, the zero-migration guarantee). Off when no active
+        # Overclock targets this planet: the reader returns 1.0 (a no-op multiply) so
+        # the wiring is byte-identical to today on any world without an active
+        # directive. Applies to commodity output, not research (mirrors the gourmet
+        # bonus's scope — Overclock models a production surge, not a lab effect).
+        # Wrapped defensively so a malformed ledger on this hot read path can never
+        # raise; on any hiccup the world simply gets the un-overclocked (today) rate.
+        if planet.owner_id is not None:
+            try:
+                owner = (
+                    self.db.query(Player)
+                    .filter(Player.id == planet.owner_id)
+                    .first()
+                )
+                if owner is not None:
+                    from src.services.research_service import active_overclock_multiplier
+                    overclock_multiplier = active_overclock_multiplier(owner, planet.id)
+                    if overclock_multiplier != 1.0:
+                        fuel_rate *= overclock_multiplier
+                        organics_rate *= overclock_multiplier
+                        equipment_rate *= overclock_multiplier
+            except Exception:
+                logger.debug(
+                    "Overclock production-read skipped on planet %s (non-fatal)",
+                    getattr(planet, "id", "?"), exc_info=True,
+                )
+
+        # Gourmet-food luxury bonus (WO-G14): a planet holding a positive
+        # gourmet_food stockpile lifts BOTH colonist growth and the three
+        # commodity rates by GOURMET_FOOD_PRODUCTION_BONUS. This is a pure,
+        # side-effect-free read of the bonus state — it does NOT consume the
+        # stockpile here (this method is called on read/preview paths like
+        # _format_planet_data and the allocate-preview, where mutating the
+        # stockpile would silently drain it on every UI poll). Actual
+        # consumption is pro-rated to elapsed time in apply_resource_production,
+        # the only path that advances the tick. Research yield is excluded — the
+        # bonus models a well-fed workforce producing more, not a lab effect.
+        if _read_gourmet_food_stockpile(planet) > 0:
+            gourmet_multiplier = 1 + GOURMET_FOOD_PRODUCTION_BONUS
+            fuel_rate *= gourmet_multiplier
+            organics_rate *= gourmet_multiplier
+            equipment_rate *= gourmet_multiplier
+            colonist_rate *= gourmet_multiplier
+
+        # Colony cap-taper (CANON colonization.md:190-194, WO-CT2): population growth halts at the
+        # demographic ceiling and tapers linearly across the top 10% band. Keys on population vs
+        # max_population (the demographic ceiling), NOT the workforce colonist cap. No shrink below
+        # the cap — overcrowding stops growth, it does not decay the colony.
+        max_pop = planet.max_population or 0
+        pop = planet.population or 0
+        if max_pop > 0 and colonist_rate > 0:
+            if pop >= max_pop:
+                colonist_rate = 0.0
+            elif pop > 0.9 * max_pop:
+                # linear 100% → 0% across [0.9·max_pop, max_pop]
+                taper = (max_pop - pop) / (0.1 * max_pop)
+                colonist_rate *= max(0.0, min(1.0, taper))
+
+        # Low-habitability resource-cost penalty (WO-F5; colonization.md:211-213).
+        # A world below LOW_HABITABILITY_THRESHOLD pays extra for life support /
+        # environmental control, netting its commodity output DOWN by
+        # LOW_HABITABILITY_PRODUCTION_PENALTY. Mirrors the siege_multiplier shape
+        # just below — a single sub-1.0 multiplier on the three commodity rates.
+        # Wrapped defensively so a malformed habitability_score on a hot read
+        # path can never raise; on any hiccup the colony simply pays no penalty.
+        try:
+            low_hab_score = planet.habitability_score
+            if low_hab_score is not None and low_hab_score < LOW_HABITABILITY_THRESHOLD:
+                low_hab_multiplier = 1.0 - LOW_HABITABILITY_PRODUCTION_PENALTY
+                fuel_rate *= low_hab_multiplier
+                organics_rate *= low_hab_multiplier
+                equipment_rate *= low_hab_multiplier
+                research_rate *= low_hab_multiplier
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Low-habitability penalty skipped on planet "
+                f"{getattr(planet, 'id', '?')}: bad habitability_score "
+                f"{getattr(planet, 'habitability_score', None)!r}"
+            )
 
         # Apply siege effects
         if planet.under_siege:
@@ -933,6 +2530,7 @@ class PlanetaryService:
             fuel_rate *= siege_multiplier
             organics_rate *= siege_multiplier
             equipment_rate *= siege_multiplier
+            research_rate *= siege_multiplier
             # Population growth halted during siege
             colonist_rate = 0.0
 
@@ -940,7 +2538,8 @@ class PlanetaryService:
             "fuel": round(fuel_rate, 2),
             "organics": round(organics_rate, 2),
             "equipment": round(equipment_rate, 2),
-            "colonists": round(colonist_rate, 2)
+            "colonists": round(colonist_rate, 2),
+            "research": round(research_rate, 2),
         }
 
     def get_habitability_effects(self, planet: Planet) -> Dict[str, Any]:
@@ -955,8 +2554,9 @@ class PlanetaryService:
         habitability = max(planet.habitability_score or 0, 0)
         habitability_ratio = habitability / 100.0
 
-        # Max population capacity scaled by habitability
-        base_max_colonists = planet.max_colonists or 10000
+        # Workforce-side limiter (ADR-0035): base cap is citadel-bound;
+        # fall back to the citadel-tier ceiling when the column is unset.
+        base_max_colonists = planet.max_colonists or max_colonists_for(planet.citadel_level or 0)
         effective_max_colonists = int(base_max_colonists * habitability_ratio)
 
         # Population growth multiplier
@@ -976,54 +2576,31 @@ class PlanetaryService:
         }
         
     def _get_buildings_data(self, planet: Planet) -> List[Dict[str, Any]]:
-        """Get building data for a planet."""
+        """Get building data for a planet.
+
+        Surfaces any in-progress time-based building upgrade (the
+        active_events['building_upgrade'] anchor) so the UI can show the pending
+        level + completionTime. The building being upgraded is included even at
+        level 0 (e.g. a first-time build) so the in-progress upgrade is visible.
+        """
+        upgrade = self._get_building_upgrade(planet)
+        upgrade_type = upgrade.get("building_type") if upgrade else None
+
         buildings = []
-        
-        # Factory
-        if planet.factory_level and planet.factory_level > 0:
+        for building_type in BUILDING_LEVEL_TYPES:
+            level = self._get_building_level(planet, building_type)
+            is_upgrading = building_type == upgrade_type
+            # Show a building if it exists (level > 0) OR has an upgrade in flight.
+            if level <= 0 and not is_upgrading:
+                continue
             buildings.append({
-                "type": "factory",
-                "level": planet.factory_level,
-                "upgrading": False,
-                "completionTime": None
+                "type": building_type,
+                "level": level,
+                "upgrading": is_upgrading,
+                "upgradingToLevel": upgrade.get("to") if is_upgrading else None,
+                "completionTime": upgrade.get("complete_at") if is_upgrading else None,
             })
-            
-        # Farm
-        if planet.farm_level and planet.farm_level > 0:
-            buildings.append({
-                "type": "farm",
-                "level": planet.farm_level,
-                "upgrading": False,
-                "completionTime": None
-            })
-            
-        # Mine
-        if planet.mine_level and planet.mine_level > 0:
-            buildings.append({
-                "type": "mine",
-                "level": planet.mine_level,
-                "upgrading": False,
-                "completionTime": None
-            })
-            
-        # Defense
-        if planet.defense_level and planet.defense_level > 0:
-            buildings.append({
-                "type": "defense",
-                "level": planet.defense_level,
-                "upgrading": False,
-                "completionTime": None
-            })
-            
-        # Research
-        if planet.research_level and planet.research_level > 0:
-            buildings.append({
-                "type": "research",
-                "level": planet.research_level,
-                "upgrading": False,
-                "completionTime": None
-            })
-            
+
         return buildings
         
     def _get_building_level(self, planet: Planet, building_type: str) -> int:
@@ -1063,33 +2640,9 @@ class PlanetaryService:
         }
         
     def _calculate_specialization_bonuses(self, specialization: str) -> Dict[str, Any]:
-        """Calculate bonuses based on planet specialization."""
-        bonuses = {
-            "agricultural": {
-                "production": {"fuel": 0.8, "organics": 1.5, "equipment": 0.8, "colonists": 1.2},
-                "defense": 0.9,
-                "research": 0.8
-            },
-            "industrial": {
-                "production": {"fuel": 0.9, "organics": 0.8, "equipment": 1.5, "colonists": 0.9},
-                "defense": 1.0,
-                "research": 0.9
-            },
-            "military": {
-                "production": {"fuel": 0.9, "organics": 0.9, "equipment": 1.1, "colonists": 0.8},
-                "defense": 1.5,
-                "research": 0.8
-            },
-            "research": {
-                "production": {"fuel": 0.8, "organics": 0.8, "equipment": 0.9, "colonists": 0.9},
-                "defense": 0.8,
-                "research": 1.5
-            },
-            "balanced": {
-                "production": {"fuel": 1.0, "organics": 1.0, "equipment": 1.0, "colonists": 1.0},
-                "defense": 1.0,
-                "research": 1.0
-            }
-        }
-        
-        return bonuses.get(specialization, bonuses["balanced"])
+        """Return the multiplier set for a planet specialization (ADR-0087).
+
+        Single source of truth is the module-level SPECIALIZATION_BONUSES (also
+        read by combat_service for the defense multiplier).
+        """
+        return SPECIALIZATION_BONUSES.get(specialization, SPECIALIZATION_BONUSES["balanced"])

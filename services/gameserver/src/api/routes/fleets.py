@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
-from src.core.database import get_async_session
+from src.core.database import get_async_session, get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.fleet import FleetRole, FleetStatus
@@ -50,6 +50,7 @@ class FleetResponse(BaseModel):
     total_shields: int
     total_hull: int
     average_speed: float
+    coordination_bonus: float
     morale: int
     supply_level: int
     commander_id: Optional[UUID]
@@ -81,6 +82,17 @@ class FleetMemberResponse(BaseModel):
 class BattleInitiateRequest(BaseModel):
     """Request to initiate a fleet battle."""
     defender_fleet_id: UUID
+
+
+class ResupplyResponse(BaseModel):
+    """Response after resupplying a docked fleet."""
+    fleet_id: UUID
+    supply_level: int
+    supply_restored: int
+    credits_spent: int
+    credits_remaining: int
+    station_id: UUID
+    station_class: Optional[int]
 
 
 class BattleResponse(BaseModel):
@@ -144,10 +156,11 @@ async def create_fleet(
             total_shields=fleet.total_shields,
             total_hull=fleet.total_hull,
             average_speed=fleet.average_speed,
+            coordination_bonus=fleet.coordination_bonus,
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
-            commander_name=fleet.commander.name if fleet.commander else None,
+            commander_name=fleet.commander.username if fleet.commander else None,
             sector_id=fleet.sector_id,
             sector_name=fleet.sector.name if fleet.sector else None,
             member_count=len(fleet.members)
@@ -180,10 +193,11 @@ async def get_team_fleets(
             total_shields=fleet.total_shields,
             total_hull=fleet.total_hull,
             average_speed=fleet.average_speed,
+            coordination_bonus=fleet.coordination_bonus,
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
-            commander_name=fleet.commander.name if fleet.commander else None,
+            commander_name=fleet.commander.username if fleet.commander else None,
             sector_id=fleet.sector_id,
             sector_name=fleet.sector.name if fleet.sector else None,
             member_count=len(fleet.members)
@@ -213,10 +227,11 @@ async def get_my_fleets(
             total_shields=fleet.total_shields,
             total_hull=fleet.total_hull,
             average_speed=fleet.average_speed,
+            coordination_bonus=fleet.coordination_bonus,
             morale=fleet.morale,
             supply_level=fleet.supply_level,
             commander_id=fleet.commander_id,
-            commander_name=fleet.commander.name if fleet.commander else None,
+            commander_name=fleet.commander.username if fleet.commander else None,
             sector_id=fleet.sector_id,
             sector_name=fleet.sector.name if fleet.sector else None,
             member_count=len(fleet.members)
@@ -333,10 +348,11 @@ async def get_fleet(
         total_shields=fleet.total_shields,
         total_hull=fleet.total_hull,
         average_speed=fleet.average_speed,
+        coordination_bonus=fleet.coordination_bonus,
         morale=fleet.morale,
         supply_level=fleet.supply_level,
         commander_id=fleet.commander_id,
-        commander_name=fleet.commander.name if fleet.commander else None,
+        commander_name=fleet.commander.username if fleet.commander else None,
         sector_id=fleet.sector_id,
         sector_name=fleet.sector.name if fleet.sector else None,
         member_count=len(fleet.members)
@@ -368,7 +384,7 @@ async def get_fleet_members(
             ship_name=member.ship.name if member.ship else "Unknown",
             ship_type=member.ship.type if member.ship else "Unknown",
             player_id=member.player_id,
-            player_name=member.player.name if member.player else "Unknown",
+            player_name=member.player.username if member.player else "Unknown",
             role=member.role,
             position=member.position,
             ready_status=member.ready_status
@@ -413,7 +429,7 @@ async def add_ship_to_fleet(
             ship_name=member.ship.name,
             ship_type=member.ship.type,
             player_id=member.player_id,
-            player_name=member.player.name,
+            player_name=member.player.username,
             role=member.role,
             position=member.position,
             ready_status=member.ready_status
@@ -561,5 +577,47 @@ async def initiate_battle(
             battle_ongoing=True,
             winner=None
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{fleet_id}/resupply", response_model=ResupplyResponse)
+async def resupply_fleet(
+    fleet_id: UUID,
+    player: Player = Depends(get_current_player),
+    # WO-U: FleetService is SYNC (.query().with_for_update()/.commit()), so this
+    # route uses the SYNC session (get_db), unlike the sibling fleet routes which
+    # declare get_async_session against the same sync service — a pre-existing
+    # module-wide async/sync mismatch flagged to the orchestrator, not fixed here.
+    db: Session = Depends(get_db)
+):
+    """Pay credits to raise a docked fleet's supply level back toward full.
+
+    Recovery counterpart to the supply-decay tick: a fleet at 0 supply is
+    combat-locked (`initiate_battle` rejects it); resupplying at a friendly
+    station while docked clears that lock. The paying player must own a ship
+    in the fleet and be docked at a station in the fleet's sector.
+    """
+    fleet = db.query(Fleet).filter(Fleet.id == fleet_id).first()
+    if not fleet:
+        raise HTTPException(status_code=404, detail="Fleet not found")
+
+    # Owner check mirrored from simulate_battle_round: the player must have a
+    # ship in this fleet (not merely be a teammate). The service re-verifies
+    # membership under the row lock.
+    from src.models.fleet import FleetMember
+    is_member = db.query(FleetMember).filter(
+        FleetMember.fleet_id == fleet_id,
+        FleetMember.player_id == player.id
+    ).first() is not None
+
+    if not is_member:
+        raise HTTPException(status_code=403, detail="You have no ships in this fleet")
+
+    service = FleetService(db)
+
+    try:
+        result = service.resupply_fleet(fleet_id, player.id)
+        return ResupplyResponse(**result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

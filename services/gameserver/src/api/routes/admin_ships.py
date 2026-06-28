@@ -5,11 +5,15 @@ Provides administrative controls for individual ship operations,
 emergency interventions, and fleet health monitoring.
 """
 
+import logging
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import and_, or_, func
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -222,12 +226,17 @@ async def emergency_ship_action(
         combat["hull"] = combat.get("max_hull", 100)
         combat["shields"] = combat.get("max_shields", 100)
         ship.combat = combat
+        # `combat = ship.combat or {}` returns the SAME dict reference when the
+        # column is already populated; reassigning it to itself does not mark
+        # the attribute dirty. flag_modified guarantees the JSONB UPDATE fires.
+        flag_modified(ship, "combat")
 
         maintenance = ship.maintenance or {}
         maintenance["condition"] = 100.0
         maintenance["last_maintenance"] = datetime.utcnow().isoformat()
         maintenance["repair_needed"] = False
         ship.maintenance = maintenance
+        flag_modified(ship, "maintenance")
 
         ship.status = ShipStatus.DOCKED.value
         ship.is_active = True
@@ -239,6 +248,7 @@ async def emergency_ship_action(
         maintenance = ship.maintenance or {}
         maintenance["condition"] = 100.0
         ship.maintenance = maintenance
+        flag_modified(ship, "maintenance")
 
         ship.status = ShipStatus.DOCKED.value
         ship.is_active = True
@@ -451,6 +461,12 @@ async def create_ship(
             "defense_rating": spec.defense_rating
         },
 
+        # B3: copy the per-hull shield/armor mitigation fractions from the
+        # ShipSpecification onto the Ship row — combat_service reads these off
+        # the Ship, not the spec. Defensive default 0.0 if unset.
+        shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
+        armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
+
         # Genesis and equipment
         genesis_devices=0,
         max_genesis_devices=spec.max_genesis_devices,
@@ -563,10 +579,20 @@ async def delete_ship(
         details=ship_info
     )
     
+    # Reabsorb pioneer colonists before hull is removed.  Mirrors the
+    # pattern in ship_service.destroy_ship — SAVEPOINT-isolated so that a
+    # ledger hiccup cannot block the admin delete.
+    try:
+        from src.services.pioneer_service import reabsorb_on_ship_loss
+        with db.begin_nested():
+            reabsorb_on_ship_loss(db, ship.owner_id)
+    except Exception:
+        logger.exception("pioneer reabsorb on admin ship-delete failed")
+
     # Delete ship
     db.delete(ship)
     db.commit()
-    
+
     return DeleteShipResponse(success=True)
 
 

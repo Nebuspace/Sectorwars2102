@@ -12,16 +12,17 @@ interface NexusStatus {
   total_planets: number;
 }
 
-interface District {
-  district_type: string;
+interface Cluster {
+  cluster_id: string;
   name: string;
-  sector_range: [number, number];
-  security_level: number;
-  development_level: number;
-  sectors_count: number;
-  stations_count: number;
+  cluster_type: string;
+  sector_count: number;
+  ports_count: number;
   planets_count: number;
-  current_traffic: number;
+  avg_security_level: number;
+  avg_development_level: number;
+  is_discovered: boolean;
+  economic_value: number;
 }
 
 interface NexusStats {
@@ -29,28 +30,24 @@ interface NexusStats {
   total_ports: number;
   total_planets: number;
   total_warp_gates: number;
-  active_players: number;
-  daily_traffic: number;
-  districts: Array<{
-    district_type: string;
-    sectors: number;
-    avg_security: number;
-    avg_development: number;
-  }>;
+  // null = no telemetry exists for this metric (gameserver does not track it)
+  active_players: number | null;
+  daily_traffic: number | null;
+  clusters: Array<Record<string, unknown>>;
 }
 
 const CentralNexusManager: React.FC = () => {
   const { token } = useAuth();
   const [nexusStatus, setNexusStatus] = useState<NexusStatus | null>(null);
-  const [districts, setDistricts] = useState<District[]>([]);
+  const [clusters, setClusters] = useState<Cluster[]>([]);
   const [stats, setStats] = useState<NexusStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'districts'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clusters'>('overview');
 
   useEffect(() => {
     loadNexusStatus();
-    loadDistricts();
+    loadClusters();
     loadStats();
   }, []);
 
@@ -68,17 +65,24 @@ const CentralNexusManager: React.FC = () => {
     }
   };
 
-  const loadDistricts = async () => {
+  const loadClusters = async () => {
+    setLoading(true);
     try {
-      const response = await fetch('/api/v1/nexus/districts', {
+      const response = await fetch('/api/v1/nexus/clusters', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
         const data = await response.json();
-        setDistricts(data);
+        setClusters(data);
+      } else if (response.status !== 404) {
+        const errData = await response.json().catch(() => ({ detail: 'Failed to load clusters' }));
+        setError(errData.detail || 'Failed to load clusters');
       }
     } catch (err) {
-      console.error('Failed to load districts:', err);
+      console.error('Failed to load clusters:', err);
+      setError('Network error while loading clusters');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -96,38 +100,6 @@ const CentralNexusManager: React.FC = () => {
     }
   };
 
-  const regenerateDistrict = async (districtType: string) => {
-    if (!confirm(`Are you sure you want to regenerate the ${districtType.replace('_', ' ')} district?`)) {
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(`/api/v1/nexus/districts/${districtType}/regenerate`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        alert(`District regeneration started: ${result.message}`);
-        setTimeout(loadDistricts, 2000);
-      } else {
-        const error = await response.json();
-        setError(error.detail || 'Failed to start regeneration');
-      }
-    } catch (err) {
-      setError('Network error occurred');
-      console.error('Regeneration error:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'active': return 'status-active';
@@ -137,12 +109,13 @@ const CentralNexusManager: React.FC = () => {
     }
   };
 
-  const formatNumber = (num: number) => {
-    return num?.toLocaleString() || '0';
+  // Renders an em-dash for null/undefined (no telemetry) — never a fake '0'
+  const formatNumber = (num: number | null | undefined) => {
+    return num != null ? num.toLocaleString() : '—';
   };
 
-  const formatDistrictName = (districtType: string) => {
-    return districtType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  const formatClusterType = (clusterType: string) => {
+    return clusterType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   };
 
   return (
@@ -166,10 +139,10 @@ const CentralNexusManager: React.FC = () => {
           Overview
         </button>
         <button
-          className={`tab-button ${activeTab === 'districts' ? 'active' : ''}`}
-          onClick={() => setActiveTab('districts')}
+          className={`tab-button ${activeTab === 'clusters' ? 'active' : ''}`}
+          onClick={() => setActiveTab('clusters')}
         >
-          Districts
+          Clusters
         </button>
       </div>
 
@@ -226,11 +199,21 @@ const CentralNexusManager: React.FC = () => {
                 </div>
                 <div className="stat-card">
                   <h4>Active Players</h4>
-                  <div className="stat-value">{formatNumber(stats.active_players)}</div>
+                  <div
+                    className="stat-value"
+                    title={stats.active_players == null ? 'no telemetry exists' : undefined}
+                  >
+                    {formatNumber(stats.active_players)}
+                  </div>
                 </div>
                 <div className="stat-card">
                   <h4>Daily Traffic</h4>
-                  <div className="stat-value">{formatNumber(stats.daily_traffic)}</div>
+                  <div
+                    className="stat-value"
+                    title={stats.daily_traffic == null ? 'no telemetry exists' : undefined}
+                  >
+                    {formatNumber(stats.daily_traffic)}
+                  </div>
                 </div>
               </div>
             )}
@@ -266,73 +249,70 @@ const CentralNexusManager: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'districts' && (
+        {activeTab === 'clusters' && (
           <div className="districts-tab">
-            <h3>District Overview</h3>
-            {districts.length > 0 ? (
+            <h3>Cluster Overview</h3>
+            <div className="info-card" style={{ marginBottom: '16px' }}>
+              <p>Cluster regeneration is offline — no regeneration endpoint exists.</p>
+            </div>
+            {clusters.length > 0 ? (
               <div className="districts-table">
                 <table>
                   <thead>
                     <tr>
-                      <th>District Name</th>
-                      <th>Sector Range</th>
+                      <th>Cluster Name</th>
+                      <th>Type</th>
                       <th>Sectors</th>
                       <th>Ports</th>
                       <th>Planets</th>
                       <th>Security</th>
                       <th>Development</th>
-                      <th>Traffic</th>
-                      <th>Actions</th>
+                      <th>Economic Value</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {districts.map((district) => (
-                      <tr key={district.district_type}>
-                        <td className="district-name">{district.name}</td>
-                        <td>{district.sector_range[0]} - {district.sector_range[1]}</td>
-                        <td>{formatNumber(district.sectors_count)}</td>
-                        <td>{formatNumber(district.stations_count)}</td>
-                        <td>{formatNumber(district.planets_count)}</td>
+                    {clusters.map((cluster) => (
+                      <tr key={cluster.cluster_id}>
+                        <td className="district-name">{cluster.name}</td>
+                        <td>{formatClusterType(cluster.cluster_type)}</td>
+                        <td>{formatNumber(cluster.sector_count)}</td>
+                        <td>{formatNumber(cluster.ports_count)}</td>
+                        <td>{formatNumber(cluster.planets_count)}</td>
                         <td>
                           <div className="security-level">
                             <div className="security-bar">
-                              <div 
-                                className="security-fill" 
-                                style={{ width: `${(district.security_level / 10) * 100}%` }}
+                              <div
+                                className="security-fill"
+                                style={{ width: `${(cluster.avg_security_level / 10) * 100}%` }}
                               ></div>
                             </div>
-                            <span>{district.security_level}/10</span>
+                            <span>{cluster.avg_security_level.toFixed(1)}/10</span>
                           </div>
                         </td>
                         <td>
                           <div className="development-level">
                             <div className="development-bar">
-                              <div 
-                                className="development-fill" 
-                                style={{ width: `${(district.development_level / 10) * 100}%` }}
+                              <div
+                                className="development-fill"
+                                style={{ width: `${(cluster.avg_development_level / 10) * 100}%` }}
                               ></div>
                             </div>
-                            <span>{district.development_level}/10</span>
+                            <span>{cluster.avg_development_level.toFixed(1)}/10</span>
                           </div>
                         </td>
-                        <td>{formatNumber(district.current_traffic)}</td>
-                        <td>
-                          <button 
-                            onClick={() => regenerateDistrict(district.district_type)}
-                            className="action-button regenerate"
-                            disabled={loading}
-                          >
-                            Regenerate
-                          </button>
-                        </td>
+                        <td>{formatNumber(cluster.economic_value)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+            ) : loading ? (
+              <div className="no-districts">Loading clusters...</div>
             ) : (
               <div className="no-districts">
-                {nexusStatus?.exists ? 'Loading districts...' : 'Central Nexus not generated yet'}
+                {nexusStatus?.exists
+                  ? 'No clusters reported for the Central Nexus'
+                  : 'Central Nexus not generated yet'}
               </div>
             )}
           </div>

@@ -1,6 +1,11 @@
 import React, { useState, useCallback } from 'react';
 import { useGame } from '../../contexts/GameContext';
+import type { Station } from '../../contexts/GameContext';
 import TradingInterface from '../trading/TradingInterface';
+import ConstructionVenue from './ConstructionVenue';
+import PortOfficeVenue from './PortOfficeVenue';
+import { InsuranceManager, MaintenanceManager, ModuleGridInterface } from '../ships';
+import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -13,7 +18,7 @@ const getApiBaseUrl = () => {
 };
 
 // Venue type definitions
-type VenueType = 'hub' | 'trading' | 'shipyard' | 'genesis' | 'armory' | 'services' | 'gambling';
+type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types
@@ -43,6 +48,138 @@ interface Venue {
   services?: string[];
 }
 
+// Extra fields the sector stations endpoint returns beyond the base Station type
+interface DockedStation extends Station {
+  station_class?: number | null;
+  is_spacedock?: boolean;
+  tradedock_tier?: string | null;
+}
+
+// Shipyard catalog entry (GET /api/v1/ships/catalog)
+interface ShipCatalogEntry {
+  type: string;
+  name: string;
+  base_cost: number;
+  purchasable: boolean;
+  speed: number;
+  turn_cost: number;
+  max_cargo: number;
+  max_colonists: number;
+  max_drones: number;
+  max_shields: number;
+  hull_points: number;
+  attack_rating: number;
+  defense_rating: number;
+  description: string;
+  reason?: string | null;
+}
+
+// Armory catalog item (GET /api/v1/armory/catalog)
+interface ArmoryCatalogItem {
+  item: string;
+  name: string;
+  price: number;
+  description?: string;
+  available?: boolean;
+  reason?: string | null;
+  service?: string;
+}
+
+// Loadout snapshot returned by POST /api/v1/armory/purchase
+interface ArmoryLoadout {
+  attack_drones: number;
+  defense_drones: number;
+  mines: number;
+  caps: {
+    attack_drones: number;
+    defense_drones: number;
+    mines: number;
+  };
+}
+
+// Station class display labels (trading classification 0-11)
+const CLASS_LABELS: Record<number, string> = {
+  0: 'Sol Hub',
+  1: 'Mining Operation',
+  2: 'Agricultural Center',
+  3: 'Industrial Hub',
+  4: 'Distribution Center',
+  5: 'Collection Hub',
+  6: 'Mixed Market',
+  7: 'Resource Exchange',
+  8: 'Black Hole Exchange',
+  9: 'Nova Market',
+  10: 'Luxury Market',
+  11: 'Premium Tech Hub'
+};
+
+// Service flags worth surfacing in the hub header, with display icons
+const SERVICE_ICONS: Array<{ key: string; icon: string; label: string }> = [
+  { key: 'ship_dealer', icon: '🛠️', label: 'Shipyard' },
+  { key: 'ship_repair', icon: '🔧', label: 'Ship Repair' },
+  { key: 'ship_maintenance', icon: '⚙️', label: 'Maintenance' },
+  { key: 'ship_upgrades', icon: '📈', label: 'Upgrades' },
+  { key: 'insurance', icon: '📜', label: 'Insurance' },
+  { key: 'drone_shop', icon: '🤖', label: 'Drone Shop' },
+  { key: 'genesis_dealer', icon: '🌍', label: 'Genesis Dealer' },
+  { key: 'mine_dealer', icon: '💣', label: 'Mine Dealer' },
+  { key: 'storage_rental', icon: '📦', label: 'Storage Rental' },
+  { key: 'market_intelligence', icon: '📊', label: 'Market Intelligence' },
+  { key: 'refining_facility', icon: '🏭', label: 'Refining Facility' },
+  { key: 'luxury_amenities', icon: '✨', label: 'Luxury Amenities' },
+  { key: 'diplomatic_services', icon: '🕊️', label: 'Diplomatic Services' }
+];
+
+// Black-market contraband catalog row (GET /api/v1/trading/black-market/{id}).
+// Mirrors ContrabandService.get_catalog's per-commodity listing shape.
+interface ContrabandListing {
+  commodity: string;
+  base_price: number;
+  category_multiplier: number;
+  severity: string;
+  indicative_unit_price: number;
+  federation_rep_delta: number;
+}
+
+interface BlackMarketCatalog {
+  station_id: string;
+  station_name: string;
+  haggle_swing: number;
+  commodities: ContrabandListing[];
+}
+
+// Human-readable label for a contraband commodity enum value (e.g.
+// "stolen_goods" → "Stolen Goods"). Falls back gracefully for new commodities.
+const prettyCommodity = (value: string): string =>
+  value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+// Display metadata for known armory items (falls back gracefully for new items)
+const ARMORY_ICONS: Record<string, string> = {
+  attack_drone: '⚔️',
+  defense_drone: '🛡️',
+  limpet_mine: '💥',
+  armored_mine: '☢️'
+};
+
+const ARMORY_CARD_CLASS: Record<string, string> = {
+  attack_drone: 'attack',
+  defense_drone: 'defense',
+  limpet_mine: 'mine',
+  armored_mine: 'mine-heavy'
+};
+
+// Which loadout counter an armory item feeds into
+const loadoutKeyForItem = (itemId: string): 'attack_drones' | 'defense_drones' | 'mines' | null => {
+  if (itemId.includes('attack')) return 'attack_drones';
+  if (itemId.includes('defense')) return 'defense_drones';
+  if (itemId.includes('mine')) return 'mines';
+  return null;
+};
+
+// Normalize ship type strings for comparison (e.g. "Cargo Hauler" vs "CARGO_HAULER")
+const normalizeShipType = (shipType?: string | null): string =>
+  (shipType || '').toUpperCase().replace(/[\s-]+/g, '_');
+
 // Slot machine symbols
 const SLOT_SYMBOLS = ['🌍', '⭐', '🚀', '💳', '🕳️', '💎'];
 const SLOT_PAYOUTS: Record<string, number> = {
@@ -53,9 +190,33 @@ const SLOT_PAYOUTS: Record<string, number> = {
   '💳💳💳': 3,   // Credits
 };
 
-const SpaceDockInterface: React.FC = () => {
-  const { playerState, stationsInSector, updatePlayerCredits, updateShipGenesis } = useGame();
+interface SpaceDockProps {
+  onUndock?: () => void;
+  helmBusy?: boolean;
+}
+
+const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = false }) => {
+  const { playerState, stationsInSector, updatePlayerCredits, updateShipGenesis, refreshPlayerState, loadShips, getStationSlips } = useGame();
   const [activeVenue, setActiveVenue] = useState<VenueType>('hub');
+
+  // Transient slips gauge for the hub header (fetched when docked)
+  const [slipsGauge, setSlipsGauge] = useState<{ occupied: number; capacity: number } | null>(null);
+
+  React.useEffect(() => {
+    const stationId = playerState?.current_port_id;
+    if (!stationId || !playerState?.is_docked) {
+      setSlipsGauge(null);
+      return;
+    }
+    let cancelled = false;
+    getStationSlips(stationId).then(info => {
+      if (!cancelled && info) {
+        setSlipsGauge({ occupied: info.occupied, capacity: info.capacity });
+      }
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerState?.current_port_id, playerState?.is_docked]);
 
   // Track local credits for immediate UI feedback
   const [localCredits, setLocalCredits] = useState<number | null>(null);
@@ -99,23 +260,101 @@ const SpaceDockInterface: React.FC = () => {
   // Black market state
   const [showBlackMarket, setShowBlackMarket] = useState(false);
 
+  // Real contraband catalog (GET /api/v1/trading/black-market/{station_id}).
+  // The endpoint is the authoritative gate: a 404 means either this isn't a
+  // BLACK_MARKET venue OR the player's OUTLAWS rep is below RECOGNIZED — both
+  // collapse to "no underworld contacts" so the gate never advertises itself.
+  const [bmCatalog, setBmCatalog] = useState<BlackMarketCatalog | null>(null);
+  const [bmLoading, setBmLoading] = useState(false);
+  const [bmGateClosed, setBmGateClosed] = useState(false); // 404 from the catalog GET
+  const [bmCatalogError, setBmCatalogError] = useState<string | null>(null);
+  const [bmQuantities, setBmQuantities] = useState<Record<string, number>>({});
+  const [bmBusy, setBmBusy] = useState<string | null>(null); // `buy:<c>` / `sell:<c>` in flight
+  const [bmError, setBmError] = useState<string | null>(null);
+  const [bmSuccess, setBmSuccess] = useState<string | null>(null);
+  const [bmDetected, setBmDetected] = useState<string | null>(null); // bust feedback (fine/heat)
+
+  // Planetary registry lookup (shadow-broker widget inside the black market modal)
+  const [registryQueryName, setRegistryQueryName] = useState('');
+  const [registryLoading, setRegistryLoading] = useState(false);
+  const [registryError, setRegistryError] = useState<string | null>(null);
+  const [registryResults, setRegistryResults] = useState<
+    { name: string; sectorId: number | string; planetType: string; registrationStatus: string }[] | null
+  >(null);
+
   // Error state
   const [gamblingError, setGamblingError] = useState<string | null>(null);
   const [genesisError, setGenesisError] = useState<string | null>(null);
   const [genesisPurchasing, setGenesisPurchasing] = useState(false);
   const [genesisSuccess, setGenesisSuccess] = useState<string | null>(null);
+  // Weekly acquisition limit readout (canon: 3/week).
+  const [genesisWeeklyRemaining, setGenesisWeeklyRemaining] = useState<number | null>(null);
+  const [genesisWeeklyLimit, setGenesisWeeklyLimit] = useState<number>(3);
 
   // Local genesis tracking for immediate UI feedback
   const [localGenesisDevices, setLocalGenesisDevices] = useState<number | null>(null);
   const [localMaxGenesis, setLocalMaxGenesis] = useState<number | null>(null);
 
+  // Prefetch the weekly acquisition allowance when the genesis venue opens so the
+  // "N of 3 left" readout is present before the first purchase.
+  React.useEffect(() => {
+    if (activeVenue !== 'genesis') return;
+    const token = getToken();
+    if (!token) return;
+    fetch(`${getApiBaseUrl()}/api/v1/genesis/available`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data) return;
+        if (typeof data.purchases_remaining === 'number') setGenesisWeeklyRemaining(data.purchases_remaining);
+        if (typeof data.max_purchases_per_week === 'number') setGenesisWeeklyLimit(data.max_purchases_per_week);
+      })
+      .catch(() => {});
+  }, [activeVenue]);
+
+  // Shipyard state
+  const [shipCatalog, setShipCatalog] = useState<ShipCatalogEntry[] | null>(null);
+  const [shipCatalogLoading, setShipCatalogLoading] = useState(false);
+  const [shipCatalogError, setShipCatalogError] = useState<string | null>(null);
+  const [confirmShip, setConfirmShip] = useState<ShipCatalogEntry | null>(null);
+  const [newShipName, setNewShipName] = useState('');
+  const [shipPurchasing, setShipPurchasing] = useState(false);
+  const [shipPurchaseError, setShipPurchaseError] = useState<string | null>(null);
+  const [shipPurchaseSuccess, setShipPurchaseSuccess] = useState<string | null>(null);
+
+  // Armory state
+  const [armoryCatalog, setArmoryCatalog] = useState<ArmoryCatalogItem[] | null>(null);
+  const [armoryLoading, setArmoryLoading] = useState(false);
+  const [armoryCatalogError, setArmoryCatalogError] = useState<string | null>(null);
+  const [armoryLoadout, setArmoryLoadout] = useState<ArmoryLoadout | null>(null);
+  const [armoryQuantities, setArmoryQuantities] = useState<Record<string, number>>({});
+  const [armoryBuying, setArmoryBuying] = useState<string | null>(null);
+  const [armoryError, setArmoryError] = useState<string | null>(null);
+  const [armorySuccess, setArmorySuccess] = useState<string | null>(null);
+
   // Get the current docked station
   const currentStation = stationsInSector?.find(
     s => s.id === playerState?.current_port_id
-  );
+  ) as DockedStation | undefined;
 
-  // Check if player has negative reputation (access to black market)
-  const hasBlackMarketAccess = (playerState?.personal_reputation || 0) < 0;
+  // TradeDock construction tier — the field arrives via the sector stations
+  // payload and may be absent entirely on older payloads; feature-detect it.
+  const rawTier = typeof currentStation?.tradedock_tier === 'string'
+    ? currentStation.tradedock_tier.toUpperCase()
+    : null;
+  const tradedockTier: 'A' | 'B' | null = rawTier === 'A' || rawTier === 'B' ? rawTier : null;
+
+  // Black-market entry affordance: show the "figure in the shadows" knock-on-
+  // the-door button when the DOCKED STATION is a BLACK_MARKET venue. The real
+  // access gate (Fringe-Alliance/OUTLAWS rep ≥ RECOGNIZED) is enforced
+  // server-side by the catalog endpoint — the modal surfaces "no underworld
+  // contacts" on a 404 — so we deliberately do NOT gate the button on the local
+  // personal_reputation<0 flag (that flag is not the backend gate).
+  const stationIsBlackMarket =
+    typeof currentStation?.type === 'string' &&
+    currentStation.type.toUpperCase() === 'BLACK_MARKET';
+  const hasBlackMarketAccess = stationIsBlackMarket;
 
   // Define available venues based on station services
   const stationServices = currentStation?.services || {};
@@ -137,29 +376,62 @@ const SpaceDockInterface: React.FC = () => {
       available: Boolean(stationServices.ship_dealer),
       services: ['Custom Ship Building', 'Dock Slip Rental', 'Ship Customization']
     },
+    // Construction only exists at TradeDock stations (tier A or B) —
+    // it is omitted entirely everywhere else rather than shown as unavailable
+    ...(tradedockTier ? [{
+      id: 'construction' as VenueType,
+      name: 'Construction',
+      icon: '🏗️',
+      description: 'Order new hulls built to spec in this TradeDock\'s construction slips',
+      available: true,
+      services: [`Tier ${tradedockTier} Slips`, 'Ship Orders', 'Build Tracking']
+    }] : []),
+    // Port Office is universal — every station keeps a registry desk,
+    // whether or not the deed itself is purchasable
+    {
+      id: 'portoffice',
+      name: 'Port Office',
+      icon: '🏛️',
+      description: 'Station registry — ownership deeds, sealed-bid sales, tariffs, and takeover filings',
+      available: true,
+      services: ['Ownership Registry', 'Sealed-Bid Offers', 'Tariff & Treasury', 'Takeover War Room']
+    },
     {
       id: 'genesis',
       name: 'Genesis Store',
       icon: '🌍',
       description: 'Acquire Genesis Devices - the key to creating new worlds',
       available: Boolean(stationServices.genesis_dealer),
-      services: ['Standard Devices', 'Advanced Devices', 'Experimental Devices']
+      services: ['Genesis Devices', 'World Creation', 'Terraforming Tech']
     },
     {
       id: 'armory',
       name: 'Armory',
       icon: '⚔️',
       description: 'Combat drones, defense systems, and tactical equipment',
-      available: Boolean(stationServices.drone_shop) || Boolean(stationServices.mine_dealer),
+      // SpaceDocks carry every armory service automatically (matches the server's
+      // _station_offers_service); without this the Armory tab was hidden at a
+      // SpaceDock that didn't explicitly list drone_shop/mine_dealer.
+      available: Boolean(stationServices.drone_shop) || Boolean(stationServices.mine_dealer) || Boolean(currentStation?.is_spacedock),
       services: ['Attack Drones', 'Defense Drones', 'Mines', 'Tactical Systems']
     },
     {
       id: 'services',
       name: 'Ship Services',
       icon: '🔧',
-      description: 'Repairs, upgrades, insurance, and maintenance',
+      description: 'Hull and shield repair plus ship condition readouts',
       available: Boolean(stationServices.ship_repair) || Boolean(stationServices.ship_maintenance),
-      services: ['Ship Repair', 'Shield Upgrades', 'Cargo Insurance', 'Maintenance']
+      services: ['Ship Repair', 'Hull & Shield Status', 'Cargo Readout']
+    },
+    {
+      id: 'mining',
+      name: 'Astral Mining',
+      icon: '⛏️',
+      description: 'Astral Mining Consortium — claim-license desk and Mining Laser refits',
+      // The Consortium maintains an office at every dock; the claim license is
+      // sector-bound (server-enforced), the laser refit is universal.
+      available: true,
+      services: ['Claim Licenses', 'Mining Laser Refits']
     },
     {
       id: 'gambling',
@@ -525,13 +797,15 @@ const SpaceDockInterface: React.FC = () => {
   };
 
   // Genesis Device Purchase function
-  const purchaseGenesisDevice = useCallback(async (tier: 'standard' | 'advanced' | 'experimental') => {
+  // Genesis devices are a single fungible consumable; the tier + credit cost are
+  // chosen at deploy. Acquiring one costs a flat GENESIS_DEVICE_PRICE and is
+  // rate-limited to 3/week (server-enforced).
+  const GENESIS_DEVICE_PRICE = 25000;
+  const purchaseGenesisDevice = useCallback(async () => {
     const token = getToken();
     if (!token || genesisPurchasing) return;
 
-    const prices = { standard: 25000, advanced: 50000, experimental: 100000 };
-    const price = prices[tier];
-
+    const price = GENESIS_DEVICE_PRICE;
     if (displayCredits < price) {
       setGenesisError(`Insufficient credits. Need ${price.toLocaleString()}, have ${displayCredits.toLocaleString()}`);
       return;
@@ -551,7 +825,7 @@ const SpaceDockInterface: React.FC = () => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ tier })
+        body: JSON.stringify({})
       });
 
       if (!response.ok) {
@@ -567,6 +841,8 @@ const SpaceDockInterface: React.FC = () => {
       setLocalCredits(result.new_credits);
       setLocalGenesisDevices(result.genesis_devices);
       setLocalMaxGenesis(result.max_genesis_devices);
+      if (typeof result.purchases_remaining === 'number') setGenesisWeeklyRemaining(result.purchases_remaining);
+      if (typeof result.weekly_limit === 'number') setGenesisWeeklyLimit(result.weekly_limit);
       updatePlayerCredits(result.new_credits);
       updateShipGenesis(result.genesis_devices);  // Update sidebar immediately
       setGenesisSuccess(result.message);
@@ -584,34 +860,425 @@ const SpaceDockInterface: React.FC = () => {
 
   // Fetch current ship data including genesis device info
   const [shipData, setShipData] = useState<{
+    id: string;
     genesis_devices: number;
     max_genesis_devices: number;
     type: string;
     name: string;
+    combat?: Record<string, unknown> | null;
+    cargo?: Record<string, number> | null;
+    cargo_capacity?: number;
+    current_value?: number;
   } | null>(null);
 
-  React.useEffect(() => {
-    const fetchShipData = async () => {
-      const token = getToken();
-      if (!token) return;
+  const [showInsurance, setShowInsurance] = useState(false);
+  const [showMaintenance, setShowMaintenance] = useState(false);
+  const [showUpgrades, setShowUpgrades] = useState(false);
 
-      try {
-        const response = await fetch(`${getApiBaseUrl()}/api/v1/player/current-ship`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setShipData(data);
-          setLocalGenesisDevices(data.genesis_devices);
-          setLocalMaxGenesis(data.max_genesis_devices);
-        }
-      } catch (error) {
-        console.error('Failed to fetch ship data:', error);
+  const fetchShipData = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/player/current-ship`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setShipData(data);
+        setLocalGenesisDevices(data.genesis_devices);
+        setLocalMaxGenesis(data.max_genesis_devices);
       }
-    };
-
-    fetchShipData();
+    } catch (error) {
+      console.error('Failed to fetch ship data:', error);
+    }
   }, []);
+
+  React.useEffect(() => {
+    fetchShipData();
+  }, [fetchShipData]);
+
+  // --- Shipyard: real catalog + purchase flow ---
+  const fetchShipCatalog = useCallback(async () => {
+    const token = getToken();
+    if (!token) {
+      setShipCatalogError('Not authenticated. Please log in again.');
+      return;
+    }
+
+    setShipCatalogLoading(true);
+    setShipCatalogError(null);
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/ships/catalog`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        setShipCatalogError(typeof (error?.message ?? error?.detail) === 'string' ? (error?.message ?? error?.detail) : 'Failed to load ship catalog');
+        return;
+      }
+
+      const data = await response.json();
+      setShipCatalog(data.ships || []);
+    } catch (error) {
+      console.error('Ship catalog error:', error);
+      setShipCatalogError('Connection error. Please try again.');
+    } finally {
+      setShipCatalogLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (activeVenue === 'shipyard') {
+      fetchShipCatalog();
+      setShipPurchaseError(null);
+      setShipPurchaseSuccess(null);
+      setConfirmShip(null);
+    }
+  }, [activeVenue, fetchShipCatalog]);
+
+  const purchaseShip = useCallback(async (entry: ShipCatalogEntry, requestedName: string) => {
+    const token = getToken();
+    if (!token || shipPurchasing) {
+      if (!token) setShipPurchaseError('Not authenticated. Please log in again.');
+      return;
+    }
+
+    if (displayCredits < entry.base_cost) {
+      setShipPurchaseError(`Insufficient credits. Need ${entry.base_cost.toLocaleString()}, have ${displayCredits.toLocaleString()}`);
+      return;
+    }
+
+    setShipPurchasing(true);
+    setShipPurchaseError(null);
+    setShipPurchaseSuccess(null);
+
+    try {
+      const body: { ship_type: string; name?: string } = { ship_type: entry.type };
+      const trimmedName = requestedName.trim();
+      if (trimmedName) {
+        body.name = trimmedName;
+      }
+
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/ships/purchase`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        setShipPurchaseError(typeof (error?.message ?? error?.detail) === 'string' ? (error?.message ?? error?.detail) : 'Purchase failed');
+        return;
+      }
+
+      const result = await response.json();
+      setLocalCredits(result.remaining_credits);
+      updatePlayerCredits(result.remaining_credits);
+      setShipPurchaseSuccess(`Purchase complete — ${result.ship.name} is ready in the hangar.`);
+      setConfirmShip(null);
+      setNewShipName('');
+
+      // Sync global player + fleet state so the rest of the UI catches up
+      await Promise.allSettled([loadShips(), refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Ship purchase error:', error);
+      setShipPurchaseError('Connection error. Please try again.');
+    } finally {
+      setShipPurchasing(false);
+    }
+  }, [shipPurchasing, displayCredits, updatePlayerCredits, loadShips, refreshPlayerState, fetchShipData]);
+
+  // --- Armory: real catalog + purchase flow ---
+  const fetchArmoryCatalog = useCallback(async () => {
+    const token = getToken();
+    if (!token) {
+      setArmoryCatalogError('Not authenticated. Please log in again.');
+      return;
+    }
+
+    setArmoryLoading(true);
+    setArmoryCatalogError(null);
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/armory/catalog`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        setArmoryCatalogError(typeof (error?.message ?? error?.detail) === 'string' ? (error?.message ?? error?.detail) : 'Failed to load armory catalog');
+        return;
+      }
+
+      const data = await response.json();
+      setArmoryCatalog(Array.isArray(data) ? data : (data.items || []));
+      if (data.loadout) {
+        setArmoryLoadout(data.loadout);
+      }
+    } catch (error) {
+      console.error('Armory catalog error:', error);
+      setArmoryCatalogError('Connection error. Please try again.');
+    } finally {
+      setArmoryLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (activeVenue === 'armory') {
+      fetchArmoryCatalog();
+      setArmoryError(null);
+      setArmorySuccess(null);
+    }
+  }, [activeVenue, fetchArmoryCatalog]);
+
+  const purchaseArmoryItem = useCallback(async (item: ArmoryCatalogItem, quantity: number) => {
+    const token = getToken();
+    if (!token || armoryBuying) {
+      if (!token) setArmoryError('Not authenticated. Please log in again.');
+      return;
+    }
+
+    const totalCost = item.price * quantity;
+    if (displayCredits < totalCost) {
+      setArmoryError(`Insufficient credits. Need ${totalCost.toLocaleString()}, have ${displayCredits.toLocaleString()}`);
+      return;
+    }
+
+    setArmoryBuying(item.item);
+    setArmoryError(null);
+    setArmorySuccess(null);
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/armory/purchase`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ item: item.item, quantity })
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.message ?? error?.detail;
+        setArmoryError(typeof rawDetail === 'string' && rawDetail
+          ? rawDetail
+          : 'Purchase failed');
+        return;
+      }
+
+      const result = await response.json();
+      setLocalCredits(result.remaining_credits);
+      updatePlayerCredits(result.remaining_credits);
+      if (result.loadout) {
+        setArmoryLoadout(result.loadout);
+      }
+      setArmorySuccess(`${quantity} × ${item.name} loaded aboard.`);
+      setTimeout(() => setArmorySuccess(null), 3000);
+
+      // Sync header credits and drone counts with the server
+      refreshPlayerState();
+    } catch (error) {
+      console.error('Armory purchase error:', error);
+      setArmoryError('Connection error. Please try again.');
+    } finally {
+      setArmoryBuying(null);
+    }
+  }, [armoryBuying, displayCredits, updatePlayerCredits, refreshPlayerState]);
+
+  // --- Ship Services: real repair flow ---
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairError, setRepairError] = useState<string | null>(null);
+  const [repairSuccess, setRepairSuccess] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (activeVenue === 'services') {
+      // Refresh hull/shield/cargo readings on entry so the gauges are live
+      fetchShipData();
+      setRepairError(null);
+      setRepairSuccess(null);
+    }
+  }, [activeVenue, fetchShipData]);
+
+  const repairShip = useCallback(async () => {
+    const token = getToken();
+    const shipId = shipData?.id;
+    if (!token || !shipId || repairBusy) {
+      if (!token) setRepairError('Not authenticated. Please log in again.');
+      return;
+    }
+
+    setRepairBusy(true);
+    setRepairError(null);
+    setRepairSuccess(null);
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/player/ships/${shipId}/repair`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.message ?? error?.detail;
+        setRepairError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'Repair failed');
+        return;
+      }
+
+      const result = await response.json();
+      setLocalCredits(result.credits_remaining);
+      updatePlayerCredits(result.credits_remaining);
+      // Copy-reassign combat so the gauges re-render with restored values
+      setShipData(prev => prev ? {
+        ...prev,
+        combat: {
+          ...(prev.combat ?? {}),
+          hull: result.hull,
+          shields: result.shields,
+          max_hull: result.max_hull,
+          max_shields: result.max_shields
+        }
+      } : prev);
+      setRepairSuccess(result.message || 'Ship repaired.');
+      setTimeout(() => setRepairSuccess(null), 3000);
+
+      // Sync header credits and ship condition with the server
+      refreshPlayerState();
+    } catch (error) {
+      console.error('Ship repair error:', error);
+      setRepairError('Connection error. Please try again.');
+    } finally {
+      setRepairBusy(false);
+    }
+  }, [shipData?.id, repairBusy, updatePlayerCredits, refreshPlayerState]);
+
+  // Credits plumbing for the Construction venue — instant optimistic feedback
+  // plus authoritative totals when the server returns them
+  const handleCreditsDelta = useCallback((delta: number) => {
+    setLocalCredits(prev => (prev ?? playerState?.credits ?? 0) + delta);
+  }, [playerState?.credits]);
+
+  const handleCreditsSet = useCallback((value: number) => {
+    setLocalCredits(value);
+    updatePlayerCredits(value);
+  }, [updatePlayerCredits]);
+
+  // --- Astral Mining: claim-license purchase + Mining Laser refit ---
+  const [licenseBusy, setLicenseBusy] = useState(false);
+  const [licenseError, setLicenseError] = useState<string | null>(null);
+  const [licenseSuccess, setLicenseSuccess] = useState<string | null>(null);
+  const [laserBusy, setLaserBusy] = useState(false);
+  const [laserError, setLaserError] = useState<string | null>(null);
+  const [laserSuccess, setLaserSuccess] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (activeVenue === 'mining') {
+      // Ensure ship telemetry (ship id) is fresh on entry; clear stale feedback.
+      fetchShipData();
+      setLicenseError(null);
+      setLicenseSuccess(null);
+      setLaserError(null);
+      setLaserSuccess(null);
+    }
+  }, [activeVenue, fetchShipData]);
+
+  // Purchase / renew the AM claim license for the current sector
+  // (POST /api/v1/mining/license {ship_id}). The fee is sector-tier-scaled and
+  // server-authoritative; a non-asteroid sector returns not_an_asteroid_field.
+  const purchaseClaimLicense = useCallback(async () => {
+    const token = getToken();
+    const shipId = shipData?.id;
+    if (!token || !shipId || licenseBusy) {
+      if (!token) setLicenseError('Not authenticated. Please log in again.');
+      else if (!shipId) setLicenseError('No active ship found.');
+      return;
+    }
+    setLicenseBusy(true);
+    setLicenseError(null);
+    setLicenseSuccess(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/mining/license`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ship_id: shipId })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        const reason = typeof rawDetail === 'string' && rawDetail ? rawDetail : 'License purchase failed';
+        // Map the most common stable reason to a friendlier line.
+        setLicenseError(
+          reason === 'not_an_asteroid_field'
+            ? 'Claim licenses are only sold for asteroid-field sectors. Fly to one to file a claim.'
+            : reason === 'insufficient_credits'
+              ? 'Insufficient credits for this claim license.'
+              : reason
+        );
+        return;
+      }
+      const result = await response.json();
+      const cost = formatCredits(result.cost_paid_cr ?? 0);
+      const expires = result.expires_at ? new Date(result.expires_at).toLocaleString() : 'soon';
+      setLicenseSuccess(`Claim filed for ${cost} — license valid until ${expires}.`);
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Claim license error:', error);
+      setLicenseError('Connection error. Please try again.');
+    } finally {
+      setLicenseBusy(false);
+    }
+  }, [shipData?.id, licenseBusy, refreshPlayerState, fetchShipData]);
+
+  // Buy the next Mining Laser ladder level
+  // (POST /api/v1/mining/laser-upgrade {ship_id}). Requires a Mining Laser
+  // already installed (the server surfaces a clear message otherwise).
+  const upgradeMiningLaser = useCallback(async () => {
+    const token = getToken();
+    const shipId = shipData?.id;
+    if (!token || !shipId || laserBusy) {
+      if (!token) setLaserError('Not authenticated. Please log in again.');
+      else if (!shipId) setLaserError('No active ship found.');
+      return;
+    }
+    setLaserBusy(true);
+    setLaserError(null);
+    setLaserSuccess(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/mining/laser-upgrade`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ship_id: shipId })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        setLaserError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'Mining laser upgrade failed');
+        return;
+      }
+      const result = await response.json();
+      const mult = typeof result.yield_multiplier === 'number' ? `${result.yield_multiplier}× yield` : '';
+      const cost = formatCredits(result.cost_paid ?? 0);
+      setLaserSuccess(
+        `${result.message || `Mining Laser upgraded to level ${result.new_level}`} — ${cost}${mult ? ` (${mult})` : ''}.`
+      );
+      if (typeof result.remaining_credits === 'number') {
+        setLocalCredits(result.remaining_credits);
+        updatePlayerCredits(result.remaining_credits);
+      }
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Mining laser upgrade error:', error);
+      setLaserError('Connection error. Please try again.');
+    } finally {
+      setLaserBusy(false);
+    }
+  }, [shipData?.id, laserBusy, updatePlayerCredits, refreshPlayerState, fetchShipData]);
 
   // Get current genesis device counts (use local if set, otherwise from ship data)
   const currentGenesisDevices = localGenesisDevices ?? shipData?.genesis_devices ?? 0;
@@ -633,36 +1300,217 @@ const SpaceDockInterface: React.FC = () => {
     );
   };
 
+  // Shadow-broker registry lookup: pays 50,000 cr to reveal another player's
+  // non-clandestine holdings. Raw fetch (like the genesis/gambling calls) so the
+  // auth token rides along. The server is authoritative on whether/when it
+  // charges (404 unknown name = no charge; empty list = no charge).
+  const handleRegistryLookup = async () => {
+    const name = registryQueryName.trim();
+    if (!name) {
+      setRegistryError('Enter a player name to query.');
+      return;
+    }
+    const token = getToken();
+    try {
+      setRegistryLoading(true);
+      setRegistryError(null);
+      setRegistryResults(null);
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/registry/lookup`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ playerName: name })
+      });
+      if (!response.ok) {
+        let detail = `Lookup failed (${response.status})`;
+        try {
+          const errBody = await response.json();
+          if (errBody && (typeof errBody.detail === 'string' || errBody.message)) {
+            detail = errBody.detail || errBody.message;
+          }
+        } catch { /* non-JSON error body — keep the generic message */ }
+        if (response.status === 404) detail = `No pilot named "${name}" on record.`;
+        throw new Error(detail);
+      }
+      const data = await response.json();
+      setRegistryResults(Array.isArray(data?.planets) ? data.planets : []);
+    } catch (err) {
+      setRegistryError(err instanceof Error ? err.message : 'Lookup failed.');
+    } finally {
+      setRegistryLoading(false);
+    }
+  };
+
+  // --- Black market: real contraband catalog + buy/sell flow ---
+  // The catalog GET is the authoritative gate: a 404 means either this station
+  // is not a BLACK_MARKET venue OR the player's Fringe-Alliance (OUTLAWS) rep is
+  // below RECOGNIZED. Both are deliberately indistinguishable — we surface "no
+  // underworld contacts" rather than the catalog. Raw fetch (the established
+  // in-component pattern, like handleRegistryLookup / the gambling/genesis calls)
+  // so the auth token rides along.
+  const fetchBlackMarketCatalog = useCallback(async (stationId: string) => {
+    const token = getToken();
+    if (!token) {
+      setBmCatalogError('Not authenticated. Please log in again.');
+      return;
+    }
+    setBmLoading(true);
+    setBmCatalogError(null);
+    setBmGateClosed(false);
+    setBmCatalog(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/trading/black-market/${stationId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (response.status === 404) {
+        // Gate unmet OR not a black-market venue — same response by design.
+        setBmGateClosed(true);
+        return;
+      }
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        setBmCatalogError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'Could not reach the shadow market.');
+        return;
+      }
+      const data: BlackMarketCatalog = await response.json();
+      setBmCatalog(data);
+    } catch (error) {
+      console.error('Black-market catalog error:', error);
+      setBmCatalogError('Connection error. Please try again.');
+    } finally {
+      setBmLoading(false);
+    }
+  }, []);
+
+  // Fetch the real catalog when the modal opens (gates visibility off the
+  // endpoint, never the local personal_reputation flag). Reset transient
+  // buy/sell feedback on open/close.
+  React.useEffect(() => {
+    if (!showBlackMarket) {
+      setBmError(null);
+      setBmSuccess(null);
+      setBmDetected(null);
+      return;
+    }
+    const stationId = currentStation?.id;
+    if (stationId) {
+      fetchBlackMarketCatalog(stationId);
+    } else {
+      setBmGateClosed(true);
+    }
+    setBmError(null);
+    setBmSuccess(null);
+    setBmDetected(null);
+  }, [showBlackMarket, currentStation?.id, fetchBlackMarketCatalog]);
+
+  // Buy contraband: POST /trading/black-market/buy. SLAVES is never in the
+  // catalog (server-excluded) so there is no path to request it from this UI.
+  const buyContraband = useCallback(async (listing: ContrabandListing, quantity: number) => {
+    const token = getToken();
+    const stationId = currentStation?.id;
+    if (!token || !stationId || bmBusy) {
+      if (!token) setBmError('Not authenticated. Please log in again.');
+      return;
+    }
+    setBmBusy(`buy:${listing.commodity}`);
+    setBmError(null);
+    setBmSuccess(null);
+    setBmDetected(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/trading/black-market/buy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ station_id: stationId, commodity: listing.commodity, quantity })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        setBmError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'The deal fell through.');
+        return;
+      }
+      const result = await response.json();
+      if (typeof result.remaining_credits === 'number') {
+        setLocalCredits(result.remaining_credits);
+        updatePlayerCredits(result.remaining_credits);
+      }
+      setBmSuccess(`Acquired ${result.quantity} × ${prettyCommodity(listing.commodity)} for ${formatCredits(result.total_cost ?? 0)}.`);
+      // Re-price the catalog (fresh haggle quotes) and sync ship cargo state.
+      fetchBlackMarketCatalog(stationId);
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Black-market buy error:', error);
+      setBmError('Connection error. Please try again.');
+    } finally {
+      setBmBusy(null);
+    }
+  }, [currentStation?.id, bmBusy, updatePlayerCredits, fetchBlackMarketCatalog, refreshPlayerState, fetchShipData]);
+
+  // Sell held contraband: POST /trading/black-market/sell. A DETECTED sell is
+  // still a 2xx success — the response carries detected/fine/heat — so surface
+  // the bust feedback distinctly from a clean payout.
+  const sellContraband = useCallback(async (listing: ContrabandListing, quantity: number) => {
+    const token = getToken();
+    const stationId = currentStation?.id;
+    if (!token || !stationId || bmBusy) {
+      if (!token) setBmError('Not authenticated. Please log in again.');
+      return;
+    }
+    setBmBusy(`sell:${listing.commodity}`);
+    setBmError(null);
+    setBmSuccess(null);
+    setBmDetected(null);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/trading/black-market/sell`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ station_id: stationId, commodity: listing.commodity, quantity })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        const rawDetail = error?.detail ?? error?.message;
+        setBmError(typeof rawDetail === 'string' && rawDetail ? rawDetail : 'The sale fell through.');
+        return;
+      }
+      const result = await response.json();
+      if (typeof result.remaining_credits === 'number') {
+        setLocalCredits(result.remaining_credits);
+        updatePlayerCredits(result.remaining_credits);
+      }
+      if (result.detected) {
+        // Bust: cargo confiscated, fine levied, heat flipped.
+        const fine = formatCredits(result.fine ?? 0);
+        const heat = result.heat === 'wanted' ? 'You are now WANTED.' : 'You are now a SUSPECT.';
+        setBmDetected(`Detected! ${result.confiscated_units ?? 0} units of contraband confiscated — fine of ${fine} levied. ${heat}`);
+      } else {
+        setBmSuccess(`Sold ${result.quantity} × ${prettyCommodity(listing.commodity)} for ${formatCredits(result.sale_value ?? 0)}. (No one was watching... this time.)`);
+      }
+      fetchBlackMarketCatalog(stationId);
+      Promise.allSettled([refreshPlayerState(), fetchShipData()]);
+    } catch (error) {
+      console.error('Black-market sell error:', error);
+      setBmError('Connection error. Please try again.');
+    } finally {
+      setBmBusy(null);
+    }
+  }, [currentStation?.id, bmBusy, updatePlayerCredits, fetchBlackMarketCatalog, refreshPlayerState, fetchShipData]);
+
   // Black Market Modal
   const renderBlackMarketModal = () => {
     if (!showBlackMarket) return null;
 
-    const getBlackMarketItems = () => {
-      switch (activeVenue) {
-        case 'trading':
-          return [
-            { name: 'Stolen Cargo Manifest', desc: 'Discounted goods of questionable origin', price: 5000, discount: '40% off market' },
-            { name: 'Smuggling Contract', desc: 'High-risk, high-reward delivery job', price: 2000, reward: '15,000 cr on completion' },
-            { name: 'Contraband Spices', desc: 'Illegal but highly valuable commodities', price: 10000, sellPrice: '25,000 at black ports' },
-          ];
-        case 'armory':
-          return [
-            { name: 'EMP Mine', desc: 'Disables ship systems on impact', price: 8000, stats: 'Disable: 3 turns' },
-            { name: 'Cloaking Generator', desc: 'Temporary invisibility field', price: 50000, stats: 'Duration: 5 sectors' },
-            { name: 'Illegal Weapon Mod', desc: '+50% damage, voids warranty', price: 15000, stats: '+50% ATK' },
-          ];
-        case 'services':
-          return [
-            { name: 'Identity Wipe', desc: 'Clear your criminal record... temporarily', price: 25000, effect: 'Reset bounty' },
-            { name: 'Stolen Ship Parts', desc: 'Repair at 30% cost, 20% failure chance', price: 3000, risk: '20% failure' },
-            { name: 'Unregistered Mods', desc: 'Performance upgrades with no paper trail', price: 20000, stats: '+10% speed' },
-          ];
-        default:
-          return [];
-      }
+    // Held contraband counts per commodity (from the current ship cargo), so a
+    // commodity the player actually holds can be sold. Cargo "contents" keys are
+    // ``illegal:<commodity>`` (ContrabandService.cargo_key).
+    const cargoContents = (shipData?.cargo && typeof shipData.cargo === 'object'
+      ? (shipData.cargo as Record<string, unknown>).contents
+      : null) as Record<string, number> | null | undefined;
+    const heldOf = (commodity: string): number => {
+      const v = cargoContents?.[`illegal:${commodity}`];
+      return typeof v === 'number' && v > 0 ? v : 0;
     };
-
-    const items = getBlackMarketItems();
 
     return (
       <div className="black-market-overlay" onClick={() => setShowBlackMarket(false)}>
@@ -682,29 +1530,158 @@ const SpaceDockInterface: React.FC = () => {
             <span className="rep-tier">({playerState?.reputation_tier})</span>
           </div>
 
-          <div className="bm-items">
-            {items.map((item, idx) => (
-              <div key={idx} className="bm-item">
-                <div className="bm-item-info">
-                  <h4>{item.name}</h4>
-                  <p>{item.desc}</p>
-                  <div className="bm-item-stats">
-                    {Object.entries(item).filter(([k]) => !['name', 'desc', 'price'].includes(k)).map(([key, val]) => (
-                      <span key={key} className="bm-stat">{key}: {val}</span>
-                    ))}
-                  </div>
+          {/* Buy/sell feedback */}
+          {bmSuccess && (
+            <div className="genesis-success-message">
+              <span className="success-icon">✅</span>
+              {bmSuccess}
+            </div>
+          )}
+          {bmDetected && (
+            <div className="genesis-error-message">
+              <span className="error-icon">🚨</span>
+              {bmDetected}
+            </div>
+          )}
+          {bmError && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {bmError}
+            </div>
+          )}
+
+          {/* Real contraband catalog — gated off the endpoint */}
+          {bmLoading && (
+            <div className="catalog-loading">Making contact with the fence...</div>
+          )}
+
+          {!bmLoading && bmGateClosed && (
+            <div className="bm-registry-empty">
+              No underworld contacts here. You have no business at this station —
+              or none they'll acknowledge.
+            </div>
+          )}
+
+          {!bmLoading && !bmGateClosed && bmCatalogError && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {bmCatalogError}
+            </div>
+          )}
+
+          {!bmLoading && !bmGateClosed && bmCatalog && (
+            <div className="bm-items">
+              {bmCatalog.commodities.length === 0 ? (
+                <div className="bm-registry-empty">The fence has nothing to move today.</div>
+              ) : (
+                bmCatalog.commodities.map(listing => {
+                  const held = heldOf(listing.commodity);
+                  const qty = bmQuantities[listing.commodity] ?? 1;
+                  const totalBuy = listing.indicative_unit_price * qty;
+                  const buyBusy = bmBusy === `buy:${listing.commodity}`;
+                  const sellBusy = bmBusy === `sell:${listing.commodity}`;
+                  const anyBusy = bmBusy !== null;
+                  return (
+                    <div key={listing.commodity} className="bm-item">
+                      <div className="bm-item-info">
+                        <h4>{prettyCommodity(listing.commodity)}</h4>
+                        <div className="bm-item-stats">
+                          <span className="bm-stat">severity: {listing.severity}</span>
+                          <span className="bm-stat">~{formatCredits(listing.indicative_unit_price)}/unit</span>
+                          {held > 0 && <span className="bm-stat">held: {held}</span>}
+                        </div>
+                      </div>
+                      <div className="bm-item-purchase">
+                        <input
+                          type="number"
+                          min={1}
+                          max={100000}
+                          className="bm-registry-input"
+                          style={{ width: '72px' }}
+                          value={qty}
+                          onChange={e => {
+                            const n = Math.max(1, Math.min(100000, parseInt(e.target.value, 10) || 1));
+                            setBmQuantities(prev => ({ ...prev, [listing.commodity]: n }));
+                          }}
+                          disabled={anyBusy}
+                          aria-label={`Quantity of ${prettyCommodity(listing.commodity)}`}
+                        />
+                        <span className="bm-price">{formatCredits(totalBuy)}</span>
+                        <button
+                          className="bm-buy-btn"
+                          onClick={() => buyContraband(listing, qty)}
+                          disabled={anyBusy || (playerState?.credits || 0) < totalBuy}
+                        >
+                          {buyBusy ? '...' : 'Buy'}
+                        </button>
+                        <button
+                          className="bm-buy-btn"
+                          onClick={() => sellContraband(listing, Math.min(qty, held))}
+                          disabled={anyBusy || held <= 0}
+                          title={held <= 0 ? 'None of this contraband in your hold' : undefined}
+                        >
+                          {sellBusy ? '...' : 'Sell'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          <div className="bm-registry">
+            <h4 className="bm-registry-title">🔍 Planetary Registry Lookup</h4>
+            <p className="bm-registry-desc">
+              "I know a clerk who'll pull a pilot's filed holdings... for a price."
+            </p>
+            <div className="bm-registry-query">
+              <input
+                type="text"
+                className="bm-registry-input"
+                placeholder="Pilot name..."
+                value={registryQueryName}
+                onChange={e => { setRegistryQueryName(e.target.value); if (registryError) setRegistryError(null); }}
+                onKeyDown={e => { if (e.key === 'Enter' && !registryLoading) handleRegistryLookup(); }}
+                disabled={registryLoading}
+              />
+              <button
+                className="bm-buy-btn"
+                onClick={handleRegistryLookup}
+                disabled={registryLoading || !registryQueryName.trim()}
+              >
+                {registryLoading ? 'Querying...' : `Pay ${formatCredits(50000)} — Query`}
+              </button>
+            </div>
+            <div className="bm-registry-meta">
+              <span className="bm-price">{formatCredits(50000)}</span>
+              <span className="bm-registry-caveat">Clandestine worlds never appear.</span>
+            </div>
+
+            {registryError && (
+              <div className="bm-registry-error">{registryError}</div>
+            )}
+
+            {registryResults && (
+              registryResults.length === 0 ? (
+                <div className="bm-registry-empty">No registered holdings on file.</div>
+              ) : (
+                <div className="bm-registry-results">
+                  {registryResults.map((planet, idx) => (
+                    <div key={idx} className="bm-item">
+                      <div className="bm-item-info">
+                        <h4>{planet.name}</h4>
+                        <div className="bm-item-stats">
+                          <span className="bm-stat">sector: {planet.sectorId}</span>
+                          <span className="bm-stat">type: {planet.planetType}</span>
+                          <span className="bm-stat">status: {planet.registrationStatus}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div className="bm-item-purchase">
-                  <span className="bm-price">{item.price.toLocaleString()} cr</span>
-                  <button
-                    className="bm-buy-btn"
-                    disabled={(playerState?.credits || 0) < item.price}
-                  >
-                    Acquire
-                  </button>
-                </div>
-              </div>
-            ))}
+              )
+            )}
           </div>
 
           <div className="bm-footer">
@@ -717,63 +1694,109 @@ const SpaceDockInterface: React.FC = () => {
     );
   };
 
-  const renderHub = () => (
-    <div className="spacedock-hub">
-      <div className="hub-header">
-        <div className="station-identity">
-          <div className="station-logo">🚀</div>
-          <div className="station-info">
-            <h2>{currentStation?.name || 'SpaceDock'}</h2>
-            <div className="station-tagline">Premier Trading & Construction Facility</div>
-          </div>
-        </div>
-        <div className="station-status">
-          <div className="status-item">
-            <span className="status-label">Status</span>
-            <span className="status-value operational">Operational</span>
-          </div>
-          <div className="status-item">
-            <span className="status-label">Security</span>
-            <span className="status-value">Maximum</span>
-          </div>
-        </div>
-      </div>
+  const renderHub = () => {
+    const stationClass = currentStation?.station_class;
+    const tagline = currentStation?.is_spacedock
+      ? 'Premier Trading & Construction Facility'
+      : (stationClass != null && CLASS_LABELS[stationClass]) || 'Orbital Trading Station';
 
-      <div className="hub-welcome">
-        <p>Welcome to the premier SpaceDock facility. Choose a destination to access our services.</p>
-      </div>
+    const status = currentStation?.status;
+    const statusLabel = status
+      ? status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())
+      : 'Unknown';
+    const statusClass = status === 'OPERATIONAL' ? 'operational' : status ? 'degraded' : '';
 
-      <div className="venues-grid">
-        {venues.map(venue => (
-          <div
-            key={venue.id}
-            className={`venue-card ${!venue.available ? 'unavailable' : ''}`}
-            onClick={() => venue.available && setActiveVenue(venue.id)}
-          >
-            <div className="venue-icon">{venue.icon}</div>
-            <div className="venue-content">
-              <h3 className="venue-name">{venue.name}</h3>
-              <p className="venue-description">{venue.description}</p>
-              {venue.services && (
-                <div className="venue-services">
-                  {venue.services.map((service, idx) => (
-                    <span key={idx} className="service-tag">{service}</span>
+    const activeServices = SERVICE_ICONS.filter(s => Boolean(stationServices[s.key]));
+
+    return (
+      <div className="spacedock-hub">
+        <div className="hub-header">
+          <div className="station-identity">
+            <div className="station-logo">🚀</div>
+            <div className="station-info">
+              <h2>{currentStation?.name || 'SpaceDock'}</h2>
+              <div className="station-tagline">{tagline}</div>
+            </div>
+          </div>
+          <div className="station-status">
+            <div className="status-item">
+              <span className="status-label">Status</span>
+              <span className={`status-value ${statusClass}`.trim()}>{statusLabel}</span>
+            </div>
+            {slipsGauge && (
+              <div className="status-item">
+                <span className="status-label">Slips</span>
+                <span
+                  className={`status-value ${slipsGauge.occupied >= slipsGauge.capacity ? 'degraded' : 'operational'}`}
+                  title={`Transient slips occupied: ${slipsGauge.occupied} of ${slipsGauge.capacity}`}
+                >
+                  {slipsGauge.occupied}/{slipsGauge.capacity}
+                </span>
+              </div>
+            )}
+            {activeServices.length > 0 && (
+              <div className="status-item">
+                <span className="status-label">Services</span>
+                <div className="station-service-icons">
+                  {activeServices.map(s => (
+                    <span key={s.key} className="station-service-icon" title={s.label}>
+                      {s.icon}
+                    </span>
                   ))}
                 </div>
-              )}
-            </div>
-            <div className="venue-status">
-              {venue.available ? (
-                <span className="available-indicator">OPEN</span>
-              ) : (
-                <span className="unavailable-indicator">UNAVAILABLE</span>
-              )}
-            </div>
+              </div>
+            )}
           </div>
-        ))}
+          {onUndock && (
+            <button
+              className="hub-undock-btn"
+              onClick={onUndock}
+              disabled={helmBusy}
+              aria-disabled={helmBusy}
+              aria-label={helmBusy ? 'Undock unavailable — helm is busy' : 'Undock and launch into space'}
+              title="Undock and launch into space"
+            >
+              {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
+            </button>
+          )}
+        </div>
+
+        <div className="hub-welcome">
+          <p>Welcome aboard. Choose a destination to access this station&apos;s services.</p>
+        </div>
+
+        <div className="venues-grid">
+          {venues.map(venue => (
+            <div
+              key={venue.id}
+              className={`venue-card ${!venue.available ? 'unavailable' : ''}`}
+              onClick={() => venue.available && setActiveVenue(venue.id)}
+            >
+              <div className="venue-icon">{venue.icon}</div>
+              <div className="venue-content">
+                <h3 className="venue-name">{venue.name}</h3>
+                <p className="venue-description">{venue.description}</p>
+                {venue.services && (
+                  <div className="venue-services">
+                    {venue.services.map((service, idx) => (
+                      <span key={idx} className="service-tag">{service}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="venue-status">
+                {venue.available ? (
+                  <span className="available-indicator">OPEN</span>
+                ) : (
+                  <span className="unavailable-indicator">UNAVAILABLE</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderGamblingHall = () => (
     <div className="venue-container gambling">
@@ -805,7 +1828,7 @@ const SpaceDockInterface: React.FC = () => {
                 <h3>Cosmic Slots</h3>
                 <p>Match symbols to win big! Jackpot pays 50x</p>
                 <div className="game-stats">
-                  <span>Min Bet: 10 cr</span>
+                  <span>Min Bet: {formatCredits(10)}</span>
                   <span>Max Win: 50x</span>
                 </div>
               </div>
@@ -815,7 +1838,7 @@ const SpaceDockInterface: React.FC = () => {
                 <h3>Nebula Dice</h3>
                 <p>Bet high, low, or exact. Avoid the Void!</p>
                 <div className="game-stats">
-                  <span>Min Bet: 10 cr</span>
+                  <span>Min Bet: {formatCredits(10)}</span>
                   <span>Max Win: 35x</span>
                 </div>
               </div>
@@ -825,7 +1848,7 @@ const SpaceDockInterface: React.FC = () => {
                 <h3>Stellar Blackjack</h3>
                 <p>Beat the dealer to 21 without busting!</p>
                 <div className="game-stats">
-                  <span>Min Bet: 10 cr</span>
+                  <span>Min Bet: {formatCredits(10)}</span>
                   <span>Blackjack: 3:2</span>
                 </div>
               </div>
@@ -835,8 +1858,8 @@ const SpaceDockInterface: React.FC = () => {
                 <h3>Sector Sweep</h3>
                 <p>Pick sectors, match the draw, win the jackpot!</p>
                 <div className="game-stats">
-                  <span>Ticket: 100 cr</span>
-                  <span>Jackpot: 1M cr</span>
+                  <span>Ticket: {formatCredits(100)}</span>
+                  <span>Jackpot: {formatCredits(1000000)}</span>
                 </div>
               </div>
             </div>
@@ -872,8 +1895,8 @@ const SpaceDockInterface: React.FC = () => {
               <div className="slot-result">
                 {lastWin !== null && (
                   <div className={`win-display ${lastWin > 0 ? 'winner' : lastWin < 0 ? 'loser' : 'push'}`}>
-                    {lastWin > 0 ? `WIN! +${lastWin.toLocaleString()} credits!` :
-                     lastWin < 0 ? `Lost ${Math.abs(lastWin).toLocaleString()} credits` :
+                    {lastWin > 0 ? `WIN! +${formatCredits(lastWin)}!` :
+                     lastWin < 0 ? `Lost ${formatCredits(Math.abs(lastWin))}` :
                      'No match - try again!'}
                   </div>
                 )}
@@ -958,8 +1981,8 @@ const SpaceDockInterface: React.FC = () => {
               <div className="dice-result">
                 {lastWin !== null && (
                   <div className={`win-display ${lastWin > 0 ? 'winner' : 'loser'}`}>
-                    {lastWin > 0 ? `WIN! +${lastWin.toLocaleString()} credits!` :
-                     `Lost ${Math.abs(lastWin).toLocaleString()} credits`}
+                    {lastWin > 0 ? `WIN! +${formatCredits(lastWin)}!` :
+                     `Lost ${formatCredits(Math.abs(lastWin))}`}
                   </div>
                 )}
               </div>
@@ -1126,7 +2149,7 @@ const SpaceDockInterface: React.FC = () => {
                       {blackjackGame.result === 'bust' && '💥 BUST!'}
                       {lastWin !== null && (
                         <div className="result-amount">
-                          {lastWin > 0 ? `+${lastWin.toLocaleString()}` : lastWin.toLocaleString()} credits
+                          {lastWin > 0 ? `+${formatCredits(lastWin)}` : formatCredits(lastWin)}
                         </div>
                       )}
                     </div>
@@ -1182,7 +2205,7 @@ const SpaceDockInterface: React.FC = () => {
                   </div>
 
                   <div className="current-bet-display">
-                    Current Bet: {betAmount.toLocaleString()} cr
+                    Current Bet: {formatCredits(betAmount)}
                   </div>
                 </div>
               )}
@@ -1260,9 +2283,9 @@ const SpaceDockInterface: React.FC = () => {
                     {isJackpot ? (
                       <div className="jackpot-win">🎉 JACKPOT! 🎉</div>
                     ) : lotteryMatches && lotteryMatches > 0 ? (
-                      `${lotteryMatches} Match${lotteryMatches > 1 ? 'es' : ''}! +${lastWin?.toLocaleString()} credits!`
+                      `${lotteryMatches} Match${lotteryMatches > 1 ? 'es' : ''}! +${formatCredits(lastWin)}!`
                     ) : (
-                      `No matches. Lost ${betAmount.toLocaleString()} credits`
+                      `No matches. Lost ${formatCredits(betAmount)}`
                     )}
                   </div>
                 </div>
@@ -1313,70 +2336,205 @@ const SpaceDockInterface: React.FC = () => {
     </div>
   );
 
-  const renderShipyard = () => (
-    <div className="venue-container shipyard">
-      <div className="venue-header">
-        <button className="back-button" onClick={() => setActiveVenue('hub')}>
-          ← Back to Hub
-        </button>
-        <h2>🛠️ Shipyard</h2>
-      </div>
-      <div className="venue-content-area">
-        <div className="shipyard-sections">
-          <div className="shipyard-section">
-            <h3>🏗️ Construction Slips</h3>
-            <p className="section-description">Reserve a dock slip to build your own custom ship</p>
-            <div className="slips-overview">
-              <div className="slip-stat">
-                <span className="slip-count">12</span>
-                <span className="slip-label">Total Slips</span>
-              </div>
-              <div className="slip-stat available">
-                <span className="slip-count">8</span>
-                <span className="slip-label">Available</span>
-              </div>
-              <div className="slip-stat occupied">
-                <span className="slip-count">4</span>
-                <span className="slip-label">In Use</span>
-              </div>
+  const renderShipyard = () => {
+    const currentShipType = normalizeShipType(shipData?.type);
+
+    return (
+      <div className="venue-container shipyard">
+        <div className="venue-header">
+          <button className="back-button" onClick={() => setActiveVenue('hub')}>
+            ← Back to Hub
+          </button>
+          <h2>🛠️ Shipyard</h2>
+        </div>
+        <div className="venue-content-area">
+          <div className="shipyard-sections">
+            <div className="shipyard-section">
+              <h3>🏗️ Construction Slips</h3>
+              {tradedockTier ? (
+                <>
+                  <p className="section-description">
+                    This Tier-{tradedockTier} TradeDock runs full construction slips. Ship orders and build tracking live in the Construction venue.
+                  </p>
+                  <button className="action-button" onClick={() => setActiveVenue('construction')}>
+                    Open Construction Venue
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="section-description">
+                    Slip construction — coming soon. Custom ship building is not yet available at this facility.
+                  </p>
+                  <button className="action-button" disabled>Reserve Dock Slip</button>
+                </>
+              )}
             </div>
-            <button className="action-button primary">Reserve Dock Slip</button>
+
+            {/* WO-SM-5 (reachability gate-fix): the slot-grid module UI lives here
+                in the ACTIVE Shipyard venue (the venue card already advertises
+                "Ship Customization"). It was previously mounted only in the legacy
+                .service-card "Ship Upgrades" overlay, which the venue-card hub no
+                longer renders — so the grid was unreachable in the live UI. */}
+            {shipData && (
+              <div className="shipyard-section">
+                <h3>🔧 Ship Customization</h3>
+                <p className="section-description">
+                  Fit modules into your hull's slot grid — supercharged slots, class locks, and salvage on removal.
+                </p>
+                <ModuleGridInterface
+                  ship={{ id: shipData.id }}
+                  playerCredits={displayCredits}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                />
+              </div>
+            )}
+
+            <div className="shipyard-section">
+              <h3>🚀 Ship Catalog</h3>
+              <p className="section-description">Browse and purchase pre-fabricated vessels</p>
+
+              {shipPurchaseSuccess && (
+                <div className="genesis-success-message">
+                  <span className="success-icon">✅</span>
+                  {shipPurchaseSuccess}
+                </div>
+              )}
+              {shipPurchaseError && !confirmShip && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {shipPurchaseError}
+                </div>
+              )}
+
+              {shipCatalogLoading && !shipCatalog && (
+                <div className="catalog-loading">Accessing shipyard registry...</div>
+              )}
+              {shipCatalogError && !shipCatalogLoading && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {shipCatalogError}
+                  <button className="action-button" onClick={fetchShipCatalog}>Retry</button>
+                </div>
+              )}
+              {!shipCatalogError && shipCatalog && (
+                <div className="ship-catalog">
+                  {shipCatalog.map(ship => {
+                    const isCurrent = currentShipType !== '' && normalizeShipType(ship.type) === currentShipType;
+                    return (
+                      <div
+                        key={ship.type}
+                        className={`ship-card${!ship.purchasable ? ' unavailable' : ''}${isCurrent ? ' current-ship' : ''}`}
+                      >
+                        <div className="ship-info">
+                          <span className="ship-name">
+                            {ship.name}
+                            {isCurrent && <span className="current-ship-badge">YOUR SHIP</span>}
+                          </span>
+                          <div className="ship-stats">
+                            <span title="Cargo holds">📦 {ship.max_cargo}</span>
+                            <span title="Speed">⚡ {ship.speed}</span>
+                            <span title="Drone capacity">🤖 {ship.max_drones}</span>
+                            <span title="Shield capacity">🛡️ {ship.max_shields}</span>
+                            <span title="Hull points">🔩 {ship.hull_points}</span>
+                          </div>
+                        </div>
+                        {ship.purchasable ? (
+                          <>
+                            <div className="ship-price">{formatCredits(ship.base_cost)}</div>
+                            <button
+                              className="buy-ship-btn"
+                              onClick={() => {
+                                setConfirmShip(ship);
+                                setNewShipName('');
+                                setShipPurchaseError(null);
+                                setShipPurchaseSuccess(null);
+                              }}
+                              disabled={shipPurchasing || displayCredits < ship.base_cost}
+                              title={displayCredits < ship.base_cost ? 'Insufficient credits' : undefined}
+                            >
+                              Purchase
+                            </button>
+                          </>
+                        ) : (
+                          <div className="ship-unavailable-reason">
+                            {ship.reason || 'Not available for purchase'}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {shipCatalog.length === 0 && (
+                    <p className="section-description">No vessels currently listed at this shipyard.</p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="shipyard-section">
-            <h3>🚀 Ship Catalog</h3>
-            <p className="section-description">Browse and purchase pre-fabricated vessels</p>
-            <div className="ship-catalog">
-              {[
-                { name: 'Scout Ship', price: 15000, cargo: 25, speed: 'Fast' },
-                { name: 'Light Freighter', price: 35000, cargo: 100, speed: 'Medium' },
-                { name: 'Defender', price: 70000, cargo: 50, speed: 'Medium' },
-                { name: 'Cargo Hauler', price: 60000, cargo: 200, speed: 'Slow' },
-                { name: 'Colony Ship', price: 150000, cargo: 500, speed: 'Slow' }
-              ].map((ship, idx) => (
-                <div key={idx} className="ship-card">
-                  <div className="ship-info">
-                    <span className="ship-name">{ship.name}</span>
-                    <div className="ship-stats">
-                      <span>📦 {ship.cargo}</span>
-                      <span>⚡ {ship.speed}</span>
-                    </div>
+          {confirmShip && (
+            <div
+              className="ship-confirm-overlay"
+              onClick={() => !shipPurchasing && setConfirmShip(null)}
+            >
+              <div className="ship-confirm-panel" onClick={e => e.stopPropagation()}>
+                <h3>Confirm Purchase — {confirmShip.name}</h3>
+                {confirmShip.description && (
+                  <p className="section-description">{confirmShip.description}</p>
+                )}
+                <label className="ship-name-label">
+                  Ship name (optional)
+                  <input
+                    type="text"
+                    value={newShipName}
+                    onChange={e => setNewShipName(e.target.value)}
+                    placeholder={confirmShip.name}
+                    maxLength={50}
+                    disabled={shipPurchasing}
+                  />
+                </label>
+                <div className="confirm-cost-rows">
+                  <div className="confirm-cost-row">
+                    <span>Cost</span>
+                    <span>{formatCredits(confirmShip.base_cost)}</span>
                   </div>
-                  <div className="ship-price">{ship.price.toLocaleString()} cr</div>
+                  <div className="confirm-cost-row">
+                    <span>Your credits</span>
+                    <span>{formatCredits(displayCredits)}</span>
+                  </div>
+                  <div className={`confirm-cost-row balance${displayCredits - confirmShip.base_cost < 0 ? ' negative' : ''}`}>
+                    <span>After purchase</span>
+                    <span>{formatCredits(displayCredits - confirmShip.base_cost)}</span>
+                  </div>
+                </div>
+                {shipPurchaseError && (
+                  <div className="genesis-error-message">
+                    <span className="error-icon">❌</span>
+                    {shipPurchaseError}
+                  </div>
+                )}
+                <div className="confirm-actions">
                   <button
-                    className="buy-ship-btn"
-                    disabled={(playerState?.credits || 0) < ship.price}
+                    className="action-button"
+                    onClick={() => setConfirmShip(null)}
+                    disabled={shipPurchasing}
                   >
-                    Purchase
+                    Cancel
+                  </button>
+                  <button
+                    className="action-button primary"
+                    onClick={() => purchaseShip(confirmShip, newShipName)}
+                    disabled={shipPurchasing || displayCredits < confirmShip.base_cost}
+                  >
+                    {shipPurchasing ? 'Processing...' : 'Confirm Purchase'}
                   </button>
                 </div>
-              ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderGenesisStore = () => {
     const canHoldGenesis = maxGenesisDevices > 0;
@@ -1459,92 +2617,44 @@ const SpaceDockInterface: React.FC = () => {
             </div>
           )}
 
-          <div className="genesis-devices-grid">
-            <div className="genesis-device-card standard">
+          <div className="genesis-devices-grid single">
+            <div className="genesis-device-card device">
               <div className="device-header">
-                <span className="device-tier">Standard</span>
-                <div className="device-icon">🌑</div>
+                <span className="device-tier">Genesis Device</span>
+                <div className="device-icon">🌍</div>
               </div>
               <div className="device-details">
-                <h3>Standard Genesis Device</h3>
+                <h3>Genesis Device</h3>
                 <ul className="device-specs">
-                  <li>🎯 85% Success Rate</li>
-                  <li>⏱️ 48 Hour Process</li>
-                  <li>🪐 Basic Planet Types</li>
-                  <li>📊 Higher chance of barren worlds</li>
+                  <li>🔩 Stored on your ship; fuse 1 (Basic), 3 (Enhanced), or 1 + your Colony Ship (Advanced)</li>
+                  <li>🪐 Tier &amp; biome are chosen when you deploy — not now</li>
+                  <li>💳 Sequence cost (25k / 75k / 250k) is paid at deploy</li>
+                  <li>📅 {genesisWeeklyRemaining !== null ? `${genesisWeeklyRemaining} of ${genesisWeeklyLimit} acquisitions left this week` : `Limited to ${genesisWeeklyLimit} per week`}</li>
                 </ul>
               </div>
               <div className="device-footer">
-                <div className="device-price">25,000 cr</div>
+                <div className="device-price">{formatCredits(GENESIS_DEVICE_PRICE)}</div>
                 <button
                   className="purchase-device-btn"
-                  onClick={() => purchaseGenesisDevice('standard')}
-                  disabled={genesisPurchasing || displayCredits < 25000 || !canHoldGenesis || !hasCapacity}
+                  onClick={() => purchaseGenesisDevice()}
+                  disabled={genesisPurchasing || displayCredits < GENESIS_DEVICE_PRICE || !canHoldGenesis || !hasCapacity || genesisWeeklyRemaining === 0}
                 >
-                  {genesisPurchasing ? 'Purchasing...' : !canHoldGenesis ? 'Ship Incompatible' : !hasCapacity ? 'At Capacity' : 'Purchase'}
-                </button>
-              </div>
-            </div>
-
-            <div className="genesis-device-card advanced">
-              <div className="device-header">
-                <span className="device-tier">Advanced</span>
-                <div className="device-icon">🌎</div>
-              </div>
-              <div className="device-details">
-                <h3>Advanced Genesis Device</h3>
-                <ul className="device-specs">
-                  <li>🎯 92% Success Rate</li>
-                  <li>⏱️ 36 Hour Process</li>
-                  <li>🪐 Improved Planet Types</li>
-                  <li>📊 Better resource distribution</li>
-                </ul>
-              </div>
-              <div className="device-footer">
-                <div className="device-price">50,000 cr</div>
-                <button
-                  className="purchase-device-btn"
-                  onClick={() => purchaseGenesisDevice('advanced')}
-                  disabled={genesisPurchasing || displayCredits < 50000 || !canHoldGenesis || !hasCapacity}
-                >
-                  {genesisPurchasing ? 'Purchasing...' : !canHoldGenesis ? 'Ship Incompatible' : !hasCapacity ? 'At Capacity' : 'Purchase'}
-                </button>
-              </div>
-            </div>
-
-            <div className="genesis-device-card experimental">
-              <div className="device-header">
-                <span className="device-tier">Experimental</span>
-                <div className="device-icon">🌏</div>
-              </div>
-              <div className="device-details">
-                <h3>Experimental Genesis Device</h3>
-                <ul className="device-specs">
-                  <li>🎯 95% Success Rate</li>
-                  <li>⏱️ 24 Hour Process</li>
-                  <li>🪐 Premium Planet Types</li>
-                  <li>📊 Chance for unique features</li>
-                </ul>
-              </div>
-              <div className="device-footer">
-                <div className="device-price">100,000 cr</div>
-                <button
-                  className="purchase-device-btn"
-                  onClick={() => purchaseGenesisDevice('experimental')}
-                  disabled={genesisPurchasing || displayCredits < 100000 || !canHoldGenesis || !hasCapacity}
-                >
-                  {genesisPurchasing ? 'Purchasing...' : !canHoldGenesis ? 'Ship Incompatible' : !hasCapacity ? 'At Capacity' : 'Purchase'}
+                  {genesisPurchasing ? 'Acquiring…'
+                    : !canHoldGenesis ? 'Ship Incompatible'
+                    : !hasCapacity ? 'Ship At Capacity'
+                    : genesisWeeklyRemaining === 0 ? 'Weekly Limit Reached'
+                    : 'Acquire Device'}
                 </button>
               </div>
             </div>
           </div>
 
           <div className="genesis-info">
-            <h4>📋 Requirements</h4>
+            <h4>📋 How it works</h4>
             <ul>
-              <li>Ship with Genesis Device capacity (Cargo Hauler, Colony Ship, Carrier, Defender, or Warp Jumper)</li>
-              <li>Empty, non-protected sector for deployment</li>
-              <li>Minimum Federation reputation level</li>
+              <li>Acquire devices here (max {genesisWeeklyLimit}/week), then fly to an <strong>empty sector</strong> to deploy.</li>
+              <li>Choose the tier at deploy: <strong>Basic</strong> (1 device), <strong>Enhanced</strong> (3 devices), or <strong>Advanced</strong> (1 device + sacrifice a Colony Ship for an instant colony).</li>
+              <li>Carry capacity depends on your hull (Cargo Hauler 2, Defender 3, Colony Ship / Carrier 5, Warp Jumper 1).</li>
             </ul>
           </div>
         </div>
@@ -1552,209 +2662,542 @@ const SpaceDockInterface: React.FC = () => {
     );
   };
 
-  const renderArmory = () => (
-    <div className="venue-container armory">
-      <div className="venue-header">
-        <button className="back-button" onClick={() => setActiveVenue('hub')}>
-          ← Back to Hub
-        </button>
-        <h2>⚔️ Armory</h2>
-      </div>
-      <div className="venue-content-area">
-        <div className="armory-categories">
-          {/* Drones Section */}
-          <div className="armory-section">
-            <h3>🤖 Combat Drones</h3>
-            <div className="equipment-grid">
-              <div className="equipment-card attack">
-                <div className="eq-icon">⚔️</div>
-                <div className="eq-info">
-                  <h4>Attack Drone</h4>
-                  <p>Offensive combat unit for ship-to-ship engagement</p>
-                  <div className="eq-stats">
-                    <span>ATK: 8</span>
-                    <span>HP: 50</span>
-                  </div>
-                </div>
-                <div className="eq-purchase">
-                  <span className="eq-price">1,000 cr</span>
-                  <div className="qty-controls">
-                    <input type="number" min="1" max="100" defaultValue="1" />
-                    <button className="buy-btn">Buy</button>
-                  </div>
-                </div>
-              </div>
+  const renderArmoryItemCard = (item: ArmoryCatalogItem) => {
+    const qty = armoryQuantities[item.item] ?? 1;
+    const totalCost = item.price * qty;
+    const loadoutKey = loadoutKeyForItem(item.item);
+    // Gate on the station's services map via the item's service key —
+    // the catalog doesn't send an 'available' flag
+    const gated = item.available === false ||
+      (item.service ? !stationServices[item.service] && !currentStation?.is_spacedock : false);
 
-              <div className="equipment-card defense">
-                <div className="eq-icon">🛡️</div>
-                <div className="eq-info">
-                  <h4>Defense Drone</h4>
-                  <p>Protective unit for ships, planets, and sectors</p>
-                  <div className="eq-stats">
-                    <span>DEF: 10</span>
-                    <span>HP: 75</span>
-                  </div>
-                </div>
-                <div className="eq-purchase">
-                  <span className="eq-price">1,200 cr</span>
-                  <div className="qty-controls">
-                    <input type="number" min="1" max="100" defaultValue="1" />
-                    <button className="buy-btn">Buy</button>
-                  </div>
-                </div>
-              </div>
+    // Determine why purchase is blocked, if anything
+    let blockReason: string | null = null;
+    if (gated) {
+      blockReason = item.reason || 'Service not available at this station';
+    } else if (armoryLoadout && loadoutKey) {
+      const cap = armoryLoadout.caps[loadoutKey];
+      const current = armoryLoadout[loadoutKey];
+      if (current >= cap) {
+        blockReason = 'At capacity';
+      } else if (current + qty > cap) {
+        blockReason = `Exceeds capacity — ${cap - current} slot${cap - current === 1 ? '' : 's'} free`;
+      }
+    }
+    if (!blockReason && displayCredits < totalCost) {
+      blockReason = 'Insufficient credits';
+    }
+
+    const cardClass = ARMORY_CARD_CLASS[item.item];
+    const isBuying = armoryBuying === item.item;
+
+    return (
+      <div
+        key={item.item}
+        className={`equipment-card${cardClass ? ` ${cardClass}` : ''}${gated ? ' unavailable' : ''}`}
+      >
+        <div className="eq-icon">{ARMORY_ICONS[item.item] || '📦'}</div>
+        <div className="eq-info">
+          <h4>{item.name}</h4>
+          {item.description && <p>{item.description}</p>}
+          {gated && (
+            <div className="eq-unavailable-reason">
+              {item.reason || 'Service not available at this station'}
             </div>
+          )}
+        </div>
+        <div className="eq-purchase">
+          <span className="eq-price">{formatCredits(item.price)}</span>
+          <div className="qty-controls">
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={qty}
+              onChange={e => {
+                const next = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1));
+                setArmoryQuantities(prev => ({ ...prev, [item.item]: next }));
+              }}
+              disabled={gated || Boolean(armoryBuying)}
+              aria-label={`${item.name} quantity`}
+            />
+            <button
+              className="buy-btn"
+              onClick={() => purchaseArmoryItem(item, qty)}
+              disabled={Boolean(armoryBuying) || Boolean(blockReason)}
+              title={blockReason ?? undefined}
+            >
+              {isBuying ? '...' : 'Buy'}
+            </button>
           </div>
+          {qty > 1 && !gated && (
+            <span className="eq-total">Total: {formatCredits(totalCost)}</span>
+          )}
+        </div>
+      </div>
+    );
+  };
 
-          {/* Mines Section */}
-          <div className="armory-section">
-            <h3>💣 Tactical Mines</h3>
-            <div className="equipment-grid">
-              <div className="equipment-card mine">
-                <div className="eq-icon">💥</div>
-                <div className="eq-info">
-                  <h4>Limpet Mine</h4>
-                  <p>Deploy in sectors to defend territory</p>
-                  <div className="eq-stats">
-                    <span>DMG: 150</span>
-                    <span>Stealth: High</span>
+  const renderArmory = () => {
+    const items = armoryCatalog ?? [];
+    const droneItems = items.filter(i => i.item.includes('drone'));
+    const mineItems = items.filter(i => !i.item.includes('drone') && i.item.includes('mine'));
+    const otherItems = items.filter(i => !i.item.includes('drone') && !i.item.includes('mine'));
+
+    return (
+      <div className="venue-container armory">
+        <div className="venue-header">
+          <button className="back-button" onClick={() => setActiveVenue('hub')}>
+            ← Back to Hub
+          </button>
+          <h2>⚔️ Armory</h2>
+        </div>
+        <div className="venue-content-area">
+          {armorySuccess && (
+            <div className="genesis-success-message">
+              <span className="success-icon">✅</span>
+              {armorySuccess}
+            </div>
+          )}
+          {armoryError && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {armoryError}
+            </div>
+          )}
+
+          {armoryLoading && !armoryCatalog && (
+            <div className="catalog-loading">Unlocking the weapons lockers...</div>
+          )}
+          {armoryCatalogError && !armoryLoading && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {armoryCatalogError}
+              <button className="action-button" onClick={fetchArmoryCatalog}>Retry</button>
+            </div>
+          )}
+
+          {!armoryCatalogError && armoryCatalog && (
+            <div className="armory-categories">
+              {droneItems.length > 0 && (
+                <div className="armory-section">
+                  <h3>🤖 Combat Drones</h3>
+                  <div className="equipment-grid">
+                    {droneItems.map(renderArmoryItemCard)}
                   </div>
                 </div>
-                <div className="eq-purchase">
-                  <span className="eq-price">2,000 cr</span>
-                  <div className="qty-controls">
-                    <input type="number" min="1" max="50" defaultValue="1" />
-                    <button className="buy-btn">Buy</button>
+              )}
+
+              {mineItems.length > 0 && (
+                <div className="armory-section">
+                  <h3>💣 Tactical Mines</h3>
+                  <div className="equipment-grid">
+                    {mineItems.map(renderArmoryItemCard)}
                   </div>
                 </div>
+              )}
+
+              {otherItems.length > 0 && (
+                <div className="armory-section">
+                  <h3>🎯 Tactical Systems</h3>
+                  <div className="equipment-grid">
+                    {otherItems.map(renderArmoryItemCard)}
+                  </div>
+                </div>
+              )}
+
+              {items.length === 0 && (
+                <p className="section-description">The armory shelves are empty at this station.</p>
+              )}
+            </div>
+          )}
+
+          <div className="current-loadout">
+            <h4>📊 Current Ship Loadout</h4>
+            <div className="loadout-stats">
+              <div className="loadout-item">
+                <span className="item-label">Attack Drones</span>
+                <span className="item-value">
+                  {armoryLoadout
+                    ? `${armoryLoadout.attack_drones} / ${armoryLoadout.caps.attack_drones}`
+                    : (playerState?.attack_drones ?? 0)}
+                </span>
               </div>
-
-              <div className="equipment-card mine-heavy">
-                <div className="eq-icon">☢️</div>
-                <div className="eq-info">
-                  <h4>Armored Mine</h4>
-                  <p>Heavy-duty mine with increased durability</p>
-                  <div className="eq-stats">
-                    <span>DMG: 300</span>
-                    <span>Armor: Heavy</span>
-                  </div>
-                </div>
-                <div className="eq-purchase">
-                  <span className="eq-price">5,000 cr</span>
-                  <div className="qty-controls">
-                    <input type="number" min="1" max="25" defaultValue="1" />
-                    <button className="buy-btn">Buy</button>
-                  </div>
-                </div>
+              <div className="loadout-item">
+                <span className="item-label">Defense Drones</span>
+                <span className="item-value">
+                  {armoryLoadout
+                    ? `${armoryLoadout.defense_drones} / ${armoryLoadout.caps.defense_drones}`
+                    : (playerState?.defense_drones ?? 0)}
+                </span>
+              </div>
+              <div className="loadout-item">
+                <span className="item-label">Mines</span>
+                <span className="item-value">
+                  {armoryLoadout
+                    ? `${armoryLoadout.mines} / ${armoryLoadout.caps.mines}`
+                    : '—'}
+                </span>
               </div>
             </div>
           </div>
         </div>
+        <BlackMarketButton />
+      </div>
+    );
+  };
 
-        <div className="current-loadout">
-          <h4>📊 Current Ship Loadout</h4>
-          <div className="loadout-stats">
-            <div className="loadout-item">
-              <span className="item-label">Attack Drones</span>
-              <span className="item-value">0 / 10</span>
+  const renderServices = () => {
+    // Read real hull/shield condition off the current ship. The combat dict
+    // mirrors the server's ShipResponse; values are plain numbers there.
+    const combat = shipData?.combat ?? null;
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const hull = num(combat?.hull);
+    const maxHull = num(combat?.max_hull);
+    const shields = num(combat?.shields);
+    const maxShields = num(combat?.max_shields);
+
+    const hullPct = hull !== null && maxHull ? Math.max(0, Math.min(100, (hull / maxHull) * 100)) : null;
+    const shieldPct = shields !== null && maxShields ? Math.max(0, Math.min(100, (shields / maxShields) * 100)) : null;
+
+    // Mirror the server's canon pricing (player.py repair endpoint):
+    // Basic repair = 5% of ship value per +10% combined hull+shield rating
+    const totalMax = (maxHull ?? 0) + (maxShields ?? 0);
+    const deficit = ((maxHull ?? 0) - (hull ?? 0)) + ((maxShields ?? 0) - (shields ?? 0));
+    const deficitPct = totalMax > 0 ? Math.max(0, (deficit / totalMax) * 100) : 0;
+    const repairCost = totalMax > 0
+      ? Math.round((shipData?.current_value ?? 0) * 0.05 * (deficitPct / 10))
+      : null;
+    const atFullCondition = totalMax > 0 && deficitPct <= 0;
+
+    // Cargo: "used" field when present, else sum commodity values while
+    // excluding metadata keys (same convention as ShipSelector)
+    const cargo = shipData?.cargo ?? {};
+    const metadataKeys = ['capacity', 'used', 'contents'];
+    const cargoUsed = typeof cargo.used === 'number'
+      ? cargo.used
+      : Object.entries(cargo)
+          .filter(([key, val]) => !metadataKeys.includes(key) && typeof val === 'number')
+          .reduce((sum, [, val]) => sum + val, 0);
+    const cargoCapacity = shipData?.cargo_capacity ?? 0;
+    const cargoPct = cargoCapacity > 0 ? Math.max(0, Math.min(100, (cargoUsed / cargoCapacity) * 100)) : 0;
+
+    // The repair endpoint requires the docked station to offer ship_repair
+    const repairOffered = Boolean(stationServices.ship_repair);
+
+    let repairBlockReason: string | null = null;
+    if (!repairOffered) {
+      repairBlockReason = 'This station does not offer hull repair';
+    } else if (!shipData) {
+      repairBlockReason = 'Reading ship telemetry...';
+    } else if (totalMax <= 0) {
+      // Escape pods / malformed combat dicts have no repairable systems;
+      // without this branch the button enables with a "—" cost and the
+      // click can only ever earn the server's 400.
+      repairBlockReason = 'Ship has no repairable systems';
+    } else if (atFullCondition) {
+      repairBlockReason = 'Ship is at full condition';
+    } else if (repairCost !== null && displayCredits < repairCost) {
+      repairBlockReason = 'Insufficient credits';
+    }
+
+    return (
+      <div className="venue-container services">
+        <div className="venue-header">
+          <button className="back-button" onClick={() => setActiveVenue('hub')}>
+            ← Back to Hub
+          </button>
+          <h2>🔧 Ship Services</h2>
+        </div>
+        <div className="venue-content-area">
+          {repairSuccess && (
+            <div className="genesis-success-message">
+              <span className="success-icon">✅</span>
+              {repairSuccess}
             </div>
-            <div className="loadout-item">
-              <span className="item-label">Defense Drones</span>
-              <span className="item-value">0 / 10</span>
+          )}
+          {repairError && (
+            <div className="genesis-error-message">
+              <span className="error-icon">❌</span>
+              {repairError}
             </div>
-            <div className="loadout-item">
-              <span className="item-label">Mines</span>
-              <span className="item-value">0 / 25</span>
+          )}
+
+          <div className="services-grid">
+            <div className="service-card">
+              <div className="service-icon">🔧</div>
+              <h3>Ship Repair</h3>
+              <p>{shipData ? `Restore ${shipData.name}'s hull and shield integrity` : 'Restore hull and shield integrity'}</p>
+              <div className="service-status">
+                <div className="status-bar">
+                  <span className="bar-label">Hull</span>
+                  <div className="bar-track">
+                    <div className="bar-fill" style={{ width: `${hullPct ?? 0}%` }}></div>
+                  </div>
+                  <span className="bar-value">{hullPct !== null ? `${Math.round(hullPct)}%` : '—'}</span>
+                </div>
+                <div className="status-bar">
+                  <span className="bar-label">Shields</span>
+                  <div className="bar-track">
+                    <div className="bar-fill shield" style={{ width: `${shieldPct ?? 0}%` }}></div>
+                  </div>
+                  <span className="bar-value">{shieldPct !== null ? `${Math.round(shieldPct)}%` : '—'}</span>
+                </div>
+              </div>
+              <div className="service-action">
+                <span className="repair-cost">
+                  {repairCost === null
+                    ? '—'
+                    : atFullCondition
+                      ? 'No repairs needed'
+                      : formatCredits(repairCost)}
+                </span>
+                <button
+                  className="service-btn"
+                  onClick={repairShip}
+                  disabled={repairBusy || Boolean(repairBlockReason)}
+                  title={repairBlockReason ?? undefined}
+                >
+                  {repairBusy ? 'Repairing...' : 'Full Repair'}
+                </button>
+              </div>
+            </div>
+
+            <div className="service-card">
+              <div className="service-icon">🛠️</div>
+              <h3>Maintenance</h3>
+              <p>{shipData ? `${shipData.name}'s hull condition & servicing` : 'Hull condition & servicing'}</p>
+              <div className="service-status">
+                Ships degrade over time; low condition saps combat effectiveness. Service to restore it.
+              </div>
+              <div className="service-action">
+                <button className="service-btn" onClick={() => setShowMaintenance(true)} disabled={!shipData}>
+                  Manage Maintenance
+                </button>
+              </div>
+            </div>
+
+            <div className="service-card">
+              <div className="service-icon">📦</div>
+              <h3>Cargo Hold</h3>
+              <p>Current hold loading for {shipData?.name ?? 'your ship'}</p>
+              <div className="service-status">
+                <div className="status-bar">
+                  <span className="bar-label">Cargo</span>
+                  <div className="bar-track">
+                    <div className="bar-fill" style={{ width: `${cargoPct}%` }}></div>
+                  </div>
+                  <span className="bar-value">{cargoCapacity > 0 ? `${Math.round(cargoPct)}%` : '—'}</span>
+                </div>
+              </div>
+              <div className="cargo-info">
+                <span>{cargoUsed.toLocaleString()} / {cargoCapacity.toLocaleString()} units</span>
+              </div>
+            </div>
+
+            {stationServices.ship_upgrades ? (
+              <div className="service-card">
+                <div className="service-icon">📈</div>
+                <h3>Ship Upgrades</h3>
+                <p>{shipData ? `Refit ${shipData.name}: hull, shield, cargo & equipment` : 'Hull, shield, and cargo refits'}</p>
+                <div className="service-status">
+                  Spend credits to raise ship subsystem levels or fit specialist equipment.
+                </div>
+                <div className="service-action">
+                  <button
+                    className="service-btn"
+                    onClick={() => setShowUpgrades(true)}
+                    disabled={!shipData}
+                  >
+                    Manage Upgrades
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="service-card unavailable">
+                <div className="service-icon">📈</div>
+                <h3>Ship Upgrades</h3>
+                <p>Hull, shield, and cargo refits</p>
+                <div className="service-unavailable-note">
+                  Upgrade bays are not operational at this station. New hulls
+                  can be commissioned at the Shipyard.
+                </div>
+                <div className="service-action">
+                  <span className="service-unavailable-badge">NOT AVAILABLE</span>
+                </div>
+              </div>
+            )}
+
+            {stationServices.insurance ? (
+              <div className="service-card">
+                <div className="service-icon">📜</div>
+                <h3>Hull Insurance</h3>
+                <p>{shipData ? `Insure ${shipData.name} against destruction` : 'Insure your ship against destruction'}</p>
+                <div className="service-status">
+                  Pay a one-time premium; the registered owner is paid out if the hull is destroyed.
+                </div>
+                <div className="service-action">
+                  <button
+                    className="service-btn"
+                    onClick={() => setShowInsurance(true)}
+                    disabled={!shipData}
+                  >
+                    Manage Insurance
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="service-card unavailable">
+                <div className="service-icon">📜</div>
+                <h3>Hull Insurance</h3>
+                <p>Protection against ship destruction</p>
+                <div className="service-unavailable-note">
+                  No underwriter currently operates at this station.
+                </div>
+                <div className="service-action">
+                  <span className="service-unavailable-badge">NOT AVAILABLE</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {showInsurance && shipData && (
+            <div className="insurance-overlay" onClick={() => setShowInsurance(false)}>
+              <div className="insurance-overlay-panel" onClick={(e) => e.stopPropagation()}>
+                <InsuranceManager
+                  shipId={shipData.id}
+                  playerCredits={displayCredits}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                  onClose={() => setShowInsurance(false)}
+                />
+              </div>
+            </div>
+          )}
+
+          {showMaintenance && shipData && (
+            <div className="maintenance-overlay" onClick={() => setShowMaintenance(false)}>
+              <div className="maintenance-overlay-panel" onClick={(e) => e.stopPropagation()}>
+                <MaintenanceManager
+                  shipId={shipData.id}
+                  playerCredits={displayCredits}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                  onClose={() => setShowMaintenance(false)}
+                />
+              </div>
+            </div>
+          )}
+
+          {showUpgrades && shipData && (
+            <div
+              className="insurance-overlay"
+              onClick={() => { setShowUpgrades(false); refreshPlayerState(); fetchShipData(); }}
+            >
+              <div className="insurance-overlay-panel" style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+                <button
+                  className="ins-close"
+                  style={{ position: 'absolute', top: 12, right: 12, zIndex: 1 }}
+                  onClick={() => { setShowUpgrades(false); refreshPlayerState(); fetchShipData(); }}
+                  aria-label="Close ship upgrades"
+                >
+                  ✕
+                </button>
+                <ModuleGridInterface
+                  ship={{ id: shipData.id }}
+                  playerCredits={displayCredits}
+                  onChanged={() => { refreshPlayerState(); fetchShipData(); }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+        <BlackMarketButton />
+      </div>
+    );
+  };
+
+  const renderMiningVenue = () => {
+    const hasShip = Boolean(shipData?.id);
+    return (
+      <div className="venue-container mining">
+        <div className="venue-header">
+          <button className="back-button" onClick={() => setActiveVenue('hub')}>
+            ← Back to Hub
+          </button>
+          <h2>⛏️ Astral Mining Consortium</h2>
+        </div>
+        <div className="venue-content-area">
+          <div className="services-grid">
+            <div className="service-card">
+              <div className="service-icon">📜</div>
+              <h3>Claim License</h3>
+              <p>File a 24-hour Consortium claim for this sector's asteroid field</p>
+              <div className="service-status">
+                A claim license authorises legal harvesting in an asteroid-field
+                sector. The fee scales with the field's richness; renewing an
+                active claim costs less than a fresh filing.
+              </div>
+              {licenseSuccess && (
+                <div className="genesis-success-message">
+                  <span className="success-icon">✅</span>
+                  {licenseSuccess}
+                </div>
+              )}
+              {licenseError && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {licenseError}
+                </div>
+              )}
+              <div className="service-action">
+                <button
+                  className="service-btn"
+                  onClick={purchaseClaimLicense}
+                  disabled={licenseBusy || !hasShip}
+                  title={!hasShip ? 'No active ship' : undefined}
+                >
+                  {licenseBusy ? 'Filing...' : 'Purchase / Renew License'}
+                </button>
+              </div>
+            </div>
+
+            <div className="service-card">
+              <div className="service-icon">🔆</div>
+              <h3>Mining Laser Refit</h3>
+              <p>Upgrade your installed Mining Laser to the next yield tier</p>
+              <div className="service-status">
+                A higher Mining Laser level raises ore yield, the precious-metals
+                cap, and the quantum-shard trace drop. Requires a Mining Laser
+                already fitted to your ship.
+              </div>
+              {laserSuccess && (
+                <div className="genesis-success-message">
+                  <span className="success-icon">✅</span>
+                  {laserSuccess}
+                </div>
+              )}
+              {laserError && (
+                <div className="genesis-error-message">
+                  <span className="error-icon">❌</span>
+                  {laserError}
+                </div>
+              )}
+              <div className="service-action">
+                <button
+                  className="service-btn"
+                  onClick={upgradeMiningLaser}
+                  disabled={laserBusy || !hasShip}
+                  title={!hasShip ? 'No active ship' : undefined}
+                >
+                  {laserBusy ? 'Refitting...' : 'Upgrade Mining Laser'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
+        <BlackMarketButton />
       </div>
-      <BlackMarketButton />
-    </div>
-  );
-
-  const renderServices = () => (
-    <div className="venue-container services">
-      <div className="venue-header">
-        <button className="back-button" onClick={() => setActiveVenue('hub')}>
-          ← Back to Hub
-        </button>
-        <h2>🔧 Ship Services</h2>
-      </div>
-      <div className="venue-content-area">
-        <div className="services-grid">
-          <div className="service-card">
-            <div className="service-icon">🔧</div>
-            <h3>Ship Repair</h3>
-            <p>Restore hull and shield integrity</p>
-            <div className="service-status">
-              <div className="status-bar">
-                <span className="bar-label">Hull</span>
-                <div className="bar-track">
-                  <div className="bar-fill" style={{ width: '85%' }}></div>
-                </div>
-                <span className="bar-value">85%</span>
-              </div>
-              <div className="status-bar">
-                <span className="bar-label">Shields</span>
-                <div className="bar-track">
-                  <div className="bar-fill shield" style={{ width: '100%' }}></div>
-                </div>
-                <span className="bar-value">100%</span>
-              </div>
-            </div>
-            <div className="service-action">
-              <span className="repair-cost">100 cr per 1%</span>
-              <button className="service-btn">Full Repair</button>
-            </div>
-          </div>
-
-          <div className="service-card">
-            <div className="service-icon">🛡️</div>
-            <h3>Shield Upgrade</h3>
-            <p>Enhance shield capacity and recharge rate</p>
-            <div className="upgrade-tiers">
-              <div className="tier current">Tier 2</div>
-              <div className="tier next">→ Tier 3</div>
-            </div>
-            <div className="service-action">
-              <span className="upgrade-cost">50,000 cr</span>
-              <button className="service-btn">Upgrade</button>
-            </div>
-          </div>
-
-          <div className="service-card">
-            <div className="service-icon">📦</div>
-            <h3>Cargo Expansion</h3>
-            <p>Increase ship cargo capacity</p>
-            <div className="cargo-info">
-              <span>Current: 50 units</span>
-              <span>Next: +25 units</span>
-            </div>
-            <div className="service-action">
-              <span className="upgrade-cost">25,000 cr</span>
-              <button className="service-btn">Expand</button>
-            </div>
-          </div>
-
-          <div className="service-card">
-            <div className="service-icon">📜</div>
-            <h3>Cargo Insurance</h3>
-            <p>Protect your cargo against piracy</p>
-            <div className="insurance-details">
-              <span>Coverage: 80% of value</span>
-              <span>Duration: 7 days</span>
-            </div>
-            <div className="service-action">
-              <span className="insurance-cost">5,000 cr</span>
-              <button className="service-btn">Purchase</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <BlackMarketButton />
-    </div>
-  );
+    );
+  };
 
   const renderTrading = () => (
     <div className="venue-container trading">
@@ -1765,7 +3208,7 @@ const SpaceDockInterface: React.FC = () => {
         <h2>🏪 Trading Hub</h2>
       </div>
       <div className="venue-content-area trading-venue">
-        <TradingInterface />
+        <TradingInterface onClose={() => {}} />
       </div>
       <BlackMarketButton />
     </div>
@@ -1780,12 +3223,39 @@ const SpaceDockInterface: React.FC = () => {
         return renderTrading();
       case 'shipyard':
         return renderShipyard();
+      case 'construction':
+        // Construction only exists at TradeDock stations — fall back to the
+        // hub if the venue is reached without a tiered station docked
+        return tradedockTier && currentStation ? (
+          <ConstructionVenue
+            stationId={currentStation.id}
+            stationName={currentStation.name}
+            tier={tradedockTier}
+            credits={displayCredits}
+            onCreditsDelta={handleCreditsDelta}
+            onCreditsSet={handleCreditsSet}
+            onBack={() => setActiveVenue('hub')}
+          />
+        ) : renderHub();
+      case 'portoffice':
+        // The registry desk needs a docked station to file against
+        return currentStation ? (
+          <PortOfficeVenue
+            stationId={currentStation.id}
+            stationName={currentStation.name}
+            credits={displayCredits}
+            onCreditsSet={handleCreditsSet}
+            onBack={() => setActiveVenue('hub')}
+          />
+        ) : renderHub();
       case 'genesis':
         return renderGenesisStore();
       case 'armory':
         return renderArmory();
       case 'services':
         return renderServices();
+      case 'mining':
+        return renderMiningVenue();
       case 'gambling':
         return renderGamblingHall();
       default:

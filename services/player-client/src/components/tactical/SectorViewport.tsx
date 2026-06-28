@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useSettings } from '../../contexts/SettingsContext';
 import './sector-viewport.css';
 
 interface SectorViewportProps {
@@ -31,6 +32,10 @@ const SectorViewport: React.FC<SectorViewportProps> = ({
   height = 300,
   onEntityClick
 }) => {
+  // Global UI scale (CSS `zoom` on #root). 1.0 = 100% (no-op default). Read so
+  // pointer hit-testing stays correct when the whole UI is zoomed.
+  const { uiScale } = useSettings();
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number>();
   const [isAnimating, setIsAnimating] = useState(true);
@@ -97,8 +102,16 @@ const SectorViewport: React.FC<SectorViewportProps> = ({
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
+    const { x: mouseX, y: mouseY } = toBufferCoords(canvas, rect, event.clientX, event.clientY, uiScale);
+
+    // Display-space pointer offset (CSS pixels relative to the canvas box). The
+    // tooltip lives in `.viewport-overlay`, a display-space overlay positioned
+    // via `left`/`top` in px, so it must be placed from these coords — NOT the
+    // drawing-buffer coords above (those are for hit-testing only). At
+    // uiScale=1 with buffer == display size these coincide; at scale≠1 they
+    // diverge by the buffer/display ratio, which is exactly the offset we drop.
+    const displayX = event.clientX - rect.left;
+    const displayY = event.clientY - rect.top;
 
     // Check if mouse is over any entity
     const hoveredItem = entityPositionsRef.current.find(entity => {
@@ -109,7 +122,7 @@ const SectorViewport: React.FC<SectorViewportProps> = ({
     });
 
     if (hoveredItem) {
-      setHoveredEntity({ type: hoveredItem.type, name: hoveredItem.name, x: mouseX, y: mouseY });
+      setHoveredEntity({ type: hoveredItem.type, name: hoveredItem.name, x: displayX, y: displayY });
       canvas.style.cursor = 'pointer';
     } else {
       setHoveredEntity(null);
@@ -167,6 +180,59 @@ const SectorViewport: React.FC<SectorViewportProps> = ({
 };
 
 // Helper functions
+
+/**
+ * Map a pointer position (clientX/clientY) into the canvas DRAWING-BUFFER
+ * coordinate space, where all entity hit-test positions are stored
+ * (0..canvas.width, 0..canvas.height).
+ *
+ * The canvas is sized by CSS (`width: 100%`), so its displayed size differs
+ * from its buffer size in general. The correct conversion scales the pointer
+ * offset by the buffer/display ratio:
+ *
+ *     bufferX = (clientX - rect.left) * (canvas.width  / rect.width)
+ *     bufferY = (clientY - rect.top)  * (canvas.height / rect.height)
+ *
+ * Why this is correct under the global CSS `zoom: var(--ui-scale)` on #root:
+ * `getBoundingClientRect()` reports the element box in the SAME (zoomed) layout
+ * space that `event.clientX/Y` live in. So at zoom `s`, both the numerator
+ * (clientX - rect.left) and the denominator (rect.width) are scaled by `s`,
+ * and `s` cancels in the ratio — the mapping is correct at any uiScale without
+ * an explicit `s` term. (`uiScale` is accepted so callers express intent and so
+ * the no-op-at-1.0 contract is verifiable; it is only used as a guarded
+ * fallback below.)
+ *
+ * No-op proof at uiScale === 1: when the canvas is displayed at its natural
+ * buffer size, rect.width === canvas.width and rect.height === canvas.height,
+ * so scaleX === scaleY === 1 and the result is exactly
+ * (clientX - rect.left, clientY - rect.top) — identical to the prior code.
+ *
+ * The `uiScale === 1` early-return makes that no-op exact-by-construction (no
+ * floating-point ratio at all at 100%), and is a defensive guard for the
+ * degenerate case where a freshly-mounted / hidden canvas reports a zero-size
+ * rect (ratio would divide by zero) before first layout.
+ */
+function toBufferCoords(
+  canvas: HTMLCanvasElement,
+  rect: DOMRect,
+  clientX: number,
+  clientY: number,
+  uiScale: number
+): { x: number; y: number } {
+  const offsetX = clientX - rect.left;
+  const offsetY = clientY - rect.top;
+
+  // Strict no-op at 100%: identical to the original (clientX - rect.left) math.
+  if (uiScale === 1 || rect.width === 0 || rect.height === 0) {
+    return { x: offsetX, y: offsetY };
+  }
+
+  // Buffer/display ratio inherently cancels the CSS `zoom` (see proof above).
+  return {
+    x: offsetX * (canvas.width / rect.width),
+    y: offsetY * (canvas.height / rect.height),
+  };
+}
 
 function generateStarfield(width: number, height: number) {
   const stars: Array<{ x: number; y: number; size: number; brightness: number }> = [];

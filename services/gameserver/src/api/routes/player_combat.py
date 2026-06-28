@@ -3,8 +3,14 @@ Player combat API endpoints.
 
 Handles combat initiation and status tracking for players.
 Includes planetary assault and sector retreat mechanics.
+
+Combat resolution is synchronous: CombatService resolves the entire fight in
+the engage call and persists a CombatLog row. The status endpoint therefore
+always reports 'completed' and returns every round for client-side replay —
+there is no ongoing-combat entity to poll or retreat from mid-fight.
 """
 
+import json
 import random
 from typing import Optional
 from uuid import UUID
@@ -13,16 +19,21 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_player
+from src.models.combat_log import CombatLog, CombatOutcome
 from src.models.player import Player
 from src.models.planet import Planet
 from src.models.sector import Sector, sector_warps
 from src.models.ship import Ship, ShipType
-from src.services.player_combat_service import PlayerCombatService
 from src.services.combat_service import CombatService
+from src.services.movement_service import MovementService
+from src.services.planetary_service import PlanetaryService
+from src.services.turn_service import spend_turns
 
-router = APIRouter(prefix="/api/combat", tags=["player-combat"])
+# Mounted under the /api/v1 api_router — a "/api/combat" prefix here doubled
+# up to /api/v1/api/combat, which no client called.
+router = APIRouter(prefix="/combat", tags=["player-combat"])
 
 
 # Request/Response Models
@@ -40,29 +51,107 @@ class CombatEngageResponse(BaseModel):
     message: Optional[str] = None
 
 
-class CombatRound(BaseModel):
-    """Single round of combat."""
+class CombatRoundEvent(BaseModel):
+    """A single event from the round-by-round combat log."""
     round: int
-    attackerHits: int
-    defenderHits: int
-    attackerDamage: int
-    defenderDamage: int
-    attackerShields: int
-    defenderShields: int
-    attackerArmor: int
-    defenderArmor: int
-    criticalHit: bool
-    specialEvent: Optional[str] = None
+    actor: Optional[str] = None
+    action: Optional[str] = None
+    message: str
 
 
 class CombatStatusResponse(BaseModel):
-    """Combat status response."""
-    status: str = Field(..., description="'ongoing' or 'completed'")
-    rounds: list[CombatRound]
-    winner: Optional[str] = None
+    """Combat status response.
+
+    Combat resolves in a single call, so status is always 'completed' and
+    rounds carries the full event log for client-side replay.
+    """
+    status: str = Field(..., description="'completed' — combat resolves synchronously")
+    outcome: Optional[str] = Field(None, description="attacker_win | defender_win | draw | escaped")
+    rounds: list[CombatRoundEvent]
+    winner: Optional[str] = Field(None, description="Winner player UUID, 'draw', or null")
     combatDuration: Optional[int] = None
     creditsLooted: Optional[int] = None
-    cargoLooted: Optional[list] = None
+    cargoLooted: list[str] = Field(default_factory=list)
+
+
+def _execute_planet_assault(db: Session, player: Player, planet_id: UUID) -> dict:
+    """Shared guard + resolution path for planetary assault.
+
+    Both engage(targetType='planet') and POST /assault-planet route through
+    here so the no-defenses guard and the canon 3-turn cost (charged inside
+    CombatService.attack_planet) stay identical between the two entry points.
+    """
+    planet = db.query(Planet).filter(Planet.id == planet_id).first()
+    if not planet:
+        raise HTTPException(status_code=404, detail="Planet not found")
+
+    # Formation-window protection (genesis-devices.md): a forming planet cannot
+    # be attacked. Checked before the no-defenses guard so a freshly-formed
+    # (still-defenseless) planet returns the canon "still forming" reason rather
+    # than "no defenses to assault". attack_planet enforces the same guard for
+    # the direct service path.
+    if planet.formation_status == 'forming':
+        raise HTTPException(status_code=400, detail="This planet is still forming and cannot be attacked")
+
+    # Planet must have defenses worth assaulting — without this guard a
+    # defenseless planet would be a free capture
+    if (planet.defense_level or 0) <= 0 and (planet.shields or 0) <= 0:
+        raise HTTPException(status_code=400, detail="Planet has no defenses to assault")
+
+    # Materialize accrued siege state when the ATTACKER acts (S3): siege morale
+    # decay was previously lazy on the VICTIM's reads only (get_siege_status /
+    # get_planet_details), so an attacker assaulting a long-besieged planet saw
+    # stale morale. Settle the siege here — advance accrued morale decay and
+    # re-evaluate siege validity — so the target's morale/vulnerability reflect
+    # reality at the moment of attack. check_and_update_siege detects + advances
+    # + commits, so the fresh planet query inside attack_planet sees the
+    # settled state.
+    #
+    # CANON GAP (honest note): combat_service._resolve_planet_combat gates
+    # capture purely on planet_damage >= planet_defense_level — morale<=0
+    # "vulnerability" does NOT shortcut or cheapen capture in the resolution
+    # math, and defense.md does not define what siege vulnerability MEANS for a
+    # direct assault (only that morale<=0 marks a planet "vulnerable to
+    # capture"). With canon silent on the assault×vulnerability interaction we
+    # do NOT invent a morale-based capture path; we only settle the siege state
+    # so morale/isVulnerable are truthful. Flagged for Max — see return.
+    if planet.under_siege:
+        try:
+            PlanetaryService(db).check_and_update_siege(planet_id)
+        except ValueError:
+            pass  # unowned/transient — attack_planet's own guards still apply
+
+    # Remaining guards (sector match, ownership, active ship, docked/landed,
+    # turn availability) live in CombatService.attack_planet, which charges
+    # the canon 3-turn cost and locks the attacker row.
+    result = CombatService(db).attack_planet(attacker_id=player.id, planet_id=planet_id)
+    if isinstance(result, dict):
+        # Surface the canon gap to callers/telemetry without altering capture
+        # mechanics (morale vulnerability is settled but not wired to capture).
+        result.setdefault(
+            "siegeVulnerabilityNote",
+            "Siege morale state settled at assault time; canon does not define "
+            "a morale-based capture shortcut, so capture remains defense-gated."
+        )
+    return result
+
+
+def _get_combat_log_for_player(db: Session, combat_id_raw: str, player: Player) -> CombatLog:
+    """Load a CombatLog by id, enforcing that the player was involved."""
+    try:
+        combat_id = UUID(combat_id_raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid combat ID format")
+
+    combat = db.query(CombatLog).filter(CombatLog.id == combat_id).first()
+    if not combat:
+        raise HTTPException(status_code=404, detail="Combat not found")
+
+    # NPC-defender logs have defender_id NULL — only the attacker may view those
+    if combat.attacker_id != player.id and combat.defender_id != player.id:
+        raise HTTPException(status_code=403, detail="You are not involved in this combat")
+
+    return combat
 
 
 # Combat Endpoints
@@ -71,26 +160,54 @@ class CombatStatusResponse(BaseModel):
 async def engage_combat(
     request: CombatEngageRequest,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
-    """Initiate combat with a target."""
-    service = PlayerCombatService(db)
-    
+    """Initiate combat with a target.
+
+    'ship' targets are Ship ids from the sector's players_present list —
+    player-owned ships route to PvP combat against the owner, NPC ships
+    (owner_id NULL / is_npc) resolve against the ship itself.
+    """
     try:
-        # Convert string UUID to UUID object
         target_id = UUID(request.targetId)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid target ID format")
-    
-    result = service.initiate_combat(
-        attacker_id=player.id,
-        target_type=request.targetType,
-        target_id=target_id
-    )
-    
+
+    service = CombatService(db)
+
+    if request.targetType == "ship":
+        ship = db.query(Ship).filter(Ship.id == target_id).first()
+        if not ship or ship.is_destroyed:
+            raise HTTPException(status_code=404, detail="Target ship not found")
+
+        # NPC ships have no owning player. Guard on owner_id-is-None plus the
+        # is_npc flag via getattr so this code does not depend on the NPC
+        # slice's Ship model changes having landed.
+        is_npc_ship = ship.owner_id is None or bool(getattr(ship, "is_npc", False))
+        if is_npc_ship:
+            result = service.attack_npc_ship(player.id, ship.id)
+        else:
+            if ship.owner_id == player.id:
+                return CombatEngageResponse(status="error", message="Cannot attack your own ship")
+            result = service.attack_player(player.id, ship.owner_id)
+    elif request.targetType == "planet":
+        result = _execute_planet_assault(db, player, target_id)
+    else:
+        # Port assault transfers station ownership — economically sensitive,
+        # deliberately disabled this pass. Return 501 Not Implemented (not a
+        # 200 "error" body) so the client treats it as a permanently-unavailable
+        # feature, not a transient/game-logic failure worth retrying.
+        raise HTTPException(
+            status_code=501,
+            detail="Port assault operations are not yet authorized."
+        )
+
+    if not result.get("success"):
+        return CombatEngageResponse(status="error", message=result.get("message", "Combat failed"))
+
     return CombatEngageResponse(
-        combatId=result.get("combatId"),
-        status=result.get("status", "error"),
+        combatId=result.get("combat_log_id"),
+        status="initiated",
         message=result.get("message")
     )
 
@@ -99,39 +216,57 @@ async def engage_combat(
 async def get_combat_status(
     combatId: str,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
-    """Get the current status of a combat."""
-    service = PlayerCombatService(db)
-    
-    try:
-        # Convert string UUID to UUID object
-        combat_id = UUID(combatId)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid combat ID format")
-    
-    # Verify player is involved in this combat
-    from src.models.combat_log import CombatLog
-    combat = db.query(CombatLog).filter(CombatLog.id == combat_id).first()
-    if not combat:
-        raise HTTPException(status_code=404, detail="Combat not found")
-        
-    if combat.attacker_id != player.id and combat.defender_id != player.id:
-        raise HTTPException(status_code=403, detail="You are not involved in this combat")
-    
-    try:
-        status = service.get_combat_status(combat_id)
+    """Get the resolved state of a combat.
 
-        return CombatStatusResponse(
-            status=status["status"],
-            rounds=[CombatRound(**round_data) for round_data in status["rounds"]],
-            winner=status.get("winner"),
-            combatDuration=status.get("combatDuration"),
-            creditsLooted=status.get("creditsLooted"),
-            cargoLooted=status.get("cargoLooted", [])
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    Combat resolves synchronously in the engage call, so this always returns
+    status 'completed' with the full round-by-round event log.
+    """
+    combat = _get_combat_log_for_player(db, combatId, player)
+
+    # Round events are stored as JSON in the combat_log Text column
+    events: list[CombatRoundEvent] = []
+    if combat.combat_log:
+        try:
+            raw_events = json.loads(combat.combat_log)
+        except (ValueError, TypeError):
+            raw_events = []
+        if isinstance(raw_events, list):
+            for entry in raw_events:
+                if not isinstance(entry, dict) or "message" not in entry:
+                    continue
+                events.append(CombatRoundEvent(
+                    round=int(entry.get("round", 0)),
+                    actor=entry.get("actor"),
+                    action=entry.get("action"),
+                    message=str(entry["message"])
+                ))
+
+    # Winner: UUID-string of the winning player, 'draw', or None (escaped /
+    # NPC defender won — NPC defenders have no player UUID)
+    winner: Optional[str] = None
+    if combat.outcome == CombatOutcome.ATTACKER_WIN.value and combat.attacker_id:
+        winner = str(combat.attacker_id)
+    elif combat.outcome == CombatOutcome.DEFENDER_WIN.value and combat.defender_id:
+        winner = str(combat.defender_id)
+    elif combat.outcome == CombatOutcome.DRAW.value:
+        winner = "draw"
+
+    cargo_looted = [
+        f"{quantity} {resource}"
+        for resource, quantity in (combat.cargo_looted or {}).items()
+    ]
+
+    return CombatStatusResponse(
+        status="completed",
+        outcome=combat.outcome,
+        rounds=events,
+        winner=winner,
+        combatDuration=combat.rounds,
+        creditsLooted=combat.credits_looted,
+        cargoLooted=cargo_looted
+    )
 
 
 class RetreatResponse(BaseModel):
@@ -145,34 +280,19 @@ class RetreatResponse(BaseModel):
 async def attempt_retreat(
     combatId: str,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
-    """Attempt to retreat from an ongoing combat."""
-    service = PlayerCombatService(db)
+    """Mid-combat retreat is not possible: combat resolves in a single call.
 
-    try:
-        combat_id = UUID(combatId)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid combat ID format")
-
-    # Verify player is involved in this combat
-    from src.models.combat_log import CombatLog
-    combat = db.query(CombatLog).filter(CombatLog.id == combat_id).first()
-    if not combat:
-        raise HTTPException(status_code=404, detail="Combat not found")
-
-    if combat.attacker_id != player.id and combat.defender_id != player.id:
-        raise HTTPException(status_code=403, detail="You are not involved in this combat")
-
-    result = service.attempt_retreat(
-        combat_id=combat_id,
-        player_id=player.id
-    )
+    Escape attempts happen automatically inside the resolution loop (see
+    CombatService escape mechanics). Use POST /combat/retreat to flee the
+    current sector after combat.
+    """
+    _get_combat_log_for_player(db, combatId, player)
 
     return RetreatResponse(
-        success=result["success"],
-        message=result["message"],
-        retreatChance=result.get("retreatChance")
+        success=False,
+        message="Combat already resolved — use sector retreat to flee your current sector"
     )
 
 
@@ -194,14 +314,15 @@ class PlanetaryAssaultResponse(BaseModel):
 async def assault_planet(
     planet_id: str,
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """
     Assault a planet's defenses.
 
     Requires being in the same sector as the target planet. The planet must
     be owned by another player and have defenses (defense_level > 0 or
-    shields > 0). Costs 5 turns.
+    shields > 0). Costs 3 turns — same path and cost as
+    engage(targetType='planet').
 
     Combat outcome is determined by the player's ship firepower versus
     the planet's defense_level and shields. On success, planet defense_level
@@ -214,69 +335,13 @@ async def assault_planet(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid planet ID format")
 
-    # Lock player row to prevent concurrent turn deduction races
-    player = db.query(Player).filter(Player.id == player.id).with_for_update().first()
-
-    # Fetch the planet
-    planet = db.query(Planet).filter(Planet.id == pid).first()
-    if not planet:
-        raise HTTPException(status_code=404, detail="Planet not found")
-
-    # Verify player is in the same sector
-    if player.current_sector_id != planet.sector_id:
-        raise HTTPException(
-            status_code=400,
-            detail="You must be in the planet's sector to assault it"
-        )
-
-    # Planet must have defenses worth assaulting
-    planet_defense_level = planet.defense_level or 0
-    planet_shields = planet.shields or 0
-    if planet_defense_level <= 0 and planet_shields <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Planet has no defenses to assault"
-        )
-
-    # Cannot assault your own planet
-    if planet.owner_id and planet.owner_id == player.id:
-        raise HTTPException(status_code=400, detail="Cannot assault your own planet")
-
-    # Must have an active ship
-    if not player.current_ship:
-        raise HTTPException(status_code=400, detail="No active ship selected")
-
-    # Cannot assault while docked or landed
-    if player.is_docked or player.is_landed:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot assault while docked at a port or landed on a planet"
-        )
-
-    # Turn cost for planetary assault is 5
-    turn_cost = 5
-    if player.turns < turn_cost:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Not enough turns. Planetary assault costs {turn_cost} turns, you have {player.turns}"
-        )
-
-    # Delegate to CombatService.attack_planet which handles full combat resolution
-    combat_service = CombatService(db)
-    result = combat_service.attack_planet(
-        attacker_id=player.id,
-        planet_id=pid
-    )
+    # Shared path with engage(targetType='planet'): no-defenses guard +
+    # CombatService.attack_planet (canon 3-turn cost, attacker row lock,
+    # ownership/sector/ship/docked guards)
+    result = _execute_planet_assault(db, player, pid)
 
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("message", "Assault failed"))
-
-    # Apply the additional turn cost difference (attack_planet uses 3, we want 5)
-    # CombatService.attack_planet already deducted 3 turns, add 2 more
-    extra_turns = turn_cost - 3
-    if extra_turns > 0:
-        player.turns -= extra_turns
-        db.commit()
 
     return PlanetaryAssaultResponse(
         success=True,
@@ -284,9 +349,64 @@ async def assault_planet(
         combatResult=result.get("combat_result"),
         combatDetails=result.get("combat_details"),
         planetCaptured=result.get("planet_captured", False),
-        turnsConsumed=turn_cost,
-        turnsRemaining=player.turns,
+        turnsConsumed=result.get("turns_consumed"),
+        turnsRemaining=result.get("turns_remaining"),
         combatLogId=result.get("combat_log_id")
+    )
+
+
+# --- Sector Drone Combat (clear hostile drones) ---
+
+class SectorDroneAttackResponse(BaseModel):
+    """Response from a sector-drone engagement."""
+    success: bool
+    message: str
+    combatResult: Optional[str] = None
+    combatDetails: Optional[list] = None
+    dronesDestroyed: Optional[int] = None
+    dronesRemaining: Optional[int] = None
+    turnsConsumed: Optional[int] = None
+    turnsRemaining: Optional[int] = None
+    combatLogId: Optional[str] = None
+
+
+@router.post("/attack-sector-drones", response_model=SectorDroneAttackResponse)
+async def attack_sector_drones(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """
+    Attack the hostile drones deployed in your current sector.
+
+    A 2-turn PvE engagement: your ship fights every live drone deployed in the
+    sector that you do not own. Drones are destroyed per their own combat stats
+    and your ship takes hull damage in return. Requires an active ship, being
+    undocked and not landed, and at least one hostile drone in the sector.
+
+    Clearing the sector of hostile drones awards +10 personal reputation
+    (destroy_pirate_drones). Turn cost and combat resolution are charged inside
+    CombatService.attack_sector_drones, which locks the attacker row.
+    """
+    if player.current_sector_id is None:
+        raise HTTPException(status_code=400, detail="You are not in a sector")
+
+    result = CombatService(db).attack_sector_drones(
+        attacker_id=player.id, sector_id=player.current_sector_id
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Drone attack failed"))
+
+    return SectorDroneAttackResponse(
+        success=True,
+        message=result["message"],
+        combatResult=result.get("combat_result"),
+        combatDetails=result.get("combat_details"),
+        dronesDestroyed=result.get("drones_destroyed"),
+        dronesRemaining=result.get("drones_remaining"),
+        turnsConsumed=result.get("turns_consumed"),
+        turnsRemaining=result.get("turns_remaining"),
+        combatLogId=result.get("combat_log_id"),
     )
 
 
@@ -305,7 +425,7 @@ class SectorRetreatResponse(BaseModel):
 @router.post("/retreat", response_model=SectorRetreatResponse)
 async def retreat_from_sector(
     player: Player = Depends(get_current_player),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """
     Attempt to retreat from the current sector to a random connected sector.
@@ -368,7 +488,7 @@ async def retreat_from_sector(
 
     if not connected_sector_uuids:
         # Deduct turns even though there's nowhere to go
-        player.turns -= turn_cost
+        spend_turns(player, turn_cost)
         db.commit()
         return SectorRetreatResponse(
             success=False,
@@ -394,7 +514,7 @@ async def retreat_from_sector(
     escape_chance = max(10, min(90, base_chance + speed_bonus + type_bonus))
 
     # Deduct turns
-    player.turns -= turn_cost
+    spend_turns(player, turn_cost)
 
     # Roll for escape
     roll = random.randint(1, 100)
@@ -414,8 +534,21 @@ async def retreat_from_sector(
                 turnsRemaining=player.turns
             )
 
-        # Move the player
+        # Move the player. Update sector presence via the movement service
+        # helper so the old sector doesn't keep a ghost players_present entry
+        # (setting current_sector_id alone leaves the player listed — and
+        # targetable — in the sector they just fled).
+        MovementService(db)._update_player_presence(
+            player, player.current_sector_id, target_sector.sector_id
+        )
         player.current_sector_id = target_sector.sector_id
+        # Keep current_region_id in sync — region-filtered routes like
+        # /player/current-sector 404 on a stale region
+        player.current_region_id = target_sector.region_id
+        # Keep the ship row in sync too — sector views read Ship.sector_id,
+        # and a ship left behind in the fled sector renders a ghost
+        if player.current_ship:
+            player.current_ship.sector_id = target_sector.sector_id
         db.commit()
 
         return SectorRetreatResponse(
@@ -438,3 +571,75 @@ async def retreat_from_sector(
             turnsConsumed=turn_cost,
             turnsRemaining=player.turns
         )
+
+
+# --- Grey-flag PvP status (WO-BL) ---
+
+class GreyStatusResponse(BaseModel):
+    """Current grey-flag PvP status for the authenticated player.
+
+    Grey is a temporary "open season" mark earned by aggressing on a lawful
+    target (attacking a good-standing player → 1h; attacking a station → 1 day).
+    While grey, qualifying players may attack this player with no reputation
+    penalty. Clears at greyUntil or by paying clearFineCredits early.
+    """
+    isGrey: bool
+    kind: Optional[str] = Field(
+        None, description="'player_attack' (1h) | 'station_attack' (1 day) | null"
+    )
+    greyUntil: Optional[str] = Field(None, description="ISO8601 expiry, or null")
+    remainingSeconds: int = Field(0, description="Seconds until auto-expiry (0 if not grey)")
+    clearFineCredits: Optional[int] = Field(
+        None, description="Credits to clear early (null if not grey)"
+    )
+
+
+@router.get("/grey-status", response_model=GreyStatusResponse)
+async def get_grey_status(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Report the authenticated player's grey-flag PvP status.
+
+    Expired grey reports isGrey=False with remainingSeconds 0 (the predicate
+    ignores lapsed flags). Read-only — no mutation, no commit.
+    """
+    from src.services.grey_flag_service import GreyFlagService
+    status = GreyFlagService(db).grey_status(player)
+    return GreyStatusResponse(
+        isGrey=status["is_grey"],
+        kind=status["kind"],
+        greyUntil=status["grey_until"],
+        remainingSeconds=status["remaining_seconds"],
+        clearFineCredits=status["clear_fine_credits"],
+    )
+
+
+class GreyClearFineResponse(BaseModel):
+    """Result of paying the fine to clear grey status early."""
+    success: bool
+    message: str
+    finePaid: Optional[int] = None
+    creditsRemaining: Optional[int] = None
+
+
+@router.post("/grey-status/clear-fine", response_model=GreyClearFineResponse)
+async def clear_grey_by_fine(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Pay the early-clear fine to remove the authenticated player's grey status.
+
+    Charges the kind-specific fine under a row lock and clears the flag. Returns
+    success=False (with a reason) when the player is not grey, the grey has
+    already expired, or there are insufficient credits — credits and grey status
+    are left untouched in every failure case.
+    """
+    from src.services.grey_flag_service import GreyFlagService
+    result = GreyFlagService(db).clear_grey_by_fine(player.id)
+    return GreyClearFineResponse(
+        success=result.get("success", False),
+        message=result.get("message", ""),
+        finePaid=result.get("fine_paid"),
+        creditsRemaining=result.get("credits_remaining"),
+    )

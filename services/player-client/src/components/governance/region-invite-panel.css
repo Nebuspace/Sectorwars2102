@@ -1,0 +1,695 @@
+/* Region Invite Control — region-owner invite-management console (WO-IL4).
+   Follows the cockpit CRT design language (.screen-hud-header chrome,
+   monospace display type, uppercase labels) with the cyan governance accent
+   #00d9ff (the region/governance surface colour, vs the gatewright violet). */
+
+.region-invite-panel {
+  --ri-cyan: #00d9ff;
+  --ri-cyan-soft: rgba(0, 217, 255, 0.7);
+  --ri-cyan-dim: rgba(0, 217, 255, 0.45);
+  --ri-cyan-faint: rgba(0, 217, 255, 0.18);
+  --ri-cyan-glow: rgba(0, 217, 255, 0.4);
+  --ri-green: #00ff7f;
+  --ri-amber: #ffaa44;
+  --ri-red: #ff4d6d;
+  --ri-muted: #9aa3ad;
+  --ri-screen: rgba(0, 8, 12, 0.98);
+
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--ri-screen);
+  border: 1px solid var(--ri-cyan-faint);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.8),
+    0 0 18px rgba(0, 217, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--font-heading, 'Courier New', monospace);
+  position: relative;
+  overflow: hidden;
+}
+
+/* CRT scanlines + cyan screen glow */
+.region-invite-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0px,
+      rgba(0, 217, 255, 0.025) 1px,
+      transparent 3px
+    ),
+    radial-gradient(ellipse at center, transparent 30%, rgba(0, 217, 255, 0.05) 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ============================================
+   HUD HEADER — mirrors .screen-hud-header chrome
+   ============================================ */
+
+.ri-hud-header {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.35rem 0.6rem 0.35rem 0.5rem;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ri-cyan);
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.8);
+  background: transparent;
+  border-top: 2px solid var(--ri-cyan-soft);
+  border-left: 2px solid var(--ri-cyan-soft);
+  border-bottom: 1px solid var(--ri-cyan-faint);
+  box-shadow:
+    0 0 8px var(--ri-cyan-glow),
+    inset 0 0 8px rgba(0, 217, 255, 0.12);
+  margin: 0.5rem 0.5rem 0 0.5rem;
+  border-radius: 2px 0 0 0;
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.ri-hud-title {
+  white-space: nowrap;
+}
+
+.ri-hud-sub {
+  font-size: 0.55rem;
+  font-weight: 400;
+  letter-spacing: 0.22em;
+  color: rgba(0, 217, 255, 0.55);
+  text-shadow: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ri-close {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--ri-cyan-faint);
+  border-radius: 2px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ri-close:hover {
+  border-color: var(--ri-cyan);
+  color: var(--ri-cyan);
+  box-shadow: 0 0 8px var(--ri-cyan-glow);
+}
+
+/* ============================================
+   BODY — the scroll region (Scroll Law: the list
+   scrolls here, the panel chrome stays fixed)
+   ============================================ */
+
+.ri-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.6rem 0.7rem 0.8rem;
+  margin: 0 0.5rem 0.5rem 0.5rem;
+  border-left: 2px solid rgba(0, 217, 255, 0.35);
+  border-bottom: 2px solid rgba(0, 217, 255, 0.2);
+  position: relative;
+  z-index: 2;
+}
+
+.ri-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ri-body::-webkit-scrollbar-track {
+  background: rgba(0, 217, 255, 0.06);
+}
+
+.ri-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 217, 255, 0.35);
+  border-radius: 3px;
+}
+
+.ri-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 217, 255, 0.55);
+}
+
+.ri-intro {
+  margin: 0 0 0.9rem 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.55);
+  font-style: italic;
+}
+
+/* ============================================
+   SECTIONS
+   ============================================ */
+
+.ri-section {
+  margin-bottom: 1.1rem;
+}
+
+.ri-section:last-child {
+  margin-bottom: 0;
+}
+
+.ri-section-title {
+  margin: 0 0 0.5rem 0;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ri-cyan);
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.6);
+  border-bottom: 1px solid var(--ri-cyan-faint);
+  padding-bottom: 0.3rem;
+}
+
+.ri-state {
+  margin: 0;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.05em;
+}
+
+/* ============================================
+   VALIDATION STRIP
+   ============================================ */
+
+.ri-validation-strip {
+  margin: 0.5rem 0;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--ri-amber);
+  background: rgba(255, 170, 68, 0.08);
+  border-left: 3px solid var(--ri-amber);
+  border-radius: 0 3px 3px 0;
+  text-shadow: 0 0 6px rgba(255, 170, 68, 0.3);
+}
+
+/* ============================================
+   CREATE FORM
+   ============================================ */
+
+.ri-create-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin-bottom: 0.6rem;
+}
+
+.ri-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.ri-field-label {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.ri-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ri-step-btn {
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid var(--ri-cyan-dim);
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.8);
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1;
+  width: 1.7rem;
+  height: 1.7rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ri-step-btn:hover:not(:disabled) {
+  border-color: var(--ri-cyan);
+  color: var(--ri-cyan);
+  box-shadow: 0 0 6px var(--ri-cyan-glow);
+}
+
+.ri-step-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ri-stepper-value {
+  min-width: 1.6rem;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ri-cyan);
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+}
+
+.ri-segmented {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.ri-seg-btn {
+  background: rgba(0, 217, 255, 0.06);
+  border: 1px solid var(--ri-cyan-faint);
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ri-seg-btn:hover:not(:disabled) {
+  border-color: var(--ri-cyan-dim);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.ri-seg-btn.selected {
+  border-color: var(--ri-cyan);
+  color: var(--ri-cyan);
+  background: rgba(0, 217, 255, 0.14);
+  box-shadow: 0 0 8px var(--ri-cyan-glow);
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+}
+
+.ri-seg-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   BUTTONS
+   ============================================ */
+
+.ri-btn {
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 0.45rem 0.9rem;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid var(--ri-cyan-soft);
+  color: var(--ri-cyan);
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+}
+
+.ri-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.22);
+  box-shadow: 0 0 12px var(--ri-cyan-glow);
+}
+
+.ri-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ri-btn.primary.mint {
+  margin-top: 0.2rem;
+  background: rgba(0, 217, 255, 0.2);
+  border-color: var(--ri-cyan);
+  color: #c2f3ff;
+  box-shadow: 0 0 10px var(--ri-cyan-glow);
+}
+
+.ri-btn.primary.mint:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.35);
+  box-shadow: 0 0 16px rgba(0, 217, 255, 0.6);
+}
+
+.ri-btn.danger {
+  border-color: rgba(255, 77, 109, 0.6);
+  background: rgba(255, 77, 109, 0.1);
+  color: var(--ri-red);
+  text-shadow: 0 0 6px rgba(255, 77, 109, 0.4);
+}
+
+.ri-btn.danger:hover:not(:disabled) {
+  background: rgba(255, 77, 109, 0.22);
+  box-shadow: 0 0 12px rgba(255, 77, 109, 0.35);
+}
+
+.ri-btn.danger.commit {
+  background: rgba(255, 77, 109, 0.25);
+  border-color: var(--ri-red);
+}
+
+.ri-btn.ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.6);
+  text-shadow: none;
+}
+
+.ri-btn.ghost:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.ri-confirm-row {
+  display: flex;
+  gap: 0.4rem;
+}
+
+/* ============================================
+   COPY BUTTONS (code / link)
+   ============================================ */
+
+.ri-copy-btn {
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid var(--ri-cyan-dim);
+  color: var(--ri-cyan);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ri-copy-btn:hover {
+  background: rgba(0, 217, 255, 0.18);
+  box-shadow: 0 0 6px var(--ri-cyan-glow);
+}
+
+.ri-copy-btn.link {
+  background: rgba(0, 255, 127, 0.06);
+  border-color: rgba(0, 255, 127, 0.35);
+  color: var(--ri-green);
+}
+
+.ri-copy-btn.link:hover {
+  background: rgba(0, 255, 127, 0.16);
+  box-shadow: 0 0 6px rgba(0, 255, 127, 0.35);
+}
+
+/* ============================================
+   MINTED SPOTLIGHT CARD
+   ============================================ */
+
+.ri-minted-card {
+  margin-top: 0.6rem;
+  padding: 0.55rem 0.6rem 0.6rem;
+  border: 1px solid var(--ri-cyan-soft);
+  border-radius: 4px;
+  background:
+    radial-gradient(ellipse at top, rgba(0, 217, 255, 0.12) 0%, transparent 75%),
+    rgba(0, 217, 255, 0.04);
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.18);
+}
+
+.ri-minted-title {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #c2f3ff;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.8);
+  margin-bottom: 0.4rem;
+}
+
+.ri-minted-code-row,
+.ri-minted-link-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.ri-minted-code {
+  flex: 1;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ri-cyan);
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.6);
+  word-break: break-all;
+}
+
+.ri-minted-link {
+  flex: 1;
+  font-size: 0.62rem;
+  letter-spacing: 0.02em;
+  color: rgba(0, 255, 127, 0.8);
+  word-break: break-all;
+  text-transform: none;
+}
+
+.ri-minted-note {
+  margin: 0.2rem 0 0;
+  font-size: 0.62rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.55);
+  font-style: italic;
+}
+
+/* ============================================
+   INVITE LIST
+   ============================================ */
+
+.ri-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.ri-active-tally {
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: rgba(0, 217, 255, 0.6);
+}
+
+.ri-invite-list {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.ri-invite-row {
+  border: 1px solid var(--ri-cyan-faint);
+  border-radius: 4px;
+  background: rgba(0, 217, 255, 0.04);
+  padding: 0.5rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ri-invite-row.status-active {
+  border-color: rgba(0, 217, 255, 0.4);
+}
+
+.ri-invite-row.status-revoked,
+.ri-invite-row.status-expired,
+.ri-invite-row.status-exhausted {
+  opacity: 0.7;
+}
+
+.ri-invite-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ri-invite-code-block {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ri-invite-code {
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.9);
+  word-break: break-all;
+  margin-right: 0.25rem;
+}
+
+.ri-invite-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.ri-meta-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.ri-meta-label {
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.ri-meta-value {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.8);
+  letter-spacing: 0.04em;
+}
+
+.ri-meta-value.past {
+  color: var(--ri-amber);
+}
+
+/* ---- Status badges ---- */
+
+.ri-badge {
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.45rem;
+  border-radius: 2px;
+}
+
+.ri-badge.active {
+  color: var(--ri-green);
+  border: 1px solid rgba(0, 255, 127, 0.4);
+  background: rgba(0, 255, 127, 0.08);
+  text-shadow: 0 0 6px rgba(0, 255, 127, 0.4);
+}
+
+.ri-badge.exhausted {
+  color: var(--ri-cyan);
+  border: 1px solid var(--ri-cyan-dim);
+  background: rgba(0, 217, 255, 0.06);
+}
+
+.ri-badge.revoked {
+  color: var(--ri-red);
+  border: 1px solid rgba(255, 77, 109, 0.4);
+  background: rgba(255, 77, 109, 0.07);
+}
+
+.ri-badge.expired {
+  color: var(--ri-muted);
+  border: 1px solid rgba(154, 163, 173, 0.4);
+  background: rgba(154, 163, 173, 0.08);
+}
+
+.ri-badge.unknown {
+  color: var(--ri-muted);
+  border: 1px solid rgba(154, 163, 173, 0.3);
+}
+
+/* ---- Row actions ---- */
+
+.ri-invite-actions {
+  display: flex;
+  align-items: center;
+}
+
+.ri-terminal-note {
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* ============================================
+   COCKPIT TRIGGER + PORTAL OVERLAY
+   (owned by GameDashboard; loaded with this module
+    via the GameDashboard import of RegionInvitePanel)
+   ============================================ */
+
+/* HUD trigger — sits under the CitizenshipBadge in the LOCATION chip, shown
+   only to confirmed region owners. Cyan governance chrome to match the chip. */
+.hud-region-invite-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0.15rem 0 0.4rem;
+  padding: 0.22rem 0.5rem;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+}
+
+.hud-region-invite-btn:hover {
+  background: rgba(0, 217, 255, 0.18);
+  border-color: #00d9ff;
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+
+/* Portal overlay + shell — mirrors .quantum-gatewright-overlay/shell so the
+   panel (height:100%) gets an explicit box to fill. */
+.region-invite-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.7);
+  backdrop-filter: blur(3px);
+}
+
+.region-invite-shell {
+  width: min(720px, calc(100vw - 2rem));
+  height: calc(100vh - 6rem);
+  overflow-y: auto;
+  border-radius: 6px;
+}

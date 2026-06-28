@@ -1,8 +1,9 @@
 import React, { lazy, Suspense } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { AdminProvider } from './contexts/AdminContext';
 import { WebSocketProvider } from './contexts/WebSocketContext';
+import { ToastProvider } from './contexts/ToastContext';
 import './App.css';
 
 // Layouts
@@ -11,6 +12,7 @@ import AppLayout from './components/layouts/AppLayout';
 // Components
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import PageLoader from './components/common/PageLoader';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 // Lazy load all pages for better performance
 const LoginPage = lazy(() => import('./components/pages/LoginPage'));
@@ -46,29 +48,42 @@ const CentralNexusManager = lazy(() => import('./components/pages/CentralNexusMa
 const RegionalGovernorDashboard = lazy(() => import('./components/pages/RegionalGovernorDashboard'));
 const FirstLoginConversations = lazy(() => import('./components/pages/FirstLoginConversations'));
 const BangGalaxyPage = lazy(() => import('./components/pages/BangGalaxyPage'));
+const FactionManagement = lazy(() => import('./components/pages/FactionManagement'));
+const MessageModeration = lazy(() => import('./components/pages/MessageModeration'));
+const TranslationManagement = lazy(() => import('./components/pages/TranslationManagement'));
 
-// Helper component for protected lazy routes
-const ProtectedLazyRoute: React.FC<{ element: React.ReactElement }> = ({ element }) => (
-  <ProtectedRoute>
-    <Suspense fallback={<PageLoader />}>
-      {element}
-    </Suspense>
-  </ProtectedRoute>
-);
+// Helper component for protected lazy routes.
+// The ErrorBoundary is keyed by pathname so a crash on one page resets
+// when the admin navigates elsewhere.
+const ProtectedLazyRoute: React.FC<{ element: React.ReactElement }> = ({ element }) => {
+  const location = useLocation();
+  return (
+    <ProtectedRoute>
+      <ErrorBoundary key={location.pathname}>
+        <Suspense fallback={<PageLoader />}>
+          {element}
+        </Suspense>
+      </ErrorBoundary>
+    </ProtectedRoute>
+  );
+};
 
 function App() {
   return (
     <AuthProvider>
       <AdminProvider>
         <WebSocketProvider>
+          <ToastProvider>
           <Router>
             <Routes>
               <Route path="/" element={<AppLayout />}>
                 {/* Public routes */}
                 <Route path="login" element={
-                  <Suspense fallback={<PageLoader />}>
-                    <LoginPage />
-                  </Suspense>
+                  <ErrorBoundary>
+                    <Suspense fallback={<PageLoader />}>
+                      <LoginPage />
+                    </Suspense>
+                  </ErrorBoundary>
                 } />
 
                 {/* Protected routes */}
@@ -102,6 +117,11 @@ function App() {
                 {/* First Login Conversations */}
                 <Route path="first-login-conversations" element={<ProtectedLazyRoute element={<FirstLoginConversations />} />} />
 
+                {/* Surfaced admin subsystems (run 5) */}
+                <Route path="factions" element={<ProtectedLazyRoute element={<FactionManagement />} />} />
+                <Route path="messages" element={<ProtectedLazyRoute element={<MessageModeration />} />} />
+                <Route path="translations" element={<ProtectedLazyRoute element={<TranslationManagement />} />} />
+
                 {/* Redirect root to dashboard */}
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 
@@ -110,6 +130,7 @@ function App() {
               </Route>
             </Routes>
           </Router>
+          </ToastProvider>
         </WebSocketProvider>
       </AdminProvider>
     </AuthProvider>

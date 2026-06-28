@@ -39,14 +39,11 @@
   }
 }
 
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 20px;
-  margin-bottom: 30px;
-}
-
-.stat-card {
+/* Page-unique .combat-stat-* names (mirrors the .event-stat-card approach):
+   the previous generic .stat-card/.stat-value/.stat-change/.stat-label names
+   were nullified by team-management-override.css's unscoped !important
+   globals, which killed the alarm styling. */
+.combat-stat-card {
   background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
   border: 1px solid #475569;
   border-radius: 12px;
@@ -55,17 +52,19 @@
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
 }
 
-.stat-card.primary {
+/* Alarm state: applied only when active battles exist AND need intervention.
+   (Was previously `.primary`, applied unconditionally.) */
+.combat-stat-card.alarm {
   background: linear-gradient(135deg, #7f1d1d 0%, #991b1b 100%);
   border-color: #dc2626;
 }
 
-.stat-card.highlight {
+.combat-stat-card.highlight {
   background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
   border-color: #3b82f6;
 }
 
-.stat-card h3 {
+.combat-stat-card h3 {
   color: #94a3b8;
   font-size: 14px;
   margin: 0 0 10px 0;
@@ -74,7 +73,7 @@
   font-weight: 600;
 }
 
-.stat-value {
+.combat-stat-value {
   display: block;
   font-size: 32px;
   font-weight: bold;
@@ -82,17 +81,21 @@
   margin-bottom: 5px;
 }
 
-.stat-card.primary .stat-value {
+.combat-stat-card.alarm .combat-stat-value {
   color: #fbbf24;
 }
 
-.stat-change {
-  color: #10b981;
+.combat-stat-change {
+  color: #94a3b8;
   font-size: 14px;
   font-weight: 500;
 }
 
-.stat-label {
+.combat-stat-card.alarm .combat-stat-change {
+  color: #fca5a5;
+}
+
+.combat-stat-label {
   color: #94a3b8;
   font-size: 12px;
 }
@@ -836,6 +839,12 @@
   grid-template-columns: 1fr 1fr;
   gap: 15px;
   margin-bottom: 20px;
+}
+
+/* DisputePanel still uses generic .stat-value spans; keep them stacked now
+   that the unscoped .stat-value rule is gone. */
+.dispute-stats .stat-value {
+  display: block;
 }
 
 .dispute-content {

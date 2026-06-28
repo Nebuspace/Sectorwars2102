@@ -46,7 +46,6 @@ class MarketSnapshot:
     price_change_percent: float
     last_transaction: datetime
     bid_ask_spread: float
-    market_depth: Dict[str, List[Tuple[float, int]]]  # {"bids": [(price, qty)], "asks": [(price, qty)]}
     sector_prices: Dict[int, float]  # sector_id -> local price
     ai_prediction: Optional[Dict[str, Any]] = None
     
@@ -62,10 +61,6 @@ class MarketSnapshot:
             "price_change_percent": self.price_change_percent,
             "last_transaction": self.last_transaction.isoformat(),
             "bid_ask_spread": self.bid_ask_spread,
-            "market_depth": {
-                "bids": self.market_depth.get("bids", []),
-                "asks": self.market_depth.get("asks", [])
-            },
             "sector_prices": self.sector_prices,
             "ai_prediction": self.ai_prediction
         }
@@ -157,20 +152,21 @@ class RealTimeMarketService:
                 # No recent transactions, return default snapshot
                 return self._create_default_snapshot(commodity)
             
-            # Calculate metrics
-            current_price = float(transactions[0].price)
+            # Calculate metrics. The enhanced model's price-per-unit column is
+            # unit_price (there is NO `price` attribute) — reading `.price` here
+            # raised AttributeError on every call, was swallowed by the broad
+            # except below, and silently returned a fabricated default snapshot
+            # (WO-RTM1 paired fix; same root cause as _get_sector_prices).
+            current_price = float(transactions[0].unit_price)
             volume_24h = sum(t.quantity for t in transactions)
-            high_24h = max(float(t.price) for t in transactions)
-            low_24h = min(float(t.price) for t in transactions)
-            
+            high_24h = max(float(t.unit_price) for t in transactions)
+            low_24h = min(float(t.unit_price) for t in transactions)
+
             # Price change calculation
-            oldest_price = float(transactions[-1].price)
+            oldest_price = float(transactions[-1].unit_price)
             price_change_24h = current_price - oldest_price
             price_change_percent = (price_change_24h / oldest_price * 100) if oldest_price > 0 else 0
-            
-            # Market depth (simplified - would need order book in production)
-            market_depth = await self._calculate_market_depth(commodity, current_price, db)
-            
+
             # Sector-specific prices
             sector_prices = await self._get_sector_prices(commodity, db)
             
@@ -190,7 +186,6 @@ class RealTimeMarketService:
                 price_change_percent=price_change_percent,
                 last_transaction=transactions[0].timestamp,
                 bid_ask_spread=bid_ask_spread,
-                market_depth=market_depth,
                 sector_prices=sector_prices,
                 ai_prediction=ai_prediction
             )
@@ -229,53 +224,28 @@ class RealTimeMarketService:
             for commodity, snapshot in zip(valid_commodities, snapshots)
         }
     
-    async def _calculate_market_depth(self, commodity: str, current_price: float, 
-                                    db: AsyncSession) -> Dict[str, List[Tuple[float, int]]]:
-        """
-        Calculate market depth (order book simulation)
-        In production, this would come from actual buy/sell orders
-        """
-        # For now, simulate based on recent transactions
-        price_ranges = [
-            (current_price * 0.95, current_price * 0.98),  # Buy orders
-            (current_price * 1.02, current_price * 1.05)   # Sell orders
-        ]
-        
-        bids = []
-        asks = []
-        
-        # Simulate bid orders (buyers)
-        for i in range(5):
-            price = current_price * (0.99 - i * 0.01)
-            quantity = 1000 * (5 - i)  # More quantity at lower prices
-            bids.append((round(price, 2), quantity))
-        
-        # Simulate ask orders (sellers)
-        for i in range(5):
-            price = current_price * (1.01 + i * 0.01)
-            quantity = 1000 * (5 - i)  # More quantity at lower prices
-            asks.append((round(price, 2), quantity))
-        
-        return {"bids": bids, "asks": asks}
-    
     async def _get_sector_prices(self, commodity: str, db: AsyncSession) -> Dict[int, float]:
         """
         Get commodity prices by sector
         Shows regional price variations
         """
-        # Get recent transactions grouped by sector
+        # Get recent transactions grouped by sector.
+        # Reads enhanced_market_transactions (the live trade ledger). Its
+        # human-readable Integer sector_id column matches the Dict[int, float]
+        # contract directly, so no port/sector joins are needed. unit_price is
+        # the enhanced model's price-per-unit column (aliased back to avg_price
+        # so the downstream row shape is unchanged).
         stmt = text("""
-            SELECT 
-                s.id as sector_id,
-                AVG(mt.price) as avg_price,
+            SELECT
+                mt.sector_id as sector_id,
+                AVG(mt.unit_price) as avg_price,
                 COUNT(*) as transaction_count
-            FROM market_transactions mt
-            JOIN ports p ON mt.station_id = p.id
-            JOIN sectors s ON p.sector_id = s.id
-            WHERE 
+            FROM enhanced_market_transactions mt
+            WHERE
                 mt.commodity = :commodity
                 AND mt.timestamp > :cutoff_time
-            GROUP BY s.id
+                AND mt.sector_id IS NOT NULL
+            GROUP BY mt.sector_id
             HAVING COUNT(*) >= 5
             ORDER BY transaction_count DESC
             LIMIT 20
@@ -364,17 +334,15 @@ class RealTimeMarketService:
                     confidence=snapshot.ai_prediction["confidence"]
                 ))
         
-        # Volume spike signal
-        # (Would need historical average volume for accurate calculation)
-        if snapshot.volume_24h > 10000:  # Placeholder threshold
-            signals.append(TradingSignal(
-                signal_type="alert",
-                commodity=commodity,
-                strength=0.5,
-                reason=f"High trading volume: {snapshot.volume_24h:,} units",
-                confidence=0.6
-            ))
-        
+        # Volume spike signal — gated off: no stored multi-day volume baseline
+        # exists.  MarketTransaction retains only a rolling 24h window, and
+        # PriceHistory.daily_volume has no guaranteed writers, so there is no
+        # queryable average to compare against.  Emitting a signal off the
+        # previous arbitrary constant ("> 10000  # Placeholder") produced
+        # false positives across the full commodity range.  Wire this signal
+        # once a reliable daily-volume baseline is available (e.g. a scheduled
+        # 7-day rolling average persisted to PriceHistory).
+
         # Spread opportunity
         if snapshot.bid_ask_spread > 5:  # 5% spread
             signals.append(TradingSignal(
@@ -392,59 +360,6 @@ class RealTimeMarketService:
             pass
         
         return signals
-    
-    # =============================================================================
-    # REAL-TIME STREAMING
-    # =============================================================================
-    
-    async def stream_market_updates(self, commodities: List[str], db: AsyncSession, 
-                                  callback: callable, stop_event: asyncio.Event):
-        """
-        Stream real-time market updates for specified commodities
-        Calls callback function with updates
-        """
-        logger.info(f"Starting market stream for commodities: {commodities}")
-        
-        last_snapshots = {}
-        
-        try:
-            while not stop_event.is_set():
-                # Get current snapshots
-                current_snapshots = await self.get_multi_commodity_data(commodities, db)
-                
-                # Detect changes and send updates
-                updates = {}
-                for commodity, snapshot in current_snapshots.items():
-                    last_snapshot = last_snapshots.get(commodity)
-                    
-                    # Send update if price changed or first update
-                    if not last_snapshot or last_snapshot.current_price != snapshot.current_price:
-                        updates[commodity] = snapshot
-                        
-                        # Generate trading signals
-                        signals = await self.generate_trading_signals(commodity, snapshot)
-                        if signals:
-                            updates[commodity].signals = [asdict(s) for s in signals]
-                
-                # Send updates if any
-                if updates:
-                    await callback({
-                        "type": "market_update",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                        "updates": {k: v.to_dict() for k, v in updates.items()}
-                    })
-                
-                # Update last snapshots
-                last_snapshots = current_snapshots
-                
-                # Wait before next update
-                await asyncio.sleep(self.market_update_interval)
-                
-        except Exception as e:
-            logger.error(f"Error in market stream: {e}")
-            raise
-        finally:
-            logger.info("Market stream stopped")
     
     # =============================================================================
     # CACHING
@@ -524,7 +439,6 @@ class RealTimeMarketService:
             price_change_percent=0.0,
             last_transaction=datetime.now(UTC),
             bid_ask_spread=0.0,
-            market_depth={"bids": [], "asks": []},
             sector_prices={},
             ai_prediction=None
         )
@@ -554,22 +468,71 @@ class RealTimeMarketService:
         """Publish market update to Redis pub/sub for broadcasting"""
         if not self.redis:
             return
-        
+
         try:
             # Use pub/sub service for better management
             from src.services.redis_pubsub_service import get_pubsub_service
             pubsub_service = await get_pubsub_service()
-            
+
             # Publish through the service
             subscribers = await pubsub_service.publish_market_update(
                 commodity=commodity,
                 market_data=snapshot.to_dict()
             )
-            
+
             logger.debug(f"Published {commodity} update to {subscribers} subscribers")
-            
+
         except Exception as e:
             logger.error(f"Error publishing market update: {e}")
+
+    # ~1s batching window per (station, commodity), keyed in-process so the
+    # synchronous trade path can fire updates without flooding pub/sub when a
+    # commodity is hammered. Mirrors the cache_ttl real-time cadence.
+    _last_trade_publish: Dict[str, float] = {}
+
+    async def publish_trade_tick(
+        self,
+        station_id: str,
+        commodity: str,
+        buy_price: int,
+        sell_price: int,
+        quantity: int,
+    ) -> None:
+        """Publish a post-trade market tick for a single station/commodity.
+
+        Built for the SYNCHRONOUS buy/sell route (no AsyncSession needed): the
+        caller already holds fresh prices after the trade, so we publish them
+        directly instead of re-querying. Respects a ~1s batching window per
+        (station, commodity) so a hot commodity does not flood subscribers.
+
+        Fully defensive — a publish hiccup must never affect the trade. The
+        route awaits this AFTER its own commit, so failure here is cosmetic."""
+        if not self.redis:
+            return
+        try:
+            key = f"{station_id}:{commodity}"
+            now = asyncio.get_event_loop().time()
+            last = self._last_trade_publish.get(key, 0.0)
+            if now - last < self.market_update_interval:
+                return  # within the batching window — skip this tick
+            self._last_trade_publish[key] = now
+
+            from src.services.redis_pubsub_service import get_pubsub_service
+            pubsub_service = await get_pubsub_service()
+            await pubsub_service.publish_market_update(
+                commodity=commodity,
+                market_data={
+                    "commodity": commodity,
+                    "station_id": str(station_id),
+                    "buy_price": buy_price,
+                    "sell_price": sell_price,
+                    "quantity": quantity,
+                    "current_price": (buy_price + sell_price) // 2,
+                    "last_transaction": datetime.now(UTC).isoformat(),
+                },
+            )
+        except Exception as e:
+            logger.error(f"Error publishing trade tick for {commodity}: {e}")
 
 
 # Singleton instance

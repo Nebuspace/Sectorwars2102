@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import FleetHealthReport from '../charts/FleetHealthReport';
+import FleetOperationsTab from '../fleet/FleetOperationsTab';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
+import './fleet-management.css';
 
 interface Ship {
   id: string;
@@ -47,6 +51,8 @@ const SHIP_TYPES = [
 ];
 
 const FleetManagement: React.FC = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [ships, setShips] = useState<Ship[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
   const [stats, setStats] = useState<FleetStats | null>(null);
@@ -165,7 +171,7 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error creating ship:', error);
-      alert('Failed to create ship');
+      toast.error('Failed to create ship');
     }
   };
 
@@ -180,21 +186,26 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error updating ship:', error);
-      alert('Failed to update ship');
+      toast.error('Failed to update ship');
     }
   };
 
   const handleDeleteShip = async (shipId: string) => {
-    if (!confirm('Are you sure you want to delete this ship? This action cannot be undone.')) {
+    if (!(await confirm({
+      title: 'Delete Ship',
+      message: 'Are you sure you want to delete this ship? This action cannot be undone.',
+      danger: true,
+      confirmLabel: 'Delete',
+    }))) {
       return;
     }
-    
+
     try {
       await api.delete(`/api/v1/admin/ships/${shipId}`);
       fetchShips();
     } catch (error) {
       console.error('Error deleting ship:', error);
-      alert('Failed to delete ship');
+      toast.error('Failed to delete ship');
     }
   };
 
@@ -212,7 +223,7 @@ const FleetManagement: React.FC = () => {
       fetchShips();
     } catch (error) {
       console.error('Error teleporting ship:', error);
-      alert('Failed to teleport ship');
+      toast.error('Failed to teleport ship');
     }
   };
 
@@ -292,8 +303,8 @@ const FleetManagement: React.FC = () => {
                   <span className="dashboard-stat-icon">🚀</span>
                   <h4 className="dashboard-stat-title">Total Ships</h4>
                 </div>
-                <div className="dashboard-stat-value">{stats.total_ships}</div>
-                <div className="dashboard-stat-description">All ships</div>
+                <div className="dashboard-stat-value">{totalCount.toLocaleString()}</div>
+                <div className="dashboard-stat-description">All ships in galaxy</div>
               </div>
               
               <div className="dashboard-stat-card">
@@ -302,7 +313,7 @@ const FleetManagement: React.FC = () => {
                   <h4 className="dashboard-stat-title">Avg Maintenance</h4>
                 </div>
                 <div className="dashboard-stat-value">{stats.average_maintenance.toFixed(1)}%</div>
-                <div className="dashboard-stat-description">Fleet condition</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
               </div>
               
               <div className="dashboard-stat-card stat-warning">
@@ -311,7 +322,7 @@ const FleetManagement: React.FC = () => {
                   <h4 className="dashboard-stat-title">Inactive Ships</h4>
                 </div>
                 <div className="dashboard-stat-value">{stats.inactive_ships}</div>
-                <div className="dashboard-stat-description">Need attention</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
               </div>
               
               <div className="dashboard-stat-card">
@@ -320,7 +331,7 @@ const FleetManagement: React.FC = () => {
                   <h4 className="dashboard-stat-title">Total Cargo</h4>
                 </div>
                 <div className="dashboard-stat-value">{stats.total_cargo_capacity.toLocaleString()}</div>
-                <div className="dashboard-stat-description">Capacity</div>
+                <div className="dashboard-stat-description">Of {stats.total_ships} ships on this page</div>
               </div>
             </div>
           </section>
@@ -494,8 +505,30 @@ const FleetManagement: React.FC = () => {
             </div>
           </div>
         </section>
+
+        {/* Fleet Health Report (rescued: GET /admin/ships/health-report) */}
+        <section className="section">
+          <div className="section-header">
+            <h3 className="section-title">🩺 Fleet Health</h3>
+            <p className="section-subtitle">Condition and status analysis across the entire fleet</p>
+          </div>
+          <div className="card">
+            <div className="card-body">
+              <FleetHealthReport />
+            </div>
+          </div>
+        </section>
+
+        {/* Fleet Operations (admin fleet/battle endpoints: /admin/fleets/*) */}
+        <section className="section">
+          <div className="section-header">
+            <h3 className="section-title">⚔️ Fleet Operations</h3>
+            <p className="section-subtitle">Active fleets, recent battles, and live admin battle interventions</p>
+          </div>
+          <FleetOperationsTab />
+        </section>
       </div>
-      
+
       {/* Create Ship Modal */}
       {showCreateForm && (
         <div className="modal-overlay" onClick={() => setShowCreateForm(false)}>

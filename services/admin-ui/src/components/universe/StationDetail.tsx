@@ -171,7 +171,7 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
             <div className="info-item">
               <span className="label">Tax Rate:</span>
               <span className="value">
-                <EditableField field="tax_rate" value={port.tax_rate} type="number" />%
+                <EditableField field="tax_rate" value={((port.tax_rate ?? 0) * 100).toFixed(1)} type="number" />%
               </span>
             </div>
             <div className="info-item">
@@ -373,7 +373,7 @@ const PortDetail: React.FC<PortDetailProps> = ({ port, onBack, onUpdate }) => {
           <h3>Station Information</h3>
           <ul>
             <li>Class {port.port_class} ports typically trade in {getPortTradingPattern(port.port_class)}</li>
-            <li>Tax rate affects all transactions: {port.tax_rate}% current rate</li>
+            <li>Tax rate affects all transactions: {((port.tax_rate ?? 0) * 100).toFixed(1)}% current rate</li>
             <li>Defense drones: {port.defense_fighters} protecting the port</li>
             <li>Station shields: {port.port_shields || 0} / 1000 strength</li>
             <li>Click any value above to edit it directly</li>

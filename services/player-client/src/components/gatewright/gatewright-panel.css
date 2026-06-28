@@ -1,0 +1,842 @@
+/* Gatewright Guild console — warp-gate construction ritual UI.
+   Follows the cockpit CRT design language (.screen-hud-header chrome,
+   Orbitron display type, uppercase labels) with the quantum-violet
+   accent #7B2FFF reserved for quantum-tech surfaces. */
+
+.gatewright-panel {
+  --gw-violet: #7B2FFF;
+  --gw-violet-soft: rgba(123, 47, 255, 0.55);
+  --gw-violet-dim: rgba(123, 47, 255, 0.25);
+  --gw-violet-glow: rgba(123, 47, 255, 0.4);
+  --gw-cyan: #00d9ff;
+  --gw-cyan-dim: rgba(0, 217, 255, 0.45);
+  --gw-amber: #ffb347;
+  --gw-red: #ff4d6d;
+  --gw-screen: rgba(5, 0, 12, 0.98);
+
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--gw-screen);
+  border: 1px solid var(--gw-violet-dim);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.8),
+    0 0 18px rgba(123, 47, 255, 0.15);
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--font-heading, 'Courier New', monospace);
+  position: relative;
+  overflow: hidden;
+}
+
+/* CRT scanlines + violet screen glow */
+.gatewright-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0px,
+      rgba(123, 47, 255, 0.025) 1px,
+      transparent 3px
+    ),
+    radial-gradient(ellipse at center, transparent 30%, rgba(123, 47, 255, 0.05) 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ============================================
+   HUD HEADER — mirrors .screen-hud-header chrome
+   ============================================ */
+
+.gw-hud-header {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.35rem 0.6rem 0.35rem 0.5rem;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gw-violet);
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.8);
+  background: transparent;
+  border-top: 2px solid var(--gw-violet-soft);
+  border-left: 2px solid var(--gw-violet-soft);
+  border-bottom: 1px solid var(--gw-violet-dim);
+  box-shadow:
+    0 0 8px var(--gw-violet-glow),
+    inset 0 0 8px rgba(123, 47, 255, 0.15);
+  margin: 0.5rem 0.5rem 0 0.5rem;
+  border-radius: 2px 0 0 0;
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.gw-hud-title {
+  white-space: nowrap;
+}
+
+.gw-hud-sub {
+  font-size: 0.55rem;
+  font-weight: 400;
+  letter-spacing: 0.25em;
+  color: rgba(123, 47, 255, 0.55);
+  text-shadow: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gw-close {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--gw-violet-dim);
+  border-radius: 2px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.gw-close:hover {
+  border-color: var(--gw-violet);
+  color: var(--gw-violet);
+  box-shadow: 0 0 8px var(--gw-violet-glow);
+}
+
+/* ============================================
+   BODY
+   ============================================ */
+
+.gw-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.6rem 0.7rem 0.8rem;
+  margin: 0 0.5rem 0.5rem 0.5rem;
+  border-left: 2px solid rgba(123, 47, 255, 0.35);
+  border-bottom: 2px solid rgba(123, 47, 255, 0.2);
+  position: relative;
+  z-index: 2;
+}
+
+.gw-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.gw-body::-webkit-scrollbar-track {
+  background: rgba(123, 47, 255, 0.06);
+}
+
+.gw-body::-webkit-scrollbar-thumb {
+  background: rgba(123, 47, 255, 0.35);
+  border-radius: 3px;
+}
+
+.gw-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(123, 47, 255, 0.55);
+}
+
+.gw-intro {
+  margin: 0 0 0.9rem 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.55);
+  font-style: italic;
+}
+
+/* ============================================
+   SECTIONS
+   ============================================ */
+
+.gw-section {
+  margin-bottom: 1.1rem;
+}
+
+.gw-section:last-child {
+  margin-bottom: 0;
+}
+
+.gw-section-title {
+  margin: 0 0 0.5rem 0;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gw-violet);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.6);
+  border-bottom: 1px solid var(--gw-violet-dim);
+  padding-bottom: 0.3rem;
+}
+
+.gw-state {
+  margin: 0;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.05em;
+}
+
+.gw-requirement {
+  margin: 0;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.5);
+  border: 1px dashed var(--gw-violet-dim);
+  border-radius: 3px;
+  padding: 0.5rem 0.6rem;
+}
+
+/* ============================================
+   VALIDATION / NOTICE STRIPS
+   ============================================ */
+
+.gw-validation-strip {
+  margin: 0.5rem 0;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--gw-amber);
+  background: rgba(255, 179, 71, 0.08);
+  border-left: 3px solid var(--gw-amber);
+  border-radius: 0 3px 3px 0;
+  text-shadow: 0 0 6px rgba(255, 179, 71, 0.3);
+}
+
+.gw-notice-strip {
+  margin: 0.5rem 0;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--gw-cyan);
+  background: rgba(0, 217, 255, 0.06);
+  border-left: 3px solid var(--gw-cyan-dim);
+  border-radius: 0 3px 3px 0;
+}
+
+/* ============================================
+   COST MANIFESTS
+   ============================================ */
+
+.gw-manifest {
+  list-style: none;
+  margin: 0.4rem 0;
+  padding: 0;
+  border: 1px solid rgba(123, 47, 255, 0.18);
+  border-radius: 3px;
+  background: rgba(123, 47, 255, 0.04);
+}
+
+.gw-manifest-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid rgba(123, 47, 255, 0.1);
+}
+
+.gw-manifest-row:last-child {
+  border-bottom: none;
+}
+
+.gw-manifest-check {
+  width: 0.9rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.gw-manifest-row.ok .gw-manifest-check {
+  color: var(--gw-cyan);
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.6);
+}
+
+.gw-manifest-row.short .gw-manifest-check {
+  color: var(--gw-amber);
+}
+
+.gw-manifest-row.unknown .gw-manifest-check {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.gw-manifest-label {
+  flex: 1;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.gw-manifest-need {
+  color: var(--gw-violet);
+  font-weight: 700;
+  text-shadow: 0 0 4px rgba(123, 47, 255, 0.4);
+}
+
+.gw-manifest-have {
+  width: 7.5rem;
+  text-align: right;
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.gw-manifest-row.ok .gw-manifest-have {
+  color: rgba(0, 217, 255, 0.75);
+}
+
+.gw-manifest-row.short .gw-manifest-have {
+  color: var(--gw-amber);
+}
+
+/* ============================================
+   DEPLOY FLOW (D2)
+   ============================================ */
+
+.gw-dest-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.gw-dest-label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.gw-dest-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.gw-step-btn {
+  background: rgba(123, 47, 255, 0.08);
+  border: 1px solid var(--gw-violet-dim);
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.75);
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.65rem;
+  padding: 0.3rem 0.45rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.gw-step-btn:hover {
+  border-color: var(--gw-violet);
+  color: var(--gw-violet);
+  box-shadow: 0 0 6px var(--gw-violet-glow);
+}
+
+.gw-dest-input {
+  width: 5.5rem;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--gw-violet-soft);
+  border-radius: 3px;
+  color: var(--gw-violet);
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.25rem 0.3rem;
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+  /* Hide native number spinners — the ±1/±10 step buttons own adjustment */
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.gw-dest-input::-webkit-outer-spin-button,
+.gw-dest-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.gw-dest-input:focus {
+  outline: none;
+  box-shadow: 0 0 10px var(--gw-violet-glow);
+}
+
+/* ============================================
+   BUTTONS
+   ============================================ */
+
+.gw-btn {
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 0.45rem 0.9rem;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: rgba(123, 47, 255, 0.1);
+  border: 1px solid var(--gw-violet-soft);
+  color: var(--gw-violet);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+}
+
+.gw-btn:hover:not(:disabled) {
+  background: rgba(123, 47, 255, 0.22);
+  box-shadow: 0 0 12px var(--gw-violet-glow);
+}
+
+.gw-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.gw-btn.deploy {
+  margin-top: 0.4rem;
+}
+
+.gw-btn.commit {
+  background: rgba(123, 47, 255, 0.25);
+  border-color: var(--gw-violet);
+  color: #d9c2ff;
+  box-shadow: 0 0 10px var(--gw-violet-glow);
+}
+
+.gw-btn.commit:hover:not(:disabled) {
+  background: rgba(123, 47, 255, 0.4);
+  box-shadow: 0 0 16px rgba(123, 47, 255, 0.6);
+}
+
+.gw-btn.danger {
+  border-color: rgba(255, 77, 109, 0.6);
+  background: rgba(255, 77, 109, 0.1);
+  color: var(--gw-red);
+  text-shadow: 0 0 6px rgba(255, 77, 109, 0.4);
+}
+
+.gw-btn.danger:hover:not(:disabled) {
+  background: rgba(255, 77, 109, 0.22);
+  box-shadow: 0 0 12px rgba(255, 77, 109, 0.35);
+}
+
+.gw-btn.ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.6);
+  text-shadow: none;
+}
+
+.gw-btn.ghost:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.gw-confirm-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.gw-confirm-block {
+  margin-top: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--gw-violet-dim);
+  border-radius: 3px;
+  background: rgba(123, 47, 255, 0.06);
+}
+
+.gw-cancel-note {
+  margin: 0 0 0.4rem 0;
+  font-size: 0.68rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+/* ============================================
+   PROJECT CARDS (D1)
+   ============================================ */
+
+.gw-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.gw-project-card {
+  border: 1px solid var(--gw-violet-dim);
+  border-radius: 4px;
+  background: rgba(123, 47, 255, 0.04);
+  padding: 0.55rem 0.65rem 0.65rem;
+  position: relative;
+}
+
+.gw-project-card.phase-active {
+  border-color: var(--gw-violet);
+  box-shadow:
+    0 0 14px rgba(123, 47, 255, 0.25),
+    inset 0 0 18px rgba(123, 47, 255, 0.08);
+}
+
+.gw-project-card.phase-expired {
+  opacity: 0.6;
+}
+
+.gw-project-route {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: 0.45rem;
+}
+
+.gw-route-arrow {
+  color: var(--gw-violet);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.6);
+}
+
+.gw-phase-flag {
+  margin-left: auto;
+  font-size: 0.55rem;
+  letter-spacing: 0.18em;
+  padding: 0.15rem 0.4rem;
+  border-radius: 2px;
+}
+
+.gw-phase-flag.expired {
+  color: var(--gw-amber);
+  border: 1px solid rgba(255, 179, 71, 0.4);
+}
+
+/* ---- Phase ribbon: 5 ritual steps ---- */
+
+.gw-ribbon {
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  margin: 0.2rem 0 0.55rem;
+  padding: 0;
+}
+
+.gw-ribbon-step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  position: relative;
+  min-width: 0;
+}
+
+/* connector track between nodes */
+.gw-ribbon-step:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  top: 0.32rem;
+  right: 50%;
+  width: 100%;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  z-index: 0;
+}
+
+.gw-ribbon-step.done:not(:first-child)::before,
+.gw-ribbon-step.current:not(:first-child)::before {
+  background: var(--gw-cyan-dim);
+  box-shadow: 0 0 4px rgba(0, 217, 255, 0.3);
+}
+
+.gw-ribbon-node {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.6);
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+}
+
+.gw-ribbon-step.done .gw-ribbon-node {
+  border-color: var(--gw-cyan-dim);
+  background: rgba(0, 217, 255, 0.25);
+  box-shadow: 0 0 5px rgba(0, 217, 255, 0.3);
+}
+
+.gw-ribbon-step.current .gw-ribbon-node {
+  border-color: var(--gw-violet);
+  background: var(--gw-violet);
+  box-shadow: 0 0 10px var(--gw-violet-glow);
+  animation: gw-node-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes gw-node-pulse {
+  0%, 100% {
+    box-shadow: 0 0 6px rgba(123, 47, 255, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 14px rgba(123, 47, 255, 0.85);
+  }
+}
+
+.gw-ribbon-label {
+  font-size: 0.48rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.35);
+  line-height: 1.25;
+  padding: 0 0.15rem;
+}
+
+.gw-ribbon-step.done .gw-ribbon-label {
+  color: rgba(0, 217, 255, 0.55);
+}
+
+.gw-ribbon-step.current .gw-ribbon-label {
+  color: var(--gw-violet);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.6);
+  font-weight: 700;
+}
+
+.gw-ribbon.dead .gw-ribbon-node,
+.gw-ribbon.dead .gw-ribbon-label {
+  opacity: 0.4;
+}
+
+/* ---- Project detail lines ---- */
+
+.gw-project-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  font-size: 0.66rem;
+  margin: 0.2rem 0;
+}
+
+.gw-line-label {
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  flex-shrink: 0;
+}
+
+.gw-line-value {
+  color: var(--gw-cyan);
+  letter-spacing: 0.05em;
+}
+
+.gw-line-value.urgent {
+  color: var(--gw-amber);
+}
+
+.gw-project-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.66rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.5);
+  font-style: italic;
+}
+
+/* ---- Anchor block (D3) ---- */
+
+.gw-anchor-block {
+  margin-top: 0.5rem;
+  border-top: 1px dashed var(--gw-violet-dim);
+  padding-top: 0.5rem;
+}
+
+.gw-anchor-title {
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gw-violet);
+  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
+  margin-bottom: 0.25rem;
+}
+
+.gw-anchor-warning {
+  margin: 0.3rem 0 0.45rem;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.5;
+  color: var(--gw-red);
+  text-shadow: 0 0 6px rgba(255, 77, 109, 0.4);
+  border: 1px solid rgba(255, 77, 109, 0.4);
+  border-radius: 3px;
+  background: rgba(255, 77, 109, 0.07);
+}
+
+/* ---- Harmonizing block ---- */
+
+.gw-harmonizing-block {
+  margin-top: 0.5rem;
+  border-top: 1px dashed var(--gw-violet-dim);
+  padding-top: 0.5rem;
+  text-align: center;
+}
+
+.gw-fusion-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gw-violet);
+  text-shadow: 0 0 8px rgba(123, 47, 255, 0.6);
+  margin-bottom: 0.35rem;
+  animation: gw-fusion-flicker 3s ease-in-out infinite;
+}
+
+@keyframes gw-fusion-flicker {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
+.gw-fusion-countdown {
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #d9c2ff;
+  text-shadow: 0 0 14px rgba(123, 47, 255, 0.8);
+  margin-bottom: 0.5rem;
+}
+
+.gw-fusion-countdown.complete {
+  font-size: 0.78rem;
+  color: var(--gw-cyan);
+  text-shadow: 0 0 10px rgba(0, 217, 255, 0.6);
+}
+
+/* ---- Ceremony card (gate active) ---- */
+
+.gw-ceremony {
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.5rem;
+  text-align: center;
+  border: 1px solid var(--gw-violet-soft);
+  border-radius: 3px;
+  background:
+    radial-gradient(ellipse at center, rgba(123, 47, 255, 0.16) 0%, transparent 75%);
+}
+
+.gw-ceremony-title {
+  font-family: var(--font-heading, 'Courier New', monospace);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #d9c2ff;
+  text-shadow:
+    0 0 10px rgba(123, 47, 255, 0.9),
+    0 0 24px rgba(123, 47, 255, 0.5);
+  margin-bottom: 0.3rem;
+}
+
+.gw-ceremony-route {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ============================================
+   SECTOR GATES (D4)
+   ============================================ */
+
+.gw-gate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.gw-gate-list.beacons {
+  margin-top: 0.35rem;
+}
+
+.gw-gate-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid rgba(123, 47, 255, 0.16);
+  border-radius: 3px;
+  background: rgba(123, 47, 255, 0.04);
+  font-size: 0.66rem;
+}
+
+.gw-gate-row.beacon {
+  border-style: dashed;
+}
+
+.gw-gate-route {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.gw-gate-owner {
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.gw-badge {
+  margin-left: auto;
+  font-size: 0.54rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 0.12rem 0.4rem;
+  border-radius: 2px;
+}
+
+.gw-badge.turns {
+  color: var(--gw-violet);
+  border: 1px solid var(--gw-violet-soft);
+  background: rgba(123, 47, 255, 0.1);
+  text-shadow: 0 0 5px rgba(123, 47, 255, 0.5);
+}
+
+.gw-badge.public {
+  margin-left: 0;
+  color: var(--gw-cyan);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  background: rgba(0, 217, 255, 0.06);
+}
+
+.gw-badge.shield {
+  color: var(--gw-cyan);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  background: rgba(0, 217, 255, 0.06);
+}

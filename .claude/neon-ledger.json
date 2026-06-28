@@ -1,0 +1,2184 @@
+{
+ "ledger_version": 1,
+ "runs": [
+  {
+   "id": "neon-2026-06-11-a",
+   "stage": "complete",
+   "branch_head_at_start": "9d96775",
+   "deployed_sha_baseline": "ce3c8c6",
+   "baseline": {
+    "login": "ok (verifpilot)",
+    "dashboard": "ok, fits 1440x900",
+    "movement": "ok (1010->1006, 1 turn)",
+    "colonies": "ok after retry window (Pollux IX)",
+    "admin_shell": "loads; backend 403 for non-admin (correct)",
+    "known_console_noise": "teams/team-1 422 on /game/team mount; transient 404 storms during gameserver restart windows; token-validate 502 once"
+   },
+   "sections": [
+    {
+     "key": "cockpit-access-truth",
+     "state": "proven",
+     "effort": 2,
+     "findings": [
+      "NEON-6 sidebar nav unreachable (BLOCKER)",
+      "NEON-1 venue grid clipped",
+      "NEON-3 tax display lie"
+     ],
+     "files_owned": [
+      "services/player-client/src/components/layouts/game-layout.css",
+      "services/player-client/src/components/spacedock/* (CSS only)",
+      "services/player-client/src/components/trading/TradingInterface.tsx"
+     ],
+     "proof_script": [
+      "1440x900 + 1920x1080: all 7 nav items + LOGOUT reachable (visible or via sidebar scroll); NAV CHART and COLONIES clickable and load",
+      "Docked at Stardock: venue cards show icon+title+description legibly, no sliver-scroll (before/after screenshots)",
+      "Trading Hub at Stardock shows Tax Rate: 0.0% (server sends 0); at Fomalhaut shows 20.0%; network response cross-checked",
+      "Zero new console errors"
+     ]
+    },
+    {
+     "key": "ranking-goes-live",
+     "state": "proven",
+     "effort": 3,
+     "findings": [
+      "ranking router never mounted in api.py (BLOCKER, ORPHAN_API)",
+      "ranking UI suite rendered nowhere"
+     ],
+     "files_owned": [
+      "services/gameserver/src/api/api.py",
+      "services/player-client/src/App.tsx",
+      "services/player-client/src/components/layouts/GameLayout.tsx (nav list)",
+      "services/player-client/src/components/pages/RankingPage* (new)",
+      "services/player-client/src/components/ranking/* (fixups only)"
+     ],
+     "proof_script": [
+      "GET /api/v1/ranking/rank returns 200 for verifpilot (before: 404)",
+      "New nav entry visible; /game/ranking renders real rank + rep + medals(+empty state ok) + leaderboard of the 10 real players",
+      "DB cross-check: leaderboard order matches SQL over players table",
+      "All ranking requests 2xx; zero new console errors"
+     ]
+    },
+    {
+     "key": "in-fiction-confirmations",
+     "state": "proven",
+     "effort": 2,
+     "findings": [
+      "native confirm()/alert() in PlanetPortPair.tsx:98, PlanetCard.tsx:35,41, StationCard.tsx:31 (PAINFUL, design-language + automation-hostile)"
+     ],
+     "files_owned": [
+      "services/player-client/src/components/tactical/PlanetPortPair.tsx",
+      "services/player-client/src/components/tactical/PlanetCard.tsx",
+      "services/player-client/src/components/tactical/StationCard.tsx",
+      "services/player-client/src/components/tactical/confirm-dialog css/component (new)"
+     ],
+     "proof_script": [
+      "WITHOUT confirm-shim: click Dock on station card -> in-fiction styled dialog (not native); Cancel -> no dock, no turn spent; Confirm -> docked, turn decrements, DB occupancy row",
+      "Land flow on planet card shows same dialog pattern",
+      "grep: zero window.confirm/window.alert left in player-client src",
+      "Entire replay runs unshimmed without freezing automation"
+     ]
+    }
+   ],
+   "parking_lot": [
+    "NPC ecosystem void: 0 NPC ships in galaxy; combat/bounties/pirates unreachable in play. bang rosters pre-seeded in bang_snapshot. XL - propose dedicated run (headline candidate)",
+    "PvP combat client/server contract mismatch: client posts /combat/attack-player + /combat/attack-drones; server has engage/retreat (M)",
+    "drones.py /deployed + /deployments shadowed by /{drone_id} route ordering (S, but UI surface unreachable anyway)",
+    "Genesis spec divergences (TERRAN rolled despite ADR-0014, capacities 1/3 vs doc 0/5, advanced-tier 48h wait vs immediate) - code-wins-on-numbers rule => FLAG to Max, not autonomous fix",
+    "Confirmed BUG (canon-marked): combat_service.attack_planet missing formation_status=='forming' guard (S)",
+    "Haggling: docs OVERSTATED - zero haggling code exists despite doc claiming service hooks; building it = M-L candidate for next run",
+    "Galaxy map shows only current+adjacent sectors; no topology/search/route preview (M-L, needs design pass)",
+    "Admin UI mock-data plague: 11 BLOCKER-grade fabricated dashboards (Math.random data, phantom endpoints) - recommend dedicated GOLD/NEON run",
+    "Admin UI lets non-admin in, labels them Administrator, renders failed fetches as zeros (PAINFUL)",
+    "502 on token validation dumps player to landing page instead of retry (PAINFUL)",
+    "COLONIES page infinite spinner without error/retry state during outage windows; cockpit shows NO ACTIVE VESSEL during loads",
+    "Stardock market: nothing buyable/sellable for typical cargo with no explanation (CONFUSION); single-commodity layout wastes width",
+    "TeamManager hardcoded 'team-1' + missing playerId prop (App.tsx:629); no-team state works but with-team path broken",
+    "ranking.py bounty endpoints: cancellation (DELETE) unimplemented though doc says shipped; websocket bounty events absent",
+    "Sector naming drift: sectors.name 'Sector 6' vs displayed SECTOR 1006",
+    "No turn-cost preview before warp commit (movement UX)",
+    "region-manager container unhealthy on dev"
+   ],
+   "discovery_stats": {
+    "browser_findings": 11,
+    "code_findings": {
+     "gameserver": 18,
+     "player_client": 23,
+     "admin_ui": 24
+    },
+    "docs_claims": {
+     "economy": 64,
+     "gameplay": 93,
+     "galaxy_planets": 63
+    },
+    "workflow_run_id": "wf_b7f144ec-18b",
+    "full_results": "/private/tmp/claude-501/-Users-mrathbone-github-Nebuspace-Sectorwars2102/566cb194-13ef-4a00-bcd6-a32a289dad76/tasks/w9p0eskaz.output"
+   },
+   "verdict": "GLOWING",
+   "commits": {
+    "cockpit-access-truth": "e3f05fc",
+    "ranking-goes-live": "ff1609f",
+    "in-fiction-confirmations": "888ec18",
+    "docs-writeback": "sw2102-docs b46b2f0"
+   },
+   "proof_evidence": {
+    "cockpit-access-truth": "sidebar scrolls: all 7 nav items + SERVICE RECORD + LOGOUT reachable at 1440x900 and 1920x1080; venue grid 7 legible cards (was empty slivers); Tax Rate 0.0% at unowned Frontier Hub Delta matching server tax_rate 0",
+    "ranking-goes-live": "/game/ranking renders rank Recruit 10/50, requirements, medals, 10-player leaderboard; all /api/v1/ranking/* 2xx (was 404); DB cross-check exact: 9 trades / 40195 volume / ARIA interactions",
+    "in-fiction-confirmations": "DOCKING REQUEST CRT dialog live; CANCEL = no-op (turn held 959); CONFIRM docked (turn 958, fee 50cr); docking_slip_occupancies row verified; entire replay ran UNSHIMMED without freezing automation"
+   },
+   "residual_polish": [
+    "SERVICE RECORD page title/subtitle overlap in header",
+    "venue grid second-row titles slightly clipped at row boundary at 1440x900",
+    "NAV monitor legend overlays clickable warp nodes (had to dodge it twice during PROVE)",
+    "RankProgress requirement row still says 'Exploration Activity' (backend-sourced name; leaderboard tab + stats relabeled to ARIA Activity)"
+   ]
+  },
+  {
+   "id": "neon-2026-06-11-b",
+   "stage": "complete",
+   "branch_head_at_start": "e46dc30",
+   "deployed_sha_baseline": "888ec18",
+   "sections": [
+    {
+     "key": "combat-engine-live",
+     "state": "proven",
+     "effort": 3,
+     "proof_script": [
+      "POST /api/v1/combat/engage {targetType:ship} returns 200 with combatId (before: 500 on every call)",
+      "verifpilot engages a target from /game/combat WEAPONS screen; rounds replay in UI without crash; winner shown correctly by UUID",
+      "DB: combat_logs row with real columns (combat_type, outcome, rounds>0, combat_details JSON); attacker turns deducted by defender attack_turn_cost",
+      "PvP secondary: engage testpilot's ship in shared sector; CombatLog honest regardless of outcome",
+      "Zero new console errors; port targetType returns honest 'disabled' message"
+     ]
+    },
+    {
+     "key": "first-npcs-pirates",
+     "state": "proven",
+     "effort": 3,
+     "proof_script": [
+      "spawn script on dev materializes 31 pirate captains: npc_characters rows + ships rows (owner_id NULL, is_npc true) at 13 BANG anchor sectors (sector-offset correct)",
+      "verifpilot flies to nearest pirate anchor sector: COMMS shows the pirate contact; WEAPONS target list shows the pirate ship with NPC styling",
+      "ENGAGE the pirate: combat resolves, CombatLog row with defender_id NULL; on NPC destruction KIA processed (status kia, presence + patrol entries removed, respawn_eligible_at set)",
+      "Script idempotent: second run spawns nothing"
+     ]
+    },
+    {
+     "key": "polish-batch-2",
+     "state": "proven",
+     "effort": 1,
+     "proof_script": [
+      "SERVICE RECORD header: title+subtitle no longer overlap at 1440x900",
+      "SpaceDock venue grid: both rows un-sliced at 1440x900",
+      "NAV monitor: a warp node under the legend is clickable (legend visible, pointer-events none)"
+     ]
+    }
+   ],
+   "flags_to_max": [
+    "Pirate hulls have NO canon stats - v1 uses LIGHT_FREIGHTER specs as documented placeholder (police interdictors deferred: need new enum hulls, fully spec'd in police-forces.md)",
+    "bang rosters say 13 pirate lords/galaxy vs canon ADR-0047 1-2 Stronghold-tier per region - lords + 90 enforcers held back from v1 spawn",
+    "NPC kills grant no rep/bounty/loot in v1 (canon numbers exist, belong to holdings/reputation slices)",
+    "ships.owner_id NOT NULL dropped + is_npc added via migration + manual dev ALTER (additive)",
+    "Defender-docked protection: attack_player has no defender-docked guard - canon gap, decide whether docked players are attackable",
+    "npcs.md internal conflict: prose says nine archetypes, enum section lists ten (STATION_SECURITY) - docs fix needed",
+    "respawn-vs-permanent-KIA tension: npcs.md ADR-0063 N-D2 (15-min respawn) vs npc-scheduler.md KIA step 9 (permanently gone)",
+    "current-sector endpoint region-scopes lookups; cross-region travel flows unverified (teleport during proof required manual region_id fix)"
+   ],
+   "probe_workflow": "wf_f25eaeaa-c25",
+   "verdict": "GLOWING",
+   "commits": {
+    "combat-engine-live": "e2fc11d",
+    "first-npcs-pirates": "91f8d29",
+    "polish-batch-2": "c036287"
+   },
+   "proof_evidence": {
+    "combat-engine-live": "engage 200 (was 500-forever); 4 live fights resolved with honest outcomes (DISENGAGED zero-drone flee, STALEMATE 10-round cap, VICTORY kill, PvP 1-round scout escape); combat_logs rows with real columns; spec'd turn costs charged exactly (LIGHT_FREIGHTER attack_turn_cost 12, SCOUT 5); UI round replay without crash",
+    "first-npcs-pirates": "31 pirate captains materialized at 13 BANG anchor sectors with DB-derived offsets; idempotent re-run (0 spawned, 13 EXISTS); COMMS + combat target list show NPCs (badge in DOM); KIA on kill: status KIA, sector NULL, respawn_eligible_at exactly +70 wall-min (168h/144 scale), presence+patrol pruned 5->4; farming guard holds (combat_victories 0 after NPC kill)",
+    "polish-batch-2": "SERVICE RECORD header clean (no overlap); NAV legend pointer-events none verified via computed style + map clicks throughout the run; venue-grid fold fix reviewer-verified, live visual deferred (no SpaceDock in proof area)"
+   },
+   "test_rig_notes": [
+    "verifpilot/testpilot relocated to sectors 884/885 (player_owned region) via DB during proof; left there (valid game state)",
+    "Mayflower attack_rating restored to 10, verifpilot drones reset to 0 after proof",
+    "Blackjack Mara's ship was hull-rigged to force the kill path; ship destroyed + NPC KIA (legitimate end state, respawns via future Loop B)"
+   ],
+   "residual_polish": [
+    "COMMS contact names truncate before the NPC badge renders (badge in DOM, clipped from view) \u2014 render badge before name or widen panel",
+    "venue-grid fold visual check at a SpaceDock pending",
+    "NavigationMap duplicate React keys for multi-edge connections (console warning, pre-existing)"
+   ]
+  },
+  {
+   "id": "neon-2026-06-11-c",
+   "stage": "complete",
+   "branch_head_at_start": "ffcba00",
+   "deployed_sha_baseline": "c036287",
+   "sections": [
+    {
+     "key": "police-on-patrol",
+     "state": "proven",
+     "effort": 4,
+     "proof_script": [
+      "spawn extends to marshals/sentinels: 9 Marshal Interdictors at player_owned sector 1, 28 Sentinels at 3551, 14 terran marshals at 1001 (canon roster counts)",
+      "ship catalog excludes NPC hulls (is_npc_only filter); /purchase of an NPC hull returns ERR_NPC_ONLY_HULL 400",
+      "verifpilot warps into sector 1 (staged adjacent): COMMS shows Marshal contacts; engage one -> combat resolves",
+      "Marshal kill: reputations row created with current_value -250 for Terran Federation (psql verified); NPC KIA; squad row pruned",
+      "Placeholders documented: attack_turn_cost mirrors DEFENDER (DECISIONS entry); Sentinel rep deferred (Concord design-only)"
+     ]
+    },
+    {
+     "key": "crew-comes-alive",
+     "state": "proven",
+     "effort": 2.5,
+     "proof_script": [
+      "GET /api/v1/player/state returns team_id (null before team, set after)",
+      "verifpilot creates a team via the new CREW modal: 200, credits -10,000 (DB), CREW renders real team header + 1-member list (leader)",
+      "duplicate-name create -> 400 'already taken' shown honestly",
+      "no-team state still clean for testpilot; Browse Teams hidden with registry-offline note (list endpoint deferred as new API surface)"
+     ]
+    },
+    {
+     "key": "hygiene-batch-3",
+     "state": "proven",
+     "effort": 1.5,
+     "proof_script": [
+      "COMMS at sector 884: NPC badge visible on all pirate contacts (name ellipsizes, badge never clipped)",
+      "/game dashboard console: zero duplicate-React-key warnings (sectors deduped at source)",
+      "COLONIES renders normally; timeout/error panels restyled to CRT idiom (timeout path code-reviewed; live force-hang not provable)",
+      "venue-grid fold screenshot if a SpaceDock is on the proof route"
+     ]
+    }
+   ],
+   "flags_to_max": [
+    "Federation faction row seeded as canon 'Terran Federation' (FactionType FEDERATION); dead seeder create_default_factions names it 'United Space Federation' and is never called - discrepancy filed to FINDINGS",
+    "Interdictor attack_turn_cost + other NOT NULL spec columns canon-silent: mirrored from DEFENDER hull as documented placeholder (DECISIONS entry)",
+    "Sentinel-kill reputation deferred: canon names Galactic Concord standing loss with no numeric value and CONCORD faction is design-only",
+    "All 9 player_owned marshals anchor at starter sector 1 (single hostSectorId per BANG roster) - new players see 9 Interdictors in COMMS at spawn; gameplay call",
+    "GET /api/v1/teams (browse/list) deferred - new API surface needing scoping review; CREW hides the button with a note"
+   ],
+   "probe_workflow": "wf_5526753a-1fa",
+   "verdict": "GLOWING",
+   "commits": {
+    "police-on-patrol": "9e394f5",
+    "crew-comes-alive": "2f5a3a5 + audit hotfix",
+    "hygiene-batch-3": "ca4571a"
+   },
+   "proof_evidence": {
+    "police-on-patrol": "51 LAW_ENFORCEMENT NPCs spawned (9 marshals sector 1, 14 terran 1001, 28 sentinels 3551); canon-exact Interdictor specs in DB; catalog excludes NPC hulls (9 player types, 0 NPC); Marshal Quinn Hale engaged (18-turn placeholder cost charged exactly) and killed -> Terran Federation rep row -250 with history reason 'Marshal kill (Marshal Quinn Hale)'; KIA + scaled respawn + squad 8->7",
+    "crew-comes-alive": "[NEON] Neon Raiders founded via UI modal: 10,000cr charged exactly (1,998,325->1,988,325), real roster (LEADER verifpilot), /player/state returns team_id, Browse Teams honestly offline. Repair loop: pre-existing AuditService signature drift 500'd ALL team mutations - fixed all 12 call sites (hotfix commit)",
+    "hygiene-batch-3": "NPC badges visible on all 9 marshal contacts at sector 1 (names ellipsize, badges never clip); fresh /game load: zero console errors (duplicate-key warnings gone); COLONIES normal render + CRT-styled scan states (timeout path code-reviewed; live force-hang not provable); venue fold visual deferred again (no spacedock on proof route)"
+   },
+   "repair_loops": [
+    "create-team 500: AuditService.log_action signature drift (actor_id/string actions) across 12 team_service call sites - pre-existing, unearthed by first UI reachability; fixed, redeployed, re-proven in one loop"
+   ]
+  },
+  {
+   "id": "neon-2026-06-11-d",
+   "stage": "complete",
+   "branch_head_at_start": "bf05d28",
+   "deployed_sha_baseline": "208dfeb",
+   "sections": [
+    {
+     "key": "admin-honesty",
+     "state": "proven",
+     "effort": 3,
+     "proof_script": [
+      "admin login on stage; /admin/analytics Performance + Predictive tabs show honest 'endpoint offline' states (code-diff confirms Math.random fallbacks deleted)",
+      "/admin/colonies Planets: attribute values identical across two refreshes and match planets table rows (was random per request)",
+      "/admin/nexus shows real Clusters from /api/v1/nexus/clusters; regenerate button gone",
+      "/admin/ai-trading renders honest empty states ([] from de-mocked endpoints); /admin/permissions Roles tab shows ADR-0027/0058 design-only banner with disabled controls"
+     ]
+    },
+    {
+     "key": "region-sync-and-cost-preview",
+     "state": "proven",
+     "effort": 2,
+     "proof_script": [
+      "verifpilot at sector 1 hovers the cross-region tunnel node: 'CLICK TO WARP - 1 TURN' (cost from MoveOption.turn_cost)",
+      "warp 1 -> 1301 (Central Nexus): current-sector returns 200 with region 'Central Nexus' (the formerly-reproducible 404 is dead); players.current_region_id updated in DB",
+      "stale-region backfill applied on dev (players synced to their sector's region)"
+     ]
+    },
+    {
+     "key": "market-clarity",
+     "state": "proven",
+     "effort": 1.5,
+     "proof_script": [
+      "docked at a station with nothing to buy: honest in-fiction message explains the market instead of an empty grid",
+      "buy confirm modal shows the tax line (effective rate) in the price preview",
+      "single-commodity market no longer renders as one card lost in empty width"
+     ]
+    }
+   ],
+   "not_selected": {
+    "haggling": "NOT-READY per spec-readiness gate: 7 decisions filed to DECISIONS.md (counter-near-fair formula, band narrowing magnitude, rank 5%-vs-12% contradiction, rep-tier multiplier tables, difficulty authority int-1-10 vs archetype multipliers, fair-price model ambiguity, session re-entry rules) + canon contradictions to FINDINGS"
+   },
+   "probe_workflow": "wf_217772ba-43b",
+   "verdict": "GLOWING",
+   "commits": {
+    "admin-honesty": "fbb94d1 + ai-metrics hotfix",
+    "region-sync-and-cost-preview": "e59d018",
+    "market-clarity": "cfafd70"
+   },
+   "proof_evidence": {
+    "admin-honesty": "Real admin login: dashboard shows true galaxy stats (10 players/6300 sectors/89 ships). Analytics tabs state accurate 404 causes where Math.random dashboards lived; AI Trading shows em-dashes + ONE real number (3 ARIA profiles); Nexus renders honest Not Generated with Clusters tab (Districts gone); /ai/metrics fabrication caught DURING proof and hotfixed (3247/79.8%/67.3% -> nulls + real ARIA counts)",
+    "region-sync-and-cost-preview": "NAV hover: 'CLICK TO WARP - 1 TURN' on the cross-region tunnel node; warp 1 -> 1301 Central Nexus: current-sector 200 with correct region (the reproducible 404 is dead); 4 new unit tests green; backfill applied (0 stale)",
+    "market-clarity": "Capital Station buy: preview itemized Goods 13 / Station tariff (0.0%) +0 / Total 13 / After 1,988,262 - server charged EXACTLY that (header matches to the credit); prices player-effective server-side. Empty-market + single-commodity visual variants reviewer-verified (no qualifying station on proof route)"
+   },
+   "residual_notes": [
+    "AI Trading 'Recent Activity' card renders null processing rate as 'Processing 0 predictions per minute' (string template path) - minor null-as-0 nit",
+    "admin_colonization genesis-alert/terraforming de-mock verified by review + build; live admin Colonization visual pass deferred",
+    "Nexus status reports Not Generated although nexus-region sectors exist (1301-6300) - status-vs-data discrepancy to investigate"
+   ],
+   "parking_lot_additions": [
+    "DUPLICATE CAPITALS: Earth + Capital Station exist at BOTH player_owned sector 1 and nexus sector 1301 (both sectors named Terra) - BANG capital stamping ran per-region; canon presumably wants one Earth (terran_space). Worldgen invariant fix needed",
+    "Stale slip occupancy ghost: teleporting a docked player (admin teleport) leaves a docking_slip_occupancies row that 500s all future docking (unique player_id). Dock path should clean stale rows or teleport should release slips",
+    "PermissionMatrix/RoleManagement design-only banners ship; AdminScopeGrant (ADR-0058) implementation remains the real fix",
+    "Surviving admin fabrications named by reviewers for a future batch: PlanetaryManagement resource-unit labels; dead-code pages (AnalyticsReports/Universe/UniverseEditor) deletion",
+    "GameDashboard affordability edge: warp-unaffordable + tunnel-affordable node renders clickable but server rejects (warp-first, no fallthrough)"
+   ]
+  },
+  {
+   "id": "neon-2026-06-11-e",
+   "stage": "complete",
+   "branch_head_at_start": "9dce82a",
+   "deployed_sha_baseline": "cfafd70+",
+   "discovery": "admin-ui-master-list.md (full 22-page live sweep + 3-auditor workflow wf_3cdf352e-aca)",
+   "sections": [
+    {
+     "key": "admin-stop-the-bleeding",
+     "state": "proven",
+     "effort": 4,
+     "proof_script": [
+      "/teams renders [NEON] Neon Raiders roster without crashing (was blank-screen TypeError); ErrorBoundary present app-wide (code-verified + any-page fallback render)",
+      "Port editor: PATCH a station via Stations Manager UI -> 200 + persisted (was NameError 500)",
+      "EconomyDashboard renders real admin_economy data (legacy shadowing removed); combat /logs panel populates or honestly states the endpoint contract",
+      "MFA: POST /auth/mfa/generate returns 200 secret/QR as admin (was 500); audit logs tab renders rows",
+      "nexus GET endpoints return 401 unauthenticated"
+     ]
+    },
+    {
+     "key": "admin-users-works",
+     "state": "proven",
+     "effort": 2.5,
+     "proof_script": [
+      "Create a user via UI -> appears in list (wired to real /api/v1/users CRUD); edit + deactivate flow works; reset-password path wired",
+      "npc_filler accounts show an NPC badge/filter in Users",
+      "/economy reachable from the sidebar"
+     ]
+    },
+    {
+     "key": "admin-presentation-quickies",
+     "state": "proven",
+     "effort": 1.5,
+     "proof_script": [
+      "Event Management: compact stat-card row replaces five full-width banner rows; CREATE EVENT bar on-theme",
+      "Players page: dead telemetry (session/retention) renders as 'not yet tracked' em-dash, not 0.0%; light band rethemed",
+      "Combat: ACTIVE BATTLES zero renders neutral (red reserved for >0 needing intervention)"
+     ]
+    }
+   ],
+   "source": "admin-ui-master-list batches 1+2+6-partial",
+   "verdict": "GLOWING",
+   "commits": {
+    "admin-stop-the-bleeding": "a888a54",
+    "admin-users-works": "df399ef",
+    "admin-presentation-quickies": "2c33868",
+    "model-tiers-docs": "3ccd0a6"
+   },
+   "proof_evidence": {
+    "admin-stop-the-bleeding": "/teams renders Neon Raiders roster (TOTAL TEAMS 1, member list, real data \u2014 was blank-screen crash). Users page loads with NPC badges + filter working ('4 of 11 users (NPC accounts hidden)'). Economy page reachable via sidebar and shows real market data (de-shadowed admin_economy now answers /admin/economy/*)",
+    "admin-users-works": "Users list shows real 11 accounts; NPC toggle collapses to 4 real humans; Economy page loads real trade volume 51,753cr / 3,669,762 credits in circulation / real market data from admin_economy service (de-shadow proof)",
+    "admin-presentation-quickies": "EventManagement stat cards compact row (code-reviewed: compact .event-stat-card grid replacing 5 full-height banners); Players dark theme + em-dash telemetry; Combat alarm correctly conditional (code-reviewed + CSS class rename escaping !important wars)"
+   },
+   "model_tier": "STANDARD (note: this was the first run to have the tier system documented; all workers used default Fable inherit + Sonnet for scans)"
+  },
+  {
+   "id": "neon-2026-06-11-f",
+   "tier": "LEAN (build+review=opus, scan/fix=sonnet, lead=fable)",
+   "stage": "complete",
+   "branch_head_at_start": "9ce758e",
+   "sections": [
+    {
+     "key": "admin-honest-lists",
+     "state": "selected",
+     "effort": 3,
+     "proof_script": [
+      "Stations Manager shows real owner names (Fomalhaut -> testpilot, not 'Independent'), real tax_rate, real docking fee per slip-class table; totals honest ('100 of 3,126' or paginated)",
+      "Sectors list: Location column resolves region/cluster names (no 'Unknown - Unknown'); honest totals",
+      "Fleet stats derive from full counts or state the cap"
+     ]
+    },
+    {
+     "key": "admin-wireups-honest-disable",
+     "state": "selected",
+     "effort": 3,
+     "proof_script": [
+      "Combat logs tab populates from a real endpoint backed by combat_logs rows (the 7+ real battles visible)",
+      "Dispute resolve posts to the real /admin/combat/{id}/resolve path",
+      "Warp tunnel edit/maintenance saves via PUT (was PATCH 405)",
+      "Teams admin actions + planet delete + player bulk/emergency controls honest-disabled with endpoint-named notes (no dead-write buttons)"
+     ]
+    },
+    {
+     "key": "admin-dead-code-purge",
+     "state": "selected",
+     "effort": 2,
+     "proof_script": [
+      "13 unrouted components + orphan css deleted (~4,500 lines); admin-ui build green",
+      "FleetHealthReport RESCUED: wired into FleetManagement consuming the real /admin/ships/health-report endpoint, renders live data"
+     ]
+    }
+   ],
+   "verdict": "GLOWING",
+   "commits": [
+    "9ce758e (model-usage docs)",
+    "5147620 (honest lists)",
+    "819b9c5 (wireups+disarm)",
+    "e44550c (dead-code purge+rescue)",
+    "<test repair>",
+    "<stations search>",
+    "<combat logs property fix>"
+   ],
+   "model_usage": {
+    "tier": "LEAN",
+    "opus": {
+     "agents": 9,
+     "tokens": 708196,
+     "roles": "build x3 + adversarial review x6"
+    },
+    "sonnet": {
+     "agents": 3,
+     "tokens": 151571,
+     "roles": "gate fix wave"
+    },
+    "fable_lead": {
+     "tokens_est": 200000,
+     "roles": "orchestration, gate triage, 3 hand-fixes, browser proofs"
+    },
+    "est_cost_vs_all_fable": "~0.45x (~55% saved)",
+    "quality_note": "opus reviewers caught dispute-panel triple-bug + 100x tax display; missed runtime-only Player.username property 500 (caught at prove, 1 repair loop) \u2014 same class Fable runs have also only caught at prove"
+   },
+   "proof_evidence": {
+    "stations": "UI search \"Trade Hub Fomalhaut\" -> Showing 2 of 2 across full table; owner=testpilot rendered; real tax 0.2; class fees 25/50/100/200 match canon table; Showing 100 of 3,126 + Page 1 of 32",
+    "sectors": "Showing 100 of 6,300; Location resolves region+cluster (was Unknown - Unknown)",
+    "combat_logs": "GET /admin/combat/logs 200 with 7 real battles; Rankings tab computes verifpilot #1 (2 kills, 2.00 K/D) from logs",
+    "fleet_health_rescue": "Fleet Health section live in FleetManagement: real destroyed Marauders/Marshal Interdictor, maintenance table from /admin/ships/health-report",
+    "teams_disarm": "all 4 admin-action buttons disabled with inline notice naming POST /admin/teams/{id}/action",
+    "warp_put_db_delta": "PUT /admin/warp-tunnels/288d4991 200; psql status ACTIVE->MAINTENANCE->ACTIVE",
+    "regression": "pytest 407 passed (baseline 318; collection repair unblocked ~150 tests); both UI builds green"
+   },
+   "parking_lot": [
+    "update_port blind-setattr should whitelist writable fields (P0.2 remnant)",
+    "admin SPA deep-link/reload bounces to player client (master list C.1) \u2014 hit 3x during proofs",
+    "health-report endpoint full-table scan + N+1 (flagged by reviewer, pre-existing)",
+    "sectors list per-row has_port/has_planet N+1 (reviewer LOW)",
+    "AdminContext zones/addSectors/createWarpTunnel chain needs coordinated prune (worker deferred correctly)"
+   ]
+  },
+  {
+   "id": "neon-2026-06-12-a",
+   "tier": "STANDARD (directed: warp jumper loop)",
+   "stage": "complete",
+   "branch_head_at_start": "73ee01d",
+   "directive": "Max: full Warp Jumper loop \u2014 build WJ, scan + directional quantum jump (non-sector-warp travel), two-way tunnel via TWO warp jumpers (canon: gates are one-way; two-way = opposing pair), impress",
+   "canon": "FEATURES/galaxy/warp-gates.md + ADR-0029 (consumption) + ADR-0030 (multi-step jump commit)",
+   "code_wins_flags": [
+    "WJ spec base_cost 500000 vs canon 1,000,000 all-in \u2014 code wins, flagged not fixed"
+   ],
+   "sections": [
+    {
+     "key": "quantum-drive-backend",
+     "state": "selected",
+     "proof_script": [
+      "POST /quantum/scan from WJ returns fuzzy resonance/texture/echo for a bearing cone; costs 5 turns; scan cooldown set (4h canonical, ~100s at scale 144)",
+      "POST /quantum/jump consumes 1 charge + 50 turns, resolves to a candidate sector 5-10 spacings along bearing (NOT adjacent, no warp link); 24h-canonical cooldown set; DB shows player+ship moved",
+      "misfire path: bearing into void arrives short with 5% hull damage"
+     ]
+    },
+    {
+     "key": "warp-gates-backend",
+     "state": "selected",
+     "proof_script": [
+      "deploy-beacon at source consumes 50T+10k cr+1000 ore+500 equip+1 crystal -> beacon row invulnerable 48h-canonical",
+      "anchor-focus at destination consumes 100T+10k+materials -> WJ HARMONIZING; ~25s later (1h canonical) WJ DESTROYED cause WARP_GATE_ANCHOR, NO insurance, NO wreck, pilot in escape pod AT DESTINATION, tunnel ACTIVE one-way",
+      "movement through gate costs 0 turns, one-way enforced (reverse rejected)",
+      "TWO-WAY FINALE: testpilot gate A->B + verifpilot gate B->A; both traverse both directions at 0 turns; psql shows 2 ARTIFICIAL tunnels created_by each pilot"
+     ]
+    },
+    {
+     "key": "quantum-console-ui",
+     "state": "selected",
+     "proof_script": [
+      "Piloting a WJ, NAV monitor offers QUANTUM DRIVE mode: bearing dial + range band + SCAN renders CRT fuzzy readout; JUMP commits with ceremony; cooldown timers visible",
+      "non-WJ ships see no quantum mode"
+     ]
+    },
+    {
+     "key": "gatewright-ui",
+     "state": "selected",
+     "proof_script": [
+      "Gatewright panel: deploy beacon flow w/ validation feedback, phase tracker (beacon->transit->anchor->harmonizing->active), materials checklist, harmonization countdown, sacrifice ceremony",
+      "new gates appear in nav as 0-turn routes"
+     ]
+    }
+   ],
+   "proof_seeding_note": "quantum shards/crystals/lumen/ore/equipment + WJ construction backdating seeded via psql for the live proof (acquisition supply chain is canon design-only); commissioning itself exercised through the real construction pipeline",
+   "verdict": "GLOWING",
+   "commits": [
+    "ebffd4f quantum drive",
+    "4cdd3a4 warp gates",
+    "6534461 consoles",
+    "<scan persistence>",
+    "466e810 gatewright shell",
+    "sw2102-docs 33d834e write-back"
+   ],
+   "model_usage": {
+    "tier": "STANDARD",
+    "fable_workers": {
+     "agents": 12,
+     "tokens": 1414151,
+     "roles": "4 build + 8 adversarial review"
+    },
+    "opus": {
+     "agents": 3,
+     "tokens": 303703,
+     "roles": "gate fix wave (exploit cluster, quantum guards, client fixes)"
+    },
+    "sonnet": {
+     "agents": 2,
+     "tokens_est": 100000,
+     "roles": "discovery scans (gameserver + player-client)"
+    },
+    "fable_lead_est": 450000,
+    "est_cost_vs_all_fable": "~0.84x (~16% saved \u2014 STANDARD is deliberately Fable-heavy for flagship work)"
+   },
+   "proof_evidence": {
+    "acquisition": "Both WJs commissioned through the REAL Tier-A TradeDock pipeline at Nexus Prime: reserve (1M, 100k deposit) -> keel milestone -> atomic delivery (5000 ore/1000 organics/2000 equipment) -> 4 phases (psql time-warp, flagged) -> claim. Bonus: first attempt overshot the claim window and the station honestly sold both hulls (70% refund) \u2014 claim-forfeit path proven by accident",
+    "quantum_scan": "Browser: echo scan from WJ console \u2014 resonance BRIGHT meter/texture TURBULENT/echo SILENT, FADES 10m countdown, far-band shard tax (12->11 shards), 5 turns, RECHARGE 100s (4h/144)",
+    "quantum_jump": "Browser: bearing 165deg FAR, two-step CONFIRM TRANSLATION -> arrived 4135 (no warp link), -50 turns, -1 charge, cooldown 10min. Transit hops via API; misfire proven: arrived short AT 6237 with 5.0% hull damage. Nebula-origin rejection proven live (6237 is NEBULA)",
+    "refinery": "Browser: QUANTUM DRIVE - REFINERY strip in docked view, 3 charges refined by clicks (shards 10->7, charges 0->3)",
+    "gate_ritual": "Browser: Gatewright Guild Console \u2014 Phase-1 manifest with live HAVE values incl. honest HAVE 0 crystal; project ribbon BEACON DEPLOYED->TRANSIT->ANCHORING; two-step COMMIT - BEGIN HARMONIZATION; HULL FUSION countdown (25s); GATE ACTIVE - 0-TURN CORRIDOR OPEN ceremony; EXPIRED beacon card with sunk-cost honesty",
+    "sacrifice_db": "Both WJs: is_destroyed=t, destruction_cause=WARP_GATE_ANCHOR, status DESTROYED; both pilots in ESCAPE_POD at their gate DESTINATIONS; lumen residue transferred to pods",
+    "two_way_finale": "testpilot pod rode verifpilot gate 6237->4495 IN BROWSER: NAVIGATION COMPLETE, turns 1636 unchanged, violet gate node + CLICK TO WARP - 0 TURNS tooltip; verifpilot rode testpilot gate 4495->6237 via API: cost 0, turns 1540 unchanged. psql: 2 ARTIFICIAL ACTIVE tunnels, turn_cost 0, is_bidirectional=f, one per builder",
+    "regression": "player-client builds green; gameserver py_compile green; stage API 200 throughout; zero console errors logged in proof session"
+   },
+   "seeding_flags": [
+    "quantum shards/crystals + lumen/ore/equipment cargo psql-seeded (supply chain is canon design-only; WJ 200-cargo cannot hold phase materials \u2014 contradiction filed)",
+    "construction phase_deadline + reservation clocks backdated (time acceleration)",
+    "jump cooldowns nulled between scripted transit hops (time acceleration)",
+    "beacon windows extended +90min for proof pacing",
+    "verifpilot teleported final 3 spacings (757->4495): jump bands cannot fine-approach <5 spacings (canon texture)",
+    "verifpilot +2 charges seeded at 6237 (no refinery venue exists in deep space \u2014 canon-correct stranding texture)"
+   ],
+   "parking_lot": [
+    "cockpit dashboard refresh remounts NAV console: resets bearing/band controls + races the 5s ARM auto-disarm (root-cause the loading flash; the scan-result loss is already fixed)",
+    "PLANETARY monitor intermittently empty on first load at a station sector (transient, pre-existing)",
+    "CORRIDORS IN SECTOR lists only outbound gates; arrival-side gate not shown",
+    "construction claim ignores custom ship_name",
+    "beacon-phase cancel exists in API but has no UI affordance",
+    "scan-detection pings to scanned cone (ADR-0030) parked; access modes/tolls/transfer/destruction/upgrades design-only per canon",
+    "Orbitron font referenced but never loaded \u2014 Max decision: load it or keep Courier New",
+    "admin WarpTunnels page now shows 4 tunnels incl. 2 player gates \u2014 admin gate-management surface is unbuilt"
+   ]
+  },
+  {
+   "id": "neon-2026-06-12-b",
+   "tier": "HEAVY (all-Fable, directed: warp jumper bearing graphics)",
+   "stage": "complete",
+   "branch_head_at_start": "979d1e6",
+   "directive": "Max: graphical effect as the ship rotates/points in different directions through the warp jumper process; canonical (ADR-0030 3D minimap); best in class",
+   "sections": [
+    {
+     "key": "quantum-bearing-viewport",
+     "state": "selected",
+     "proof_script": [
+      "Dragging/aiming in the QUANTUM DRIVE console visibly rotates the ship glyph (yaw) and tilts it (pitch); the 15-degree scan cone sweeps with it in real time",
+      "Range band arcs render at canon distances (5-6/7-8/9-10/12-15 spacings); selected band brightens; nearby charted sectors render as parallax dots from a real minimap endpoint (positions only \u2014 no activity data, ADR-0031 fuzziness preserved)",
+      "Scan fires a sweep animation out the cone; jump commit collapses the cone into a translation streak before the outcome card",
+      "No fabricated sector data; canvas idles when not animating (no runaway rAF)"
+     ]
+    }
+   ],
+   "verdict": "GLOWING",
+   "commits": [
+    "<astrogation plot feat commit>",
+    "sw2102-docs band-minimum finding"
+   ],
+   "model_usage": {
+    "tier": "HEAVY (all-Fable per Max)",
+    "fable": {
+     "agents": 3,
+     "tokens": 367200,
+     "roles": "1 build + 1 adversarial review + 1 fix wave"
+    },
+    "fable_lead_est": 90000,
+    "est_cost_vs_all_fable": "1.0x (directed)"
+   },
+   "proof_evidence": {
+    "plot_live": "ASTROGATION PLOT renders real charted sectors from GET /quantum/minimap (positions only, no ids per ADR-0031); click-to-aim swung BRG 0->128->181 with eased glyph rotation; pitch +44 slid the chevron ladder and visibly foreshortened+dimmed the cone wedge (pitch-collapse fix on screen); FAR band lengthened the cone; scan fired (-5 turns, -1 shard) during recording",
+    "gif": "~/Downloads/warp-jumper-astrogation-plot.gif (15 frames)",
+    "gate_fixes_shipped": "sector ids stripped from minimap wire; resonance now counts warp connections (canon: warps-worth of activity) so the chart cannot precompute scan results; idle shimmer throttled ~14fps; chart-thins/loading/unavailable honest states",
+    "builds": "py_compile + vite build green; sector_warps.source_sector_id column verified by hand against models/sector.py"
+   },
+   "seeding_flags": [
+    "testpilot consumed WJ resurrected at 4495 with 2 charges/6 shards for the graphics proof (acquisition path proven in run 7)"
+   ],
+   "parking_lot": [
+    "minimap state dies with console remounts (refetch per remount; lift into GameContext with the remount root-cause fix)",
+    "DPR change across monitors not observed until next resize",
+    "drag emits integer degrees (sub-degree aim needs float state)"
+   ]
+  },
+  {
+   "id": "neon-2026-06-12-c",
+   "tier": "STANDARD",
+   "stage": "complete",
+   "branch_head_at_start": "29e6b5d",
+   "sections": [
+    {
+     "key": "cockpit-stability",
+     "state": "selected",
+     "effort": 1,
+     "proof_script": [
+      "Set bearing 222 in quantum console, fire ECHO SCAN -> bearing remains 222 after the refresh (fails today: resets to 000)",
+      "ARM -> CONFIRM TRANSLATION clickable at human pace (no remount disarm race)",
+      "Monitors do not flash/unmount during actions; initial page load still shows a loading state"
+     ]
+    },
+    {
+     "key": "combat-real-damage",
+     "state": "selected",
+     "effort": 4,
+     "proof_script": [
+      "Attack an NPC: psql shows defender Ship.combat shields/hull DECREASED after a non-lethal round (today: never written)",
+      "High-HP Sentinel Interdictor survives meaningfully longer than a Marauder freighter under identical attacker",
+      "Destruction occurs at hull <= 0, not via instant dice; combat log rounds reflect attrition",
+      "GET /api/v1/fleets returns 200 (commander.name AttributeError fixed at all 6 sites)"
+     ]
+    },
+    {
+     "key": "planetary-ops-honesty",
+     "state": "selected",
+     "effort": 3,
+     "proof_script": [
+      "Land on owned planet: allocation sliders initialize from the planet's REAL stored allocations; moving a slider persists via PUT /allocate (psql delta + survives reload)",
+      "Citadel Safe panel shows real safe contents from GET /citadel; deposit 100cr works end-to-end (psql delta); buttons enabled at citadel L2+ per canon",
+      "Defense quick-action buttons either wired to real endpoints or removed (no permanently-disabled dead-ends)"
+     ]
+    }
+   ],
+   "parking_lot_inherited": [
+    "port assault coded-but-disabled + Station defense scalars missing",
+    "siege/terraforming tick loops have no scheduler (design question)",
+    "pirate captains ship LIGHT_FREIGHTER placeholder hulls",
+    "premium buyer/seller class multipliers unapplied",
+    "BuildingManager mock affordability",
+    "stale-marker write-back batch: ranking x3, insurance, citadel names, tradedock-shipyard, combat.md fleet bug scope"
+   ],
+   "verdict": "GLOWING",
+   "commits": [
+    "cockpit stability",
+    "combat real damage (5b632f2-area)",
+    "planetary ops honesty (9d3baab head)",
+    "sw2102-docs 1e2d0b0 write-back"
+   ],
+   "model_usage": {
+    "tier": "STANDARD",
+    "fable": {
+     "agents": 9,
+     "tokens": 862312,
+     "roles": "3 build + 6 adversarial review"
+    },
+    "opus": {
+     "agents": 4,
+     "tokens": 304898,
+     "roles": "3 gate-fix agents + docs write-back"
+    },
+    "sonnet": {
+     "agents": 4,
+     "tokens": 353200,
+     "roles": "discovery: 2 code scans + 2 docs drift audits"
+    },
+    "fable_lead_est": 250000,
+    "est_cost_vs_all_fable": "~0.71x (~29% saved)"
+   },
+   "proof_evidence": {
+    "cockpit": "bearing 222 held through scan-triggered refresh (was 000 \u2014 exact repro, before/after via live DOM stopwatch); 56s idle baseline showed zero resets pre-fix proving action-triggered mechanism",
+    "combat": "Crow Talon Marauder shields 300 -> 298.6 persisted in DB after 2-round non-lethal fight; WJ hull 570/600 still carrying run-7 misfire scar (persistence across runs); GET /fleets/ 200 (empty set; 6-site fix review-verified); kill_escape_pod penalty was misfiring on EVERY kill \u2014 fixed",
+    "planetary": "allocation slider 200->250 persisted via PUT /allocate (psql); citadel safe deposit 100cr end-to-end (safe 0->100, wallet 349800->349700) under new planet+player row locks; real Outpost L1 + drone capacity 10 + capacity 100k rendered from GET /citadel; Withdraw honestly disabled at 0 balance",
+    "regression": "player-client build green, all backend py_compile green, stage API 200 throughout"
+   },
+   "seeding_flags": [
+    "Gamma Prime (4135) granted to testpilot with 500 colonists + citadel L1 + 200/150/100 allocations (ownership claim flow not in section scope)",
+    "testpilot teleported 4495->4135->733 between proof legs"
+   ],
+   "parking_lot": [
+    "port assault coded-but-disabled + Station defense scalars missing",
+    "siege/terraforming tick loops have no scheduler (design question)",
+    "pirate captains ship LIGHT_FREIGHTER placeholder hulls",
+    "premium buyer/seller class multipliers unapplied",
+    "BuildingManager mock affordability",
+    "stale-marker write-back batch: ranking x3, insurance, citadel names, tradedock-shipyard, combat.md fleet bug scope",
+    "combat_log damage columns read 0 for the new attrition model (log tally not wired to pool deltas)",
+    "page-level isLoading spinner branches (PlanetManager/TeamManager 4 sites each) still remount their subtrees \u2014 GameLayout is immune but pages keep the anti-pattern",
+    "GameContext refreshPlayerState still toggles global isLoading (GameLayout now immune; removing the toggle entirely per GameContext:622 pattern would finish the job)",
+    "no fleet rows exist on dev to exercise the fleet serializer live",
+    "terraform header block still reads (currentPlanet as any).terraform_level fiction"
+   ]
+  },
+  {
+   "id": "neon-2026-06-12-d",
+   "tier": "STANDARD (directed: sector solar systems)",
+   "stage": "complete",
+   "branch_head_at_start": "3df765d",
+   "directive": "Max: every sector presents as a solar system \u2014 varied stars, mostly uninhabitable planets, huge visual variety; mostly UI, models only if needed",
+   "canon_note": "No existing canon for stellar composition \u2014 documented interpretation, deterministic from sector_id, proposed canon in report (Max-gated)",
+   "sections": [
+    {
+     "key": "celestial-composer-backend",
+     "state": "selected",
+     "proof_script": [
+      "GET /sectors/{id}/system returns a deterministic system (same sector twice -> identical JSON): star class, procedural bodies with orbits/sizes/palettes, REAL planets+stations merged at stable slots",
+      "Sector-type variants: NEBULA carries haze param, BLACK_HOLE accretion star, VOID starless, ASTEROID_FIELD belt",
+      "No DB migration; pure function of sector_id + real rows"
+     ]
+    },
+    {
+     "key": "solar-system-viewscreen",
+     "state": "selected",
+     "proof_script": [
+      "Viewscreen shows full solar system: star with class-colored corona, orbit arcs, procedural barren worlds with VARIETY (banded gas giants, rings, ice caps, lava glow, crater speckle), real planets labeled and clickable (land flow still works), stations as orbital structures",
+      "4+ different sectors screenshot distinctly different skies (variety proof); nebula + black-hole variants seen live",
+      "Slow orbital drift GIF; reduced-motion static; fetch failure falls back to current minimal view (no broken viewscreen)"
+     ]
+    }
+   ],
+   "verdict": "GLOWING",
+   "model_usage": {
+    "tier": "STANDARD",
+    "fable": {
+     "agents": 6,
+     "tokens": 453671,
+     "roles": "2 build + 4 adversarial review"
+    },
+    "opus": {
+     "agents": 1,
+     "tokens": 62805,
+     "roles": "gate fix wave"
+    },
+    "fable_lead_est": 280000,
+    "est_cost_vs_all_fable": "~0.97x (visual flagship; lead-heavy compositor forensics)"
+   },
+   "proof_evidence": {
+    "determinism": "GET /sectors/733/system byte-identical across calls; 6 sectors sampled: M_DWARF/G_YELLOW/K_ORANGE/RED_GIANT/WHITE_DWARF stars, rings, belt at 847, nebula at 12",
+    "variety_tour": "five sectors screenshot live, each distinct: 733 M-dwarf + ringed rust world; 847 K-orange + 7 orbits; 884 RED GIANT + binary companion + station hex; 12 NEBULA indigo veil + ringed gold world; 4135 GAMMA PRIME real planet labeled cyan among procedural siblings",
+    "repair_loop": "proof initially FAILED black-screen: canvas bitmap held the scene (getImageData 42k lit px) but never composited \u2014 root-caused live to .cockpit-frame z-index:0 stacking above z-auto in-flow content; fixed with position:relative z-index:2 on the canvas; re-proven cold-load",
+    "regression": "builds green; stage 200; LOCATION panel + hazard HUD intact in every frame"
+   },
+   "parking_lot": [
+    "BLACK_HOLE/VOID/STAR_CLUSTER/ASTEROID_FIELD sector types absent from dev galaxy \u2014 variants code-complete but unproven live (only STANDARD+NEBULA exist)",
+    "viewscreen land/dock click-through trace-verified via review, not browser-proven this run (extension flickered at tour end)",
+    "system layout re-rolls when sector planet count crosses procedural body count (documented modulo design)",
+    "Pydantic response model for /system endpoint (OpenAPI doc gap)",
+    "station orbit clearance from planet orbits (0.04 AU nudge idea)"
+   ],
+   "proposed_canon": "Full interpretation table (star weights, body kinds, orbit ladder, merge rules) documented in celestial_service.py module docstring \u2014 proposed for FEATURES/galaxy/sectors.md as new canon, Max-gated"
+  },
+  {
+   "id": "neon-2026-06-12-e",
+   "tier": "STANDARD",
+   "stage": "complete",
+   "branch_head_at_start": "6fb35d7",
+   "sections": [
+    {
+     "key": "stop-the-leaks",
+     "state": "selected",
+     "effort": 3,
+     "proof_script": [
+      "DM testpilot->verifpilot succeeds end-to-end: 200, messages row in psql with recipient_id set (today: 400 Either recipient_id or team_id)",
+      "Genesis purchase at a NON-spacedock station -> 400 (today: succeeds anywhere docked); at a real SpaceDock still works; player+ship rows locked",
+      "GET /teams/{id}/wars unauthenticated -> 401 (today: open); /first-login/debug as player -> 403/404",
+      "team treasury transfer_to_player row-locked (code evidence; race not live-staged)",
+      "websocket reconnects after a logout/login cycle (shouldReconnect reset); loadShips no longer wipes the fleet on transient error (code evidence + hangar stays populated through a forced failure if stageable)"
+     ]
+    },
+    {
+     "key": "isloading-finisher",
+     "state": "selected",
+     "effort": 3,
+     "proof_script": [
+      "Galaxy 3D map (/game/map) does NOT tear down its scene during a background refresh (was: full Three.js rebuild on every action)",
+      "GameContext background ops no longer toggle the global isLoading (initial load keeps its overlay); cockpit + map + pages stable through scan/move/dock",
+      "No regression to the initial INITIALIZING overlay or SYNC beacon"
+     ]
+    },
+    {
+     "key": "factions-alive",
+     "state": "selected",
+     "effort": 2,
+     "proof_script": [
+      "GET /factions/ returns 200 with real faction rows (today: 500 AsyncSession has no attribute query \u2014 proven live)",
+      "Faction detail + missions list load; accept-mission persists to player settings JSONB in psql (today: commit never flushes)",
+      "Mission COMPLETION endpoint deliberately NOT built (no canon mechanics) \u2014 filed as pending decision"
+     ]
+    }
+   ],
+   "verdict": "GLOWING",
+   "model_usage": {
+    "tier": "STANDARD",
+    "fable": {
+     "agents": 9,
+     "tokens": 835587,
+     "roles": "3 build + 6 adversarial review"
+    },
+    "sonnet": {
+     "agents": 2,
+     "tokens": 184944,
+     "roles": "discovery scans"
+    },
+    "opus": {
+     "agents": 0,
+     "tokens": 0,
+     "roles": "gate fixes done by lead this run"
+    },
+    "fable_lead_est": 320000,
+    "est_cost_vs_all_fable": "~0.88x (~12% saved; lead hand-fixed the gate)"
+   },
+   "proof_evidence": {
+    "dm_first_ever": "send 200 with message_id; verifpilot inbox 2 messages; settings... messages row persisted; repair loop fixed the phantom ConnectionManager.send_to_player exposed by the first successful sends",
+    "factions": "GET /factions/ 200 (Terran Federation) \u2014 was 500 AsyncSession.query live-verified pre-fix; mission seeded (flagged), accepted via API, persisted in settings JSONB (psql)",
+    "auth_gates": "wars endpoint unauth 401; /first-login/debug as player 403; genesis purchase DOCKED at Class-4 Distribution Center rejected with SpaceDock message (was purchasable anywhere docked)",
+    "isloading": "Three.js galaxy map canvas node identity + custom mark survived 12s live session (was torn down on every refresh); cockpit bearing survival re-inherited from run 9",
+    "regression": "client build green, all py_compile green, stage 200 throughout"
+   },
+   "seeding_flags": [
+    "one FactionMission row seeded for the accept-persistence proof (no mission rows existed on dev)"
+   ],
+   "parking_lot": [
+    "DM inbox/send UI missing entirely (MECHANIC-NO-UI) \u2014 API + persistence proven, zero client consumers of messageAPI",
+    "team treasury resource transfers to players silently destroy non-credit resources (Player has no commodity columns) \u2014 whitelist or cargo routing needed",
+    "genesis tiers are price-only theater (success_rate/process_hours never persisted)",
+    "dual refresh-token locks (AuthContext + apiClient) still uncoordinated",
+    "orphan market-intelligence + player-analytics components call nonexistent endpoint families (tradingAPI/playerAPI) \u2014 remove or rewire",
+    "realtimeWebSocket.ts connects to nonexistent /ws/realtime with wrong token key",
+    "faction missions: completion mechanics pending decision (filed)",
+    "team_service contribution_credits JSONB in-place mutation may not persist"
+   ]
+  },
+  {
+   "id": "neon-2026-06-12-f",
+   "tier": "STANDARD",
+   "stage": "complete",
+   "branch_head_at_start": "3d9f7a1",
+   "sections": [
+    {
+     "key": "comms-mailbox",
+     "state": "selected",
+     "effort": 3,
+     "proof_script": [
+      "COMMS monitor gains HAILS: testpilot composes a hail to verifpilot from the cockpit (contact click or mail tab) -> 200; verifpilot session shows the message with unread badge; mark-read clears it",
+      "Unread count badge on the COMMS header from real GET /messages/inbox unread data",
+      "new_message websocket event refreshes the inbox live (code-verified at minimum; live two-session if browser permits)"
+     ]
+    },
+    {
+     "key": "dead-tech-purge-and-safety",
+     "state": "selected",
+     "effort": 3,
+     "proof_script": [
+      "Orphan market-intelligence + player-analytics families + realtimeWebSocket.ts deleted after zero-routed-consumer verification; build green",
+      "Team treasury transfer of a non-credit resource to a player -> clean 400 naming the rule (was: silent resource destruction); credits transfer still works",
+      "combat_logs attacker/defender damage columns nonzero after a fight (was always 0)"
+     ]
+    },
+    {
+     "key": "living-world-ticks",
+     "state": "selected",
+     "effort": 3,
+     "proof_script": [
+      "Terraforming started on Gamma Prime (500 colonists): lazy advance applies population-scaled habitability points per canon (1 base +1/1000 colonists, cap 3) on read; psql shows habitability_score rising on the canon schedule after backdating",
+      "Ops console terraform header shows REAL terraforming status (project level/progress) instead of the (currentPlanet as any).terraform_level fiction",
+      "Siege morale advance-on-read wired via the same lazy pattern (staged proof only if cheaply stageable; else code+review evidence, honestly labeled)"
+     ]
+    }
+   ],
+   "verdict": "GLOWING",
+   "model_usage": {
+    "tier": "STANDARD",
+    "fable": {
+     "agents": 9,
+     "tokens": 1391559,
+     "roles": "3 build + 6 adversarial review"
+    },
+    "opus": {
+     "agents": 3,
+     "tokens": 306066,
+     "roles": "2 gate-fix waves + docs write-back"
+    },
+    "sonnet": {
+     "agents": 0,
+     "tokens": 0,
+     "roles": "no discovery this run (deep parking lot)"
+    },
+    "fable_lead_est": 300000,
+    "est_cost_vs_all_fable": "~0.90x (~10% saved)"
+   },
+   "proof_evidence": {
+    "mailbox": "COMMS (5) badge on cold load; HAILS tab listed 5 unread; expand auto-read dropped badge to (4); cockpit REPLY persisted threaded (RE: burst 5, is_reply=t in psql); rate limit 200x5-then-429 live; toast + ws notify path active",
+    "purge": "market-intelligence + player-analytics + SmartTradingAutomation + MarketIntelligenceDashboard + realtimeWebSocket.ts + orphan api families + 2 stale e2e specs deleted; vite build green",
+    "treasury": "fuel transfer AND organics deposit both rejected with honest cargo-routing message; credits+quantum_crystals whitelisted both directions",
+    "terraforming": "cockpit panel honest (real ladder costs, honest 400 pre-seed); L1 started (100k debit); 24 canonical hours backdated -> exactly 3 ticks at 500-colonist rate -> hab 15->18, progress 30%, tickPeriodHours 7.2, max_population recomputed 15000->18000 (ADR-0035 fix live)",
+    "regression": "build + py_compile green, stage 200 throughout"
+   },
+   "seeding_flags": [
+    "Gamma Prime organics/equipment stocked for the L1 start (planet stockpile empty)",
+    "terraforming last_tick_at backdated 10 wall minutes (time acceleration)"
+   ],
+   "parking_lot": [
+    "siege vulnerability remains display-only (pending decision filed); lift_siege/check_and_update callers still sparse",
+    "process_terraforming_tick has zero callers (scheduler-or-delete decision)",
+    "dual refresh-token locks still uncoordinated",
+    "genesis tiers price-only theater",
+    "security-validation e2e spec deleted; foundation-sprint dir could use a fuller audit",
+    "COMMS v1: no manual recipient entry, page-1-only inbox, no sent view (no backend endpoint)"
+   ]
+  },
+  {
+   "id": "neon-2026-06-12-g",
+   "tier": "HEAVY-design (directed: full Player UI cockpit identity pass; fable-led design, multi-model opinion panel)",
+   "stage": "complete",
+   "branch_head_at_start": "e881af3",
+   "directive": "Max: every player page audited for cutoff/overflow at MacBook fullscreen; cockpit identity everywhere (top band = viewscreen/canopy); ARIA integrated into the dashboard; docked/landed metaphor reconsidered; multi-model design opinions, Fable rules and builds. Beat Opus at design.",
+   "sections": [
+    {
+     "id": "A-cockpit-instrument-shell",
+     "commit": "4461040",
+     "status": "PROVEN",
+     "claim": "CockpitInstrument frame wraps all 7 secondary routes with Law-5 accents; GameLayout scroll contract; sidebar accent nav; HANGAR 954>947 overflow fixed",
+     "evidence": "__neonAudit zero on all 7 routes at 1710x947 AND 1440x707; SPA nav clicks proved sidebar links + active highlight; screenshots SERVICE RECORD/TRADE LEDGER"
+    },
+    {
+     "id": "B-helm-rail-and-scenes",
+     "commit": "3ec4ffb",
+     "status": "PROVEN",
+     "claim": "HELM rail (DOCK/LAND/UNDOCK/LIFT OFF) + docked station-bay scene + landed planet-vista scene; band flow content evicted (Law 1); native prompt/alert removed",
+     "evidence": "Full live loop: dock (fee 50cr, turn spent, bay scene + CLAMPS ENGAGED) -> undock -> land (volcanic vista, OWNER/HABITABILITY chips) -> inline rename round-trip (Enter/Escape/guard; psql showed 'Gamma Prime Test' then reverted) -> LIFT OFF; audits zero in every state at both viewports (landed-1440 single finding = invisible chip scrollHeight delta, screenshot clean)"
+    },
+    {
+     "id": "C-aria-console-strip",
+     "commit": "977d295",
+     "status": "PROVEN",
+     "claim": "ARIA docked as 36px console strip + upward drawer; FAB retired; drawer can never clip its input row",
+     "evidence": "Drawer open + SYS panel: audit zero at both viewports; chat compose/XMIT exercised (message logged + ticker); Escape/focus return implemented. KNOWN PRE-EXISTING: aria_chat WS type only handled by enhanced_websocket_service, plain endpoint logs 'Unknown message type' -> no reply (old FAB had same dead pipe); parked"
+    }
+   ],
+   "verdict": "GLOWING",
+   "deployed_sha": "ffcc7ed",
+   "gate": {
+    "pass1_findings": "2 HIGH (drawer self-clip, dup), 3 MED, ~12 LOW",
+    "fix_wave": "opus single agent (F1-F7) all applied",
+    "post_fix_proof_fixes": [
+     "windshield-frame rename (theme .cockpit-frame min-height:100vh collision) 679560e",
+     "console grid minmax elastic + comms header wrap (1440 HAILS overflow) bb35038",
+     "TRADE LEDGER self-cap max-height removed a745119",
+     "trading-header gradient muted in cockpit hosts + docked h2 hide d1a6a19/ffcc7ed"
+    ]
+   },
+   "parking_lot_additions": [
+    "ARIA chat reply pipe dead: client websocket_service endpoint lacks aria_chat handler (enhanced_websocket_service has it); wire or route",
+    "hud-overlay inner scrollHeight ~37px phantom (invisible; detector noise) - identify the generated box someday"
+   ],
+   "followups": [
+    {
+     "id": "living-viewscreen",
+     "commit": "602f591",
+     "status": "PROVEN",
+     "directive": "Max: chips occlude scene + block clicks; want clickable planets with info popups; minimize + HUD transparency",
+     "claim": "HUD-glass chips (frosted, pointer-events pass-through, ghost-on-approach, per-chip minimize pills in localStorage) + interactive flight scene (per-frame hit data; popups for star/planet/station/procedural with LAND/DOCK wired to helm)",
+     "evidence": "Click through ghosted LOCATION chip hit the station orbiting BEHIND it (popup + DOCK) \u2014 the exact reported scenario; planet popup LAND button landed the ship (rail confirmed) then lift-off; HAZARD minimized to pill '+ \u26a0 3/10'; audit zero at 1710x947; zero new console errors. Procedural-body popup unproven by automation (tiny moving target, 3 missed clicks) \u2014 same code path as proven kinds",
+     "parked": "3D view rotation deliberately NOT built \u2014 overhead view framed as astrogation composite; canopy-view presentation is a future Max decision"
+    }
+   ]
+  },
+  {
+   "id": "neon-2026-06-12-h",
+   "tier": "STANDARD",
+   "stage": "complete",
+   "verdict": "GLOWING",
+   "branch_head_at_start": "0b769b8",
+   "deployed_sha": "b3cd066",
+   "docs_sha": "2797e3b",
+   "discovery": "5 sonnet scanners (gameserver, player-client, contracts, 2 docs-drift zones) + lead sortie that hit the token-expiry 401 blocker LIVE mid-flight (dock -> 'Could not validate credentials')",
+   "sections": [
+    {
+     "id": "A-token-refresh-unification",
+     "commit": "2ff4eb3",
+     "status": "PROVEN",
+     "claim": "GameContext/FirstLoginContext/api.ts all ride apiClient's single-flight refresh; refresh POST on pristine axios (AuthContext global-interceptor hang); auth-adjacent, client plumbing only",
+     "evidence": "poisoned expired token + UNDOCK -> exactly one POST /auth/refresh 200, retried action succeeded, localStorage rotated, no toast"
+    },
+    {
+     "id": "B-economy-integrity",
+     "commit": "7f1d423",
+     "status": "PROVEN",
+     "claim": "lazy stock regen (24h first-credit cap, station-lock, GAME_TIME_SCALE); precious_metals 80-180 clamp; Class 8/9 premiums at transaction time per doc design target 1.2x/1.25x (bootstrap 1.3/0.8 never live, Class 9 direction was inverted; exclusive-flag gates kill same-station pump); bounty single deepest tier",
+     "evidence": "colonists 240->480 exactly prod x 24h, exotech capacity-capped 3260; organics buy 18 = 1.2x prediction at Class-8 Trade Hub Sol (vs 15 without); precious_metals floored at 80; rep -1000 -> ONE 100k bounty (was 130k stacked). Class 9: zero Nova stations in dev galaxy - same code path, no live proof (flagged)"
+    },
+    {
+     "id": "C-client-honesty",
+     "commit": "b3cd066",
+     "status": "PROVEN",
+     "claim": "SpaceDock Ship Services de-mocked (real telemetry, wired repair, honest NOT AVAILABLE for insurance/upgrades); defense drones field fixed (fighters wire name)",
+     "evidence": "staged 400/600+350/500 rendered exactly; Full Repair charged displayed 79,545 to the credit, psql 600/500/169,705, no remount; drones=10 -> PUT 200 -> defense_fighters=10"
+    }
+   ],
+   "gate": "reviewer B-fidelity caught Class 9 DIRECTION inversion (HIGH) - ruled doc-design-target wins over never-live bootstrap; + exclusivity gates (MED), refresh-POST pristine instance (HIGH), 24h first-tick cap, drones type lie, totalMax=0 repair guard - all hand-fixed by lead",
+   "incidents": [
+    "cross-region teleport correctly 404'd (sector 10 Terran vs testpilot region) - relocated to in-region SpaceDock Castor 6295",
+    "stale slip occupancy after psql teleport 500'd docking (already-known FINDINGS item) - released, slips integrity validated",
+    "local /tmp tasks ENOSPC interference mid-proof (harness-side, intermittent)"
+   ],
+   "parked": [
+    "genesis coherence (headline candidate next run)",
+    "starter ship stats hardcoded 10/5 (needs fresh first-login proof)",
+    "fleet API dead (UI unreachable too)",
+    "faction trade modifiers unwired",
+    "team missions/alliances orphan UI",
+    "AuthContext parallel refresher race (delegate to apiClient)",
+    "defense config charges no server-side credits (free defenses LIE)",
+    "repeat-kill bounty collusion faucet (100k per kill, rep never restored)"
+   ],
+   "testpilot_endstate": "docked SpaceDock Castor sector 6295 (in-region), ship repaired full, credits 169,705"
+  },
+  {
+   "id": "adr0072-phase1-2026-06-12",
+   "tier": "SONNET-BUILD (Max directive: implement with sonnet agents; Fable lead held contracts + gate + proofs)",
+   "stage": "complete",
+   "verdict": "GLOWING",
+   "deployed_sha": "278360d",
+   "docs_sha": "FINDINGS update",
+   "sections": [
+    {
+     "id": "B1-nav-backend",
+     "status": "PROVEN",
+     "claim": "POST /nav/plot \u2014 sync Dijkstra over known graph (own visits + corp + current sector); unreachable -> nearest known approach; 200-hop guard",
+     "evidence": "4x plot 200; 2-hop course priced exactly; refusal shape with nearest_known live"
+    },
+    {
+     "id": "B2-autopilot-client",
+     "status": "PROVEN",
+     "claim": "AutopilotContext (refs-disciplined hop chain via ordinary moveToSector, 800ms cadence, pause/invalidate/abort) + helm ENGAGE/ABORT + NAV plot input + course breadcrumb",
+     "evidence": "autopilot flew 5819->5880->5960; turns 1532->1530 exactly; breadcrumb + ENGAGE rendered; manual helm actions abort; audit zero"
+    },
+    {
+     "id": "B3-aria-voice",
+     "status": "PROVEN",
+     "claim": "strip command grammar (plot/engage/abort) + journey narration; per-hop ticker only",
+     "evidence": "full voice transcript verbatim incl. P-N4 refusal-as-quest-hook; HOP 1/2 ticker; arrival line"
+    }
+   ],
+   "gate": "Fable lead caught: (1) FATAL \u2014 AutopilotProvider wrapped only main-viewport while the strip lives outside it AND GameDashboard calls the hook above its own GameLayout wrapper \u2014 provider moved to App.tsx above the route tree (the first placement white-screened /game on dev, fixed in one redeploy); (2) MoveResponse response_model silently stripped encounters \u2014 widened model + fixed client field names (new_sector_id; success=false pauses, bounce invalidates); (3) DISCOVERY: aria_exploration_maps had ZERO rows galaxy-wide \u2014 the canon-claimed visit hook never existed; wired it into movement_service (the autopilot exposed a launch-day theater feature)",
+   "parked": [
+    "unknown-sector voice reply uses beyond-my-charts phrasing (kept: epistemically correct)",
+    "plotCourse network-error is silent (no ARIA reply)",
+    "Phase 2: player_known_sectors + Federation public layer + cartography desks",
+    "ADR-0072 Accepted flip is Max-gated"
+   ]
+  },
+  {
+   "id": "neon-2026-06-13-a",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "b536a59",
+   "deployed_sha_end": "67479af",
+   "verdict": "GLOWING",
+   "baseline": {
+    "health": "healthy",
+    "npcs": "80 ON_DUTY all frozen PATROL, 0 schedules, rosters empty"
+   },
+   "sections": [
+    {
+     "key": "npc-patrols-come-alive",
+     "state": "proven",
+     "effort": 2,
+     "findings": [
+      "NPCs frozen: empty daily_schedule (roster-gated backfill never ran)",
+      "patrol waypoint resonance under accelerated time"
+     ],
+     "files_owned": [
+      "services/gameserver/src/services/npc_spawn_service.py",
+      "services/gameserver/src/services/npc_scheduler_service.py"
+     ],
+     "commits": [
+      "045e497",
+      "67479af"
+     ],
+     "proof": "log repaired 80; psql all 80 moved off anchor in 1 Loop A tick (1001 14->0 marshals, squad to 1002); UI COMMS 1001 full->No other contacts"
+    }
+   ],
+   "parking_lot": [
+    "npc-scheduler.md Status banner flip (Max-gated)",
+    "Loop A patrol-only / Loop C stub",
+    "all-law-enforcement NPC set (rosters empty, no traders)",
+    "npc_restock_demand never read by pricing",
+    "pirate LIGHT_FREIGHTER hull",
+    "port assault targetType=port 400",
+    "alembic-tree drift (b42e19a78c52 missing)",
+    "Quantum Jump FEATURES status design-only but shipped"
+   ]
+  },
+  {
+   "id": "neon-2026-06-13-b",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "lead_model": "opus-4.8",
+   "branch_head_at_start": "552ff0c",
+   "deployed_sha_end": "0d1dbea",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "mfd-comms-shows-npcs",
+     "state": "proven",
+     "effort": 1,
+     "findings": [
+      "MFD COMMS/CREW page read only sectorPlayers (WS human) - blind to the now-living NPCs"
+     ],
+     "files_owned": [
+      "services/player-client/src/components/mfd/pages/CommsCrewPage.tsx",
+      "services/player-client/src/components/mfd/pages/pages-ops.css"
+     ],
+     "commits": [
+      "e7f008c",
+      "0d1dbea"
+     ],
+     "proof": "MFD COMM page empty in NPC-free sector; lists 14 marshals with [NPC] chips when present (sector 1003), matches main COMMS; zero console errors"
+    }
+   ],
+   "notes": [
+    "DEV INFRA: modified existing pages-ops.css served STALE (JS hot-reloaded, CSS bundle cached) across 2 restarts+hard-reloads; worked around with inline styles. Future runs editing EXISTING css files on dev should expect this and prefer new css files or inline-critical styles."
+   ],
+   "parking_lot": [
+    "Genesis two half-systems (repeatedly-flagged headline)",
+    "NPC traders never spawn (rosters empty)",
+    "npc_restock_demand never read by pricing",
+    "npc-scheduler.md Status banner flip (Max-gated)",
+    "Quantum Jump FEATURES design-only but shipped",
+    "port assault targetType=port 400",
+    "leaderboard padded with npc_filler accounts"
+   ]
+  },
+  {
+   "id": "neon-2026-06-13-c",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "lead_model": "opus-4.8",
+   "branch_head_at_start": "6f520a6",
+   "deployed_sha_end": "a3cd68d",
+   "verdict": "STEADY",
+   "sections": [
+    {
+     "key": "genesis-deploy-end-to-end",
+     "state": "proven",
+     "effort": 4,
+     "findings": [
+      "deploy never decremented ship.genesis_devices (unlimited planets)",
+      "rolled TERRAN (ADR-0014 reserved)",
+      "response snake_case client never read",
+      "formation completion never triggered by any client"
+     ],
+     "files_owned": [
+      "services/gameserver/src/services/genesis_service.py",
+      "services/gameserver/src/api/routes/planets.py"
+     ],
+     "commits": [
+      "a3cd68d"
+     ],
+     "proof": "live container+DB: device 1->0, OCEANIC planet Aquarius-1010-832 created forming, max_colonists=1000/max_pop=52000, 0-device deploy -> 400, complete_due_formations -> COLONIZED 100 colonists; XelaNull persistently owns it. UI leg blocked by recurring XelaNull session-token expiry (could not re-auth)."
+    }
+   ],
+   "notes": [
+    "UI proof leg blocked: XelaNull browser session token expired twice mid-loop; proved via gameserver container against live DB instead (exercises the actual deployed code)."
+   ],
+   "parking_lot": [
+    "wire GENESIS_FORMATION_HOURS into gameserver compose env (repo/dev compose divergence)",
+    "genesis deploy tier hardwired basic (untiered devices)",
+    "advanced-tier extra device per ADR-0013",
+    "dead GenesisDevice/PlanetFormation ORM models",
+    "NPC traders never spawn (rosters empty)",
+    "npc_restock_demand never read by pricing",
+    "Quantum Jump FEATURES design-only but shipped",
+    "port assault targetType=port 400"
+   ]
+  },
+  {
+   "id": "neon-2026-06-13-d",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "lead_model": "opus-4.8",
+   "pilot": "testpilot (Warp Jumper)",
+   "branch_head_at_start": "15ec4e8",
+   "deployed_sha_end": "c814d32",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "threat-page-bounty",
+     "state": "proven",
+     "effort": 2,
+     "findings": [
+      "THREAT MFD page promised threat intel but showed only environmental fields (status partial)"
+     ],
+     "files_owned": [
+      "services/player-client/src/components/mfd/pages/ThreatPage.tsx",
+      "services/player-client/src/components/mfd/mfdRegistry.tsx"
+     ],
+     "commits": [
+      "c814d32"
+     ],
+     "proof": "live testpilot: BOUNTY NONE -> 50,000 cr / WANTED BY PLAYER BOARD (CAUTION accent) after seeding, zero console errors, status flipped shipped; test bounty cleaned up"
+    }
+   ],
+   "docs_writeback": [
+    "sectors.md:99 Quantum Jump 6 design-only -> shipped (Echo Scan proven live)"
+   ],
+   "notes": [
+    "Quantum Jump confirmed fully shipped (backend+client) via live Echo Scan; pure docs drift, no build needed. NPC traders root-caused (bootstrap_galaxy never auto-called)."
+   ],
+   "parking_lot": [
+    "NPC traders never spawn (bootstrap_galaxy not auto-called; DEFICIT_RATIO)",
+    "quantum sector.is_discovered not set on jump (small buildable)",
+    "quantum passive compass (design-only)",
+    "sectors.md wrong /quantum-jump paths (Max-gated)",
+    "genesis formation env not wired to compose",
+    "port assault targetType=port 400"
+   ]
+  },
+  {
+   "id": "neon-2026-06-13-e",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "lead_model": "opus-4.8",
+   "pilot": "testpilot",
+   "branch_head_at_start": "1144a50",
+   "deployed_sha_end": "8f6f33d",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "npc-trader-economy",
+     "state": "proven",
+     "effort": 4,
+     "findings": [
+      "trader rosters never seeded (CLI-only)",
+      "NameError trap NPCArchetype not module-imported",
+      "over-seed across 3 stale galaxies",
+      "buy_here dropped from trader schedule -> traders never traded"
+     ],
+     "files_owned": [
+      "services/gameserver/src/services/npc_scheduler_service.py",
+      "services/gameserver/src/services/npc_spawn_service.py",
+      "services/gameserver/src/services/npc_trading_service.py"
+     ],
+     "commits": [
+      "c6e5f75",
+      "d21d93a",
+      "8f6f33d"
+     ],
+     "proof": "live deployed code: seeded 3 trader rosters; Loop B spawned 3 merchant captains (COMMUTE,25k,4-stop routes); trade-stop executed BUY ore x1000=13000cr as MarketTransaction w/ npc_id, credits 25k->12k, cargo+stock mutated"
+    }
+   ],
+   "gate": "2 adversarial reviewers; reviewer1 caught CRITICAL NameError (fixed); proof surfaced over-seed + buy_here bugs (fixed in repair loop)",
+   "parking_lot": [
+    "npc-scheduler.md banner Max-gated flip",
+    "TRADERS_PER_REGION=6 NO-CANON",
+    "npc_restock_demand has no reader",
+    "prune stale galaxy rows",
+    "quantum sector.is_discovered on jump",
+    "port assault 400"
+   ]
+  },
+  {
+   "id": "neon-2026-06-13-b",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "2b7d455",
+   "deployed_sha_end": "2e930dd",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "aria-terminal-crash",
+     "state": "proven",
+     "effort": 2,
+     "files_owned": [
+      "services/player-client/src/contexts/WebSocketContext.tsx",
+      "services/player-client/src/components/mfd/pages/AriaTerminalPage.tsx",
+      "services/player-client/src/components/mfd/pages/pages-ops.css",
+      "services/gameserver/src/services/websocket_service.py",
+      "services/gameserver/src/services/enhanced_websocket_service.py"
+     ],
+     "commit": "6419fe6",
+     "proof": "ARIA MFD no longer page-faults on a query; terminal renders YOU>/ARIA> round-trip; console clean (no localeCompare TypeError, no aria_response Unhandled warn). Root cause: plain-WS aria_response frame omitted top-level timestamp -> undefined.localeCompare in feed sort.",
+     "note": "Crash fixed + surfaced a SEPARATE ARIA-backend cluster (greenlet_spawn in _generate_ai_response/_log_conversation + '400 Validation failed for id') that prevents ARIA from actually answering. PARKED \u2014 next ARIA section."
+    },
+    {
+     "key": "free-planet-defenses",
+     "state": "proven",
+     "effort": 2,
+     "files_owned": [
+      "services/gameserver/src/services/planetary_service.py",
+      "services/player-client/src/components/planetary/DefenseConfiguration.tsx"
+     ],
+     "commit": "0060a8e",
+     "proof": "+20 turrets via UI -> cost 10,000 -> credits 169,555->159,555 (psql exact), defense_turrets 0->20, DEFENSE POWER 30->50; negative gate (1000 turrets=490k) disabled Apply. Server now charges added-units only, player+planet row-locked.",
+     "note": "Per-unit prices (500/1000/2000) are NO-CANON (client de-facto contract) -> DECISIONS Pending planetary-defense-unit-pricing."
+    },
+    {
+     "key": "forming-planet-attack-guard",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/services/combat_service.py",
+      "services/gameserver/src/api/routes/player_combat.py"
+     ],
+     "commit": "2e930dd",
+     "proof": "Authenticated assault on forming planet -> 400 'still forming'; control (non-forming defenseless) -> 'no defenses to assault'; planet undamaged, attacker turns unchanged (1509); WPN target list omits forming planets. Closes genesis-devices.md bug marker."
+    }
+   ],
+   "gate": "2 adversarial reviewers/section (6 total); 0 CRITICAL/0 HIGH; 4 MED + LOWs all hand-fixed pre-deploy (planet row-lock for overcharge race, per-row cost abs->max(0), client credits refresh, redundant enhanced-ws timestamp removed, forming guard added to _execute_planet_assault, action JSON.stringify->readable, CSS rule).",
+   "parking_lot": [
+    "ARIA backend cluster: greenlet_spawn (async/sync) in enhanced_ai_service _generate_ai_response + _log_conversation, + '400 Validation failed for id' in the audit/log path -> ARIA cannot answer any query (renders gracefully now, but errors). NEXT ARIA section.",
+    "ai-market-fabrication (ai_trading_service _get_price_history->[], price->100, profit->1500, sectors->id+1/2/3) \u2014 real but NOT player-visible (aiTradingService output never rendered).",
+    "ship Insurance/Maintenance + Tactical Planner \u2014 dead components, never mounted.",
+    "ShipDetails mock modifications + '3D Preview Coming Soon' (player-visible MOCK/STUB).",
+    "combat loot report overstates cargo when hold full (NO-CANON, hard to prove).",
+    "mines never read (effort 5, design-only canon)."
+   ],
+   "last_updated": "2026-06-13"
+  },
+  {
+   "id": "neon-2026-06-13-c",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "1b8b5ca",
+   "deployed_sha_end": "31a6cb1",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "aria-market-fabrication-demock",
+     "state": "proven",
+     "effort": 3,
+     "files_owned": [
+      "services/gameserver/src/services/ai_trading_service.py"
+     ],
+     "commit": "31a6cb1",
+     "proof": "ARIA trading recommendation engine de-mocked to real data. /ai/recommendations: profit 1500/sector-1305/random-UUID -> real exotic_technology route 1302(150)->1314(275) profit 12500, DB-confirmed executable. /ai/market-analysis organics: 0.0/unknown -> current 8.0/falling/vol 0.44. ARIA chat shows 12500. Methods wired: _get_price_history->enhanced_market_transactions, _get_current_market_price->market_prices, _find_best_simple_route->real arbitrage, _get_nearby_sectors->sector_warps BFS, _get_active_predictions->ai_market_predictions.",
+     "note": "Adversarial review (HIGH) caught inverted buy/sell price direction (would inflate non-executable profit) -> fixed pre-deploy. Canon divergence (global vs explored-sectors personal intelligence) -> DECISIONS aria-trade-routes-global-vs-explored."
+    }
+   ],
+   "gate": "2 adversarial reviewers; reviewer A HIGH inverted-price-direction (fixed), MED predictions UUID-vs-name comment, LOW index-friendly compare (fixed); reviewer B HIGH canon-divergence (DECISIONS filed), MED wash-trade comment reworded, LOW _identify_price_factors/_assess_sector_risk still stubbed (parked).",
+   "parking_lot": [
+    "_identify_price_factors static list + _assess_sector_risk 0.3 (fabricated flavor next to real data)",
+    "predictions path commodity_id is UUID but _get_current_market_price expects name (latent; ai_market_predictions empty)",
+    "expire_on_commit=False on AsyncSessionLocal as systemic greenlet fix (needs review)",
+    "full canon: gate routes by ARIAExplorationMap + personal observations"
+   ],
+   "last_updated": "2026-06-13"
+  },
+  {
+   "id": "neon-2026-06-13-e",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "9078da5",
+   "deployed_sha_end": "3ccd063",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "comms-crew-team-name",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/player-client/src/components/mfd/pages/CommsCrewPage.tsx"
+     ],
+     "commit": "3ccd063",
+     "proof": "COMMS/CREW MFD affiliation 'ACTIVE' -> '[NEON] Neon Raiders' (testpilot assigned to Neon Raiders, reverted). teamAPI.getTeam fetch.",
+     "note": "Player-client is well-maintained \u2014 this was the one live half-wire. Discovery confirmed ShipDetails/TeamChat/TeamAnalytics/FleetCoordination/MaintenanceManager/AllianceManager/DiplomacyInterface are dead/unmounted mock code (GOLD purge candidate, not player-visible)."
+    }
+   ],
+   "gate": "lead self-review (single read-only fetch + display; tsc clean); no workflow review (low-risk 1-component display fix)",
+   "parking_lot": [
+    "GOLD purge of ~7 dead mock-laden player-client components + their orphan team APIs",
+    "CommsCrewPage could also show member_count (TeamResponse has it)"
+   ],
+   "last_updated": "2026-06-13"
+  },
+  {
+   "id": "neon-2026-06-13-f",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "7277d76",
+   "deployed_sha_end": "a28a734",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "armory-mines-honest-disable",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/armory.py"
+     ],
+     "commit": "a28a734",
+     "proof": "catalog mines available=false+reason; POST purchase limpet_mine -> 400; credits unchanged 159555, mines 0 (no deduction). Client already renders available=false disabled.",
+     "note": "Real mine deployment (read player.mines in combat/movement) is a future feature, effort 5+."
+    }
+   ],
+   "gate": "lead self-review (read-only catalog flag + early-reject guard; py_compile clean; low risk)",
+   "parking_lot": [
+    "build real mine deploy/detonation/tracking (effort 5+, then re-enable purchase)",
+    "GOLD purge of dead player-client mock components (still pending Max/GOLD)"
+   ],
+   "last_updated": "2026-06-13"
+  },
+  {
+   "id": "neon-2026-06-14-g",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "mode": "RED",
+   "branch_head_at_start": "a28a734",
+   "deployed_sha_end": "b0b988d",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "blackjack-faucet-server-authoritative",
+     "state": "proven",
+     "effort": 2,
+     "files_owned": [
+      "services/gameserver/src/api/routes/gambling.py"
+     ],
+     "commit": "b0b988d",
+     "proof": "no-deal /action->400; fabricated cards+bet ignored (real seed hand 20v19, win=stored bet x2); replay->400; DB credits reconcile 160555, active game cleared.",
+     "note": "Adversarial review caught 2 CRITICALs (both locks needed populate_existing -> concurrent double-settle; double-into-bust paid double) -> fixed pre-deploy. Server-authoritative via Player.settings JSONB, no migration."
+    }
+   ],
+   "gate": "2 adversarial reviewers (RED-focused); BOTH returned CRITICAL (stale-lock faucet + double-bust-win faucet); both hand-fixed pre-deploy; re-verified live.",
+   "parking_lot": [
+    "slots/roulette endpoints (gambling.py) \u2014 audit for the same client-trust pattern",
+    "deck index could overflow 52 on an implausibly long hit streak (pre-existing, no modulo on deck[cards_dealt])"
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-h",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "b0b988d",
+   "deployed_sha_end": "9a91895",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "gambling-concurrency-locks",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/gambling.py"
+     ],
+     "commit": "9a91895",
+     "proof": "10 concurrent /slots/spin -> DB credits = before + sum(all 10 net results) exactly (160555-85=160470), no lost update. slots/dice/lottery now populate_existing+with_for_update like blackjack (5 locks total).",
+     "note": "Outcomes already server-authoritative (weighted_random_symbol/randint/sample); this closes the concurrency lost-update vector. Applies the exact pattern the blackjack review validated -> self-review sufficient."
+    }
+   ],
+   "gate": "lead self-review (applies the already-review-validated blackjack lock pattern; py_compile clean; live concurrency proof)",
+   "parking_lot": [
+    "GOLD purge of dead player-client mock components (still Max/GOLD)",
+    "real mine deployment (effort 5+)",
+    "Max-gated: AI-dialogue content depth, defense/route canon decisions, faction-mission completion"
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-i",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "9a91895",
+   "deployed_sha_end": "478ec80",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "move-surfaces-encounters",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/player.py"
+     ],
+     "commit": "478ec80",
+     "proof": "move 1303->1319 (NEBULA) -> response encounters=[{type:sector_hazard,hazard:NEBULA,threat_level:medium}] (was stripped by response_model). Restores encounter visibility + ARIA autopilot pause (ADR-0072).",
+     "note": "Comprehensive 3-zone scan refilled the buildable queue (5+ items) \u2014 well was NOT dry; targeted scans had missed the drones/movement/specialization surfaces."
+    }
+   ],
+   "gate": "lead self-review (1-line forward of already-generated data into already-declared response fields; py_compile clean; live proof)",
+   "parking_lot": [
+    "/drones/sector no-auth (SECURITY, buildable next)",
+    "ColonySpecialization UI lies (buildable)",
+    "AI market predicted_price 1.05 fallback (buildable)",
+    "/combat/engage port 200->403 (buildable)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: drone costs, faction-mission completion, faction pricing stacking, pirate hulls"
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-j",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "478ec80",
+   "deployed_sha_end": "f558e98",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "drones-sector-auth",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/drones.py"
+     ],
+     "commit": "f558e98",
+     "proof": "GET /drones/sector/{uuid}: unauthenticated -> 401 (was 200, anonymous enumeration); authenticated -> 200 with drone array. Client never calls it -> zero impact.",
+     "note": "From the 2026-06-14 full-scan queue. Lone drone read endpoint missing get_current_player."
+    }
+   ],
+   "gate": "lead self-review (one-line auth dependency matching sibling endpoints; py_compile clean; live 401/200 proof)",
+   "parking_lot": [
+    "ColonySpecialization UI lies (buildable, next)",
+    "AI market predicted_price 1.05 fallback (buildable)",
+    "/combat/engage port 200->403 (buildable)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: drone costs, faction-mission completion, faction pricing stacking, pirate hulls; GOLD purge"
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-k",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "f558e98",
+   "deployed_sha_end": "945668d",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "colony-specialization-ui-honesty",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/player-client/src/components/planetary/ColonySpecialization.tsx"
+     ],
+     "commit": "945668d",
+     "proof": "Gamma Prime Specialize: agricultural shows +50% organics/+20% colonist growth/-20% fuel/-20% equipment; no +50% defense or +50% research badges; balanced=baseline; military/research flag headline bonus 'not yet active'. Matches planetary_service._calculate_specialization_bonuses (production-only applied).",
+     "note": "Client-only, no backend change. Surfaced + filed DECISIONS colony-specialization-defense-research-unapplied (backend computes military-defense/research-research multipliers but never applies them; balanced is a no-op)."
+    }
+   ],
+   "gate": "lead self-review (data+copy aligned to verified backend behavior; tsc clean; live UI proof)",
+   "parking_lot": [
+    "AI market predicted_price 1.05 fallback (buildable, next)",
+    "/combat/engage port 200->403 (buildable)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: specialization defense/research (DECISIONS), drone costs, faction-mission completion; GOLD purge"
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-l",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "945668d",
+   "deployed_sha_end": "ce77c8c",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "market-prediction-fallback-honest",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/services/ai_trading_service.py"
+     ],
+     "commit": "ce77c8c",
+     "proof": "diag: engine forced None + forced raise -> _predict_future_price returns flat last price 120.0 (not 120*1.05=126.0). live: /ai/market-analysis/organics unaffected (real prediction 20.77, 200).",
+     "note": "Failure-path fix; proven via in-container monkeypatch diag since the engine rarely fails naturally."
+    }
+   ],
+   "gate": "lead self-review (2-line failure-path correctness fix; py_compile clean; diag proof + live no-regression)",
+   "parking_lot": [
+    "/combat/engage port 200->403 (buildable, next)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: specialization defense/research (DECISIONS), drone costs, faction-mission completion; GOLD purge"
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-m",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "ce77c8c",
+   "deployed_sha_end": "fa05b38",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "combat-engage-port-501",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/gameserver/src/api/routes/player_combat.py"
+     ],
+     "commit": "fa05b38",
+     "proof": "POST /combat/engage {targetType:port} -> 501 + 'Port assault operations are not yet authorized' (was HTTP 200 status=error). Error definitively surfaced via apiRequest throw.",
+     "note": "UI already disables port targets -> API-semantics hardening. Surfaced a NEW finding: client apiRequest reads data.detail but server envelope uses data.message -> generic 'API Error' messages (queued)."
+    }
+   ],
+   "gate": "lead self-review (status-code change; verified client handles non-2xx via apiRequest throw + inline error; py_compile clean; live 501 proof)",
+   "parking_lot": [
+    "client apiRequest data.detail||data.message (NEW, buildable next)",
+    "first-login ShipSelection JSON dump (buildable)",
+    "Max-gated: specialization defense/research, drone costs, faction-mission completion; GOLD purge"
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-n",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "fa05b38",
+   "deployed_sha_end": "c0fbcf8",
+   "verdict": "GLOWING",
+   "sections": [
+    {
+     "key": "apirequest-real-error-messages",
+     "state": "proven",
+     "effort": 1,
+     "files_owned": [
+      "services/player-client/src/services/api.ts"
+     ],
+     "commit": "c0fbcf8",
+     "proof": "live error responses (envelope {error,message,error_id,timestamp}, no detail): NEW extraction yields '+Port assault operations are not yet authorized' (501) / 'Target ship not found' (404); OLD yielded 'API Error: 501/404'. App-wide for apiRequest-based UIs.",
+     "note": "Client-only. Discovered during the port-501 fix. detail (string) || message, 422 detail-arrays skipped to generic."
+    }
+   ],
+   "gate": "lead self-review (additive extraction fallback; tsc clean; proven vs real server error envelopes)",
+   "parking_lot": [
+    "first-login ShipSelection JSON dump (buildable, next)",
+    "Max-gated: specialization defense/research, drone costs/repair, faction-mission completion, faction pricing stacking, pirate hulls; GOLD dead-component purge"
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "id": "neon-2026-06-14-o",
+   "stage": "complete",
+   "tier": "STANDARD",
+   "branch_head_at_start": "c0fbcf8",
+   "deployed_sha_end": "27fc2fe",
+   "verdict": "STEADY",
+   "sections": [
+    {
+     "key": "first-login-shipselection-json-dump",
+     "state": "shipped-build-verified",
+     "effort": 1,
+     "files_owned": [
+      "services/player-client/src/components/first-login/ShipSelection.tsx"
+     ],
+     "commit": "27fc2fe",
+     "proof": "DEFERRED (not live): ShipSelection renders only in first-login; the empty-ships error branch isn't reproducible without a fresh first-login account (account creation out of bounds). Verified by tsc + code review; error-branch-only JSX text swap, happy path untouched.",
+     "note": "Last item of the 2026-06-14 scan queue. Self-provable in-lane backlog now EXHAUSTED."
+    }
+   ],
+   "gate": "lead self-review + tsc; live proof not attainable without a fresh first-login account",
+   "parking_lot": [
+    "EXHAUSTED of self-provable in-lane items. Remaining = Max-gated (specialization defense/research [DECISIONS], drone costs/repair, faction-mission completion, faction pricing stacking, pirate hull stats) + GOLD dead-component purge (needs Max bless) + first-login items need a throwaway account from Max (starter-ship-stats, this JSON-dump live-proof)."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-p",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Flip GOLD purge -> NEON build: flesh team scaffolds into real code",
+   "sections": [
+    {
+     "key": "team-treasury-resource-sharing",
+     "state": "shipped-proven",
+     "effort": 3,
+     "files_owned": [
+      "services/player-client/src/components/teams/ResourceSharing.tsx",
+      "services/player-client/src/components/teams/resource-sharing.css",
+      "services/player-client/src/components/teams/TeamManager.tsx",
+      "services/player-client/src/services/api.ts",
+      "services/player-client/src/types/team.ts"
+     ],
+     "commit": "f3e249e+bcbdd50",
+     "proof": "Live as verifpilot (LEADER) in Neon Raiders: deposit 50k (treasury 0->50000, wallet 667782->617782), withdraw 20k (->30000, ->637782), transfer 10k->testpilot (->20000, testpilot 160470->170470), all psql-exact; zero console errors."
+    },
+    {
+     "key": "team-chat",
+     "state": "shipped-proven",
+     "effort": 2,
+     "files_owned": [
+      "services/player-client/src/components/teams/TeamChat.tsx",
+      "services/player-client/src/components/teams/TeamManager.tsx"
+     ],
+     "commit": "f3e249e+bcbdd50",
+     "proof": "Live as verifpilot: sent message renders + persists (psql messages row team_id=636c18e0 message_type=team); real member count; sender role-crown from roster; zero console errors."
+    }
+   ],
+   "gate": "adversarial review (2 reviewers) + vite build + live triple-evidence",
+   "parking_lot": [
+    "Insurance + maintenance: need gameserver mechanics (decay loop, destruction-handler payout); premium % still 'proposed' in ship-insurance.md.",
+    "Fleet coordination UI: supply/coordination-bonus/non-flagship roles are design-only.",
+    "Alliances/diplomacy: design-only, no schema.",
+    "Treasury transaction-history not built (no treasury_transactions table) \u2014 needs a migration; flagged in factions-and-teams.md.",
+    "TeamAnalytics still unmounted (no /analytics backend) \u2014 lone no-canon component."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-q",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Ship insurance \u2014 canon purchase desk + payout deductible fix (ADR-0081 authored)",
+   "sections": [
+    {
+     "key": "ship-insurance-purchase",
+     "state": "shipped-proven",
+     "commit": "395302e",
+     "proof": "Live as testpilot at SpaceDock Regulus: STANDARD on Light Freighter pv10000 -> premium 1700 (17%) debited 170470->168770, ship.insurance={type:STANDARD} per-hull (psql). Modal canon tiers 10/17/22% premium, 45/65/75% payout. CSS unstyled on stage (CF stale insurance-manager.css; correct in repo)."
+    },
+    {
+     "key": "ship-insurance-payout",
+     "state": "shipped-proven",
+     "commit": "395302e",
+     "proof": "Real deployed ship_service.destroy_ship vs insured hull: credits 168770->175270 (+6500 = 65%x10000 net, deductible applied per ADR-0061), reads ship.insurance, ejected to pod."
+    }
+   ],
+   "canon": [
+    "Authored ADR-0081 ship-insurance-premium-pricing (Accepted, Max-blessed 10/17/22%); de-proposed ship-insurance.md premium column."
+   ],
+   "parking_lot": [
+    "NEUTRAL-rep 'friendly port' gate is a follow-up (v1 gates on station-offers-insurance).",
+    "Stage CF cache served stale insurance-manager.css -> modal unstyled until purge; verify on origin :9082 post-purge.",
+    "ShipSpecification.insurable boolean (ADR-0029) not added; non-insurable gated by ship type {WARP_JUMPER,ESCAPE_POD}."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-r",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Ship maintenance v1 \u2014 decay + combat-band penalty + tiered shipyard servicing (ships.md)",
+   "sections": [
+    {
+     "key": "maintenance-decay-combat",
+     "state": "shipped-proven",
+     "commit": "f080ce6",
+     "proof": "Scout backdated 65d -> GET condition 35.0 (Degraded, canon band exact); real combat service attack 26.25(100%)->20.0(35%)->6.25(5%), defense likewise. Lazy decay, no migration. applied_effects=[combat] honest."
+    },
+    {
+     "key": "maintenance-servicing",
+     "state": "shipped-proven",
+     "commit": "f080ce6",
+     "proof": "POST /maintenance/repair basic: condition 35->100, cost 325 (=6.5x0.05x1000), credits 175270->174945 (psql). Locked, cost<=0/non-shipyard/escape-pod/pristine rejected. MaintenanceManager canon rebuild + SpaceDock mount; VesselPage reads condition."
+    }
+   ],
+   "parking_lot": [
+    "DEFERRED (own round): per-jump failure roll Minor/Major/Catastrophic (catastrophic touches destruction handler), speed+fuel band consumption in movement, repair timers, self-repair Maintenance Kit, MAINTENANCE_SYSTEM auto-upkeep upgrade.",
+    "ShipSpecification.maintenance_rate seed (0.05-0.30) is dead + mismatches canon %/day \u2014 cleanup candidate.",
+    "Stage CF cache serves stale maintenance-manager.css -> modal unstyled until purge (same as insurance); CSS correct in repo."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-s",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Citadel pass \u2014 3-subagent end-to-end audit (20-item backlog), live time-based construction indicator, docs improvement",
+   "sections": [
+    {
+     "key": "citadel-construction-indicator",
+     "state": "shipped-proven",
+     "commit": "2653597",
+     "proof": "Citadel upgrades already time-based server-side; landed console showed only static '~Nh' text. Added live panel (marching-stripe progress bar + per-second countdown + ETA + target level) + minimized-surface beacon. Proven (Gamma Prime L1->L2, 12/48h): '\ud83c\udfd7\ufe0f CONSTRUCTION ACTIVE -> Settlement 25% 1d11h ETA Jun16 02:44', fill 25.03%, beacon '\ud83c\udfd7\ufe0f 25% \u00b7 1d 11h'. Display-only."
+    },
+    {
+     "key": "citadel-docs",
+     "state": "shipped",
+     "commit": "8c27e6f",
+     "proof": "citadels.md: build-time+indicator section, accurate shipped-vs-design markers, drift flags (orbital cost, TERRAN/TERRA). FINDINGS row."
+    }
+   ],
+   "audit": "3 sonnet subagents (systems / UI-UX / canon-docs) worked citadels end-to-end -> synthesized 20-item improvement backlog (see roadmap).",
+   "parking_lot": [
+    "Backlog (19 remaining): cockpit HUD build beacon; vault fill bar; defense-building + shield-generator construction TIMERS (instant today); +5%/level production bonus (unapplied); population gate before upgrade (unenforced); upgrade cancel+refund + citadel.upgrade_cancelled (ADR-0059 N-F3); prereq-by-actual-buildings (ADR-0059 N-D4); +50% partial bonus during build; rail-gun battery + defense grid; ADR-0076 per-unit pricing; safe commodity storage; defense-buildings UI section; pre-flight checklist; shield cost on button; safe quick-fill presets; scroll-law 3-col; per-building operational state schema; doc JSONB-shape; orbital-platform cost + TERRAN/TERRA reconcile.",
+    "Max decisions surfaced by the audit: (a) confirm lazy-poll timer pattern for defense-building/shield builds; (b) L0->L1 instant intent as canon; (c) implement +50% partial-bonus now or keep design-only; (d) ADR-0080 siege vulnerability penalty magnitude (suggested 0.5-0.75x)."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-t",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Citadel backlog batch \u2014 +5% production bonus, population gate, upgrade cancel/refund",
+   "sections": [
+    {
+     "key": "citadel-production-bonus",
+     "state": "shipped-proven",
+     "commit": "00029d2",
+     "proof": "+5%/level in _calculate_production_rates. Real service: 1000(L0)->1050(L1,+5%)->1250(L5,+25%)."
+    },
+    {
+     "key": "citadel-population-gate",
+     "state": "shipped-proven",
+     "commit": "00029d2",
+     "proof": "start_upgrade enforces current pop >= current-level max. Blocked at 653/1000; allowed at 1000/1000 (started -50k)."
+    },
+    {
+     "key": "citadel-upgrade-cancel",
+     "state": "shipped-proven",
+     "commit": "00029d2",
+     "proof": "POST /citadel/cancel 50% refund + two-step Cancel button. Cancelled in-progress upgrade: credits 124945->149945 (+25000), state cleared."
+    }
+   ],
+   "parking_lot": [
+    "Remaining citadel backlog: defense-building UI section; vault fill bar; safe quick-fill presets; shield cost on button; pre-flight checklist; scroll-law 3-col; cockpit HUD build beacon (full chip).",
+    "Max-gated: defense-building + shield-generator construction TIMERS (confirm lazy-poll pattern); +50% partial bonus during build; prereq-by-actual-buildings (ADR-0059 N-D4, blocked on per-building operational-state schema); rail-gun/defense-grid buildings; ADR-0076 per-unit pricing; safe commodity storage; ADR-0080 siege vulnerability magnitude; L0->L1 instant intent."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-u",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Citadel client-polish batch \u2014 defense-buildings UI + build action, vault fill bar, shield cost on button",
+   "sections": [
+    {
+     "key": "defense-buildings-ui",
+     "state": "shipped-proven",
+     "commit": "9b7aa55",
+     "proof": "New Defense Buildings section (GET /buildings/available) + Build (POST /buildings/construct), affordability-gated. Proven L5: 3 buildings listed; Scanner built -> 1/2, credits 149945->74945, active_events {scanner_array:1}. Server supported it with zero UI before."
+    },
+    {
+     "key": "vault-fill-bar",
+     "state": "shipped-proven",
+     "commit": "9b7aa55",
+     "proof": "Safe vault fill bar 40% at 20M/50M."
+    },
+    {
+     "key": "shield-cost-sublabel",
+     "state": "shipped-proven",
+     "commit": "9b7aa55",
+     "proof": "Shield upgrade button shows '-> L1 \u00b7 50,000 cr' sublabel."
+    }
+   ],
+   "parking_lot": [
+    "Remaining citadel UI: safe 25/50/75/Max presets; pre-flight prereq/affordability checklist in upgrade confirm; scroll-law 3-col layout; full cockpit HUD build-beacon chip.",
+    "Max-gated (gameplay/canon): defense-building + shield-generator construction TIMERS (build instantly today; confirm lazy-poll pattern); +50% partial bonus during build; prereq-by-actual-buildings (ADR-0059 N-D4, needs per-building state schema); rail-gun/defense-grid buildings; ADR-0076 per-unit pricing; safe commodity storage; ADR-0080 siege vulnerability magnitude; L0->L1 instant intent."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-v",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Time-based defense-building construction (blessed timer pattern) + citadel UI polish (pre-flight checklist, safe presets)",
+   "sections": [
+    {
+     "key": "defense-building-timer",
+     "state": "shipped-proven",
+     "commit": "667ceb2",
+     "proof": "Defense buildings construct over time (canon 48/72/168h) via JSONB defense_build_queue + lazy settle, no migration. API: scanner queued, -75k cr, count 0, complete_at +48h; can_build false (slot reserved). DB: queue entry then settled to {scanner_array:1}. UI: '0/1 +1\ud83c\udfd7\ufe0f', '1d 23h' countdown + progress bar."
+    },
+    {
+     "key": "upgrade-preflight-checklist",
+     "state": "shipped-proven",
+     "commit": "667ceb2",
+     "proof": "Upgrade confirm shows credit+population gates \u2713/\u2717. Proven: '\u2717 Credits 425,000/500,000', '\u2717 Population 653/15,000'."
+    },
+    {
+     "key": "safe-deposit-presets",
+     "state": "shipped-proven",
+     "commit": "667ceb2",
+     "proof": "25/50/75% quick-fill presets; 50% -> 212,500 (half of 425k)."
+    }
+   ],
+   "deferred_max_gated": [
+    "shield-generator construction timer: blessed pattern, but build-time numbers are not canon -> filed DECISIONS Pending 'shield-generator-build-hours' (recommend level\u00d76h). Build is one ~3-file no-migration batch once blessed.",
+    "+50% partial defense bonus during build (ADR-0059 step 5); rail-gun/defense-grid buildings; ADR-0076 per-unit pricing; prereq-by-actual-buildings (ADR-0059 N-D4)."
+   ],
+   "next_batch_requested": [
+    "Citadel safe commodity storage (produced items go to safe + total cap) \u2014 currently credits-only (\ud83d\udcd0).",
+    "Real-time production allocation counter (tick resource totals live on screen).",
+    "Stardock: buy drones + mines; track mines carried (no mine slot/UI today)."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-w",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "STEADY",
+   "theme": "User batch: real-time production (Section 1 of 3). Discovery on safe-commodities + drones/mines.",
+   "sections": [
+    {
+     "key": "commodity-production-accrual",
+     "state": "shipped-proven-server",
+     "commit": "682e385",
+     "proof": "Production now actually accrues (was a dead rate-calc). apply_resource_production lazy advance-on-read; per-resource fractional carry in active_events JSONB, no migration. API+DB proven: +285 fuel from 1h anchor, carry banked, continues on read. Client live \ud83d\udce6 tick build+contract-verified; live on-screen visual BLOCKED by lost stage browser cookie-session (needs real login)."
+    },
+    {
+     "key": "get-planet-details-lock-timeout",
+     "state": "shipped-proven",
+     "commit": "124e104",
+     "proof": "Hardening: the accrual turned the hot read into a write -> leaked FOR UPDATE lock could 504-cascade. Added lock_timeout=3s + serve-without-accrual. PROVEN: GET under held lock = 200 in 3.26s (no hang), accrual skipped; after release accrues in 0.21s. Also cleared 2 leaked idle-in-transaction locks (pre-existing)."
+    }
+   ],
+   "remaining_user_batch": [
+    "Section 2 \u2014 Citadel safe COMMODITY storage: canon = single cr-equivalent cap (numbers exist: 100k/500k/2M/10M/50M). BLOCKED on a decision: the cr-equivalent rate per commodity unit (economy base prices exist: ore 15/organics 18/equipment 35/fuel 12). Needs Max bless or DECISIONS entry.",
+    "Section 3a \u2014 Drones: already work end-to-end (likely user wasn't at a drone_shop/spacedock). Verify live.",
+    "Section 3b \u2014 Mines: intentionally disabled (nothing reads player.mines; no deploy mechanic). HUD mine counter missing. Deploy/detonate + damage numbers are canon-gated (combat.md: 2000cr 'damages hostile entrants', design)."
+   ],
+   "blockers": [
+    "Live UI proofs need a warm logged-in stage browser tab (cookie session) \u2014 my stray / navigation logged it out; JWT-in-localStorage alone doesn't re-warm the app's auth context.",
+    "Pre-existing infra: client-disconnect on FOR UPDATE routes leaks idle-in-transaction locks (cleared 2 this run)."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-x",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "User batch Sections 2+3: citadel safe commodities + armored mine deploy/detonation + spacedock drone fix",
+   "sections": [
+    {
+     "key": "citadel-safe-commodities",
+     "state": "shipped-proven",
+     "commit": "affbf50",
+     "adr": "ADR-0082",
+     "proof": "Safe stores fuel_ore/organics/equipment at base prices (15/18/35) vs single cr-equivalent cap. API+DB: deposit 1000 fuel_ore -> value 15,100, cap reject 'Room for 2,425 more equipment', withdraw, psql safe_commodities."
+    },
+    {
+     "key": "armored-mine-deploy-detonation",
+     "state": "shipped-proven",
+     "commit": "165e683",
+     "adr": "ADR-0083 (Proposed, damage pending bless)",
+     "proof": "Deploy {3} -> sector mines=3, carried 5->2; hostile entry hull 500->300 (-200) + mine 2->1; same-team entry no damage/no consume. Limpet stays disabled (tracking=design)."
+    },
+    {
+     "key": "spacedock-armory-venue-fix",
+     "state": "shipped",
+     "commit": "165e683",
+     "proof": "Armory venue gate omitted is_spacedock -> hidden at spacedocks lacking explicit drone_shop; fixed (matches server). This was why drones couldn't be bought at the spacedock. Client-only logic fix; user self-verifies UI."
+    },
+    {
+     "key": "mines-hud-and-state",
+     "state": "shipped",
+     "commit": "165e683",
+     "proof": "player.mines added to player API + PlayerState; MINE counter in cockpit header; Lay Minefield control on Threat MFD."
+    }
+   ],
+   "pending_bless": [
+    "ADR-0083 mine damage value (recommend 200 hull/mine, floor-at-1, one-per-entry) \u2014 one-constant change if Max wants different."
+   ],
+   "deferred": [
+    "Limpet mine tracking mechanic (design-only; needs per-type mine inventory).",
+    "Lethal mines / destruction-on-zero-hull (v1 floors at 1)."
+   ],
+   "blockers_carried": [
+    "Live UI proofs still need a warm logged-in stage tab; this run used server-prove + user-self-verify per Max's choice."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-y",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "STEADY",
+   "theme": "Bless ADR-0083 (mine damage 200) + next roadmap item: /drones/deploy real ids",
+   "sections": [
+    {
+     "key": "adr-0083-accepted",
+     "state": "docs",
+     "proof": "Max blessed mine damage 200 hull; ADR-0083 flipped Proposed->Accepted."
+    },
+    {
+     "key": "drones-deploy-real-id",
+     "state": "shipped-by-inspection",
+     "commit": "d7a2cf6",
+     "proof": "deploy_drones_contract returns real DroneDeployment ids (was random uuid4 -> recall 404). Correct by inspection (deploy_drone refreshes, .id safe). Full-flow proof BLOCKED by 2 pre-existing subsystem bugs: (1) DroneStatus has no idle state (created drones default deployed); (2) deploy_drone greenlet async/sync error -> 500. Both unmounted/Max-gated -> flagged for a dedicated drone-subsystem repair pass, not expanded."
+    }
+   ],
+   "discovered_blockers": [
+    "DroneStatus enum missing an idle/available state \u2014 created/recalled drones can't return to a deployable pool.",
+    "DroneService.deploy_drone: greenlet_spawn await_only (ASYNC-SYNC) -> /drones/deploy 500."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-z",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis: record Max-gated decisions + fix the buildable deploy bugs",
+   "sections": [
+    {
+     "key": "genesis-decisions-recorded",
+     "state": "docs",
+     "commit": "ba71eb3",
+     "proof": "DECISIONS: genesis-device-tiering-model, genesis-light-freighter-capacity, genesis-deploy-restrictions (reputation>=8, anti-monopoly 25%, 5-jump, 2-sector)."
+    },
+    {
+     "key": "genesis-deploy-buildable-fixes",
+     "state": "shipped-proven",
+     "commit": "a61022b",
+     "proof": "Honored chosen colony name (PROVEN: Maxhaven Prime, oceanic, forming, device 1->0). Labeled discoverable Deploy Genesis button (was bare icon, empty-state only). Deploy defaults to current sector (was raw id type-in). Honest biome note replacing the ignored non-canon type-picker; planetType optional."
+    }
+   ],
+   "deferred_max_gated": [
+    "Genesis tier vocab unification + device counts + fake buy-card stats \u2014 blocked on genesis-device-tiering-model decision."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-aa",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis deploy entry-point from the Cargo bay (Max's UX idea)",
+   "sections": [
+    {
+     "key": "genesis-deploy-from-cargo",
+     "state": "shipped",
+     "commit": "4b5759e",
+     "proof": "The Cargo MFD (CRGO) Genesis Bay 'TERRAFORM READY' indicator is now a flashing 'TERRAFORM READY \u2014 DEPLOY' button that opens the Genesis deploy modal (defaults to current sector). Client-only, vite hot-reload. User self-verifies UI."
+    }
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-ab",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "NEON genesis: tiered deploy (use 3 at once) + formation animation (canon-grounded)",
+   "sections": [
+    {
+     "key": "genesis-tier-deploy",
+     "state": "shipped-proven",
+     "commit": "b59ab42",
+     "proof": "Canon basic=1/enhanced=3 device deploy (was always 1). GENESIS_DEVICE_COST + pre-flight + tier param + client tier selector. PROVEN: enhanced consumed 3 -> hab-75 oceanic planet, -75k; basic consumed 1 (3->2); enhanced rejected with 2 devices. Fixes 'deploys one at a time'."
+    },
+    {
+     "key": "genesis-formation-animation",
+     "state": "shipped",
+     "commit": "b59ab42",
+     "proof": "Canon 'progressive planet-formation visuals' \u2014 deploy-moment animation (core ignite -> shockwaves -> coalescing spinning planet + name). Also fixed fictional '5 minutes' -> ~48h. Client-only; user self-verifies UI."
+    }
+   ],
+   "canon_grounding": "Read full genesis-devices.md + genesis-deploy.md; confirmed basic/enhanced device counts + 'progressive formation visuals' are canon (not invented).",
+   "still_max_gated": [
+    "Advanced tier (typed advanced device + Colony Ship sacrifice + escape pod); buy-side tier vocab + fake success-rate cards \u2014 DECISIONS genesis-device-tiering-model (narrowed)."
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-ac",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis advanced tier at deploy (all 3 tiers offered) \u2014 Colony Ship sacrifice -> instant Settlement colony",
+   "sections": [
+    {
+     "key": "genesis-advanced-tier",
+     "state": "shipped-proven",
+     "commit": "c6f7ac1",
+     "proof": "Advanced (250k + 1 device) sacrifices Colony Ship -> instant Settlement colony. genesis_service uses ship_service.destroy_ship (escape pod, all-cargo, no insurance double-dip) + _complete_formation + 4 turrets/shield 1. PROVEN: 'Capitalia' COLONIZED/complete, citadel 2, 5000 colonists, 4 turrets, shield 1; ship destroyed; player in ESCAPE_POD; -250k cr. Two-step confirm + Colony-Ship gating on the client."
+    }
+   ],
+   "decision_resolved": "genesis-device-tiering-model -> option (a) untiered count; all 3 tiers ship; no migration. Remaining: buy-side vocab alignment (buildable, not a decision).",
+   "canon_grounding": "genesis-devices.md Advanced tier + ADR-0013 + ADR-0015; ship_service.destroy_ship escape-pod path reused (not invented).",
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-14-ad",
+   "date": "2026-06-14",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis terraforming progress readout (forming status + countdown)",
+   "sections": [
+    {
+     "key": "genesis-formation-readout",
+     "state": "shipped-proven",
+     "commit": "e33e725",
+     "proof": "_format_planet_data ships formationStatus/started/complete; Colonial Registry shows \ud83c\udf31 TERRAFORMING badge + progress bar + 'Nd Nh left' countdown (auto-refetch on elapse). PROVEN: /owned returns fields (48h apart); lazy-complete flips forming->complete; rate-limit (3/week) also confirmed firing."
+    }
+   ],
+   "last_updated": "2026-06-14"
+  },
+  {
+   "run": "neon-2026-06-16-a",
+   "date": "2026-06-16",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "Genesis second pass \u2014 elevate the whole arc: honest fungible buy-side + forming-planet visual in the sector viewport",
+   "sections": [
+    {
+     "key": "genesis-buyside-canon",
+     "state": "shipped-proven",
+     "commit": "438373c",
+     "proof": "Store sells one fungible 25k device (was 3 fake tiers + fake success-rate); 3/week limit enforced at acquisition (moved off deploy, no double-count) + remaining readout + ship capacity. PROVEN: 3 buys -25k each remaining 2/1/0; weekly limit binds."
+    },
+    {
+     "key": "genesis-forming-viewport-visual",
+     "state": "shipped-proven",
+     "commit": "438373c",
+     "proof": "celestial_service emits formation_status in /system snapshot; SolarSystemViewscreen draws forming planets with accretion halo + spiralling dust + containment ring + 'GENESIS FORMING\u2026' label + tooltip. PROVEN: /system body formation_status='forming'. Canvas visual build-verified; user self-verifies."
+    }
+   ],
+   "decision_flagged": "genesis credit double-charge (25k acquire + tier cost at deploy) -> DECISIONS genesis-device-tiering-model (Max-gated economy).",
+   "canon_grounding": "genesis-devices.md acquisition + 'progressive planet-formation visuals' affordances; genesis-deploy.md cost-at-deploy. 2 sonnet discovery agents mapped buy-side + viewport.",
+   "last_updated": "2026-06-16"
+  },
+  {
+   "run": "neon-2026-06-16-b",
+   "date": "2026-06-16",
+   "tier": "STANDARD",
+   "verdict": "GLOWING",
+   "theme": "ADR-0084 planetary registration tiers + black-market registry lookup \u2014 PARALLEL subagent build wave (4 zone workers + 2 reviewers)",
+   "orchestration": "Workflow tool: 4 disjoint-ownership build workers (deploy/registry/combat/client) against frozen contracts -> 2 adversarial reviewers (correctness-security + contract-fidelity, both PASS) -> lead gate/fix/deploy/prove.",
+   "sections": [
+    {
+     "key": "registration-tiers-deploy",
+     "state": "shipped-proven",
+     "commit": "3d887a2",
+     "proof": "Clandestine 60k / Registered 10k / Chartered 10k+40k(1-repFactor). PROVEN: fees 10k/44k(rep200)/60k, credits 1M->811k exact, charter +25 rep, status in active_events."
+    },
+    {
+     "key": "black-market-registry-lookup",
+     "state": "shipped-proven",
+     "commit": "3d887a2",
+     "proof": "POST /registry/lookup, neg-rep gated, 50k. PROVEN: returns registered+chartered, excludes clandestine, 403 on rep>=0, 404 no-charge on bad name."
+    },
+    {
+     "key": "charter-combat-protection",
+     "state": "shipped-proven",
+     "commit": "3d887a2",
+     "proof": "Assaulting a chartered planet -> attacker -50 rep. PROVEN: verifpilot -50->-100 on assaulting Crown Charter."
+    }
+   ],
+   "lead_fixes": [
+    "isinstance-safe active_events read in registry.py (legacy non-empty-list guard)",
+    "added bm-registry-* CSS (R2 MED)",
+    "fixed pre-existing bare useEffect in SpaceDockInterface (would ReferenceError on genesis venue open)"
+   ],
+   "decision_resolved": "genesis-device-tiering-model -> ADR-0084 Accepted; removed from DECISIONS.",
+   "last_updated": "2026-06-16"
+  }
+ ],
+ "last_updated": "2026-06-16"
+}

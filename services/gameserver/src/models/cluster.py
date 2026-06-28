@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 from typing import List, Dict, Optional, Any
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
@@ -88,6 +88,20 @@ class Cluster(Base):
     special_features = Column(ARRAY(String), nullable=False, default=[])
     description = Column(String, nullable=True)
     is_hidden = Column(Boolean, nullable=False, default=False)
+
+    # Structured nebula fields (WO-DBB-QR4). The bang payload carries nebula
+    # data PER-SECTOR only (sector.nebula = {type, density}); there is no
+    # cluster-level nebula block. These columns capture the cluster's
+    # *dominant* (representative) nebula, derived at import time from its member
+    # sectors: nebula_type = the most common nebula type among the cluster's
+    # nebula sectors; quantum_field_strength = the mean density of those
+    # sectors (the only quantitative nebula attribute the payload provides).
+    # color_hex has no source in the bang payload — it is left NULL until a
+    # source for it exists. All three are additive + nullable: a cluster with
+    # no nebula sectors leaves all three NULL.
+    nebula_type = Column(String(50), nullable=True)
+    quantum_field_strength = Column(Float, nullable=True)
+    color_hex = Column(String(20), nullable=True)
     
     # Warp stability
     warp_stability = Column(Float, nullable=False, default=1.0)  # Affects warp tunnel reliability
@@ -95,6 +109,11 @@ class Cluster(Base):
     # Relationships
     region = relationship("Region", back_populates="clusters")
     sectors = relationship("Sector", back_populates="cluster", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        # ADR-0044: cluster names are unique within a region.
+        UniqueConstraint("region_id", "name", name="uq_clusters_region_name"),
+    )
 
     def __repr__(self):
         return f"<Cluster {self.name} ({self.type.name}) - {self.sector_count} sectors>"

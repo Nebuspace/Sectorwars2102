@@ -24,6 +24,23 @@ from src.services.message_service import MessageService
 router = APIRouter(prefix="/teams", tags=["teams"])
 
 
+def _dispatch_team_founder_medal(db, leader_id, member_count) -> None:
+    """Fire the medals-lane team-founder hook
+    ``medal_service.check_and_award_team_founder_medal(db, leader_id, member_count)``
+    after a member join (diplomatic.team_founder / team_members >= 5).
+
+    Defensive: resolved by ``getattr`` (the medals lane may be absent),
+    idempotent on the medals side, and any failure is logged and swallowed — a
+    medal hiccup must NEVER break the join request."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_team_founder_medal", None)
+        if callable(hook):
+            hook(db, leader_id, member_count)
+    except Exception as e:  # never let a medal hiccup break the join
+        logger.error("Team-founder medal dispatch hook failed: %s", e)
+
+
 # Request/Response models
 class CreateTeamRequest(BaseModel):
     name: str = Field(..., min_length=3, max_length=80)
@@ -157,6 +174,7 @@ async def create_team(
 @router.get("/{team_id}", response_model=TeamResponse)
 async def get_team(
     team_id: UUID,
+    player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
     """Get team details"""
@@ -266,12 +284,19 @@ async def delete_team(
 @router.get("/{team_id}/members", response_model=List[TeamMemberResponse])
 async def get_team_members(
     team_id: UUID,
+    player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
     """Get all team members"""
     team_service = TeamService(db)
     members = team_service.get_team_members(team_id)
-    
+
+    # Roster is visible to any authenticated player, but live positions
+    # are team-internal intelligence: hide current_sector from non-members.
+    if player.team_id != team_id:
+        for member in members:
+            member["current_sector"] = None
+
     return [TeamMemberResponse(**member) for member in members]
 
 
@@ -315,10 +340,26 @@ async def join_team(
             team_id=request.team_id,
             invitation_code=request.invitation_code
         )
-        
+
         # Calculate member count
         member_count = len(team.team_members) if team.team_members else 0
-        
+
+        # Medal: diplomatic.team_founder (team_members >= 5) — awarded to the
+        # team's FOUNDER (leader_id) when the roster reaches the threshold after
+        # this join. Fires on the genuine join event. join_team has already
+        # committed its own transaction, so the medal INSERT lands in a fresh
+        # one — we commit it here (the route owns the session) so it persists;
+        # without this trailing commit the award would roll back on request
+        # teardown. Idempotent on the medals side; defensive — never breaks the
+        # join. A commit hiccup is logged and swallowed (the join is already
+        # durable from join_team's own commit).
+        _dispatch_team_founder_medal(db, team.leader_id, member_count)
+        try:
+            db.commit()
+        except Exception as e:  # pragma: no cover - persisting a medal must never break the join
+            logger.error("Team-founder medal commit failed: %s", e)
+            db.rollback()
+
         return TeamResponse(
             id=team.id,
             name=team.name,
@@ -406,7 +447,9 @@ async def update_member_role(
         
         return TeamMemberResponse(
             player_id=member.player_id,
-            nickname=member_player.nickname if member_player else "Unknown",
+            # nickname is nullable — fall back to the Player.username
+            # property (nickname -> user.username -> "Unknown Player")
+            nickname=(member_player.nickname or member_player.username) if member_player else "Unknown",
             role=member.role,
             joined_at=member.joined_at.isoformat(),
             last_active=member.last_active.isoformat() if member.last_active else None,
@@ -417,7 +460,9 @@ async def update_member_role(
             can_manage_alliances=member.can_manage_alliances,
             contribution_credits=member.contribution_credits,
             current_sector=member_player.current_sector_id if member_player else None,
-            combat_rating=member_player.combat_rating if member_player else 0.0
+            # canon gap: no per-player combat rating exists yet
+            # (Team.combat_rating is the team aggregate)
+            combat_rating=0.0
         )
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -591,6 +636,42 @@ async def get_treasury_balance(
     except Exception as e:
         logger.error(f"Failed to get treasury balance: {e}")
         raise HTTPException(status_code=500, detail="Failed to get treasury balance")
+
+
+class TreasuryTransactionResponse(BaseModel):
+    id: str
+    resource_type: str
+    kind: str
+    amount: int
+    balance_after: int
+    actor_player_id: Optional[str]
+    actor_name: Optional[str]
+    reason: Optional[str]
+    created_at: Optional[str]
+
+
+@router.get("/{team_id}/treasury/history", response_model=List[TreasuryTransactionResponse])
+async def get_treasury_history(
+    team_id: UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
+    current_player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Get the team's treasury transaction history (newest-first, paginated).
+
+    Requires team membership — the same gate as the treasury balance endpoint.
+    """
+    if not current_player.team_id or str(current_player.team_id) != str(team_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this team")
+
+    try:
+        team_service = TeamService(db)
+        history = team_service.get_treasury_history(team_id, skip=skip, limit=limit)
+        return [TreasuryTransactionResponse(**row) for row in history]
+    except Exception as e:
+        logger.error(f"Failed to get treasury history: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get treasury history")
 
 
 # Team Communication Endpoints
@@ -794,6 +875,7 @@ async def declare_war(
 async def list_wars(
     team_id: UUID,
     status: Optional[str] = Query(None, pattern="^(active|ceased)$"),
+    current_player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
     """List wars for a team, optionally filtered by status."""

@@ -3,44 +3,12 @@
 .game-layout {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* The in-#root app shell must fill the REAL viewport at any UI scale — raw
+     100vh would shrink to scale×viewport under #root's zoom, leaving an empty
+     band below + clipping content. (WO-UISCALE-VH) */
+  height: var(--svh, 100vh);
   position: relative;
   z-index: 1;
-}
-
-/* Header redesign with cockpit styling */
-.game-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--space-md) var(--space-lg);
-  height: 80px;
-  position: relative;
-  background: linear-gradient(135deg, 
-    rgba(26, 26, 34, 0.95) 0%, 
-    rgba(19, 27, 44, 0.95) 100%);
-  border-bottom: 2px solid var(--color-primary);
-  box-shadow: 
-    var(--shadow-lg),
-    0 2px 20px rgba(0, 217, 255, 0.3);
-}
-
-.game-header-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-lg);
-}
-
-.game-header-center {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-}
-
-.game-header-right {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
 }
 
 .sidebar-toggle {
@@ -74,88 +42,220 @@
   transform: scale(1.2);
 }
 
-.game-title {
-  margin: 0;
-  font-family: var(--font-heading);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  display: flex;
-  flex-direction: column;
-  line-height: 1;
+/* Edge-anchored variant — the toggle moved out of the deleted top header
+   onto the left edge of the viewport. Reuses the .sidebar-toggle chrome
+   (gradient/border/hover) and overrides only position + size so it sits
+   compactly at the viewport's left, vertically centered, above content. */
+/* Two-class selector so `position:absolute` outranks `.cockpit-btn{position:relative}`
+   (cockpit-components.css, same specificity but imported later) — otherwise the
+   toggle stays in-flow at the top of .game-content and (with main{gap:4rem})
+   pushes the viewport down ~102px, leaving an empty band above it. */
+/* Slim flush-edge tab (id=139 item 2): a 38x38 square inset 0.5rem at the
+   viewport's left-center stole scene clicks there. Shrunk to a 14x44 vertical
+   tab pinned FLUSH to the left edge (left:0) and rounded only on its inner
+   (right) corners, so its click-stealing footprint drops from 38x38=1444px^2
+   to 14x44=616px^2 and sits against the rail seam instead of over the scene. */
+.cockpit-btn.sidebar-edge-toggle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  width: 14px;
+  height: 44px;
+  min-width: 0; /* override .cockpit-btn min sizing so the slim width holds */
+  padding: 0;
+  border-radius: 0 6px 6px 0;
 }
 
-.title-main {
-  font-size: 1.5rem;
-  color: var(--color-primary);
-  text-shadow: 0 0 20px rgba(0, 217, 255, 0.8);
+.sidebar-edge-toggle:hover {
+  /* keep the base translateY centering while applying the hover scale */
+  transform: translateY(-50%) scale(1.05);
 }
 
-.title-year {
-  font-size: 0.9rem;
-  color: var(--color-secondary);
-  margin-top: -2px;
-  text-shadow: 0 0 10px rgba(255, 140, 0, 0.6);
-}
-
-/* Game container */
+/* Game container — inverted-L contract (WO-INVERTED-L).
+   Positioning context for a SINGLE full-bleed scene layer (.game-content)
+   behind everything, with an OPAQUE console (sidebar rail+MFD stacked with
+   .cockpit-console) overlaying the bottom-left. The scene shows through ONLY
+   the full-width top band + the right column → visible scene = inverted-L (⌐);
+   never behind the console (Max: "solid console block, no scene behind").
+   Magnitudes (--band-h / --console-w / the rail-vs-console split) are starting
+   values for the Orchestrator's browser-prove tuning. */
 .game-container {
-  display: flex;
+  display: block;
   flex: 1;
   overflow: hidden;
   position: relative;
+  /* Max's exact in-flight inverted-L (id=149 REDEFINED): a full-width band on
+     top, a NARROW full-height sidebar on the left below it, and the instrument
+     DECK (the 3 console monitors) as a bottom strip spanning the FULL width
+     RIGHT of the sidebar. The scene shows through the band + the right-of-sidebar
+     area ABOVE the deck = the ⌐. (% of the already scale-correct container.) */
+  --band-h: 20%;
+  /* NARROW natural sidebar (MFD-A/B), NOT half the screen.
+     WO-COCKPIT-ADJ-0628: slimmed ~12% (300-420 → 260-370) to reclaim
+     deck width. */
+  --sidebar-w: clamp(260px, 22%, 370px);
+  /* Deck height — the bottom instrument strip, right of the sidebar.
+     WO-COCKPIT-ADJ-0628: raised ~26% (38% → 48%) so the bottom panels
+     have room to surface primary actions without internal scrolling. */
+  --deck-h: 48%;
 }
 
-/* Sidebar redesign */
-.game-sidebar {
-  width: 320px;
+/* DOCKED / LANDED: the deck fills the FULL right-of-sidebar height (the trade /
+   planetary terminal needs the room); the upper-right scene collapses. GameLayout
+   sets .console-expand on the container from playerState (is_docked||is_landed). */
+.game-container.console-expand {
+  --deck-h: calc(100% - var(--band-h));
+}
+
+/* SIDEBAR — narrow, full-height left column (id=149 REDEFINED, Max's exact
+   layout). MFD-A + MFD-B at a NATURAL width (--sidebar-w, ~320–420px,
+   NOT half the screen), inset below the band and spanning to the
+   screen bottom. Opaque CRT backing. Scrolling stays INSIDE each MFD page body
+   (mfd.css), never at this level.
+   Selector is `.game-container .game-sidebar` (0,2,0) so `position:absolute` +
+   the full-height geometry beat `.hud-panel { position:relative }` (0,1,0,
+   imported AFTER game-layout.css) — otherwise the sidebar fell back to relative,
+   sized to content, rendered SHORT and left a bottom-left gap (id=149 re-prove). */
+.game-container .game-sidebar {
+  position: absolute;
+  top: var(--band-h);
+  left: 0;
+  bottom: 0;
+  width: var(--sidebar-w);
+  z-index: 20;
   transition: width 0.3s ease;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.75rem;
-  background: linear-gradient(180deg,
-    rgba(19, 27, 44, 0.98) 0%,
-    rgba(10, 10, 15, 0.98) 100%);
-  border-right: 2px solid rgba(77, 132, 253, 0.2);
-  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
-  position: relative;
-  z-index: 10;
+  /* OPAQUE CRT backing — solid, no scene behind the sidebar. */
+  background: linear-gradient(180deg, #131b2c 0%, #0f1620 100%);
+  /* WO-PANEL-3D-EDGE: right edge (viewport-facing) gets a subtle raised/proud
+     bevel — inset inner highlight on the right inner wall + existing outer
+     rightward shadow. CRT line-style, not heavy chrome. */
+  border-right: 2px solid rgba(77, 132, 253, 0.28);
+  box-shadow:
+    4px 0 24px rgba(0, 0, 0, 0.55),
+    inset -2px 0 4px rgba(255, 255, 255, 0.06);
+  box-sizing: border-box;
 }
 
-.game-sidebar.open {
-  width: 320px;
+/* The edge-toggle collapses the sidebar (width 0) to reclaim the left column
+   for scene + deck — logout/settings now live in the always-on HUD, so a clean
+   collapse is safe. The deck's left edge follows --sidebar-w. GameLayout sets
+   .console-collapsed on the container from !sidebarOpen. */
+.game-container.console-collapsed {
+  --sidebar-w: 0px;
 }
 
-.game-sidebar.closed {
-  width: 0;
-  padding: 0;
-  overflow: hidden;
+/* WINDSHIELD MINIMIZE (id=151): docked/landed shrink the band to a thin bar so
+   the station/colony console gets the reclaimed room. Shrinking --band-h raises
+   the helm + sidebar + deck; with .console-expand the deck (terminal) grows to
+   fill it. The HUD stays readable in the thin band; the toggle restores it. */
+.game-container.windshield-min {
+  /* A touch taller so the always-on HUD (top) and the centered "Expand
+     Viewport" button (id=151b) both fit in the thin band. */
+  --band-h: 60px;
 }
 
-/* Player info section */
-.player-info {
-  margin: 0;
+/* LANDED + EXPANDED (id=151c): open the windshield LARGE so the planet-surface
+   scene (the LANDMASS, not just sky) is visible — a short band crops the
+   full-bleed scene to its top (sky). The colony console is pushed down (still
+   present below). Minimized falls back to windshield-min's thin bar (console
+   gets the room). Mutually exclusive with .windshield-min (that is the
+   minimized state). [P] tune the % if Max wants more/less scene. */
+.game-container.landed-expanded {
+  --band-h: 65%;
 }
 
-.commander-name {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--color-primary);
-  margin-bottom: 0.5rem;
+/* CENTERED, prominent "Minimize Viewport" button — symmetric to
+   .windshield-expand; shown only while the viewport is EXPANDED (grounded +
+   windshieldMin=false). Anchored to the BOTTOM of the visual scene band using
+   `--band-h` (set on .game-container and inherited). Formula:
+     bottom = 100% (full .main-viewport height) − var(--band-h) + 0.7rem
+   places the button's bottom edge 0.7rem inside the band from its lower border
+   for any --band-h value (20% docked, 65% landed-expanded). */
+.windshield-minimize {
+  position: absolute;
+  bottom: calc(100% - var(--band-h) + 0.7rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 37;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.95rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  text-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
+  white-space: nowrap;
+  color: var(--color-primary, #00d9ff);
+  background: rgba(0, 12, 20, 0.82);
+  border: 1px solid rgba(0, 217, 255, 0.5);
+  border-radius: 4px;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
 }
 
-.player-stats {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+.windshield-minimize:hover {
+  background: rgba(0, 217, 255, 0.18);
+  box-shadow: 0 0 16px rgba(0, 217, 255, 0.5);
 }
 
+/* CENTERED, prominent "Expand Viewport" button shown only while MINIMIZED
+   (id=151b — Max couldn't find the corner glyph). Horizontally centered in the
+   thin band, just below the always-on HUD; a real labeled button. */
+.windshield-expand {
+  position: absolute;
+  top: 1.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 37;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.95rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-primary, #00d9ff);
+  background: rgba(0, 12, 20, 0.82);
+  border: 1px solid rgba(0, 217, 255, 0.5);
+  border-radius: 4px;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
+}
+
+.windshield-expand:hover {
+  background: rgba(0, 217, 255, 0.18);
+  box-shadow: 0 0 16px rgba(0, 217, 255, 0.5);
+}
+
+/* MFD console layout: rail fixed top, screens share the leftover height.
+   Descendant (not child) selectors so an extra provider wrapper between
+   the aside and the screens can never silently break the split. */
+.game-sidebar .route-rail {
+  flex: 0 0 auto;
+}
+
+.game-sidebar .mfd-screen {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* The rules below once styled the sidebar cards but their class names are
+   shared by ships/, planetary/, trading/ and spacedock/ components, so
+   they survive the NEON15 sidebar redesign untouched. Sidebar-private
+   rules (.game-nav, .nav-link, .location-info, genesis slots, ...) were
+   removed with the markup they served. */
 .stat-item {
   display: flex;
   justify-content: space-between;
@@ -194,23 +294,6 @@
   text-transform: uppercase;
 }
 
-.cargo-header {
-  font-size: 0.9rem;
-  color: var(--color-text-muted);
-  margin: var(--space-md) 0 var(--space-sm) 0;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.cargo-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-}
-
 .cargo-item {
   display: flex;
   justify-content: space-between;
@@ -227,9 +310,10 @@
   text-transform: capitalize;
 }
 
+/* .empty-cargo / .no-ship are NOT sidebar-private — TradingInterface and
+   ShipSelection render them — so they survive the sidebar redesign. */
 .empty-cargo,
-.no-ship,
-.unknown-sector {
+.no-ship {
   font-size: 0.9rem;
   color: var(--color-text-muted);
   text-align: center;
@@ -239,7 +323,7 @@
   letter-spacing: 0.5px;
 }
 
-/* Genesis Device Display in Sidebar */
+/* Genesis Device Display — kept: SpaceDockInterface renders these. */
 .ship-genesis {
   margin-top: var(--space-md);
   padding-top: var(--space-md);
@@ -258,123 +342,12 @@
   text-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
 }
 
-.genesis-icon {
-  font-size: 1.1em;
-  filter: drop-shadow(0 0 4px rgba(76, 175, 80, 0.6));
-}
-
-.genesis-status {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--space-sm);
-  background: rgba(76, 175, 80, 0.1);
-  border: 1px solid rgba(76, 175, 80, 0.3);
-  border-radius: 6px;
-}
-
-.genesis-slots {
-  display: flex;
-  gap: 6px;
-}
-
-.genesis-slot {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  font-size: 1rem;
-  transition: all 0.3s ease;
-}
-
-.genesis-slot.loaded {
-  background: radial-gradient(circle at 30% 30%, #4CAF50, #1B5E20);
-  box-shadow: 0 0 10px rgba(76, 175, 80, 0.6);
-  animation: genesis-glow 2s ease-in-out infinite;
-}
-
-.genesis-slot.empty {
-  background: rgba(30, 40, 50, 0.6);
-  border: 1px dashed rgba(255, 255, 255, 0.2);
-  color: rgba(255, 255, 255, 0.3);
-  font-size: 0.8rem;
-}
-
-@keyframes genesis-glow {
-  0%, 100% {
-    box-shadow: 0 0 10px rgba(76, 175, 80, 0.6);
-    transform: scale(1);
-  }
-  50% {
-    box-shadow: 0 0 18px rgba(76, 175, 80, 0.8);
-    transform: scale(1.05);
-  }
-}
-
-.genesis-count .data-readout {
-  font-size: 1rem;
-  color: var(--color-text-secondary);
-}
-
-.genesis-count .data-readout.genesis-active {
-  color: #4CAF50;
-  text-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
-  font-weight: bold;
-}
-
-.genesis-ready-indicator {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  margin-top: var(--space-sm);
-  padding: var(--space-xs) var(--space-sm);
-  background: rgba(76, 175, 80, 0.15);
-  border-radius: 4px;
-  font-size: 0.75rem;
-  color: #4CAF50;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  font-weight: bold;
-}
-
-.pulse-dot {
-  width: 8px;
-  height: 8px;
-  background: #4CAF50;
-  border-radius: 50%;
-  animation: pulse-beacon 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse-beacon {
-  0%, 100% {
-    opacity: 1;
-    box-shadow: 0 0 4px #4CAF50;
-  }
-  50% {
-    opacity: 0.5;
-    box-shadow: 0 0 12px #4CAF50, 0 0 20px rgba(76, 175, 80, 0.5);
-  }
-}
-
-/* Location info section */
-.location-info {
-  margin: 0;
-}
-
 .sector-name {
   font-size: 1rem;
   font-weight: 600;
   color: var(--color-primary);
   margin-bottom: var(--space-xs);
   text-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
-}
-
-.sector-designation {
-  font-size: 0.9rem;
-  color: var(--color-text);
-  margin-bottom: var(--space-xs);
 }
 
 .sector-type {
@@ -387,130 +360,29 @@
   display: inline-block;
 }
 
-.sector-hazard {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: var(--space-sm);
-  padding: var(--space-xs) var(--space-sm);
-  background: rgba(255, 68, 68, 0.1);
-  border: 1px solid rgba(255, 68, 68, 0.3);
-  border-radius: 4px;
-}
-
-.hazard-label {
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-}
-
-/* Navigation */
-.game-nav {
-  margin-top: auto;
-  flex-shrink: 0;
-  min-height: 0;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.nav-header {
-  font-size: 0.9rem;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-bottom: var(--space-md);
-  text-align: center;
-  border-bottom: 1px solid var(--color-border);
-  padding-bottom: var(--space-sm);
-}
-
-.nav-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  width: 100%;
-}
-
-.nav-list li {
-  width: 100%;
-  display: block;
-  margin: 0;
-  padding: 0;
-}
-
-.nav-link {
-  display: block;
-  text-decoration: none;
-  width: 100%;
-  text-align: left;
-  font-size: 0.85rem;
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
-  transition: all 0.3s ease;
-  position: relative;
-  overflow: hidden;
-  color: #a3b1cc;
-  background: rgba(26, 31, 46, 0.6);
-  border: 1px solid rgba(77, 132, 253, 0.2);
-  box-sizing: border-box;
-  margin: 0;
-  line-height: 1.4;
-  white-space: nowrap;
-  z-index: 1;
-}
-
-.nav-link:hover {
-  transform: translateX(3px);
-  background: rgba(77, 132, 253, 0.1);
-  border-color: rgba(77, 132, 253, 0.4);
-  color: #ffffff;
-  box-shadow: 0 0 10px rgba(77, 132, 253, 0.3);
-}
-
-.nav-link.active {
-  background: linear-gradient(145deg, rgba(0, 217, 255, 0.2), rgba(0, 217, 255, 0.1));
-  border-color: #00d9ff;
-  color: #00d9ff;
-  box-shadow: 0 0 15px rgba(0, 217, 255, 0.4);
-  transform: translateX(5px);
-}
-
-/* Navigation Footer - Logout button */
-.nav-footer {
-  margin-top: var(--space-lg);
-  padding-top: var(--space-md);
-  border-top: 1px solid var(--color-border);
-}
-
-.nav-footer .logout-btn {
-  background: rgba(255, 68, 68, 0.1);
-  border-color: rgba(255, 68, 68, 0.3);
-  color: #ff6b6b;
-}
-
-.nav-footer .logout-btn:hover {
-  background: rgba(255, 68, 68, 0.2);
-  border-color: rgba(255, 68, 68, 0.5);
-  color: #ff4444;
-  box-shadow: 0 0 10px rgba(255, 68, 68, 0.4);
-}
-
-/* Main content area */
+/* Main content area = the SINGLE full-bleed scene layer (WO-INVERTED-L).
+   Absolutely fills the whole container so the windshield canvas spans the full
+   width (top band) and shows through the right column; the opaque console
+   overlays the bottom-left above it. Transparent so the canvas reads through;
+   the document never scrolls (Law 2 — overflow:hidden holds). */
 .game-content {
-  flex: 1;
-  position: relative;
+  position: absolute;
+  inset: 0;
+  /* NO z-index here: a positive z-index would make .game-content a stacking
+     context and trap its descendants (console z:20, HUD z:30, edge-toggle z:40)
+     beneath the container-level .game-sidebar (z:20). With z:auto the scene's
+     own z:1 layers it behind the console while the console/HUD/toggle stay
+     coplanar with the sidebar in the root context. */
   overflow: hidden;
-  background: linear-gradient(135deg,
-    rgba(10, 10, 15, 0.95) 0%,
-    rgba(13, 13, 20, 0.95) 100%);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: transparent;
 }
 
 .main-viewport {
-  height: 100%;
+  flex: 1 1 0;
+  min-height: 0;
   width: 100%;
   padding: 0;
   overflow: hidden;
@@ -521,8 +393,9 @@
   box-sizing: border-box;
 }
 
-/* Loading overlay */
-.loading-overlay {
+/* Loading overlay — scoped name to avoid colliding with the global
+   .loading-overlay defined in first-login.css. */
+.viewport-loading-overlay {
   position: absolute;
   top: 0;
   left: 0;
@@ -562,102 +435,87 @@
   100% { transform: rotate(360deg); }
 }
 
-/* Responsive design */
-@media (max-width: 1024px) {
-  .game-sidebar {
-    width: 280px;
+/* Background-sync indicator — shown for refreshes AFTER initial load.
+   Non-blocking by design: the viewport children stay mounted underneath
+   (the full .viewport-loading-overlay is reserved for the true initial load).
+   Appears only when a refresh persists >300ms (delayed in GameLayout.tsx
+   to avoid flicker on fast scans/jumps). pointer-events: none so it can
+   never intercept cockpit controls. Same CRT idiom as .data-readout:
+   cyan glow, mono caps, pulsing beacon dot. */
+.sync-indicator {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-md);
+  z-index: 90; /* over viewport content, under the initial-load overlay (100) */
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0.25rem 0.6rem;
+  background: rgba(10, 10, 15, 0.85);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 12px rgba(0, 217, 255, 0.2);
+  pointer-events: none;
+  animation: sync-indicator-in 0.2s ease-out;
+}
+
+.sync-indicator-dot {
+  width: 7px;
+  height: 7px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  animation: sync-dot-pulse 1s ease-in-out infinite;
+}
+
+.sync-indicator-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.6);
+  line-height: 1;
+}
+
+@keyframes sync-indicator-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sync-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 4px rgba(0, 217, 255, 0.8);
   }
-  
-  .game-sidebar.open {
-    width: 280px;
-  }
-  
-  .title-main {
-    font-size: 1.3rem;
-  }
-  
-  .title-year {
-    font-size: 0.8rem;
+  50% {
+    opacity: 0.4;
+    box-shadow: 0 0 10px rgba(0, 217, 255, 0.9), 0 0 18px rgba(0, 217, 255, 0.4);
   }
 }
 
+/* Responsive design — the console width is --console-w (clamp ~half with a min
+   so controls never crush), so the old fixed sidebar-width breakpoints are gone.
+   On narrow viewports drop the console min so it doesn't swallow the scene; only
+   the edge-toggle hit-target is also tuned by viewport. */
 @media (max-width: 768px) {
-  .game-header {
-    padding: var(--space-sm) var(--space-md);
-    height: 70px;
+  .game-container {
+    /* Narrower sidebar + shorter deck so the scene/viewport keeps room. */
+    --sidebar-w: clamp(220px, 40%, 300px);
+    --deck-h: 34%;
   }
-  
-  .game-header-center {
-    display: none; /* Hide status display on mobile */
-  }
-  
-  .game-sidebar {
-    position: absolute;
-    top: 0;
-    left: 0;
-    height: 100%;
-    z-index: 10;
-    width: 300px;
-    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.5);
-  }
-  
-  .game-sidebar.closed {
-    transform: translateX(-100%);
-    width: 300px;
-  }
-  
+
   .sidebar-toggle {
     width: 45px;
     height: 45px;
   }
-  
-  .title-main {
-    font-size: 1.1rem;
-  }
-  
-  .title-year {
-    font-size: 0.7rem;
-  }
-  
-  .nav-link {
-    font-size: 0.8rem;
-    padding: var(--space-sm) var(--space-md);
-  }
 }
 
 @media (max-width: 480px) {
-  .game-header {
-    padding: var(--space-sm);
-    height: 60px;
-  }
-  
-  .game-header-left {
-    gap: var(--space-md);
-  }
-  
   .sidebar-toggle {
     width: 40px;
     height: 40px;
     font-size: 1rem;
-  }
-  
-  .title-main {
-    font-size: 1rem;
-  }
-  
-  .title-year {
-    font-size: 0.6rem;
-  }
-  
-  .game-sidebar {
-    width: 260px;
-  }
-  
-  .game-sidebar.closed {
-    width: 260px;
-  }
-  
-  .main-viewport {
-    padding: var(--space-md);
   }
 }

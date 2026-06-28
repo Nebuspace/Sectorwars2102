@@ -512,8 +512,10 @@ async def get_ships_comprehensive(
                     "id": str(ship.id),
                     "name": getattr(ship, 'name', f"Ship {ship.id}"),
                     "ship_type": ship.type.value if hasattr(ship, 'type') and ship.type else "UNKNOWN",
-                    "owner_id": str(ship.owner_id),
+                    # NPC ships have no owner — emit null, not the string "None"
+                    "owner_id": str(ship.owner_id) if ship.owner_id else None,
                     "owner_name": owner_name,
+                    "is_npc": bool(getattr(ship, 'is_npc', False)),
                     "current_sector_id": getattr(ship, 'sector_id', 1),
                     "maintenance_rating": maintenance_rating,
                     "cargo_used": cargo_used,
@@ -528,8 +530,9 @@ async def get_ships_comprehensive(
                     "id": str(ship.id),
                     "name": f"Ship {ship.id}",
                     "ship_type": "UNKNOWN",
-                    "owner_id": str(getattr(ship, 'owner_id', 'unknown')),
+                    "owner_id": str(ship.owner_id) if getattr(ship, 'owner_id', None) else None,
                     "owner_name": "Unknown",
+                    "is_npc": bool(getattr(ship, 'is_npc', False)),
                     "current_sector_id": 1,
                     "maintenance_rating": 100.0,
                     "cargo_used": 0,
@@ -679,7 +682,17 @@ async def delete_ship(
         # If this is the player's current ship, clear it
         if owner and owner.current_ship_id == ship.id:
             owner.current_ship_id = None
-        
+
+        # Reabsorb pioneer colonists before hull is removed.  Mirrors the
+        # pattern in ship_service.destroy_ship — SAVEPOINT-isolated so that a
+        # ledger hiccup cannot block the admin delete.
+        try:
+            from src.services.pioneer_service import reabsorb_on_ship_loss
+            with db.begin_nested():
+                reabsorb_on_ship_loss(db, ship.owner_id)
+        except Exception:
+            logger.exception("pioneer reabsorb on admin ship-delete failed")
+
         db.delete(ship)
         db.commit()
         
@@ -713,10 +726,14 @@ async def teleport_ship(
         old_sector = ship.sector_id
         ship.sector_id = target_sector_id
         
-        # Also update player location if this is their current ship
+        # Also update player location if this is their current ship.
+        # Keep current_region_id in sync with the target sector — teleports
+        # can cross regions, and region-filtered routes (e.g.
+        # /player/current-sector) 404 on a stale region.
         owner = db.query(Player).filter(Player.id == ship.owner_id).first()
         if owner and owner.current_ship_id == ship.id:
             owner.current_sector_id = target_sector_id
+            owner.current_region_id = sector.region_id
         
         db.commit()
         
@@ -941,45 +958,45 @@ async def get_ports_comprehensive(
         ports_data = []
         for port in ports:
             owner_name = None
-            if station.owner_id:
-                owner = db.query(Player).join(User).filter(Player.id == station.owner_id).first()
+            if port.owner_id:
+                owner = db.query(Player).join(User).filter(Player.id == port.owner_id).first()
                 if owner:
                     owner_name = owner.user.username
-            
+
             # Get sector name
             sector_name = None
-            if station.sector:
-                sector_name = station.sector.name
-            
+            if port.sector:
+                sector_name = port.sector.name
+
             # Extract information from JSONB fields with defaults
-            defenses = station.defenses or {}
-            service_prices = station.service_prices or {}
-            commodities_data = station.commodities or {}
-            
+            defenses = port.defenses or {}
+            service_prices = port.service_prices or {}
+            commodities_data = port.commodities or {}
+
             # Calculate values for frontend display
-            trade_volume = station.trade_volume or 0
+            trade_volume = port.trade_volume or 0
             # Calculate max capacity from commodities
             max_capacity = sum(commodity.get("capacity", 1000) for commodity in commodities_data.values()) if commodities_data else 10000
             security_level = defenses.get("defense_drones", 0) + defenses.get("patrol_ships", 0)
             docking_fee = service_prices.get("docking_fee", 100)
-            
+
             # Extract commodities from commodities data
             commodities = list(commodities_data.keys()) if commodities_data else []
-            
+
             ports_data.append(StationManagementResponse(
-                id=str(station.id),
-                name=station.name,
-                sector_id=str(station.sector_id),
+                id=str(port.id),
+                name=port.name,
+                sector_id=str(port.sector_id),
                 sector_name=sector_name,
-                port_class=station.station_class.name,
+                port_class=port.station_class.name,
                 trade_volume=trade_volume,
                 max_capacity=max_capacity,
                 security_level=security_level,
                 docking_fee=docking_fee,
-                owner_id=str(station.owner_id) if station.owner_id else None,
+                owner_id=str(port.owner_id) if port.owner_id else None,
                 owner_name=owner_name,
-                created_at=station.created_at.isoformat() if station.created_at else "",
-                is_operational=station.status == StationStatus.OPERATIONAL,
+                created_at=port.created_at.isoformat() if port.created_at else "",
+                is_operational=port.status == StationStatus.OPERATIONAL,
                 commodities=commodities
             ))
         
@@ -1449,15 +1466,15 @@ async def update_all_port_stock_levels(
         
         for port in ports:
             # Store original stock levels for reporting
-            original_commodities = dict(station.commodities)
-            
+            original_commodities = dict(port.commodities)
+
             # Update trading flags and stock levels
-            station.update_commodity_trading_flags()
-            station.update_commodity_stock_levels()
-            
+            port.update_commodity_trading_flags()
+            port.update_commodity_stock_levels()
+
             # Track changes
             changes = {}
-            for commodity_name, commodity_data in station.commodities.items():
+            for commodity_name, commodity_data in port.commodities.items():
                 old_quantity = original_commodities.get(commodity_name, {}).get("quantity", 0)
                 new_quantity = commodity_data.get("quantity", 0)
                 if old_quantity != new_quantity:
@@ -1465,14 +1482,14 @@ async def update_all_port_stock_levels(
                         "old_quantity": old_quantity,
                         "new_quantity": new_quantity
                     }
-            
+
             if changes:
                 updated_ports.append({
-                    "station_id": str(station.id),
-                    "station_name": station.name,
-                    "station_class": station.station_class.value,
-                    "station_type": station.type.value,
-                    "sector_id": station.sector_id,
+                    "station_id": str(port.id),
+                    "station_name": port.name,
+                    "station_class": port.station_class.value,
+                    "station_type": port.type.value,
+                    "sector_id": port.sector_id,
                     "changes": changes
                 })
         
@@ -1937,20 +1954,20 @@ async def create_port_in_sector(
             raise HTTPException(status_code=400, detail="Sector already has a port")
         
         # Import and validate enums
-        from src.models.station import Station, PortClass, PortType, StationStatus
-        
+        from src.models.station import Station, StationClass, StationType, StationStatus
+
         try:
-            port_class = PortClass(station_data.station_class)
-            port_type = PortType(station_data.type)
+            port_class = StationClass(station_data.station_class)
+            port_type = StationType(station_data.type)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid port class or type: {str(e)}")
-        
+
         # Create new port
         new_port = Station(
             name=station_data.name,
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
-            port_class=port_class,
+            station_class=port_class,
             type=port_type,
             status=StationStatus.OPERATIONAL,
             size=station_data.size,
@@ -2082,8 +2099,8 @@ async def get_sector_port(
         
         # Find the port in this sector
         station = db.query(Station).filter(Station.sector_uuid == sector.id).first()
-        
-        if not port:
+
+        if not station:
             return {"has_station": False, "station": None}
         
         # Get owner information if port is owned
@@ -2485,19 +2502,19 @@ async def update_port(
     try:
         # Find the port by ID
         station = db.query(Station).filter(Station.id == station_id).first()
-        if not port:
+        if not station:
             raise HTTPException(status_code=404, detail="Station not found")
-        
+
         # Update fields that were provided
         update_data = station_data.dict(exclude_unset=True)
-        
+
         for field, value in update_data.items():
-            if field == "station_class" and value:
-                # Convert string to enum
-                from src.models.station import PortClass
+            if field == "port_class" and value:
+                # Convert string enum name (e.g. "CLASS_1") to StationClass
+                from src.models.station import StationClass
                 try:
-                    port_class_enum = getattr(PortClass, value)
-                    setattr(port, "station_class", port_class_enum)
+                    station_class_enum = getattr(StationClass, value)
+                    setattr(station, "station_class", station_class_enum)
                 except AttributeError:
                     raise HTTPException(status_code=400, detail=f"Invalid port class: {value}")
             elif field == "owner_name":
@@ -2514,8 +2531,8 @@ async def update_port(
                     station.owner_id = None
             else:
                 # Direct field update
-                setattr(port, field, value)
-        
+                setattr(station, field, value)
+
         db.commit()
         
         return {
@@ -2539,13 +2556,13 @@ async def delete_port(
     try:
         # Find the port by ID
         station = db.query(Station).filter(Station.id == station_id).first()
-        if not port:
+        if not station:
             raise HTTPException(status_code=404, detail="Station not found")
-        
+
         station_name = station.name
-        
+
         # Delete the port
-        db.delete(port)
+        db.delete(station)
         db.commit()
         
         return {
@@ -2567,12 +2584,12 @@ async def create_port(
     """Create a new port"""
     try:
         # Import and validate enums
-        from src.models.station import Station, PortClass, PortType, StationStatus
-        
+        from src.models.station import Station, StationClass, StationType, StationStatus
+
         # Validate required fields
-        if not station_data.get("name"):
+        if not port_data.get("name"):
             raise HTTPException(status_code=400, detail="Station name is required")
-        if not station_data.get("sector_id"):
+        if not port_data.get("sector_id"):
             raise HTTPException(status_code=400, detail="Sector ID is required")
         
         # Find the sector
@@ -2600,14 +2617,14 @@ async def create_port(
         
         # Parse port class
         try:
-            port_class_str = station_data.get("station_class", "CLASS_1")
-            port_class = getattr(PortClass, port_class_str)
+            port_class_str = port_data.get("station_class", "CLASS_1")
+            port_class = getattr(StationClass, port_class_str)
         except AttributeError:
             raise HTTPException(status_code=400, detail=f"Invalid port class: {port_class_str}")
-        
+
         # Handle owner assignment
         owner_id = None
-        if station_data.get("owner_name"):
+        if port_data.get("owner_name"):
             player = db.query(Player).join(User).filter(User.username == port_data["owner_name"]).first()
             if player:
                 owner_id = player.id
@@ -2619,15 +2636,15 @@ async def create_port(
             name=port_data["name"],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
-            port_class=port_class,
-            type=PortType.TRADING,  # Default to trading
+            station_class=port_class,
+            type=StationType.TRADING,  # Default to trading
             status=StationStatus.OPERATIONAL,
-            trade_volume=station_data.get("trade_volume", 1000),
-            size=station_data.get("size", 5),
+            trade_volume=port_data.get("trade_volume", 1000),
+            size=port_data.get("size", 5),
             owner_id=owner_id,
             # Set default values for required fields
-            faction_affiliation=station_data.get("faction_affiliation", None),
-            market_volatility=station_data.get("market_volatility", 50)
+            faction_affiliation=port_data.get("faction_affiliation", None),
+            market_volatility=port_data.get("market_volatility", 50)
         )
         
         # Update commodity stock levels based on port class
@@ -2667,43 +2684,11 @@ async def get_ai_models(
 ):
     """Get AI models status for admin dashboard"""
     try:
-        # Return realistic AI models data
-        models = [
-            {
-                "id": "price-prediction-v1",
-                "name": "Commodity Price Prediction",
-                "type": "price_prediction",
-                "status": "active",
-                "accuracy": 78.5,
-                "lastTrainedAt": "2025-01-06T12:00:00Z",
-                "nextTrainingAt": "2025-01-07T12:00:00Z",
-                "predictions": 1247,
-                "avgResponseTime": 45
-            },
-            {
-                "id": "route-optimizer-v2",
-                "name": "Trade Route Optimizer",
-                "type": "route_optimization",
-                "status": "active", 
-                "accuracy": 82.1,
-                "lastTrainedAt": "2025-01-06T06:00:00Z",
-                "nextTrainingAt": "2025-01-07T06:00:00Z",
-                "predictions": 634,
-                "avgResponseTime": 120
-            },
-            {
-                "id": "behavior-analyzer-v1",
-                "name": "Player Behavior Analysis",
-                "type": "behavior_analysis",
-                "status": "training",
-                "accuracy": 71.3,
-                "lastTrainedAt": "2025-01-05T18:00:00Z",
-                "nextTrainingAt": "2025-01-06T18:00:00Z",
-                "predictions": 892,
-                "avgResponseTime": 95
-            }
-        ]
-        
+        # No AI model registry exists in the system; there is no table or
+        # service tracking trained models, accuracy, or training schedules.
+        # Return an empty list rather than fabricated model status.
+        models: List[Dict[str, Any]] = []
+
         logger.info(f"Admin {current_admin.username} requested AI models data")
         return models
         
@@ -2718,16 +2703,11 @@ async def get_ai_prediction_accuracy(
 ):
     """Get AI prediction accuracy by commodity for admin dashboard"""
     try:
-        # Generate realistic prediction accuracy data
-        commodities = [
-            {"resourceId": "food", "resourceName": "Food Rations", "accuracy": 85.2, "predictions": 324, "accurate": 276, "avgDeviation": 12.4},
-            {"resourceId": "equipment", "resourceName": "Equipment", "accuracy": 79.8, "predictions": 198, "accurate": 158, "avgDeviation": 15.6},
-            {"resourceId": "fuel", "resourceName": "Fuel Ore", "accuracy": 77.4, "predictions": 287, "accurate": 222, "avgDeviation": 18.2},
-            {"resourceId": "organics", "resourceName": "Organics", "accuracy": 82.1, "predictions": 156, "accurate": 128, "avgDeviation": 14.1},
-            {"resourceId": "energy", "resourceName": "Energy", "accuracy": 74.6, "predictions": 243, "accurate": 181, "avgDeviation": 21.3},
-            {"resourceId": "holds", "resourceName": "Holds", "accuracy": 81.9, "predictions": 89, "accurate": 73, "avgDeviation": 13.7}
-        ]
-        
+        # No prediction accuracy tracking exists; predictions are not logged
+        # or scored against outcomes anywhere in the system. Return an empty
+        # list rather than fabricated per-commodity accuracy figures.
+        commodities: List[Dict[str, Any]] = []
+
         logger.info(f"Admin {current_admin.username} requested AI prediction accuracy data")
         return commodities
         
@@ -2742,18 +2722,17 @@ async def get_ai_player_profiles(
 ):
     """Get AI player profiles for admin dashboard"""
     try:
-        # Get actual player data and generate AI profiles
+        # Get actual player data; only fields read 1:1 from Player/User rows
+        # are returned. riskTolerance/tradingPatterns/aiEngagement/
+        # profitImprovement were hash-synthesized scores with no backing data
+        # and have been removed — no AI profiling telemetry exists yet.
         players = db.query(Player).join(User).limit(10).all()
-        
+
         profiles = []
         for player in players:
             profiles.append({
                 "playerId": str(player.id),
                 "playerName": player.user.username,
-                "riskTolerance": ["conservative", "moderate", "aggressive"][hash(str(player.id)) % 3],
-                "tradingPatterns": ["bulk-trader", "arbitrage", "long-haul"][:2],
-                "aiEngagement": 65 + (hash(str(player.id)) % 35),
-                "profitImprovement": -5 + (hash(str(player.id)) % 25),
                 "lastActive": (player.last_game_login or player.user.created_at).isoformat()
             })
         
@@ -2776,17 +2755,26 @@ async def get_ai_system_metrics(
         day_ago = datetime.utcnow() - timedelta(days=1)
         active_players = db.query(Player).filter(Player.last_game_login >= day_ago).count()
         
-        # Calculate AI metrics
-        ai_active_profiles = min(active_players, int(total_players * 0.3))  # 30% use AI
-        
+        # Honest metrics: no AI prediction engine, model registry, or job queue
+        # exists yet — only real ARIA interaction counts are reportable.
+        # (De-mocked: the previous hardcoded 3247/79.8/67.3/12/45 figures were
+        # fabrications presented as live telemetry.)
+        total_aria_interactions = db.query(
+            func.coalesce(func.sum(Player.aria_total_interactions), 0)
+        ).scalar() or 0
+        aria_active_profiles = db.query(Player).filter(
+            Player.aria_total_interactions > 0
+        ).count()
+
         metrics = {
-            "totalPredictions": 3247,
-            "avgAccuracy": 79.8,
-            "activeProfiles": ai_active_profiles,
-            "recommendationAcceptance": 67.3,
-            "modelHealth": "healthy",
-            "queuedJobs": 12,
-            "processingRate": 45
+            "totalPredictions": None,   # no prediction engine exists
+            "avgAccuracy": None,        # no model accuracy telemetry exists
+            "activeProfiles": aria_active_profiles,  # players with ARIA activity
+            "recommendationAcceptance": None,  # no recommendation telemetry exists
+            "modelHealth": None,        # no model registry exists
+            "queuedJobs": None,         # no job queue exists
+            "processingRate": None,     # no processing pipeline exists
+            "totalAriaInteractions": int(total_aria_interactions),
         }
         
         logger.info(f"Admin {current_admin.username} requested AI system metrics")
@@ -2804,22 +2792,17 @@ async def ai_model_action(
     db: Session = Depends(get_db)
 ):
     """Take action on AI model (start, stop, train)"""
-    try:
-        if action not in ["start", "stop", "train"]:
-            raise HTTPException(status_code=400, detail="Invalid action")
-            
-        logger.info(f"Admin {current_admin.username} executed {action} on AI model {model_id}")
-        
-        return {
-            "message": f"Successfully executed {action} on model {model_id}",
-            "model_id": model_id,
-            "action": action,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error executing AI model action: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to execute AI model action: {str(e)}")
+    if action not in ["start", "stop", "train"]:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+    # No AI model registry exists in the system (see GET /ai/models), so
+    # there is nothing to start/stop/train. The previous implementation
+    # returned a fabricated success message without doing anything.
+    logger.info(f"Admin {current_admin.username} attempted {action} on AI model {model_id} (not implemented)")
+    raise HTTPException(
+        status_code=501,
+        detail="No AI model registry exists; model actions are not implemented"
+    )
 
 @router.get("/ai/predictions", response_model=List[Dict[str, Any]])
 async def get_ai_predictions(
@@ -2830,56 +2813,15 @@ async def get_ai_predictions(
 ):
     """Get AI price predictions for admin dashboard"""
     try:
-        # Generate realistic prediction data
-        predictions = [
-            {
-                "id": "pred-1",
-                "resourceId": "food_rations",
-                "resourceName": "Food Rations",
-                "sectorId": "42",
-                "sectorName": "Nexus Station",
-                "currentPrice": 85.50,
-                "predictedPrice": 92.30,
-                "confidence": 78,
-                "timeframe": timeframe,
-                "factors": ["High demand", "Low supply", "Trade route disruption"],
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "id": "pred-2",
-                "resourceId": "equipment",
-                "resourceName": "Equipment",
-                "sectorId": "15",
-                "sectorName": "Industrial Hub",
-                "currentPrice": 235.80,
-                "predictedPrice": 221.45,
-                "confidence": 82,
-                "timeframe": timeframe,
-                "factors": ["Manufacturing surplus", "Trade competition"],
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "id": "pred-3",
-                "resourceId": "fuel_ore",
-                "resourceName": "Fuel Ore",
-                "sectorId": "8",
-                "sectorName": "Mining Colony",
-                "currentPrice": 156.20,
-                "predictedPrice": 164.75,
-                "confidence": 71,
-                "timeframe": timeframe,
-                "factors": ["Mining strikes", "Increased transport costs"],
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        ]
-        
-        # Filter by resource if specified
-        if resource and resource != "all":
-            predictions = [p for p in predictions if p["resourceId"] == resource]
-        
+        # No price prediction engine exists; nothing in the system generates,
+        # stores, or scores price forecasts (see GET /ai/models — there is no
+        # model registry either). Return an empty list rather than fabricated
+        # predictions.
+        predictions: List[Dict[str, Any]] = []
+
         logger.info(f"Admin {current_admin.username} requested AI predictions")
         return predictions
-        
+
     except Exception as e:
         logger.error(f"Error getting AI predictions: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI predictions: {str(e)}")
@@ -2892,43 +2834,18 @@ async def get_ai_route_optimization_data(
 ):
     """Get AI route optimization data for admin dashboard"""
     try:
-        # Generate realistic route optimization data
+        # No route optimization engine exists; nothing in the system computes,
+        # tracks, or stores optimized routes or their outcomes. Return an
+        # empty structure (with null stats — zeros would themselves be
+        # fabricated metrics) rather than invented routes.
         data = {
-            "active_optimizations": [
-                {
-                    "id": "route-1",
-                    "playerId": "player-123",
-                    "playerName": "TraderOne",
-                    "startSector": "Nexus Station",
-                    "route": ["Nexus Station", "Trade Hub Alpha", "Mining Outpost", "Industrial Complex"],
-                    "estimatedProfit": 45680,
-                    "estimatedTime": 4.5,
-                    "efficiency": 89,
-                    "status": "in_progress"
-                },
-                {
-                    "id": "route-2",
-                    "playerId": "player-456",
-                    "playerName": "CargoMaster",
-                    "startSector": "Frontier Base",
-                    "route": ["Frontier Base", "Research Station", "Crystal Mines"],
-                    "estimatedProfit": 23450,
-                    "estimatedTime": 2.8,
-                    "efficiency": 76,
-                    "status": "completed"
-                }
-            ],
-            "optimization_stats": {
-                "total_routes_optimized": 1247,
-                "avg_efficiency_improvement": 23.5,
-                "avg_profit_increase": 18.2,
-                "active_optimizations": 12
-            }
+            "active_optimizations": [],
+            "optimization_stats": None
         }
-        
+
         logger.info(f"Admin {current_admin.username} requested AI route optimization data")
         return data
-        
+
     except Exception as e:
         logger.error(f"Error getting AI route optimization data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI route optimization data: {str(e)}")
@@ -2940,58 +2857,21 @@ async def get_ai_behavior_analytics(
 ):
     """Get AI behavior analytics data for admin dashboard"""
     try:
-        # Get actual player data for realistic analytics
-        total_players = db.query(Player).count()
-        active_players = db.query(Player).filter(Player.last_game_login >= datetime.utcnow() - timedelta(days=7)).count()
-        
+        # No behavior analytics pipeline exists; player trading patterns,
+        # AI engagement, and insights are not classified or tracked anywhere
+        # in the system. The previous payload apportioned the real player
+        # count across invented pattern buckets with fabricated percentages.
+        # Return an empty structure (null metrics — zeros would themselves be
+        # fabricated) rather than synthesized analytics.
         data = {
-            "player_patterns": [
-                {
-                    "pattern": "Bulk Traders",
-                    "count": int(total_players * 0.35),
-                    "description": "Players who focus on high-volume, low-margin trades",
-                    "avgProfit": 15.2,
-                    "aiEngagement": 68
-                },
-                {
-                    "pattern": "Arbitrage Specialists",
-                    "count": int(total_players * 0.25),
-                    "description": "Players who exploit price differences between sectors",
-                    "avgProfit": 28.7,
-                    "aiEngagement": 84
-                },
-                {
-                    "pattern": "Long-haul Traders",
-                    "count": int(total_players * 0.20),
-                    "description": "Players who make extended trading routes",
-                    "avgProfit": 41.3,
-                    "aiEngagement": 72
-                },
-                {
-                    "pattern": "Casual Traders",
-                    "count": int(total_players * 0.20),
-                    "description": "Players with sporadic trading activity",
-                    "avgProfit": 8.9,
-                    "aiEngagement": 45
-                }
-            ],
-            "engagement_metrics": {
-                "total_analyzed_players": total_players,
-                "active_ai_users": int(active_players * 0.3),
-                "avg_ai_engagement": 67.2,
-                "patterns_identified": 847
-            },
-            "recent_insights": [
-                "Bulk traders show 23% higher AI acceptance rate",
-                "Arbitrage specialists prefer minimal AI intervention",
-                "Long-haul traders benefit most from route optimization",
-                "New players show 40% higher AI engagement"
-            ]
+            "player_patterns": [],
+            "engagement_metrics": None,
+            "recent_insights": []
         }
-        
+
         logger.info(f"Admin {current_admin.username} requested AI behavior analytics")
         return data
-        
+
     except Exception as e:
         logger.error(f"Error getting AI behavior analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get AI behavior analytics: {str(e)}")

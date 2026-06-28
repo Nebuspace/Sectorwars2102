@@ -1,0 +1,159 @@
+/* ============================================
+   SOLAR SYSTEM VIEWSCREEN - Cockpit windshield
+   Container-sized canvas; fills the windshield
+   band (.cockpit-windshield) edge to edge.
+   ============================================ */
+
+.solar-viewscreen-container {
+  position: relative;
+  width: 100%;
+  /* Clip the canvas to the VISIBLE scene area only: the console (deck) overlays
+     the bottom portion of the full-bleed windshield. Using the inherited
+     --deck-h variable (defined on .game-container) ensures the canvas height
+     tracks the visible area in every mode — flight (52%), docked/landed expanded
+     (20%), minimized (60px). Without this, getBoundingClientRect() returns the
+     FULL windshield height (900px at 1440×900), and starY = h*0.5 lands at the
+     deck boundary rather than the scene centre. */
+  height: calc(100% - var(--deck-h));
+  overflow: hidden;
+  background: #040711;
+}
+
+.solar-viewscreen-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: default;
+  /* The .windshield-frame sibling overlay carries z-index: 0, which stacks ABOVE
+     z-auto in-flow content and buries the canvas paint entirely. Lift the
+     canvas into its own stacking position (below the HUD overlays, above the
+     frame's vignette). Without this the scene renders but never composites. */
+  position: relative;
+  z-index: 2;
+}
+
+/* When hosting the legacy SectorViewport fallback, let it fill the band
+   the same way cockpit.css expects (.sector-viewport-container rules in
+   cockpit.css still apply since the class names are unchanged). */
+.solar-viewscreen-container .sector-viewport-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* ============================================
+   CELESTIAL BODY POPUP — HUD-glass info card.
+   Absolutely positioned inside the windshield
+   band (the component clamps left/top so the
+   card never escapes it); same frosted glass
+   language as the .hud-overlay chips.
+   ============================================ */
+
+.ssv-popup {
+  position: absolute;
+  /* Above the HUD chips (z 20) — those are pointer-events:none glass */
+  z-index: 25;
+  width: 232px;
+  box-sizing: border-box;
+  pointer-events: auto;
+  background: rgba(0, 10, 16, 0.38);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 4px;
+  backdrop-filter: blur(3px);
+  box-shadow:
+    0 0 14px rgba(0, 217, 255, 0.12),
+    inset 0 1px 0 rgba(0, 217, 255, 0.08);
+  padding: 0.6rem 0.75rem;
+  font-family: 'Courier New', monospace;
+  color: #00d9ff;
+}
+
+.ssv-popup-close {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: rgba(0, 10, 16, 0.5);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 2px;
+  color: rgba(0, 217, 255, 0.85);
+  font-family: 'Courier New', monospace;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.ssv-popup-close:hover {
+  background: rgba(0, 217, 255, 0.18);
+  color: #00d9ff;
+}
+
+.ssv-popup-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 10px rgba(0, 217, 255, 0.7);
+  padding-right: 18px; /* clear the ✕ tab */
+  margin-bottom: 0.25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ssv-popup-line {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: rgba(0, 217, 255, 0.8);
+  margin-top: 2px;
+}
+
+/* Composer-only background worlds read in the procedural grey */
+.ssv-popup-title.proc,
+.ssv-popup-line.proc {
+  color: rgba(158, 150, 184, 0.9);
+  text-shadow: 0 0 8px rgba(158, 150, 184, 0.4);
+}
+
+.ssv-popup-status {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: rgba(158, 150, 184, 0.7);
+  margin-top: 0.4rem;
+}
+
+.ssv-popup-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.ssv-popup-action {
+  display: block;
+  margin-top: 0.5rem;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+  background: rgba(0, 217, 255, 0.12);
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 3px;
+  color: #00d9ff;
+  font-family: 'Courier New', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.6);
+}
+
+.ssv-popup-action:hover {
+  background: rgba(0, 217, 255, 0.22);
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.25);
+}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { rankingAPI } from '../../services/api';
 import './ranking.css';
 
@@ -23,39 +23,54 @@ const CATEGORY_LABELS: Record<Category, { label: string; icon: string; scoreLabe
   rank_points: { label: 'Rank Points', icon: '\u2B50', scoreLabel: 'Points' },
   combat:      { label: 'Combat',      icon: '\u2694\uFE0F', scoreLabel: 'Victories' },
   trading:     { label: 'Trading',     icon: '\uD83D\uDCB0', scoreLabel: 'Volume' },
-  exploration: { label: 'Exploration', icon: '\uD83C\uDF0C', scoreLabel: 'Activity' },
+  exploration: { label: 'ARIA Activity', icon: '\uD83C\uDF0C', scoreLabel: 'Activity' },
 };
 
 const CATEGORIES: Category[] = ['rank_points', 'combat', 'trading', 'exploration'];
 
 interface LeaderboardProps {
   category?: Category;
+  /** The viewing player's id (Player.id), used to highlight their row. */
+  playerId?: string | null;
 }
 
-const Leaderboard: React.FC<LeaderboardProps> = ({ category: initialCategory = 'rank_points' }) => {
+const Leaderboard: React.FC<LeaderboardProps> = ({
+  category: initialCategory = 'rank_points',
+  playerId,
+}) => {
   const [activeCategory, setActiveCategory] = useState<Category>(initialCategory);
   const [data, setData] = useState<LeaderboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const currentPlayerId = localStorage.getItem('playerId');
-
-  const fetchLeaderboard = useCallback(async (cat: Category) => {
-    try {
-      setLoading(true);
-      setError(null);
-      const result = await rankingAPI.getPublicLeaderboard(cat, 20);
-      setData(result);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load leaderboard');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const currentPlayerId = playerId ?? localStorage.getItem('playerId');
 
   useEffect(() => {
-    fetchLeaderboard(activeCategory);
-  }, [activeCategory, fetchLeaderboard]);
+    // Stale-response guard: rapid tab switches can resolve out of order,
+    // so drop any response that lands after this effect is cleaned up or
+    // that echoes a category other than the active one.
+    let cancelled = false;
+
+    const fetchLeaderboard = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const result: LeaderboardData = await rankingAPI.getPublicLeaderboard(activeCategory, 20);
+        if (cancelled || result.category !== activeCategory) return;
+        setData(result);
+        setLoading(false);
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Failed to load leaderboard');
+        setLoading(false);
+      }
+    };
+
+    fetchLeaderboard();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCategory]);
 
   const handleCategoryChange = (cat: Category) => {
     setActiveCategory(cat);
@@ -126,7 +141,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({ category: initialCategory = '
             </tbody>
           </table>
 
-          {data.player_position !== null && !data.entries.some((e) => e.player_id === currentPlayerId) && (
+          {data.player_position != null && !data.entries.some((e) => e.position === data.player_position) && (
             <div className="leaderboard-your-rank">
               Your position: <strong>#{data.player_position}</strong> of {data.total_players}
             </div>

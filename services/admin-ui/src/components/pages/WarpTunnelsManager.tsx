@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
 import PageHeader from '../ui/PageHeader';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './pages.css';
 
 interface WarpTunnel {
@@ -24,6 +25,8 @@ interface WarpTunnel {
 }
 
 const WarpTunnelsManager: React.FC = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [warpTunnels, setWarpTunnels] = useState<WarpTunnel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,26 +71,37 @@ const WarpTunnelsManager: React.FC = () => {
   };
 
   const handleMaintenanceToggle = async (tunnel: WarpTunnel) => {
-    const newStatus = !tunnel.is_active;
-    const action = newStatus ? 'reactivate' : 'put into maintenance mode';
-    if (!confirm(`Are you sure you want to ${action} tunnel "${tunnel.name}"?`)) {
+    const newActive = !tunnel.is_active;
+    const action = newActive ? 'reactivate' : 'put into maintenance mode';
+    if (!(await confirm({
+      title: 'Update Tunnel Status',
+      message: `Are you sure you want to ${action} tunnel "${tunnel.name}"?`,
+      confirmLabel: newActive ? 'Reactivate' : 'Set Maintenance',
+    }))) {
       return;
     }
 
     try {
-      await api.patch(`/api/v1/admin/warp-tunnels/${tunnel.id}`, {
-        is_active: newStatus
+      // Backend PUT /warp-tunnels/{id} takes a `status` enum, not `is_active`.
+      // ACTIVE = operational; MAINTENANCE = temporarily offline.
+      await api.put(`/api/v1/admin/warp-tunnels/${tunnel.id}`, {
+        status: newActive ? 'ACTIVE' : 'MAINTENANCE'
       });
       setWarpTunnels(warpTunnels.map(t =>
-        t.id === tunnel.id ? { ...t, is_active: newStatus } : t
+        t.id === tunnel.id ? { ...t, is_active: newActive, status: newActive ? 'ACTIVE' : 'MAINTENANCE' } : t
       ));
     } catch (err: any) {
-      alert(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
     }
   };
 
   const handleDeleteTunnel = async (tunnel: WarpTunnel) => {
-    if (!confirm(`Are you sure you want to delete tunnel "${tunnel.name}"? This action cannot be undone.`)) {
+    if (!(await confirm({
+      title: 'Delete Tunnel',
+      message: `Are you sure you want to delete tunnel "${tunnel.name}"? This action cannot be undone.`,
+      danger: true,
+      confirmLabel: 'Delete',
+    }))) {
       return;
     }
 
@@ -95,7 +109,7 @@ const WarpTunnelsManager: React.FC = () => {
       await api.delete(`/api/v1/admin/warp-tunnels/${tunnel.id}`);
       setWarpTunnels(warpTunnels.filter(t => t.id !== tunnel.id));
     } catch (err: any) {
-      alert(`Failed to delete tunnel: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Failed to delete tunnel: ${err.response?.data?.detail || err.message}`);
     }
   };
 
@@ -104,17 +118,30 @@ const WarpTunnelsManager: React.FC = () => {
     setSelectedTunnel(null);
   };
 
-  const handleTunnelSaved = async (updatedData: Partial<WarpTunnel>) => {
+  const handleTunnelSaved = async (updatedData: Partial<WarpTunnel> & { is_active?: boolean; max_ship_size?: string }) => {
     if (!selectedTunnel) return;
     setSaving(true);
     try {
-      await api.patch(`/api/v1/admin/warp-tunnels/${selectedTunnel.id}`, updatedData);
+      // Translate the form fields to the backend PUT contract
+      // (WarpTunnelUpdateRequest): it accepts stability, energy_cost,
+      // is_bidirectional and a `status` enum — but not `is_active` or
+      // `max_ship_size`, so we map/drop those before sending.
+      // Drop fields the backend PUT doesn't accept: is_active (mapped to status
+      // enum), max_ship_size (not in WarpTunnelUpdateRequest). The same stripped
+      // object is used for both the payload and the optimistic state merge so
+      // max_ship_size is never transiently shown as saved.
+      const { is_active, max_ship_size: _dropSize, ...rest } = updatedData;
+      const payload: Record<string, unknown> = { ...rest };
+      if (is_active !== undefined) {
+        payload.status = is_active ? 'ACTIVE' : 'MAINTENANCE';
+      }
+      await api.put(`/api/v1/admin/warp-tunnels/${selectedTunnel.id}`, payload);
       setWarpTunnels(warpTunnels.map(t =>
-        t.id === selectedTunnel.id ? { ...t, ...updatedData } : t
+        t.id === selectedTunnel.id ? { ...t, ...rest, ...(is_active !== undefined ? { is_active } : {}) } : t
       ));
       closeModal();
     } catch (err: any) {
-      alert(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Failed to update tunnel: ${err.response?.data?.detail || err.message}`);
     } finally {
       setSaving(false);
     }
@@ -444,19 +471,14 @@ const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose
 
             <div className="form-group">
               <label>Max Ship Size</label>
-              {isReadOnly ? (
-                <input type="text" value={formData.max_ship_size} readOnly />
-              ) : (
-                <select
-                  value={formData.max_ship_size}
-                  onChange={(e) => setFormData({ ...formData, max_ship_size: e.target.value })}
-                >
-                  <option value="Small">Small</option>
-                  <option value="Medium">Medium</option>
-                  <option value="Large">Large</option>
-                  <option value="Capital">Capital</option>
-                </select>
-              )}
+              {/* Always read-only: backend WarpTunnelUpdateRequest has no max_ship_size field */}
+              <input
+                type="text"
+                value={formData.max_ship_size}
+                readOnly
+                disabled
+                title="Read-only — backend does not accept this field yet"
+              />
             </div>
 
             <div className="form-group">

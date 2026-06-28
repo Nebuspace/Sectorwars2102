@@ -1,0 +1,69 @@
+/* ============================================
+   STATION IDENTITY — shared class badge + marks
+   Accent flows in via --sc-accent (set inline by
+   StationClassBadge from STATION_CLASSES metadata).
+   ============================================ */
+
+.station-class-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.12rem 0.5rem 0.12rem 0.35rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  width: fit-content;
+  color: var(--sc-accent, #00d9ff);
+  background: rgba(8, 12, 22, 0.55);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.station-class-badge.size-md {
+  gap: 0.35rem;
+  padding: 0.18rem 0.6rem 0.18rem 0.4rem;
+  font-size: 0.75rem;
+}
+
+.station-class-badge-name {
+  line-height: 1.2;
+}
+
+/* The bare mark (used standalone in compact rows too) */
+.station-class-mark {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: -0.15em;
+}
+
+.station-class-badge .station-class-mark {
+  vertical-align: middle;
+  filter: drop-shadow(0 0 3px currentColor);
+}
+
+/* Premium-class marks breathe softly */
+.station-class-mark.mark-blackhole,
+.station-class-mark.mark-nova {
+  animation: sc-mark-breathe 3s ease-in-out infinite;
+}
+
+@keyframes sc-mark-breathe {
+  0%, 100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .station-class-mark.mark-blackhole,
+  .station-class-mark.mark-nova {
+    animation: none;
+    opacity: 1;
+  }
+}

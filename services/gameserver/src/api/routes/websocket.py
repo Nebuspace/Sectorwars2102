@@ -75,6 +75,8 @@ async def websocket_endpoint(
             "username": user.username,
             "player_id": str(player.id),
             "current_sector": player.current_sector_id,
+            # WO-DBB-RT4: pass the region so connect() joins the region room (broadcast_to_region).
+            "current_region_id": str(player.current_region_id) if getattr(player, "current_region_id", None) else None,
             "team_id": str(player.team_id) if player.team_id else None,
             "credits": player.credits,
             "turns": player.turns,
@@ -241,7 +243,7 @@ async def broadcast_message(
     logger.info(
         "ADMIN_BROADCAST: admin_id=%s target=%s:%s content_length=%d",
         current_user.id, target_type, target_id or "all",
-        len(message_data.get("content", "")),
+        len(request.content),
     )
 
     return {"message": "Broadcast sent successfully", "target_type": target_type, "target_id": target_id}
@@ -275,45 +277,3 @@ async def get_team_players(
         "players": players,
         "count": len(players)
     }
-
-
-# Helper function to notify sector changes from other parts of the application
-async def notify_player_moved(user_id: str, new_sector_id: int):
-    """Helper function to notify about player movement from other API endpoints"""
-    await connection_manager.update_user_location(user_id, new_sector_id)
-
-
-# Helper function to broadcast trading activities
-async def notify_trade_completed(station_id: str, trade_data: dict):
-    """Helper function to notify about completed trades"""
-    # Get the sector for this port
-    # You would need to implement this based on your data model
-    # For now, we'll broadcast globally
-    message = {
-        "type": "trade_completed",
-        "station_id": station_id,
-        "trade_data": trade_data,
-        "timestamp": trade_data.get("timestamp", "")
-    }
-    await connection_manager.broadcast_global(message)
-
-
-# Helper function to broadcast combat events
-async def notify_combat_event(sector_id: int, combat_data: dict):
-    """Helper function to notify about combat events"""
-    message = {
-        "type": "combat_event",
-        "combat_data": combat_data,
-        "timestamp": combat_data.get("timestamp", "")
-    }
-    await connection_manager.broadcast_to_sector(sector_id, message)
-
-
-# Helper function to send personal notifications
-async def send_personal_notification(user_id: str, notification_data: dict):
-    """Helper function to send personal notifications to a specific user"""
-    message = {
-        "type": "notification",
-        **notification_data
-    }
-    await connection_manager.send_personal_message(user_id, message)

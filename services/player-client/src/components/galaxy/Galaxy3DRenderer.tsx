@@ -77,7 +77,11 @@ function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => 
           radiation_level: 0,
           resources: {},
           players_present: [],
-          special_features: []
+          special_features: [],
+          // Neighbour anomaly markers (WO-SFM): the move option carries the
+          // formations that include this sector, identity withheld until
+          // discovered. May be absent on older API responses → default [].
+          special_formations: warp.special_formations ?? []
         });
       }
     });
@@ -93,7 +97,8 @@ function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => 
           radiation_level: 0,
           resources: {},
           players_present: [],
-          special_features: []
+          special_features: [],
+          special_formations: tunnel.special_formations ?? []
         });
       }
     });
@@ -143,12 +148,24 @@ function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => 
     }
   }, [currentSector, sectorPositions, camera]);
 
-  if (isLoading || !sectors) {
+  // Only show the placeholder while sector data is genuinely missing (the
+  // true first load). Never gate on the global loading flag: tearing down
+  // the Three.js scene on a background refresh destroys canvas/camera
+  // state. Once sectors exist the scene stays mounted, period.
+  if (!sectors || sectors.length === 0) {
+    // isLoading is initial-hydration-only now, so it distinguishes "still
+    // loading" from "loaded but genuinely empty" (e.g. moves fetch failed).
     return (
       <Html center>
         <div className="loading-container">
-          <div className="loading-spinner"></div>
-          <div>Loading Galaxy...</div>
+          {isLoading ? (
+            <>
+              <div className="loading-spinner"></div>
+              <div>Loading Galaxy...</div>
+            </>
+          ) : (
+            <div>NO CHART DATA — sector telemetry unavailable</div>
+          )}
         </div>
       </Html>
     );

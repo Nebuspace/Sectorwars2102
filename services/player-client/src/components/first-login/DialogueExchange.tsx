@@ -182,8 +182,22 @@ const DialogueExchange: React.FC = () => {
               type="submit"
               className="submit-response"
               disabled={!response.trim() || isLoading || !!dialogueOutcome}
+              title={
+                !response.trim()
+                  ? 'Type a response first'
+                  : isLoading
+                    ? 'Sending...'
+                    : 'Submit response (Enter)'
+              }
             >
-              {isLoading ? 'Sending...' : 'Submit Response'}
+              {isLoading ? (
+                <>
+                  <span className="submit-spinner" aria-hidden="true"></span>
+                  Sending...
+                </>
+              ) : (
+                'Submit Response'
+              )}
             </button>
           </div>
         </form>

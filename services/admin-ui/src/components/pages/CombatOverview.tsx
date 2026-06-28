@@ -3,21 +3,15 @@ import PageHeader from '../ui/PageHeader';
 import { CombatActivityChart } from '../charts/CombatActivityChart';
 import { CombatFeed } from '../combat/CombatFeed';
 import { DisputePanel } from '../combat/DisputePanel';
+import DroneOperationsTab from '../combat/DroneOperationsTab';
+import BalanceAnalytics from '../combat/BalanceAnalytics';
 import { api } from '../../utils/auth';
 import { useCombatUpdates } from '../../contexts/WebSocketContext';
 import './combat-overview.css';
 
-interface CombatEvent {
-  id: string;
-  timestamp: string;
-  type: 'player_vs_player' | 'player_vs_npc' | 'fleet_battle';
-  attacker: string;
-  defender: string;
-  winner?: string;
-  damageDealt: number;
-  disputed?: boolean;
-  sector: string;
-}
+// CombatEvent local type removed (NH10): it was a stale flat shape that did not
+// match the nested backend payload (CombatFeedItem). combatEvents is now any[]
+// — CombatFeed accepts any[] and reads the payload defensively.
 
 interface CombatStats {
   timestamp: string | null;
@@ -58,18 +52,21 @@ interface CombatRanking {
   totalDamage: number;
 }
 
+// Matches backend CombatDisputeResponse in admin_combat.py
 interface CombatDispute {
   id: string;
-  combatEventId: string;
-  reporterId: string;
-  reporterName: string;
-  reason: string;
-  status: 'pending' | 'resolved' | 'rejected';
-  createdAt: string;
+  combat_id: string | null;
+  type: string;
+  severity: string;
+  timestamp: string;
+  description: string;
+  participants: Record<string, unknown>;
+  status: string;
+  recommended_action: string;
 }
 
 export const CombatOverview: React.FC = () => {
-  const [combatEvents, setCombatEvents] = useState<CombatEvent[]>([]);
+  const [combatEvents, setCombatEvents] = useState<any[]>([]);
   const [combatStats, setCombatStats] = useState<CombatStats | null>(null);
   const [rankings, setRankings] = useState<CombatRanking[]>([]);
   const [disputes, setDisputes] = useState<CombatDispute[]>([]);
@@ -115,7 +112,7 @@ export const CombatOverview: React.FC = () => {
 
     // Process combat events
     if (eventsRes.status === 'fulfilled') {
-      setCombatEvents(eventsRes.value.data as CombatEvent[]);
+      setCombatEvents(eventsRes.value.data);
     } else {
       setCombatEvents([]);
       errors.push('Combat feed unavailable');
@@ -279,6 +276,12 @@ export const CombatOverview: React.FC = () => {
     );
   }
 
+  const activeBattles = combatStats?.active_combats?.total ?? 0;
+  const needingIntervention = combatStats?.active_combats?.needing_intervention ?? 0;
+  // Red alarm is for "needs attention" ONLY. A quiet battlefield (0 active
+  // battles) or live battles with nothing needing intervention render neutral.
+  const activeBattlesAlarm = activeBattles > 0 && needingIntervention > 0;
+
   return (
     <div className="combat-overview">
       <PageHeader title="Combat Overview" />
@@ -305,41 +308,46 @@ export const CombatOverview: React.FC = () => {
       )}
       
       {/* Combat Statistics Dashboard */}
+      {/* Page-unique .combat-stat-* class names: generic .stat-card/.stat-value
+          names get clobbered by team-management-override.css's unscoped
+          !important globals, which nullified the alarm styling. */}
       <div className="combat-stats-grid">
-        <div className="stat-card primary">
+        {/* Alarm styling only when there are live battles needing intervention;
+            a quiet battlefield is neutral, not red. */}
+        <div className={`combat-stat-card${activeBattlesAlarm ? ' alarm' : ''}`}>
           <h3>Active Battles</h3>
-          <div className="stat-value">{combatStats?.active_combats?.total?.toLocaleString() || 0}</div>
-          <div className="stat-change">{combatStats?.active_combats?.needing_intervention || 0} need intervention</div>
+          <div className="combat-stat-value">{activeBattles.toLocaleString()}</div>
+          <div className="combat-stat-change">{needingIntervention.toLocaleString()} need intervention</div>
         </div>
-        
-        <div className="stat-card">
+
+        <div className="combat-stat-card">
           <h3>24h Battles</h3>
-          <div className="stat-value">{combatStats?.balance_summary?.total_combats_24h?.toLocaleString() || 0}</div>
-          <div className="stat-label">battles today</div>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.total_combats_24h?.toLocaleString() || 0}</div>
+          <div className="combat-stat-label">battles today</div>
         </div>
-        
-        <div className="stat-card">
+
+        <div className="combat-stat-card">
           <h3>Balance Score</h3>
-          <div className="stat-value">{combatStats?.balance_summary?.score?.toFixed(0) || 0}%</div>
-          <div className="stat-label">system balance</div>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.score?.toFixed(0) || 0}%</div>
+          <div className="combat-stat-label">system balance</div>
         </div>
-        
-        <div className="stat-card">
+
+        <div className="combat-stat-card">
           <h3>Total Disputes</h3>
-          <div className="stat-value">{combatStats?.dispute_summary?.total_disputes?.toLocaleString() || 0}</div>
-          <div className="stat-label">pending review</div>
+          <div className="combat-stat-value">{combatStats?.dispute_summary?.total_disputes?.toLocaleString() || 0}</div>
+          <div className="combat-stat-label">pending review</div>
         </div>
-        
-        <div className="stat-card highlight">
+
+        <div className="combat-stat-card highlight">
           <h3>Critical Disputes</h3>
-          <div className="stat-value">{combatStats?.dispute_summary?.by_severity?.critical || 0}</div>
-          <div className="stat-label">need attention</div>
+          <div className="combat-stat-value">{combatStats?.dispute_summary?.by_severity?.critical || 0}</div>
+          <div className="combat-stat-label">need attention</div>
         </div>
-        
-        <div className="stat-card highlight">
+
+        <div className="combat-stat-card highlight">
           <h3>Balance Outliers</h3>
-          <div className="stat-value">{combatStats?.balance_summary?.outliers_count || 0}</div>
-          <div className="stat-label">imbalanced</div>
+          <div className="combat-stat-value">{combatStats?.balance_summary?.outliers_count || 0}</div>
+          <div className="combat-stat-label">imbalanced</div>
         </div>
       </div>
 
@@ -476,6 +484,18 @@ export const CombatOverview: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Drone Operations command center */}
+      <section className="drone-operations-section">
+        <h2 className="drone-operations-section-title">Drone Operations</h2>
+        <DroneOperationsTab />
+      </section>
+
+      {/* Combat Balance Analytics */}
+      <section className="drone-operations-section">
+        <h2 className="drone-operations-section-title">Balance Analytics</h2>
+        <BalanceAnalytics />
+      </section>
     </div>
   );
 };

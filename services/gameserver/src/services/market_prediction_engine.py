@@ -16,6 +16,7 @@ from sqlalchemy import select, and_, desc, func
 
 from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory
 from src.models.station import Station
+from src.utils.error_handling import generate_error_id
 
 logger = logging.getLogger(__name__)
 
@@ -367,8 +368,9 @@ class MarketPredictionEngine:
             }
 
         except Exception as e:
-            logger.error(f"Error analysing commodity {commodity}: {e}")
-            return {"commodity": commodity, "status": "error", "message": str(e)}
+            error_id = generate_error_id()
+            logger.exception("Error analysing commodity %s [error_id=%s]", commodity, error_id)
+            return {"commodity": commodity, "status": "error", "error_id": error_id}
 
     # ------------------------------------------------------------------
     # Statistical helpers

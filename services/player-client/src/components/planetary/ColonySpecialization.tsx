@@ -9,7 +9,7 @@ interface ColonySpecializationProps {
   onClose?: () => void;
 }
 
-interface SpecializationInfo {
+export interface SpecializationInfo {
   type: ColonySpecializationType;
   name: string;
   icon: string;
@@ -29,17 +29,21 @@ interface SpecializationInfo {
   recommendedFor: string[];
 }
 
-const SPECIALIZATIONS: SpecializationInfo[] = [
+// Benefits below reflect what the gameserver ACTUALLY applies (ADR-0087): the
+// production multipliers, the defense multiplier (combat damage-reduction +
+// shield HP), and the research-point yield. Specialization is a TRADE-OFF, so
+// penalties are shown, not hidden.
+export const SPECIALIZATIONS: SpecializationInfo[] = [
   {
     type: 'agricultural',
     name: 'Agricultural Colony',
     icon: '🌾',
-    description: 'Focus on food production and organic materials to support your empire',
+    description: 'Food-focused colony: trades industrial output for organics and population growth',
     benefits: [
       '+50% organics production',
-      '+10% colonist growth rate',
-      'Reduced food consumption',
-      'Export surplus for high profits'
+      '+20% colonist growth',
+      '−20% fuel output',
+      '−20% equipment output'
     ],
     productionBonuses: {
       organics: 50
@@ -54,18 +58,16 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'industrial',
     name: 'Industrial Complex',
     icon: '🏭',
-    description: 'Manufacturing hub producing equipment and machinery for your fleet',
+    description: 'Manufacturing hub: maximises equipment output at the cost of food and growth',
     benefits: [
       '+50% equipment production',
-      '+25% fuel production',
-      'Ship upgrade discounts',
-      'Advanced manufacturing capabilities'
+      '−10% fuel output',
+      '−20% organics output',
+      '−10% colonist growth'
     ],
     productionBonuses: {
-      equipment: 50,
-      fuel: 25
+      equipment: 50
     },
-    defenseBonuses: 10,
     requirements: {
       minColonists: 15000,
       minBuildings: { factory: 2, mine: 1 }
@@ -76,17 +78,16 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'military',
     name: 'Military Outpost',
     icon: '⚔️',
-    description: 'Fortified colony focused on defense and military operations',
+    description: 'Fortified colony: hardened planetary defenses at the cost of production and growth',
     benefits: [
-      '+50% defense effectiveness',
-      '+25% equipment production',
-      'Drone squadron bonuses',
-      'Rapid deployment capabilities'
+      '+50% planetary defense (damage reduction + shield HP in combat)',
+      '+10% equipment production',
+      '−10% fuel & organics output',
+      '−20% colonist growth'
     ],
     productionBonuses: {
-      equipment: 25
+      equipment: 10
     },
-    defenseBonuses: 50,
     requirements: {
       minColonists: 20000,
       minBuildings: { defense: 3, factory: 1 }
@@ -97,15 +98,15 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'research',
     name: 'Research Station',
     icon: '🔬',
-    description: 'Scientific colony advancing technology and discovering new possibilities',
+    description: 'Scientific colony: maximises research-point output from its Research Labs',
     benefits: [
-      '+50% research points',
-      'Technology breakthroughs',
-      'Efficiency improvements',
-      'Unique research projects'
+      '+50% research-point output from Research Labs (feeds upcoming tech systems)',
+      '−20% fuel output',
+      '−20% organics output',
+      '−10% equipment output',
+      '−10% colonist growth'
     ],
     productionBonuses: {},
-    researchBonuses: 50,
     requirements: {
       minColonists: 25000,
       minBuildings: { research: 2 }
@@ -116,20 +117,13 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
     type: 'balanced',
     name: 'Balanced Colony',
     icon: '⚖️',
-    description: 'Well-rounded colony with diverse capabilities and steady growth',
+    description: 'Generalist colony: a modest all-round bonus instead of a single specialty',
     benefits: [
-      '+10% all production types',
-      '+10% defense bonus',
-      '+10% research bonus',
-      'Flexible development options'
+      '+10% to all production, defense, and research',
+      'Lowest requirement (5,000 colonists)',
+      'Re-specialize later as the colony grows'
     ],
-    productionBonuses: {
-      fuel: 10,
-      organics: 10,
-      equipment: 10
-    },
-    defenseBonuses: 10,
-    researchBonuses: 10,
+    productionBonuses: { fuel: 10, organics: 10, equipment: 10 },
     requirements: {
       minColonists: 5000,
       minBuildings: {}
@@ -138,11 +132,19 @@ const SPECIALIZATIONS: SpecializationInfo[] = [
   }
 ];
 
-export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({ 
-  planet, 
-  onUpdate,
-  onClose 
-}) => {
+/**
+ * useColonySpecialization — the shared selection + apply logic for choosing a
+ * colony specialization. Extracted verbatim from the original modal component so
+ * BOTH the modal (ColonySpecialization) and the in-tab SpecializationDrawer use
+ * the exact same state machine, requirement checks, and server call (no
+ * divergence in the spec rules / percentages / endpoint). Only the surrounding
+ * SHELL/LAYOUT differs between the two consumers.
+ */
+export const useColonySpecialization = (
+  planet: Planet,
+  onUpdate?: (planet: Planet) => void,
+  onClose?: () => void,
+) => {
   const [selectedSpec, setSelectedSpec] = useState<ColonySpecializationType | null>(
     planet.specialization || null
   );
@@ -190,7 +192,7 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
 
     const selectedInfo = SPECIALIZATIONS.find(s => s.type === selectedSpec)!;
     const requirements = meetsRequirements(selectedInfo);
-    
+
     if (!requirements.meets) {
       setError(`Missing requirements: ${requirements.missing.join(', ')}`);
       return;
@@ -202,10 +204,10 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
       setSuccessMessage(null);
 
       const response = await gameAPI.planetary.specializePlanet(planet.id, selectedSpec);
-      
+
       if (response.success) {
         setSuccessMessage(`Colony specialized as ${selectedInfo.name}!`);
-        
+
         // Update parent component
         if (onUpdate) {
           const updatedPlanet = {
@@ -214,7 +216,7 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
           };
           onUpdate(updatedPlanet);
         }
-        
+
         // Close after success
         setTimeout(() => {
           if (onClose) onClose();
@@ -226,6 +228,36 @@ export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
       setChanging(false);
     }
   };
+
+  return {
+    selectedSpec,
+    setSelectedSpec,
+    changing,
+    error,
+    successMessage,
+    currentSpec,
+    selectedSpecInfo,
+    meetsRequirements,
+    handleSpecialize,
+  };
+};
+
+export const ColonySpecialization: React.FC<ColonySpecializationProps> = ({
+  planet,
+  onUpdate,
+  onClose
+}) => {
+  const {
+    selectedSpec,
+    setSelectedSpec,
+    changing,
+    error,
+    successMessage,
+    currentSpec,
+    selectedSpecInfo,
+    meetsRequirements,
+    handleSpecialize,
+  } = useColonySpecialization(planet, onUpdate, onClose);
 
   return (
     <div className="colony-specialization">

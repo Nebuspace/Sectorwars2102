@@ -1,0 +1,644 @@
+/* SHIP-MODS slot-grid UI (WO-SM-5). Matches the CRT design language of
+   upgrade-interface.css: dark panels, #4a9eff primary, #44ff44 green accents. */
+
+.module-grid-interface {
+  background: var(--card-bg, #1a1a2e);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  position: relative; /* anchors the absolutely-placed GC crest (WO-GC-B) */
+}
+
+/* Header */
+.module-grid-interface .mgi-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: linear-gradient(135deg, #2a2a3e 0%, #1a1a2e 100%);
+  border-bottom: 1px solid var(--border-color, #333);
+}
+
+.module-grid-interface .mgi-header h3 {
+  margin: 0;
+  color: var(--primary-color, #4a9eff);
+  font-size: 1.25rem;
+}
+
+.module-grid-interface .mgi-ship-info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.module-grid-interface .mgi-ship-name {
+  color: var(--text-primary, #fff);
+  font-weight: 500;
+}
+
+.module-grid-interface .mgi-credits {
+  color: #44ff44;
+  font-weight: bold;
+}
+
+/* Warp-Jumper non-insurable warning */
+.module-grid-interface .mgi-wj-warning {
+  margin: 1rem;
+  padding: 0.75rem 1rem;
+  background: rgba(255, 170, 68, 0.1);
+  border: 1px solid #ffaa44;
+  border-radius: 6px;
+  color: #ffcb7a;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.module-grid-interface .mgi-wj-warning strong {
+  color: #ffaa44;
+}
+
+/* Action message */
+.module-grid-interface .mgi-action-message {
+  padding: 8px 16px;
+  margin: 0 1rem 1rem;
+  background: rgba(74, 158, 255, 0.1);
+  border: 1px solid rgba(74, 158, 255, 0.3);
+  border-radius: 4px;
+  color: #aaa;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.module-grid-interface .mgi-no-slots {
+  padding: 2rem 1rem;
+  color: var(--text-secondary, #999);
+  text-align: center;
+  font-style: italic;
+}
+
+/* The slot lattice grid */
+.module-grid-interface .mgi-grid {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.module-grid-interface .mgi-slot {
+  position: relative;
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0.5rem;
+  transition: all 0.25s ease;
+}
+
+/* Supercharged slot — distinct GLOW */
+.module-grid-interface .mgi-slot.is-super {
+  border-color: rgba(255, 214, 102, 0.6);
+  background: rgba(255, 214, 102, 0.06);
+  box-shadow: 0 0 12px rgba(255, 214, 102, 0.35), inset 0 0 8px rgba(255, 214, 102, 0.12);
+  animation: mgi-super-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes mgi-super-pulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 214, 102, 0.3), inset 0 0 8px rgba(255, 214, 102, 0.1); }
+  50%      { box-shadow: 0 0 18px rgba(255, 214, 102, 0.55), inset 0 0 10px rgba(255, 214, 102, 0.18); }
+}
+
+/* Class-locked slot — tinted border */
+.module-grid-interface .mgi-slot.is-class-locked {
+  border-color: rgba(186, 104, 255, 0.5);
+}
+
+/* requires-gated (locked) slot — greyed out */
+.module-grid-interface .mgi-slot.is-locked {
+  opacity: 0.55;
+  filter: grayscale(0.4);
+}
+
+.module-grid-interface .mgi-slot.is-filled {
+  border-color: rgba(68, 255, 68, 0.3);
+}
+
+/* Slot badge row */
+.module-grid-interface .mgi-slot-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+}
+
+.module-grid-interface .mgi-slot-index {
+  color: var(--text-secondary, #999);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.module-grid-interface .mgi-badge {
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.module-grid-interface .mgi-badge-super {
+  background: rgba(255, 214, 102, 0.2);
+  color: #ffd666;
+  border: 1px solid rgba(255, 214, 102, 0.5);
+}
+
+.module-grid-interface .mgi-badge-class {
+  background: rgba(186, 104, 255, 0.18);
+  color: #ba68ff;
+  border: 1px solid rgba(186, 104, 255, 0.45);
+}
+
+.module-grid-interface .mgi-badge-lock {
+  background: rgba(255, 68, 68, 0.15);
+  color: #ff6b6b;
+  border: 1px solid rgba(255, 68, 68, 0.4);
+}
+
+.module-grid-interface .mgi-badge-soon {
+  background: rgba(150, 150, 150, 0.18);
+  color: #b0b0b0;
+  border: 1px solid rgba(150, 150, 150, 0.4);
+}
+
+/* Empty slot — add affordance */
+.module-grid-interface .mgi-slot-add {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  background: transparent;
+  border: 1px dashed rgba(74, 158, 255, 0.35);
+  border-radius: 6px;
+  color: var(--primary-color, #4a9eff);
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.module-grid-interface .mgi-slot-add:hover:not(:disabled) {
+  background: rgba(74, 158, 255, 0.08);
+  border-color: var(--primary-color, #4a9eff);
+}
+
+.module-grid-interface .mgi-slot-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.module-grid-interface .mgi-add-plus {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.module-grid-interface .mgi-add-label {
+  font-size: 0.72rem;
+}
+
+.module-grid-interface .mgi-slot-locked-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.module-grid-interface .mgi-locked-text {
+  color: var(--text-secondary, #999);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* Filled slot */
+.module-grid-interface .mgi-slot-fitted {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  text-align: center;
+}
+
+.module-grid-interface .mgi-fitted-icon {
+  font-size: 1.6rem;
+}
+
+.module-grid-interface .mgi-fitted-name {
+  color: var(--text-primary, #fff);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.module-grid-interface .mgi-fitted-tier {
+  color: var(--primary-color, #4a9eff);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.module-grid-interface .mgi-fitted-super {
+  color: #ffd666;
+  font-size: 0.65rem;
+}
+
+.module-grid-interface .mgi-remove-btn {
+  margin-top: 0.35rem;
+  padding: 0.25rem 0.7rem;
+  background: rgba(255, 68, 68, 0.18);
+  border: 1px solid #ff4444;
+  color: #ff6b6b;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  transition: all 0.25s ease;
+}
+
+.module-grid-interface .mgi-remove-btn:hover:not(:disabled) {
+  background: rgba(255, 68, 68, 0.3);
+}
+
+.module-grid-interface .mgi-remove-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Loading / error */
+.module-grid-interface .mgi-loading,
+.module-grid-interface .mgi-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 160px;
+  color: #888;
+  padding: 2rem;
+}
+
+.module-grid-interface .mgi-retry-btn {
+  padding: 6px 14px;
+  border: 1px solid #4a9eff;
+  border-radius: 4px;
+  background: transparent;
+  color: #4a9eff;
+  cursor: pointer;
+}
+
+/* Catalog drawer + confirm overlay */
+.module-grid-interface .mgi-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  padding: 1rem;
+}
+
+.module-grid-interface .mgi-drawer {
+  background: var(--card-bg, #1a1a2e);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 8px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 82vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.module-grid-interface .mgi-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem;
+  background: linear-gradient(135deg, #2a2a3e 0%, #1a1a2e 100%);
+  border-bottom: 1px solid var(--border-color, #333);
+}
+
+.module-grid-interface .mgi-drawer-header h4 {
+  margin: 0;
+  color: var(--primary-color, #4a9eff);
+  font-size: 1.05rem;
+}
+
+.module-grid-interface .mgi-drawer-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #999);
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.module-grid-interface .mgi-drawer-close:hover {
+  color: #fff;
+}
+
+.module-grid-interface .mgi-drawer-note {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  color: #ffd666;
+  font-size: 0.8rem;
+  background: rgba(255, 214, 102, 0.06);
+}
+
+.module-grid-interface .mgi-catalog {
+  padding: 1rem;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.module-grid-interface .mgi-cat-card {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 0.75rem;
+}
+
+.module-grid-interface .mgi-cat-card.is-deferred {
+  opacity: 0.65;
+}
+
+.module-grid-interface .mgi-cat-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.module-grid-interface .mgi-cat-icon {
+  font-size: 1.2rem;
+}
+
+.module-grid-interface .mgi-cat-name {
+  color: var(--text-primary, #fff);
+  font-size: 0.9rem;
+  font-weight: 500;
+  flex: 1;
+}
+
+.module-grid-interface .mgi-cat-desc {
+  margin: 0 0 0.6rem 0;
+  color: var(--text-secondary, #999);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.module-grid-interface .mgi-cat-deferred-note {
+  color: #b0b0b0;
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
+.module-grid-interface .mgi-cat-tiers {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.module-grid-interface .mgi-tier-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.4rem 0.7rem;
+  background: rgba(74, 158, 255, 0.12);
+  border: 1px solid rgba(74, 158, 255, 0.4);
+  border-radius: 5px;
+  color: var(--text-primary, #fff);
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.module-grid-interface .mgi-tier-btn:hover:not(:disabled) {
+  background: rgba(74, 158, 255, 0.25);
+  border-color: var(--primary-color, #4a9eff);
+}
+
+.module-grid-interface .mgi-tier-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.module-grid-interface .mgi-tier-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--primary-color, #4a9eff);
+}
+
+.module-grid-interface .mgi-tier-cost {
+  font-size: 0.68rem;
+  color: #44ff44;
+}
+
+.module-grid-interface .mgi-cat-empty {
+  color: var(--text-secondary, #999);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 1rem;
+  font-style: italic;
+}
+
+/* Remove confirm modal */
+.module-grid-interface .mgi-confirm {
+  background: var(--card-bg, #1a1a2e);
+  border: 1px solid #ff4444;
+  border-radius: 8px;
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 440px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.module-grid-interface .mgi-confirm h4 {
+  margin: 0 0 0.75rem 0;
+  color: #ff6b6b;
+  font-size: 1.1rem;
+}
+
+.module-grid-interface .mgi-confirm-body {
+  margin: 0 0 1.25rem 0;
+  color: var(--text-secondary, #ccc);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.module-grid-interface .mgi-confirm-body strong {
+  color: #44ff44;
+}
+
+.module-grid-interface .mgi-confirm-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.module-grid-interface .mgi-cancel-btn {
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--text-primary, #fff);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.module-grid-interface .mgi-cancel-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.module-grid-interface .mgi-confirm-btn {
+  padding: 0.5rem 1rem;
+  background: rgba(255, 68, 68, 0.25);
+  border: 1px solid #ff4444;
+  color: #ff6b6b;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.module-grid-interface .mgi-confirm-btn:hover:not(:disabled) {
+  background: rgba(255, 68, 68, 0.4);
+}
+
+.module-grid-interface .mgi-confirm-btn:disabled,
+.module-grid-interface .mgi-cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .module-grid-interface .mgi-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .module-grid-interface .mgi-header {
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+}
+
+/* ============================================================================
+   WO-GC-B — Galactic-Citizen L1 cosmetic overlay (zero-stat flair).
+   Aurora violet/cyan accents distinguish Citizen flair from the stock blue.
+   ========================================================================== */
+.module-grid-interface .mgi-gc-badge {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 10px;
+  color: #e9d5ff;
+  background: linear-gradient(135deg, rgba(167, 99, 255, 0.28), rgba(56, 224, 224, 0.22));
+  border: 1px solid rgba(167, 99, 255, 0.55);
+  box-shadow: 0 0 8px rgba(167, 99, 255, 0.35);
+  white-space: nowrap;
+}
+
+/* Frame skins — a plating accent on the whole bay wrapper. */
+.module-grid-interface.gc-frame-citizen_aurora {
+  border-color: rgba(167, 99, 255, 0.6);
+  box-shadow: 0 0 0 1px rgba(167, 99, 255, 0.4), 0 0 18px rgba(167, 99, 255, 0.22);
+}
+.module-grid-interface.gc-frame-citizen_obsidian {
+  border-color: rgba(70, 80, 110, 0.9);
+  box-shadow: 0 0 0 1px rgba(40, 44, 60, 0.9), 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* Slot-glow — installed/super slots take a Citizen hue. */
+.module-grid-interface.gc-glow-citizen_hue .mgi-slot.is-filled,
+.module-grid-interface.gc-glow-citizen_hue .mgi-slot.is-super {
+  box-shadow: inset 0 0 12px rgba(167, 99, 255, 0.35), 0 0 8px rgba(56, 224, 224, 0.25);
+  border-color: rgba(167, 99, 255, 0.55);
+}
+
+/* Crest sigil — small corner mark (wrapper is position:relative in the base rule). */
+.module-grid-interface .mgi-gc-crest {
+  position: absolute;
+  top: 6px; right: 8px;
+  width: 18px; height: 18px;
+  background: radial-gradient(circle at 50% 40%, #38e0e0 0%, #a763ff 60%, transparent 72%);
+  clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+/* Lapsed membership — applied cosmetics grey out (kept, not erased). */
+.module-grid-interface.gc-lapsed {
+  filter: grayscale(0.85) brightness(0.92);
+}
+.module-grid-interface.gc-lapsed .mgi-gc-crest { opacity: 0.4; }
+
+/* Cosmetic picker panel. */
+.module-grid-interface .mgi-cosmetics {
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(167, 99, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(167, 99, 255, 0.06);
+}
+.module-grid-interface .mgi-cosmetics-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  color: #d7c2ff;
+  margin-bottom: 6px;
+}
+.module-grid-interface .mgi-cosmetics-locked {
+  font-size: 0.68rem;
+  color: #9a8bbf;
+  font-style: italic;
+}
+.module-grid-interface .mgi-cosmetic-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+.module-grid-interface .mgi-cosmetic-label {
+  min-width: 78px;
+  font-size: 0.72rem;
+  color: #aaa;
+}
+.module-grid-interface .mgi-cosmetic-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.module-grid-interface .mgi-cosmetic-opt {
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  border-radius: 4px;
+  border: 1px solid rgba(167, 99, 255, 0.4);
+  background: rgba(20, 20, 36, 0.8);
+  color: #c9b8f0;
+  cursor: pointer;
+}
+.module-grid-interface .mgi-cosmetic-opt:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.module-grid-interface .mgi-cosmetic-opt.is-selected {
+  background: linear-gradient(135deg, rgba(167, 99, 255, 0.45), rgba(56, 224, 224, 0.3));
+  border-color: #a763ff;
+  color: #fff;
+}
+.module-grid-interface .mgi-cosmetic-opt.is-clear { color: #ff9a9a; border-color: rgba(255, 120, 120, 0.4); }

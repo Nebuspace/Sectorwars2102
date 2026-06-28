@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../../utils/auth';
 import './planet-detail-modal.css';
 
 interface Planet {
@@ -40,7 +39,9 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
   mode
 }) => {
   const [editedPlanet, setEditedPlanet] = useState<Planet | null>(null);
-  const [isEditing, setIsEditing] = useState(mode === 'edit');
+  // Planet editing is disabled: no admin planet-edit endpoint exists, so the
+  // modal is view-only regardless of the requested mode.
+  const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,28 +49,15 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
     if (planet) {
       setEditedPlanet({ ...planet });
     }
-    setIsEditing(mode === 'edit');
+    setIsEditing(false); // view-only — no admin planet-edit endpoint
   }, [planet, mode]);
 
   const handleSave = async () => {
-    if (!editedPlanet || !planet) return;
-
-    try {
-      setLoading(true);
-      setError(null);
-
-      const response = await api.put(`/api/v1/admin/planets/${planet.id}`, editedPlanet);
-      
-      if (onSave) {
-        onSave(response.data);
-      }
-      
-      setIsEditing(false);
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to save planet');
-    } finally {
-      setLoading(false);
-    }
+    // No admin planet-edit endpoint exists (no PUT/PATCH /admin/planets/{id}).
+    // The Edit control is disabled so this is unreachable; surface the truth
+    // instead of firing a 404 that reads as a transient save failure.
+    setError('Planet editing is not available — the admin planet-edit endpoint is not implemented yet.');
+    setIsEditing(false);
   };
 
   const handleCancel = () => {
@@ -336,8 +324,12 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
             </>
           ) : (
             <>
-              <button className="edit-btn" onClick={() => setIsEditing(true)}>
-                Edit Planet
+              <button
+                className="edit-btn"
+                disabled
+                title="Planet editing is not available — no admin planet-edit endpoint exists yet"
+              >
+                Edit Planet (unavailable)
               </button>
               <button className="close-btn" onClick={onClose}>
                 Close

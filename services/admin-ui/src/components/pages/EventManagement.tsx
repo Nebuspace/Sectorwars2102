@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
+import { useToast, useConfirm } from '../../contexts/ToastContext';
 import './event-management.css';
 
 interface GameEvent {
@@ -43,47 +44,14 @@ interface EventStats {
   rewards_distributed: number;
 }
 
-// Fallback event templates used when the API is unavailable.
-// These provide a baseline set of templates so admins can still create events
-// even if the template endpoint is temporarily down.
-const DEFAULT_EVENT_TEMPLATES: EventTemplate[] = [
-  {
-    id: 'fallback-1',
-    name: 'Economic Boom',
-    description: 'Increases trade prices across affected regions',
-    event_type: 'economic',
-    default_effects: [
-      { type: 'price_modifier', target: 'all_commodities', modifier: 1.5, duration_hours: 24 }
-    ],
-    duration_hours: 24
-  },
-  {
-    id: 'fallback-2',
-    name: 'Pirate Raids',
-    description: 'Increased combat encounters in affected sectors',
-    event_type: 'combat',
-    default_effects: [
-      { type: 'spawn_rate', target: 'pirates', modifier: 2.0, duration_hours: 48 }
-    ],
-    duration_hours: 48
-  },
-  {
-    id: 'fallback-3',
-    name: 'Resource Rush',
-    description: 'Bonus resources from mining and trading',
-    event_type: 'exploration',
-    default_effects: [
-      { type: 'resource_bonus', target: 'mining', modifier: 2.0, duration_hours: 72 }
-    ],
-    duration_hours: 72
-  }
-];
-
 const EventManagement: React.FC = () => {
+  const toast = useToast();
+  const confirm = useConfirm();
   const [events, setEvents] = useState<GameEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<GameEvent | null>(null);
   const [eventStats, setEventStats] = useState<EventStats | null>(null);
   const [templates, setTemplates] = useState<EventTemplate[]>([]);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -145,13 +113,13 @@ const EventManagement: React.FC = () => {
 
   const fetchEventTemplates = async () => {
     try {
-      // Fetch event templates from API
+      setTemplatesError(null);
       const response = await api.get('/api/v1/admin/events/templates');
       setTemplates(response.data as EventTemplate[]);
     } catch (error) {
       console.error('Error fetching event templates:', error);
-      // Use fallback templates when API is unavailable
-      setTemplates(DEFAULT_EVENT_TEMPLATES);
+      setTemplates([]);
+      setTemplatesError(error instanceof Error ? error.message : 'Failed to load event templates');
     }
   };
 
@@ -171,17 +139,23 @@ const EventManagement: React.FC = () => {
           affected_regions: [],
           effects: []
         });
+        toast.success('Event created successfully');
       } else {
-        alert('Failed to create event');
+        toast.error('Failed to create event');
       }
     } catch (error) {
       console.error('Error creating event:', error);
-      alert('Error creating event');
+      toast.error('Error creating event');
     }
   };
 
   const handleCancelEvent = async (eventId: string) => {
-    if (!confirm('Are you sure you want to cancel this event?')) {
+    const ok = await confirm({
+      title: 'Cancel event',
+      message: 'Are you sure you want to cancel this event?',
+      danger: true
+    });
+    if (!ok) {
       return;
     }
 
@@ -190,12 +164,13 @@ const EventManagement: React.FC = () => {
 
       if (response.status === 200) {
         await fetchEventData();
+        toast.success('Event cancelled successfully');
       } else {
-        alert('Failed to cancel event');
+        toast.error('Failed to cancel event');
       }
     } catch (error) {
       console.error('Error cancelling event:', error);
-      alert('Error cancelling event');
+      toast.error('Error cancelling event');
     }
   };
 
@@ -205,12 +180,13 @@ const EventManagement: React.FC = () => {
 
       if (response.status === 200) {
         await fetchEventData();
+        toast.success('Event activated successfully');
       } else {
-        alert('Failed to activate event');
+        toast.error('Failed to activate event');
       }
     } catch (error) {
       console.error('Error activating event:', error);
-      alert('Error activating event');
+      toast.error('Error activating event');
     }
   };
 
@@ -293,26 +269,26 @@ const EventManagement: React.FC = () => {
       
       {/* Event Statistics */}
       {eventStats && (
-        <div className="stats-overview">
-          <div className="stat-card">
-            <h3>{eventStats.total_events}</h3>
-            <p>Total Events</p>
+        <div className="event-stats-grid">
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Total Events</h3>
+            <span className="event-stat-value">{eventStats.total_events.toLocaleString()}</span>
           </div>
-          <div className="stat-card">
-            <h3>{eventStats.active_events}</h3>
-            <p>Active Events</p>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Active</h3>
+            <span className="event-stat-value">{eventStats.active_events.toLocaleString()}</span>
           </div>
-          <div className="stat-card">
-            <h3>{eventStats.scheduled_events}</h3>
-            <p>Scheduled Events</p>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Scheduled</h3>
+            <span className="event-stat-value">{eventStats.scheduled_events.toLocaleString()}</span>
           </div>
-          <div className="stat-card">
-            <h3>{eventStats.total_participants}</h3>
-            <p>Participants</p>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Participants</h3>
+            <span className="event-stat-value">{eventStats.total_participants.toLocaleString()}</span>
           </div>
-          <div className="stat-card">
-            <h3>{eventStats.rewards_distributed.toLocaleString()}</h3>
-            <p>Rewards Given</p>
+          <div className="event-stat-card">
+            <h3 className="event-stat-title">Rewards Given</h3>
+            <span className="event-stat-value">{eventStats.rewards_distributed.toLocaleString()}</span>
           </div>
         </div>
       )}
@@ -370,19 +346,30 @@ const EventManagement: React.FC = () => {
             {/* Event Templates */}
             <div className="templates-section">
               <h4>Quick Templates</h4>
-              <div className="templates-grid">
-                {templates.map(template => (
-                  <div 
-                    key={template.id} 
-                    className="template-card"
-                    onClick={() => applyTemplate(template)}
-                  >
-                    <h5>{template.name}</h5>
-                    <p>{template.description}</p>
-                    <span className="template-type">{template.event_type}</span>
-                  </div>
-                ))}
-              </div>
+              {templatesError ? (
+                <div className="templates-error">
+                  <p>Unable to load event templates: {templatesError}</p>
+                  <button onClick={fetchEventTemplates} className="retry-button">
+                    Retry
+                  </button>
+                </div>
+              ) : templates.length === 0 ? (
+                <p className="templates-empty">No event templates available.</p>
+              ) : (
+                <div className="templates-grid">
+                  {templates.map(template => (
+                    <div
+                      key={template.id}
+                      className="template-card"
+                      onClick={() => applyTemplate(template)}
+                    >
+                      <h5>{template.name}</h5>
+                      <p>{template.description}</p>
+                      <span className="template-type">{template.event_type}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Event Form */}

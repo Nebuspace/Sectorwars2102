@@ -42,9 +42,6 @@
   --container-2xl: 1536px;
   
   /* Game-specific measurements */
-  --header-height-mobile: 60px;
-  --header-height-tablet: 70px;
-  --header-height-desktop: 80px;
   --sidebar-width-mobile: 0;
   --sidebar-width-tablet: 280px;
   --sidebar-width-desktop: 320px;
@@ -143,7 +140,6 @@
 /* Mobile Base */
 @media (max-width: 767px) {
   :root {
-    --header-height: var(--header-height-mobile);
     --sidebar-width: var(--sidebar-width-mobile);
   }
   
@@ -267,7 +263,6 @@
 
 @media (min-width: 768px) and (max-width: 1023px) {
   :root {
-    --header-height: var(--header-height-tablet);
     --sidebar-width: var(--sidebar-width-tablet);
   }
   
@@ -324,7 +319,6 @@
 
 @media (min-width: 1024px) {
   :root {
-    --header-height: var(--header-height-desktop);
     --sidebar-width: var(--sidebar-width-desktop);
   }
   

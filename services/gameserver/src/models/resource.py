@@ -29,8 +29,8 @@ class ResourceType(enum.Enum):
     - TECHNOLOGY -> equipment (in actual code)
     - POPULATION -> colonists (in actual code)
 
-    This enum is primarily used by the Resource and MarketTransaction models.
-    Most trading flows use string-based commodity names directly.
+    This enum is primarily used by the Resource model. Most trading flows
+    use string-based commodity names directly.
 
     See /DOCS/STATUS/COMMODITY_NAMING_ANALYSIS.md for detailed analysis.
 
@@ -141,43 +141,6 @@ class Market(Base):
     
     # Relationships
     station = relationship("Station", back_populates="market")
-    transactions = relationship("src.models.resource.MarketTransaction", back_populates="market", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Market at {self.station.name} - Size: {self.size}>"
-
-
-# Market transaction record
-class MarketTransaction(Base):
-    __tablename__ = "market_transactions"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    
-    # Transaction details
-    market_id = Column(UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"), nullable=False)
-    player_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="CASCADE"), nullable=False)
-    ship_id = Column(UUID(as_uuid=True), ForeignKey("ships.id", ondelete="SET NULL"), nullable=True)
-    
-    # Transaction type
-    is_purchase = Column(Boolean, nullable=False)  # True = buy, False = sell
-    
-    # Resource details
-    resource_type = Column(Enum(ResourceType, name="resource_type"), nullable=False)
-    resource_quality = Column(Enum(ResourceQuality, name="resource_quality"), nullable=False)
-    quantity = Column(Integer, nullable=False)
-    price_per_unit = Column(Integer, nullable=False)
-    total_price = Column(Integer, nullable=False)
-    
-    # Transaction metadata
-    tax_paid = Column(Integer, nullable=False, default=0)
-    negotiated_discount = Column(Integer, nullable=False, default=0)  # Based on reputation
-    
-    # Relationships
-    market = relationship("Market", back_populates="transactions")
-    player = relationship("Player", back_populates="market_transactions")
-    ship = relationship("Ship")
-    
-    def __repr__(self):
-        action = "Bought" if self.is_purchase else "Sold"
-        return f"<Transaction: {self.player.username} {action} {self.quantity} {self.resource_type.name} at {self.price_per_unit}/unit>"

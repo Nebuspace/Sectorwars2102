@@ -7,11 +7,13 @@ and completing terraforming projects on player-owned planets.
 
 from typing import Dict, Any, Optional
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 import logging
 
+from src.core.game_time import GAME_TIME_SCALE, canonical_hours_since, scaled_deadline
+from src.services.structures import _via_settle_guard
 from src.models.player import Player
 from src.models.planet import Planet, PlanetStatus, player_planets
 
@@ -24,6 +26,17 @@ TERRAFORMING_MIN_TARGET = 90          # Planets at or above this don't need terr
 TERRAFORMING_BASE_INCREMENT = 1       # Minimum habitability gain per tick
 TERRAFORMING_MAX_INCREMENT = 3        # Maximum habitability gain per tick
 TERRAFORMING_POPULATION_SCALE = 1000  # Population per additional increment point
+
+# Habitability-banded credit-cost scaling (terraforming.md "cost scaling at high
+# habitability"). The legacy spec scaled the level's credit cost by the current
+# habitability_score: x1.25 above 40, x1.5 above 70 (the x2.0-above-90 band is
+# moot — the skip threshold at TERRAFORMING_MIN_TARGET=90 forbids starting there).
+# Bands are inclusive-exclusive: "above N" means strictly greater than N.
+TERRAFORMING_COST_SCALE_THRESHOLD_LOW = 40    # habitability above this -> LOW multiplier
+TERRAFORMING_COST_SCALE_THRESHOLD_HIGH = 70   # habitability above this -> HIGH multiplier
+TERRAFORMING_COST_SCALE_BASE = 1.0            # at or below the low threshold
+TERRAFORMING_COST_SCALE_LOW = 1.25            # above 40 (and at or below 70)
+TERRAFORMING_COST_SCALE_HIGH = 1.5            # above 70
 
 # 5-level terraforming system with escalating costs and rewards
 TERRAFORMING_LEVELS = {
@@ -41,9 +54,15 @@ class TerraformingService:
     def __init__(self, db: Session):
         self.db = db
 
-    def _get_owned_planet(self, planet_id: UUID, player_id: UUID) -> Planet:
-        """Retrieve a planet and verify it is owned by the given player."""
-        planet = self.db.query(Planet).join(
+    def _get_owned_planet(self, planet_id: UUID, player_id: UUID, lock: bool = False) -> Planet:
+        """Retrieve a planet and verify it is owned by the given player.
+
+        When `lock` is set the planet row is taken FOR UPDATE (with
+        populate_existing so the identity-map copy reflects the locked row);
+        used on the advance-on-read path so two concurrent reads cannot both
+        apply the same accrued terraforming ticks (double-award / lost-update).
+        """
+        query = self.db.query(Planet).join(
             player_planets,
             Planet.id == player_planets.c.planet_id
         ).filter(
@@ -51,7 +70,10 @@ class TerraformingService:
                 Planet.id == planet_id,
                 player_planets.c.player_id == player_id
             )
-        ).first()
+        )
+        if lock:
+            query = query.populate_existing().with_for_update(of=Planet)
+        planet = query.first()
 
         if not planet:
             raise ValueError("Planet not found or not owned by player")
@@ -128,7 +150,14 @@ class TerraformingService:
         if not player:
             raise ValueError("Player not found")
 
-        credit_cost = level_config["cost"]
+        # Habitability-banded cost scaling (terraforming.md "cost scaling at high
+        # habitability"): the harder a planet is to lift, the pricier the project.
+        # Scale the level's flat credit cost by the factor derived from the
+        # planet's CURRENT habitability_score, BEFORE the affordability check and
+        # debit, so the scaled figure is what gets validated, charged, and
+        # recorded in the project metadata (cancel refunds 50% of this value).
+        scaling_factor = self._cost_scaling_factor(planet.habitability_score)
+        credit_cost = int(level_config["cost"] * scaling_factor)
         if player.credits < credit_cost:
             raise ValueError(
                 f"Insufficient credits. Level {level} ({level_config['name']}) "
@@ -159,7 +188,7 @@ class TerraformingService:
         planet.equipment = (planet.equipment or 0) - equipment_cost
 
         # Set terraforming state
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         planet.terraforming_active = True
         planet.terraforming_target = target_habitability
         planet.terraforming_start_time = now
@@ -177,13 +206,34 @@ class TerraformingService:
             "equipment_cost": equipment_cost,
             "habitability_boost": boost,
             "duration_hours": level_config["duration_hours"],
-            "started_at": now.isoformat()
+            "started_at": now.isoformat(),
+            # Lazy-tick bookkeeping (see _advance_terraforming):
+            # start_habitability anchors honest progress math; last_tick_at
+            # is the advance-on-read anchor (mirrors planet.last_growth_at).
+            "start_habitability": planet.habitability_score,
+            "last_tick_at": now.isoformat()
         }
         current_events = list(planet.active_events or [])
         # Remove any stale terraforming events
         current_events = [e for e in current_events if not (isinstance(e, dict) and e.get("type") == "terraforming")]
         current_events.append(terraforming_meta)
         planet.active_events = current_events
+
+        # K1b-2: mirror the terraform investment onto the structures grid as a rig BUNDLE (additive —
+        # the grid is terraform-owned state; the legacy habitability_score path above stays the
+        # AUTHORITATIVE driver of habitability). The placed rigs feed the settle() step-2 SHADOW
+        # grid-habitability log (Max-gated ADR-0002 amendment). Fully defensive: a grid-placement
+        # hiccup must never break the terraform start (credits/resources already validated above).
+        try:
+            from src.services import structures as _struct
+            from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+            _struct.seed(planet, db=self.db)            # idempotent: builds the grid if absent
+            _struct.place_terraform_preset(planet.structures, level)
+            _flag_modified(planet, "structures")
+        except Exception:
+            logger.exception(
+                "K1b-2 grid preset placement failed (non-fatal) on planet %s", planet.id
+            )
 
         self.db.commit()
         self.db.refresh(planet)
@@ -228,7 +278,46 @@ class TerraformingService:
         Returns:
             Dict with current terraforming state
         """
-        planet = self._get_owned_planet(planet_id, player_id)
+        # Lock the planet row on the advance path: the lazy reconciliation
+        # mutates habitability/progress, so concurrent status reads must
+        # serialize to avoid both applying the same accrued ticks (T5).
+        planet = self._get_owned_planet(planet_id, player_id, lock=True)
+
+        # Advance-on-read via the CRT spine (WO-K1a cutover): settle() applies every
+        # population-scaled terraforming tick (+ the other clocks, each idempotent on its own
+        # anchor) and completes the project if the target is reached.
+        from src.services.structures import settle
+        if settle(planet, db=self.db).changed:
+            self.db.commit()
+            self.db.refresh(planet)
+
+        # Reconcile-on-read (defensive completion). settle()'s terraform step
+        # advances the LEGACY project (substep 1) and then, separately, writes
+        # the AUTHORITATIVE grid-derived habitability_score (substep 3). Those
+        # two writes are decoupled: the grid field can lift habitability to or
+        # past the legacy terraforming_target without _advance_terraforming
+        # re-checking the post-grid value, and a legacy/stale project may
+        # already sit at/over its target on read with too few accrued ticks to
+        # trip the advance-path completion. In either case the project is in an
+        # invalid state — current habitability >= target while still active —
+        # so finalize it here. _complete_terraforming raises to max(current,
+        # target) (never regresses the grid value) and clears all terraforming
+        # state (active=False, target/start cleared, progress=100, active_events
+        # entry removed). Idempotent: once active is False this never re-fires.
+        if (
+            planet.terraforming_active
+            and planet.terraforming_target is not None
+            and planet.habitability_score is not None
+            and planet.habitability_score >= planet.terraforming_target
+        ):
+            self._complete_terraforming(planet)
+            self.db.commit()
+            self.db.refresh(planet)
+            logger.info(
+                "Reconcile-on-read completed terraforming on planet %s "
+                "(id=%s): current habitability >= target while active.",
+                planet.name, planet.id
+            )
 
         if not planet.terraforming_active:
             return {
@@ -243,90 +332,81 @@ class TerraformingService:
                 "availableLevels": self.get_terraforming_levels()
             }
 
-        # Calculate estimated ticks remaining
+        # Calculate estimated ticks remaining. avg_increment is the canonical
+        # per-cycle habitability gain (_calculate_increment: 1 + pop//1000,
+        # capped at TERRAFORMING_MAX_INCREMENT) — the SAME number the lazy
+        # advance path applies, so the client can label speed without
+        # recomputing a different mechanic. population is the colonist/population
+        # count that formula reads.
         habitability_remaining = planet.terraforming_target - planet.habitability_score
         avg_increment = self._calculate_increment(planet)
         estimated_ticks = max(1, int(habitability_remaining / avg_increment)) if avg_increment > 0 else None
+        population = max(planet.colonists or 0, planet.population or 0)
+
+        # Level identity from the project metadata (additive — lets clients
+        # render the real ladder entry instead of inventing one)
+        terra_meta = self._get_terraforming_meta(planet) or {}
+
+        # Intelligibility (T6): derive the canonical tick period and an absolute
+        # estimated completion so the client can render a real countdown instead
+        # of opaque "~N ticks". TICK_PERIOD = duration / total_points (same
+        # derivation as _advance_terraforming). estimated_completion runs from
+        # the lazy anchor through scaled_deadline so dev-time compression
+        # (GAME_TIME_SCALE) is reflected. Additive fields; None when metadata
+        # is insufficient (legacy projects).
+        tick_period_hours = None
+        estimated_completion = None
+        duration_hours = terra_meta.get("duration_hours")
+        target = min(TERRAFORMING_MAX_HABITABILITY, planet.terraforming_target)
+        start_habitability = terra_meta.get("start_habitability")
+        if duration_hours and duration_hours > 0:
+            if isinstance(start_habitability, int) and target > start_habitability:
+                total_points = target - start_habitability
+            else:
+                total_points = max(1, terra_meta.get("habitability_boost") or 1)
+            tick_period_hours = duration_hours / total_points
+
+            if estimated_ticks is not None:
+                # Remaining canonical hours from the lazy anchor (last applied
+                # tick), so the countdown excludes time already banked.
+                anchor_raw = terra_meta.get("last_tick_at") or terra_meta.get("started_at")
+                anchor = None
+                if anchor_raw:
+                    try:
+                        anchor = datetime.fromisoformat(anchor_raw)
+                    except (TypeError, ValueError):
+                        anchor = None
+                if anchor is None:
+                    anchor = planet.terraforming_start_time
+                if anchor is not None:
+                    if anchor.tzinfo is None:
+                        anchor = anchor.replace(tzinfo=UTC)
+                    remaining_canonical_hours = estimated_ticks * tick_period_hours
+                    estimated_completion = scaled_deadline(
+                        remaining_canonical_hours, anchor
+                    ).isoformat()
 
         return {
             "active": True,
             "planetId": str(planet.id),
             "planetName": planet.name,
+            "level": terra_meta.get("level"),
+            "levelName": terra_meta.get("level_name"),
             "currentHabitability": planet.habitability_score,
             "terraformingTarget": planet.terraforming_target,
             "progress": round(planet.terraforming_progress, 2),
             "startedAt": planet.terraforming_start_time.isoformat() if planet.terraforming_start_time else None,
             "estimatedTicksRemaining": estimated_ticks,
+            "tickPeriodHours": round(tick_period_hours, 4) if tick_period_hours is not None else None,
+            "estimatedCompletion": estimated_completion,
+            # Canonical per-cycle speed inputs (additive): pointsPerCycle is the
+            # increment _calculate_increment computed above; population is the
+            # count that formula scales on. The client labels speed from these
+            # instead of recomputing or falling back to opaque "points/tick".
+            "pointsPerCycle": avg_increment,
+            "population": population,
             "populationBonus": self._get_population_bonus_description(planet)
         }
-
-    def process_terraforming_tick(self, planet_id: UUID) -> Dict[str, Any]:
-        """
-        Advance terraforming progress by one tick.
-
-        Called during turn/tick processing. Each tick increases
-        habitability by 1-3 points based on population assigned to
-        the planet.
-
-        Returns:
-            Dict with tick processing results
-        """
-        planet = self.db.query(Planet).filter(Planet.id == planet_id).first()
-        if not planet:
-            raise ValueError("Planet not found")
-
-        if not planet.terraforming_active:
-            return {
-                "processed": False,
-                "reason": "No active terraforming project"
-            }
-
-        # Calculate increment based on population
-        increment = self._calculate_increment(planet)
-
-        old_habitability = planet.habitability_score
-        new_habitability = min(
-            planet.terraforming_target,
-            planet.habitability_score + increment
-        )
-        planet.habitability_score = new_habitability
-
-        # Progress is percentage of the gap already closed toward the target.
-        # We track it as (current - start) / (target - start) * 100,
-        # but since we don't persist the start value, use current / target as
-        # an approximation that reaches 100% when habitability == target.
-        total_gap = planet.terraforming_target
-        if total_gap > 0:
-            planet.terraforming_progress = min(
-                100.0,
-                (new_habitability / total_gap) * 100.0
-            )
-
-        result = {
-            "processed": True,
-            "planetId": str(planet.id),
-            "planetName": planet.name,
-            "increment": increment,
-            "oldHabitability": old_habitability,
-            "newHabitability": new_habitability,
-            "progress": round(planet.terraforming_progress, 2),
-            "completed": False
-        }
-
-        # Check if terraforming is complete
-        if new_habitability >= planet.terraforming_target:
-            completion_result = self._complete_terraforming(planet)
-            result["completed"] = True
-            result["completionDetails"] = completion_result
-
-        self.db.commit()
-
-        logger.info(
-            f"Terraforming tick on planet {planet.name}: "
-            f"{old_habitability} -> {new_habitability} (+{increment})"
-        )
-
-        return result
 
     def cancel_terraforming(
         self,
@@ -361,6 +441,21 @@ class TerraformingService:
             raise ValueError("Player not found")
 
         player.credits += refund_amount
+
+        # Arbitrage fix: cancellation must NOT bank the partial habitability
+        # the lazy-advance path accrued. Canon's terraforming gain is a single
+        # integer addition applied at COMPLETION (terraforming.md: the boost
+        # lands when the project finishes); mid-project ticks are bookkeeping,
+        # not earned terrain. Without this revert a player could start L5,
+        # let it advance a few points, cancel for a 50% refund, repeat, and
+        # ratchet habitability upward for ~half price — a pure arbitrage loop.
+        # Restore the recorded start_habitability so cancellation yields ZERO
+        # net habitability gain. (max_population is recomputed below to track
+        # the reverted score, ADR-0035.)
+        start_habitability = terra_meta.get("start_habitability") if terra_meta else None
+        if isinstance(start_habitability, int):
+            planet.habitability_score = min(planet.habitability_score, start_habitability)
+            self._recompute_max_population(planet)
 
         # Clear terraforming state
         planet.terraforming_active = False
@@ -401,6 +496,31 @@ class TerraformingService:
             "creditsAfterRefund": player.credits,
             "currentHabitability": planet.habitability_score
         }
+
+    def settle_terraforming(self, planet: Planet) -> bool:
+        """Settle banked terraforming ticks at the CURRENT population rate (T2).
+
+        Advance-and-commit entry point for callers that are about to mutate a
+        planet's population (e.g. the colonist embark/disembark route). The
+        lazy advance samples population at reconciliation time, so banked ticks
+        must be reconciled BEFORE the population change lands — otherwise ticks
+        earned under the OLD population settle at the NEW rate (retroactive
+        rate change). Call this on the already-loaded (and ideally row-locked)
+        planet before applying the transfer.
+
+        Returns True if any terraforming state advanced.
+        """
+        if not planet.terraforming_active:
+            return False
+        # CRT WO-K1a cutover: settle() reconciles banked terraforming ticks (at the current
+        # population rate) — and the other idempotent clocks — BEFORE the caller applies the
+        # population transfer (§5.4).
+        from src.services.structures import settle
+        changed = settle(planet, db=self.db).changed
+        if changed:
+            self.db.commit()
+            self.db.refresh(planet)
+        return changed
 
     def complete_terraforming(self, planet_id: UUID) -> Dict[str, Any]:
         """
@@ -445,6 +565,40 @@ class TerraformingService:
 
     # --- Private helpers ---
 
+    @staticmethod
+    def _cost_scaling_factor(habitability_score: int) -> float:
+        """Credit-cost multiplier for the planet's current habitability band.
+
+        Per terraforming.md ("cost scaling at high habitability"): lifting an
+        already-decent world costs more. Bands keyed on the CURRENT
+        habitability_score, "above N" being strictly greater than N:
+
+          * > TERRAFORMING_COST_SCALE_THRESHOLD_HIGH (70) -> x1.5
+          * > TERRAFORMING_COST_SCALE_THRESHOLD_LOW  (40) -> x1.25
+          * otherwise                                     -> x1.0
+
+        The legacy x2.0-above-90 band is intentionally omitted: the skip
+        threshold (TERRAFORMING_MIN_TARGET = 90) already forbids starting a
+        project at habitability >= 90, so that band is unreachable.
+        """
+        if habitability_score > TERRAFORMING_COST_SCALE_THRESHOLD_HIGH:
+            return TERRAFORMING_COST_SCALE_HIGH
+        if habitability_score > TERRAFORMING_COST_SCALE_THRESHOLD_LOW:
+            return TERRAFORMING_COST_SCALE_LOW
+        return TERRAFORMING_COST_SCALE_BASE
+
+    def _recompute_max_population(self, planet: Planet) -> None:
+        """Re-evaluate the habitability-derived demographic ceiling (ADR-0035).
+
+        "Canonical formula: `max_population = habitability_score × 1,000`. ...
+        The recompute is a *trigger* fired by the habitability mutation — it
+        evaluates the formula afresh, never multiplicatively shrinks the prior
+        value." Lazy import avoids a module-load cycle with planetary_service.
+        `max_colonists` (citadel-bound) is never touched here.
+        """
+        from src.services.planetary_service import max_population_for
+        planet.max_population = max_population_for(planet.habitability_score)
+
     def _complete_terraforming(self, planet: Planet) -> Dict[str, Any]:
         """
         Internal method to finalize a terraforming project.
@@ -459,22 +613,25 @@ class TerraformingService:
         level = terra_meta.get("level", 0) if terra_meta else 0
         level_name = terra_meta.get("level_name", "Unknown") if terra_meta else "Unknown"
 
-        # Apply habitability boost (capped at 100)
+        # Apply the habitability gain (capped at 100). The tick path may
+        # already have incremented habitability toward terraforming_target;
+        # raising to the stored target (rather than re-adding the boost)
+        # avoids double-applying the gain when both paths run.
         old_habitability = planet.habitability_score
-        planet.habitability_score = min(
-            TERRAFORMING_MAX_HABITABILITY,
-            planet.habitability_score + boost
-        )
+        if planet.terraforming_target:
+            target = min(TERRAFORMING_MAX_HABITABILITY, planet.terraforming_target)
+        else:
+            target = min(TERRAFORMING_MAX_HABITABILITY, planet.habitability_score + boost)
+        planet.habitability_score = max(planet.habitability_score, target)
         final_habitability = planet.habitability_score
 
-        # Recalculate max population based on habitability
-        # Higher habitability directly scales the planet's carrying capacity
-        if planet.max_population and planet.max_population > 0:
-            habitability_factor = planet.habitability_score / 100.0
-            planet.max_population = int(planet.max_population * habitability_factor)
-        if planet.max_colonists and planet.max_colonists > 0:
-            habitability_factor = planet.habitability_score / 100.0
-            planet.max_colonists = max(1, int(planet.max_colonists * habitability_factor))
+        # Recompute the demographic ceiling per ADR-0035: "Canonical formula:
+        # `max_population = habitability_score × 1,000`. ... The recompute is
+        # a *trigger* fired by the habitability mutation — it evaluates the
+        # formula afresh, never multiplicatively shrinks the prior value."
+        # `max_colonists` is NOT touched here: it is citadel-bound, never
+        # modified by terraforming or habitability changes (ADR-0035).
+        self._recompute_max_population(planet)
 
         # Boost population growth rate based on habitability improvement
         if planet.habitability_score >= 80:
@@ -518,6 +675,157 @@ class TerraformingService:
             "populationGrowthRate": planet.population_growth,
             "status": planet.status.value
         }
+
+    def _advance_terraforming(self, planet: Planet, *, _via_settle: bool = False) -> bool:
+        """
+        Lazily apply every population-scaled terraforming tick accrued since
+        the project last advanced (advance-on-read — the codebase pattern
+        used by citadel upgrades, construction, and colonist growth). Also
+        driven on a fixed cadence by the npc_scheduler planetary-advance
+        sweep so progress no longer depends on the owner re-reading the
+        planet; both paths are time-accurate and idempotent, so they
+        reconcile cleanly regardless of which runs first.
+
+        Tick-period derivation — this reconciles terraforming.md's two
+        progress models honestly:
+
+          * The level ladder gives each project a canonical duration D hours
+            (72/120/168/240/336 for L1-L5) and a habitability boost B points.
+          * The canon tick model (terraforming.md "Tick-based progression")
+            advances 1 point/tick base for a < 1,000-population planet,
+            +1 per 1,000 population, capped at 3 points/tick.
+          * Neither the doc nor ADR-0002 defines the tick's wall length, so
+            we derive it from the constraint that a minimum-speed planet
+            (< 1,000 pop, 1 point/tick) completes in EXACTLY the documented
+            level duration:  TICK_PERIOD = D / total_points  canonical hours.
+          * Populous planets earn 2-3 points per tick and therefore finish
+            proportionally (2-3x) faster — the doc's population-scaling
+            intent, expressed in time.
+
+        total_points is the real gap at project start (target may be capped
+        at 100, making it smaller than B); legacy projects without the
+        start_habitability marker fall back to B.
+
+        Elapsed time runs through GAME_TIME_SCALE (canonical hours), so dev
+        compression applies uniformly. Only the wall-clock time the applied
+        ticks consumed is taken from the anchor; the sub-tick remainder
+        stays banked (mirrors the colonist-growth anchor pattern).
+
+        Returns True if any state changed (caller commits).
+
+        ``_via_settle`` (CRT spine): True from structures.settle() step 2; reads its OWN canonical
+        anchor (active_events['terraforming']['last_tick_at']) as shipped — no spine ``now`` in.
+        """
+        _via_settle_guard("_advance_terraforming", _via_settle)
+        if not planet.terraforming_active or not planet.terraforming_start_time:
+            return False
+        if not planet.terraforming_target:
+            return False
+
+        terra_meta = self._get_terraforming_meta(planet)
+        duration_hours = (terra_meta or {}).get("duration_hours")
+        if not duration_hours or duration_hours <= 0:
+            return False
+
+        target = min(TERRAFORMING_MAX_HABITABILITY, planet.terraforming_target)
+
+        # Legacy/odd state: already at or past the target — finish now.
+        if planet.habitability_score >= target:
+            self._complete_terraforming(planet)
+            return True
+
+        # Total points the project must earn (honest gap at start)
+        start_habitability = terra_meta.get("start_habitability")
+        if isinstance(start_habitability, int) and target > start_habitability:
+            total_points = target - start_habitability
+        else:
+            total_points = max(1, terra_meta.get("habitability_boost") or 1)
+
+        tick_period_hours = duration_hours / total_points
+
+        # Anchor: last advance, falling back to project start for projects
+        # that predate the marker
+        anchor = None
+        anchor_raw = terra_meta.get("last_tick_at") or terra_meta.get("started_at")
+        if anchor_raw:
+            try:
+                anchor = datetime.fromisoformat(anchor_raw)
+            except (TypeError, ValueError):
+                anchor = None
+        if anchor is None:
+            anchor = planet.terraforming_start_time
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+
+        ticks = int(canonical_hours_since(anchor) // tick_period_hours)
+        if ticks <= 0:
+            # Not a full tick yet — leave the anchor so the remainder accrues
+            return False
+
+        # Population is sampled at reconciliation time; mid-window population
+        # changes are approximated by the current rate (same simplification
+        # the lazy colonist-growth path makes for habitability changes).
+        increment = self._calculate_increment(planet)
+        old_habitability = planet.habitability_score
+        new_habitability = min(target, old_habitability + ticks * increment)
+        planet.habitability_score = new_habitability
+        # ADR-0035: every habitability mutation re-fires the demographic-ceiling
+        # trigger. _complete_terraforming recomputes on its own path; the
+        # partial-advance path must too, so the colony's max_population tracks
+        # mid-project gains rather than only updating at completion.
+        self._recompute_max_population(planet)
+
+        if new_habitability >= target:
+            completion = self._complete_terraforming(planet)
+            logger.info(
+                f"Lazy terraforming advance completed project on planet "
+                f"{planet.name} (id={planet.id}): {old_habitability} -> "
+                f"{completion['finalHabitability']} ({ticks} ticks)"
+            )
+            return True
+
+        # Honest progress when the start marker exists; otherwise keep the
+        # tick path's current/target approximation. Never regress.
+        if isinstance(start_habitability, int) and target > start_habitability:
+            fraction = (new_habitability - start_habitability) / (target - start_habitability)
+        else:
+            fraction = new_habitability / target if target > 0 else 0.0
+        planet.terraforming_progress = max(
+            planet.terraforming_progress or 0.0,
+            min(100.0, fraction * 100.0)
+        )
+
+        # Consume only the wall-clock time the applied ticks represent
+        wall_hours_consumed = (ticks * tick_period_hours) / GAME_TIME_SCALE
+        self._set_terraforming_meta_field(
+            planet, "last_tick_at",
+            (anchor + timedelta(hours=wall_hours_consumed)).isoformat()
+        )
+
+        logger.info(
+            f"Lazy terraforming advance on planet {planet.name}: "
+            f"{old_habitability} -> {new_habitability} "
+            f"({ticks} ticks x {increment} pts, period {tick_period_hours:.2f}h)"
+        )
+        return True
+
+    def _set_terraforming_meta_field(self, planet: Planet, key: str, value: Any) -> None:
+        """
+        Update one field of the terraforming entry in active_events.
+
+        JSONB mutation pattern: rebuild the list with a copied dict and
+        reassign the column so SQLAlchemy sees the change. No-op when no
+        terraforming entry exists (e.g. after completion removed it).
+        """
+        events = []
+        for event in (planet.active_events or []):
+            if isinstance(event, dict) and event.get("type") == "terraforming":
+                updated = dict(event)
+                updated[key] = value
+                events.append(updated)
+            else:
+                events.append(event)
+        planet.active_events = events
 
     def _get_terraforming_meta(self, planet: Planet) -> Optional[Dict[str, Any]]:
         """

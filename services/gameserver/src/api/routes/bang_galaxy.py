@@ -227,6 +227,121 @@ async def add_player_owned_region(
 
 
 # ---------------------------------------------------------------------------
+# POST /admin/galaxy/{galaxy_id}/regenerate  (content-only; preserves identity)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/galaxy/{galaxy_id}/regenerate",
+    response_model=BangJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def regenerate_galaxy(
+    galaxy_id: uuid.UUID,
+    payload: BangJobCreate,
+    background_tasks: BackgroundTasks,
+    force: bool = False,
+    current_admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_async_session),
+    service: BangImportService = Depends(get_bang_import_service),
+    x_confirm_galaxy_name: Optional[str] = Header(
+        default=None,
+        alias="X-Confirm-Galaxy-Name",
+        description="Must match the galaxy's exact name to authorise regeneration.",
+    ),
+) -> BangJobResponse:
+    """Regenerate an EXISTING galaxy's CONTENT in place, preserving identity.
+
+    Per ADR-0005, a region's identity is stable: this endpoint wipes only
+    CONTENT (clusters, sectors, warps, stations, market_prices, planets,
+    special_formations) for each of the galaxy's existing regions and
+    re-imports fresh content into the SAME Region rows. The Region UUIDs and
+    every operator/customer-bound field (owner_id, paypal_subscription_id,
+    subscription_status, governance_type, tax_rate, name/display_name,
+    cultural identity, treasury, …) survive untouched. NO new Region rows
+    are created — unlike `POST /galaxy/jobs`, which builds fresh identities.
+
+    Destructive: requires `force=true` AND an `X-Confirm-Galaxy-Name` header
+    matching the galaxy's exact name (same safety gate as hard-delete).
+    """
+    galaxy = await session.get(Galaxy, galaxy_id)
+    if galaxy is None:
+        raise HTTPException(status_code=404, detail="Galaxy not found")
+
+    if not force:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Regeneration wipes all sectors/warps/stations/planets for "
+                "this galaxy's regions; pass force=true to confirm."
+            ),
+        )
+    if x_confirm_galaxy_name is None or x_confirm_galaxy_name != galaxy.name:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "X-Confirm-Galaxy-Name header missing or does not match galaxy "
+                "name; regeneration refused."
+            ),
+        )
+
+    # Resolve the EXISTING Region UUIDs per region_type from the galaxy's
+    # bang_snapshot — the same link apply() writes when the galaxy was first
+    # generated. These are the rows we re-import into, preserving identity.
+    snapshot = galaxy.bang_snapshot or {}
+    existing_region_ids: Dict[str, uuid.UUID] = {}
+    for region_type, snap in (snapshot.get("regions") or {}).items():
+        if not isinstance(snap, dict):
+            continue
+        rid = snap.get("region_id")
+        if rid is None:
+            continue
+        existing_region_ids[region_type] = (
+            rid if isinstance(rid, uuid.UUID) else uuid.UUID(str(rid))
+        )
+    if not existing_region_ids:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Galaxy has no region_ids in its bang_snapshot; cannot "
+                "regenerate while preserving region identity."
+            ),
+        )
+
+    job_id = uuid.uuid4()
+    job = BangGenerationJob(
+        id=job_id,
+        admin_user_id=current_admin.id,
+        status=BangGenerationJobStatus.PENDING,
+        params_json={
+            **payload.config.model_dump(),
+            "galaxy_id": str(galaxy_id),
+            "regenerate": True,
+        },
+    )
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+
+    region_metadata: Dict[str, Any] = {
+        "galaxy_name": payload.galaxy_name or galaxy.name,
+        "master_seed": payload.config.seed,
+        "regions": {
+            rt: {"region_id": str(rid)} for rt, rid in existing_region_ids.items()
+        },
+    }
+    background_tasks.add_task(
+        service.run_regeneration_job,
+        job_id,
+        galaxy_id,
+        payload.config,
+        existing_region_ids,
+        region_metadata=region_metadata,
+    )
+    return BangJobResponse.model_validate(job)
+
+
+# ---------------------------------------------------------------------------
 # POST /admin/galaxy/preview
 # ---------------------------------------------------------------------------
 

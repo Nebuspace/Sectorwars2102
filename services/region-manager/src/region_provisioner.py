@@ -320,7 +320,7 @@ class RegionProvisioner:
                     UPDATE regions 
                     SET status = 'active',
                         updated_at = CURRENT_TIMESTAMP,
-                        nexus_warp_gate_sector = $2
+                        nexus_warp_sector = $2
                     WHERE name = $1
                 """, region_name, 250)  # Central sector for warp gate
             

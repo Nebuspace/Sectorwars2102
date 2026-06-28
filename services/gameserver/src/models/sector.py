@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 from typing import List, Dict, Optional, Any
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func, Table
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Enum, func, Table, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
@@ -16,6 +16,9 @@ sector_warps = Table(
     Column('source_sector_id', UUID(as_uuid=True), ForeignKey('sectors.id', ondelete="CASCADE"), primary_key=True),
     Column('destination_sector_id', UUID(as_uuid=True), ForeignKey('sectors.id', ondelete="CASCADE"), primary_key=True),
     Column('is_bidirectional', Boolean, default=True, nullable=False),
+    # ADR-0034: latent one-ways appear bidirectional until a Warp Jumper scan
+    # reveals them. Default false; worldgen flips ~20% of one-ways.
+    Column('is_latent', Boolean, default=False, nullable=False),
     Column('turn_cost', Integer, default=1, nullable=False),
     Column('warp_stability', Float, default=1.0, nullable=False),  # 0.0-1.0, affects reliability
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
@@ -48,9 +51,24 @@ class SectorType(enum.Enum):
 class Sector(Base):
     __tablename__ = "sectors"
 
+    # ADR-0005: compound sector identity. `sector_id` stays the GLOBALLY unique
+    # key (the bang import offsets each region into a disjoint range, and ~600
+    # references across the codebase depend on it). `sector_number` is the
+    # region-LOCAL number (1..N per region) and is unique only within a region
+    # via uq_sectors_region_sector_number — the additive compound key that
+    # composes for petal-style region attachment. The full global-sector_id
+    # retirement is a separate future project; these coexist today.
+    __table_args__ = (
+        UniqueConstraint('region_id', 'sector_number', name='uq_sectors_region_sector_number'),
+    )
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    sector_id = Column(Integer, nullable=False, unique=True)  # Human-readable sector number
-    sector_number = Column(Integer, nullable=True)  # New field for Central Nexus (can be same as sector_id)
+    sector_id = Column(Integer, nullable=False, unique=True)  # GLOBAL human-readable sector number (offset per region)
+    sector_number = Column(Integer, nullable=True)  # ADR-0005 region-local number (unique per region)
+    # ADR-0005: the region's welcome hub / Capital Sector marker. Exactly one
+    # sector per region carries is_capital=true (the offset-anchor capital,
+    # region-local sector 1 at bang time).
+    is_capital = Column(Boolean, nullable=False, default=False, server_default="false")
     name = Column(String(100), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -106,6 +124,11 @@ class Sector(Base):
         "patrol_ships": []
     })
     
+    # Canon (police-forces.md "Sector protection flag"): breach of a
+    # protected Nexus sector (warp-gate Phase 1, hostile combat) triggers
+    # the Sentinel response. Default false; flagged by operator/import.
+    is_nexus_protected = Column(Boolean, nullable=False, default=False)
+
     controlling_faction = Column(String, nullable=True)  # Null means uncontrolled or contested
     controlling_team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
     last_combat = Column(DateTime(timezone=True), nullable=True)

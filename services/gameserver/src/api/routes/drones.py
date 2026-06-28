@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 from src.core.database import get_async_session
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.drone import Drone, DroneDeployment, DroneCombat, DroneType, DroneStatus
+from src.models.drone import Drone, DroneDeployment, DroneType, DroneStatus
 from src.services.drone_service import DroneService
 
 
@@ -43,13 +43,6 @@ class DeployDronesRequest(BaseModel):
     """Request to deploy multiple drones (API contract version)."""
     sectorId: str
     droneCount: int
-
-
-class InitiateCombatRequest(BaseModel):
-    """Request to initiate drone combat."""
-    attacker_drone_id: UUID
-    defender_drone_id: UUID
-    sector_id: UUID
 
 
 class RepairDroneRequest(BaseModel):
@@ -100,24 +93,6 @@ class DroneDeploymentResponse(BaseModel):
     enemies_destroyed: int
     resources_collected: int
     damage_prevented: int
-    
-    class Config:
-        from_attributes = True
-
-
-class DroneCombatResponse(BaseModel):
-    """Response model for drone combat data."""
-    id: UUID
-    attacker_drone_id: Optional[UUID]
-    defender_drone_id: Optional[UUID]
-    sector_id: Optional[UUID]
-    started_at: datetime
-    ended_at: Optional[datetime]
-    rounds: int
-    winner_drone_id: Optional[UUID]
-    attacker_damage_dealt: int
-    defender_damage_dealt: int
-    combat_log: Optional[str]
     
     class Config:
         from_attributes = True
@@ -366,37 +341,6 @@ async def upgrade_drone(
         )
 
 
-@router.post("/combat/initiate", response_model=DroneCombatResponse)
-async def initiate_combat(
-    request: InitiateCombatRequest,
-    current_player: Player = Depends(get_current_player),
-    db: AsyncSession = Depends(get_async_session)
-):
-    """Initiate combat between drones."""
-    # Verify attacker ownership
-    attacker = await db.get(Drone, request.attacker_drone_id)
-    if not attacker or attacker.player_id != current_player.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Attacker drone not found or not owned by you"
-        )
-        
-    service = DroneService(db)
-    
-    try:
-        combat = await service.initiate_combat(
-            attacker_id=request.attacker_drone_id,
-            defender_id=request.defender_drone_id,
-            sector_id=request.sector_id
-        )
-        return combat
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
-
 @router.get("/deployments", response_model=List[DroneDeploymentResponse])
 async def get_my_deployments(
     active_only: bool = True,
@@ -415,39 +359,19 @@ async def get_my_deployments(
 @router.get("/sector/{sector_id}", response_model=List[DroneResponse])
 async def get_sector_drones(
     sector_id: UUID,
-    db: AsyncSession = Depends(get_async_session)
-):
-    """Get all active drones in a sector."""
-    service = DroneService(db)
-    drones = await service.get_sector_drones(sector_id)
-    return drones
-
-
-@router.get("/combat/history", response_model=List[DroneCombatResponse])
-async def get_combat_history(
-    drone_id: Optional[UUID] = None,
-    sector_id: Optional[UUID] = None,
-    limit: int = 10,
     current_player: Player = Depends(get_current_player),
     db: AsyncSession = Depends(get_async_session)
 ):
-    """Get combat history for drones or sectors."""
-    # If drone_id is provided, verify ownership
-    if drone_id:
-        drone = await db.get(Drone, drone_id)
-        if not drone or drone.player_id != current_player.id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Drone not found or not owned by you"
-            )
-    
+    """Get all active drones in a sector.
+
+    Requires authentication: sector drone presence is tactical intelligence
+    (it reveals players' military deployments and positions) and must not be
+    enumerable by anonymous callers. Matches the auth posture of the sibling
+    drone read endpoints (team/{id}).
+    """
     service = DroneService(db)
-    combats = await service.get_combat_history(
-        drone_id=drone_id,
-        sector_id=sector_id,
-        limit=limit
-    )
-    return combats
+    drones = await service.get_sector_drones(sector_id)
+    return drones
 
 
 @router.get("/team/{team_id}", response_model=List[DroneResponse])
@@ -503,25 +427,49 @@ async def deploy_drones_contract(
             detail=f"Not enough available drones. Have {len(undeployed_drones)}, requested {request.droneCount}"
         )
     
-    # Deploy the requested number of drones
+    # Deploy the requested number of drones, collecting the REAL deployment-row
+    # ids. The previous version returned a random uuid4 unrelated to any row, so
+    # DELETE /{deploymentId}/recall (which does db.get(DroneDeployment, id))
+    # always 404'd. Each deploy_drone creates one DroneDeployment; return its id.
     deployed_count = 0
-    deployment_id = str(uuid4())  # Create a single deployment ID for this batch
-    
+    deployment_ids: list[str] = []
+    last_error: Optional[str] = None
+
     for i in range(min(request.droneCount, len(undeployed_drones))):
         drone = undeployed_drones[i]
         try:
-            await service.deploy_drone(
+            deployment = await service.deploy_drone(
                 drone_id=drone.id,
                 sector_id=sector_id,
                 deployment_type="defense"
             )
             deployed_count += 1
+            if deployment is not None:
+                deployment_ids.append(str(deployment.id))
+        except ValueError as e:
+            # Per-drone reject (e.g. the per-ship drone cap was reached). Stop
+            # the batch — the cap is monotonic for this batch, so once one deploy
+            # is capped, every remaining one will be too. Within-cap deploys
+            # already done above are kept (clamp behaviour).
+            last_error = str(e)
+            logger.info(f"Stopping batch deploy at drone {drone.id}: {e}")
+            break
         except Exception as e:
-            # Continue deploying others even if one fails
+            # Continue deploying others even if one fails for an unexpected reason
+            last_error = str(e)
             logger.warning(f"Failed to deploy drone {drone.id}: {e}")
-    
+
+    if deployed_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=last_error or "No drones could be deployed",
+        )
+
     return {
-        "deploymentId": deployment_id,
+        # First real deployment id for the single-id contract; deploymentIds
+        # lists every row created so the caller can recall each.
+        "deploymentId": deployment_ids[0] if deployment_ids else None,
+        "deploymentIds": deployment_ids,
         "dronesDeployed": deployed_count
     }
 

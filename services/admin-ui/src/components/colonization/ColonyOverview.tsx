@@ -36,6 +36,32 @@ interface Colony {
   lastActivity: string;
 }
 
+// Shape of a single entry returned by GET /api/v1/admin/colonies.
+// The endpoint returns every planet, colonized or not, so owner_id may be null.
+interface RawColony {
+  id: string;
+  name: string;
+  sector_id: number;
+  type?: string;
+  status?: string;
+  owner_id: string | null;
+  owner_name?: string | null;
+  population?: number;
+  max_population?: number;
+  habitability_score?: number;
+  resource_richness?: number;
+  defense_level?: number;
+  colonized_at?: string | null;
+  fuel_ore?: number;
+  organics?: number;
+  equipment?: number;
+  fighters?: number;
+  factory_level?: number;
+  farm_level?: number;
+  mine_level?: number;
+  research_level?: number;
+}
+
 interface ColonyStats {
   totalColonies: number;
   activeColonies: number;
@@ -88,9 +114,17 @@ export const ColonyOverview: React.FC = () => {
       }
 
       const data = await response.json();
-      
+
+      // The /admin/colonies endpoint returns ALL planets (colonized and
+      // uncolonized worldgen planets). Only planets with an owner are actual
+      // colonies, so filter out the uncolonized ones client-side to avoid
+      // inflating the colony count and population totals.
+      const colonizedPlanets = (data.colonies as RawColony[]).filter(
+        (colony) => colony.owner_id != null && colony.owner_id !== ''
+      );
+
       // Map colony data from our colonies endpoint
-      const mappedColonies = data.colonies.map((colony: any) => ({
+      const mappedColonies: Colony[] = colonizedPlanets.map((colony) => ({
         id: colony.id,
         name: colony.name,
         planetId: colony.id,
@@ -106,12 +140,14 @@ export const ColonyOverview: React.FC = () => {
         morale: Math.min(100, colony.habitability_score || 50),
         infrastructure: Math.min(100, (colony.defense_level || 0) * 10),
         defenseRating: colony.defense_level || 0,
-        productionEfficiency: Math.min(100, colony.resource_richness * 100 || 50),
+        productionEfficiency: Math.min(100, (colony.resource_richness || 0) * 100 || 50),
         resources: {
           energy: colony.fuel_ore || 0,
           minerals: colony.equipment || 0,
           food: colony.organics || 0,
-          water: Math.floor(colony.habitability_score * 100) || 0
+          // habitability_score is stored on a 0-100 scale; shown as a %, labelled
+          // "Habitability" in the UI so it isn't read as a unit count.
+          water: Math.min(100, Math.round(colony.habitability_score || 0))
         },
         buildings: {
           residential: colony.farm_level || 0,
@@ -119,31 +155,36 @@ export const ColonyOverview: React.FC = () => {
           research: colony.research_level || 0,
           defense: colony.mine_level || 0
         },
-        status: colony.owner_id ? 'active' : 'abandoned',
+        // Status is derived from morale on the same 0-100 scale + threshold
+        // (morale < 50) used for the "troubled" summary stat below, so the
+        // per-card badge stays consistent with the aggregate counts.
+        status: colony.owner_id
+          ? (Math.min(100, colony.habitability_score || 50) < 50 ? 'troubled' : 'active')
+          : 'abandoned',
         foundedAt: colony.colonized_at || new Date().toISOString(),
         lastActivity: colony.colonized_at || new Date().toISOString()
       }));
       
       setColonies(mappedColonies);
       
-      // Calculate stats from mapped data
+      // Calculate stats from mapped data (already filtered to owned colonies)
       const totalColonies = mappedColonies.length;
-      const activeColonies = mappedColonies.filter((c: any) => c.status === 'active').length;
-      const totalPopulation = mappedColonies.reduce((sum: number, c: any) => sum + c.population, 0);
-      const averageMorale = mappedColonies.length > 0 
-        ? mappedColonies.reduce((sum: number, c: any) => sum + c.morale, 0) / mappedColonies.length 
+      const activeColonies = mappedColonies.filter((c) => c.status === 'active').length;
+      const totalPopulation = mappedColonies.reduce((sum, c) => sum + c.population, 0);
+      const averageMorale = mappedColonies.length > 0
+        ? mappedColonies.reduce((sum, c) => sum + c.morale, 0) / mappedColonies.length
         : 0;
-      const troubledColonies = mappedColonies.filter((c: any) => c.morale < 50).length;
-      
+      const troubledColonies = mappedColonies.filter((c) => c.morale < 50).length;
+
       setStats({
         totalColonies,
         activeColonies,
         totalPopulation,
         totalProduction: {
-          energy: mappedColonies.reduce((sum: number, c: any) => sum + c.resources.energy, 0),
-          minerals: mappedColonies.reduce((sum: number, c: any) => sum + c.resources.minerals, 0),
-          food: mappedColonies.reduce((sum: number, c: any) => sum + c.resources.food, 0),
-          water: mappedColonies.reduce((sum: number, c: any) => sum + c.resources.water, 0)
+          energy: mappedColonies.reduce((sum, c) => sum + c.resources.energy, 0),
+          minerals: mappedColonies.reduce((sum, c) => sum + c.resources.minerals, 0),
+          food: mappedColonies.reduce((sum, c) => sum + c.resources.food, 0),
+          water: mappedColonies.reduce((sum, c) => sum + c.resources.water, 0)
         },
         averageMorale,
         troubledColonies
@@ -172,8 +213,8 @@ export const ColonyOverview: React.FC = () => {
       return matchesSearch && matchesStatus;
     })
     .sort((a, b) => {
-      let aValue: any = a[sortBy as keyof Colony];
-      let bValue: any = b[sortBy as keyof Colony];
+      let aValue: number | string = a[sortBy as keyof Colony] as number | string;
+      let bValue: number | string = b[sortBy as keyof Colony] as number | string;
 
       if (sortBy === 'resources') {
         aValue = a.resources.energy + a.resources.minerals + a.resources.food + a.resources.water;
@@ -293,10 +334,12 @@ export const ColonyOverview: React.FC = () => {
               </span>
             </div>
             <div className="colony-info">
-              <div className="info-row">
-                <span className="info-label">Planet:</span>
-                <span className="info-value">{colony.planetName}</span>
-              </div>
+              {colony.planetName !== colony.name && (
+                <div className="info-row">
+                  <span className="info-label">Planet:</span>
+                  <span className="info-value">{colony.planetName}</span>
+                </div>
+              )}
               <div className="info-row">
                 <span className="info-label">Owner:</span>
                 <span className="info-value">{colony.playerName}</span>
@@ -350,19 +393,35 @@ export const ColonyOverview: React.FC = () => {
             <div className="colony-resources">
               <div className="resource">
                 <span className="resource-icon">⚡</span>
-                <span className="resource-value">{formatNumber(colony.resources.energy)}</span>
+                <span className="resource-value">
+                  {formatNumber(colony.resources.energy)}
+                  <span className="resource-unit"> units</span>
+                </span>
+                <span className="resource-name">Fuel Ore</span>
               </div>
               <div className="resource">
                 <span className="resource-icon">💎</span>
-                <span className="resource-value">{formatNumber(colony.resources.minerals)}</span>
+                <span className="resource-value">
+                  {formatNumber(colony.resources.minerals)}
+                  <span className="resource-unit"> units</span>
+                </span>
+                <span className="resource-name">Equipment</span>
               </div>
               <div className="resource">
                 <span className="resource-icon">🌾</span>
-                <span className="resource-value">{formatNumber(colony.resources.food)}</span>
+                <span className="resource-value">
+                  {formatNumber(colony.resources.food)}
+                  <span className="resource-unit"> units</span>
+                </span>
+                <span className="resource-name">Organics</span>
               </div>
               <div className="resource">
                 <span className="resource-icon">💧</span>
-                <span className="resource-value">{formatNumber(colony.resources.water)}</span>
+                <span className="resource-value">
+                  {Math.round(colony.resources.water)}
+                  <span className="resource-unit">%</span>
+                </span>
+                <span className="resource-name">Habitability</span>
               </div>
             </div>
           </div>
@@ -427,10 +486,10 @@ export const ColonyOverview: React.FC = () => {
               <div className="detail-section">
                 <h3>Actions</h3>
                 <div className="action-buttons">
-                  <button className="action-button primary">View Planet</button>
-                  <button className="action-button">Contact Owner</button>
-                  <button className="action-button">View History</button>
-                  <button className="action-button warning">Send Resources</button>
+                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
+                    Colony actions (view planet, contact owner, view history, send
+                    resources) are not yet available — no backend exists for them.
+                  </p>
                 </div>
               </div>
             </div>

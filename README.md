@@ -1,187 +1,215 @@
 # Sector Wars 2102
 
-A revolutionary web-based space trading simulation game featuring a **Multi-Regional Platform** with player-owned territories, sophisticated governance systems, and AI-powered intelligence.
+A web-based space trading simulation game featuring a **Multi-Regional Platform** with player-owned territories, sophisticated governance systems, and AI-powered intelligence.
 
 ## Overview
 
 Sector Wars 2102 is an innovative turn-based space trading game that transforms the traditional single-galaxy experience into a **Multi-Regional Universe**. Players can own and govern entire regional territories, participate in democratic governance, manage economic policies, and engage in complex diplomatic relations. The game features a Central Nexus hub (5000 sectors) connecting all regional territories, sophisticated AI-powered systems, and monetization through regional ownership subscriptions.
 
-### 🤖 AI-Powered Features
+### AI-Powered Features
 
 #### ARIA Trading Intelligence System
-**ARIA** (Autonomous Resource Intelligence Assistant) - The first AI trading companion in a space trading game:
+**ARIA** (Autonomous Resource Intelligence Assistant) — the trading companion:
 - **Personalized Recommendations**: AI learns your trading style and provides tailored suggestions
 - **Market Predictions**: Advanced algorithms forecast commodity price movements
 - **Route Optimization**: AI calculates optimal multi-sector trading paths
 - **Risk Assessment**: Early warnings for dangerous sectors and market conditions
 - **Real-time Learning**: Continuously improves based on your feedback and success
 
-#### AI-Powered First Login Experience ✨ NEW!
-**Dynamic Narrative Dialogue** - Immersive AI-driven character interactions:
+#### AI-Powered First Login Experience
+**Dynamic Narrative Dialogue** — immersive AI-driven character interactions:
 - **Adaptive Conversations**: Guard NPCs respond dynamically using LLM AI (Anthropic Claude/OpenAI GPT)
 - **Contextual Questioning**: Questions adapt based on your responses and claimed ship type
 - **Intelligent Analysis**: AI analyzes persuasiveness, confidence, and consistency in real-time
 - **Natural Language Processing**: Free-form text input with sophisticated response understanding
 - **Seamless Fallback**: Robust rule-based system ensures 100% reliability when AI is unavailable
 
+---
+
 ## Architecture
 
-The project uses a flexible architecture with three main components:
+The project uses a microservices architecture orchestrated with Docker Compose and profile-gating.
 
-1. **Game API Server**: Core backend service containing all game logic, database operations, and API endpoints
-2. **Player Client**: Web interface for playing the game
-3. **Admin UI**: Comprehensive administrative interface with advanced game management tools
+### Services
 
-All services can be deployed using Docker with Docker Compose.
+| Service | Profile(s) | Role |
+|---|---|---|
+| `database` | `development`, `default` | PostgreSQL — single-server dev database |
+| `central-nexus-db` | `multi-regional`, `production` | PostgreSQL — Central Nexus |
+| `redis-cache` | `development`, `default`, `multi-regional` | Cache / session store |
+| `redis-nexus` | `multi-regional`, `production` | Nexus-scoped Redis |
+| `gameserver` | `development`, `default` | FastAPI game API (single-server dev) |
+| `central-nexus-server` | `multi-regional`, `production` | FastAPI — Central Nexus service |
+| `player-client` | `development`, `default`, `multi-regional` | React cockpit (Vite) |
+| `admin-ui` | `development`, `default`, `multi-regional` | React admin interface (Vite) |
+| `nginx-gateway` | `development`, `default`, `multi-regional` | Reverse proxy / gateway |
+| `region-manager` | `development`, `default`, `multi-regional` | Regional orchestration service |
+| `prometheus` / `grafana` | `monitoring`, `production` | Observability stack |
+| `regional-server-template` | `regional-template` | Regional shard template |
+
+> **A bare `docker compose up` starts nothing** — every service is profile-gated. Always pass `--profile`.
+
+### Component Overview
+
+1. **Game API Server** (`gameserver` / `central-nexus-server`): Core backend — all game logic, database operations, API endpoints
+2. **Player Client**: The cockpit — React 19 + Vite 8, three.js / react-three-fiber for 3D visualization, chart.js + D3.js for analytics
+3. **Admin UI**: Administrative interface — React + TypeScript, D3.js dashboards
+4. **nginx-gateway**: Routes player-client, admin-ui, and API traffic
+5. **region-manager**: Orchestrates multi-regional shards
+
+---
 
 ## Technical Stack
 
-- **Backend**: FastAPI (Python 3.11)
-- **Database**: PostgreSQL 15 in Docker
-- **ORM**: SQLAlchemy
+- **Backend**: FastAPI (Python 3.11), SQLAlchemy 2, Alembic, Poetry
+- **Database**: PostgreSQL 15
+- **Cache**: Redis
 - **Authentication**: JWT-based
-- **Frontend**: React with TypeScript
-- **Visualization**: D3.js (Admin UI)
-- **Testing**: Pytest (backend) and Playwright (E2E)
-- **Containerization**: Docker with Docker Compose (optional)
+- **Frontend**: React 19 + TypeScript, Vite 8
+- **3D Visualization**: three.js, react-three-fiber (player cockpit)
+- **Charts / Analytics**: chart.js, D3.js (admin UI)
+- **Testing**: Pytest (backend), Playwright (E2E), React Testing Library
+- **Containerization**: Docker + Docker Compose (profile-based)
 
-## Multi-Environment Support
+---
 
-The project is designed to work seamlessly across development environments:
+## Environments
 
-1. **Local Development**: Docker-based with Docker Compose
-2. **GitHub Codespaces**: Remote development with VS Code
+The full Docker stack does **not** run on a developer's Mac — it runs on a remote Linux host accessed via Tailscale.
+
+| Environment | Location | Notes |
+|---|---|---|
+| **Dev / Stage** | Remote Linux host via Tailscale | Tracks active feature branch; Vite hot-reloads client |
+| **Production** | Separate colocated bare-metal host | |
+
+Infrastructure details, SSH access, and runbooks live in `~/github/ServerSetup/` (local-only, not part of this repo). See `ServerSetup/docs/services/sectorwars-hosting.md` for host names and access.
+
+---
 
 ## Quick Start
 
 ### Prerequisites
 
-- Node.js 16+ and npm
-- Python 3.11+
-- Docker and Docker Compose
-- Docker environment with PostgreSQL 15
+- **Mac / local machine**: Node.js 20+ (22 LTS recommended), Python 3.11+, git
+- **Remote dev host**: Docker + Docker Compose, accessible via Tailscale
 
-### Using Docker Compose (Local & GitHub Codespaces)
+> **Do not run `docker build`, `docker run`, or `docker compose` on your Mac.** The full stack runs on the remote Linux dev host. Running Docker locally alongside Claude Code throttles CPU to ~20%.
+
+### 1. Clone the repo
 
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/Sectorwars2102.git
+git clone https://github.com/Nebuspace/Sectorwars2102.git
 cd Sectorwars2102
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your database URL and settings
-
-# Start services using Docker Compose
-docker-compose up
 ```
 
-### Auto-detection
-
-Our main start script automatically detects your environment and configures everything appropriately:
+### 2. Start the stack on the remote dev host (via SSH)
 
 ```bash
-./dev-scripts/start-unified.sh
+# SSH into the dev host (see ServerSetup/docs/services/sectorwars-hosting.md for host name)
+ssh <dev-host>
+
+# In /data/sectorwars-dev (or the configured project root):
+docker compose --profile development up -d
 ```
 
-### Switching Between Development and Production
+This brings up: `database`, `redis-cache`, `gameserver`, `player-client`, `admin-ui`, `nginx-gateway`, `region-manager`.
 
-You can easily switch between development and production databases by using the `--production-db` flag:
+### 3. Apply database migrations (remote dev host)
 
 ```bash
-# Start with development database (default)
-./dev-scripts/start-unified.sh
-
-# Start with production database
-./dev-scripts/start-unified.sh --production-db
+docker compose exec gameserver poetry run alembic upgrade head
 ```
 
-This approach keeps your environment configuration simple while providing control over which database to use.
+### 4. Access services
 
-### Accessing Services
+With Tailscale connected, reach the dev host's exposed ports:
 
-- **Game API Server**: <http://localhost:8080>
-- **Player Client**: <http://localhost:3000>
-- **Admin UI**: <http://localhost:3001>
+- **Player Client**: `http://<dev-host>:3000`
+- **Admin UI**: `http://<dev-host>:3001`
+- **Game API**: `http://<dev-host>:8080`
+- **API Docs**: `http://<dev-host>:8080/docs` (Swagger UI — available when `DEBUG=true`)
 
-## Service Endpoints
+### Compose profiles
 
-### Game API Server
+| Profile | Use case |
+|---|---|
+| `development` / `default` | Standard dev — single gameserver + supporting services |
+| `multi-regional` | Multi-regional dev with Central Nexus |
+| `production` | Production topology |
+| `monitoring` | Add Prometheus + Grafana |
+| `regional-template` | Spin up a regional shard template |
 
-- **Base URL**: <http://localhost:8080>
-- **Health Check**: GET /health
-- **API Documentation**: GET /docs (Swagger UI)
+---
 
-### Player Client
+## Mac-Local Development (code + tests only)
 
-- **URL**: <http://localhost:3000>
-
-### Admin UI
-
-- **URL**: <http://localhost:3001>
-- **Features**:
-  - **Economy Dashboard**: Real-time market monitoring and price intervention tools
-  - **Player Analytics**: Comprehensive player tracking and account management
-  - **Combat Overview**: Combat monitoring, balance analysis, and dispute resolution
-  - **Fleet Management**: Galaxy-wide ship tracking and emergency operations
-  - **Colonization Oversight**: Planetary colonization and Genesis device monitoring
-  - **Team Management**: Faction administration and diplomatic relations
-  - **Event Management**: Dynamic event creation and seasonal content
-  - **Analytics & Reports**: Advanced reporting and predictive analytics
-
-## Development
-
-Each service can be developed independently:
+Mac-safe commands — these do **not** require Docker:
 
 ```bash
-# Game API Server
-cd services/gameserver
-# Start with poetry
-poetry install
-poetry run uvicorn src.main:app --reload
-
-# Player Client
+# Player Client — type-check (Vite/esbuild does NOT type-check on build)
 cd services/player-client
 npm install
-npm run dev
+npx tsc --noEmit      # always run before pushing frontend work
+npm run build         # build artifact
 
 # Admin UI
 cd services/admin-ui
 npm install
-npm run dev
+npx tsc --noEmit
+npm run build
+
+# Gameserver — linting (requires a local venv or Poetry)
+cd services/gameserver
+poetry install
+poetry run ruff check .
+poetry run pytest     # unit tests; integration tests require the running stack
 ```
+
+> **Note**: `npm run build` (Vite) does not type-check. Run `npx tsc --noEmit` explicitly before deploying — type errors and undefined-name bugs ship silently otherwise.
+
+---
 
 ## Testing
 
-### Backend Testing (Gameserver)
-
-The gameserver uses pytest for both unit and integration tests:
+### Backend (Gameserver)
 
 ```bash
-cd services/gameserver/tests
-./run_tests.sh
+# Remote dev host — full test suite (requires running stack)
+docker compose exec gameserver poetry run pytest
+
+# Mac-local — unit tests only (if local Poetry env is set up)
+cd services/gameserver
+poetry run pytest
 ```
 
-You can also use VS Code's Test Explorer to run specific tests or test suites.
+### End-to-End (Playwright)
 
-### End-to-End (E2E) Testing
-
-E2E tests for both the admin UI and player client use Playwright:
+E2E tests target the remote dev host via Tailscale:
 
 ```bash
-# Run all E2E tests
-cd e2e_tests
-./run_all_tests.sh
+# From Mac, with Tailscale connected and dev host running:
+npx playwright test -c e2e_tests/playwright.config.ts
 
-# Or run specific test projects
+# Specific suites
 npx playwright test -c e2e_tests/playwright.config.ts --project=admin-tests
 npx playwright test -c e2e_tests/playwright.config.ts --project=player-tests
 ```
 
+---
+
+## Git Workflow
+
+- **`master`** — tested, validated code. Primary integration target.
+- **`feat/living-npc-system`** — active feature branch (current work).
+- **`dev`** — development; the remote dev host sync script tracks this branch.
+
+Migrations are **additive only** (nullable columns or new tables) — no destructive schema changes without explicit sign-off.
+
+---
+
 ## Documentation
 
-- **Developer Documentation**: See [CLAUDE.md](./CLAUDE.md) for development guide
-- **Admin UI Guide**: See [DOCS/FEATURES/WEB_INTERFACES/ADMIN_UI.md](./DOCS/FEATURES/WEB_INTERFACES/ADMIN_UI.md) for admin interface documentation
-- **Architecture Overview**: See [DOCS/SPECS/Architecture.aispec](./DOCS/SPECS/Architecture.aispec) and [DOCS/ARCHITECTURE/](./DOCS/ARCHITECTURE/)
-- **AI Specifications**: See [DOCS/SPECS/](./DOCS/SPECS/) for detailed system specifications
-- **Feature Documentation**: See [DOCS/FEATURES/](./DOCS/FEATURES/) for detailed feature specifications
+- **Project context / dev guide**: [`CLAUDE.md`](./CLAUDE.md)
+- **Canonical game spec** (public): [`sw2102-docs`](https://github.com/Nebuspace/sw2102-docs) — auto-published to Cloudflare on every push to `main`; this is the primary specification reference
+- **In-repo AI specs**: [`AISPEC/`](./AISPEC/) — detailed system specifications; note this directory is currently untracked in git (`AISPEC/` is in the working tree but not committed)
+- **E2E test suite**: [`e2e_tests/`](./e2e_tests/)

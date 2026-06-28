@@ -8,12 +8,30 @@ import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipType, ShipSpecification
 from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
 
 logger = logging.getLogger(__name__)
+
+
+def _dispatch_fleet_medals(db: Session, owner_id: uuid.UUID) -> None:
+    """Fire the medals-lane fleet hook
+    ``medal_service.check_and_award_fleet_medals(db, owner_id)`` after a ship
+    acquisition (combat.fleet_commander / ships_owned).
+
+    Defensive: resolved by ``getattr`` (the medals lane may be absent),
+    idempotent on the medals side, and any failure is logged and swallowed — a
+    medal hiccup must NEVER break ship creation."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_fleet_medals", None)
+        if callable(hook):
+            hook(db, owner_id)
+    except Exception as e:  # never let a medal hiccup break ship creation
+        logger.error("Fleet medal dispatch hook failed: %s", e)
 
 
 class ShipService:
@@ -61,8 +79,10 @@ class ShipService:
                 "repair_needed": False
             },
             
-            # Initialize cargo
-            cargo={},
+            # Initialize cargo with the spec's hold size — an empty dict
+            # made every purchased ship fall back to the default capacity
+            # of 50 (a Cargo Hauler shipped with a rowboat's hold)
+            cargo={"capacity": spec.max_cargo, "used": 0, "contents": {}},
             
             # Initialize combat stats based on specifications
             combat={
@@ -78,6 +98,12 @@ class ShipService:
             
             # Combat turn cost
             attack_turn_cost=getattr(spec, 'attack_turn_cost', None),
+
+            # B3: copy the per-hull shield/armor mitigation fractions from the
+            # ShipSpecification onto the Ship row — combat_service reads these
+            # off the Ship, not the spec. Defensive default 0.0 if unset.
+            shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
+            armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
 
             # Genesis and equipment
             genesis_devices=0,
@@ -104,43 +130,145 @@ class ShipService:
         # Add to database
         self.db.add(ship)
         self.db.flush()  # Get the ID
-        
+
         logger.info(f"Created ship {ship.name} ({ship_type.value}) for player {owner_id}")
+
+        # Medal: combat.fleet_commander (ships_owned >= 5). Fires after a genuine
+        # ship acquisition, in the caller's open transaction; idempotent on the
+        # medals side. Defensive — a medal hiccup never breaks ship creation.
+        _dispatch_fleet_medals(self.db, owner_id)
+
         return ship
     
     def destroy_ship(self, ship: Ship, destroyer: Optional[Player] = None, cause: str = "combat") -> Ship:
         """
         Destroy a ship and handle Escape Pod ejection if needed.
         Returns the ship the player ends up in (could be escape pod).
+
+        cause="warp_gate_anchor" is the ADR-0029 planned dismantle: the Warp
+        Jumper hull fuses into the gate focus, so there is NO insurance payout
+        (Warp Jumpers are non-insurable), NO 10% emergency-cargo haircut (ALL
+        non-bound cargo transfers to the pod), and destruction_cause is set to
+        WARP_GATE_ANCHOR. No CargoWreck is generated on ANY path through this
+        method — wreck generation lives in CombatService, which never handles
+        this cause.
         """
         player = ship.owner
-        
+
         # Check if ship is an Escape Pod - if so, it cannot be destroyed
         if ship.type == ShipType.ESCAPE_POD:
             logger.warning(f"Attempted to destroy indestructible Escape Pod for player {player.id}")
             return ship  # Return the same ship (indestructible)
-        
+
+        # Carrier ship-hangar jettison (WO-AE; FEATURES/gameplay/ships.md:341).
+        # If THIS hull is a Carrier carrying docked ships, jettison them INTACT
+        # into the destruction sector and auto-eject their pilots to Escape Pods
+        # BEFORE the Carrier itself runs the standard destruction flow below.
+        # The docked ships are NOT destroyed and spawn NO wrecks (cargo /
+        # insurance unaffected). Best-effort: a hangar hiccup must never block
+        # the Carrier's own destruction (it would strand the kill).
+        if ship.hangar and (ship.hangar.get("docked")):
+            try:
+                from src.services.hangar_service import HangarService
+                HangarService(self.db).jettison_all(ship, ship.sector_id, self)
+            except Exception as e:
+                logger.error("Hangar jettison-on-destruction failed for Carrier %s: %s", ship.id, e)
+
+        # Tractor tow auto-detach (WO-AF; ships.md:362-364; ADR-0067). Covers
+        # this hull in BOTH tow roles, uniformly across combat / genesis /
+        # warp-gate-anchor destruction (every destroy path funnels here):
+        #   - HAULER destroyed mid-tow -> tow detaches; the TOWED ship is left
+        #     INTACT where it sits and its pilot stays aboard (destroy_ship runs
+        #     on the HAULER, never the towed hull, so the towed pilot is never
+        #     ejected — no wreck, no insurance, cargo preserved). The WJ Phase-3
+        #     anchor-sacrifice (cause warp_gate_anchor) lands here too: the towed
+        #     ship already rode along to the destination and survives intact.
+        #   - TOWED ship destroyed -> clear its hauler's tow_state so the hauler
+        #     continues at base cost; the towed hull runs the standard wreck flow
+        #     below. Best-effort — a tow hiccup must never block the kill.
+        try:
+            from src.services.tow_service import TowService
+            TowService(self.db).detach_on_destruction(ship)
+        except Exception as e:
+            logger.error("Tow detach-on-destruction failed for ship %s: %s", ship.id, e)
+
+        # Pioneer colonist reabsorb: cryosleep pods are lost with the hull
+        # (canon: pioneer_service.py docstring). Zeroes `loaded` on the
+        # player's open MigrationContracts and VOIDs any that have never
+        # delivered. Best-effort — a ledger hiccup must never block
+        # destruction. Wrapped in begin_nested() (SAVEPOINT) so that a
+        # reabsorb DB error does not poison the outer transaction — mirrors
+        # the _spawn_cargo_wreck pattern in combat_service.py.
+        try:
+            from src.services.pioneer_service import reabsorb_on_ship_loss
+            with self.db.begin_nested():
+                reabsorb_on_ship_loss(self.db, player.id)
+        except Exception as e:
+            logger.error(
+                "Pioneer reabsorb on ship loss failed for player %s (ship %s): %s",
+                player.id, ship.id, e,
+            )
+
+        is_planned_dismantle = cause == "warp_gate_anchor"
+        # A voluntary genesis sacrifice (advanced tier) behaves like the planned
+        # dismantle for property handling: ALL non-bound cargo transfers to the
+        # pod and NO insurance pays out — you chose to consume the hull for a
+        # planet, so double-dipping an insurance payout would be an exploit.
+        is_voluntary_consume = is_planned_dismantle or cause == "genesis_sacrifice"
+
+        # Is the owner actually piloting THIS hull? Only the piloted hull's
+        # destruction ejects the pilot into the escape pod. Consuming an
+        # unpiloted hull (the owner switched ships — e.g. a Warp Jumper
+        # anchored as a gate focus while the player flies something else)
+        # must NOT reseat the player or relocate their active vehicle
+        # (FIX 6 — pilot hijack). Cargo still transfers to a pod at the
+        # dead hull's sector so the owner's property isn't silently lost.
+        is_piloted = player.current_ship_id == ship.id
+
         # Mark ship as destroyed
         ship.is_destroyed = True
         ship.is_active = False
-        
-        # Create or find escape pod for the player
-        escape_pod = self._ensure_escape_pod(player, ship.sector_id)
-        
-        # Transfer emergency cargo to escape pod (10% of original cargo)
-        self._transfer_emergency_cargo(ship, escape_pod)
-        
-        # Set escape pod as player's current ship
-        player.current_ship_id = escape_pod.id
-        
-        # Apply insurance if available
-        if player.insurance:
-            compensation = self._calculate_insurance_payout(ship, player.insurance)
+        # Contract: WARP_GATE_ANCHOR for the planned dismantle; other causes
+        # record their raw string (e.g. "combat").
+        ship.destruction_cause = "WARP_GATE_ANCHOR" if is_planned_dismantle else cause
+
+        if is_piloted:
+            # Pilot ejects: reuse/relocate the player's escape pod and reseat.
+            escape_pod = self._ensure_escape_pod(player, ship.sector_id)
+        else:
+            # Unpiloted hull: materialize a pod at the dead hull's sector to
+            # receive cargo WITHOUT moving the player's active pod or
+            # reseating them.
+            escape_pod = self._pod_for_unpiloted_hull(player, ship.sector_id)
+
+        if is_voluntary_consume:
+            # Planned dismantle / genesis sacrifice — all non-bound cargo transfers
+            self._transfer_all_cargo(ship, escape_pod)
+        else:
+            # Transfer emergency cargo to escape pod (10% of original cargo)
+            self._transfer_emergency_cargo(ship, escape_pod)
+
+        # Set escape pod as player's current ship ONLY when the piloted hull
+        # was destroyed (FIX 6).
+        if is_piloted:
+            player.current_ship_id = escape_pod.id
+
+        # Apply insurance if available. Skipped entirely for the warp-gate
+        # anchor: no underwriter writes a policy on a hull whose canonical
+        # use is its own destruction (ADR-0029).
+        # Coverage attaches to the HULL (ship-insurance.md), so the policy lives
+        # on ship.insurance; the payout credits player == ship.owner (the
+        # registered owner, never the current pilot — handles stolen hulls).
+        if not is_voluntary_consume and ship.insurance:
+            compensation = self._calculate_insurance_payout(ship, ship.insurance)
             if compensation > 0:
                 player.credits += compensation
                 logger.info(f"Applied insurance payout of {compensation} credits to player {player.id}")
-        
-        logger.info(f"Ship {ship.name} destroyed for player {player.id}, ejected to Escape Pod")
+
+        logger.info(
+            f"Ship {ship.name} destroyed for player {player.id} (cause: {cause}), "
+            f"{'pilot ejected to Escape Pod' if is_piloted else 'unpiloted hull — pilot untouched'}"
+        )
         return escape_pod
     
     def _ensure_escape_pod(self, player: Player, sector_id: int) -> Ship:
@@ -171,68 +299,152 @@ class ShipService:
         logger.info(f"Created new Escape Pod for player {player.id}")
         return escape_pod
     
-    def _transfer_emergency_cargo(self, destroyed_ship: Ship, escape_pod: Ship) -> None:
-        """Transfer 10% of cargo from destroyed ship to escape pod"""
-        if not destroyed_ship.cargo:
-            return
-        
-        # Get escape pod cargo capacity
-        escape_pod_spec = self.db.query(ShipSpecification).filter(
-            ShipSpecification.type == ShipType.ESCAPE_POD
+    def _pod_for_unpiloted_hull(self, player: Player, sector_id: int) -> Ship:
+        """Provide an escape pod to receive the cargo of an UNPILOTED hull
+        being consumed, without reseating the player (FIX 6).
+
+        Preserves the single-pod-per-player invariant (_ensure_escape_pod uses
+        .first()): if the player owns a pod they are NOT currently piloting,
+        reuse it and relocate it to the dead hull's sector to receive the
+        cargo (the player isn't aboard, so relocation is harmless). If the
+        player IS currently piloting their only pod, or owns none, create a
+        fresh pod at the hull's sector so cargo isn't silently destroyed. In
+        no case is player.current_ship_id touched here."""
+        existing = self.db.query(Ship).filter(
+            Ship.owner_id == player.id,
+            Ship.type == ShipType.ESCAPE_POD,
+            Ship.is_destroyed == False  # noqa: E712
         ).first()
-        
-        if not escape_pod_spec:
+
+        if existing is not None and existing.id != player.current_ship_id:
+            existing.sector_id = sector_id
+            existing.is_active = True
+            return existing
+
+        return self.create_ship(
+            ship_type=ShipType.ESCAPE_POD,
+            owner_id=player.id,
+            sector_id=sector_id,
+            name="Emergency Escape Pod"
+        )
+
+    def _transfer_all_cargo(self, destroyed_ship: Ship, escape_pod: Ship) -> None:
+        """ADR-0029 planned-dismantle transfer: ALL non-bound cargo moves to
+        the escape pod, intentionally ignoring the pod's capacity — canon's
+        "non-bound cargo transfers to the pilot's escape pod inventory" is
+        unconditional, and dropping the gate-builder's remaining materials
+        over a capacity clamp would silently destroy player property. The pod
+        may sit over capacity until the player offloads (purchases/loads onto
+        an over-full pod are blocked by the normal space checks)."""
+        destroyed_cargo = destroyed_ship.cargo or {}
+        destroyed_contents: Dict[str, int] = destroyed_cargo.get("contents") or {}
+        if not destroyed_contents:
             return
-        
-        max_cargo = escape_pod_spec.max_cargo
-        current_cargo = sum(escape_pod.cargo.values()) if escape_pod.cargo else 0
-        available_space = max_cargo - current_cargo
-        
+
+        pod_cargo = escape_pod.cargo or {"capacity": 0, "used": 0, "contents": {}}
+        pod_contents: Dict[str, int] = pod_cargo.get("contents") or {}
+
+        transferred: Dict[str, int] = {}
+        for resource, amount in list(destroyed_contents.items()):
+            if not isinstance(amount, (int, float)) or amount <= 0:
+                continue
+            pod_contents[resource] = int(pod_contents.get(resource, 0)) + int(amount)
+            transferred[resource] = int(amount)
+            del destroyed_contents[resource]
+
+        if not transferred:
+            return
+
+        destroyed_cargo["contents"] = destroyed_contents
+        destroyed_cargo["used"] = sum(
+            int(q) for q in destroyed_contents.values() if isinstance(q, (int, float))
+        )
+        pod_cargo["contents"] = pod_contents
+        pod_cargo["used"] = sum(
+            int(q) for q in pod_contents.values() if isinstance(q, (int, float))
+        )
+        destroyed_ship.cargo = destroyed_cargo
+        escape_pod.cargo = pod_cargo
+        flag_modified(destroyed_ship, "cargo")
+        flag_modified(escape_pod, "cargo")
+
+        logger.info(f"Transferred full cargo to Escape Pod (planned dismantle): {transferred}")
+
+    def _transfer_emergency_cargo(self, destroyed_ship: Ship, escape_pod: Ship) -> None:
+        """Transfer 10% of cargo contents from destroyed ship to escape pod.
+
+        Operates on the real cargo JSONB shape
+        {"capacity": n, "used": n, "contents": {commodity: qty}} (see
+        create_ship) — mirrors CombatService._transfer_cargo. Treating the
+        cargo dict as flat {resource: qty} made sum() blow up on the nested
+        contents dict, 500ing every ship destruction.
+        """
+        destroyed_cargo = destroyed_ship.cargo or {}
+        destroyed_contents: Dict[str, int] = destroyed_cargo.get("contents") or {}
+        if not destroyed_contents:
+            return
+
+        pod_cargo = escape_pod.cargo or {}
+        pod_contents: Dict[str, int] = pod_cargo.get("contents") or {}
+
+        # Pod capacity from its own cargo record, falling back to the spec
+        pod_capacity = pod_cargo.get("capacity") or 0
+        if not pod_capacity:
+            escape_pod_spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == ShipType.ESCAPE_POD
+            ).first()
+            pod_capacity = escape_pod_spec.max_cargo if escape_pod_spec else 0
+
+        pod_used = sum(int(q) for q in pod_contents.values() if isinstance(q, (int, float)))
+        available_space = max(0, int(pod_capacity) - pod_used)
         if available_space <= 0:
             return
-        
-        # Calculate emergency cargo (10% of each resource)
-        emergency_cargo = {}
-        total_emergency_cargo = 0
-        
-        for resource, amount in destroyed_ship.cargo.items():
-            emergency_amount = max(1, int(amount * 0.1))  # At least 1 unit
-            emergency_cargo[resource] = emergency_amount
-            total_emergency_cargo += emergency_amount
-        
-        # Limit to available space
-        if total_emergency_cargo > available_space:
-            # Proportionally reduce all cargo
-            reduction_factor = available_space / total_emergency_cargo
-            emergency_cargo = {
-                resource: max(1, int(amount * reduction_factor))
-                for resource, amount in emergency_cargo.items()
-            }
-        
-        # Transfer cargo
-        if not escape_pod.cargo:
-            escape_pod.cargo = {}
-        
-        for resource, amount in emergency_cargo.items():
-            if resource in escape_pod.cargo:
-                escape_pod.cargo[resource] += amount
-            else:
-                escape_pod.cargo[resource] = amount
-        
-        logger.info(f"Transferred emergency cargo to Escape Pod: {emergency_cargo}")
+
+        # Move 10% of each commodity (at least 1 unit), clamped to what the
+        # destroyed ship actually holds and the pod's remaining space
+        transferred: Dict[str, int] = {}
+        for resource, amount in list(destroyed_contents.items()):
+            if available_space <= 0:
+                break
+            if not isinstance(amount, (int, float)) or amount <= 0:
+                continue
+            emergency_amount = min(max(1, int(amount * 0.1)), int(amount), available_space)
+            if emergency_amount <= 0:
+                continue
+
+            destroyed_contents[resource] = int(amount) - emergency_amount
+            if destroyed_contents[resource] <= 0:
+                del destroyed_contents[resource]
+            pod_contents[resource] = int(pod_contents.get(resource, 0)) + emergency_amount
+            transferred[resource] = emergency_amount
+            available_space -= emergency_amount
+
+        if not transferred:
+            return
+
+        # Write back with recalculated usage; flag_modified is required for
+        # SQLAlchemy to detect in-place JSONB mutation
+        destroyed_cargo["contents"] = destroyed_contents
+        destroyed_cargo["used"] = sum(int(q) for q in destroyed_contents.values())
+        pod_cargo["contents"] = pod_contents
+        pod_cargo["used"] = sum(int(q) for q in pod_contents.values())
+        destroyed_ship.cargo = destroyed_cargo
+        escape_pod.cargo = pod_cargo
+        flag_modified(destroyed_ship, "cargo")
+        flag_modified(escape_pod, "cargo")
+
+        logger.info(f"Transferred emergency cargo to Escape Pod: {transferred}")
     
     def _calculate_insurance_payout(self, ship: Ship, insurance: Dict[str, Any]) -> int:
-        """Calculate insurance payout for destroyed ship"""
+        """Calculate insurance payout for a destroyed ship.
+
+        Canon (ADR-0061 S-D3): payout = (coverage% - deductible%) x purchase_value.
+        Net payout per tier = BASIC 50-5=45%, STANDARD 75-10=65%, PREMIUM 90-15=75%
+        (the deductible was previously not applied — fixed here).
+        """
         insurance_type = insurance.get("type", "NONE")
-        
-        if insurance_type == "PREMIUM":
-            return int(ship.purchase_value * 0.9)  # 90% payout
-        elif insurance_type == "STANDARD":
-            return int(ship.purchase_value * 0.75)  # 75% payout
-        elif insurance_type == "BASIC":
-            return int(ship.purchase_value * 0.5)  # 50% payout
-        else:
-            return 0
+        net_payout = {"BASIC": 0.45, "STANDARD": 0.65, "PREMIUM": 0.75}.get(insurance_type, 0.0)
+        return int(ship.purchase_value * net_payout)
     
     def is_ship_indestructible(self, ship: Ship) -> bool:
         """Check if a ship is indestructible (like Escape Pod)"""
@@ -253,19 +465,41 @@ class ShipService:
             # Escape pods have minimal repair needs
             ship.combat["hull"] = ship.combat["max_hull"]
             ship.combat["shields"] = ship.combat["max_shields"]
+            # In-place JSONB mutation needs an explicit dirty flag or the
+            # caller's commit silently drops the restore.
+            flag_modified(ship, "combat")
             return {"success": True, "message": "Escape Pod systems restored"}
-        
+
         # Get current combat stats
         combat = ship.combat
-        
-        # Calculate repair amounts
-        hull_repair = int((combat["max_hull"] - combat["hull"]) * (repair_percentage / 100.0))
-        shield_repair = int((combat["max_shields"] - combat["shields"]) * (repair_percentage / 100.0))
-        
+        max_hull = combat["max_hull"]
+        max_shields = combat["max_shields"]
+        cur_hull = combat["hull"]
+        cur_shields = combat["shields"]
+
+        if repair_percentage >= 100:
+            # Full repair restores hull/shields to max exactly — no float
+            # truncation gap at the cap.
+            new_hull = max_hull
+            new_shields = max_shields
+        else:
+            # Partial repair: restore repair_percentage of the missing pool.
+            # Round to 1 decimal to match the resolver's stored precision
+            # (combat-resolver.md damage stack rounds hull/shields to 1dp);
+            # the old int() truncated fractional restores away.
+            new_hull = min(max_hull, round(cur_hull + (max_hull - cur_hull) * (repair_percentage / 100.0), 1))
+            new_shields = min(max_shields, round(cur_shields + (max_shields - cur_shields) * (repair_percentage / 100.0), 1))
+
+        hull_repair = round(new_hull - cur_hull, 1)
+        shield_repair = round(new_shields - cur_shields, 1)
+
         # Apply repairs
-        combat["hull"] = min(combat["max_hull"], combat["hull"] + hull_repair)
-        combat["shields"] = min(combat["max_shields"], combat["shields"] + shield_repair)
-        
+        combat["hull"] = new_hull
+        combat["shields"] = new_shields
+        # In-place JSONB mutation: SQLAlchemy needs flag_modified to detect it
+        # and emit the UPDATE, otherwise the repair is lost on commit.
+        flag_modified(ship, "combat")
+
         # Update maintenance
         if "maintenance" not in ship.maintenance:
             ship.maintenance = {}

@@ -15,9 +15,16 @@ export interface Planet {
   underSiege: boolean;
   siegeDetails?: SiegeDetails;
   specialization?: ColonySpecialization;
+  // Genesis formation state (forming planets are still terraforming).
+  formationStatus?: string | null;
+  formationStartedAt?: string | null;
+  formationCompleteAt?: string | null;
 }
 
-export type PlanetType = 'terran' | 'oceanic' | 'mountainous' | 'desert' | 'frozen';
+// Canonical 12-value set (matches gameserver's PlanetType enum and the vista
+// engine contract). Single source of truth lives in src/vista/contract.ts.
+import type { PlanetType as _PlanetType } from '../vista/contract';
+export type PlanetType = _PlanetType;
 
 export interface ProductionRates {
   fuel: number;

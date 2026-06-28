@@ -16,7 +16,8 @@ class WarpTunnelType(enum.Enum):
     QUANTUM = "QUANTUM"      # Fast quantum tunnel
     ANCIENT = "ANCIENT"      # Old alien technology
     UNSTABLE = "UNSTABLE"    # Unstable warp tunnel
-    ONE_WAY = "ONE_WAY"      # One-way tunnel
+    # NOTE (ADR-0034): ONE_WAY removed. Directionality lives on is_bidirectional,
+    # never on the type enum. A one-way tunnel is is_bidirectional=False.
 
 class WarpTunnelStability(enum.Enum):
     UNSTABLE = "UNSTABLE"    # May collapse or shift
@@ -50,6 +51,9 @@ class WarpTunnel(Base):
     
     # Properties - aligned with data definition
     is_bidirectional = Column(Boolean, nullable=False, default=True)  # Can be used in reverse
+    # ADR-0034: latent one-ways look bidirectional in the raw view until a Warp
+    # Jumper scan reveals them. Default false; worldgen flips ~20% of one-ways.
+    is_latent = Column(Boolean, nullable=False, default=False)
     stability = Column(Float, nullable=False, default=1.0)  # 0.0-1.0 scale
     stability_enum = Column(Enum(WarpTunnelStability, name="warp_tunnel_stability_enum"), nullable=False, default=WarpTunnelStability.STABLE)
     

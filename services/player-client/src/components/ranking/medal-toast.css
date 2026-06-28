@@ -1,0 +1,91 @@
+/* MedalToast — cockpit toast for the medal_awarded WS event.
+   Top-right, fixed overlay; gold CRT showcase matching ranking.css medal-card
+   .earned styling. Out of the primary-action band (SCROLL LAW) and
+   self-dismissing, so it never blocks the controls a screen exists to provide. */
+
+.medal-toast {
+  position: fixed;
+  top: 84px;
+  right: 24px;
+  z-index: 1200;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 360px;
+  padding: 14px 16px 14px 14px;
+  border: 1px solid rgba(255, 215, 0, 0.6);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(60, 45, 0, 0.92) 0%, rgba(20, 16, 0, 0.94) 100%);
+  box-shadow: 0 0 18px rgba(255, 215, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.5);
+  color: #f5e9c8;
+  text-shadow: 0 0 6px rgba(255, 215, 0, 0.5);
+  animation: medal-toast-in 280ms ease-out, medal-toast-glow 2.4s ease-in-out infinite 280ms;
+}
+
+@keyframes medal-toast-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes medal-toast-glow {
+  0%, 100% { box-shadow: 0 0 12px rgba(255, 215, 0, 0.28), 0 8px 24px rgba(0, 0, 0, 0.5); }
+  50% { box-shadow: 0 0 22px rgba(255, 215, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.5); }
+}
+
+.medal-toast-icon {
+  font-size: 2rem;
+  line-height: 1;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.6));
+}
+
+.medal-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.medal-toast-eyebrow {
+  font-size: 0.62rem;
+  letter-spacing: 0.18em;
+  color: rgba(255, 215, 0, 0.85);
+  text-transform: uppercase;
+}
+
+.medal-toast-name {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #ffe27a;
+}
+
+.medal-toast-desc {
+  font-size: 0.78rem;
+  color: rgba(245, 233, 200, 0.85);
+  text-shadow: none;
+}
+
+.medal-toast-cat {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  color: rgba(245, 233, 200, 0.6);
+  text-transform: uppercase;
+  text-shadow: none;
+}
+
+.medal-toast-close {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: rgba(245, 233, 200, 0.6);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.medal-toast-close:hover {
+  color: #ffe27a;
+}

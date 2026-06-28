@@ -4,13 +4,17 @@ Admin Combat Overview API routes
 
 from typing import Optional, List
 from uuid import UUID
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func, desc, and_
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
 from src.auth.dependencies import require_admin
 from src.models.user import User
+from src.models.combat_log import CombatLog
+from src.models.player import Player
 from src.services.combat_analytics_service import CombatAnalyticsService
 
 
@@ -79,6 +83,53 @@ class InterventionResponse(BaseModel):
     timestamp: str
     result: dict
     message: str
+
+
+class CombatStatsResponse(BaseModel):
+    total_combats_today: int
+    total_ships_destroyed: int
+    total_credits_looted: int
+    average_combat_duration: float
+    most_active_combatant: str
+    deadliest_ship_type: str
+
+
+class CombatResolutionRequest(BaseModel):
+    outcome: Optional[str] = Field(None, description="Override combat outcome")
+    notes: Optional[str] = Field(None, description="Admin resolution notes")
+    credits_adjustment: Optional[int] = Field(None, description="Adjusted credits looted")
+
+
+class CombatLogParticipant(BaseModel):
+    id: Optional[str] = None
+    username: str
+    ship_name: Optional[str] = None
+    ship_type: Optional[str] = None
+
+
+class CombatLogDamage(BaseModel):
+    attacker_damage: int
+    defender_damage: int
+
+
+class CombatLogItem(BaseModel):
+    id: str
+    combat_id: str
+    combat_type: str
+    outcome: str
+    rounds: int
+    duration_seconds: float
+    sector_id: Optional[int] = None
+    attacker: CombatLogParticipant
+    defender: CombatLogParticipant
+    damage_dealt: CombatLogDamage
+    credits_looted: int
+    experience_gained: int
+    disputed: bool
+    admin_resolved: bool
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    timestamp: str
 
 
 @router.get("/live", response_model=List[CombatFeedItem])
@@ -240,6 +291,220 @@ async def get_combat_disputes(
             status_code=500,
             detail=f"Failed to retrieve combat disputes: {str(e)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints ported from the retired legacy /admin/combat router so the
+# still-working capabilities are not lost.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stats", response_model=CombatStatsResponse)
+async def get_combat_stats(
+    time_filter: str = Query("24h", description="Time filter: 24h, 7d, 30d"),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Get aggregate combat statistics for the selected time window.
+
+    **Required permissions**: Admin access
+    """
+    now = datetime.utcnow()
+    time_filters = {
+        "24h": now - timedelta(hours=24),
+        "7d": now - timedelta(days=7),
+        "30d": now - timedelta(days=30)
+    }
+
+    time_threshold = time_filters.get(time_filter, time_filters["24h"])
+
+    # Get base query with time filter
+    base_query = db.query(CombatLog).filter(CombatLog.timestamp >= time_threshold)
+
+    # Total combats
+    total_combats = base_query.count()
+
+    # Ships destroyed (a decisive outcome means a ship was destroyed)
+    ships_destroyed = base_query.filter(
+        CombatLog.outcome.in_(["attacker_win", "defender_win"])
+    ).count()
+
+    # Total credits looted
+    total_credits = base_query.with_entities(func.sum(CombatLog.credits_looted)).scalar() or 0
+
+    # Average combat duration
+    avg_duration = base_query.with_entities(func.avg(CombatLog.combat_duration)).scalar() or 0
+
+    # Most active combatant (by participation count)
+    # Player.username is a Python property, not a column — group by id, resolve after
+    most_active_result = db.query(
+        Player.id,
+        func.count().label('combat_count')
+    ).join(
+        CombatLog,
+        (CombatLog.attacker_id == Player.id) | (CombatLog.defender_id == Player.id)
+    ).filter(
+        CombatLog.timestamp >= time_threshold
+    ).group_by(Player.id).order_by(desc('combat_count')).first()
+
+    if most_active_result:
+        most_active_player = db.query(Player).filter(Player.id == most_active_result.id).first()
+        most_active_combatant = most_active_player.username if most_active_player else "None"
+    else:
+        most_active_combatant = "None"
+
+    # Deadliest ship type (by wins)
+    deadliest_result = db.query(
+        CombatLog.attacker_ship_type,
+        func.count().label('wins')
+    ).filter(
+        and_(
+            CombatLog.timestamp >= time_threshold,
+            CombatLog.outcome == "attacker_win"
+        )
+    ).group_by(CombatLog.attacker_ship_type).order_by(desc('wins')).first()
+
+    deadliest_ship_type = deadliest_result.attacker_ship_type if deadliest_result else "None"
+
+    return CombatStatsResponse(
+        total_combats_today=total_combats,
+        total_ships_destroyed=ships_destroyed,
+        total_credits_looted=int(total_credits),
+        average_combat_duration=float(avg_duration),
+        most_active_combatant=most_active_combatant,
+        deadliest_ship_type=deadliest_ship_type
+    )
+
+
+@router.get("/logs", response_model=List[CombatLogItem])
+async def get_combat_logs(
+    time_filter: str = Query("30d", description="Time filter: 24h, 7d, 30d, all"),
+    limit: int = Query(1000, ge=1, le=5000, description="Max number of logs to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    combat_type: Optional[str] = Query(None, description="Filter by combat type"),
+    outcome: Optional[str] = Query(None, description="Filter by outcome"),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Get a paginated, time-filtered list of recorded combat logs.
+
+    Returns the persisted combat history (one row per resolved combat),
+    enriched with attacker/defender usernames resolved from the players table.
+
+    **Required permissions**: Admin access
+    """
+    now = datetime.utcnow()
+    time_filters = {
+        "24h": now - timedelta(hours=24),
+        "7d": now - timedelta(days=7),
+        "30d": now - timedelta(days=30),
+    }
+
+    query = db.query(CombatLog)
+
+    if time_filter != "all":
+        threshold = time_filters.get(time_filter, time_filters["30d"])
+        query = query.filter(CombatLog.timestamp >= threshold)
+
+    if combat_type:
+        query = query.filter(CombatLog.combat_type == combat_type)
+
+    if outcome:
+        query = query.filter(CombatLog.outcome == outcome)
+
+    rows = (
+        query.order_by(desc(CombatLog.timestamp))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # Resolve participant usernames in one round-trip
+    player_ids = set()
+    for row in rows:
+        if row.attacker_id:
+            player_ids.add(row.attacker_id)
+        if row.defender_id:
+            player_ids.add(row.defender_id)
+
+    username_by_id = {}
+    if player_ids:
+        # Player.username is a Python property (nickname or user.username), not a column
+        for p in db.query(Player).filter(Player.id.in_(player_ids)).all():
+            username_by_id[p.id] = p.username
+
+    def participant(player_id, ship_name, ship_type) -> CombatLogParticipant:
+        return CombatLogParticipant(
+            id=str(player_id) if player_id else None,
+            username=username_by_id.get(player_id, "Unknown") if player_id else "Unknown",
+            ship_name=ship_name,
+            ship_type=ship_type,
+        )
+
+    logs: List[CombatLogItem] = []
+    for row in rows:
+        logs.append(
+            CombatLogItem(
+                id=str(row.id),
+                combat_id=str(row.id),
+                combat_type=row.combat_type or "ship_to_ship",
+                outcome=row.outcome,
+                rounds=row.rounds or 0,
+                duration_seconds=float(row.combat_duration or 0.0),
+                sector_id=row.sector_id,
+                attacker=participant(row.attacker_id, row.attacker_ship_name, row.attacker_ship_type),
+                defender=participant(row.defender_id, row.defender_ship_name, row.defender_ship_type),
+                damage_dealt=CombatLogDamage(
+                    attacker_damage=row.attacker_damage_dealt or 0,
+                    defender_damage=row.defender_damage_dealt or 0,
+                ),
+                credits_looted=row.credits_looted or 0,
+                experience_gained=row.experience_gained or 0,
+                disputed=bool(row.disputed),
+                admin_resolved=bool(row.admin_resolved),
+                started_at=row.started_at.isoformat() if row.started_at else None,
+                ended_at=row.ended_at.isoformat() if row.ended_at else None,
+                timestamp=row.timestamp.isoformat() if row.timestamp else now.isoformat(),
+            )
+        )
+
+    return logs
+
+
+@router.post("/{combat_id}/resolve")
+async def resolve_combat_dispute(
+    combat_id: UUID,
+    resolution: CombatResolutionRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Resolve a disputed combat result.
+
+    **Required permissions**: Admin access
+    """
+    combat_log = db.query(CombatLog).filter(CombatLog.id == combat_id).first()
+    if not combat_log:
+        raise HTTPException(status_code=404, detail="Combat log not found")
+
+    # Update combat log with admin resolution
+    if resolution.outcome is not None:
+        combat_log.outcome = resolution.outcome
+
+    if resolution.notes is not None:
+        combat_log.admin_notes = resolution.notes
+
+    if resolution.credits_adjustment is not None:
+        combat_log.credits_looted = resolution.credits_adjustment
+
+    combat_log.admin_resolved = True
+    combat_log.admin_resolved_at = datetime.utcnow()
+
+    db.commit()
+
+    return {"message": "Combat dispute resolved", "combat_id": str(combat_id)}
 
 
 @router.get("/dashboard-summary")

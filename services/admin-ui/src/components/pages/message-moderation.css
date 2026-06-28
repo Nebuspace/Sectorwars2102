@@ -1,0 +1,273 @@
+.message-moderation {
+  padding: 1.5rem 2rem 3rem;
+  color: var(--text-primary);
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Header ------------------------------------------------------------------ */
+.msgmod-header {
+  margin-bottom: 1.5rem;
+}
+
+.msgmod-header h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 0.35rem;
+}
+
+.msgmod-subtitle {
+  color: var(--text-tertiary);
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+/* Sections ---------------------------------------------------------------- */
+.msgmod-section {
+  margin-bottom: 2rem;
+}
+
+.msgmod-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.msgmod-section-head h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.msgmod-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.msgmod-count {
+  font-size: 0.85rem;
+  color: var(--text-tertiary);
+}
+
+/* Stats ------------------------------------------------------------------- */
+.msgmod-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.msgmod-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 1rem 1.25rem;
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 0.5rem;
+}
+
+.msgmod-stat-card.msgmod-stat-flagged {
+  border-color: var(--status-warning, var(--color-gray-600));
+}
+
+.msgmod-stat-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+}
+
+.msgmod-stat-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.msgmod-stat-flagged .msgmod-stat-value {
+  color: var(--status-warning, var(--text-primary));
+}
+
+/* Table ------------------------------------------------------------------- */
+.msgmod-table-wrap {
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 0.5rem;
+  overflow-x: auto;
+}
+
+.msgmod-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.msgmod-table thead th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  background: var(--surface-secondary);
+  border-bottom: 1px solid var(--border-medium);
+  white-space: nowrap;
+}
+
+.msgmod-table tbody td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  vertical-align: top;
+}
+
+.msgmod-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.msgmod-table tbody tr:hover {
+  background: var(--surface-secondary);
+}
+
+.msgmod-sender,
+.msgmod-recipient {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  word-break: break-all;
+  max-width: 180px;
+}
+
+.msgmod-content {
+  max-width: 420px;
+}
+
+.msgmod-msg-subject {
+  display: block;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.2rem;
+}
+
+.msgmod-msg-body {
+  display: block;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msgmod-sent {
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: 0.82rem;
+}
+
+.msgmod-flag-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--status-warning, var(--text-primary));
+  background: color-mix(in srgb, var(--status-warning, var(--color-gray-600)) 18%, transparent);
+  border: 1px solid var(--status-warning, var(--border-medium));
+}
+
+/* Actions ----------------------------------------------------------------- */
+.msgmod-actions-col {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.msgmod-row-actions {
+  display: inline-flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.msgmod-btn {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border-medium);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.msgmod-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.msgmod-btn-secondary {
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+}
+
+.msgmod-btn-secondary:hover:not(:disabled) {
+  background: var(--interactive-secondary-hover, var(--color-gray-600));
+  color: var(--text-primary);
+}
+
+.msgmod-btn-danger {
+  background: color-mix(in srgb, var(--status-error, var(--color-gray-600)) 16%, transparent);
+  color: var(--status-error, var(--text-primary));
+  border-color: var(--status-error, var(--border-medium));
+}
+
+.msgmod-btn-danger:hover:not(:disabled) {
+  background: var(--status-error, var(--color-gray-600));
+  color: var(--color-gray-50, #fff);
+}
+
+/* Empty / error states ---------------------------------------------------- */
+.msgmod-empty {
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 0.5rem;
+}
+
+.msgmod-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 1rem;
+  border-radius: 0.5rem;
+  color: var(--status-error, var(--text-primary));
+  background: color-mix(in srgb, var(--status-error, var(--color-gray-700)) 14%, transparent);
+  border: 1px solid var(--status-error, var(--border-medium));
+}
+
+.msgmod-inline-error {
+  padding: 0.75rem 1rem;
+  color: var(--text-tertiary);
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 0.5rem;
+}
+
+/* Pagination -------------------------------------------------------------- */
+.msgmod-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.msgmod-page-indicator {
+  font-size: 0.85rem;
+  color: var(--text-tertiary);
+}

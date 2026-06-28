@@ -15,26 +15,59 @@ interface User {
   last_login: string | null;
 }
 
+/**
+ * Normalize a FastAPI error into a renderable string. `detail` is a plain
+ * string for HTTPException errors but an array of {loc, msg, type} objects
+ * for 422 validation errors — rendering the raw value would break React.
+ */
+const extractErrorDetail = (err: any, fallback: string): string => {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item: any) => (typeof item?.msg === 'string' ? item.msg : JSON.stringify(item)))
+      .join('; ');
+  }
+  return err?.message || fallback;
+};
+
+/**
+ * NPC filler-account detection (v1 heuristic, client-side).
+ *
+ * Pattern-matches the `npc_filler_<n>` usernames and `@dev.local` emails
+ * observed in seeded dev data. This is observed-data matching only — no
+ * backend account-kind field exists yet, and nothing formally reserves
+ * either format. If a real `kind`/`is_npc` flag is ever added to the user
+ * schema, replace this heuristic with it.
+ */
+const isNpcAccount = (user: Pick<User, 'username' | 'email'>): boolean =>
+  user.username.startsWith('npc_filler_') ||
+  (user.email?.endsWith('@dev.local') ?? false);
+
 const UsersManager: React.FC = () => {
   const { user: currentUser } = useAuth();
   const { users, loadUsers, isLoading, error: contextError } = useAdmin();
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const hasLoaded = useRef(false);
   const [editMode, setEditMode] = useState<boolean>(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
   const [confirmUsername, setConfirmUsername] = useState<string>('');
-  
+  const [showResetModal, setShowResetModal] = useState<boolean>(false);
+  const [resetPassword, setResetPassword] = useState<string>('');
+
   // Search/filter state
   const [searchTerm, setSearchTerm] = useState<string>('');
-  
+  const [includeNpc, setIncludeNpc] = useState<boolean>(true);
+
   // Form states for new user
   const [newUsername, setNewUsername] = useState<string>('');
   const [newEmail, setNewEmail] = useState<string>('');
   const [newPassword, setNewPassword] = useState<string>('');
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
-  
+
   // Form states for edit user
   const [editUsername, setEditUsername] = useState<string>('');
   const [editEmail, setEditEmail] = useState<string>('');
@@ -51,18 +84,28 @@ const UsersManager: React.FC = () => {
   // Handle create user form submission
   const handleCreateUser = async (e: FormEvent) => {
     e.preventDefault();
-    
+
     try {
       setError(null);
+      setSuccessMessage(null);
 
-      const userData = {
-        username: newUsername,
-        email: newEmail || null,
-        password: newPassword,
-        is_admin: isAdmin
-      };
-
-      await api.post('/api/v1/admin/users', userData);
+      if (isAdmin) {
+        // POST /api/v1/users/admin (users.py:85) — creates the user AND its
+        // AdminCredentials row; password is required (min 8 chars).
+        await api.post('/api/v1/users/admin', {
+          username: newUsername,
+          email: newEmail || null,
+          password: newPassword
+        });
+      } else {
+        // POST /api/v1/users/ (users.py:42) — creates a non-admin account.
+        // The backend ignores any password (no credentials row is created),
+        // so we don't collect or send one; these accounts sign in via OAuth.
+        await api.post('/api/v1/users/', {
+          username: newUsername,
+          email: newEmail || null
+        });
+      }
 
       // Reset form
       setNewUsername('');
@@ -70,12 +113,13 @@ const UsersManager: React.FC = () => {
       setNewPassword('');
       setIsAdmin(false);
       setShowCreateModal(false);
-      
+      setSuccessMessage(`User "${newUsername}" created successfully.`);
+
       // Refresh users list
       loadUsers();
     } catch (err: any) {
       console.error('Error creating user:', err);
-      setError(err.response?.data?.detail || err.message || 'Failed to create user');
+      setError(extractErrorDetail(err, 'Failed to create user'));
     }
   };
 
@@ -96,24 +140,28 @@ const UsersManager: React.FC = () => {
     
     try {
       setError(null);
+      setSuccessMessage(null);
 
+      // PUT /api/v1/users/{id} (users.py:156) — partial update; is_active
+      // doubles as the activate/deactivate control (no dedicated endpoints exist).
       const updateData = {
         username: editUsername,
         email: editEmail || null,
         is_active: editIsActive
       };
 
-      await api.put(`/api/v1/admin/users/${selectedUser.id}`, updateData);
+      await api.put(`/api/v1/users/${selectedUser.id}`, updateData);
 
       // Reset edit state
       setEditMode(false);
       setSelectedUser(null);
-      
+      setSuccessMessage(`User "${editUsername}" updated successfully.`);
+
       // Refresh users list
       loadUsers();
     } catch (err: any) {
       console.error('Error updating user:', err);
-      setError(err.response?.data?.detail || err.message || 'Failed to update user');
+      setError(extractErrorDetail(err, 'Failed to update user'));
     }
   };
 
@@ -132,33 +180,57 @@ const UsersManager: React.FC = () => {
     
     try {
       setError(null);
+      setSuccessMessage(null);
 
-      await api.delete(`/api/v1/admin/users/${selectedUser.id}`);
+      // DELETE /api/v1/users/{id} (users.py:210) — soft delete (sets deleted=true).
+      await api.delete(`/api/v1/users/${selectedUser.id}`);
 
       // Reset delete state
       setShowDeleteConfirm(false);
       setSelectedUser(null);
       setConfirmUsername('');
-      
+      setSuccessMessage(`User "${selectedUser.username}" deleted.`);
+
       // Refresh users list
       loadUsers();
     } catch (err: any) {
       console.error('Error deleting user:', err);
-      setError(err.response?.data?.detail || err.message || 'Failed to delete user');
+      setError(extractErrorDetail(err, 'Failed to delete user'));
     }
   };
 
-  // Handle reset password
-  const handleResetPassword = async (userId: string) => {
+  // Handle reset password click — opens the modal (admin accounts only:
+  // PUT /users/{id}/password 404s for non-admin users by design).
+  const handleResetClick = (user: User) => {
+    setSelectedUser(user);
+    setResetPassword('');
+    setShowResetModal(true);
+  };
+
+  // Handle reset password form submission
+  const handleResetPassword = async (e: FormEvent) => {
+    e.preventDefault();
+
+    if (!selectedUser) return;
+
     try {
       setError(null);
+      setSuccessMessage(null);
 
-      await api.post(`/api/v1/admin/users/${userId}/reset-password`, {});
+      // PUT /api/v1/users/{id}/password (users.py:242). The endpoint declares a
+      // single non-embedded scalar Body param, so the request body is the raw
+      // JSON-encoded password string (not an object).
+      await api.put(`/api/v1/users/${selectedUser.id}/password`, JSON.stringify(resetPassword), {
+        headers: { 'Content-Type': 'application/json' }
+      });
 
-      alert('Password reset successfully. New password has been generated.');
+      setShowResetModal(false);
+      setSelectedUser(null);
+      setResetPassword('');
+      setSuccessMessage('Password updated successfully.');
     } catch (err: any) {
       console.error('Error resetting password:', err);
-      setError(err.response?.data?.detail || err.message || 'Failed to reset password');
+      setError(extractErrorDetail(err, 'Failed to reset password'));
     }
   };
 
@@ -175,10 +247,11 @@ const UsersManager: React.FC = () => {
     }).format(date);
   };
 
-  // Filter users based on search term
+  // Filter users based on NPC toggle and search term
   const filteredUsers = users.filter(user => {
+    if (!includeNpc && isNpcAccount(user)) return false;
     if (!searchTerm) return true;
-    
+
     const searchLower = searchTerm.toLowerCase();
     const statusText = !user.is_active ? 'inactive' : user.is_admin ? 'admin' : 'active';
     
@@ -210,6 +283,11 @@ const UsersManager: React.FC = () => {
                   (filtered by "{searchTerm}")
                 </span>
               )}
+              {!includeNpc && (
+                <span className="ml-2 text-xs">
+                  (NPC accounts hidden)
+                </span>
+              )}
             </div>
             <div className="search-box flex-1 max-w-md">
               <input
@@ -229,6 +307,15 @@ const UsersManager: React.FC = () => {
                 </button>
               )}
             </div>
+            <label className="form-checkbox text-muted" title="Heuristic: matches npc_filler_* usernames / @dev.local emails observed in seeded dev data (no backend account-kind field exists yet)">
+              <input
+                type="checkbox"
+                checked={includeNpc}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setIncludeNpc(e.target.checked)}
+                className="mr-2"
+              />
+              Include NPC accounts
+            </label>
           </div>
           <button 
             className="btn btn-primary"
@@ -242,6 +329,13 @@ const UsersManager: React.FC = () => {
           <div className="alert alert-error mb-6">
             <p>{displayError}</p>
             <button className="btn btn-sm btn-outline" onClick={() => setError(null)}>Dismiss</button>
+          </div>
+        )}
+
+        {successMessage && (
+          <div className="alert alert-success mb-6">
+            <p>{successMessage}</p>
+            <button className="btn btn-sm btn-outline" onClick={() => setSuccessMessage(null)}>Dismiss</button>
           </div>
         )}
         
@@ -267,7 +361,12 @@ const UsersManager: React.FC = () => {
                 <tbody>
                   {filteredUsers.map((user: User) => (
                     <tr key={user.id}>
-                      <td className="font-medium">{user.username || <span className="text-muted">[No Username]</span>}</td>
+                      <td className="font-medium">
+                        {user.username || <span className="text-muted">[No Username]</span>}
+                        {isNpcAccount(user) && (
+                          <span className="badge badge-info ml-2" title="Matches the npc_filler_* / @dev.local pattern observed in seeded dev data (heuristic)">NPC</span>
+                        )}
+                      </td>
                       <td className="text-muted">{user.email || 'N/A'}</td>
                       <td>
                         <span className={`badge ${!user.is_active ? 'badge-error' : user.is_admin ? 'badge-warning' : 'badge-success'}`}>
@@ -297,10 +396,12 @@ const UsersManager: React.FC = () => {
                               >
                                 Delete
                               </button>
+                              {/* Backend only supports password resets for admin accounts
+                                  (PUT /users/{id}/password 404s otherwise) */}
                               {user.is_admin && (
-                                <button 
+                                <button
                                   className="btn btn-sm btn-outline btn-warning"
-                                  onClick={() => handleResetPassword(user.id)}
+                                  onClick={() => handleResetClick(user)}
                                   title="Reset Password"
                                 >
                                   Reset
@@ -352,20 +453,6 @@ const UsersManager: React.FC = () => {
                       className="form-input"
                       value={newEmail}
                       onChange={(e: ChangeEvent<HTMLInputElement>) => setNewEmail(e.target.value)}
-                      required
-                    />
-                  </div>
-                  
-                  <div className="form-group">
-                    <label htmlFor="password" className="form-label">Password</label>
-                    <input
-                      id="password"
-                      type="password"
-                      className="form-input"
-                      value={newPassword}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) => setNewPassword(e.target.value)}
-                      required
-                      minLength={8}
                     />
                   </div>
                   
@@ -380,6 +467,29 @@ const UsersManager: React.FC = () => {
                       Grant Admin Privileges
                     </label>
                   </div>
+
+                  {/* Only admin accounts get a password here: POST /users/admin stores
+                      AdminCredentials, while POST /users/ ignores passwords entirely
+                      (non-admin accounts authenticate via OAuth). */}
+                  {isAdmin ? (
+                    <div className="form-group">
+                      <label htmlFor="password" className="form-label">Password</label>
+                      <input
+                        id="password"
+                        type="password"
+                        className="form-input"
+                        value={newPassword}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => setNewPassword(e.target.value)}
+                        required
+                        minLength={8}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-muted text-xs">
+                      The backend does not set a password for non-admin accounts created
+                      here — the user will need to sign in via OAuth.
+                    </p>
+                  )}
                   
                   <div className="modal-footer">
                     <button type="button" className="btn btn-outline" onClick={() => setShowCreateModal(false)}>
@@ -401,7 +511,10 @@ const UsersManager: React.FC = () => {
             <div className="modal">
               <div className="modal-header">
                 <h3 className="modal-title">Edit User: {selectedUser.username}</h3>
-                <button className="btn btn-sm btn-ghost" onClick={() => setEditMode(false)}>×</button>
+                <button className="btn btn-sm btn-ghost" onClick={() => {
+                  setEditMode(false);
+                  setSelectedUser(null);
+                }}>×</button>
               </div>
               <div className="modal-body">
                 <form onSubmit={handleSaveEdit} className="space-y-4">
@@ -427,6 +540,7 @@ const UsersManager: React.FC = () => {
                       className="form-input"
                       value={editEmail}
                       onChange={(e: ChangeEvent<HTMLInputElement>) => setEditEmail(e.target.value)}
+                      required
                     />
                   </div>
                   
@@ -465,7 +579,10 @@ const UsersManager: React.FC = () => {
             <div className="modal">
               <div className="modal-header">
                 <h3 className="modal-title">Delete User</h3>
-                <button className="btn btn-sm btn-ghost" onClick={() => setShowDeleteConfirm(false)}>×</button>
+                <button className="btn btn-sm btn-ghost" onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setSelectedUser(null);
+                }}>×</button>
               </div>
               <div className="modal-body">
                 <p className="mb-4">
@@ -489,8 +606,8 @@ const UsersManager: React.FC = () => {
                   }}>
                     Cancel
                   </button>
-                  <button 
-                    type="button" 
+                  <button
+                    type="button"
                     className="btn btn-error"
                     disabled={confirmUsername !== selectedUser.username}
                     onClick={handleConfirmDelete}
@@ -498,6 +615,53 @@ const UsersManager: React.FC = () => {
                     Delete User
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Reset Password Modal */}
+        {showResetModal && selectedUser && (
+          <div className="modal-overlay">
+            <div className="modal">
+              <div className="modal-header">
+                <h3 className="modal-title">Reset Password: {selectedUser.username}</h3>
+                <button className="btn btn-sm btn-ghost" onClick={() => {
+                  setShowResetModal(false);
+                  setSelectedUser(null);
+                }}>×</button>
+              </div>
+              <div className="modal-body">
+                <form onSubmit={handleResetPassword} className="space-y-4">
+                  <p className="mb-4">
+                    Set a new password for the admin account <strong>{selectedUser.username}</strong>.
+                  </p>
+                  <div className="form-group">
+                    <label htmlFor="reset-password" className="form-label">New Password</label>
+                    <input
+                      id="reset-password"
+                      type="password"
+                      className="form-input"
+                      value={resetPassword}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => setResetPassword(e.target.value)}
+                      required
+                      minLength={8}
+                      autoFocus
+                    />
+                  </div>
+
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-outline" onClick={() => {
+                      setShowResetModal(false);
+                      setSelectedUser(null);
+                    }}>
+                      Cancel
+                    </button>
+                    <button type="submit" className="btn btn-warning" disabled={resetPassword.length < 8}>
+                      Reset Password
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
           </div>

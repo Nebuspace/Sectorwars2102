@@ -1,0 +1,450 @@
+/* Terraforming Panel */
+.terraforming-panel {
+  padding: 16px;
+  background: linear-gradient(135deg, #16261e 0%, #16213e 100%);
+  border: 1px solid var(--border-color, #334155);
+  border-radius: 8px;
+}
+
+.terraforming-panel.terraforming-loading,
+.terraforming-panel.terraforming-error,
+.terraforming-panel.terraforming-unavailable {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 100px;
+  color: #889;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.terraforming-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #444;
+  border-top-color: #44dd88;
+  border-radius: 50%;
+  animation: terraforming-spin 0.8s linear infinite;
+}
+
+@keyframes terraforming-spin {
+  to { transform: rotate(360deg); }
+}
+
+.terraforming-retry-btn {
+  padding: 4px 12px;
+  border: 1px solid #44dd88;
+  border-radius: 4px;
+  background: transparent;
+  color: #44dd88;
+  cursor: pointer;
+}
+
+.unavailable-icon {
+  font-size: 1.2rem;
+}
+
+.terraforming-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.terraforming-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #fff;
+}
+
+.terraforming-hab-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(68, 221, 136, 0.15);
+  color: #44dd88;
+  border: 1px solid rgba(68, 221, 136, 0.4);
+}
+
+/* ---- Active project ---- */
+.terraforming-active {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 12px;
+  margin-bottom: 14px;
+  background: rgba(68, 221, 136, 0.06);
+  border: 1px solid rgba(68, 221, 136, 0.3);
+  border-radius: 8px;
+}
+
+/* Pulsing planet icon ring */
+.terraforming-planet-pulse {
+  position: relative;
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.terraforming-planet-pulse .planet-glyph {
+  font-size: 1.8rem;
+  z-index: 1;
+}
+
+.terraforming-planet-pulse .pulse-ring {
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(68, 221, 136, 0.7);
+  border-radius: 50%;
+  animation: terraform-pulse 2.6s ease-out infinite;
+}
+
+.terraforming-planet-pulse .pulse-ring-delay {
+  animation-delay: 1.3s;
+}
+
+@keyframes terraform-pulse {
+  0% {
+    transform: scale(0.65);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+}
+
+.terraforming-active-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.active-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #44dd88;
+}
+
+.active-target {
+  font-size: 0.78rem;
+  color: #cde;
+}
+
+.terraforming-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.terraforming-progress-bar {
+  flex: 1;
+  height: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(68, 221, 136, 0.25);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.terraforming-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #1f9d5f, #44dd88, #aaffcc);
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+.terraforming-progress-pct {
+  font-size: 0.78rem;
+  color: #aaffcc;
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
+
+.active-complete-note {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #aaffcc;
+}
+
+.active-time {
+  font-size: 0.72rem;
+  color: #99ccaa;
+  font-variant-numeric: tabular-nums;
+}
+
+.active-bonus {
+  font-size: 0.7rem;
+  color: #889;
+  font-style: italic;
+}
+
+.cancel-note {
+  font-size: 0.68rem;
+  color: #997755;
+}
+
+/* ---- Maxed / empty states ---- */
+.terraforming-maxed,
+.terraforming-no-levels {
+  padding: 10px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  background: rgba(0, 255, 204, 0.05);
+  border: 1px solid rgba(0, 255, 204, 0.2);
+  color: #7dd3b0;
+  font-size: 0.8rem;
+  font-style: italic;
+  text-align: center;
+}
+
+/* ---- Level cards ---- */
+.terraforming-levels-intro {
+  font-size: 0.75rem;
+  color: #99aabb;
+  margin-bottom: 10px;
+}
+
+.terraforming-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.terraforming-level-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(68, 221, 136, 0.18);
+  border-radius: 6px;
+  transition: border-color 0.2s ease;
+}
+
+.terraforming-level-card:hover {
+  border-color: rgba(68, 221, 136, 0.45);
+}
+
+.level-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.level-card-tier {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: rgba(68, 221, 136, 0.15);
+  color: #44dd88;
+  border: 1px solid rgba(68, 221, 136, 0.35);
+}
+
+.level-card-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #ddd;
+}
+
+.level-card-boost {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #aaffcc;
+}
+
+.level-card-costs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 0.72rem;
+  color: #99aabb;
+}
+
+.level-cost.credits {
+  color: var(--credits-color, #fbbf24);
+}
+
+.level-cost.duration {
+  margin-left: auto;
+  color: #8899aa;
+}
+
+.terraforming-btn {
+  padding: 6px 12px;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: transparent;
+  color: #ddd;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  align-self: flex-start;
+}
+
+.terraforming-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.start-btn {
+  border-color: #44dd88;
+  color: #44dd88;
+  font-weight: 600;
+}
+
+.start-btn:hover:not(:disabled) {
+  background: rgba(68, 221, 136, 0.15);
+  color: #aaffcc;
+}
+
+.cancel-btn {
+  border-color: #ffaa44;
+  color: #ffaa44;
+  margin-top: 2px;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  background: rgba(255, 170, 68, 0.12);
+}
+
+.terraforming-message {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #aac;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* ---- Capstone: Confirm Biome (terminal terraform step) ---- */
+.terraforming-capstone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.06), rgba(68, 221, 136, 0.06));
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 8px;
+}
+
+.capstone-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.capstone-tag {
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  background: rgba(34, 211, 238, 0.18);
+  color: #67e8f9;
+  border: 1px solid rgba(34, 211, 238, 0.45);
+}
+
+.capstone-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #a5f3ec;
+}
+
+.capstone-intro {
+  font-size: 0.74rem;
+  color: #9fc7c9;
+  line-height: 1.4;
+}
+
+.capstone-btn {
+  border-color: #22d3ee;
+  color: #67e8f9;
+  font-weight: 600;
+  align-self: flex-start;
+}
+
+.capstone-btn:hover:not(:disabled) {
+  background: rgba(34, 211, 238, 0.15);
+  color: #a5f3ec;
+}
+
+/* Reclassification result (after a successful confirm) */
+.capstone-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.capstone-transition {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #aaffcc;
+}
+
+.capstone-arrow {
+  color: #67e8f9;
+}
+
+.capstone-result-note {
+  font-size: 0.72rem;
+  color: #7dd3b0;
+  font-style: italic;
+}
+
+/* Gate / success feedback under the capstone */
+.capstone-message {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 0.76rem;
+  text-align: center;
+}
+
+.capstone-message-ok {
+  background: rgba(68, 221, 136, 0.1);
+  border: 1px solid rgba(68, 221, 136, 0.3);
+  color: #aaffcc;
+}
+
+.capstone-message-gate {
+  background: rgba(255, 170, 68, 0.1);
+  border: 1px solid rgba(255, 170, 68, 0.35);
+  color: #ffc58a;
+}
+
+/* ---- Reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  .terraforming-spinner {
+    animation-duration: 2s;
+  }
+
+  .terraforming-planet-pulse .pulse-ring {
+    animation: none;
+    transform: scale(1);
+    opacity: 0.5;
+  }
+
+  .terraforming-planet-pulse .pulse-ring-delay {
+    display: none;
+  }
+
+  .terraforming-progress-fill {
+    transition: none;
+  }
+
+  .terraforming-level-card {
+    transition: none;
+  }
+}

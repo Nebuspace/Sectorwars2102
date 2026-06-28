@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_admin_user
 from src.services.audit_service import AuditService
 from src.models.user import User
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/admin/audit", tags=["audit"])
 async def create_audit_log(
     request: dict,
     admin: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """
     Create a manual audit log entry (for admin actions that need explicit logging)
@@ -64,7 +64,7 @@ async def get_audit_logs(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     admin: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """
     Get audit logs with filtering and pagination
@@ -124,7 +124,7 @@ async def get_security_violations(
     start_date: Optional[datetime] = None,
     limit: int = Query(100, ge=1, le=500),
     admin: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """
     Get recent security violations
@@ -150,7 +150,7 @@ async def get_user_activity_summary(
     user_id: UUID,
     days: int = Query(30, ge=1, le=365),
     admin: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """
     Get activity summary for a specific user

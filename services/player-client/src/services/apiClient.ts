@@ -65,9 +65,12 @@ async function doRefreshToken(): Promise<void> {
   try {
     console.log('[apiClient] Refreshing access token...');
 
-    // Use a plain axios call (not apiClient) to avoid re-entering the
-    // interceptor if the refresh endpoint itself returns 401.
-    const response = await axios.post(
+    // The refresh call must go through a PRISTINE axios instance: apiClient
+    // would re-enter this interceptor, and the GLOBAL axios instance carries
+    // AuthContext's own 401 response interceptor — routing a dead refresh
+    // token through it turns a fast-fail logout into a circular await that
+    // silently hangs every queued request.
+    const response = await axios.create().post(
       `${getBaseURL()}/api/v1/auth/refresh`,
       { refresh_token: storedRefreshToken },
       { headers: { Authorization: '' } },
@@ -96,6 +99,35 @@ async function doRefreshToken(): Promise<void> {
   }
 }
 
+// Single-flight wrapper so the response interceptor AND the WebSocket reconnect
+// share ONE in-flight refresh (no dual-lock races between the two subsystems).
+function runRefresh(): Promise<void> {
+  if (!isRefreshing) {
+    isRefreshing = true;
+    refreshPromise = doRefreshToken().finally(() => {
+      isRefreshing = false;
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise as Promise<void>;
+}
+
+/** The current access token (canonical store; updated by every refresh). */
+export function getAccessToken(): string | null {
+  return localStorage.getItem('accessToken');
+}
+
+/** Refresh the access token via the shared single-flight, returning the new
+ *  token, or null if refresh failed (e.g. the refresh token is also expired). */
+export async function refreshAccessToken(): Promise<string | null> {
+  try {
+    await runRefresh();
+    return localStorage.getItem('accessToken');
+  } catch {
+    return null;
+  }
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
@@ -108,18 +140,9 @@ apiClient.interceptors.response.use(
     ) {
       originalRequest._retry = true;
 
-      // Deduplicate: if a refresh is already in-flight, wait for it.
-      if (!isRefreshing) {
-        isRefreshing = true;
-        refreshPromise = doRefreshToken().finally(() => {
-          isRefreshing = false;
-          refreshPromise = null;
-        });
-      }
-
       try {
-        // All concurrent callers await the same promise.
-        await refreshPromise;
+        // Shared single-flight refresh (same path the WS reconnect uses).
+        await runRefresh();
 
         // Retry the original request with the fresh token.
         const newToken = localStorage.getItem('accessToken');

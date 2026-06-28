@@ -1,8 +1,34 @@
-/* Central Nexus Manager Styles */
+/* Central Nexus Manager Styles
+ *
+ * This page previously leaned on light fallbacks (white card surfaces, light
+ * grey hover/header backgrounds, dark text) that rendered as a jarring white
+ * island inside the dark admin shell. We pin the design-system dark tokens on
+ * the page root (same approach as regional-governor-dashboard.css) AND map the
+ * page-local chrome onto those tokens, so the page stays dark with readable
+ * light text regardless of the browser's prefers-color-scheme. Intentional
+ * accents (the indigo primary, semantic status badges) are kept.
+ */
 .central-nexus-manager {
   padding: 24px;
   max-width: 1400px;
   margin: 0 auto;
+
+  /* Dark-pin the design-system tokens to the shell palette */
+  --text-primary: var(--color-gray-50);
+  --text-secondary: var(--color-gray-300);
+  --text-tertiary: var(--color-gray-400);
+
+  --surface-primary: var(--color-gray-800);
+  --surface-secondary: var(--color-gray-700);
+  --surface-elevated: var(--color-gray-700);
+
+  --border-light: var(--color-gray-700);
+  --border-medium: var(--color-gray-600);
+
+  --status-error-bg: rgba(239, 68, 68, 0.12);
+  --status-error-text: #fca5a5;
+
+  color: var(--text-primary);
 }
 
 /* Header */
@@ -14,12 +40,12 @@
   font-size: 32px;
   font-weight: 600;
   margin: 0 0 8px 0;
-  color: var(--title-color, #1a1a1a);
+  color: var(--text-primary);
 }
 
 .nexus-header p {
   font-size: 16px;
-  color: var(--subtitle-color, #666);
+  color: var(--text-secondary);
   margin: 0;
 }
 
@@ -28,7 +54,7 @@
   display: flex;
   gap: 8px;
   margin-bottom: 24px;
-  border-bottom: 2px solid var(--border-color, #e0e0e0);
+  border-bottom: 2px solid var(--border-light);
 }
 
 .central-nexus-manager .tab-button {
@@ -37,14 +63,14 @@
   padding: 12px 24px;
   font-size: 15px;
   font-weight: 500;
-  color: var(--subtitle-color, #666);
+  color: var(--text-secondary);
   cursor: pointer;
   position: relative;
   transition: color 0.2s;
 }
 
 .central-nexus-manager .tab-button:hover {
-  color: var(--text-color, #333);
+  color: var(--text-primary);
 }
 
 .central-nexus-manager .tab-button.active {
@@ -75,8 +101,8 @@
 
 /* Status Card */
 .central-nexus-manager .status-card {
-  background: var(--card-bg, white);
-  border: 1px solid var(--border-color, #e0e0e0);
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   padding: 24px;
 }
@@ -85,7 +111,7 @@
   font-size: 18px;
   font-weight: 600;
   margin: 0 0 16px 0;
-  color: var(--title-color, #1a1a1a);
+  color: var(--text-primary);
 }
 
 .status-info {
@@ -102,12 +128,12 @@
 
 .status-item label {
   font-weight: 500;
-  color: var(--subtitle-color, #666);
+  color: var(--text-secondary);
   min-width: 100px;
 }
 
 .status-item span {
-  color: var(--text-color, #333);
+  color: var(--text-primary);
 }
 
 .status-badge {
@@ -120,18 +146,18 @@
 }
 
 .status-badge.status-active {
-  background: var(--active-bg, #d1fae5);
-  color: var(--active-color, #065f46);
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
 }
 
 .status-badge.status-generating {
-  background: #fef3c7;
-  color: #92400e;
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
 }
 
 .status-badge.status-not-generated {
-  background: var(--inactive-bg, #f3f4f6);
-  color: var(--inactive-color, #4b5563);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
 }
 
 .nexus-id {
@@ -145,8 +171,8 @@
 
 /* Quick Actions */
 .central-nexus-manager .quick-actions {
-  background: var(--card-bg, white);
-  border: 1px solid var(--border-color, #e0e0e0);
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   padding: 24px;
 }
@@ -155,7 +181,7 @@
   font-size: 18px;
   font-weight: 600;
   margin: 0 0 16px 0;
-  color: var(--title-color, #1a1a1a);
+  color: var(--text-primary);
 }
 
 .central-nexus-manager .action-buttons {
@@ -175,12 +201,13 @@
 }
 
 .central-nexus-manager .action-button.refresh {
-  background: var(--hover-bg, #f3f4f6);
-  color: var(--text-color, #374151);
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-medium);
 }
 
 .central-nexus-manager .action-button.refresh:hover {
-  background: var(--hover-color, #e5e7eb);
+  background: var(--surface-elevated);
 }
 
 .central-nexus-manager .action-button.generate,
@@ -207,8 +234,8 @@
 }
 
 .central-nexus-manager .stat-card {
-  background: var(--card-bg, white);
-  border: 1px solid var(--border-color, #e0e0e0);
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   padding: 20px;
   text-align: center;
@@ -217,7 +244,7 @@
 .central-nexus-manager .stat-card h4 {
   font-size: 14px;
   font-weight: 500;
-  color: var(--subtitle-color, #666);
+  color: var(--text-secondary);
   margin: 0 0 8px 0;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -238,13 +265,13 @@
 }
 
 .districts-tab h3 {
-  color: var(--title-color, #1a1a1a);
+  color: var(--text-primary);
 }
 
 .districts-table {
   width: 100%;
-  background: var(--card-bg, white);
-  border: 1px solid var(--border-color, #e0e0e0);
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -255,22 +282,22 @@
 }
 
 .districts-table th {
-  background: var(--header-bg, #f9fafb);
+  background: var(--surface-secondary);
   padding: 12px 16px;
   text-align: left;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-color, #374151);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border-color, #e0e0e0);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .districts-table td {
   padding: 16px;
-  border-bottom: 1px solid var(--border-color, #f3f4f6);
+  border-bottom: 1px solid var(--border-light);
   font-size: 14px;
-  color: var(--text-color, #1a1a1a);
+  color: var(--text-primary);
 }
 
 .districts-table tr:last-child td {
@@ -278,7 +305,7 @@
 }
 
 .districts-table tr:hover {
-  background: var(--hover-bg, #f9fafb);
+  background: var(--surface-secondary);
 }
 
 .district-name {
@@ -297,7 +324,7 @@
 .development-bar {
   flex: 1;
   height: 8px;
-  background: var(--border-color, #e5e7eb);
+  background: var(--surface-secondary);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -320,8 +347,8 @@
 
 .initial-generation-section,
 .regeneration-section {
-  background: var(--card-bg, white);
-  border: 1px solid var(--border-color, #e0e0e0);
+  background: var(--surface-primary);
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   padding: 24px;
 }
@@ -331,12 +358,12 @@
   font-size: 18px;
   font-weight: 600;
   margin: 0 0 16px 0;
-  color: var(--title-color, #1a1a1a);
+  color: var(--text-primary);
 }
 
 .generation-info {
-  background: var(--active-bg, #f0fdf4);
-  border: 1px solid var(--success-border, #bbf7d0);
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.4);
   border-radius: 6px;
   padding: 16px;
   margin-bottom: 16px;
@@ -344,24 +371,24 @@
 
 .generation-info p {
   margin: 0 0 8px 0;
-  color: var(--success-color, #166534);
+  color: #86efac;
   font-size: 14px;
 }
 
 .generation-info ul {
   margin: 0;
   padding-left: 20px;
-  color: var(--success-color, #166534);
+  color: #86efac;
   font-size: 14px;
 }
 
 .warning {
-  background: #fef3c7;
-  border: 1px solid #fde68a;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
   border-radius: 6px;
   padding: 16px;
   margin-bottom: 16px;
-  color: #92400e;
+  color: #fbbf24;
   font-size: 14px;
 }
 
@@ -385,10 +412,10 @@
 .generation-status {
   margin-top: 16px;
   padding: 12px;
-  background: var(--hover-bg, #f9fafb);
+  background: var(--surface-secondary);
   border-radius: 6px;
   font-size: 14px;
-  color: var(--subtitle-color, #666);
+  color: var(--text-secondary);
 }
 
 /* Loading & Error States */
@@ -397,7 +424,7 @@
   align-items: center;
   justify-content: center;
   padding: 40px;
-  color: var(--subtitle-color, #666);
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
@@ -405,7 +432,7 @@
   display: inline-block;
   width: 16px;
   height: 16px;
-  border: 2px solid var(--border-color, #e5e7eb);
+  border: 2px solid var(--border-medium);
   border-top-color: var(--primary-color, #4f46e5);
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
@@ -417,29 +444,29 @@
 }
 
 .central-nexus-manager .error-message {
-  background: var(--error-bg, #fee2e2);
-  border: 1px solid var(--danger-border, #fecaca);
+  background: var(--status-error-bg);
+  border: 1px solid rgba(239, 68, 68, 0.4);
   border-radius: 6px;
   padding: 16px;
   margin-bottom: 24px;
-  color: var(--error-text, #991b1b);
+  color: var(--status-error-text);
   font-size: 14px;
 }
 
 .no-districts {
   text-align: center;
   padding: 40px;
-  color: var(--subtitle-color, #666);
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
 .central-nexus-manager .info-card {
-  background: rgba(79, 70, 229, 0.1);
-  border: 1px solid rgba(79, 70, 229, 0.3);
+  background: rgba(79, 70, 229, 0.15);
+  border: 1px solid rgba(79, 70, 229, 0.4);
   border-radius: 6px;
   padding: 16px;
   margin-bottom: 16px;
-  color: var(--text-color, #1e40af);
+  color: #c7d2fe;
   font-size: 14px;
 }
 
@@ -448,10 +475,10 @@
   align-items: center;
   gap: 8px;
   padding: 12px;
-  background: var(--hover-bg, #f9fafb);
+  background: var(--surface-secondary);
   border-radius: 6px;
   font-size: 14px;
-  color: var(--subtitle-color, #666);
+  color: var(--text-secondary);
 }
 
 /* Responsive */

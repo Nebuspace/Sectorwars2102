@@ -500,15 +500,11 @@ export const PlanetaryManagement: React.FC = () => {
               <div className="detail-section">
                 <h3>Actions</h3>
                 <div className="action-buttons">
-                  <button className="action-button primary">View Colonies</button>
-                  <button className="action-button">Monitor Resources</button>
-                  {selectedPlanet.colonizable && (
-                    <button className="action-button success">Mark for Colonization</button>
-                  )}
-                  {selectedPlanet.ownership.contested && (
-                    <button className="action-button error">Resolve Conflict</button>
-                  )}
-                  <button className="action-button warning">Start Terraforming</button>
+                  <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: 0 }}>
+                    Planet actions (view colonies, monitor resources, mark for
+                    colonization, resolve conflict, start terraforming) are not yet
+                    available — no backend exists for them.
+                  </p>
                 </div>
               </div>
             </div>

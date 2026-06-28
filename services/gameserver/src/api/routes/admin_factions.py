@@ -5,13 +5,14 @@ Admin API routes for managing factions.
 from uuid import UUID
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_admin_user
 from src.models.user import User
-from src.models.faction import Faction, FactionType, FactionMission
+from src.models.faction import Faction, FactionType
 from src.services.faction_service import FactionService
 
 router = APIRouter(prefix="/admin/factions", tags=["admin-factions"])
@@ -48,22 +49,6 @@ class TerritoryUpdateRequest(BaseModel):
     home_sector_id: Optional[str] = None
 
 
-class MissionCreateRequest(BaseModel):
-    title: str = Field(..., min_length=1, max_length=255)
-    description: str
-    mission_type: str = Field(..., description="cargo_delivery, combat, exploration, etc.")
-    credit_reward: int = Field(..., ge=0)
-    reputation_reward: int = Field(..., ge=-100, le=100)
-    min_reputation: int = Field(default=-800, ge=-800, le=800)
-    min_level: int = Field(default=1, ge=1)
-    item_rewards: List[str] = Field(default_factory=list)
-    target_sector_id: Optional[str] = None
-    cargo_type: Optional[str] = None
-    cargo_quantity: Optional[int] = Field(None, ge=1)
-    target_faction_id: Optional[str] = None
-    expires_at: Optional[datetime] = None
-
-
 class ReputationUpdateRequest(BaseModel):
     player_id: str
     change: int = Field(..., ge=-100, le=100)
@@ -94,7 +79,7 @@ class FactionDetailResponse(BaseModel):
 # Admin Endpoints
 @router.get("/", response_model=List[FactionDetailResponse])
 async def list_all_factions(
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
     """Get detailed list of all factions (admin only)."""
@@ -126,7 +111,7 @@ async def list_all_factions(
 @router.post("/", response_model=FactionDetailResponse)
 async def create_faction(
     request: FactionCreateRequest,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
     """Create a new faction (admin only)."""
@@ -175,7 +160,7 @@ async def create_faction(
 async def update_faction(
     faction_id: UUID,
     request: FactionUpdateRequest,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
     """Update a faction (admin only)."""
@@ -216,7 +201,7 @@ async def update_faction(
 @router.delete("/{faction_id}")
 async def delete_faction(
     faction_id: UUID,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
     """Delete a faction (admin only)."""
@@ -252,7 +237,7 @@ async def delete_faction(
 async def update_faction_territory(
     faction_id: UUID,
     request: TerritoryUpdateRequest,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
     """Update faction territory control (admin only)."""
@@ -276,52 +261,11 @@ async def update_faction_territory(
     }
 
 
-@router.post("/{faction_id}/missions", response_model=dict)
-async def create_faction_mission(
-    faction_id: UUID,
-    request: MissionCreateRequest,
-    db=Depends(get_async_session),
-    admin_user: User = Depends(get_current_admin_user)
-):
-    """Create a new mission for a faction (admin only)."""
-    service = FactionService(db)
-    
-    # Verify faction exists
-    faction = await service.get_faction_by_id(faction_id)
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    # Create mission
-    mission = await service.create_mission(
-        faction_id=faction_id,
-        title=request.title,
-        description=request.description,
-        mission_type=request.mission_type,
-        credit_reward=request.credit_reward,
-        reputation_reward=request.reputation_reward,
-        min_reputation=request.min_reputation,
-        min_level=request.min_level,
-        item_rewards=request.item_rewards,
-        target_sector_id=UUID(request.target_sector_id) if request.target_sector_id else None,
-        cargo_type=request.cargo_type,
-        cargo_quantity=request.cargo_quantity,
-        target_faction_id=UUID(request.target_faction_id) if request.target_faction_id else None,
-        expires_at=request.expires_at
-    )
-    
-    return {
-        "success": True,
-        "mission_id": str(mission.id),
-        "title": mission.title,
-        "faction_name": faction.name
-    }
-
-
 @router.put("/{faction_id}/reputation")
 async def update_player_reputation(
     faction_id: UUID,
     request: ReputationUpdateRequest,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
     """Update a player's reputation with a faction (admin only)."""
@@ -349,35 +293,3 @@ async def update_player_reputation(
         "new_level": reputation.current_level.value,
         "new_title": reputation.title
     }
-
-
-@router.get("/missions/all")
-async def list_all_missions(
-    active_only: bool = True,
-    db=Depends(get_async_session),
-    admin_user: User = Depends(get_current_admin_user)
-):
-    """Get all missions across all factions (admin only)."""
-    query = db.query(FactionMission).join(Faction)
-    
-    if active_only:
-        query = query.filter(FactionMission.is_active == 1)
-    
-    missions = query.all()
-    
-    return [
-        {
-            "id": str(mission.id),
-            "faction_id": str(mission.faction_id),
-            "faction_name": mission.faction.name,
-            "title": mission.title,
-            "mission_type": mission.mission_type,
-            "credit_reward": mission.credit_reward,
-            "reputation_reward": mission.reputation_reward,
-            "min_reputation": mission.min_reputation,
-            "is_active": bool(mission.is_active),
-            "expires_at": mission.expires_at,
-            "created_at": mission.created_at
-        }
-        for mission in missions
-    ]

@@ -3,87 +3,96 @@ import PageHeader from '../ui/PageHeader';
 import { AuditLogViewer } from '../security/AuditLogViewer';
 import { MFASetup } from '../auth/MFASetup';
 import { useAuth } from '../../contexts/AuthContext';
+import { api } from '../../utils/auth';
 import './security-dashboard.css';
 
-interface SecurityMetrics {
-  totalLogins24h: number;
-  failedLogins24h: number;
-  activeUsers: number;
-  mfaEnabledUsers: number;
-  totalUsers: number;
-  suspiciousActivities: number;
-  blockedIPs: number;
-  recentThreats: Array<{
-    id: string;
-    timestamp: string;
-    type: string;
-    severity: 'low' | 'medium' | 'high' | 'critical';
-    description: string;
-    status: 'detected' | 'mitigated' | 'investigating';
-  }>;
+// Shape of GET /api/v1/admin/security/report
+// (admin_comprehensive.py -> AISecurityService.generate_security_report)
+interface SecurityReport {
+  timestamp: string;
+  players: {
+    total: number;
+    blocked: number;
+    high_risk: number;
+    blocked_percentage: number;
+  };
+  violations: {
+    total: number;
+    by_type: Record<string, number>;
+    average_per_player: number;
+  };
+  costs: {
+    total_today_usd: number;
+    average_per_player_usd: number;
+    highest_spender: [string, number] | null;
+    players_over_limit: number;
+  };
+  rate_limits: {
+    requests_per_minute: number;
+    requests_per_hour: number;
+    requests_per_day: number;
+    max_cost_per_day_usd: number;
+  };
+}
+
+// Shape of GET /api/v1/admin/security/alerts
+interface SecurityAlert {
+  type: string;
+  severity: string;
+  message: string;
+  details: unknown;
+  timestamp: string;
+}
+
+interface SecurityAlertsResponse {
+  alerts: SecurityAlert[];
+  alert_count: number;
+  high_priority_count: number;
 }
 
 export const SecurityDashboard: React.FC = () => {
   const { user } = useAuth();
-  const [metrics, setMetrics] = useState<SecurityMetrics | null>(null);
+  const [report, setReport] = useState<SecurityReport | null>(null);
+  const [alerts, setAlerts] = useState<SecurityAlertsResponse | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showMFASetup, setShowMFASetup] = useState(false);
-  const [selectedTimeRange, setSelectedTimeRange] = useState('24h');
   const [activeTab, setActiveTab] = useState<'overview' | 'audit' | 'threats' | 'settings'>('overview');
 
   useEffect(() => {
-    fetchSecurityMetrics();
-    const interval = setInterval(fetchSecurityMetrics, 30000); // Refresh every 30 seconds
+    fetchSecurityOverview();
+    const interval = setInterval(fetchSecurityOverview, 30000); // Refresh every 30 seconds
     return () => clearInterval(interval);
-  }, [selectedTimeRange]);
+  }, []);
 
-  const getPlaceholderMetrics = (): SecurityMetrics => ({
-    totalLogins24h: 0,
-    failedLogins24h: 0,
-    activeUsers: 0,
-    mfaEnabledUsers: 0,
-    totalUsers: 0,
-    suspiciousActivities: 0,
-    blockedIPs: 0,
-    recentThreats: []
-  });
+  const fetchSecurityOverview = async () => {
+    const [reportResult, alertsResult] = await Promise.allSettled([
+      api.get('/api/v1/admin/security/report'),
+      api.get('/api/v1/admin/security/alerts')
+    ]);
 
-  const fetchSecurityMetrics = async () => {
-    try {
-      const response = await fetch(`/api/v1/admin/security/metrics?timeRange=${selectedTimeRange}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`
-        }
-      });
+    const failures: string[] = [];
 
-      if (!response.ok) {
-        console.warn('Security metrics endpoint returned non-OK status');
-        setMetrics(null);
-        return;
-      }
-
-      const data = await response.json();
-      setMetrics(data);
-    } catch (error) {
-      // Network error or other failure — show error state, not fake data
-      console.warn('Security metrics unavailable');
-      setMetrics(getPlaceholderMetrics());
-    } finally {
-      setLoading(false);
+    if (reportResult.status === 'fulfilled') {
+      setReport(reportResult.value.data as SecurityReport);
+    } else {
+      const reason: any = reportResult.reason;
+      failures.push(`security report: ${reason?.response?.data?.detail || reason?.message || 'request failed'}`);
     }
+
+    if (alertsResult.status === 'fulfilled') {
+      setAlerts(alertsResult.value.data as SecurityAlertsResponse);
+    } else {
+      const reason: any = alertsResult.reason;
+      failures.push(`security alerts: ${reason?.response?.data?.detail || reason?.message || 'request failed'}`);
+    }
+
+    setOverviewError(failures.length > 0 ? `Failed to load ${failures.join('; ')}` : null);
+    setLoading(false);
   };
 
   const getSeverityClass = (severity: string) => {
     return `severity-${severity}`;
-  };
-
-  const getStatusIcon = (status: string) => {
-    const icons: Record<string, string> = {
-      detected: 'fa-exclamation-triangle',
-      mitigated: 'fa-check-circle',
-      investigating: 'fa-search'
-    };
-    return icons[status] || 'fa-question-circle';
   };
 
   return (
@@ -126,125 +135,156 @@ export const SecurityDashboard: React.FC = () => {
 
       {activeTab === 'overview' && (
         <div className="security-overview">
-          <div className="time-range-selector">
-            <label>Time Range:</label>
-            <select 
-              value={selectedTimeRange} 
-              onChange={(e) => setSelectedTimeRange(e.target.value)}
-            >
-              <option value="1h">Last Hour</option>
-              <option value="24h">Last 24 Hours</option>
-              <option value="7d">Last 7 Days</option>
-              <option value="30d">Last 30 Days</option>
-            </select>
-          </div>
-
           {loading ? (
             <div className="loading-state">
               <i className="fas fa-spinner fa-spin"></i>
-              <span>Loading security metrics...</span>
+              <span>Loading security overview...</span>
             </div>
-          ) : metrics && (
+          ) : (
             <>
-              <div className="security-metrics">
-                <div className="metric-card">
-                  <div className="metric-icon">
-                    <i className="fas fa-sign-in-alt"></i>
-                  </div>
-                  <div className="metric-content">
-                    <h3>Total Logins</h3>
-                    <div className="metric-value">{metrics.totalLogins24h.toLocaleString()}</div>
-                    <div className="metric-label">Last 24 hours</div>
-                  </div>
+              {overviewError && (
+                <div
+                  role="alert"
+                  style={{
+                    margin: '0 0 16px 0',
+                    padding: '16px',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                    borderRadius: '8px',
+                    color: '#fca5a5',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px'
+                  }}
+                >
+                  <i className="fas fa-exclamation-circle"></i>
+                  <span>{overviewError}</span>
+                  <button
+                    onClick={() => { setLoading(true); fetchSecurityOverview(); }}
+                    style={{
+                      marginLeft: 'auto',
+                      padding: '6px 12px',
+                      background: '#374151',
+                      color: '#e5e7eb',
+                      border: '1px solid #4b5563',
+                      borderRadius: '6px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Retry
+                  </button>
                 </div>
+              )}
 
-                <div className="metric-card alert">
-                  <div className="metric-icon">
-                    <i className="fas fa-times-circle"></i>
+              {report && (
+                <div className="security-metrics">
+                  <div className="metric-card">
+                    <div className="metric-icon">
+                      <i className="fas fa-users"></i>
+                    </div>
+                    <div className="metric-content">
+                      <h3>Tracked Players</h3>
+                      <div className="metric-value">{report.players.total.toLocaleString()}</div>
+                      <div className="metric-label">AI security profiles</div>
+                    </div>
                   </div>
-                  <div className="metric-content">
-                    <h3>Failed Logins</h3>
-                    <div className="metric-value">{metrics.failedLogins24h}</div>
-                    <div className="metric-label">
-                      {metrics.totalLogins24h > 0 ? ((metrics.failedLogins24h / metrics.totalLogins24h) * 100).toFixed(1) : '0.0'}% failure rate
+
+                  <div className="metric-card alert">
+                    <div className="metric-icon">
+                      <i className="fas fa-ban"></i>
+                    </div>
+                    <div className="metric-content">
+                      <h3>Blocked Players</h3>
+                      <div className="metric-value">{report.players.blocked}</div>
+                      <div className="metric-label">
+                        {report.players.blocked_percentage.toFixed(1)}% of tracked players
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="metric-card warning">
+                    <div className="metric-icon">
+                      <i className="fas fa-exclamation-triangle"></i>
+                    </div>
+                    <div className="metric-content">
+                      <h3>High-Risk Players</h3>
+                      <div className="metric-value">{report.players.high_risk}</div>
+                      <div className="metric-label">Trust score below 0.3</div>
+                    </div>
+                  </div>
+
+                  <div className="metric-card warning">
+                    <div className="metric-icon">
+                      <i className="fas fa-flag"></i>
+                    </div>
+                    <div className="metric-content">
+                      <h3>Violations</h3>
+                      <div className="metric-value">{report.violations.total}</div>
+                      <div className="metric-label">
+                        {report.violations.average_per_player.toFixed(2)} avg per player
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="metric-card">
+                    <div className="metric-icon">
+                      <i className="fas fa-dollar-sign"></i>
+                    </div>
+                    <div className="metric-content">
+                      <h3>AI Cost Today</h3>
+                      <div className="metric-value">${report.costs.total_today_usd.toFixed(4)}</div>
+                      <div className="metric-label">
+                        {report.costs.players_over_limit} player(s) near daily limit
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="metric-card">
+                    <div className="metric-icon">
+                      <i className="fas fa-tachometer-alt"></i>
+                    </div>
+                    <div className="metric-content">
+                      <h3>Rate Limits</h3>
+                      <div className="metric-value">{report.rate_limits.requests_per_minute}/min</div>
+                      <div className="metric-label">
+                        {report.rate_limits.requests_per_day}/day, ${report.rate_limits.max_cost_per_day_usd}/day cap
+                      </div>
                     </div>
                   </div>
                 </div>
-
-                <div className="metric-card">
-                  <div className="metric-icon">
-                    <i className="fas fa-users"></i>
-                  </div>
-                  <div className="metric-content">
-                    <h3>Active Users</h3>
-                    <div className="metric-value">{metrics.activeUsers}</div>
-                    <div className="metric-label">Currently online</div>
-                  </div>
-                </div>
-
-                <div className="metric-card success">
-                  <div className="metric-icon">
-                    <i className="fas fa-lock"></i>
-                  </div>
-                  <div className="metric-content">
-                    <h3>MFA Enabled</h3>
-                    <div className="metric-value">
-                      {metrics.mfaEnabledUsers} / {metrics.totalUsers}
-                    </div>
-                    <div className="metric-label">
-                      {metrics.totalUsers > 0 ? ((metrics.mfaEnabledUsers / metrics.totalUsers) * 100).toFixed(1) : '0.0'}% coverage
-                    </div>
-                  </div>
-                </div>
-
-                <div className="metric-card warning">
-                  <div className="metric-icon">
-                    <i className="fas fa-exclamation-triangle"></i>
-                  </div>
-                  <div className="metric-content">
-                    <h3>Suspicious Activities</h3>
-                    <div className="metric-value">{metrics.suspiciousActivities}</div>
-                    <div className="metric-label">Requires attention</div>
-                  </div>
-                </div>
-
-                <div className="metric-card">
-                  <div className="metric-icon">
-                    <i className="fas fa-ban"></i>
-                  </div>
-                  <div className="metric-content">
-                    <h3>Blocked IPs</h3>
-                    <div className="metric-value">{metrics.blockedIPs}</div>
-                    <div className="metric-label">Currently blocked</div>
-                  </div>
-                </div>
-              </div>
+              )}
 
               <div className="recent-threats">
-                <h3>Recent Security Threats</h3>
+                <h3>
+                  Security Alerts
+                  {alerts ? ` (${alerts.alert_count}${alerts.high_priority_count > 0 ? `, ${alerts.high_priority_count} high priority` : ''})` : ''}
+                </h3>
                 <div className="threats-list">
-                  {metrics.recentThreats.length > 0 ? (
-                    metrics.recentThreats.map(threat => (
-                      <div key={threat.id} className={`threat-item ${getSeverityClass(threat.severity)}`}>
+                  {alerts && alerts.alerts.length > 0 ? (
+                    alerts.alerts.map((alert, index) => (
+                      <div key={`${alert.type}-${index}`} className={`threat-item ${getSeverityClass(alert.severity)}`}>
                         <div className="threat-header">
                           <div className="threat-type">
                             <i className="fas fa-exclamation-circle"></i>
-                            {threat.type}
+                            {alert.type.replace(/_/g, ' ')}
                           </div>
-                          <div className={`threat-status status-${threat.status}`}>
-                            <i className={`fas ${getStatusIcon(threat.status)}`}></i>
-                            {threat.status}
+                          <div className={`threat-status severity-${alert.severity}`}>
+                            {alert.severity}
                           </div>
                         </div>
-                        <div className="threat-description">{threat.description}</div>
+                        <div className="threat-description">{alert.message}</div>
                         <div className="threat-timestamp">
-                          {new Date(threat.timestamp).toLocaleString()}
+                          {new Date(alert.timestamp).toLocaleString()}
                         </div>
                       </div>
                     ))
+                  ) : alerts ? (
+                    <div className="no-threats" style={{ padding: '20px', textAlign: 'center', color: '#9ca3af' }}>
+                      No active security alerts.
+                    </div>
                   ) : (
                     <div className="no-threats" style={{ padding: '20px', textAlign: 'center', color: '#9ca3af' }}>
-                      No security threats detected in the selected time range.
+                      Alerts unavailable — see error above.
                     </div>
                   )}
                 </div>
@@ -264,12 +304,24 @@ export const SecurityDashboard: React.FC = () => {
         <div className="security-threats">
           <div className="threat-detection-panel">
             <h3>Threat Detection Rules</h3>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 16px 0', padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+              }}
+            >
+              Threat-detection rule configuration is unavailable: no backend endpoint
+              exists to persist rule changes. The rules below reflect server-side
+              defaults and are read-only.
+            </div>
             <div className="detection-rules">
               <div className="rule-item active">
                 <div className="rule-header">
                   <span className="rule-name">Brute Force Detection</span>
                   <label className="toggle">
-                    <input type="checkbox" defaultChecked />
+                    <input type="checkbox" defaultChecked disabled />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
@@ -281,7 +333,7 @@ export const SecurityDashboard: React.FC = () => {
                 <div className="rule-header">
                   <span className="rule-name">API Rate Limiting</span>
                   <label className="toggle">
-                    <input type="checkbox" defaultChecked />
+                    <input type="checkbox" defaultChecked disabled />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
@@ -293,7 +345,7 @@ export const SecurityDashboard: React.FC = () => {
                 <div className="rule-header">
                   <span className="rule-name">Suspicious Pattern Detection</span>
                   <label className="toggle">
-                    <input type="checkbox" />
+                    <input type="checkbox" disabled />
                     <span className="toggle-slider"></span>
                   </label>
                 </div>
@@ -306,10 +358,21 @@ export const SecurityDashboard: React.FC = () => {
 
           <div className="blocked-ips-panel">
             <h3>IP Blocklist Management</h3>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 16px 0', padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+              }}
+            >
+              IP blocklist management is unavailable: no backend endpoint exists to
+              add or remove blocked IPs. This list is read-only.
+            </div>
             <div className="ip-blocklist">
               <div className="add-ip-form">
-                <input type="text" placeholder="Enter IP address to block" />
-                <button className="btn btn-primary">
+                <input type="text" placeholder="Enter IP address to block" disabled />
+                <button className="btn btn-primary" disabled title="Disabled — no IP blocklist backend endpoint">
                   <i className="fas fa-plus"></i>
                   Add to Blocklist
                 </button>
@@ -350,11 +413,23 @@ export const SecurityDashboard: React.FC = () => {
 
           <div className="settings-section">
             <h3>Security Policies</h3>
+            <div
+              role="note"
+              style={{
+                margin: '0 0 16px 0', padding: '10px 12px',
+                background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+              }}
+            >
+              Security-policy editing is unavailable: no backend endpoint exists to
+              persist policy changes. The values below reflect server-side defaults
+              and are read-only.
+            </div>
             <div className="policy-list">
               <div className="policy-item">
                 <div className="policy-header">
                   <h4>Password Requirements</h4>
-                  <button className="btn btn-secondary">
+                  <button className="btn btn-secondary" disabled title="Disabled — no policy-config backend endpoint">
                     <i className="fas fa-edit"></i>
                     Edit
                   </button>
@@ -369,7 +444,7 @@ export const SecurityDashboard: React.FC = () => {
               <div className="policy-item">
                 <div className="policy-header">
                   <h4>Session Management</h4>
-                  <button className="btn btn-secondary">
+                  <button className="btn btn-secondary" disabled title="Disabled — no policy-config backend endpoint">
                     <i className="fas fa-edit"></i>
                     Edit
                   </button>

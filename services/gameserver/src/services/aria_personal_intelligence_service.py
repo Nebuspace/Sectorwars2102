@@ -28,7 +28,7 @@ import base64
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, update
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, Session
 
 from src.models.player import Player
 from src.models.sector import Sector
@@ -62,6 +62,12 @@ class ARIAPersonalIntelligenceService:
         self.MIN_DATA_POINTS_FOR_PREDICTION = 5  # Need at least 5 visits
         self.CONFIDENCE_THRESHOLD = 0.6  # Minimum confidence for predictions
         self.MEMORY_DECAY_RATE = 0.001  # How fast old memories fade
+
+        # Per-player ARIA storage hard cap (NO-CANON: 10 MiB proposed — pure
+        # data-maintenance, not dialogue/LLM). When a player's combined
+        # ARIAPersonalMemory + ARIAMarketIntelligence row bytes exceed this,
+        # the daily pass evicts oldest-first until back under the cap.
+        self.MAX_PLAYER_ARIA_BYTES = 10 * 1024 * 1024  # 10 MiB
         
         # Security monitoring (OWASP A09)
         self.anomaly_threshold = 0.8
@@ -155,9 +161,9 @@ class ARIAPersonalIntelligenceService:
         
         # Get port's sector
         station = await db.get(Station, station_id)
-        if not port:
+        if not station:
             return None
-        
+
         # Check existing intelligence
         stmt = select(ARIAMarketIntelligence).where(
             and_(
@@ -293,6 +299,95 @@ class ARIAPersonalIntelligenceService:
                 player_id, e,
             )
 
+    def record_combat_memory_sync(self, player_id: str, combat_data: dict,
+                                  db: Session) -> None:
+        """Synchronous twin of ``record_combat_memory`` for sync-Session callers.
+
+        ``combat_service`` runs entirely on a synchronous SQLAlchemy ``Session``
+        (it never awaits), so it cannot call the async ``record_combat_memory``.
+        This method records the exact same ``combat_encounter`` memory shape via
+        the sync session: it reuses the identical encryption, content schema, and
+        dedup-by-hash logic — only the DB calls differ (sync ``query``/``add``
+        instead of ``await db.execute``/``select``).
+
+        FLUSH-FREE: like the async ``_create_memory``, it only ``db.add``s the
+        memory; the CALLER owns the commit (so it folds into combat's single
+        commit). Never raises — an ARIA memory hiccup must never break combat.
+
+        Args:
+            player_id: the player whose ARIA should remember this combat.
+            combat_data: same keys as ``record_combat_memory`` — ``outcome``,
+                ``opponent_name``, ``sector_id``, ``attacker_ship``,
+                ``defender_ship``, ``cargo_stolen``, ``reputation_change``, plus
+                an optional ``event`` override (defaults ``combat_encounter``).
+            db: synchronous database session (caller commits).
+        """
+        try:
+            outcome = combat_data.get("outcome", "unknown")
+            opponent = combat_data.get("opponent_name", "Unknown")
+
+            # Higher importance for victories and first-time encounters
+            importance = 0.8 if outcome == "victory" else 0.7
+
+            content = {
+                "event": combat_data.get("event", "combat_encounter"),
+                "opponent_name": str(opponent),
+                "outcome": str(outcome),
+                "sector_id": combat_data.get("sector_id"),
+                "attacker_ship": combat_data.get("attacker_ship"),
+                "defender_ship": combat_data.get("defender_ship"),
+                "cargo_stolen": combat_data.get("cargo_stolen"),
+                "reputation_change": combat_data.get("reputation_change"),
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            # Preserve any extra structured detail the caller supplies (e.g.
+            # planet_id / planet_name on a capture) without colliding with the
+            # canonical keys above.
+            for k, v in combat_data.items():
+                if k not in content and k not in (
+                    "event", "opponent_name", "outcome", "sector_id",
+                    "attacker_ship", "defender_ship", "cargo_stolen",
+                    "reputation_change",
+                ):
+                    content[k] = v
+
+            encrypted_content = self._encrypt_memory(content)
+            content_str = json.dumps(content, sort_keys=True)
+            memory_hash = hashlib.sha256(content_str.encode()).hexdigest()
+
+            existing = (
+                db.query(ARIAPersonalMemory)
+                .filter(
+                    ARIAPersonalMemory.player_id == player_id,
+                    ARIAPersonalMemory.memory_hash == memory_hash,
+                )
+                .first()
+            )
+            if existing is not None:
+                return  # Memory already exists (dedup — also our double-fire guard)
+
+            memory = ARIAPersonalMemory(
+                player_id=player_id,
+                memory_type="combat",
+                importance_score=importance,
+                memory_content={"encrypted": encrypted_content},
+                memory_hash=memory_hash,
+                confidence_level=0.9,
+                decay_rate=self.MEMORY_DECAY_RATE,
+            )
+            db.add(memory)
+            self.memories_created += 1
+
+            logger.info(
+                "Recorded combat memory (sync) for player %s: %s vs %s",
+                player_id, outcome, opponent,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record combat memory (sync) for player %s: %s",
+                player_id, e,
+            )
+
     async def record_trade_memory(self, player_id: str, trade_data: dict,
                                   db: AsyncSession) -> None:
         """
@@ -401,9 +496,9 @@ class ARIAPersonalIntelligenceService:
         """
         # Check if player has visited this port
         station = await db.get(Station, station_id)
-        if not port:
+        if not station:
             return None
-        
+
         exploration = await self._get_sector_exploration(player_id, station.sector_id, db)
         if not exploration:
             logger.info(f"Player {player_id} has never visited sector {station.sector_id}")
@@ -570,7 +665,15 @@ class ARIAPersonalIntelligenceService:
     async def evolve_trading_pattern(self, player_id: str, trade_result: Dict[str, Any],
                                    db: AsyncSession):
         """
-        Evolve player's personal trading patterns based on success/failure
+        Update a player's personal trading-pattern observation accounting.
+
+        Per ADR-0038 (Accepted) ARIA learning is a purely append-only
+        observation log: this records plain performance metrics
+        (times_used / success_rate / average_profit / best_profit /
+        worst_loss / last_used) for the pattern derived from this trade.
+        There is no genetic-algorithm evolution — no fitness-driven
+        mutation or offspring. The method name is retained for caller
+        compatibility.
         """
         pattern_id = trade_result.get("pattern_id")
         if not pattern_id:
@@ -608,37 +711,28 @@ class ARIAPersonalIntelligenceService:
                 (pattern.success_rate * (pattern.times_used - 1)) / pattern.times_used
             )
             pattern.worst_loss = min(pattern.worst_loss, profit)
-        
-        # Calculate fitness
-        pattern.fitness_score = self._calculate_pattern_fitness(pattern)
-        
-        # Evolution decision
-        if pattern.times_used >= 10:
-            if pattern.fitness_score < 0.3:
-                # Pattern is failing, mutate it
-                await self._mutate_pattern(pattern, db)
-            elif pattern.fitness_score > 0.7:
-                # Pattern is successful, create offspring
-                await self._create_pattern_offspring(player_id, pattern, db)
-        
+
         await db.commit()
         self.patterns_evolved += 1
     
-    async def get_evolved_patterns(self, player_id: str, 
+    async def get_evolved_patterns(self, player_id: str,
                                  db: AsyncSession,
                                  pattern_type: Optional[str] = None) -> List[ARIATradingPattern]:
         """
-        Get player's evolved trading patterns
+        Get a player's recorded trading patterns, most-used first.
+
+        Ordered by observation accounting (times_used) rather than the legacy
+        GA fitness score, per ADR-0038's append-only observation-log model.
         """
         stmt = select(ARIATradingPattern).where(
             ARIATradingPattern.player_id == player_id
         )
-        
+
         if pattern_type:
             stmt = stmt.where(ARIATradingPattern.pattern_type == pattern_type)
-        
-        stmt = stmt.order_by(ARIATradingPattern.fitness_score.desc()).limit(10)
-        
+
+        stmt = stmt.order_by(ARIATradingPattern.times_used.desc()).limit(10)
+
         result = await db.execute(stmt)
         return result.scalars().all()
     
@@ -962,31 +1056,7 @@ class ARIAPersonalIntelligenceService:
         random_component = hashlib.sha256(str(np.random.random()).encode()).hexdigest()[:8]
         return f"cascade_{timestamp}_{random_component}"
     
-    def _calculate_pattern_fitness(self, pattern: ARIATradingPattern) -> float:
-        """Calculate evolutionary fitness of a trading pattern"""
-        if pattern.times_used == 0:
-            return 0.5  # Neutral fitness for unused patterns
-        
-        # Success rate component (40%)
-        success_component = pattern.success_rate * 0.4
-        
-        # Profit component (40%)
-        if pattern.average_profit > 0:
-            # Normalize profit (assume 1000 credits is good profit)
-            profit_component = min(pattern.average_profit / 1000, 1.0) * 0.4
-        else:
-            profit_component = 0
-        
-        # Risk component (20%) - penalize high losses
-        if pattern.worst_loss < -1000:
-            risk_component = 0
-        else:
-            risk_component = (1 + pattern.worst_loss / 1000) * 0.2
-        
-        fitness = success_component + profit_component + risk_component
-        return min(fitness, 1.0)
-    
-    def _generate_recommendation(self, value: float, action: str, 
+    def _generate_recommendation(self, value: float, action: str,
                                commodity: str) -> str:
         """Generate trading recommendation"""
         if action == "buy":
@@ -1214,58 +1284,6 @@ class ARIAPersonalIntelligenceService:
         else:
             return "general"
     
-    async def _mutate_pattern(self, pattern: ARIATradingPattern, db: AsyncSession):
-        """Mutate unsuccessful pattern"""
-        # Mutate DNA
-        mutated_dna = pattern.pattern_dna.copy()
-        
-        # Random mutations
-        if "risk_tolerance" in mutated_dna:
-            mutated_dna["risk_tolerance"] *= (1 + np.random.uniform(-0.2, 0.2))
-            
-        if "time_preference" in mutated_dna:
-            mutated_dna["time_preference"] = (mutated_dna["time_preference"] + 
-                                            np.random.randint(-2, 3)) % 24
-        
-        pattern.pattern_dna = mutated_dna
-        pattern.generation += 1
-        pattern.evolved_at = datetime.now(UTC)
-        pattern.mutations.append({
-            "generation": pattern.generation,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "changes": "risk_and_time_mutations"
-        })
-    
-    async def _create_pattern_offspring(self, player_id: str, 
-                                      parent: ARIATradingPattern,
-                                      db: AsyncSession):
-        """Create offspring from successful pattern"""
-        # Create variation
-        offspring_dna = parent.pattern_dna.copy()
-        
-        # Small variations
-        for key, value in offspring_dna.items():
-            if isinstance(value, (int, float)):
-                offspring_dna[key] = value * (1 + np.random.uniform(-0.05, 0.05))
-        
-        # New pattern ID
-        pattern_id = hashlib.sha256(
-            json.dumps(offspring_dna, sort_keys=True).encode()
-        ).hexdigest()[:16]
-        
-        offspring = ARIATradingPattern(
-            player_id=player_id,
-            pattern_id=pattern_id,
-            pattern_type=parent.pattern_type,
-            pattern_dna=offspring_dna,
-            generation=parent.generation + 1,
-            parent_pattern=parent.pattern_id,
-            discovered_at=datetime.now(UTC)
-        )
-        
-        db.add(offspring)
-        await db.commit()
-
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
     # =============================================================================
@@ -1393,6 +1411,180 @@ class ARIAPersonalIntelligenceService:
         }
 
     # =============================================================================
+    # STORAGE MAINTENANCE (size-cap prune — NOT dialogue/LLM)
+    # =============================================================================
+
+    @staticmethod
+    def _row_byte_size(value: Any) -> int:
+        """
+        Estimate the on-disk JSON byte size of a single ARIA row's payload.
+
+        Pure size proxy: the UTF-8 byte length of the row's JSON content
+        (memory_content for memories, price_observations for market
+        intelligence). Defensive — a non-serialisable payload falls back to
+        ``len(str(value))`` so one bad row can never derail the whole prune.
+        """
+        if value is None:
+            return 0
+        try:
+            return len(json.dumps(value, default=str).encode("utf-8"))
+        except Exception:
+            try:
+                return len(str(value).encode("utf-8"))
+            except Exception:
+                return 0
+
+    async def prune_player_storage(
+        self, player_id: str, db: AsyncSession
+    ) -> Dict[str, Any]:
+        """
+        Daily-pass-callable storage prune for ONE player's ARIA data.
+
+        Computes the combined JSON byte size of the player's
+        ``ARIAPersonalMemory`` rows (``memory_content``) and
+        ``ARIAMarketIntelligence`` rows (``price_observations`` — the player's
+        personal trading-observation log). If the total exceeds the
+        ``MAX_PLAYER_ARIA_BYTES`` hard cap (NO-CANON: 10 MiB), the OLDEST rows
+        across BOTH tables are evicted first until the total is back under the
+        cap. Under-cap players are left completely untouched.
+
+        This is pure data maintenance — it deletes whole stale rows by age and
+        size. It does NOT read, write, decrypt, or otherwise touch any
+        LLM/dialogue/prompt logic; the memories' encrypted contents are never
+        opened. Ordering keys:
+          - ARIAPersonalMemory:       ``created_at``
+          - ARIAMarketIntelligence:   ``last_visit`` (NULL sorts oldest)
+
+        Returns a summary dict (no raise on the happy path); fully defensive so
+        a hiccup in the nightly sweep can never break the pass for other players.
+
+        Args:
+            player_id: the player whose ARIA storage to size-check and prune.
+            db: async database session (this method owns its single commit).
+
+        Returns:
+            {success, over_cap, bytes_before, bytes_after, cap_bytes,
+             evicted_memories, evicted_intelligence, evicted_total}
+        """
+        cap = self.MAX_PLAYER_ARIA_BYTES
+
+        try:
+            # --- Load the player's rows from both tables ---
+            mem_result = await db.execute(
+                select(ARIAPersonalMemory).where(
+                    ARIAPersonalMemory.player_id == player_id
+                )
+            )
+            memories = mem_result.scalars().all()
+
+            intel_result = await db.execute(
+                select(ARIAMarketIntelligence).where(
+                    ARIAMarketIntelligence.player_id == player_id
+                )
+            )
+            intelligences = intel_result.scalars().all()
+
+            # --- Build an age-sortable, size-tagged eviction list ---
+            # Each entry: (sort_key_datetime, byte_size, kind, orm_obj)
+            # Use a tz-aware epoch floor so NULL timestamps sort OLDEST and
+            # naive/aware mixes never raise on comparison.
+            epoch = datetime(1970, 1, 1, tzinfo=UTC)
+
+            def _as_aware(dt: Optional[datetime]) -> datetime:
+                if dt is None:
+                    return epoch
+                if dt.tzinfo is None:
+                    return dt.replace(tzinfo=UTC)
+                return dt
+
+            entries: List[Tuple[datetime, int, str, Any]] = []
+            total_bytes = 0
+
+            for m in memories:
+                size = self._row_byte_size(m.memory_content)
+                total_bytes += size
+                entries.append(
+                    (_as_aware(m.created_at), size, "memory", m)
+                )
+
+            for intel in intelligences:
+                size = self._row_byte_size(intel.price_observations)
+                total_bytes += size
+                entries.append(
+                    (_as_aware(intel.last_visit), size, "intelligence", intel)
+                )
+
+            bytes_before = total_bytes
+
+            # --- Under cap: untouched ---
+            if total_bytes <= cap:
+                return {
+                    "success": True,
+                    "over_cap": False,
+                    "bytes_before": bytes_before,
+                    "bytes_after": bytes_before,
+                    "cap_bytes": cap,
+                    "evicted_memories": 0,
+                    "evicted_intelligence": 0,
+                    "evicted_total": 0,
+                }
+
+            # --- Over cap: evict OLDEST-first across both tables ---
+            entries.sort(key=lambda e: e[0])  # oldest first
+
+            evicted_memories = 0
+            evicted_intelligence = 0
+            for _sort_key, size, kind, obj in entries:
+                if total_bytes <= cap:
+                    break
+                await db.delete(obj)
+                total_bytes -= size
+                if kind == "memory":
+                    evicted_memories += 1
+                else:
+                    evicted_intelligence += 1
+
+            await db.commit()
+
+            evicted_total = evicted_memories + evicted_intelligence
+            logger.info(
+                "ARIA storage prune for player %s: %d -> %d bytes (cap %d), "
+                "evicted %d rows (%d memories, %d intelligence)",
+                player_id, bytes_before, total_bytes, cap,
+                evicted_total, evicted_memories, evicted_intelligence,
+            )
+
+            return {
+                "success": True,
+                "over_cap": True,
+                "bytes_before": bytes_before,
+                "bytes_after": total_bytes,
+                "cap_bytes": cap,
+                "evicted_memories": evicted_memories,
+                "evicted_intelligence": evicted_intelligence,
+                "evicted_total": evicted_total,
+            }
+        except Exception as e:
+            logger.warning(
+                "ARIA storage prune failed for player %s: %s", player_id, e
+            )
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "over_cap": False,
+                "bytes_before": 0,
+                "bytes_after": 0,
+                "cap_bytes": cap,
+                "evicted_memories": 0,
+                "evicted_intelligence": 0,
+                "evicted_total": 0,
+                "error": str(e),
+            }
+
+    # =============================================================================
     # CONSCIOUSNESS EVOLUTION & GAMEPLAY INTEGRATION
     # =============================================================================
 
@@ -1501,7 +1693,85 @@ class ARIAPersonalIntelligenceService:
             "memory_counts": memory_counts,
         }
 
+    async def _resolve_player_language(
+        self, player_id: str, db: AsyncSession
+    ) -> str:
+        """
+        Resolve a player's preferred language code via an async lookup against
+        the user-language-preference table. Defensive: returns "en" on any
+        miss or error. Kept here (async) so we never mix ARIA's AsyncSession
+        with the sync TranslationService session.
+        """
+        try:
+            from src.models.player import Player
+            from src.models.translation import UserLanguagePreference, Language
+
+            stmt = (
+                select(Language.code)
+                .select_from(Player)
+                .join(UserLanguagePreference, UserLanguagePreference.user_id == Player.user_id)
+                .join(Language, Language.id == UserLanguagePreference.language_id)
+                .where(Player.id == player_id)
+            )
+            result = await db.execute(stmt)
+            code = result.scalar_one_or_none()
+            return code or "en"
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve language for player %s: %s", player_id, e
+            )
+            return "en"
+
+    async def _localize_recommendations(
+        self, player_id: str, recommendations: List[str], db: AsyncSession
+    ) -> List[str]:
+        """
+        Translate ARIA recommendation strings into the player's preferred
+        language. Fully defensive: any failure (or an English preference)
+        yields the original English recommendations unchanged.
+        """
+        if not recommendations:
+            return recommendations
+        try:
+            target_language = await self._resolve_player_language(player_id, db)
+            if not target_language or target_language.split("-")[0].lower() == "en":
+                return recommendations
+
+            from src.services.multilingual_ai_service import MultilingualAIService
+            from src.services.ai_dialogue_service import AIDialogueService
+            from src.services.translation_service import TranslationService
+
+            ai_service = AIDialogueService()
+            if not ai_service.is_available():
+                return recommendations
+
+            # translate_text() needs no DB; translation_service is only held as
+            # a collaborator and unused on this path, so a None session is safe.
+            multilingual = MultilingualAIService(None, ai_service, TranslationService(None))
+
+            localized: List[str] = []
+            for rec in recommendations:
+                localized.append(await multilingual.translate_text(rec, target_language))
+            return localized
+        except Exception as e:
+            logger.warning(
+                "Failed to localize ARIA recommendations for player %s: %s",
+                player_id, e,
+            )
+            return recommendations
+
     async def get_gameplay_recommendations(
+        self, player_id: str, db: AsyncSession
+    ) -> List[str]:
+        """
+        Public entry point: build rule-based gameplay recommendations and then
+        localize them into the player's preferred language (defensive — falls
+        back to English on any translation failure).
+        """
+        recommendations = await self._build_gameplay_recommendations(player_id, db)
+        return await self._localize_recommendations(player_id, recommendations, db)
+
+    async def _build_gameplay_recommendations(
         self, player_id: str, db: AsyncSession
     ) -> List[str]:
         """
@@ -1511,7 +1781,7 @@ class ARIAPersonalIntelligenceService:
         Lower levels produce generic tips.  Higher levels incorporate the
         player's own memory history to offer contextualised strategic advice.
 
-        Returns a list of 1-3 recommendation strings.
+        Returns a list of 1-3 recommendation strings (in English).
         """
         from src.models.player import Player
 

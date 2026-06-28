@@ -69,6 +69,34 @@
   font-size: 12px;
 }
 
+.health-section {
+  margin-bottom: var(--space-4);
+}
+
+.health-section > h3 {
+  color: var(--text-secondary);
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 var(--space-3) 0;
+}
+
+.health-empty {
+  background: var(--surface-secondary, #1e293b);
+  border: 1px solid var(--border-light, #475569);
+  border-radius: 12px;
+  padding: 20px;
+  color: var(--text-tertiary, #64748b);
+  font-size: 13px;
+  text-align: center;
+}
+
+.health-meta {
+  margin-top: var(--space-2);
+  color: var(--text-tertiary, #64748b);
+  font-size: 12px;
+}
+
 .alerts-section {
   background: #1e293b;
   border: 1px solid #475569;

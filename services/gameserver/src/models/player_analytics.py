@@ -6,7 +6,7 @@ Tracks comprehensive player metrics and analytics data
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func, text
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
@@ -116,6 +116,71 @@ class PlayerActivity(Base):
 
     def __repr__(self):
         return f"<PlayerActivity {self.activity_type} - {self.player_id} - {self.timestamp}>"
+
+
+class PlayerReEngagement(Base):
+    """
+    Re-engagement queue (WO-RE2).
+
+    One row per player flagged at-risk by the nightly at-risk-signal sweep
+    (``RetentionService.compute_player_signals`` driven by
+    ``npc_scheduler_service._run_retention_sweep_async``). The row records WHICH
+    of the 7 canonical at-risk signals (OPERATIONS/retention.md "At-risk
+    signals") tripped for the player, the per-signal threshold metadata used to
+    decide it, and when the decision was computed.
+
+    Additive, durable, and idempotent per canonical day: the sweep computes
+    signals READ-ONLY from PlayerActivity / PlayerSession (it never mutates the
+    activity tables) and the ONLY write is upserting one OPEN row per flagged
+    player. A row is OPEN while the player is still at-risk and uncontacted; the
+    re-engagement campaign layer (email / ARIA welcome-back / turn bonus, see
+    OPERATIONS/retention.md "Re-engagement campaigns") closes it.
+    """
+    __tablename__ = "player_re_engagement_queue"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    player_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("players.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # The signal label(s) that tripped for this player, e.g.
+    # ["dormant_session", "social_isolation"]. Canonical labels only.
+    signals = Column(JSONB, nullable=False, default=list)
+    # Per-signal evidence: {signal_label: {threshold, observed, ...}} — the
+    # threshold each tripped signal used + the observed value, for auditing and
+    # campaign targeting. Read-only provenance; never PII.
+    signal_detail = Column(JSONB, nullable=False, default=dict)
+    # OPEN (awaiting / eligible for re-engagement) | CONTACTED | RESOLVED.
+    status = Column(String(20), nullable=False, default="OPEN", server_default="OPEN")
+    computed_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    # Canonical-day index the flag was last (re)computed on — lets the sweep
+    # refresh an existing OPEN row's signals once per canonical day in place.
+    computed_day = Column(Integer, nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    player = relationship("Player")
+
+    __table_args__ = (
+        # One OPEN row per player is a DB invariant (matches the migration's
+        # partial unique index) — a player may carry past RESOLVED rows but
+        # only one live OPEN one; the sweep upserts that single OPEN row.
+        Index(
+            "uq_player_re_engagement_open",
+            "player_id",
+            unique=True,
+            postgresql_where=text("status = 'OPEN'"),
+        ),
+        Index("ix_player_re_engagement_queue_status", "status"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<PlayerReEngagement {self.player_id} "
+            f"signals={self.signals} status={self.status}>"
+        )
 
 
 # Add the relationships to existing Player model (this would be added to player.py)

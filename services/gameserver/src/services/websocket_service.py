@@ -8,6 +8,11 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
+# NO-CANON: no canon prescribes a topic-name length cap; this is a conservative
+# bound so a client-supplied topic name (subscribe_topic) cannot bloat the
+# in-memory registry key. Reported to the Orchestrator.
+MAX_TOPIC_NAME_LENGTH = 128
+
 
 class ConnectionManager:
     """Manages WebSocket connections for real-time multiplayer features"""
@@ -21,10 +26,20 @@ class ConnectionManager:
         self.sector_connections: Dict[int, Set[str]] = {}
         # Store connections by team for team-based communication
         self.team_connections: Dict[str, Set[str]] = {}
+        # Store connections by region for region-scoped events (WO-DBB-RT4):
+        # governance / election / treaty broadcasts. Keyed by region_id (str),
+        # mirroring sector_connections / team_connections exactly.
+        self.region_connections: Dict[str, Set[str]] = {}
+        # Generic topic pub/sub (WO-DBB-RT5): topic name -> set of subscribed
+        # user_ids. Lets any service fan out to arbitrary topic subscribers via
+        # publish_topic(), not just the sector/team/market firehoses. Players
+        # opt in with subscribe_topic(); subscriptions are torn down on
+        # disconnect so a topic set never references a dead connection.
+        self.topic_subscriptions: Dict[str, Set[str]] = {}
         # Store admin connections separately
         self.admin_connections: Dict[str, WebSocket] = {}
         self.admin_metadata: Dict[str, Dict[str, Any]] = {}
-        
+
     async def connect(self, websocket: WebSocket, user_id: str, user_data: Dict[str, Any]):
         """Accept a new WebSocket connection"""
         await websocket.accept()
@@ -38,11 +53,18 @@ class ConnectionManager:
         
         # Store new connection
         self.active_connections[user_id] = websocket
+        # Region scope (WO-DBB-RT4): accept either "current_region" or the
+        # player-model field name "current_region_id"; normalize to a str so
+        # the region_connections key type is stable. None until a caller
+        # supplies region context (additive — older callers stay unaffected).
+        current_region_raw = user_data.get("current_region") or user_data.get("current_region_id")
+        current_region = str(current_region_raw) if current_region_raw is not None else None
         self.connection_metadata[user_id] = {
             "connected_at": datetime.now(UTC),
             "user_data": user_data,
             "current_sector": user_data.get("current_sector"),
             "team_id": user_data.get("team_id"),
+            "current_region": current_region,
             "last_heartbeat": datetime.now(UTC)
         }
         
@@ -59,7 +81,13 @@ class ConnectionManager:
             if team_id not in self.team_connections:
                 self.team_connections[team_id] = set()
             self.team_connections[team_id].add(user_id)
-        
+
+        # Add to region connections if user has a region (WO-DBB-RT4)
+        if current_region:
+            if current_region not in self.region_connections:
+                self.region_connections[current_region] = set()
+            self.region_connections[current_region].add(user_id)
+
         logger.info(f"User {user_id} connected via WebSocket")
         
         # Notify other players in the same sector
@@ -80,23 +108,39 @@ class ConnectionManager:
         metadata = self.connection_metadata.get(user_id, {})
         current_sector = metadata.get("current_sector")
         team_id = metadata.get("team_id")
-        
+        current_region = metadata.get("current_region")
+
         # Remove from active connections
         del self.active_connections[user_id]
         del self.connection_metadata[user_id]
-        
+
         # Remove from sector connections
         if current_sector and current_sector in self.sector_connections:
             self.sector_connections[current_sector].discard(user_id)
             if not self.sector_connections[current_sector]:
                 del self.sector_connections[current_sector]
-        
+
         # Remove from team connections
         if team_id and team_id in self.team_connections:
             self.team_connections[team_id].discard(user_id)
             if not self.team_connections[team_id]:
                 del self.team_connections[team_id]
-        
+
+        # Remove from region connections (WO-DBB-RT4)
+        if current_region and current_region in self.region_connections:
+            self.region_connections[current_region].discard(user_id)
+            if not self.region_connections[current_region]:
+                del self.region_connections[current_region]
+
+        # Remove from every topic subscription (WO-DBB-RT5) so no topic set
+        # ever references a dead connection.
+        for topic in list(self.topic_subscriptions.keys()):
+            subscribers = self.topic_subscriptions[topic]
+            if user_id in subscribers:
+                subscribers.discard(user_id)
+                if not subscribers:
+                    del self.topic_subscriptions[topic]
+
         logger.info(f"User {user_id} disconnected from WebSocket")
         
         # Notify other players in the same sector
@@ -166,6 +210,43 @@ class ConnectionManager:
         for user_id in disconnect_users:
             await self.disconnect(user_id)
     
+    async def broadcast_to_region(self, region_id: str, message: Dict[str, Any], exclude: Optional[str] = None):
+        """Broadcast a message to all connected users in a specific region.
+
+        WO-DBB-RT4 — the region-room primitive (none existed before). The
+        foundation for governance / election / treaty events, which are
+        region-scoped: every member of region R should see them, no one in
+        another region S should. Mirrors broadcast_to_sector /
+        broadcast_to_team exactly (region context stamped on the message, failed
+        sends pruned via disconnect). ``region_id`` is normalized to str to
+        match the region_connections key type; ``exclude`` skips one user_id
+        (e.g. the actor who triggered the event)."""
+        region_key = str(region_id) if region_id is not None else None
+        if region_key is None or region_key not in self.region_connections:
+            return
+
+        # Add region context to message
+        message["region_id"] = region_key
+
+        disconnect_users = []
+        for user_id in list(self.region_connections[region_key]):
+            if exclude and user_id == exclude:
+                continue
+
+            ws = self.active_connections.get(user_id)
+            if ws is None:
+                disconnect_users.append(user_id)
+                continue
+            try:
+                await ws.send_text(json.dumps(message))
+            except Exception as e:
+                logger.error(f"Error broadcasting to user {user_id} in region {region_key}: {e}")
+                disconnect_users.append(user_id)
+
+        # Clean up failed connections
+        for user_id in disconnect_users:
+            await self.disconnect(user_id)
+
     async def broadcast_global(self, message: Dict[str, Any], exclude_user: Optional[str] = None):
         """Broadcast a message to all connected users"""
         disconnect_users = []
@@ -182,7 +263,68 @@ class ConnectionManager:
         # Clean up failed connections
         for user_id in disconnect_users:
             await self.disconnect(user_id)
-    
+
+    # --- Generic topic pub/sub (WO-DBB-RT5) --------------------------------
+
+    def subscribe_topic(self, user_id: str, topic: str):
+        """Subscribe a connected user to a generic topic.
+
+        WO-DBB-RT5 — opt a user into a named topic so a later publish_topic()
+        reaches them. Idempotent (a set). Only subscribes already-connected
+        users so a topic set never references a dead connection; teardown lives
+        in disconnect(). Mirrors the team_connections registry idiom (a
+        topic -> set-of-user_ids map)."""
+        if not topic or user_id not in self.active_connections:
+            return
+        if topic not in self.topic_subscriptions:
+            self.topic_subscriptions[topic] = set()
+        self.topic_subscriptions[topic].add(user_id)
+
+    def unsubscribe_topic(self, user_id: str, topic: str):
+        """Unsubscribe a user from a generic topic (WO-DBB-RT5)."""
+        subscribers = self.topic_subscriptions.get(topic)
+        if subscribers is None:
+            return
+        subscribers.discard(user_id)
+        if not subscribers:
+            del self.topic_subscriptions[topic]
+
+    async def publish_topic(self, topic: str, message: Dict[str, Any], exclude: Optional[str] = None):
+        """Publish a message to every subscriber of a generic topic.
+
+        WO-DBB-RT5 — the generic fan-out primitive over the topic-subscription
+        registry, so any service can fan out to arbitrary topic subscribers
+        (not just the sector/team/market firehoses). Only that topic's
+        subscribers receive the frame; non-subscribers get nothing. Mirrors
+        broadcast_to_team / broadcast_to_region (topic context stamped on the
+        message, failed sends pruned via disconnect). ``exclude`` skips one
+        user_id."""
+        subscribers = self.topic_subscriptions.get(topic)
+        if not subscribers:
+            return
+
+        # Add topic context to message
+        message["topic"] = topic
+
+        disconnect_users = []
+        for user_id in list(subscribers):
+            if exclude and user_id == exclude:
+                continue
+
+            ws = self.active_connections.get(user_id)
+            if ws is None:
+                disconnect_users.append(user_id)
+                continue
+            try:
+                await ws.send_text(json.dumps(message))
+            except Exception as e:
+                logger.error(f"Error publishing topic '{topic}' to user {user_id}: {e}")
+                disconnect_users.append(user_id)
+
+        # Clean up failed connections
+        for user_id in disconnect_users:
+            await self.disconnect(user_id)
+
     # Real-time game event methods requested by UI teams
     
     async def send_combat_update(self, combat_id: str, combat_data: Dict[str, Any], participants: List[str] = None):
@@ -219,7 +361,40 @@ class ConnectionManager:
             **ship_data
         }
         await self.send_personal_message(user_id, message)
-    
+
+    async def send_turn_pool_update(self, user_id: str, turn_data: Dict[str, Any]):
+        """Push an authoritative turn-pool snapshot to the pool's owner.
+
+        The promised SYSTEMS/turn-regeneration.md "Authoritative push": a
+        player-scoped ``turn_pool_updated`` frame emitted by ``regenerate_turns``
+        whenever lazy regen actually credits turns (N>0), so connected clients
+        refresh the pool without polling. Mirrors send_ship_status_change /
+        send_personal_message (typed message, personal scope). ``user_id`` is the
+        owning User's id string (the key send_personal_message routes on)."""
+        message = {
+            "type": "turn_pool_updated",
+            "timestamp": datetime.now(UTC).isoformat(),
+            **turn_data,
+        }
+        await self.send_personal_message(user_id, message)
+
+    async def send_hostile_detected(self, owner_user_id: str, payload: Dict[str, Any]):
+        """Push a player-scoped ``hostile_detected`` frame to a planet owner.
+
+        A Long-Range Scanner Array (citadel_service DEFENSE_BUILDINGS
+        "scanner_array", effect detection_range_sectors) on the owner's planet
+        picks up a hostile ship moving within detection range of the planet's
+        sector. Mirrors send_turn_pool_update / send_ship_status_change (typed
+        message, personal scope). ``owner_user_id`` is the owning User's id
+        string (the key send_personal_message routes on); ``payload`` carries
+        ``{sector_id, detection_range, ship_id, detected_player_id}``."""
+        message = {
+            "type": "hostile_detected",
+            "timestamp": datetime.now(UTC).isoformat(),
+            **payload,
+        }
+        await self.send_personal_message(owner_user_id, message)
+
     async def send_economy_alert(self, alert_data: Dict[str, Any], admin_only: bool = True):
         """Send economy alert to admins or all users"""
         message = {
@@ -262,6 +437,34 @@ class ConnectionManager:
         else:
             await self.broadcast_global(message)
     
+    async def send_bounty_update(
+        self,
+        action: str,
+        bounty_data: Dict[str, Any],
+        placer_id: str = None,
+        target_id: str = None,
+    ):
+        """Broadcast a bounty lifecycle event (place / collect / cancel).
+
+        Mirrors send_market_update / send_combat_update: a typed ``bounty_updated``
+        message. The bounty board is globally interesting (anyone can hunt), so
+        the event broadcasts globally; the placer and target additionally get a
+        personal copy (already covered by the global broadcast if connected, but
+        sent explicitly so they receive it even when the global fan-out is
+        filtered). ``action`` is one of "placed" | "collected" | "cancelled".
+        """
+        message = {
+            "type": "bounty_updated",
+            "action": action,
+            "timestamp": datetime.now(UTC).isoformat(),
+            **bounty_data,
+        }
+        await self.broadcast_global(message)
+        if placer_id:
+            await self.send_personal_message(placer_id, message)
+        if target_id:
+            await self.send_personal_message(target_id, message)
+
     async def send_planetary_update(self, planet_data: Dict[str, Any], owner_user_id: str = None, sector_id: int = None):
         """Send planetary update to planet owner or sector"""
         message = {
@@ -431,7 +634,41 @@ class ConnectionManager:
             "other_players": other_players,
             "timestamp": datetime.now(UTC).isoformat()
         })
-    
+
+    async def update_user_region(self, user_id: str, new_region_id: Optional[str]):
+        """Move a connected user between region rooms on a region transfer.
+
+        WO-DBB-RT4 — keep region_connections correct when a player crosses a
+        region boundary (e.g. through a warp gate into another region) so they
+        receive the destination region's governance/election/treaty broadcasts
+        and stop receiving the origin's. Mirrors update_user_location for
+        sectors: leave the old region set, join the new. ``new_region_id`` may
+        be None (player has no region context). No-op for an unknown user."""
+        if user_id not in self.connection_metadata:
+            return
+
+        metadata = self.connection_metadata[user_id]
+        old_region = metadata.get("current_region")
+        new_region = str(new_region_id) if new_region_id is not None else None
+
+        if old_region == new_region:
+            return
+
+        # Remove from old region
+        if old_region and old_region in self.region_connections:
+            self.region_connections[old_region].discard(user_id)
+            if not self.region_connections[old_region]:
+                del self.region_connections[old_region]
+
+        # Add to new region
+        if new_region:
+            if new_region not in self.region_connections:
+                self.region_connections[new_region] = set()
+            self.region_connections[new_region].add(user_id)
+
+        # Update metadata
+        metadata["current_region"] = new_region
+
     def get_sector_players(self, sector_id: int) -> List[Dict[str, Any]]:
         """Get list of players currently in a sector"""
         if sector_id not in self.sector_connections:
@@ -486,11 +723,19 @@ class ConnectionManager:
             "total_admin_connections": len(self.admin_connections),
             "sectors_with_players": len(self.sector_connections),
             "teams_with_players": len(self.team_connections),
+            "regions_with_players": len(self.region_connections),
+            "active_topics": len(self.topic_subscriptions),
             "connections_by_sector": {
                 sector_id: len(users) for sector_id, users in self.sector_connections.items()
             },
             "connections_by_team": {
                 team_id: len(users) for team_id, users in self.team_connections.items()
+            },
+            "connections_by_region": {
+                region_id: len(users) for region_id, users in self.region_connections.items()
+            },
+            "subscribers_by_topic": {
+                topic: len(users) for topic, users in self.topic_subscriptions.items()
             }
         }
     
@@ -525,6 +770,12 @@ class ConnectionManager:
 
         for user_id in stale_users:
             logger.info(f"Disconnecting stale WebSocket: user {user_id} (heartbeat timeout)")
+            # Snapshot the user's prior location + name BEFORE disconnect, which
+            # deletes connection_metadata[user_id]. We emit presence_updated
+            # AFTER the drop using this snapshot (WO-G1).
+            stale_meta = self.connection_metadata.get(user_id, {})
+            prior_sector = stale_meta.get("current_sector")
+            prior_username = stale_meta.get("user_data", {}).get("username")
             ws = self.active_connections.get(user_id)
             if ws:
                 try:
@@ -532,6 +783,35 @@ class ConnectionManager:
                 except Exception:
                     pass
             await self.disconnect(user_id)
+
+            # WO-G1: announce that a stale socket was dropped. disconnect()
+            # already fans a player_left_sector frame to co-sector peers; this
+            # adds an explicit presence_updated event naming the dropped user so
+            # presence consumers (co-sector subscribers + admins) converge after
+            # the sweep. POST-drop + best-effort: a WS hiccup here must never
+            # break the sweep loop, so each emit is isolated in its own try.
+            presence_event = {
+                "type": "presence_updated",
+                "event": "dropped",
+                "reason": "heartbeat_timeout",
+                "user_id": user_id,
+                "username": prior_username,
+                "sector_id": prior_sector,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            if prior_sector:
+                try:
+                    await self.broadcast_to_sector(prior_sector, dict(presence_event))
+                except Exception as e:
+                    logger.warning(
+                        f"presence_updated sector emit failed for dropped user {user_id}: {e}"
+                    )
+            try:
+                await self.broadcast_to_admins(dict(presence_event))
+            except Exception as e:
+                logger.warning(
+                    f"presence_updated admin emit failed for dropped user {user_id}: {e}"
+                )
 
         # Also clean stale admins
         stale_admins = []
@@ -638,8 +918,115 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
                 "timestamp": datetime.now(UTC).isoformat()
             })
     
+    elif message_type == "subscribe_topic":
+        # WO-DBB-RT5: opt the connection into a generic topic so a later
+        # publish_topic() reaches it. Cap topic name length to keep the
+        # registry key bounded; the service-side publisher decides what topics
+        # carry sensitive data (this is opt-in fan-out, not authorization —
+        # publish_topic only ever delivers what a service explicitly fans out).
+        topic = (message_data.get("topic") or "").strip()
+        if not topic or len(topic) > MAX_TOPIC_NAME_LENGTH:  # NO-CANON: cap to bound the registry key
+            await connection_manager.send_personal_message(user_id, {
+                "type": "error",
+                "message": "Invalid topic name"
+            })
+            return
+        connection_manager.subscribe_topic(user_id, topic)
+        await connection_manager.send_personal_message(user_id, {
+            "type": "topic_subscribed",
+            "topic": topic,
+            "timestamp": datetime.now(UTC).isoformat()
+        })
+
+    elif message_type == "unsubscribe_topic":
+        # WO-DBB-RT5: opt out of a generic topic.
+        topic = (message_data.get("topic") or "").strip()
+        if topic:
+            connection_manager.unsubscribe_topic(user_id, topic)
+        await connection_manager.send_personal_message(user_id, {
+            "type": "topic_unsubscribed",
+            "topic": topic,
+            "timestamp": datetime.now(UTC).isoformat()
+        })
+
+    elif message_type == "aria_chat":
+        await handle_aria_chat(user_id, message_data)
+
     else:
         logger.warning(f"Unknown WebSocket message type: {message_type} from user {user_id}")
+
+
+async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
+    """Route a player's ARIA chat message to the AI service and return an
+    aria_response. The plain WS endpoint uses the sync connection manager, but
+    EnhancedAIService needs an AsyncSession, so we open one here. AI safety —
+    input sanitization, prompt-injection filtering, and response sanitization —
+    lives INSIDE EnhancedAIService.process_natural_language_query (the same
+    proven path the /enhanced-ai/chat REST route uses); we do not bypass it."""
+    import uuid as _uuid
+
+    metadata = connection_manager.connection_metadata.get(user_id, {})
+    user_data = metadata.get("user_data", {})
+    player_id = user_data.get("player_id")
+    content = (message_data.get("content") or "").strip()
+    conversation_id = message_data.get("conversation_id")
+    context_type = message_data.get("context") or "query"
+
+    if not player_id or not content:
+        await connection_manager.send_personal_message(user_id, {
+            "type": "error",
+            "message": "ARIA request missing player context or message content",
+        })
+        return
+
+    try:
+        from src.core.database import AsyncSessionLocal
+        from src.services.enhanced_ai_service import EnhancedAIService, ConversationContext
+        from src.models.enhanced_ai_models import SecurityLevel
+
+        async with AsyncSessionLocal() as adb:
+            ai_service = EnhancedAIService(adb)
+            # Let the service build the ConversationContext: only it has the
+            # authenticated assistant id, and ConversationContext validation
+            # rejects an empty assistant_id (the old pre-built context with
+            # assistant_id="" raised "Validation failed for id" on every
+            # threaded follow-up query). Pass the client's conversation_id so
+            # the service can continue the thread when it is a valid id.
+            result = await ai_service.process_natural_language_query(
+                player_id=_uuid.UUID(str(player_id)),
+                user_input=content,
+                conversation_id=conversation_id,
+            )
+            await adb.commit()
+
+        await connection_manager.send_personal_message(user_id, {
+            "type": "aria_response",
+            "conversation_id": result.get("conversation_id"),
+            "timestamp": datetime.now(UTC).isoformat(),
+            "data": {
+                "message": result.get("response", ""),
+                "confidence": 0.95,
+                "context_used": context_type,
+                "actions": [],
+                "suggestions": [],
+                "learning_note": None,
+            },
+        })
+    except Exception as e:
+        logger.error(f"ARIA chat handling failed for user {user_id}: {e}")
+        await connection_manager.send_personal_message(user_id, {
+            "type": "aria_response",
+            "conversation_id": conversation_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "data": {
+                "message": "ARIA is temporarily unavailable. Please try again.",
+                "confidence": 0,
+                "context_used": context_type,
+                "actions": [],
+                "suggestions": [],
+                "learning_note": None,
+            },
+        })
 
 
 async def handle_admin_websocket_message(admin_id: str, message_data: Dict[str, Any]):

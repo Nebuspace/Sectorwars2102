@@ -21,15 +21,17 @@ interface RankInfo {
   progress_percent: number;
   bonuses: RankBonuses;
   is_max_rank: boolean;
+  is_game_complete?: boolean;
+  rank_victory_at?: string | null;
 }
 
-const TIER_COLORS: Record<string, string> = {
+/** Keys match the rank tiers the backend emits (RANK_DEFINITIONS). */
+export const TIER_COLORS: Record<string, string> = {
   Enlisted: '#888888',
-  'Non-Commissioned Officer': '#4a9eff',
+  NCO: '#4a9eff',
+  Warrant: '#ffaa44',
   Officer: '#ff44ff',
-  'Senior Officer': '#ffaa44',
   Flag: '#ff4444',
-  Supreme: '#00ffff',
 };
 
 const RankDisplay: React.FC = () => {
@@ -96,8 +98,22 @@ const RankDisplay: React.FC = () => {
             {rankInfo.rank_points} / {rankInfo.next_rank_points_required} pts &rarr; {rankInfo.next_rank}
           </div>
         )}
-        {rankInfo.is_max_rank && (
+        {rankInfo.is_max_rank && !rankInfo.is_game_complete && (
           <div className="rank-next rank-max">Maximum Rank Achieved</div>
+        )}
+        {rankInfo.is_max_rank && rankInfo.is_game_complete && (
+          <div className="rank-victory-banner">
+            <span className="rank-victory-title">★ FLEET ADMIRAL — JOURNEY COMPLETE ★</span>
+            {rankInfo.rank_victory_at && (
+              <span className="rank-victory-date">
+                {new Date(rankInfo.rank_victory_at).toLocaleDateString(undefined, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                })}
+              </span>
+            )}
+          </div>
         )}
       </div>
       <div className="rank-bonuses">

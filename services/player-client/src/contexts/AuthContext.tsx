@@ -1,5 +1,6 @@
 import React, { createContext, useState, useContext, useEffect, useRef, ReactNode } from 'react';
 import axios from 'axios';
+import { refreshAccessToken } from '../services/apiClient';
 
 interface User {
   id: string;
@@ -34,11 +35,15 @@ interface AuthResponse {
   [key: string]: any;
 }
 
+// Token refresh is delegated to the ONE shared single-flight in
+// services/apiClient.ts (refreshAccessToken). The global-axios 401 interceptor
+// here and the apiClient interceptor MUST funnel through that single lock —
+// two separate locks race on the rotating refresh token (one call rotates it,
+// the concurrent one then presents the now-revoked token → 401 → logout).
+
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProviderProps) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
-  const [refreshPromise, setRefreshPromise] = useState<Promise<void> | null>(null);
   
   // Use Vite proxy for all API requests to avoid CORS issues
   const getApiUrl = () => {
@@ -292,57 +297,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }: AuthProv
   };
   
   const refreshToken = async () => {
-    // If already refreshing, return the existing promise to prevent race conditions
-    if (isRefreshing && refreshPromise) {
-      return refreshPromise;
+    // Delegate to the ONE shared single-flight refresh (services/apiClient.ts):
+    // concurrent 401s across the global-axios and apiClient layers coalesce into
+    // a single /auth/refresh and all callers receive the same rotated token.
+    // refreshAccessToken() already persists the new tokens and updates the global
+    // axios Authorization header; it never throws (returns null on failure).
+    const token = await refreshAccessToken();
+    if (!token) {
+      setUser(null);
+      throw new Error('Token refresh failed');
     }
-
-    const storedRefreshToken = localStorage.getItem('refreshToken');
-    if (!storedRefreshToken) {
-      throw new Error('No refresh token available');
-    }
-    
-    // Create a new refresh promise
-    const newRefreshPromise = (async () => {
-      setIsRefreshing(true);
-      
-      try {
-        const response = await axios.post<AuthResponse>(
-          `${apiUrl}/api/v1/auth/refresh`,
-          { refresh_token: storedRefreshToken },
-          { headers: { Authorization: '' } } // Don't send current auth header
-        );
-        
-        const { access_token, refresh_token } = response.data;
-        
-        // Store new tokens
-        localStorage.setItem('accessToken', access_token);
-        localStorage.setItem('refreshToken', refresh_token);
-        
-        // Update auth header
-        axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
-        
-        // Clear the refresh promise and state
-        setIsRefreshing(false);
-        setRefreshPromise(null);
-      } catch (error) {
-        console.error('Token refresh failed:', error);
-        
-        // Clear the refresh promise and state
-        setIsRefreshing(false);
-        setRefreshPromise(null);
-        
-        // Clear tokens and user on refresh failure
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
-        axios.defaults.headers.common['Authorization'] = '';
-        setUser(null);
-        throw error;
-      }
-    })();
-    
-    setRefreshPromise(newRefreshPromise);
-    return newRefreshPromise;
   };
   
   const logout = () => {

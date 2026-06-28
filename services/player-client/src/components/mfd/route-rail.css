@@ -1,0 +1,130 @@
+/* ============================================
+   ROUTE RAIL — ship-systems navigation keys
+   Sits above the MFD stack in the left console.
+   Shares the MFD bezel language (mfd.css tokens)
+   but is navigation chrome, not a softkey rail.
+   ============================================ */
+
+.route-rail {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: linear-gradient(#23262e, #15171c);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+}
+
+.rr-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 30px;
+  gap: 4px;
+}
+
+.rr-key {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Courier New', Courier, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-decoration: none;
+  color: color-mix(in srgb, var(--rr-accent, #00d9ff) 80%, #ffffff);
+  background: #04090f;
+  border: 1px solid color-mix(in srgb, var(--rr-accent, #00d9ff) 35%, transparent);
+  border-radius: 4px;
+  /* Accent edge light on the left of every key. */
+  box-shadow: inset 2px 0 0 var(--rr-accent, #00d9ff);
+  cursor: pointer;
+  transition:
+    background 90ms ease-out,
+    color 90ms ease-out,
+    box-shadow 90ms ease-out,
+    transform 90ms ease-out;
+}
+
+.rr-key:hover {
+  background: color-mix(in srgb, var(--rr-accent, #00d9ff) 14%, #04090f);
+  border-color: color-mix(in srgb, var(--rr-accent, #00d9ff) 60%, transparent);
+}
+
+/* Press feel (Design A graft): fast depress, eased release. */
+.rr-key:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 2px 0 0 var(--rr-accent, #00d9ff),
+    inset 0 2px 6px rgba(0, 0, 0, 0.7);
+  transition-duration: 40ms;
+}
+
+/* Active route — inverted key: accent-filled face, dark text. */
+.rr-key.rr-key-active {
+  background: var(--rr-accent, #00d9ff);
+  border-color: var(--rr-accent, #00d9ff);
+  color: #04090f;
+  box-shadow:
+    inset 2px 0 0 color-mix(in srgb, #ffffff 35%, var(--rr-accent, #00d9ff)),
+    0 0 10px color-mix(in srgb, var(--rr-accent, #00d9ff) 50%, transparent);
+}
+
+.rr-key:focus-visible {
+  outline: 2px solid var(--rr-accent, #00d9ff);
+  outline-offset: 1px;
+}
+
+/* Logout — 9th slim key, full rail width. The double-class selector
+   (0-2-0) outranks .logout-button (auth.css, 0-1-0) regardless of CSS
+   import order, so the auth base styles (left-aligned, 0.75rem padding)
+   never leak through. */
+.rr-key.rr-key-logout {
+  --rr-accent: #ff4d6d;
+  width: 100%;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  text-align: center;
+  text-transform: uppercase;
+  font-size: 0.6rem;
+  font-family: 'Courier New', Courier, monospace;
+  letter-spacing: 0.18em;
+  color: color-mix(in srgb, var(--rr-accent) 80%, #ffffff);
+  background: #04090f;
+  border: 1px solid color-mix(in srgb, var(--rr-accent) 35%, transparent);
+  border-radius: 4px;
+}
+
+.rr-key.rr-key-logout:hover {
+  background: color-mix(in srgb, var(--rr-accent) 14%, #04090f);
+  border-color: color-mix(in srgb, var(--rr-accent) 60%, transparent);
+  color: color-mix(in srgb, var(--rr-accent) 90%, #ffffff);
+}
+
+/* Pilot identity row — sits between the route grid and the logout key,
+   tinted by the player's chosen name_color (falls back to console cyan). */
+.rr-pilot {
+  width: 100%;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--pilot-color, #00d9ff);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 2px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rr-key {
+    transition: none;
+  }
+  .rr-key:active {
+    transform: none;
+  }
+}

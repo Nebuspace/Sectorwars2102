@@ -21,7 +21,7 @@
   width: 16px;
   height: 16px;
   border: 2px solid #444;
-  border-top-color: #4a9eff;
+  border-top-color: var(--color-primary, #00d9ff);
   border-radius: 50%;
   animation: rank-spin 0.8s linear infinite;
 }
@@ -91,6 +91,39 @@
 .rank-next.rank-max {
   color: #00ffff;
   font-style: italic;
+}
+
+/* Journey-complete victory banner — CRT gold, scanline glow. */
+.rank-victory-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 215, 0, 0.6);
+  border-radius: 4px;
+  background: linear-gradient(135deg, rgba(60, 45, 0, 0.6) 0%, rgba(30, 22, 0, 0.6) 100%);
+  text-shadow: 0 0 6px rgba(255, 215, 0, 0.7);
+  animation: rank-victory-pulse 2.2s ease-in-out infinite;
+}
+
+.rank-victory-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #ffd700;
+  text-transform: uppercase;
+}
+
+.rank-victory-date {
+  font-size: 0.62rem;
+  color: #ffe98a;
+  opacity: 0.85;
+}
+
+@keyframes rank-victory-pulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(255, 215, 0, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(255, 215, 0, 0.55); }
 }
 
 .rank-bonuses {
@@ -184,9 +217,9 @@
 }
 
 .medal-cat-btn.active {
-  border-color: #4a9eff;
-  color: #4a9eff;
-  background: rgba(74, 158, 255, 0.1);
+  border-color: var(--color-primary, #00d9ff);
+  color: var(--color-primary, #00d9ff);
+  background: rgba(0, 217, 255, 0.1);
 }
 
 .medal-grid {
@@ -253,7 +286,7 @@
   z-index: 1000;
   padding: 10px 14px;
   background: #1a1a2e;
-  border: 1px solid #4a9eff;
+  border: 1px solid var(--color-primary, #00d9ff);
   border-radius: 6px;
   max-width: 220px;
   pointer-events: none;
@@ -274,7 +307,7 @@
 
 .medal-tooltip .tooltip-category {
   font-size: 0.65rem;
-  color: #4a9eff;
+  color: var(--color-primary, #00d9ff);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-top: 4px;
@@ -344,8 +377,8 @@
 }
 
 .leaderboard-table tbody tr.current-player {
-  background: rgba(74, 158, 255, 0.12);
-  border-left: 2px solid #4a9eff;
+  background: rgba(0, 217, 255, 0.12);
+  border-left: 2px solid var(--color-primary, #00d9ff);
 }
 
 .leaderboard-table td {
@@ -365,8 +398,8 @@
 .leaderboard-your-rank {
   margin-top: 10px;
   padding: 8px 12px;
-  background: rgba(74, 158, 255, 0.08);
-  border: 1px solid rgba(74, 158, 255, 0.2);
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 6px;
   font-size: 0.8rem;
   color: #aaa;
@@ -374,7 +407,7 @@
 }
 
 .leaderboard-your-rank strong {
-  color: #4a9eff;
+  color: var(--color-primary, #00d9ff);
 }
 
 /* Rank Progress */

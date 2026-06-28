@@ -83,122 +83,49 @@ export const PerformanceMetrics: React.FC = () => {
   const [selectedTimeRange, setSelectedTimeRange] = useState<'1h' | '6h' | '24h' | '7d'>('24h');
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
+  // Initial fetch + refetch on time-range change only. Error state is NOT a
+  // dependency here, so a failure never triggers an automatic refetch loop —
+  // recovery is via the manual Retry button.
   useEffect(() => {
     fetchPerformanceData();
-    
-    if (autoRefresh) {
-      const interval = setInterval(fetchPerformanceData, 5000); // Refresh every 5 seconds
-      return () => clearInterval(interval);
-    }
-  }, [selectedTimeRange, autoRefresh]);
+  }, [selectedTimeRange]);
+
+  // Polling interval — paused while in an error state so we don't hammer a
+  // missing endpoint. No immediate fetch in this effect, so toggling error
+  // only starts/stops the timer.
+  useEffect(() => {
+    if (!autoRefresh || error) return;
+    const interval = setInterval(fetchPerformanceData, 5000); // Refresh every 5 seconds
+    return () => clearInterval(interval);
+  }, [selectedTimeRange, autoRefresh, error]);
 
   const fetchPerformanceData = async () => {
     try {
-      const response = await fetch(`/api/admin/performance/metrics?timeRange=${selectedTimeRange}`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
-      }).catch(() => ({
-        ok: true,
-        json: async () => ({
-          system: {
-            serverLoad: 65 + Math.random() * 10,
-            memoryUsage: 72 + Math.random() * 5,
-            diskUsage: 45,
-            networkLatency: 15 + Math.random() * 5,
-            activeConnections: Math.floor(850 + Math.random() * 100),
-            requestsPerSecond: Math.floor(120 + Math.random() * 30),
-            errorRate: 0.5 + Math.random() * 0.5,
-            uptime: 99.98
-          },
-          database: {
-            queryTime: 45 + Math.random() * 10,
-            activeQueries: Math.floor(15 + Math.random() * 10),
-            slowQueries: Math.floor(Math.random() * 5),
-            connectionPool: {
-              active: Math.floor(20 + Math.random() * 10),
-              idle: Math.floor(5 + Math.random() * 5),
-              total: 50
-            },
-            cacheHitRate: 85 + Math.random() * 10
-          },
-          application: {
-            responseTime: {
-              p50: 45 + Math.random() * 10,
-              p95: 120 + Math.random() * 30,
-              p99: 350 + Math.random() * 50
-            },
-            throughput: Math.floor(1000 + Math.random() * 200),
-            errorCount: Math.floor(Math.random() * 50),
-            successRate: 99.2 + Math.random() * 0.5,
-            endpoints: [
-              { path: '/api/auth/login', avgTime: 85, calls: 1520, errors: 12 },
-              { path: '/api/players/*', avgTime: 45, calls: 8420, errors: 5 },
-              { path: '/api/economy/*', avgTime: 120, calls: 3200, errors: 8 },
-              { path: '/api/combat/*', avgTime: 200, calls: 2100, errors: 15 },
-              { path: '/api/admin/*', avgTime: 95, calls: 450, errors: 2 }
-            ]
-          },
-          historical: {
-            timestamps: Array.from({ length: 24 }, (_, i) => {
-              const date = new Date();
-              date.setHours(date.getHours() - 23 + i);
-              return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-            }),
-            serverLoad: Array.from({ length: 24 }, () => 60 + Math.random() * 20),
-            responseTime: Array.from({ length: 24 }, () => 40 + Math.random() * 20),
-            errorRate: Array.from({ length: 24 }, () => Math.random() * 2)
-          },
-          suggestions: [
-            {
-              id: 's1',
-              title: 'Enable Query Result Caching',
-              description: 'Implement Redis caching for frequently accessed data to reduce database load',
-              impact: 'high',
-              effort: 'medium',
-              category: 'Database',
-              estimatedImprovement: '30% reduction in query time'
-            },
-            {
-              id: 's2',
-              title: 'Optimize Slow Queries',
-              description: 'Add indexes to player_stats and combat_logs tables',
-              impact: 'high',
-              effort: 'low',
-              category: 'Database',
-              estimatedImprovement: '50% faster query execution'
-            },
-            {
-              id: 's3',
-              title: 'Implement Connection Pooling',
-              description: 'Increase connection pool size to handle peak traffic',
-              impact: 'medium',
-              effort: 'low',
-              category: 'Infrastructure',
-              estimatedImprovement: '20% better concurrency'
-            },
-            {
-              id: 's4',
-              title: 'Enable HTTP/2',
-              description: 'Upgrade to HTTP/2 for better multiplexing and reduced latency',
-              impact: 'medium',
-              effort: 'medium',
-              category: 'Network',
-              estimatedImprovement: '15% faster page loads'
-            }
-          ]
-        })
-      }));
+      const response = await fetch(`/api/v1/admin/performance/metrics?timeRange=${selectedTimeRange}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+      });
 
-      if (response.ok) {
-        const data = await response.json();
-        setSystemMetrics(data.system);
-        setDatabaseMetrics(data.database);
-        setApplicationMetrics(data.application);
-        setHistoricalData(data.historical);
-        setSuggestions(data.suggestions);
+      if (!response.ok) {
+        setError(
+          response.status === 404
+            ? 'Performance metrics endpoint not implemented — /api/v1/admin/performance/metrics returned 404'
+            : `Performance metrics request failed (HTTP ${response.status})`
+        );
+        return;
       }
-    } catch (error) {
-      console.error('Error fetching performance data:', error);
+
+      const data = await response.json();
+      setSystemMetrics(data.system);
+      setDatabaseMetrics(data.database);
+      setApplicationMetrics(data.application);
+      setHistoricalData(data.historical);
+      setSuggestions(data.suggestions ?? []);
+      setError(null);
+    } catch (err) {
+      console.error('Error fetching performance data:', err);
+      setError('Gameserver unreachable — network error fetching performance metrics');
     } finally {
       setLoading(false);
     }
@@ -342,6 +269,30 @@ export const PerformanceMetrics: React.FC = () => {
       <div className="performance-loading">
         <i className="fas fa-spinner fa-spin"></i>
         <span>Loading performance metrics...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="performance-metrics">
+        <div className="metrics-header">
+          <h2>Performance Optimization Metrics</h2>
+        </div>
+        <div className="alert alert-error">
+          <span className="alert-icon">⚠️</span>
+          <span className="alert-message">{error}</span>
+        </div>
+        <button
+          className="btn btn-secondary"
+          onClick={() => {
+            setLoading(true);
+            fetchPerformanceData();
+          }}
+        >
+          <i className="fas fa-sync"></i>
+          Retry
+        </button>
       </div>
     );
   }
@@ -560,6 +511,7 @@ export const PerformanceMetrics: React.FC = () => {
         </div>
       )}
 
+      {suggestions.length > 0 && (
       <div className="optimization-suggestions">
         <h3>Optimization Suggestions</h3>
         <div className="suggestions-grid">
@@ -591,6 +543,7 @@ export const PerformanceMetrics: React.FC = () => {
           ))}
         </div>
       </div>
+      )}
     </div>
   );
 };

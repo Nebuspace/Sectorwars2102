@@ -26,6 +26,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 import asyncio
 import json
+import time
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,20 +57,13 @@ from src.models.team import Team
 try:
     from src.utils.validation import validate_uuid
 except ImportError:
-    def validate_uuid(value): 
+    def validate_uuid(value):
         import uuid
         try:
             uuid.UUID(value)
             return True
         except ValueError:
             return False
-
-try:
-    from src.core.security import get_current_player_id
-except ImportError:
-    def get_current_player_id():
-        # Placeholder - in production this would come from JWT/session
-        return None
 
 
 logger = logging.getLogger(__name__)
@@ -183,8 +177,7 @@ class EnhancedAIService:
         self.trading_service = AITradingService()
         self.market_prediction = MarketPredictionEngine()
         self.route_optimizer = RouteOptimizer()
-        # Note: PlayerBehaviorAnalyzer will be implemented in future iteration
-        
+
         # Security configuration
         self.max_recommendations_per_request = 10
         self.max_conversation_length = 4000
@@ -202,16 +195,14 @@ class EnhancedAIService:
         OWASP A01 & A04 compliance
         """
         try:
-            # Verify player exists and is authenticated
-            current_player = await get_current_player_id()
-            if current_player != player_id:
-                await self._log_security_event(
-                    "access", "warning", 
-                    f"Unauthorized access attempt for player {player_id}",
-                    player_id=player_id
-                )
-                raise PermissionError("Unauthorized access to AI assistant")
-            
+            # The caller is already authenticated against THIS player_id: REST
+            # routes gate on the validate_ai_access dependency, and the WS
+            # handler resolves the player from the handshake-authenticated
+            # connection. The previous `await get_current_player_id()` re-check
+            # was a no-arg placeholder that returned None, so `await None`
+            # crashed every ARIA query — removed; authentication stays at the
+            # entry points.
+
             # Get or create AI assistant
             stmt = select(AIComprehensiveAssistant).where(
                 AIComprehensiveAssistant.player_id == player_id
@@ -482,11 +473,19 @@ class EnhancedAIService:
         Get trading recommendations using existing ARIA foundation
         Converts ARIA recommendations to enhanced format
         """
+        # Capture assistant fields BEFORE the trading-service call: that call
+        # commits internally (profile creation / _save_recommendations_to_db),
+        # and with expire_on_commit=True the commit expires this ORM object —
+        # a later attribute access (security_level below) would then trigger a
+        # sync lazy-reload on the async session and raise greenlet_spawn.
+        security_level = assistant.security_level
+        player_id_str = str(assistant.player_id)
+
         # Leverage existing ARIA trading intelligence
         aria_recommendations = await self.trading_service.get_trading_recommendations(
-            self.db, str(assistant.player_id), max_count
+            self.db, player_id_str, max_count
         )
-        
+
         enhanced_recommendations = []
         for rec in aria_recommendations:
             # Convert ARIA TradingRecommendation to CrossSystemRecommendation
@@ -512,7 +511,7 @@ class EnhancedAIService:
                 },
                 confidence=float(rec.confidence),
                 expires_at=rec.expires_at,
-                security_clearance_required=assistant.security_level
+                security_clearance_required=security_level
             )
             enhanced_recommendations.append(enhanced_rec)
         
@@ -527,8 +526,8 @@ class EnhancedAIService:
         
         # Get player's fleet information
         stmt = select(Fleet).where(
-            Fleet.player_id == assistant.player_id,
-            Fleet.is_destroyed == False
+            Fleet.commander_id == assistant.player_id,
+            Fleet.disbanded_at.is_(None)
         ).options(selectinload(Fleet.members))
         result = await self.db.execute(stmt)
         fleets = result.scalars().all()
@@ -539,7 +538,7 @@ class EnhancedAIService:
                 FleetBattle.attacker_fleet_id.in_([f.id for f in fleets]),
                 FleetBattle.defender_fleet_id.in_([f.id for f in fleets])
             ),
-            FleetBattle.status == "active"
+            FleetBattle.ended_at.is_(None)
         )
         result = await self.db.execute(stmt)
         active_battles = result.scalars().all()
@@ -711,7 +710,7 @@ class EnhancedAIService:
         player_data = await self._analyze_player_strategic_position(assistant.player_id)
         
         # Generate strategic insights
-        if player_data["credits"] > 1000000 and not player_data["owns_ports"]:
+        if player_data["credits"] > 1000000 and not player_data["owns_stations"]:
             rec = CrossSystemRecommendation(
                 id=str(uuid.uuid4()),
                 category=AISystemType.STRATEGIC,
@@ -761,8 +760,8 @@ class EnhancedAIService:
 
         # Check fleet strength
         stmt = select(func.count(Fleet.id)).where(
-            Fleet.player_id == player_id,
-            Fleet.is_destroyed == False
+            Fleet.commander_id == player_id,
+            Fleet.disbanded_at.is_(None)
         )
         result = await self.db.execute(stmt)
         fleet_count = result.scalar()
@@ -781,26 +780,41 @@ class EnhancedAIService:
     # =============================================================================
 
     async def process_natural_language_query(self, player_id: uuid.UUID, user_input: str,
-                                           conversation_context: ConversationContext = None) -> Dict[str, Any]:
+                                           conversation_context: ConversationContext = None,
+                                           conversation_id: str = None) -> Dict[str, Any]:
         """
         Process natural language queries with comprehensive AI intelligence
         Extends ARIA's chat interface to all game systems
         """
         # Security validation and input sanitization
         assistant = await self._validate_and_authenticate(player_id)
+        # Capture the assistant id up front: _generate_ai_response's trading
+        # path commits mid-request, expiring this ORM object — a later
+        # assistant.id access (conversation/security logging) would then trigger
+        # a sync lazy-reload on the async session and raise greenlet_spawn.
+        assistant_id = assistant.id
         sanitized_input = self._sanitize_user_input(user_input)
         
         if not sanitized_input:
             raise ValueError("Empty or invalid input")
         
         try:
-            # Create conversation context if not provided
+            # Create conversation context if not provided. Built HERE (not by the
+            # caller) because only this method has the authenticated assistant id
+            # — ConversationContext validation rejects an empty assistant_id.
+            # Reuse the client's conversation_id only when it is a valid UUID
+            # (session_id is later parsed with uuid.UUID in _log_conversation);
+            # otherwise mint a fresh thread id.
             if not conversation_context:
+                try:
+                    session_id = str(uuid.UUID(conversation_id)) if conversation_id else str(uuid.uuid4())
+                except (ValueError, TypeError, AttributeError):
+                    session_id = str(uuid.uuid4())
                 conversation_context = ConversationContext(
-                    session_id=str(uuid.uuid4()),
+                    session_id=session_id,
                     conversation_type="query",
                     player_id=str(player_id),
-                    assistant_id=str(assistant.id),
+                    assistant_id=str(assistant_id),
                     security_level=assistant.security_level
                 )
             
@@ -808,13 +822,15 @@ class EnhancedAIService:
             intent_analysis = await self._analyze_user_intent(sanitized_input, conversation_context)
             
             # Generate response based on intent
+            _gen_start = time.perf_counter()
             response = await self._generate_ai_response(intent_analysis, assistant, conversation_context)
-            
+            _gen_elapsed_ms = int((time.perf_counter() - _gen_start) * 1000)
+
             # SECURITY: Sanitize AI response content
             response = self._sanitize_response(response)
-            
+
             # Log conversation for learning and audit
-            await self._log_conversation(assistant, sanitized_input, response, conversation_context)
+            await self._log_conversation(assistant_id, sanitized_input, response, conversation_context, _gen_elapsed_ms)
             
             return {
                 "response": response,
@@ -827,7 +843,7 @@ class EnhancedAIService:
             await self._log_security_event(
                 "data_access", "error",
                 f"Failed to process natural language query: {str(e)}",
-                assistant_id=assistant.id, player_id=player_id
+                assistant_id=assistant_id, player_id=player_id
             )
             logger.error(f"Error processing natural language query: {e}")
             
@@ -847,27 +863,30 @@ class EnhancedAIService:
         # Convert to lowercase for analysis
         input_lower = user_input.lower()
         
-        # Define intent patterns
+        # Define intent patterns. Keyword lists include the root words AND common
+        # word-forms (e.g. "colony"/"colonies", "strategy"/"strategic") because a
+        # plain substring test would otherwise miss "colonies" or "combat".
         intent_patterns = {
-            "trading": ["trade", "buy", "sell", "price", "profit", "route", "commodity", "market"],
-            "combat": ["battle", "fight", "attack", "defend", "fleet", "tactical", "formation", "war"],
-            "colony": ["planet", "colony", "colonist", "terraform", "genesis", "population", "development"],
-            "station": ["station", "buy station", "own", "investment", "acquire", "purchase"],
-            "strategic": ["strategy", "plan", "recommend", "advice", "next move", "best option", "should i"],
-            "navigation": ["go to", "travel", "navigate", "route to", "path", "direction"],
-            "help": ["help", "how to", "what is", "explain", "tutorial", "guide"]
+            "trading": ["trade", "trading", "buy", "sell", "price", "profit", "route", "commodity", "market", "cargo"],
+            "combat": ["combat", "battle", "fight", "attack", "defend", "fleet", "tactical", "formation", "war", "weapon", "shield", "drone", "engage", "threat", "readiness"],
+            "colony": ["colony", "colonies", "colonist", "planet", "terraform", "genesis", "population", "develop", "settle", "habitability"],
+            "station": ["station", "port", "investment", "invest", "acquire", "ownership", "dock"],
+            "strategic": ["strategic", "strategy", "plan", "recommend", "advice", "next move", "best option", "should i", "overall", "position", "focus", "priorit"],
+            "navigation": ["go to", "travel", "navigate", "warp", "path", "heading", "direction", "jump"],
+            "help": ["help", "how to", "what is", "explain", "tutorial", "guide", "what can you"]
         }
-        
-        # Score each intent
+
+        # Score each intent by raw count of matched keywords (most matches wins).
+        # Normalizing by list length penalized intents with richer keyword sets.
         intent_scores = {}
         for intent, keywords in intent_patterns.items():
             score = sum(1 for keyword in keywords if keyword in input_lower)
             if score > 0:
-                intent_scores[intent] = score / len(keywords)  # Normalize by keyword count
-        
+                intent_scores[intent] = score
+
         # Determine primary intent
         primary_intent = max(intent_scores.items(), key=lambda x: x[1])[0] if intent_scores else "general"
-        confidence = intent_scores.get(primary_intent, 0.5)
+        confidence = min(1.0, 0.5 + 0.2 * intent_scores.get(primary_intent, 0))
         
         # Extract entities (sectors, commodities, etc.)
         entities = self._extract_entities(user_input)
@@ -969,37 +988,167 @@ class EnhancedAIService:
         """
         Generate combat tactical response
         """
-        if not assistant.has_permission("combat"):
-            return "I don't currently have access to combat systems. Please upgrade your AI assistant permissions for tactical analysis."
-        
-        return "Combat tactical analysis is coming soon! I'll be able to provide fleet formation recommendations, battle strategy, and tactical coordination guidance."
+        # Advisory responses (read-only analysis of the player's own holdings) are
+        # open to any assistant — no per-domain permission gate.
+        try:
+            player = (await self.db.execute(
+                select(Player).where(Player.id == assistant.player_id))).scalar_one()
+            fleet_count = (await self.db.execute(
+                select(func.count(Fleet.id)).where(
+                    Fleet.commander_id == assistant.player_id,
+                    Fleet.disbanded_at.is_(None)))).scalar() or 0
+            try:
+                recs = await self._get_combat_recommendations(assistant, 3)
+            except Exception as rec_err:
+                logger.warning(f"combat recommendations unavailable: {rec_err}")
+                recs = []
+
+            lines = [
+                "Here's your combat picture, Commander:",
+                f"• Military rank: {str(player.military_rank).replace('_', ' ').title()}",
+                f"• Defense drones: {player.defense_drones}",
+                f"• Active fleets: {fleet_count}",
+            ]
+            if recs:
+                lines.append("")
+                lines.append("Tactical recommendations:")
+                for i, r in enumerate(recs, 1):
+                    lines.append(f"{i}. {r.title} — {r.summary}")
+            else:
+                lines.append("")
+                lines.append(
+                    "No active battles. Keep your shields charged and drones stocked, watch your "
+                    "sector contacts for hostiles, and only engage targets you can out-gun — note "
+                    "that attacking reputable traders or fleeing escape pods costs you reputation."
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error building combat response: {e}")
+            return (
+                "Keep your shields up and your drones stocked. Engage only targets you can beat, "
+                "disengage early if a fight turns against you, and remember that attacking innocents "
+                "carries a reputation penalty."
+            )
 
     async def _generate_colony_response(self, assistant: AIComprehensiveAssistant,
                                       entities: Dict[str, List[str]], context: ConversationContext) -> str:
         """
         Generate colonization response
         """
-        if not assistant.has_permission("colony"):
-            return "I don't currently have access to colonization data. Please upgrade your AI assistant permissions for planetary guidance."
-        
-        return "Planetary colonization guidance is coming soon! I'll help you optimize terraforming, colonist allocation, and planetary development strategies."
+        # Advisory: read-only, open to any assistant.
+        try:
+            planets = (await self.db.execute(
+                select(Planet).where(Planet.owner_id == assistant.player_id))).scalars().all()
+            if not planets:
+                return (
+                    "You haven't founded any colonies yet. Land on an unclaimed world and claim it "
+                    "to establish your first — you'll receive a founding grant and a level-1 citadel. "
+                    "High-habitability oceanic and terran worlds make the strongest starts; pick up "
+                    "colonists from a population hub like New Earth and ferry them out to settle."
+                )
+            lines = [f"You command {len(planets)} colon{'y' if len(planets) == 1 else 'ies'}:"]
+            for p in planets[:5]:
+                cap = int((p.population / p.max_population) * 100) if p.max_population else 0
+                lines.append(f"• {p.name}: {p.population:,}/{p.max_population:,} colonists ({cap}% of capacity)")
+            recs = await self._get_colonization_recommendations(assistant, 3)
+            lines.append("")
+            if recs:
+                lines.append("Development advice:")
+                for i, r in enumerate(recs, 1):
+                    lines.append(f"{i}. {r.summary}")
+            else:
+                lines.append(
+                    "Your colonies are near capacity. Raise habitability through terraforming to lift "
+                    "the population ceiling, and invest in citadel defenses to protect your output."
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error building colony response: {e}")
+            return (
+                "For colony growth: ferry colonists from a population hub to your worlds, terraform to "
+                "raise habitability and the population ceiling, and build citadel defenses to protect them."
+            )
 
     async def _generate_station_response(self, assistant: AIComprehensiveAssistant,
                                     entities: Dict[str, List[str]], context: ConversationContext) -> str:
         """
         Generate station ownership response
         """
-        if not assistant.has_permission("station"):
-            return "I don't currently have access to station investment data. Please upgrade your AI assistant permissions for investment analysis."
-        
-        return "Station investment analysis is coming soon! I'll help you identify profitable station acquisition opportunities and optimize revenue from owned stations."
+        # Advisory: read-only, open to any assistant.
+        try:
+            owned = (await self.db.execute(
+                select(Station).where(Station.owner_id == assistant.player_id))).scalars().all()
+            lines: List[str] = []
+            if owned:
+                lines.append(f"You own {len(owned)} station{'s' if len(owned) != 1 else ''}:")
+                for s in owned[:5]:
+                    lines.append(f"• {s.name} (sector {s.sector_id})")
+            else:
+                lines.append(
+                    "You don't own any stations yet — owning one turns a trade hub into passive income "
+                    "from transaction fees."
+                )
+            # Investment opportunities (the helper touches several optional Station
+            # fields; degrade gracefully if any are absent on this deployment).
+            try:
+                recs = await self._get_station_recommendations(assistant, 3)
+            except Exception as rec_err:
+                logger.warning(f"station recommendations unavailable: {rec_err}")
+                recs = []
+            if recs:
+                lines.append("")
+                lines.append("Investment opportunities:")
+                for i, r in enumerate(recs, 1):
+                    lines.append(f"{i}. {r.summary}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error building station response: {e}")
+            return (
+                "Station ownership earns passive income from transaction fees — look for ownable ports "
+                "in high-traffic sectors where the trade volume pays back the acquisition cost quickly."
+            )
 
     async def _generate_strategic_response(self, assistant: AIComprehensiveAssistant,
                                          entities: Dict[str, List[str]], context: ConversationContext) -> str:
         """
         Generate strategic planning response
         """
-        return "Strategic planning analysis is coming soon! I'll provide comprehensive guidance spanning trading, combat, colonization, and station management to optimize your overall position."
+        try:
+            pos = await self._analyze_player_strategic_position(assistant.player_id)
+            lines = [
+                "Strategic overview across your operations:",
+                f"• Credits: {pos['credits']:,}",
+                f"• Stations owned: {pos['station_count']}",
+                f"• Colonies: {pos['planet_count']}",
+                f"• Fleets: {pos['fleet_count']}",
+                f"• Diversification: {pos['strategic_diversity']}/3 domains active",
+            ]
+            recs = await self._get_strategic_recommendations(assistant, 3)
+            lines.append("")
+            lines.append("Strategic moves:")
+            if recs:
+                for i, r in enumerate(recs, 1):
+                    lines.append(f"{i}. {r.title} — {r.summary}")
+            else:
+                tips = []
+                if pos["credits"] > 1_000_000 and pos["station_count"] == 0:
+                    tips.append("Your reserves are strong — acquiring a station would diversify into passive income.")
+                if pos["planet_count"] == 0:
+                    tips.append("You hold no colonies; founding one secures long-term production and growth.")
+                if pos["strategic_diversity"] < 2:
+                    tips.append("You're concentrated in one domain — spreading across trade, colonies, and fleets hedges risk.")
+                if not tips:
+                    tips.append("You're well diversified. Press your advantage where your rank and reputation open the best markets.")
+                for i, tip in enumerate(tips, 1):
+                    lines.append(f"{i}. {tip}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error building strategic response: {e}")
+            return (
+                "Think across systems: keep credits flowing from trade, convert surplus into colonies and "
+                "stations for passive income, and maintain a fleet strong enough to defend it all. Diversify "
+                "so no single setback can cripple you."
+            )
 
     async def _generate_help_response(self, assistant: AIComprehensiveAssistant,
                                     entities: Dict[str, List[str]], context: ConversationContext) -> str:
@@ -1028,15 +1177,19 @@ What would you like help with today?"""
         """
         return "I'm here to help with your space trading strategy! You can ask me about trading opportunities, market analysis, strategic planning, or say 'help' to see what I can do."
 
-    async def _log_conversation(self, assistant: AIComprehensiveAssistant, user_input: str,
-                               ai_response: str, context: ConversationContext):
+    async def _log_conversation(self, assistant_id: uuid.UUID, user_input: str,
+                               ai_response: str, context: ConversationContext,
+                               elapsed_ms: int = 0):
         """
         Log conversation for audit and learning purposes
         GDPR-compliant with automatic expiration
+
+        Takes assistant_id (not the ORM object) so it never touches an
+        attribute that may have been expired by a mid-request commit.
         """
         try:
             conversation_log = AIConversationLog(
-                assistant_id=assistant.id,
+                assistant_id=assistant_id,
                 session_id=uuid.UUID(context.session_id),
                 conversation_type=context.conversation_type,
                 interaction_sequence=len(context.conversation_history) + 1,
@@ -1044,10 +1197,12 @@ What would you like help with today?"""
                 ai_response_text=ai_response,
                 response_type="answer",
                 response_confidence=0.8,  # Default confidence
-                response_time_ms=100,  # Placeholder
+                response_time_ms=elapsed_ms,
                 conversation_context={
                     "topic": context.current_topic,
-                    "security_level": context.security_level.value
+                    # security_level may be a SecurityLevel enum or already a raw
+                    # string depending on the entry point — handle both.
+                    "security_level": getattr(context.security_level, "value", context.security_level)
                 },
                 privacy_level="standard",
                 data_retention_days=365  # 1 year retention

@@ -175,6 +175,9 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AI_DIALOGUE_ENABLED=${AI_DIALOGUE_ENABLED:-true}
+      # Duration compression for dev (1.0 in prod): construction days,
+      # grace windows, slip tenures, takeover months all scale by this
+      - GAME_TIME_SCALE=${GAME_TIME_SCALE:-1.0}
       - AI_PROVIDER_PRIMARY=${AI_PROVIDER_PRIMARY:-openai}
       - AI_PROVIDER_SECONDARY=${AI_PROVIDER_SECONDARY:-anthropic}
       - AI_PROVIDER_FALLBACK=${AI_PROVIDER_FALLBACK:-manual}
@@ -191,7 +194,9 @@ services:
     networks:
       - sectorwars-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/status/health"]
+      # curl is not installed in the gameserver image — a curl-based check
+      # reports permanently unhealthy and blocks service_healthy consumers
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/v1/status/health', timeout=5).status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -240,7 +245,9 @@ services:
       redis-nexus:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/status/health"]
+      # curl is not installed in the gameserver image — a curl-based check
+      # reports permanently unhealthy and blocks service_healthy consumers
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/v1/status/health', timeout=5).status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -280,7 +287,9 @@ services:
     profiles:
       - regional-template
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/status/health"]
+      # curl is not installed in the gameserver image — a curl-based check
+      # reports permanently unhealthy and blocks service_healthy consumers
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/v1/status/health', timeout=5).status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -311,8 +320,12 @@ services:
       - REACT_APP_PAYPAL_CLIENT_ID=${PAYPAL_CLIENT_ID}
       # Vite reads VITE_* via import.meta.env (REACT_APP_* is ignored by Vite — kept above for any non-Vite consumers)
       # NOTE: player-client adds /api/v1 + /ws at call sites (unlike admin-ui which expects suffixes baked in)
-      - VITE_API_URL=${API_BASE_URL:-http://localhost:8080}
-      - VITE_WS_URL=${WS_BASE_URL:-ws://localhost:8080}
+      # Empty default = same-origin: the client falls back to the page origin
+      # (Vite proxy / nginx gateway), which works from any browser. Set
+      # API_BASE_URL in the per-tier .env only when the API truly lives on a
+      # different origin than the page.
+      - VITE_API_URL=${API_BASE_URL:-}
+      - VITE_WS_URL=${WS_BASE_URL:-}
     restart: unless-stopped
     depends_on:
       - gameserver
@@ -362,7 +375,9 @@ services:
     networks:
       - sectorwars-network
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/index.html', (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }).on('error', () => { process.exit(1); });"]
+      # Vite serves under VITE_BASE (e.g. /admin/) — a fixed /index.html
+      # probe 302s and reports the container permanently unhealthy
+      test: ["CMD-SHELL", "node -e \"const b=process.env.VITE_BASE||'/';const p=(b.endsWith('/')?b:b+'/')+'index.html';require('http').get({host:'127.0.0.1',port:3000,path:p},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -418,6 +433,10 @@ services:
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - JWT_SECRET=${JWT_SECRET}
       - API_BASE_URL=${API_BASE_URL:-http://localhost:8080}
+      # src-layout fix: the dev image launches `uvicorn src.main:app` with PYTHONPATH=/app,
+      # but src/main.py uses bare sibling imports (region_provisioner/monitoring/config/models),
+      # which need /app/src on sys.path. Without this the service ModuleNotFound-crashes on boot.
+      - PYTHONPATH=/app/src:/app
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./services/region-manager/templates:/app/templates

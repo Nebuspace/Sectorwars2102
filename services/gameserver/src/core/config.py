@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-3-sonnet-20240229")
     AI_DIALOGUE_ENABLED: bool = os.environ.get("AI_DIALOGUE_ENABLED", "true").lower() == "true"
 
+    # Living NPC System — gates the npc_scheduler_service lifespan task
+    # (Loops A/B/C). Default off so prod stays static until proven on dev.
+    NPC_SCHEDULER_ENABLED: bool = os.environ.get("NPC_SCHEDULER_ENABLED", "false").lower() == "true"
+
     # PayPal Configuration
     PAYPAL_CLIENT_ID: str = os.environ.get("PAYPAL_CLIENT_ID", "")
     PAYPAL_CLIENT_SECRET: str = os.environ.get("PAYPAL_CLIENT_SECRET", "")

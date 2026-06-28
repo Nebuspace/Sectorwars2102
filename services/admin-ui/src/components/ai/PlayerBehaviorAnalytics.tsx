@@ -176,7 +176,7 @@ export const PlayerBehaviorAnalytics: React.FC = () => {
       <div className="analytics-filters">
         <div className="filter-group">
           <label>Behavior Type:</label>
-          <select value={filterBehavior} onChange={(e) => setFilterBehavior(e.target.value)}>
+          <select value={filterBehavior} onChange={(e) => setFilterBehavior(e.target.value)} disabled title="Inactive — per-player behavior profiles are not yet available">
             <option value="all">All Types</option>
             <option value="aggressive">Aggressive</option>
             <option value="balanced">Balanced</option>
@@ -187,7 +187,7 @@ export const PlayerBehaviorAnalytics: React.FC = () => {
         </div>
         <div className="filter-group">
           <label>Activity Level:</label>
-          <select value={filterActivity} onChange={(e) => setFilterActivity(e.target.value)}>
+          <select value={filterActivity} onChange={(e) => setFilterActivity(e.target.value)} disabled title="Inactive — per-player behavior profiles are not yet available">
             <option value="all">All Levels</option>
             <option value="very_active">Very Active</option>
             <option value="active">Active</option>
@@ -201,6 +201,11 @@ export const PlayerBehaviorAnalytics: React.FC = () => {
       <div className="profiles-grid">
         <div className="profiles-list">
           <h3>Player Behavior Profiles</h3>
+          <p style={{ color: 'var(--text-tertiary)', fontSize: '0.85rem', margin: '0 0 12px 0' }}>
+            Per-player behavior profiles are not yet surfaced — the behavior-analytics
+            endpoint returns aggregate player patterns and insights (shown above), not
+            per-player rows. The filters and table below stay inactive until that data exists.
+          </p>
           <div className="profiles-table">
             <table>
               <thead>

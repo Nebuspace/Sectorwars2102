@@ -1,4 +1,5 @@
 from typing import Dict, Any, List
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -6,11 +7,15 @@ from pydantic import BaseModel
 from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.ship import Ship
+from src.models.ship import Ship, ShipType, effective_cargo_capacity
 from src.models.sector import Sector
+from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel
 from src.services.movement_service import MovementService
 from src.services.ranking_service import RankingService
+from src.services.ship_service import ShipService
+from src.services.bounty_service import BountyService
+from src.services import turn_service
 
 router = APIRouter(
     prefix="/player",
@@ -31,13 +36,21 @@ class PlayerStateResponse(BaseModel):
     current_planet_id: str | None = None
     defense_drones: int
     attack_drones: int
-    current_ship_id: str = None
+    mines: int = 0
+    # Optional: a player has no ship until first-login completes
+    current_ship_id: str | None = None
+    # Optional: set when the player belongs to a team
+    team_id: str | None = None
 
     # Reputation and Ranking
     personal_reputation: int = 0
     reputation_tier: str = "Neutral"
     name_color: str = "#FFFFFF"
     military_rank: str = "Recruit"
+
+    # HUD enrichment (WO-PLAYERINFO id=142) — additive read fields:
+    turn_regen_per_hour: float = 0.0  # effective turns/hour (turn_service)
+    bounty_total: int = 0             # credits on this player's head
 
 class ShipResponse(BaseModel):
     id: str
@@ -55,6 +68,78 @@ class ShipResponse(BaseModel):
     current_value: int
     genesis_devices: int = 0
     max_genesis_devices: int = 0
+    # WO-UI-FIELDS: the installed Mining Laser ladder level (from
+    # equipment_slots["mining_laser"]["level"]) so the laser-upgrade UI can show
+    # the CURRENT level before a refit. None when no Mining Laser is fitted.
+    mining_laser_level: int | None = None
+
+class RepairShipResponse(BaseModel):
+    success: bool
+    message: str
+    credits_charged: int = 0
+    credits_remaining: int = 0
+    hull: float = 0
+    shields: float = 0
+    max_hull: float = 0
+    max_shields: float = 0
+
+class FormationResponse(BaseModel):
+    """A special-formation present in (or anchored at) the sector. The
+    formation's identity (name + type) is disclosed ONLY once discovered;
+    an undiscovered formation surfaces as a generic anomaly with no name or
+    type, mirroring how undiscovered planets are withheld (WO-CA)."""
+    id: str
+    is_discovered: bool
+    is_anchor: bool
+    # name + type are populated ONLY when is_discovered is True; withheld
+    # (None) before discovery so the client renders the unknown-anomaly
+    # placeholder instead of leaking the formation's identity.
+    name: str | None = None
+    type: str | None = None
+    # WO-UI-FIELDS: whether this formation's one-time investigation reward has
+    # already been claimed (derived from is_formation_investigated) so the
+    # Investigate UI can mark it done without a per-item fetch. Only meaningful
+    # once discovered.
+    is_investigated: bool = False
+
+class FormationInvestigateRewardResponse(BaseModel):
+    """The reward granted by investigating a formation. [NO-CANON]: the reward
+    magnitude is a proposed conservative value pending Max's canon ruling."""
+    credits: int = 0
+
+class FormationInvestigateDetailResponse(BaseModel):
+    """The investigated formation's disclosed details."""
+    id: str
+    type: str | None = None
+    name: str | None = None
+    is_discovered: bool
+    is_investigated: bool
+    region_id: str | None = None
+    anchor_sector_id: str | None = None
+
+class FormationInvestigateResponse(BaseModel):
+    """Payload returned on a successful POST /player/formations/{id}/investigate."""
+    formation: FormationInvestigateDetailResponse
+    reward: FormationInvestigateRewardResponse
+    credits_remaining: int
+    # FLAG: the reward magnitude is [NO-CANON] — proposed, pending Max's ruling.
+    reward_is_no_canon: bool = True
+
+
+def _mining_laser_level(ship) -> int | None:
+    """The installed Mining Laser ladder level from
+    ``equipment_slots["mining_laser"]["level"]`` (WO-UI-FIELDS), or ``None`` when
+    no Mining Laser is fitted. Mirrors MiningService._laser_level — never reads a
+    ship.* column (the level lives on the equipment slot)."""
+    slots = ship.equipment_slots if isinstance(getattr(ship, "equipment_slots", None), dict) else {}
+    slot = slots.get("mining_laser")
+    if not isinstance(slot, dict):
+        return None
+    try:
+        return int(slot.get("level", 0))
+    except (TypeError, ValueError):
+        return 0
+
 
 class SectorResponse(BaseModel):
     id: str
@@ -71,6 +156,9 @@ class SectorResponse(BaseModel):
     x_coord: int
     y_coord: int
     z_coord: int
+    # Special formations present in this sector (anchor or interior). Identity
+    # disclosed only after discovery; see FormationResponse (WO-CA).
+    special_formations: List[FormationResponse] = []
 
 class MoveResponse(BaseModel):
     success: bool
@@ -78,6 +166,11 @@ class MoveResponse(BaseModel):
     new_sector_id: int = None
     turn_cost: int = 0
     turns_remaining: int = 0
+    # The movement service attaches encounter/tunnel events to its result;
+    # without these fields response_model filtering silently strips them,
+    # which blinds the autopilot's encounter-pause (ADR-0072 Phase 1).
+    encounters: list = []
+    tunnel_events: list = []
 
 class MoveOption(BaseModel):
     sector_id: int
@@ -90,6 +183,17 @@ class MoveOption(BaseModel):
     can_afford: bool
     tunnel_type: str = None
     stability: float = None
+    # Player warp gates are strictly one-way (tunnel_type "warp_gate",
+    # turn_cost 0); natural tunnels report False, direct warps omit it.
+    one_way: bool | None = None
+    # Special formations present in (or anchored at) this neighbour sector, so
+    # the galaxy map can mark anomalies on adjacent nodes (WO-SFM). Surfaced
+    # read-only: viewing the move list does NOT discover anything (discovery is
+    # the act of *visiting* a sector — flip_formation_discovery), so an
+    # undiscovered formation here is withheld to a generic, identity-less anomaly
+    # exactly as on the current sector (WO-CA). is_discovered is a global row
+    # flag, so this leaks nothing a current-sector view wouldn't already.
+    special_formations: List[FormationResponse] = []
 
 class AvailableMovesResponse(BaseModel):
     warps: List[MoveOption]
@@ -126,11 +230,15 @@ async def get_player_state(
         current_planet_id=str(player.current_planet_id) if player.current_planet_id else None,
         defense_drones=player.defense_drones,
         attack_drones=player.attack_drones,
+        mines=player.mines,
         current_ship_id=str(player.current_ship_id) if player.current_ship_id else None,
+        team_id=str(player.team_id) if player.team_id else None,
         personal_reputation=player.personal_reputation,
         reputation_tier=player.reputation_tier,
         name_color=player.name_color,
-        military_rank=player.military_rank
+        military_rank=player.military_rank,
+        turn_regen_per_hour=turn_service.effective_regen_per_hour(db, player),
+        bounty_total=BountyService(db).total_active_bounty_on(player),
     )
 
 @router.get("/ships", response_model=List[ShipResponse])
@@ -144,7 +252,7 @@ async def get_player_ships(
     ship_responses = []
     for ship in ships:
         cargo_data = ship.cargo or {}
-        cargo_capacity = cargo_data.get('capacity', 50)
+        cargo_capacity = effective_cargo_capacity(ship)
         ship_responses.append(ShipResponse(
             id=str(ship.id),
             name=ship.name,
@@ -160,7 +268,8 @@ async def get_player_ships(
             purchase_value=ship.purchase_value,
             current_value=ship.current_value,
             genesis_devices=ship.genesis_devices or 0,
-            max_genesis_devices=ship.max_genesis_devices or 0
+            max_genesis_devices=ship.max_genesis_devices or 0,
+            mining_laser_level=_mining_laser_level(ship)
         ))
 
     return ship_responses
@@ -185,7 +294,7 @@ async def get_current_ship(
         )
     
     cargo_data = ship.cargo or {}
-    cargo_capacity = cargo_data.get('capacity', 50)
+    cargo_capacity = effective_cargo_capacity(ship)
     return ShipResponse(
         id=str(ship.id),
         name=ship.name,
@@ -201,7 +310,141 @@ async def get_current_ship(
         purchase_value=ship.purchase_value,
         current_value=ship.current_value,
         genesis_devices=ship.genesis_devices or 0,
-        max_genesis_devices=ship.max_genesis_devices or 0
+        max_genesis_devices=ship.max_genesis_devices or 0,
+        mining_laser_level=_mining_laser_level(ship)
+    )
+
+@router.post("/ships/{ship_id}/repair", response_model=RepairShipResponse)
+async def repair_player_ship(
+    ship_id: str,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Repair the player's ship at a docked station offering ship_repair.
+
+    Canon pricing (FEATURES/gameplay/ships.md:84 "Repair options — Basic"):
+    "5% of ship value per +10% rating". "Ship value" is the ship's
+    current_value; "rating" is the combined hull+shields condition. The
+    player must be docked at a station whose services include ship_repair.
+    Charges the full restore-to-max cost atomically, then restores hull and
+    shields to max via ShipService.repair_ship (Basic = full restore).
+    """
+    # Lock the player row so the credit charge is race-safe.
+    locked_player = db.query(Player).filter(
+        Player.id == player.id
+    ).with_for_update().first()
+
+    if not locked_player.is_docked or not locked_player.current_port_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be docked at a station to repair"
+        )
+
+    station = db.query(Station).filter(
+        Station.id == locked_player.current_port_id
+    ).first()
+    if not station:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Docked station not found"
+        )
+
+    services = station.services or {}
+    if not services.get("ship_repair"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This station does not offer ship repair services"
+        )
+
+    # Lock the ship row; must be the player's own ship.
+    ship = db.query(Ship).filter(
+        Ship.id == ship_id
+    ).with_for_update().first()
+    if not ship or ship.owner_id != locked_player.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ship not found"
+        )
+    if ship.is_destroyed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot repair a destroyed ship"
+        )
+    if ship.type == ShipType.ESCAPE_POD:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Escape pods do not require paid repair"
+        )
+
+    combat = ship.combat or {}
+    max_hull = combat.get("max_hull") or 0
+    max_shields = combat.get("max_shields") or 0
+    cur_hull = combat.get("hull") or 0
+    cur_shields = combat.get("shields") or 0
+
+    # Combined rating deficit as a percentage of the combined max pool. This is
+    # the "rating" the canon price is keyed to (hull + shields condition).
+    total_max = max_hull + max_shields
+    if total_max <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ship has no repairable systems"
+        )
+    deficit = (max_hull - cur_hull) + (max_shields - cur_shields)
+    deficit_pct = max(0.0, (deficit / total_max) * 100.0)
+
+    if deficit_pct <= 0:
+        return RepairShipResponse(
+            success=True,
+            message="Ship is already at full condition",
+            credits_charged=0,
+            credits_remaining=locked_player.credits,
+            hull=cur_hull,
+            shields=cur_shields,
+            max_hull=max_hull,
+            max_shields=max_shields,
+        )
+
+    # Basic repair: 5% of current_value per +10% rating restored.
+    cost = int(round((ship.current_value or 0) * 0.05 * (deficit_pct / 10.0)))
+
+    # Owner service-charge (B4 consume-side): if the docked station's owner has
+    # set a service-charge multiplier (0.8x-2.0x), it scales the repair cost.
+    # docking_service.service_charge_multiplier_for returns 1.0 when unset, so a
+    # port with no service charge prices repairs exactly as before.
+    from src.services import docking_service
+    service_mult = docking_service.service_charge_multiplier_for(station)
+    if service_mult != 1.0:
+        cost = int(round(cost * service_mult))
+
+    if locked_player.credits < cost:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Not enough credits to repair (need {cost})"
+        )
+
+    locked_player.credits -= cost
+
+    # Basic repair fully restores hull/shields (repair_percentage=100).
+    ship_service = ShipService(db)
+    repair_result = ship_service.repair_ship(ship, repair_percentage=100.0)
+    if not repair_result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=repair_result.get("message", "Repair failed")
+        )
+
+    db.commit()
+
+    return RepairShipResponse(
+        success=True,
+        message=f"Ship repaired for {cost} credits",
+        credits_charged=cost,
+        credits_remaining=locked_player.credits,
+        hull=ship.combat.get("hull", max_hull),
+        shields=ship.combat.get("shields", max_shields),
+        max_hull=max_hull,
+        max_shields=max_shields,
     )
 
 @router.get("/current-sector", response_model=SectorResponse)
@@ -227,10 +470,65 @@ async def get_current_sector(
             detail="Current sector not found in your region"
         )
 
-    # Get region name if sector belongs to a region
+    # Player-facing region label: display_name ("Terran Space"), not the
+    # internal import-scoped name ("bang-<uuid>-terran_space")
     region_name = None
     if sector.region:
-        region_name = sector.region.name
+        region_name = sector.region.display_name or sector.region.name
+
+    # Enrich NPC presence entries with LIVE activity + mission + archetype so
+    # the client can render ships honestly (a transiting ship cruises out; a
+    # working ship loiters at the right dock type) and color glyphs by real
+    # archetype rather than guessing from the ship name. Archetype is also
+    # stored in the JSONB entry at spawn time (npc_spawn_service._presence_entry),
+    # but enriching it here guarantees the authoritative value for legacy JSONB
+    # rows that pre-date the archetype field.
+    present = list(sector.players_present or [])
+    npc_ids = [e.get("player_id") for e in present
+               if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")]
+    if npc_ids:
+        from src.models.npc_character import NPCCharacter
+        npcs = db.query(NPCCharacter).filter(NPCCharacter.id.in_(npc_ids)).all()
+        by_id = {str(n.id): n for n in npcs}
+        enriched = []
+        for e in present:
+            if isinstance(e, dict) and e.get("is_npc"):
+                n = by_id.get(str(e.get("player_id")))
+                if n is not None:
+                    e = dict(e)
+                    act = n.current_activity
+                    e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
+                    e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
+                    e["archetype"] = n.archetype.name if n.archetype else None
+            enriched.append(e)
+        present = enriched
+
+    # Special-formation discovery + disclosure (WO-CA). Viewing the current
+    # sector scans it: any formation anchored here or whose interior includes
+    # this sector is first-observed (is_discovered False→True, name back-filled),
+    # mirroring how GET /sectors/{id}/system discovers planets on view. Then
+    # serialize — identity (name+type) is disclosed ONLY for discovered
+    # formations; undiscovered ones surface as a generic, identity-less anomaly.
+    from src.services.special_formation_service import (
+        flip_formation_discovery,
+        find_formations_for_sector,
+        is_formation_investigated,
+    )
+    flip_formation_discovery(db, player, sector)
+    db.commit()  # persist the discovery flip (mirrors /system)
+
+    formation_responses = []
+    for f in find_formations_for_sector(db, sector):
+        discovered = bool(f.is_discovered)
+        formation_responses.append(FormationResponse(
+            id=str(f.id),
+            is_discovered=discovered,
+            is_anchor=(f.anchor_sector_id == sector.id),
+            # Withhold identity until discovered (omit name+type pre-discovery).
+            name=f.name if discovered else None,
+            type=(f.type.value if hasattr(f.type, 'value') else str(f.type)) if discovered else None,
+            is_investigated=is_formation_investigated(f) if discovered else False,
+        ))
 
     return SectorResponse(
         id=str(sector.id),
@@ -243,10 +541,51 @@ async def get_current_sector(
         hazard_level=sector.hazard_level,
         radiation_level=sector.radiation_level,
         resources=sector.resources or {},
-        players_present=sector.players_present or [],
+        players_present=present,
         x_coord=sector.x_coord,
         y_coord=sector.y_coord,
-        z_coord=sector.z_coord
+        z_coord=sector.z_coord,
+        special_formations=formation_responses
+    )
+
+@router.post("/formations/{formation_id}/investigate", response_model=FormationInvestigateResponse)
+async def investigate_formation_route(
+    formation_id: UUID,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Investigate a DISCOVERED special-formation, granting a one-time reward.
+
+    404 if the formation does not exist or has not yet been discovered (identity
+    is withheld pre-discovery, so both collapse to "not found"). 409 if it has
+    already been investigated (the reward is one-time). On success: marks the
+    formation investigated, grants the [NO-CANON] rarity-scaled credit reward, and
+    returns the formation details + reward payload.
+    """
+    from src.services.special_formation_service import (
+        investigate_formation,
+        FormationNotDiscoveredError,
+        FormationAlreadyInvestigatedError,
+    )
+
+    try:
+        payload = investigate_formation(db, player, formation_id)
+    except FormationNotDiscoveredError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Formation not found or not yet discovered.",
+        )
+    except FormationAlreadyInvestigatedError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Formation has already been investigated.",
+        )
+
+    return FormationInvestigateResponse(
+        formation=FormationInvestigateDetailResponse(**payload["formation"]),
+        reward=FormationInvestigateRewardResponse(**payload["reward"]),
+        credits_remaining=payload["credits_remaining"],
+        reward_is_no_canon=payload["reward_is_no_canon"],
     )
 
 @router.post("/move/{sector_id}", response_model=MoveResponse)
@@ -266,13 +605,19 @@ async def move_to_sector(
             detail=result["message"]
         )
     
-    # Return the movement response with turn cost and remaining turns
+    # Return the movement response with turn cost and remaining turns.
+    # Forward the encounter/tunnel events the MovementService attached to its
+    # result — without these the response_model silently strips them, hiding
+    # entry encounters from the player and blinding the ARIA autopilot's
+    # encounter-pause (ADR-0072 Phase 1).
     return MoveResponse(
         success=True,
         message=result["message"],
         new_sector_id=sector_id,
         turn_cost=result.get("turn_cost", 0),
-        turns_remaining=result.get("turns_remaining", player.turns)
+        turns_remaining=result.get("turns_remaining", player.turns),
+        encounters=result.get("encounters", []),
+        tunnel_events=result.get("tunnel_events", []),
     )
 
 @router.get("/available-moves", response_model=AvailableMovesResponse)
@@ -284,7 +629,36 @@ async def get_available_moves(
     # Use MovementService to get properly calculated moves
     movement_service = MovementService(db)
     available_moves = movement_service.get_available_moves(player.id)
-    
+
+    # Read-only neighbour-formation surfacing (WO-SFM): serialize the formations
+    # that include a neighbour sector WITHOUT discovering them. We deliberately
+    # call find_formations_for_sector (the read-only lookup) and NOT
+    # flip_formation_discovery — listing a move is not visiting it, so identity
+    # stays withheld until the player actually travels there (WO-CA rule).
+    from src.services.special_formation_service import (
+        find_formations_for_sector,
+        is_formation_investigated,
+    )
+
+    def _serialize_neighbour_formations(neighbour_sector) -> List[FormationResponse]:
+        if neighbour_sector is None:
+            return []
+        out = []
+        for f in find_formations_for_sector(db, neighbour_sector):
+            discovered = bool(f.is_discovered)
+            out.append(FormationResponse(
+                id=str(f.id),
+                is_discovered=discovered,
+                is_anchor=(f.anchor_sector_id == neighbour_sector.id),
+                # Withhold identity until discovered — same rule as the current
+                # sector serializer; an unvisited neighbour reveals only that an
+                # anomaly exists, never its name/type.
+                name=f.name if discovered else None,
+                type=(f.type.value if hasattr(f.type, 'value') else str(f.type)) if discovered else None,
+                is_investigated=is_formation_investigated(f) if discovered else False,
+            ))
+        return out
+
     # Convert the response to match our model, enriching with region data
     warps = []
     tunnels = []
@@ -293,7 +667,7 @@ async def get_available_moves(
     for warp in available_moves.get("warps", []):
         # Look up sector to get region information
         sector = db.query(Sector).filter(Sector.sector_id == warp["sector_id"]).first()
-        region_name = sector.region.name if sector and sector.region else None
+        region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         warps.append(MoveOption(
             sector_id=warp["sector_id"],
@@ -303,14 +677,15 @@ async def get_available_moves(
             region_id=str(sector.region_id) if sector and sector.region_id else None,
             region_name=region_name,
             turn_cost=warp["turn_cost"],
-            can_afford=warp["can_afford"]
+            can_afford=warp["can_afford"],
+            special_formations=_serialize_neighbour_formations(sector)
         ))
 
     # Process warp tunnels
     for tunnel in available_moves.get("tunnels", []):
         # Look up sector to get region information
         sector = db.query(Sector).filter(Sector.sector_id == tunnel["sector_id"]).first()
-        region_name = sector.region.name if sector and sector.region else None
+        region_name = (sector.region.display_name or sector.region.name) if sector and sector.region else None
 
         tunnels.append(MoveOption(
             sector_id=tunnel["sector_id"],
@@ -322,15 +697,50 @@ async def get_available_moves(
             turn_cost=tunnel["turn_cost"],
             can_afford=tunnel["can_afford"],
             tunnel_type=tunnel.get("tunnel_type"),
-            stability=tunnel.get("stability")
+            stability=tunnel.get("stability"),
+            one_way=tunnel.get("one_way"),
+            special_formations=_serialize_neighbour_formations(sector)
         ))
 
     return AvailableMovesResponse(warps=warps, tunnels=tunnels)
 
 
+# WO-LW — scan the current sector for latent warp tunnels (ADR-0045 /
+# aria-companion.md § Warp discovery). Reveals latent tunnels the player has
+# not personally discovered, writing per-player PlayerWarpKnowledge rows
+# (revealed_via=scan). Idempotent; non-latent tunnels are unaffected.
+class ScanLatentTunnelsResponse(BaseModel):
+    success: bool
+    message: str
+    revealed: int
+    sectors: List[int]
+
+
+@router.post("/scan-latent-tunnels", response_model=ScanLatentTunnelsResponse)
+async def scan_latent_tunnels(
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Reveal latent warp tunnels in the player's current sector (per-player)."""
+    movement_service = MovementService(db)
+    result = movement_service.scan_for_latent_tunnels(player.id)
+    return ScanLatentTunnelsResponse(
+        success=bool(result.get("success")),
+        message=result.get("message", ""),
+        revealed=int(result.get("revealed", 0)),
+        sectors=result.get("sectors", []),
+    )
+
+
 # Genesis Device Purchase
+#
+# Genesis devices are a single FUNGIBLE consumable (untiered count on the ship —
+# DECISIONS genesis-device-tiering-model). The TIER (basic/enhanced/advanced) and
+# its credit cost are chosen and charged at DEPLOY (genesis-deploy.md), not here.
+# Acquiring a device is the rate-limited action (canon: max 3 purchases/week).
+# `tier` is accepted for backward compatibility but ignored.
 class GenesisPurchaseRequest(BaseModel):
-    tier: str  # "standard", "advanced", "experimental"
+    tier: str | None = None  # ignored — devices are fungible; tier is a deploy choice
 
 class GenesisPurchaseResponse(BaseModel):
     success: bool
@@ -338,29 +748,12 @@ class GenesisPurchaseResponse(BaseModel):
     genesis_devices: int
     max_genesis_devices: int
     new_credits: int
-    tier_purchased: str
+    purchases_remaining: int
+    weekly_limit: int
 
-# Genesis device tiers with pricing
-GENESIS_TIERS = {
-    "standard": {
-        "price": 25000,
-        "name": "Standard Genesis Device",
-        "success_rate": 0.85,
-        "process_hours": 48
-    },
-    "advanced": {
-        "price": 50000,
-        "name": "Advanced Genesis Device",
-        "success_rate": 0.92,
-        "process_hours": 36
-    },
-    "experimental": {
-        "price": 100000,
-        "name": "Experimental Genesis Device",
-        "success_rate": 0.95,
-        "process_hours": 24
-    }
-}
+# Flat acquisition price for one Genesis Device. The per-tier sequence cost
+# (25k/75k/250k) is charged separately at deploy.
+GENESIS_DEVICE_PRICE = 25000
 
 @router.post("/genesis/purchase", response_model=GenesisPurchaseResponse)
 async def purchase_genesis_device(
@@ -368,35 +761,80 @@ async def purchase_genesis_device(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db)
 ):
-    """Purchase a Genesis Device and add it to the player's ship"""
+    """Acquire one (fungible) Genesis Device for the player's ship.
 
-    # Validate tier
-    tier = request.tier.lower()
-    if tier not in GENESIS_TIERS:
+    Rate-limited to MAX_PURCHASES_PER_WEEK per account (canon). The deploy step
+    chooses the tier and charges the sequence cost.
+    """
+    from src.services.genesis_service import (
+        GenesisService, MAX_PURCHASES_PER_WEEK, GENESIS_MIN_REPUTATION,
+    )
+
+    price = GENESIS_DEVICE_PRICE
+
+    # Lock the player row so the credit charge is race-safe (mirrors
+    # repair_player_ship above; populate_existing() refreshes the loaded
+    # instance under the lock — trading.py pattern).
+    player = (
+        db.query(Player)
+        .filter(Player.id == player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if player is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+
+    # Genesis acquire gate (ADR-0088): Federation reputation tier 7 (Heroic,
+    # >= GENESIS_MIN_REPUTATION). Same bar as deploy — you must already be a
+    # trusted Federation citizen to obtain the technology.
+    if (player.personal_reputation or 0) < GENESIS_MIN_REPUTATION:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid genesis tier. Must be one of: {', '.join(GENESIS_TIERS.keys())}"
+            detail=(
+                f"Genesis devices require Federation reputation tier 7 (Heroic, "
+                f">= {GENESIS_MIN_REPUTATION}); your standing is {player.personal_reputation or 0}."
+            ),
         )
 
-    tier_info = GENESIS_TIERS[tier]
-    price = tier_info["price"]
-
     # Check if player is docked (required to purchase)
-    if not player.is_docked:
+    if not player.is_docked or not player.current_port_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You must be docked at a SpaceDock to purchase Genesis Devices"
         )
 
-    # Check credits
+    # Genesis Devices are sold at SpaceDocks (which carry every service) or
+    # stations advertising genesis_dealer — same gating rule as
+    # _station_offers_service in armory.py / _station_offers_shipyard in
+    # ship_upgrades.py.
+    station = db.query(Station).filter(
+        Station.id == player.current_port_id
+    ).first()
+    station_services = (station.services or {}) if station else {}
+    if not station or not (
+        bool(station.is_spacedock) or bool(station_services.get("genesis_dealer"))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You must be docked at a SpaceDock to purchase Genesis Devices"
+        )
+
+    # Check credits (under the player row lock)
     if player.credits < price:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Insufficient credits. Need {price:,}, have {player.credits:,}"
         )
 
-    # Get current ship
-    ship = db.query(Ship).filter(Ship.id == player.current_ship_id).first()
+    # Lock the active ship row before reading/mutating genesis capacity
+    ship = (
+        db.query(Ship)
+        .filter(Ship.id == player.current_ship_id, Ship.owner_id == player.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
     if not ship:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -418,17 +856,28 @@ async def purchase_genesis_device(
             detail=f"Your ship is at maximum Genesis Device capacity ({ship.max_genesis_devices})"
         )
 
-    # Process purchase
+    # Canon rate limit: max MAX_PURCHASES_PER_WEEK acquisitions per rolling week.
+    genesis_service = GenesisService(db)
+    purchases_this_week = genesis_service._get_weekly_purchase_count(player)
+    if purchases_this_week >= MAX_PURCHASES_PER_WEEK:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Weekly Genesis acquisition limit reached ({MAX_PURCHASES_PER_WEEK}/week)."
+        )
+
+    # Process purchase + record it for the rolling weekly limit.
     player.credits -= price
     ship.genesis_devices = current_devices + 1
+    genesis_service._record_genesis_purchase(player, "device")
 
     db.commit()
 
     return GenesisPurchaseResponse(
         success=True,
-        message=f"Successfully purchased {tier_info['name']}!",
+        message="Genesis Device acquired. Choose its tier when you deploy.",
         genesis_devices=ship.genesis_devices,
         max_genesis_devices=ship.max_genesis_devices,
         new_credits=player.credits,
-        tier_purchased=tier
+        purchases_remaining=MAX_PURCHASES_PER_WEEK - (purchases_this_week + 1),
+        weekly_limit=MAX_PURCHASES_PER_WEEK,
     )

@@ -54,6 +54,14 @@ class Planet(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), nullable=False)
+    # ADR-0073 No-Man's-Sky naming: auto_name is the generated default; the
+    # discoverer may set custom_name. Display resolves custom_name -> auto_name
+    # -> legacy name. Discovery (separate from sector discovery) records the
+    # first discoverer, who alone may rename (claimed or not).
+    auto_name = Column(String(100), nullable=True)
+    custom_name = Column(String(50), nullable=True)
+    discovered_by = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    discovered_at = Column(DateTime(timezone=True), nullable=True)
     sector_id = Column(Integer, nullable=False)
     sector_uuid = Column(UUID(as_uuid=True), ForeignKey("sectors.id", ondelete="CASCADE"), nullable=True)
     owner_id = Column(UUID(as_uuid=True), nullable=True)
@@ -85,16 +93,26 @@ class Planet(Base):
     equipment = Column(Integer, nullable=False, default=0)
     fighters = Column(Integer, nullable=False, default=0)
     
-    # Colonization 
+    # Colonization
     colonized_at = Column(DateTime(timezone=True), nullable=True)
     population = Column(BigInteger, nullable=False, default=0)  # Current population
     max_population = Column(BigInteger, nullable=False, default=0)  # Maximum sustainable population
     population_growth = Column(Float, nullable=False, default=0.0)  # Growth rate percentage
     colonists = Column(Integer, nullable=False, default=0)
-    max_colonists = Column(Integer, nullable=False, default=10000)
+    # ADR-0035 "Schema impact": default 10000 -> 1000 (L1 Outpost scale)
+    max_colonists = Column(Integer, nullable=False, default=1000)
     fuel_allocation = Column(Integer, nullable=False, default=0)
     organics_allocation = Column(Integer, nullable=False, default=0)
     equipment_allocation = Column(Integer, nullable=False, default=0)
+    # Capital population hubs are public welcome worlds and never claimable
+    # (SYSTEMS/galaxy-generation.md Step 8: "A population hub planet
+    # (`is_population_hub = True`) ... Public, well-policed, non-destructible.")
+    is_population_hub = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Anchor for lazy colonist growth (FEATURES/planets/colonization.md
+    # "Population growth": colonist_rate = colonists × 0.01 × (habitability/100) per day).
+    # Only whole-colonist time is consumed from the anchor; the fractional
+    # remainder stays banked until it yields a full colonist.
+    last_growth_at = Column(DateTime(timezone=True), nullable=True)
     
     # Economy and production
     economy = Column(JSONB, nullable=False, default={})  # Economic attributes
@@ -124,12 +142,53 @@ class Planet(Base):
     last_attacked = Column(DateTime(timezone=True), nullable=True)
     last_production = Column(DateTime(timezone=True), nullable=True)
     active_events = Column(JSONB, nullable=False, default=[])
+    # CRT grid spine (WO-K1a): single-writer is structures.py. Nullable/additive — a planet with
+    # null structures is a legacy planet that structures.seed() cold-starts on first settle().
+    # Holds terraform_meta.last_settle_at (the spine monotonic gate / event-window key) and, in
+    # K1b, the grid layout (plots/economy/lab/defense/build-queue). NEVER an ALTER of active_events.
+    structures = Column(JSONB, nullable=True)
+    # Landing-rights ACL (WO-G16; FEATURES/planets/colonization.md "Landing rights").
+    # Additive/nullable — null ⇒ public (anyone may land; backward-compatible default).
+    # Shape: {"mode": "public|team_only|private|whitelist|denylist",
+    #         "whitelist": [player_uuid,...], "denylist": [player_uuid,...]}.
+    # Enforced at land-time only (mode changes apply to subsequent landings; no
+    # eviction of ships already on-planet). tax_rate is a SEPARATE, Max-gated axis.
+    landing_rights = Column(JSONB, nullable=True)
     description = Column(String, nullable=True)
-    
+
+    # PL4b abandonment / reclamation markers + the deferred planet tax axis
+    # (DB columns added in migration d7a2f1c9e3b5 — all additive + nullable).
+    # Declared here so the ORM and any model-reader see them; abandonment_service
+    # remains the SINGLE WRITER of reclaimable_at/abandoned_at and reaches them via
+    # raw text() SQL on the same transaction — those raw helpers keep working
+    # unchanged now that the columns are also visible on the ORM model.
+    #   tax_rate       — INERT this slice (no taxable event wired yet). NULL ⇒ 0.0;
+    #                    the [0.00, 0.20] clamp lives in planetary_service.clamp_tax_rate.
+    #   reclaimable_at — inactivity-reclaim flag (NULL ⇒ not flagged).
+    #   abandoned_at   — audit stamp for the moment ownership reverted (forensics only).
+    tax_rate = Column(Float, nullable=True)
+    reclaimable_at = Column(DateTime(timezone=True), nullable=True)
+    abandoned_at = Column(DateTime(timezone=True), nullable=True)
+
     # Siege information
     under_siege = Column(Boolean, nullable=False, default=False)
     siege_started_at = Column(DateTime(timezone=True), nullable=True)
     siege_attacker_id = Column(UUID(as_uuid=True), nullable=True)
+    # Colony morale, 0-100 (DB column added in migration a1b2c3d4e5f6 with
+    # server_default '100' — a fresh colony starts at full morale).
+    morale = Column(Integer, nullable=False, default=100, server_default="100")
+    # Consecutive turns enemies have been present (siege escalation counter,
+    # DB column added in migration a1b2c3d4e5f6).
+    siege_turns = Column(Integer, nullable=False, default=0, server_default="0")
+
+    # Terraforming state (DB columns added in migration b2c3d4e5f6a7;
+    # documented in FEATURES/planets/terraforming.md "Planet model state").
+    # Per-level metadata (cost/boost/duration) lives in active_events JSONB
+    # under a {type: "terraforming"} entry.
+    terraforming_active = Column(Boolean, nullable=False, default=False, server_default="false")
+    terraforming_target = Column(Integer, nullable=True)  # Target habitability score
+    terraforming_start_time = Column(DateTime(timezone=True), nullable=True)
+    terraforming_progress = Column(Float, nullable=False, default=0.0, server_default="0.0")
     
     # Citadel system
     citadel_level = Column(Integer, nullable=False, default=0)  # 0-5
@@ -159,5 +218,11 @@ class Planet(Base):
     formation = relationship("PlanetFormation", foreign_keys="[PlanetFormation.resulting_planet_id]", back_populates="resulting_planet", uselist=False)
     region = relationship("Region", back_populates="planets")
     
+    @property
+    def display_name(self) -> str:
+        """The name shown to players: a discoverer's custom name wins, else the
+        generated auto-name, else the legacy stored name (ADR-0073)."""
+        return self.custom_name or self.auto_name or self.name
+
     def __repr__(self):
-        return f"<Planet {self.name} ({self.type.name}) - Sector: {self.sector_id}, Status: {self.status.name}>" 
+        return f"<Planet {self.name} ({self.type.name}) - Sector: {self.sector_id}, Status: {self.status.name}>"

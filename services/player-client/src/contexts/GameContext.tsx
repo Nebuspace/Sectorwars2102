@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
-import axios from 'axios';
 import { useAuth } from './AuthContext';
+import apiClient from '../services/apiClient';
 
 // Types for game state
 export interface Ship {
@@ -21,6 +21,18 @@ export interface Ship {
   max_genesis_devices: number;
 }
 
+// A special-formation present in (or anchored at) the current sector. The
+// identity (name + type) is disclosed by the server ONLY once discovered;
+// before discovery both are absent and the client shows an unknown-anomaly
+// placeholder (WO-CA).
+export interface SpecialFormationSummary {
+  id: string;
+  is_discovered: boolean;
+  is_anchor: boolean;
+  name?: string | null;
+  type?: string | null;
+}
+
 export interface Sector {
   id: number;
   sector_id: number;
@@ -34,6 +46,7 @@ export interface Sector {
   resources: Record<string, any>;
   players_present: any[];
   special_features?: string[];
+  special_formations?: SpecialFormationSummary[];
   description?: string;
 }
 
@@ -50,6 +63,30 @@ export interface Planet {
   population: number;
   max_population: number;
   habitability_score: number;
+  is_population_hub?: boolean;
+}
+
+// A pioneer migration contract brokered at a capital population hub.
+export interface MigrationContract {
+  id: string;
+  source_planet_id: string;
+  source_planet_name?: string | null;
+  source_sector_id: number;
+  cohort_total: number;
+  loaded: number;
+  delivered: number;
+  remaining_to_load: number;
+  fee_per_pioneer_locked: number;
+  status: 'BROKERED' | 'IN_PROGRESS' | 'FULFILLED' | 'VOID';
+}
+
+export interface PioneerOffice {
+  planet_id: string;
+  planet_name: string;
+  fee_per_pioneer: number;
+  cargo_colonists: number;
+  cargo_free: number;
+  contracts: MigrationContract[];
 }
 
 export interface Station {
@@ -61,6 +98,8 @@ export interface Station {
   owner?: any;
   services: Record<string, any>;
   faction_affiliation?: string;
+  station_class?: string | number;
+  is_spacedock?: boolean;
 }
 
 export interface MoveOption {
@@ -74,6 +113,19 @@ export interface MoveOption {
   can_afford: boolean;
   tunnel_type?: string;
   stability?: number;
+  // Special formations present in (or anchored at) this neighbour sector,
+  // surfaced read-only so the galaxy map can mark anomalies on adjacent nodes
+  // (WO-SFM). Undiscovered ones are identity-less (name/type withheld) exactly
+  // as on the current sector (WO-CA).
+  special_formations?: SpecialFormationSummary[];
+}
+
+// WO-LW — result of a latent-warp-tunnel scan (ADR-0045).
+export interface ScanLatentTunnelsResult {
+  success: boolean;
+  message: string;
+  revealed: number;      // how many latent tunnels this scan newly revealed
+  sectors: number[];     // the sector numbers the revealed tunnels lead to
 }
 
 export interface MarketInfo {
@@ -81,6 +133,9 @@ export interface MarketInfo {
     quantity: number;
     buy_price: number;
     sell_price: number;
+    station_buys: boolean;
+    station_sells: boolean;
+    last_updated?: string;
   }>;
   port: {
     id: string;
@@ -88,7 +143,100 @@ export interface MarketInfo {
     type: string;
     faction: string | null;
     tax_rate: number;
+    station_class?: string | number;
+    is_spacedock?: boolean;
+    trade_volume?: number;
+    trader_personality_type?: string;
   };
+}
+
+export interface StationSlips {
+  capacity: number;
+  occupied: number;
+  free: number;
+  fee: number;
+  bump_cost: number;
+  queue_length: number;
+  my_queue_position: number | null;
+  occupants_bumpable_count: number;
+}
+
+// --- Quantum drive (Warp Jumper) ---
+export interface QuantumStatus {
+  quantum_shards: number;
+  quantum_crystals: number;
+  quantum_charges: number;
+  jump_cooldown_until: string | null;
+  scan_cooldown_until: string | null;
+  can_jump: boolean;
+  is_warp_jumper: boolean;
+  sensor_level: number;
+}
+
+export interface QuantumBearing {
+  yaw_deg: number;
+  pitch_deg: number;
+  range_band: 'near' | 'mid' | 'far' | 'extended';
+}
+
+export interface QuantumScanResult {
+  resonance: 'bright' | 'steady' | 'faint' | 'silent';
+  texture: 'hollow' | 'mineral' | 'chromatic' | 'heavy' | 'hot' | 'turbulent';
+  echo: 'silent' | 'faint motion';
+  expires_at: string;
+  scan_cooldown_until: string | null;
+  turns_remaining: number;
+}
+
+// A paid echo scan, tagged with the sector it was fired from. Lifted into
+// context so flipping the NAV monitor mode (which unmounts the console)
+// doesn't destroy telemetry the pilot spent turns/shards to obtain.
+export interface QuantumScanTelemetry {
+  origin_sector_id: number;
+  result: QuantumScanResult;
+}
+
+export interface QuantumJumpResult {
+  outcome: 'jump' | 'misfire';
+  destination_sector_id: number;
+  destination_name: string;
+  distance_jumped: number;
+  hull_damage_pct: number;
+  jump_cooldown_until: string | null;
+  turns_remaining: number;
+}
+
+// Result of harvesting Quantum Shards from a nebula sector
+// (POST /api/v1/quantum/harvest). The server rolls the canon shard yield
+// (with a 2% crit), credits player.quantum_shards, and arms the 2h per-ship
+// harvest cooldown — the ISO deadline is returned so the console can show it.
+export interface QuantumHarvestResult {
+  shard_yield: number;
+  crit: boolean;
+  nebula_type: string;
+  quantum_shards: number;
+  harvest_cooldown_until: string | null;
+}
+
+// One inbox entry, exactly as Message.to_dict() serializes it on the
+// gameserver (GET /api/v1/messages/inbox → {messages: [...], unread_count,
+// total, page, limit, pages}).
+export interface PlayerMessage {
+  id: string;
+  sender_id: string;
+  recipient_id: string | null;
+  team_id: string | null;
+  subject: string | null;
+  content: string;
+  sent_at: string | null;
+  read_at: string | null;
+  message_type: string;
+  priority: string;
+  thread_id: string | null;
+  reply_to_id: string | null;
+  flagged: boolean;
+  is_read: boolean;
+  sender_name?: string;
 }
 
 export interface PlayerState {
@@ -96,6 +244,7 @@ export interface PlayerState {
   username: string;
   credits: number;
   turns: number;
+  max_turns?: number;
   current_sector_id: number;
   is_docked: boolean;
   is_landed: boolean;
@@ -103,6 +252,7 @@ export interface PlayerState {
   current_planet_id?: string;
   defense_drones: number;
   attack_drones: number;
+  mines: number;
   current_ship_id?: string;
   team_id?: string;
 
@@ -111,6 +261,10 @@ export interface PlayerState {
   reputation_tier: string;
   name_color: string;
   military_rank: string;
+
+  // HUD enrichment (WO-PLAYERINFO id=142) — additive read fields:
+  turn_regen_per_hour?: number; // effective turns/hour
+  bounty_total?: number;        // credits on this player's head
 }
 
 interface GameContextType {
@@ -143,10 +297,14 @@ interface GameContextType {
   // Movement
   moveToSector: (sectorId: number) => Promise<any>;
   getAvailableMoves: () => Promise<void>;
-  
+  // WO-LW — reveal latent warp tunnels in the current sector (per-player).
+  scanForLatentTunnels: () => Promise<ScanLatentTunnelsResult | undefined>;
+
   // Station interactions
   dockAtStation: (stationId: string) => Promise<any>;
   undockFromStation: () => Promise<any>;
+  getStationSlips: (stationId: string) => Promise<StationSlips | null>;
+  bumpDockOccupant: (stationId: string, occupantPlayerId: string) => Promise<any>;
   marketInfo: MarketInfo | null;
   getMarketInfo: (stationId: string) => Promise<void>;
   buyResource: (stationId: string, resourceType: string, quantity: number) => Promise<any>;
@@ -158,19 +316,92 @@ interface GameContextType {
   leavePlanet: () => Promise<any>;
   renamePlanet: (planetId: string, newName: string) => Promise<any>;
   getPlanetDetails: (planetId: string) => Promise<any>;
-  updatePlanetAllocation: (planetId: string, allocations: { fuel: number; organics: number; equipment: number; ore?: number; terraform?: number }) => Promise<any>;
+  // Allocations are colonist HEADCOUNTS, not percentages — the backend
+  // (PlanetResourceAllocation + PlanetaryService.allocate_colonists)
+  // accepts exactly {fuel, organics, equipment} and validates that the
+  // sum does not exceed planet.colonists.
+  updatePlanetAllocation: (planetId: string, allocations: { fuel: number; organics: number; equipment: number }) => Promise<any>;
   updatePlanetDefenses: (planetId: string, defenses: { turrets?: number; shields?: number; fighters?: number }) => Promise<any>;
   upgradePlanetBuilding: (planetId: string, buildingType: string, targetLevel: number) => Promise<any>;
   transferColonists: (planetId: string, action: 'embark' | 'disembark', quantity: number) => Promise<any>;
-  depositToSafe: (planetId: string, resourceType: string, amount: number) => Promise<any>;
-  withdrawFromSafe: (planetId: string, resourceType: string, amount: number) => Promise<any>;
+  // Pioneer Office (population-hub migration contracts)
+  getPioneerOffice: () => Promise<PioneerOffice>;
+  brokerMigrationContract: (cohortTotal: number) => Promise<MigrationContract>;
+  loadPioneerBatch: (contractId: string, quantity: number) => Promise<MigrationContract>;
+  listMigrationContracts: (includeClosed?: boolean) => Promise<MigrationContract[]>;
+  cancelMigrationContract: (contractId: string) => Promise<MigrationContract>;
+  // Citadel (5-level) — info, upgrades, and CREDITS-ONLY safe storage.
+  // CitadelService.deposit_to_safe/withdraw_from_safe move credits between
+  // the player balance and planet.citadel_safe_credits; there is no
+  // commodity storage in the citadel safe.
+  getCitadelInfo: (planetId: string) => Promise<any>;
+  upgradeCitadel: (planetId: string) => Promise<any>;
+  cancelCitadelUpgrade: (planetId: string) => Promise<any>;
+  getDefenseBuildings: (planetId: string) => Promise<any>;
+  buildDefenseBuilding: (planetId: string, buildingType: string) => Promise<any>;
+  depositToSafe: (planetId: string, amount: number) => Promise<any>;
+  withdrawFromSafe: (planetId: string, amount: number) => Promise<any>;
+  depositCommodityToSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
+  withdrawCommodityFromSafe: (planetId: string, commodity: string, amount: number) => Promise<any>;
+  setCitadelAutoDeposit: (planetId: string, enabled: boolean) => Promise<any>;
+  deployMines: (quantity: number) => Promise<any>;
+  // Planetary defenses — shield generator status/upgrade
+  getPlanetDefenseInfo: (planetId: string) => Promise<any>;
+  upgradeShields: (planetId: string) => Promise<any>;
 
-  // Combat
-  attackPlayer: (playerId: string) => Promise<any>;
-  attackDrones: () => Promise<any>;
-  
+  // Port Office — station ownership, sealed-bid sales, tariffs, takeovers
+  // (backend: /api/v1/port-ownership/*). Payload shapes are normalized
+  // defensively in the Port Office venue, so these return `unknown`.
+  getPortListings: () => Promise<unknown>;
+  getListing: (stationId: string) => Promise<unknown>;
+  listStation: (stationId: string) => Promise<unknown>;
+  placeOffer: (stationId: string, bidAmount: number) => Promise<unknown>;
+  getMyStations: () => Promise<unknown>;
+  setStationTax: (stationId: string, taxRate: number) => Promise<unknown>;
+  withdrawTreasury: (stationId: string, amount: number) => Promise<unknown>;
+  getTakeoverStatus: (stationId: string) => Promise<unknown>;
+  launchTakeover: (stationId: string) => Promise<unknown>;
+  counterTakeover: (stationId: string, action: 'accept' | 'match' | 'dispute') => Promise<unknown>;
+
+  // Player-to-player hails (COMMS mailbox) — bound to /api/v1/messages/*.
+  // Follows the Port Office mold: no global isLoading/error churn, the
+  // COMMS monitor surfaces failures inline.
+  inboxMessages: PlayerMessage[];
+  unreadMessageCount: number;
+  refreshInbox: () => Promise<void>;
+  sendPlayerMessage: (
+    recipientId: string,
+    content: string,
+    subject?: string | null,
+    replyToId?: string | null
+  ) => Promise<{ message_id: string; sent_at: string }>;
+  markMessageRead: (messageId: string) => Promise<void>;
+
+  // Quantum drive (Warp Jumper) — status is auto-refreshed alongside player
+  // state whenever the active ship is a WARP_JUMPER, null otherwise
+  quantumStatus: QuantumStatus | null;
+  refreshQuantumStatus: () => Promise<void>;
+  quantumScan: (payload: QuantumBearing) => Promise<QuantumScanResult>;
+  quantumJump: (payload: QuantumBearing) => Promise<QuantumJumpResult>;
+  refineQuantumCharge: () => Promise<{ quantum_charges: number; quantum_shards: number }>;
+  // Harvest Quantum Shards from the current nebula sector (Warp Jumper with a
+  // fitted harvester). Server gates on nebula + harvester + the 2h cooldown.
+  harvestNebula: () => Promise<QuantumHarvestResult>;
+  // Last paid echo scan, preserved across NAV mode flips and cleared on
+  // sector change (telemetry from a prior sector is meaningless here).
+  quantumScanResult: QuantumScanTelemetry | null;
+  setQuantumScanResult: (telemetry: QuantumScanTelemetry | null) => void;
+
+
   // Loading states
+  // isLoading is TRUE ONLY during initial hydration — the first
+  // refreshPlayerState while playerState is still null. Background
+  // refreshes and mutations never touch it, so consumers can gate
+  // first-load placeholders on it without flicker/remount churn.
   isLoading: boolean;
+  // isRefreshing flips during background refreshPlayerState runs (after
+  // hydration) for any consumer that wants a lightweight activity signal.
+  isRefreshing: boolean;
   error: string | null;
   
   // General methods
@@ -182,7 +413,13 @@ const GameContext = createContext<GameContextType | undefined>(undefined);
 export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { user, isAuthenticated } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Latches true once the first player-state hydration succeeds. Refs (not
+  // derived from the playerState closure) so a stale function reference held
+  // by a consumer can never misclassify a background refresh as initial load.
+  const hasHydrated = useRef(false);
   
   // Player state
   const [playerState, setPlayerState] = useState<PlayerState | null>(null);
@@ -203,33 +440,24 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   // Market
   const [marketInfo, setMarketInfo] = useState<MarketInfo | null>(null);
-  
-  // Use Vite proxy for all API requests to avoid CORS issues
-  const getApiUrl = () => {
-    // If an environment variable is explicitly set, use it
-    if (import.meta.env.VITE_API_URL) {
-      return import.meta.env.VITE_API_URL;
-    }
 
-    // Always use the current origin to leverage Vite proxy in Docker environments
-    // This ensures all API calls go through the Vite dev server proxy
-    return window.location.origin;  // Use current origin, which will use the proxy
-  };
+  // Player-to-player hails (COMMS mailbox)
+  const [inboxMessages, setInboxMessages] = useState<PlayerMessage[]>([]);
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
 
-  // Set up axios with authorization header
-  const api = axios.create({
-    baseURL: getApiUrl(),
-  });
-  
-  // Use token from localStorage directly instead of from context
-  api.interceptors.request.use(config => {
-    const token = localStorage.getItem('accessToken');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  });
-  
+  // Quantum drive (Warp Jumper only)
+  const [quantumStatus, setQuantumStatus] = useState<QuantumStatus | null>(null);
+  // Paid echo scan telemetry, lifted out of the console so NAV mode flips
+  // don't destroy it. Cleared whenever the player's sector changes.
+  const [quantumScanResult, setQuantumScanResult] = useState<QuantumScanTelemetry | null>(null);
+
+  // Shared axios instance: attaches the access token from localStorage and
+  // transparently refreshes it on 401 (see services/apiClient.ts). Its
+  // baseURL resolves to VITE_API_URL or window.location.origin, matching the
+  // Vite-proxy semantics this context previously set up itself.
+  const api = apiClient;
+
+
   // Check first login status
   const checkFirstLoginStatus = async (): Promise<boolean> => {
     if (!user) return false;
@@ -271,6 +499,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
     } else {
       initializedForUser.current = null;
+      hasHydrated.current = false;
       setPlayerState(null);
       setCurrentShip(null);
       setShips([]);
@@ -284,6 +513,37 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       exploreCurrentLocation();
       getAvailableMoves();
     }
+  }, [playerState?.current_sector_id]);
+
+  // Keep the sector snapshot live. NPC ships (patrolling marshals, raiders,
+  // merchant captains) and other pilots move through the sector continuously,
+  // but the snapshot — including players_present, which carries NPC entries
+  // the COMMS contacts list renders — was only fetched on arrival, so the
+  // crowd appeared frozen no matter how much the galaxy moved underneath it.
+  // Poll current-sector on an interval so contacts visibly arrive and depart.
+  // The gameserver documents polled players_present as the authoritative
+  // visibility path (its websocket sector routing is best-effort), so this is
+  // the intended sync mechanism, not a workaround. Skipped while the tab is
+  // backgrounded; cleared on sector change / unmount.
+  useEffect(() => {
+    if (!playerState?.current_sector_id) return;
+    const SECTOR_PRESENCE_POLL_MS = 5000;
+    const id = window.setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const res = await api.get('/api/v1/player/current-sector');
+        setCurrentSector(res.data);
+      } catch {
+        // Transient — the next tick retries.
+      }
+    }, SECTOR_PRESENCE_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [playerState?.current_sector_id]);
+
+  // A paid echo scan is only meaningful from the sector it was fired in —
+  // discard it the moment the player relocates.
+  useEffect(() => {
+    setQuantumScanResult(null);
   }, [playerState?.current_sector_id]);
   
   // Track if refresh is in progress to prevent duplicate calls
@@ -301,13 +561,24 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     refreshInProgress.current = true;
-    setIsLoading(true);
+    // Global isLoading is reserved for the true initial hydration (we have
+    // never successfully loaded player state). Every later run is a
+    // background refresh and only flips the lightweight isRefreshing flag —
+    // toggling the global flag on every scan/jump/move/dock is what caused
+    // the app-wide spinner/remount plague.
+    const isInitialHydration = !hasHydrated.current;
+    if (isInitialHydration) {
+      setIsLoading(true);
+    } else {
+      setIsRefreshing(true);
+    }
     setError(null);
-    
+
     try {
       const response = await api.get('/api/v1/player/state');
       setPlayerState(response.data as PlayerState);
-      
+      hasHydrated.current = true;
+
       // If player has a current ship, load its details
       if ((response.data as any).current_ship_id) {
         try {
@@ -343,7 +614,11 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setError('Failed to load player state');
       }
     } finally {
-      setIsLoading(false);
+      if (isInitialHydration) {
+        setIsLoading(false);
+      } else {
+        setIsRefreshing(false);
+      }
       refreshInProgress.current = false;
     }
   };
@@ -351,9 +626,7 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Load player's ships
   const loadShips = async () => {
     if (!user) return;
-    
-    setIsLoading(true);
-    
+
     try {
       const response = await api.get('/api/v1/player/ships');
       setShips(response.data || []);
@@ -372,10 +645,10 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // But do handle auth errors specifically since they affect everything
       if (error.response?.status === 401) {
         setError('Authentication required. Please log in again.');
+        setShips([]);
       }
-      setShips([]);
-    } finally {
-      setIsLoading(false);
+      // On transient (non-auth) errors keep the previously loaded ships
+      // rather than blanking the fleet list
     }
   };
   
@@ -383,7 +656,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const setActiveShip = async (shipId: string) => {
     if (!user) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -395,8 +667,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
       console.error('Error setting active ship:', error);
       setError('Failed to set active ship');
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -404,49 +674,70 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const moveToSector = async (sectorId: number) => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
       const response = await api.post(`/api/v1/player/move/${sectorId}`);
-      
+
       // Update player state after movement
       await refreshPlayerState();
-      
+
+      // Ships move with the player server-side; reload so Hangar
+      // doesn't show the pre-move sector
+      await loadShips();
+
       return response.data;
     } catch (error: any) {
       console.error('Error moving to sector:', error);
       setError(error.response?.data?.message || 'Failed to move to sector');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
   
   // Get available moves from current sector
   const getAvailableMoves = async () => {
     if (!user || !playerState) return;
-    
-    setIsLoading(true);
+
     setError(null);
-    
+
     try {
       const response = await api.get('/api/v1/player/available-moves');
       setAvailableMoves(response.data);
     } catch (error) {
       console.error('Error getting available moves:', error);
       setError('Failed to get available moves');
-    } finally {
-      setIsLoading(false);
+    }
+  };
+
+  // WO-LW — scan the current sector for latent warp tunnels (ADR-0045 /
+  // aria-companion.md § Warp discovery). Reveals latent tunnels the player
+  // hasn't personally discovered, writing per-player warp knowledge server-side,
+  // then refreshes the move list so newly-revealed tunnels appear. Returns the
+  // scan result ({ success, message, revealed, sectors }). Latent tunnels stay
+  // hidden until scanned — non-latent tunnels are unaffected and always shown.
+  const scanForLatentTunnels = async (): Promise<ScanLatentTunnelsResult | undefined> => {
+    if (!user || !playerState) return undefined;
+
+    setError(null);
+
+    try {
+      const response = await api.post<ScanLatentTunnelsResult>('/api/v1/player/scan-latent-tunnels');
+      // A successful reveal changes what the player can navigate to — refresh.
+      if (response.data?.revealed) {
+        await getAvailableMoves();
+      }
+      return response.data;
+    } catch (error: any) {
+      console.error('Error scanning for latent tunnels:', error);
+      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to scan for latent tunnels');
+      throw error;
     }
   };
 
   // Explore current location (sector, planets, stations)
   const exploreCurrentLocation = async () => {
     if (!user || !playerState) return;
-    
-    setIsLoading(true);
-    
+
     try {
       // Get sector info
       try {
@@ -477,8 +768,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
       console.error('GameContext: Error exploring location:', error);
       // Don't set a general error here as this is not critical for basic UI
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -486,7 +775,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const dockAtStation = async (stationId: string) => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -497,19 +785,66 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       
       return response.data;
     } catch (error: any) {
+      // 409 = every transient slip is taken; the server auto-enqueued us and
+      // returned slip/queue/bump details. Surface that payload to callers
+      // instead of throwing so the UI can offer the queue/bump flow inline.
+      if (error.response?.status === 409 && error.response?.data) {
+        return { full: true, ...error.response.data };
+      }
       console.error('Error docking at port:', error);
       setError(error.response?.data?.message || 'Failed to dock at port');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
+  };
+
+  // Get transient slip availability for a station
+  // Note: lightweight read used by dock lists and gauges — intentionally does
+  // NOT set global isLoading/error to avoid re-render cascades
+  const getStationSlips = async (stationId: string): Promise<StationSlips | null> => {
+    if (!user) return null;
+
+    try {
+      const response = await api.get(`/api/v1/trading/stations/${stationId}/slips`);
+      return response.data as StationSlips;
+    } catch (error) {
+      console.warn('GameContext: Failed to load station slips:', error);
+      return null;
+    }
+  };
+
+  // Pay the bump cost to evict a long-tenured occupant and take their slip.
+  // Errors are surfaced inline by the dock-full panel, so no global setError.
+  const bumpDockOccupant = async (stationId: string, occupantPlayerId: string) => {
+    if (!user || !playerState) {
+      // Callers treat a return as success — never fall through silently
+      throw new Error('Not ready to dock — please try again');
+    }
+
+    let response;
+    try {
+      response = await api.post(`/api/v1/trading/stations/${stationId}/slips/bump`, {
+        occupant_player_id: occupantPlayerId
+      });
+    } catch (error: any) {
+      console.error('Error bumping slip occupant:', error);
+      throw error;
+    }
+
+    // The bump succeeded server-side; a failed refresh must not read as a
+    // failed bump (the player IS docked and WAS charged)
+    try {
+      await refreshPlayerState();
+    } catch (refreshError) {
+      console.warn('Post-bump state refresh failed:', refreshError);
+    }
+
+    return response.data;
   };
 
   // Undock from current station
   const undockFromStation = async () => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -523,8 +858,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error undocking from station:', error);
       setError(error.response?.data?.message || 'Failed to undock from station');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -546,7 +879,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const buyResource = async (stationId: string, resourceType: string, quantity: number) => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -565,8 +897,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error buying resource:', error);
       setError(error.response?.data?.message || 'Failed to buy resource');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -574,7 +904,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const sellResource = async (stationId: string, resourceType: string, quantity: number) => {
     if (!user || !playerState) return;
     
-    setIsLoading(true);
     setError(null);
     
     try {
@@ -593,8 +922,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error selling resource:', error);
       setError(error.response?.data?.message || 'Failed to sell resource');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
   
@@ -602,22 +929,29 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const claimPlanet = async (planetId: string) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
       const response = await api.post(`/api/v1/planets/${planetId}/claim`);
 
-      // Update player state after claiming (player is auto-landed)
+      // Update player state after claiming (player is auto-landed).
+      // Claiming spends credits and settles colonists from the ship's
+      // cargo, and the planet's ownership changes — refresh all three.
       await refreshPlayerState();
+      await loadShips();
+      await exploreCurrentLocation();
 
       return response.data;
     } catch (error: any) {
       console.error('Error claiming planet:', error);
-      setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to claim planet');
+      // 400 (requirements not met) and 403 (protected population hub) are
+      // in-fiction gameplay refusals that the claim UI surfaces inline;
+      // only unexpected failures should raise the global system alert.
+      const status = error.response?.status;
+      if (status !== 400 && status !== 403) {
+        setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to claim planet');
+      }
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -625,7 +959,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const landOnPlanet = async (planetId: string) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -639,8 +972,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error landing on planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to land on planet');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -648,7 +979,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const leavePlanet = async () => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -662,8 +992,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error leaving planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to leave planet');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -671,7 +999,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const renamePlanet = async (planetId: string, newName: string) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -685,8 +1012,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error renaming planet:', error);
       setError(error.response?.data?.detail || error.response?.data?.message || 'Failed to rename planet');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -703,26 +1028,25 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  // Update planet production allocation
+  // Update planet production allocation (colonist headcounts).
+  // PUT /allocate returns {success, allocations: {fuel, organics, equipment,
+  // unused}, productionRates: {fuel, organics, equipment, colonists}}.
+  // No global isLoading/error churn: the allocation sliders persist on a
+  // debounce and surface failures inline with an optimistic revert, and the
+  // endpoint touches no player-level state (no credits/turns), so there is
+  // nothing to refresh globally.
   const updatePlanetAllocation = async (
     planetId: string,
-    allocations: { fuel: number; organics: number; equipment: number; ore?: number; terraform?: number }
+    allocations: { fuel: number; organics: number; equipment: number }
   ) => {
-    if (!user || !playerState) return;
-
-    setIsLoading(true);
-    setError(null);
+    if (!user) throw new Error('Not authenticated');
 
     try {
       const response = await api.put(`/api/v1/planets/${planetId}/allocate`, allocations);
-      await refreshPlayerState();
       return response.data;
     } catch (error: any) {
       console.error('Error updating planet allocation:', error);
-      setError(error.response?.data?.detail || 'Failed to update allocation');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -733,7 +1057,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   ) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -745,8 +1068,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error updating planet defenses:', error);
       setError(error.response?.data?.detail || 'Failed to update defenses');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -754,7 +1075,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const upgradePlanetBuilding = async (planetId: string, buildingType: string, targetLevel: number) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -769,8 +1089,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Error upgrading building:', error);
       setError(error.response?.data?.detail || 'Failed to upgrade building');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -778,7 +1096,6 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const transferColonists = async (planetId: string, action: 'embark' | 'disembark', quantity: number) => {
     if (!user || !playerState) return;
 
-    setIsLoading(true);
     setError(null);
 
     try {
@@ -792,111 +1109,587 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return response.data;
     } catch (error: any) {
       console.error('Error transferring colonists:', error);
-      setError(error.response?.data?.detail || 'Failed to transfer colonists');
+      // 400/403 are gameplay refusals (capacity, ownership, quantity) shown
+      // inline by the transfer modal; reserve the global alert for the rest.
+      const status = error.response?.status;
+      if (status !== 400 && status !== 403) {
+        setError(error.response?.data?.detail || 'Failed to transfer colonists');
+      }
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
-  // Deposit resources to citadel safe
-  const depositToSafe = async (planetId: string, resourceType: string, amount: number) => {
-    if (!user || !playerState) return;
+  // --- Pioneer Office: migration contracts at a population hub ---
+  // Follow the Port Office mold: no global isLoading/error churn — the venue
+  // surfaces 400/403 refusals inline. Mutations that move credits or cargo
+  // refresh player + ship state so the cockpit stays authoritative.
+  const getPioneerOffice = async (): Promise<PioneerOffice> => {
+    const response = await api.get('/api/v1/pioneer/office');
+    return response.data;
+  };
 
-    setIsLoading(true);
-    setError(null);
+  const brokerMigrationContract = async (cohortTotal: number): Promise<MigrationContract> => {
+    const response = await api.post('/api/v1/pioneer/contracts', { cohort_total: cohortTotal });
+    return response.data;
+  };
+
+  const loadPioneerBatch = async (contractId: string, quantity: number): Promise<MigrationContract> => {
+    const response = await api.post(`/api/v1/pioneer/contracts/${contractId}/load`, { quantity });
+    await refreshPlayerState();
+    await loadShips();
+    return response.data;
+  };
+
+  const listMigrationContracts = async (includeClosed = false): Promise<MigrationContract[]> => {
+    const response = await api.get('/api/v1/pioneer/contracts', {
+      params: { include_closed: includeClosed },
+    });
+    return response.data;
+  };
+
+  const cancelMigrationContract = async (contractId: string): Promise<MigrationContract> => {
+    const response = await api.post(`/api/v1/pioneer/contracts/${contractId}/cancel`);
+    return response.data;
+  };
+
+  // --- Citadel: info, upgrades, and the credits-only safe ---
+  // These follow the Port Office mold: no global isLoading/error churn — the
+  // planetary ops console surfaces failures inline. Mutations that move
+  // credits refresh player state so the header credits stay authoritative.
+
+  // Citadel info — GET /planets/{id}/citadel (owner-only; 400 otherwise).
+  // Returns {citadel_level, citadel_name, max_population, safe_storage,
+  // safe_credits, drone_capacity, is_upgrading, upgrade_remaining_seconds?,
+  // next_level: {level, name, upgrade_cost, upgrade_hours, resource_cost, ...} | null}
+  const getCitadelInfo = async (planetId: string) => {
+    if (!user) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/safe/deposit`, {
-        resource_type: resourceType,
+      const response = await api.get(`/api/v1/planets/${planetId}/citadel`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting citadel info:', error);
+      throw error;
+    }
+  };
+
+  // Start a citadel upgrade — POST /planets/{id}/citadel/upgrade.
+  // Level 0→1 (Outpost) is free and instant; higher levels deduct credits
+  // and planet resources and run on a timer (CitadelService.start_upgrade).
+  const upgradeCitadel = async (planetId: string) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/upgrade`);
+      // Upgrades from level 1+ deduct player credits
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error upgrading citadel:', error);
+      throw error;
+    }
+  };
+
+  // Cancel an in-progress citadel upgrade — POST /planets/{id}/citadel/cancel.
+  // Refunds 50% of the credits paid (CitadelService.cancel_upgrade).
+  const cancelCitadelUpgrade = async (planetId: string) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/cancel`);
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error cancelling citadel upgrade:', error);
+      throw error;
+    }
+  };
+
+  // Defense buildings a planet's citadel level unlocks — GET
+  // /planets/{id}/buildings/available (CitadelService.get_available_buildings).
+  const getDefenseBuildings = async (planetId: string) => {
+    try {
+      const response = await api.get(`/api/v1/planets/${planetId}/buildings/available`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting defense buildings:', error);
+      return null;
+    }
+  };
+
+  // Construct a defense building — POST /planets/{id}/buildings/construct.
+  const buildDefenseBuilding = async (planetId: string, buildingType: string) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/buildings/construct`, { buildingType });
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error constructing defense building:', error);
+      throw error;
+    }
+  };
+
+  // Deposit credits into the citadel safe — POST /planets/{id}/citadel/deposit
+  // {amount}. Server gating (CitadelService.deposit_to_safe): planet must be
+  // owned, citadel_level >= 1, player must hold the credits, and the safe
+  // balance may not exceed CITADEL_LEVELS[level].safe_storage. Returns
+  // {credits_deposited, safe_balance, safe_capacity, player_credits, message}.
+  const depositToSafe = async (planetId: string, amount: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/deposit`, { amount });
+      // Deposit debits the player's credit balance
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error depositing to citadel safe:', error);
+      throw error;
+    }
+  };
+
+  // Withdraw credits from the citadel safe — POST /planets/{id}/citadel/withdraw
+  // {amount}. Returns {credits_withdrawn, safe_balance, player_credits, message}.
+  const withdrawFromSafe = async (planetId: string, amount: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/withdraw`, { amount });
+      // Withdrawal credits the player's balance
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error withdrawing from citadel safe:', error);
+      throw error;
+    }
+  };
+
+  // Move a commodity planet-stockpile -> protected citadel safe.
+  // POST /planets/{id}/citadel/deposit-commodity {commodity, amount}.
+  const depositCommodityToSafe = async (planetId: string, commodity: string, amount: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/deposit-commodity`, { commodity, amount });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error depositing commodity to citadel safe:', error);
+      throw error;
+    }
+  };
+
+  // Move a commodity safe -> planet stockpile.
+  // POST /planets/{id}/citadel/withdraw-commodity {commodity, amount}.
+  const withdrawCommodityFromSafe = async (planetId: string, commodity: string, amount: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/withdraw-commodity`, { commodity, amount });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error withdrawing commodity from citadel safe:', error);
+      throw error;
+    }
+  };
+
+  // Toggle auto-deposit of production into the protected safe (opt-in, default
+  // OFF). POST /planets/{id}/citadel/auto-deposit {enabled}. Owner-only,
+  // requires citadel_level >= 1. Returns { success: true, auto_deposit: bool }.
+  const setCitadelAutoDeposit = async (planetId: string, enabled: boolean) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/citadel/auto-deposit`, { enabled });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error setting citadel auto-deposit:', error);
+      throw error;
+    }
+  };
+
+  // Lay armored mines in the current sector (open space). POST /armory/deploy.
+  const deployMines = async (quantity: number) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+    try {
+      const response = await api.post(`/api/v1/armory/deploy`, { quantity });
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error deploying mines:', error);
+      throw error;
+    }
+  };
+
+  // Defense telemetry — GET /planets/{id}/defenses (no ownership required;
+  // useful for scouting). Returns {shieldGenerator: {level, maxLevel, name,
+  // strength, currentShields, regenPerHour, nextUpgrade: {level, name,
+  // strength, regenPerHour, cost} | null}, defenseLevel, damageReduction,
+  // turrets, fighters}.
+  const getPlanetDefenseInfo = async (planetId: string) => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get(`/api/v1/planets/${planetId}/defenses`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting planet defense info:', error);
+      throw error;
+    }
+  };
+
+  // Upgrade the planet's shield generator by one level — POST
+  // /planets/{id}/shields/upgrade. Returns {shieldGenerator: {level, name,
+  // strength, regenPerHour, maxLevel}, creditsCost, creditsRemaining,
+  // nextUpgradeCost}; errors arrive as 400 detail strings.
+  const upgradeShields = async (planetId: string) => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/planets/${planetId}/shields/upgrade`);
+      // Upgrade deducts player credits
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error upgrading shields:', error);
+      throw error;
+    }
+  };
+
+  // --- Port Office: station ownership, sealed-bid sales, tariffs, takeovers ---
+  // These follow the getPlanetDetails mold: no global isLoading/error churn —
+  // the Port Office venue surfaces failures inline. Mutations that move
+  // credits (escrowed offers, treasury withdrawals, forced sales) refresh
+  // player state so the header credits stay authoritative.
+
+  // Registry board — every station currently listed for sale in scope
+  const getPortListings = async (): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get('/api/v1/port-ownership/listings');
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting port listings:', error);
+      throw error;
+    }
+  };
+
+  // Ownership/listing status for one station. Reading this also lets the
+  // server lazily resolve expired grace windows (sealed-bid auctions resolve
+  // on first read past expiry — no scheduler exists).
+  const getListing = async (stationId: string): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get(`/api/v1/port-ownership/stations/${stationId}/listing`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting station listing:', error);
+      throw error;
+    }
+  };
+
+  // Put a station on the sale board (price is formula-set server-side)
+  const listStation = async (stationId: string): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/list`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error listing station for sale:', error);
+      throw error;
+    }
+  };
+
+  // Sealed-bid offer — funds are escrowed (debited) immediately
+  const placeOffer = async (stationId: string, bidAmount: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/offer`, {
+        bid: bidAmount
+      });
+      // Escrow debits credits at offer time
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error placing station offer:', error);
+      throw error;
+    }
+  };
+
+  // Stations I own (with treasury / tax / revenue detail)
+  const getMyStations = async (): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get('/api/v1/port-ownership/my-stations');
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting my stations:', error);
+      throw error;
+    }
+  };
+
+  // Owner lever: set the trade tariff within [0.0, 0.25]
+  const setStationTax = async (stationId: string, taxRate: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/tax`, {
+        rate: taxRate
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error setting station tax:', error);
+      throw error;
+    }
+  };
+
+  // Owner lever: withdraw from the station treasury (solo owner only)
+  const withdrawTreasury = async (stationId: string, amount: number): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/withdraw`, {
         amount
       });
+      // Withdrawal credits the player
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error withdrawing station treasury:', error);
+      throw error;
+    }
+  };
+
+  // Economic-takeover campaign status. Reading this also lets the server
+  // lazily evaluate monthly volume shares and counter-window expiry.
+  const getTakeoverStatus = async (stationId: string): Promise<unknown> => {
+    if (!user) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.get(`/api/v1/port-ownership/stations/${stationId}/takeover`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error getting takeover status:', error);
+      throw error;
+    }
+  };
+
+  // Challenger: open an economic-takeover campaign against this station
+  const launchTakeover = async (stationId: string): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/takeover/launch`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error launching takeover campaign:', error);
+      throw error;
+    }
+  };
+
+  // Owner counter during the 7-canonical-day window: accept (forced sale),
+  // match (volume contest resets the clock), or dispute (auto-arbitration)
+  const counterTakeover = async (
+    stationId: string,
+    action: 'accept' | 'match' | 'dispute'
+  ): Promise<unknown> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post(`/api/v1/port-ownership/stations/${stationId}/takeover/counter`, {
+        action
+      });
+      // 'accept' transfers ownership + sale proceeds atomically
+      await refreshPlayerState();
+      return response.data;
+    } catch (error: any) {
+      console.error('Error countering takeover:', error);
+      throw error;
+    }
+  };
+
+  // --- Player-to-player hails: the COMMS mailbox ---
+  // These follow the getStationSlips/Port Office mold: no global
+  // isLoading/error churn — the COMMS monitor surfaces failures inline.
+
+  // Pull the inbox (first page covers the cockpit mailbox; the backend
+  // serves 50 per page). Sets both the message list and the unread badge
+  // count from the same authoritative response.
+  const refreshInbox = async () => {
+    if (!user) return;
+
+    try {
+      const response = await api.get('/api/v1/messages/inbox');
+      const data = response.data as { messages: PlayerMessage[]; unread_count: number };
+      setInboxMessages(data.messages || []);
+      setUnreadMessageCount(data.unread_count || 0);
+      // Server count is authoritative again — drop the local decrement guard
+      locallyReadIds.current.clear();
+    } catch (error) {
+      console.warn('GameContext: Failed to load message inbox:', error);
+      // Keep the previously loaded inbox on transient failures
+    }
+  };
+
+  // Send a hail to another player — POST /api/v1/messages/send
+  // {recipient_id, subject?, content, reply_to_id?} (snake_case per
+  // MessageCreateRequest). Returns {message_id, sent_at}.
+  const sendPlayerMessage = async (
+    recipientId: string,
+    content: string,
+    subject?: string | null,
+    replyToId?: string | null
+  ): Promise<{ message_id: string; sent_at: string }> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post('/api/v1/messages/send', {
+        recipient_id: recipientId,
+        subject: subject || null,
+        content,
+        reply_to_id: replyToId || null
+      });
+      return response.data as { message_id: string; sent_at: string };
+    } catch (error: any) {
+      console.error('Error sending player message:', error);
+      throw error;
+    }
+  };
+
+  // Mark one hail read — PUT /api/v1/messages/{id}/read — then update the
+  // local list and badge in place (no refetch needed for a single flag).
+  // The ref guard makes the badge decrement idempotent per message id even
+  // under stale closures / rapid double-expands; refreshInbox resets it
+  // because a fresh server count re-baselines everything.
+  const locallyReadIds = useRef<Set<string>>(new Set());
+  const markMessageRead = async (messageId: string): Promise<void> => {
+    if (!user) throw new Error('Not authenticated');
+
+    const wasUnread =
+      !locallyReadIds.current.has(messageId) &&
+      inboxMessages.some(msg => msg.id === messageId && !msg.is_read);
+
+    try {
+      await api.put(`/api/v1/messages/${messageId}/read`);
+      setInboxMessages(prev => prev.map(msg =>
+        msg.id === messageId && !msg.is_read
+          ? { ...msg, is_read: true, read_at: new Date().toISOString() }
+          : msg
+      ));
+      if (wasUnread) {
+        locallyReadIds.current.add(messageId);
+        setUnreadMessageCount(prev => Math.max(0, prev - 1));
+      }
+    } catch (error: any) {
+      console.error('Error marking message read:', error);
+      throw error;
+    }
+  };
+
+  // --- Quantum drive (Warp Jumper): scan / jump / charge refinement ---
+  // These follow the Port Office mold: no global isLoading/error churn — the
+  // Quantum Drive console surfaces failures inline. Status is a lightweight
+  // read; actions that spend turns/shards/charges refresh the affected state.
+
+  const refreshQuantumStatus = async () => {
+    if (!user) return;
+
+    try {
+      const response = await api.get('/api/v1/quantum/status');
+      setQuantumStatus(response.data as QuantumStatus);
+    } catch (error) {
+      console.warn('GameContext: Failed to load quantum status:', error);
+      setQuantumStatus(null);
+    }
+  };
+
+  // Keep quantum status in lockstep with player state while piloting a
+  // Warp Jumper; clear it the moment the active ship is anything else.
+  useEffect(() => {
+    if (currentShip?.type === 'WARP_JUMPER') {
+      refreshQuantumStatus();
+    } else {
+      setQuantumStatus(null);
+    }
+  }, [currentShip?.id, currentShip?.type, playerState?.turns, playerState?.current_sector_id]);
+
+  // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
+  const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    try {
+      const response = await api.post('/api/v1/quantum/scan', payload);
+      // Scan spends turns (and a shard on the far band) — keep the header
+      // turns counter and the console's cooldowns authoritative.
+      await Promise.allSettled([refreshPlayerState(), refreshQuantumStatus()]);
+      return response.data as QuantumScanResult;
+    } catch (error: any) {
+      console.error('Error running quantum scan:', error);
+      throw error;
+    }
+  };
+
+  // Commit the jump along a bearing (1 quantum charge + turns; may misfire)
+  const quantumJump = async (payload: QuantumBearing): Promise<QuantumJumpResult> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
+    let response;
+    try {
+      response = await api.post('/api/v1/quantum/jump', payload);
+    } catch (error: any) {
+      console.error('Error committing quantum jump:', error);
+      throw error;
+    }
+
+    // The jump succeeded server-side (even a misfire MOVED the ship) — a
+    // failed refresh must not read as a failed jump.
+    try {
       await refreshPlayerState();
       await loadShips();
-      await exploreCurrentLocation();
-      return response.data;
-    } catch (error: any) {
-      console.error('Error depositing to safe:', error);
-      setError(error.response?.data?.detail || 'Failed to deposit to safe');
-      throw error;
-    } finally {
-      setIsLoading(false);
+      await refreshQuantumStatus();
+    } catch (refreshError) {
+      console.warn('Post-jump state refresh failed:', refreshError);
     }
+
+    return response.data as QuantumJumpResult;
   };
 
-  // Withdraw resources from citadel safe
-  const withdrawFromSafe = async (planetId: string, resourceType: string, amount: number) => {
-    if (!user || !playerState) return;
-
-    setIsLoading(true);
-    setError(null);
+  // Refine 1 quantum shard into 1 charge on the current Warp Jumper
+  // (server enforces docked-at-Class-3+/SpaceDock and charge capacity)
+  const refineQuantumCharge = async (): Promise<{ quantum_charges: number; quantum_shards: number }> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
 
     try {
-      const response = await api.post(`/api/v1/planets/${planetId}/safe/withdraw`, {
-        resource_type: resourceType,
-        amount
-      });
-      await refreshPlayerState();
-      await loadShips();
-      await exploreCurrentLocation();
-      return response.data;
+      const response = await api.post('/api/v1/quantum/refine-charge', {});
+      await refreshQuantumStatus();
+      return response.data as { quantum_charges: number; quantum_shards: number };
     } catch (error: any) {
-      console.error('Error withdrawing from safe:', error);
-      setError(error.response?.data?.detail || 'Failed to withdraw from safe');
+      console.error('Error refining quantum charge:', error);
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
 
-  // Attack another player
-  const attackPlayer = async (playerId: string) => {
-    if (!user || !playerState) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
+  // Harvest Quantum Shards from the current nebula sector (server gates on a
+  // NEBULA sector + a fitted Quantum Field Harvester + the 2h per-ship harvest
+  // cooldown; rejected attempts arrive as 400 detail strings prefixed with a
+  // stable reason — no_harvester / not_a_nebula / on_cooldown — which the
+  // console maps to friendly inline messages). A success credits the shard
+  // wallet and arms the cooldown, so refresh quantum status to keep the
+  // inventory strip authoritative.
+  const harvestNebula = async (): Promise<QuantumHarvestResult> => {
+    if (!user || !playerState) throw new Error('Not authenticated');
+
     try {
-      const response = await api.post('/api/v1/combat/attack-player', { defender_id: playerId });
-      
-      // Update player state after combat
-      await refreshPlayerState();
-      
-      return response.data;
+      const response = await api.post('/api/v1/quantum/harvest', {});
+      await refreshQuantumStatus();
+      return response.data as QuantumHarvestResult;
     } catch (error: any) {
-      console.error('Error attacking player:', error);
-      setError(error.response?.data?.message || 'Failed to attack player');
+      console.error('Error harvesting nebula:', error);
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   };
-  
-  // Attack sector drones
-  const attackDrones = async () => {
-    if (!user || !playerState) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const response = await api.post('/api/v1/combat/attack-drones', { 
-        sector_id: playerState.current_sector_id 
-      });
-      
-      // Update player state after combat
-      await refreshPlayerState();
-      
-      return response.data;
-    } catch (error: any) {
-      console.error('Error attacking drones:', error);
-      setError(error.response?.data?.message || 'Failed to attack drones');
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  
+
   // Handle first login completion - refresh all game data
   const onFirstLoginComplete = async () => {
     setNeedsFirstLogin(false);
@@ -943,10 +1736,13 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Movement
     moveToSector,
     getAvailableMoves,
-    
+    scanForLatentTunnels,
+
     // Station interactions
     dockAtStation,
     undockFromStation,
+    getStationSlips,
+    bumpDockOccupant,
     marketInfo,
     getMarketInfo,
     buyResource,
@@ -962,15 +1758,57 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     updatePlanetDefenses,
     upgradePlanetBuilding,
     transferColonists,
+    getPioneerOffice,
+    brokerMigrationContract,
+    loadPioneerBatch,
+    listMigrationContracts,
+    cancelMigrationContract,
+    getCitadelInfo,
+    upgradeCitadel,
+    cancelCitadelUpgrade,
+    getDefenseBuildings,
+    buildDefenseBuilding,
     depositToSafe,
     withdrawFromSafe,
+    depositCommodityToSafe,
+    withdrawCommodityFromSafe,
+    setCitadelAutoDeposit,
+    deployMines,
+    getPlanetDefenseInfo,
+    upgradeShields,
 
-    // Combat
-    attackPlayer,
-    attackDrones,
-    
+    // Port Office — station ownership
+    getPortListings,
+    getListing,
+    listStation,
+    placeOffer,
+    getMyStations,
+    setStationTax,
+    withdrawTreasury,
+    getTakeoverStatus,
+    launchTakeover,
+    counterTakeover,
+
+    // Player-to-player hails (COMMS mailbox)
+    inboxMessages,
+    unreadMessageCount,
+    refreshInbox,
+    sendPlayerMessage,
+    markMessageRead,
+
+    // Quantum drive (Warp Jumper)
+    quantumStatus,
+    refreshQuantumStatus,
+    quantumScan,
+    quantumJump,
+    refineQuantumCharge,
+    harvestNebula,
+    quantumScanResult,
+    setQuantumScanResult,
+
     // Loading states
     isLoading,
+    isRefreshing,
     error,
     
     // General methods

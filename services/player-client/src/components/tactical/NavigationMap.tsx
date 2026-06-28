@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { TurnsIcon } from '../icons/TurnsIcon';
 import './navigation-map.css';
 
 interface Sector {
@@ -12,6 +13,8 @@ interface NavigationMapProps {
   currentSectorId: number;
   sectors: Sector[];
   availableMoves: number[];
+  /** Turn cost per destination sector id — shown in the hover warp prompt */
+  moveCosts?: Record<number, number>;
   onNavigate: (sectorId: number) => void;
   width?: number;
   height?: number;
@@ -26,10 +29,18 @@ interface Node {
   sector: Sector;
 }
 
+// Truncate long sector/region labels so they don't overlap neighboring
+// nodes and edges. The full name stays available via the SVG <title>
+// tooltip on the node circles.
+const MAX_LABEL_CHARS = 14;
+const truncateLabel = (name: string): string =>
+  name.length > MAX_LABEL_CHARS ? `${name.slice(0, MAX_LABEL_CHARS - 1)}…` : name;
+
 const NavigationMap: React.FC<NavigationMapProps> = ({
   currentSectorId,
   sectors,
   availableMoves,
+  moveCosts,
   onNavigate,
   width = 600,
   height = 600
@@ -49,7 +60,21 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   const availableMovesRef = useRef(availableMoves);
   availableMovesRef.current = availableMoves;
 
-  // Initialize nodes with force-directed layout
+  // Topology signature: the layout depends only on WHICH sectors exist, the
+  // current sector, the available moves, and the canvas size — NOT on the
+  // sector objects' identity. The dashboard re-fetches currentSector every 5s
+  // for live ship presence, which hands NavigationMap brand-new `sectors`/
+  // `availableMoves` array refs with identical content. Keying the layout
+  // effect on this stable STRING (instead of the array refs) stops the force
+  // simulation from re-initializing — and the nodes from bobbing/resizing —
+  // on every poll. It re-runs only when the actual graph changes.
+  const topoSig = useMemo(() => {
+    const ids = (sectors || []).map(s => s.id).sort((a, b) => a - b).join(',');
+    const moves = [...(availableMoves || [])].sort((a, b) => a - b).join(',');
+    return `${ids}|${currentSectorId}|${moves}|${width}x${height}`;
+  }, [sectors, availableMoves, currentSectorId, width, height]);
+
+  // Initialize nodes with force-directed layout (only when topology changes)
   useEffect(() => {
     if (!sectors || sectors.length === 0) return;
 
@@ -60,7 +85,17 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
     const centerX = width / 2;
     const centerY = height / 2;
 
-    const newNodes: Node[] = sectors.map((sector, index) => {
+    // Defensive: one node per sector id. Duplicate entries from a caller
+    // (e.g. a destination listed via both warp and tunnel) would otherwise
+    // render overlapping phantom nodes with duplicate React keys.
+    const seenIds = new Set<number>();
+    const uniqueSectors = sectors.filter(sector => {
+      if (seenIds.has(sector.id)) return false;
+      seenIds.add(sector.id);
+      return true;
+    });
+
+    const newNodes: Node[] = uniqueSectors.map((sector, index) => {
       const isCurrent = sector.id === currentSectorId;
 
       // Place current sector in center
@@ -78,7 +113,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
       // Place connected sectors in a circle around current (maximum spacing)
       const isConnected = availableMoves.includes(sector.id);
       const radius = isConnected ? 350 : 450;  // Very wide spacing for clear readability
-      const angle = (index / sectors.length) * Math.PI * 2;
+      const angle = (index / uniqueSectors.length) * Math.PI * 2;
 
       return {
         id: sector.id,
@@ -92,7 +127,10 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
 
     setNodes(newNodes);
     setIsSimulating(true);
-  }, [sectors, currentSectorId, availableMoves, width, height]);
+    // Keyed on the stable topology signature so a 5s presence poll (which only
+    // changes array identity, not graph content) does NOT restart the layout.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topoSig]);
 
   // Force-directed graph simulation - stops when settled
   useEffect(() => {
@@ -236,11 +274,19 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   };
 
   return (
+    <div className="navigation-map-wrapper">
     <div className="navigation-map-container">
       <svg
         ref={svgRef}
         className="navigation-map-svg"
         viewBox={`0 0 ${width} ${height}`}
+        /* Anchor the scaled viewBox content to the TOP-center of the
+           SVG element. The default `xMidYMid meet` centers the content
+           vertically — so when the parent container is taller than
+           viewBox aspect, a visible band of empty space appears ABOVE
+           the graph. Anchoring to `xMidYMin` puts any remaining empty
+           space below the graph instead. */
+        preserveAspectRatio="xMidYMin meet"
         width="100%"
         height="100%"
       >
@@ -314,7 +360,9 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                     }}
                     onMouseEnter={() => setHoveredNode(node.id)}
                     onMouseLeave={() => setHoveredNode(null)}
-                  />
+                  >
+                    <title>{node.sector.name}</title>
+                  </circle>
                 )}
 
                 {/* Node circle */}
@@ -336,38 +384,86 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                     }
                   }}
                   style={{ cursor: isAvailable ? 'pointer' : 'default' }}
-                />
+                >
+                  <title>{node.sector.name}</title>
+                </circle>
 
-                {/* Node label */}
+                {/* Node label - truncated with full name in tooltip */}
                 {(isCurrent || isHovered || isAvailable) && (
                   <text
                     x={node.x}
-                    y={node.y + nodeSize + 16}
+                    y={node.y + nodeSize + 14}
                     textAnchor="middle"
                     className="node-label"
                     fill={nodeColor}
-                    fontSize="11"
+                    fontSize="9"
                     fontWeight="bold"
                     style={{ pointerEvents: 'none' }}
                   >
-                    {node.sector.name}
+                    {truncateLabel(node.sector.name)}
                   </text>
                 )}
 
                 {/* Warp prompt on hover for available sectors */}
                 {isAvailable && isHovered && !isCurrent && (
-                  <text
-                    x={node.x}
-                    y={node.y - nodeSize - 8}
-                    textAnchor="middle"
-                    className="warp-prompt"
-                    fill="#00d9ff"
-                    fontSize="9"
-                    fontWeight="bold"
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    {isMoving ? '⟐ WARPING...' : '▶ CLICK TO WARP'}
-                  </text>
+                  <g style={{ pointerEvents: 'none' }}>
+                    {isMoving ? (
+                      <text
+                        x={node.x}
+                        y={node.y - nodeSize - 8}
+                        textAnchor="middle"
+                        className="warp-prompt"
+                        fill="#00d9ff"
+                        fontSize="9"
+                        fontWeight="bold"
+                      >
+                        ⟐ WARPING...
+                      </text>
+                    ) : moveCosts?.[node.id] != null ? (
+                      <>
+                        <text
+                          x={node.x - 15}
+                          y={node.y - nodeSize - 8}
+                          textAnchor="end"
+                          className="warp-prompt"
+                          fill="#00d9ff"
+                          fontSize="9"
+                          fontWeight="bold"
+                        >
+                          ▶ CLICK TO WARP —
+                        </text>
+                        <TurnsIcon
+                          x={node.x - 13}
+                          y={node.y - nodeSize - 24}
+                          size={26}
+                          color="#00d9ff"
+                        />
+                        <text
+                          x={node.x + 15}
+                          y={node.y - nodeSize - 8}
+                          textAnchor="start"
+                          className="warp-prompt"
+                          fill="#00d9ff"
+                          fontSize="9"
+                          fontWeight="bold"
+                        >
+                          {moveCosts[node.id]}
+                        </text>
+                      </>
+                    ) : (
+                      <text
+                        x={node.x}
+                        y={node.y - nodeSize - 8}
+                        textAnchor="middle"
+                        className="warp-prompt"
+                        fill="#00d9ff"
+                        fontSize="9"
+                        fontWeight="bold"
+                      >
+                        ▶ CLICK TO WARP
+                      </text>
+                    )}
+                  </g>
                 )}
 
                 {/* Current sector indicator */}
@@ -390,16 +486,18 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
           })}
         </g>
       </svg>
+    </div>
 
-      {/* Navigation instructions */}
+      {/* Navigation legend — lives OUTSIDE the SVG container so it
+          never overlaps clickable warp nodes regardless of graph layout */}
       <div className="navigation-instructions">
         <div className="instruction-item">
           <span className="instruction-icon" style={{ color: '#00ff41' }}>●</span>
-          <span>Current Location</span>
+          <span>Here</span>
         </div>
         <div className="instruction-item">
           <span className="instruction-icon" style={{ color: '#00d9ff' }}>●</span>
-          <span>Available (Click to Warp)</span>
+          <span>In Range</span>
         </div>
         <div className="instruction-item">
           <span className="instruction-icon" style={{ color: '#6b7280' }}>●</span>

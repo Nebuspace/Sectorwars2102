@@ -5,12 +5,13 @@ Provides endpoints for regional owners to manage their territories, governance, 
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from sqlalchemy import select, update, func, and_, or_
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 import uuid
 
-from src.core.database import get_async_session
+from src.core.database import get_async_session, get_db
 from src.auth.dependencies import get_current_user, require_auth
 from src.models.user import User
 from src.models.region import (
@@ -22,10 +23,91 @@ from src.models.sector import Sector
 from src.models.planet import Planet
 from src.models.station import Station
 from src.models.ship import Ship
+from src.models.region_invite import RegionInvite
+from src.services.regional_governance_service import RegionalGovernanceService
+from src.services import trading_service
+from src.services.region_invite_service import (
+    RegionInviteService,
+    DEFAULT_MAX_USES,
+    MAX_MAX_USES,
+)
 from pydantic import BaseModel, Field
 
 
 router = APIRouter(prefix="/regions")
+
+
+# Map governance-service rejection codes to HTTP status. Anything not listed is
+# a 400 (a validation/eligibility failure the caller can act on).
+_VOTE_ERROR_STATUS = {
+    "ERR_ELECTION_NOT_FOUND": 404,
+    "ERR_POLICY_NOT_FOUND": 404,
+    "ERR_REGION_NOT_FOUND": 404,
+    "ERR_ELECTION_NOT_IN_REGION": 404,
+    "ERR_POLICY_NOT_IN_REGION": 404,
+    "ERR_NOT_A_MEMBER": 403,
+    "ERR_NOT_ELIGIBLE": 403,
+    "ERR_ALREADY_VOTED": 409,
+    "ERR_ELECTION_NOT_ACTIVE": 409,
+    "ERR_POLICY_NOT_VOTING": 409,
+    "ERR_VOTING_WINDOW_CLOSED": 409,
+    "ERR_UNKNOWN_CANDIDATE": 400,
+    "ERR_NO_COLONY_IN_REGION": 403,
+    "ERR_MEMBERSHIP_UPSERT_FAILED": 409,
+    # Candidate self-registration (canon "Candidate registration").
+    "ERR_CANDIDATES_LOCKED": 409,
+    "ERR_NOT_A_CITIZEN": 403,
+    "ERR_INSUFFICIENT_REPUTATION": 403,
+    "ERR_ALREADY_CANDIDATE": 409,
+}
+
+
+# Map treaty-lifecycle service rejection codes to HTTP status (WO-TREATY). A
+# missing region/treaty is 404; a same-region proposal or other validation
+# failure is 400; a state-machine conflict (already exists, wrong state for the
+# transition) is 409. Owner-authorization (403) is enforced at the route, not
+# returned as a service code.
+_TREATY_ERROR_STATUS = {
+    "ERR_REGION_NOT_FOUND": 404,
+    "ERR_SAME_REGION_TREATY": 400,
+    "ERR_TREATY_ALREADY_EXISTS": 409,
+    "ERR_TREATY_NOT_PROPOSED": 409,
+    "ERR_TREATY_NOT_ACTIVE": 409,
+}
+
+
+# Map region-invite service rejection codes to HTTP status (WO-IL3). A
+# non-owner trying to mint/list/revoke is 403 (the security-relevant denial);
+# validation failures are 400; cap hits are 409 (state conflict, retry later).
+_INVITE_ERROR_STATUS = {
+    "ERR_NOT_REGION_OWNER": 403,
+    "ERR_NOT_INVITE_OWNER": 403,
+    "ERR_INVITE_NOT_FOUND": 404,
+    "ERR_INVALID_MAX_USES": 400,
+    "ERR_INVALID_EXPIRY": 400,
+    "ERR_ACTIVE_INVITE_CAP": 409,
+    "ERR_REDEMPTION_CAP": 409,
+    "ERR_CODE_COLLISION": 500,
+}
+
+
+async def _get_region_by_id(db: AsyncSession, region_id: uuid.UUID) -> Region:
+    """Fetch a region by id (404 if missing). Used by the member-facing vote
+    routes, which are NOT owner-scoped (any eligible member can vote)."""
+    region = await db.scalar(select(Region).where(Region.id == region_id))
+    if region is None:
+        raise HTTPException(status_code=404, detail="Region not found")
+    return region
+
+
+async def _get_current_player(db: AsyncSession, user: User) -> Player:
+    """Resolve the Player record for the authenticated user (404 if absent),
+    mirroring the create-policy route's lookup."""
+    result = await db.execute(select(Player).where(Player.user_id == user.id))
+    player = result.scalar_one_or_none()
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player record not found")
+    return player
 
 
 class EconomicConfigUpdate(BaseModel):
@@ -61,6 +143,76 @@ class CulturalUpdate(BaseModel):
     aesthetic_theme: Dict[str, Any] = Field(default_factory=dict)
     traditions: Dict[str, Any] = Field(default_factory=dict)
     regional_motto: Optional[str] = None
+
+
+class ElectionVoteCast(BaseModel):
+    candidate_id: str
+
+
+class CandidateRegister(BaseModel):
+    """A citizen's self-nomination in a SCHEDULED election (canon "Candidate
+    registration"). The nominee is the calling player; an optional short
+    platform statement is attached to the candidates JSONB entry."""
+    platform: Optional[str] = Field(default=None, max_length=500)
+
+
+class PolicyVoteCast(BaseModel):
+    # True = yes / for; False = no / against.
+    support: bool
+
+
+class InviteCreate(BaseModel):
+    """Owner request to mint a region invite (WO-IL3).
+
+    ``max_uses`` defaults to one-time (D2) and is bounded by MAX_MAX_USES so an
+    owner cannot mint an infinitely-shareable link. ``expires_at`` is optional in
+    the request — the service applies the mandatory default TTL (7 days, D3) when
+    omitted; a supplied value must be in the future (enforced server-side)."""
+    max_uses: int = Field(default=DEFAULT_MAX_USES, ge=1, le=MAX_MAX_USES)
+    expires_at: Optional[datetime] = None
+
+
+class TariffSet(BaseModel):
+    """Owner request to set the region COMMERCE tariff (WO-G9 / ADR-0062 E-F2).
+
+    ``rate`` is the requested per-trade tariff surcharge (0.0 = neutral). The
+    server CLAMPS it to the E-F2 sliding cap (by in-region station count) inside
+    ``trading_service.set_region_tariff`` and returns the persisted clamped value
+    — a request above the cap is accepted but stored at the cap, not rejected."""
+    rate: float = Field(..., description="Requested tariff rate (clamped to the E-F2 cap on write)")
+
+
+class TreatyPropose(BaseModel):
+    """Owner request to PROPOSE a treaty to another region (WO-TREATY).
+
+    The proposing region is resolved server-side from the caller's owned region
+    (never trusted from the body); ``counterparty_region_id`` is the offeree.
+    ``treaty_type`` is a free-form label (the model column is String(50));
+    ``terms`` is the agreement payload (effect-application is DEFERRED — terms
+    are stored, not yet interpreted). ``expires_at`` is optional; when set, the
+    existing lazy + sweep expiry flips an accepted treaty to 'expired' once
+    past."""
+    counterparty_region_id: uuid.UUID
+    treaty_type: str = Field(..., max_length=50)
+    terms: Dict[str, Any] = Field(default_factory=dict)
+    expires_at: Optional[datetime] = None
+
+
+def _serialize_invite(invite: RegionInvite) -> Dict[str, Any]:
+    """Shape a RegionInvite for the owner-facing API (includes the code — this
+    surface is owner-scoped, so returning the redeem key here is intended)."""
+    return {
+        "id": str(invite.id),
+        "code": invite.code,
+        "region_id": str(invite.region_id),
+        "created_by": str(invite.created_by) if invite.created_by else None,
+        "max_uses": invite.max_uses,
+        "uses": invite.uses,
+        "status": invite.status,
+        "expires_at": invite.expires_at.isoformat() if invite.expires_at else None,
+        "created_at": invite.created_at.isoformat() if invite.created_at else None,
+        "revoked_at": invite.revoked_at.isoformat() if invite.revoked_at else None,
+    }
 
 
 async def get_user_region(db: AsyncSession, user_id: uuid.UUID) -> Optional[Region]:
@@ -469,6 +621,168 @@ async def get_regional_treaties(
     ]
 
 
+# =====================================================================
+# Treaty lifecycle CRUD — owner-gated propose / accept / reject / terminate
+# (WO-TREATY). Before this slice only GET /my-region/treaties + lazy expiry
+# existed; there was no way to CREATE or END a treaty. Effect-application (what
+# a treaty DOES) is DEFERRED — this is the lifecycle ONLY.
+#
+# AUTHORIZATION (mirrors the owner-scoped governance routes): every transition
+# is gated on the caller OWNING the relevant region, re-checked server-side
+# against Region.owner_id — never trusted from the body:
+#   - propose:   caller owns a region (the proposer = region_a); the body names
+#                only the counterparty.
+#   - accept/reject: caller owns the COUNTERPARTY (region_b) — the offeree
+#                decides (a proposer cannot accept their own offer).
+#   - terminate: caller owns EITHER signatory (region_a OR region_b) — either
+#                side may unilaterally exit an active treaty.
+# THE ROUTE OWNS db.commit() — the service methods only flush; a return without
+# this commit silently rolls back the lifecycle change.
+# =====================================================================
+
+async def _fetch_treaty_or_404(db: AsyncSession, treaty_id: uuid.UUID) -> RegionalTreaty:
+    """Fetch a treaty row (404 if missing) for the lifecycle transitions."""
+    treaty = await db.scalar(
+        select(RegionalTreaty).where(RegionalTreaty.id == treaty_id)
+    )
+    if treaty is None:
+        raise HTTPException(status_code=404, detail="Treaty not found")
+    return treaty
+
+
+async def _require_region_owner(
+    db: AsyncSession, user: User, region_id: uuid.UUID
+) -> Region:
+    """Verify the user owns the SPECIFIC region_id (403 otherwise), re-checked
+    server-side against Region.owner_id. A NULL owner_id (unowned hub region)
+    never matches a real user id, so hubs are safely excluded. 404 if the region
+    does not exist."""
+    region = await db.scalar(select(Region).where(Region.id == region_id))
+    if region is None:
+        raise HTTPException(status_code=404, detail="Region not found")
+    if region.owner_id is None or region.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Not the region owner")
+    return region
+
+
+@router.post("/my-region/treaties", status_code=201)
+async def propose_treaty(
+    body: TreatyPropose,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Propose a treaty FROM the caller's owned region TO another region.
+
+    Owner-scoped: the proposing region is the caller's own region
+    (verify_region_owner) — the proposer is never trusted from the body, only the
+    counterparty is. Born 'proposed'; it does nothing until the counterparty's
+    owner accepts. 400 if proposing to one's own region; 404 if the counterparty
+    region does not exist; 409 if a live (proposed/active) treaty already exists
+    between the pair (either direction)."""
+    region = await verify_region_owner(db, current_user)
+
+    result = await RegionalGovernanceService.propose_treaty(
+        db,
+        proposer_region_id=region.id,
+        counterparty_region_id=body.counterparty_region_id,
+        treaty_type=body.treaty_type,
+        terms=body.terms,
+        expires_at=body.expires_at,
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_TREATY_PROPOSE_FAILED")
+        raise HTTPException(
+            status_code=_TREATY_ERROR_STATUS.get(code, 400), detail=code
+        )
+    # THE ROUTE OWNS db.commit() — the service only flushed the new row.
+    await db.commit()
+    return {"message": "Treaty proposed successfully", "treaty": result["treaty"]}
+
+
+@router.post("/treaties/{treaty_id}/accept")
+async def accept_treaty(
+    treaty_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Accept a PROPOSED treaty (the COUNTERPARTY region's owner only).
+
+    The caller must own region_b (the offeree) — a proposer cannot accept their
+    own offer (403 otherwise). 'proposed' -> 'active'. 404 if the treaty does not
+    exist; 409 if it is not in the proposed state."""
+    treaty = await _fetch_treaty_or_404(db, treaty_id)
+    # Only the counterparty (region_b) may accept.
+    await _require_region_owner(db, current_user, treaty.region_b_id)
+
+    result = await RegionalGovernanceService.accept_treaty(db, treaty)
+    if not result.get("ok"):
+        code = result.get("code", "ERR_TREATY_ACCEPT_FAILED")
+        raise HTTPException(
+            status_code=_TREATY_ERROR_STATUS.get(code, 400), detail=code
+        )
+    await db.commit()
+    return {"message": "Treaty accepted successfully", "treaty": result["treaty"]}
+
+
+@router.post("/treaties/{treaty_id}/reject")
+async def reject_treaty(
+    treaty_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Reject a PROPOSED treaty (the COUNTERPARTY region's owner only).
+
+    The caller must own region_b (the offeree) — 403 otherwise. 'proposed' ->
+    'rejected'. 404 if the treaty does not exist; 409 if it is not in the
+    proposed state."""
+    treaty = await _fetch_treaty_or_404(db, treaty_id)
+    await _require_region_owner(db, current_user, treaty.region_b_id)
+
+    result = await RegionalGovernanceService.reject_treaty(db, treaty)
+    if not result.get("ok"):
+        code = result.get("code", "ERR_TREATY_REJECT_FAILED")
+        raise HTTPException(
+            status_code=_TREATY_ERROR_STATUS.get(code, 400), detail=code
+        )
+    await db.commit()
+    return {"message": "Treaty rejected successfully", "treaty": result["treaty"]}
+
+
+@router.post("/treaties/{treaty_id}/terminate")
+async def terminate_treaty(
+    treaty_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Terminate an ACTIVE treaty (EITHER signatory region's owner).
+
+    The caller must own region_a OR region_b — either side may unilaterally exit
+    an active treaty (403 otherwise). 'active' -> 'terminated'. 404 if the treaty
+    does not exist; 409 if it is not in the active state."""
+    treaty = await _fetch_treaty_or_404(db, treaty_id)
+    # Either signatory's owner may terminate. Resolve both candidate regions and
+    # require ownership of at least one; re-checked server-side.
+    region_a = await db.scalar(select(Region).where(Region.id == treaty.region_a_id))
+    region_b = await db.scalar(select(Region).where(Region.id == treaty.region_b_id))
+    owns_either = (
+        (region_a is not None and region_a.owner_id is not None
+         and region_a.owner_id == current_user.id)
+        or (region_b is not None and region_b.owner_id is not None
+            and region_b.owner_id == current_user.id)
+    )
+    if not owns_either:
+        raise HTTPException(status_code=403, detail="Not a signatory region owner")
+
+    result = await RegionalGovernanceService.terminate_treaty(db, treaty)
+    if not result.get("ok"):
+        code = result.get("code", "ERR_TREATY_TERMINATE_FAILED")
+        raise HTTPException(
+            status_code=_TREATY_ERROR_STATUS.get(code, 400), detail=code
+        )
+    await db.commit()
+    return {"message": "Treaty terminated successfully", "treaty": result["treaty"]}
+
+
 @router.put("/my-region/culture")
 async def update_cultural_identity(
     culture_data: CulturalUpdate,
@@ -529,3 +843,326 @@ async def get_regional_members(
         }
         for membership, username in members
     ]
+
+
+# =====================================================================
+# The democratic loop — member-facing vote casting + result reads
+# (canon paths: POST /regions/{region_id}/elections/{election_id}/vote,
+#  POST /regions/{region_id}/policies/{policy_id}/vote). These are gated by
+# the existing auth dependency but are NOT owner-scoped — any eligible region
+# member can vote (eligibility is enforced in the service).
+# =====================================================================
+
+@router.post("/{region_id}/elections/{election_id}/vote")
+async def cast_election_vote(
+    region_id: uuid.UUID,
+    election_id: uuid.UUID,
+    vote: ElectionVoteCast,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Cast a vote in an ACTIVE regional election (one vote per voter, final)."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+
+    election = await db.scalar(
+        select(RegionalElection).where(RegionalElection.id == election_id)
+    )
+    if election is None or election.region_id != region.id:
+        raise HTTPException(status_code=404, detail="Election not found in this region")
+
+    result = await RegionalGovernanceService.cast_election_vote(
+        db, region, election, player, vote.candidate_id
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_VOTE_REJECTED")
+        raise HTTPException(
+            status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return result
+
+
+@router.post("/{region_id}/elections/{election_id}/candidates")
+async def register_election_candidate(
+    region_id: uuid.UUID,
+    election_id: uuid.UUID,
+    body: CandidateRegister,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Self-nominate as a candidate in a SCHEDULED election (canon "Candidate
+    registration"). A region citizen with reputation >= MIN_CANDIDACY_REP may
+    register while the election is still PENDING/SCHEDULED; the candidate list
+    locks the moment the governance sweep advances it to ACTIVE. NOT
+    owner-scoped — any eligible citizen may stand."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+
+    election = await db.scalar(
+        select(RegionalElection).where(RegionalElection.id == election_id)
+    )
+    if election is None or election.region_id != region.id:
+        raise HTTPException(status_code=404, detail="Election not found in this region")
+
+    result = await RegionalGovernanceService.register_candidate(
+        db, region, election, player, body.platform
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_CANDIDATE_REJECTED")
+        raise HTTPException(
+            status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    # THE ROUTE OWNS db.commit() — the service only flushed. A return without
+    # this commit silently rolls back the appended candidate.
+    await db.commit()
+    return result
+
+
+@router.post("/{region_id}/policies/{policy_id}/vote")
+async def cast_policy_vote(
+    region_id: uuid.UUID,
+    policy_id: uuid.UUID,
+    vote: PolicyVoteCast,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Cast a yes/no vote on a policy that is in the VOTING state."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+
+    policy = await db.scalar(
+        select(RegionalPolicy).where(RegionalPolicy.id == policy_id)
+    )
+    if policy is None or policy.region_id != region.id:
+        raise HTTPException(status_code=404, detail="Policy not found in this region")
+
+    result = await RegionalGovernanceService.cast_policy_vote(
+        db, region, policy, player, vote.support
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_VOTE_REJECTED")
+        raise HTTPException(
+            status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return result
+
+
+@router.get("/{region_id}/membership/me")
+async def get_my_membership(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Read the calling player's own citizenship status in a region (WO-CF).
+
+    Reflects PATH A: a player who owns a colony in the region is reported as a
+    citizen on the voter roll (`can_vote: true`, `citizenship_source: "colony"`)
+    even if their stored membership row has not yet been upgraded. A player with
+    no colony and no qualifying membership is reported as not on the roll. This
+    is the player-facing read that backs the governance panel's citizenship
+    badge — it is NOT owner-scoped (any authenticated player may read their own
+    status)."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    return await RegionalGovernanceService.get_membership_status(
+        db, region.id, player.id
+    )
+
+
+@router.post("/{region_id}/citizenship/colony-claim")
+async def claim_colony_citizenship(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Claim region citizenship on the strength of owning a colony here (WO-CF
+    PATH A).
+
+    Verifies the caller owns ≥1 colony whose sector is in this region, then
+    upserts their RegionalMembership to citizen. Idempotent — confirming an
+    already-citizen colony owner succeeds. Rejects with 403 ERR_NO_COLONY_IN_REGION
+    if the player owns no colony in the region. (Voting also auto-enrolls a colony
+    owner, so this endpoint is the explicit on-ramp; it is not required to vote.)"""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    result = await RegionalGovernanceService.grant_citizenship_for_colony(
+        db, player.id, region.id
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_CITIZENSHIP_DENIED")
+        raise HTTPException(
+            status_code=_VOTE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return result
+
+
+@router.get("/{region_id}/elections/{election_id}/results")
+async def get_election_results(
+    region_id: uuid.UUID,
+    election_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Read an election's status + tally results (the results JSONB is
+    populated once the election COMPLETES)."""
+    election = await db.scalar(
+        select(RegionalElection).where(RegionalElection.id == election_id)
+    )
+    if election is None or election.region_id != region_id:
+        raise HTTPException(status_code=404, detail="Election not found in this region")
+    return {
+        "id": str(election.id),
+        "position": election.position,
+        "status": election.status,
+        "candidates": election.candidates,
+        "voting_opens_at": election.voting_opens_at.isoformat(),
+        "voting_closes_at": election.voting_closes_at.isoformat(),
+        "results": election.results,
+    }
+
+
+# =====================================================================
+# Region invite onramp — owner-gated mint / list / revoke (WO-IL3).
+# Brief: audit/design-briefs/invite-link-onramp.md §4.2.
+#
+# AUTH-FREE infrastructure: these endpoints manage invite CODES; they do NOT
+# create accounts (that is WO-IL6, Max-gated). Every endpoint is owner-scoped:
+# ownership of THIS region_id is re-checked SERVER-SIDE on every call via the
+# NEW region_id-keyed RegionInviteService.owns_region (NOT the single-region
+# verify_region_owner above). The client-supplied region_id is never trusted —
+# a non-owner gets 403, never another owner's region.
+# =====================================================================
+
+@router.post("/{region_id}/invites", status_code=201)
+async def create_region_invite(
+    region_id: uuid.UUID,
+    invite_data: InviteCreate,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Mint a region invite for ``region_id`` (region OWNER only).
+
+    Returns 201 with the high-entropy invite ``code``. The caller must own
+    ``region_id`` (re-checked server-side); a non-owner gets 403. ``max_uses``
+    defaults to 1 (one-time, D2); ``expires_at`` defaults to now + 7 days (D3)."""
+    result = await RegionInviteService.mint_invite(
+        db,
+        owner_user_id=current_user.id,
+        region_id=region_id,
+        max_uses=invite_data.max_uses,
+        expires_at=invite_data.expires_at,
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_INVITE_MINT_FAILED")
+        raise HTTPException(
+            status_code=_INVITE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return {
+        "message": "Invite created successfully",
+        "invite": _serialize_invite(result["invite"]),
+    }
+
+
+@router.get("/{region_id}/invites")
+async def list_region_invites(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List the invites the calling owner has minted for ``region_id``.
+
+    Owner-scoped (403 if the caller does not own ``region_id``). Returns newest
+    first, each with its current usage/status (the code is included — this is the
+    owner's own management surface)."""
+    result = await RegionInviteService.list_invites(
+        db, owner_user_id=current_user.id, region_id=region_id
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_INVITE_LIST_FAILED")
+        raise HTTPException(
+            status_code=_INVITE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return {"invites": [_serialize_invite(inv) for inv in result["invites"]]}
+
+
+@router.post("/{region_id}/invites/{invite_id}/revoke")
+async def revoke_region_invite(
+    region_id: uuid.UUID,
+    invite_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Revoke an invite the calling owner minted (owner-only).
+
+    Owner-scoped on BOTH the invite's minter and current ownership of
+    ``region_id`` (re-checked server-side). Sets status -> 'revoked' and stamps
+    ``revoked_at``; revoking an already-revoked invite is an idempotent success.
+    The ``region_id`` in the path is validated against the invite's region so an
+    owner cannot revoke via a region they own but the invite does not belong to."""
+    # Guard: the invite must belong to the region named in the path. This is a
+    # defence-in-depth scoping check on top of the service's owner checks — a
+    # mismatched path/invite is a 404 (the invite is not "in this region").
+    invite_row = await db.scalar(
+        select(RegionInvite).where(RegionInvite.id == invite_id)
+    )
+    if invite_row is None or invite_row.region_id != region_id:
+        raise HTTPException(status_code=404, detail="ERR_INVITE_NOT_FOUND")
+
+    result = await RegionInviteService.revoke_invite(
+        db, owner_user_id=current_user.id, invite_id=invite_id
+    )
+    if not result.get("ok"):
+        code = result.get("code", "ERR_INVITE_REVOKE_FAILED")
+        raise HTTPException(
+            status_code=_INVITE_ERROR_STATUS.get(code, 400), detail=code
+        )
+    return {
+        "message": "Invite revoked successfully",
+        "invite": _serialize_invite(result["invite"]),
+    }
+
+
+# =====================================================================
+# Region COMMERCE tariff — owner-gated WRITE lever (WO-G9 / ADR-0062 E-F2).
+#
+# The read/apply path (trading.py compute_region_tariff_multiplier) and the
+# clamp+persist (trading_service.set_region_tariff, with the E-F2 sliding cap)
+# were already shipped; only this WRITE endpoint was missing, leaving the region
+# revenue lever stuck at 0. Owner-scoped: ownership of THIS region_id is
+# re-checked SERVER-SIDE (id == region_id AND owner_id == caller) — the same
+# region_id-keyed guard the invite endpoints use, expressed in the sync session
+# this route runs on (set_region_tariff is a sync helper, so this route takes a
+# sync Session to call it verbatim — the cap lives entirely inside that helper,
+# never duplicated here). The tariff persists in the existing trade_bonuses
+# JSONB; no migration.
+# =====================================================================
+
+@router.post("/{region_id}/tariff")
+def set_region_tariff_endpoint(
+    region_id: uuid.UUID,
+    body: TariffSet,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Set the region COMMERCE tariff (region OWNER only).
+
+    404 if ``region_id`` does not exist; 403 if the caller does not own it. On
+    success the rate is clamped to the E-F2 sliding cap inside
+    ``trading_service.set_region_tariff`` (which persists
+    ``trade_bonuses['tariff_rate']``), committed, and the persisted CLAMPED rate
+    is returned — a request above the cap is stored at the cap, not rejected."""
+    region = db.query(Region).filter(Region.id == region_id).first()
+    if region is None:
+        raise HTTPException(status_code=404, detail="Region not found")
+    # Server-side ownership re-check, mirroring RegionInviteService.owns_region:
+    # the caller must own THIS specific region. A NULL owner_id (unowned hub
+    # region) never matches a real user id, so hubs are safely excluded.
+    if region.owner_id is None or region.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not the region owner")
+
+    clamped = trading_service.set_region_tariff(db, region, body.rate)
+    db.commit()
+    return {
+        "message": "Region tariff updated successfully",
+        "tariff_rate": clamped,
+    }

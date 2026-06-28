@@ -1,26 +1,60 @@
 """PayPal subscription service for multi-regional platform monetization"""
 
 import asyncio
+import hashlib
 import json
 import os
+import re
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, Field
 from enum import Enum
 
-from src.core.database import get_async_session
+from src.core.database import AsyncSessionLocal
 from src.core.config import get_config
 from src.models.region import Region
 from src.models.player import Player
 from src.models.user import User
+from src.models.processed_webhook_event import ProcessedWebhookEvent
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# Name of the env flag that disables PayPal webhook signature verification.
+# Intended for local/dev only — it must NEVER be active in production.
+WEBHOOK_BYPASS_ENV = "PAYPAL_SKIP_WEBHOOK_VALIDATION"
+
+
+class BypassFlagInProductionError(RuntimeError):
+    """Raised at import time if a webhook-validation bypass flag is enabled while
+    the service is running in production. PayPal webhook signature verification is
+    mandatory in production (ADR-0058 A-D3); allowing it to be silently bypassed
+    is a forgeable-payment vulnerability, so we fail closed at boot rather than
+    serve a single request with verification off.
+    """
+
+
+def _assert_no_webhook_bypass_in_production() -> None:
+    """Fail fast at import if the bypass flag is set in a production environment."""
+    env = os.environ.get("ENVIRONMENT", "development").strip().lower()
+    bypass = os.environ.get(WEBHOOK_BYPASS_ENV, "").strip().lower() == "true"
+    if env == "production" and bypass:
+        raise BypassFlagInProductionError(
+            f"{WEBHOOK_BYPASS_ENV} must never be enabled in production — "
+            "PayPal webhook signature verification is mandatory. Refusing to start."
+        )
+
+
+# Evaluated when this module is imported during app startup: a production server
+# configured with the bypass flag will refuse to boot.
+_assert_no_webhook_bypass_in_production()
 
 
 def _redact(value: Optional[str], keep: int = 4) -> str:
@@ -33,6 +67,17 @@ def _redact(value: Optional[str], keep: int = 4) -> str:
     if len(value) <= keep:
         return "***"
     return f"...{value[-keep:]}"
+
+
+def _sub_ref(value: Optional[str]) -> str:
+    """Return a 12-char SHA-256 hash of a sensitive PayPal identifier for logging.
+    Non-reversible one-way transform: provides a stable correlation token without
+    leaking the original value. CodeQL cannot model this as a sanitizer, hence the
+    inline lgtm suppression on each logger call site.
+    """
+    if not value:
+        return "***"
+    return hashlib.sha256(value.encode()).hexdigest()[:12]
 
 
 class SubscriptionTier(str, Enum):
@@ -120,7 +165,7 @@ class PayPalService:
             )
             
             if response.status_code != 200:
-                logger.error(f"PayPal token request failed: {response.text}")
+                logger.error("PayPal token request failed: status=%s", response.status_code)
                 raise Exception(f"Failed to get PayPal access token: {response.status_code}")
             
             token_data = response.json()
@@ -170,8 +215,9 @@ class PayPalService:
                 raise ValueError(f"Unsupported HTTP method: {method}")
         
         if response.status_code not in [200, 201, 202]:
-            logger.error(f"PayPal API request failed: {method} {endpoint} - {response.status_code} - {response.text}")
-            raise Exception(f"PayPal API error: {response.status_code} - {response.text}")
+            safe_endpoint = re.sub(r"subscriptions/[^/?]+", "subscriptions/[id]", endpoint)
+            logger.error("PayPal API request failed: %s %s - status=%s", method, safe_endpoint, response.status_code)
+            raise Exception(f"PayPal API error: {response.status_code}")
         
         return response.json()
     
@@ -212,7 +258,7 @@ class PayPalService:
         
         result = await self._make_request("POST", "/v1/billing/subscriptions", subscription_data)
         
-        logger.info(f"Created galactic citizen subscription for user {user_id}: {result['id']}")
+        logger.info("Created galactic citizen subscription for user %s: %s", user_id, _sub_ref(result.get("id")))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
         return result
     
     async def create_regional_ownership_subscription(
@@ -253,7 +299,7 @@ class PayPalService:
         
         result = await self._make_request("POST", "/v1/billing/subscriptions", subscription_data)
         
-        logger.info(f"Created regional ownership subscription for user {user_id}, region {region_name}: {result['id']}")
+        logger.info("Created regional ownership subscription for user %s, region %s: %s", user_id, region_name, _sub_ref(result.get("id")))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
         return result
     
     async def get_subscription_details(self, subscription_id: str) -> Dict[str, Any]:
@@ -269,10 +315,10 @@ class PayPalService:
         
         try:
             await self._make_request("POST", f"/v1/billing/subscriptions/{subscription_id}/cancel", cancel_data)
-            logger.info(f"Successfully cancelled subscription {subscription_id}")
+            logger.info("Successfully cancelled subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return True
         except Exception as e:
-            logger.error(f"Failed to cancel subscription {subscription_id}: {str(e)}")
+            logger.exception("Failed to cancel subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return False
     
     async def suspend_subscription(self, subscription_id: str, reason: str = "Payment failure") -> bool:
@@ -283,10 +329,10 @@ class PayPalService:
         
         try:
             await self._make_request("POST", f"/v1/billing/subscriptions/{subscription_id}/suspend", suspend_data)
-            logger.info(f"Successfully suspended subscription {subscription_id}")
+            logger.info("Successfully suspended subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return True
         except Exception as e:
-            logger.error(f"Failed to suspend subscription {subscription_id}: {str(e)}")
+            logger.exception("Failed to suspend subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return False
     
     async def activate_subscription(self, subscription_id: str, reason: str = "Payment resumed") -> bool:
@@ -297,10 +343,10 @@ class PayPalService:
         
         try:
             await self._make_request("POST", f"/v1/billing/subscriptions/{subscription_id}/activate", activate_data)
-            logger.info(f"Successfully activated subscription {subscription_id}")
+            logger.info("Successfully activated subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return True
         except Exception as e:
-            logger.error(f"Failed to activate subscription {subscription_id}: {str(e)}")
+            logger.exception("Failed to activate subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
             return False
     
     async def handle_subscription_webhook(self, webhook_event: PayPalWebhookEvent) -> bool:
@@ -310,11 +356,33 @@ class PayPalService:
             resource = webhook_event.resource
             subscription_id = resource.get("id")
             
-            logger.info(f"Processing PayPal webhook: {event_type} for subscription {subscription_id}")
-            
-            async with get_async_session() as session:
+            logger.info("Processing PayPal webhook: %s for subscription %s", event_type, _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
+
+            # NB: use AsyncSessionLocal() directly — get_async_session is a FastAPI
+            # dependency generator (async def ... yield), not an async context
+            # manager, so `async with get_async_session()` raises.
+            async with AsyncSessionLocal() as session:
+                # Idempotency: record this event id first, in the SAME transaction
+                # as the mutation below. A duplicate delivery (PayPal retries
+                # aggressively) collides on the unique primary key, so we skip it
+                # instead of applying the effect twice. Insert-as-dedup means
+                # there's no SELECT-then-INSERT race window.
+                session.add(ProcessedWebhookEvent(
+                    event_id=webhook_event.id, event_type=event_type
+                ))
+                try:
+                    await session.flush()
+                except IntegrityError:
+                    await session.rollback()
+                    logger.info(
+                        "Duplicate PayPal webhook %s (%s) ignored", webhook_event.id, event_type
+                    )
+                    return True
+
                 if event_type == "BILLING.SUBSCRIPTION.ACTIVATED":
                     await self._handle_subscription_activated(session, resource)
+                elif event_type == "BILLING.SUBSCRIPTION.PAYMENT.SUCCEEDED":
+                    await self._handle_subscription_renewed(session, resource)
                 elif event_type == "BILLING.SUBSCRIPTION.CANCELLED":
                     await self._handle_subscription_cancelled(session, resource)
                 elif event_type == "BILLING.SUBSCRIPTION.SUSPENDED":
@@ -325,13 +393,13 @@ class PayPalService:
                     await self._handle_payment_completed(session, resource)
                 else:
                     logger.info(f"Unhandled webhook event type: {event_type}")
-                
+
                 await session.commit()
-            
+
             return True
             
         except Exception as e:
-            logger.error(f"Failed to process PayPal webhook: {str(e)}")
+            logger.exception("Failed to process PayPal webhook")
             return False
     
     async def _handle_subscription_activated(self, session: AsyncSession, resource: Dict[str, Any]):
@@ -342,7 +410,7 @@ class PayPalService:
         # Parse custom_id to determine subscription type and user
         if custom_id.startswith("galactic_citizen_"):
             user_id = custom_id.replace("galactic_citizen_", "")
-            await self._activate_galactic_citizenship(session, user_id, subscription_id)
+            await self._activate_galactic_citizenship(session, user_id, subscription_id, resource)
         elif custom_id.startswith("regional_owner_"):
             parts = custom_id.replace("regional_owner_", "").split("_")
             user_id = parts[0]
@@ -397,11 +465,7 @@ class PayPalService:
             return
         
         # Log payment failure and potentially suspend after multiple failures.
-        # The redacted variable is constructed BEFORE the log call so CodeQL's
-        # data-flow doesn't track the raw subscription_id reaching logger
-        # (py/clear-text-logging-sensitive-data).
-        redacted_id = _redact(subscription_id)
-        logger.warning("Payment failed for subscription %s", redacted_id)
+        logger.warning("Payment failed for subscription %s", _sub_ref(subscription_id))  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
         
         # You could implement a failure counter and suspend after X failures
         # For now, just log the event
@@ -413,8 +477,7 @@ class PayPalService:
             return
         
         amount = resource.get("amount", {}).get("total", "0.00")
-        redacted_id = _redact(subscription_id)
-        logger.info("Payment completed for subscription %s: $%s", redacted_id, amount)
+        logger.info("Payment completed for subscription %s: $%s", _sub_ref(subscription_id), amount)  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
         
         # Ensure region/citizenship remains active
         result = await session.execute(
@@ -426,19 +489,75 @@ class PayPalService:
             region.status = "active"
             logger.info(f"Reactivated region {region.name} after successful payment")
     
-    async def _activate_galactic_citizenship(self, session: AsyncSession, user_id: str, subscription_id: str):
+    @staticmethod
+    def _next_expiry(resource: Dict[str, Any]) -> datetime:
+        """Compute the new subscription expiry from a PayPal subscription resource.
+
+        Prefers the provider's authoritative ``billing_info.next_billing_time``;
+        falls back to ~one billing month from now when absent. Returns a NAIVE UTC
+        datetime: the ``subscription_expires_at`` column is TIMESTAMP WITHOUT TIME
+        ZONE, and the auth-layer expiry check treats stored values as UTC, so we
+        normalise to naive-UTC here to keep the whole path tz-consistent.
+        """
+        next_billing = (resource.get("billing_info") or {}).get("next_billing_time")
+        if next_billing:
+            try:
+                dt = datetime.fromisoformat(str(next_billing).replace("Z", "+00:00"))
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            except (ValueError, TypeError):
+                logger.warning("Unparseable next_billing_time on PayPal resource; using fallback")
+        return (datetime.now(timezone.utc) + timedelta(days=31)).replace(tzinfo=None)
+
+    async def _activate_galactic_citizenship(self, session: AsyncSession, user_id: str, subscription_id: str, resource: Dict[str, Any]):
         """Activate galactic citizenship for user"""
         result = await session.execute(
             select(Player).options(selectinload(Player.user))
             .where(Player.user_id == user_id)
         )
         player = result.scalar_one_or_none()
-        
+
         if player:
             player.is_galactic_citizen = True
-            if hasattr(player.user, 'paypal_subscription_id'):
-                player.user.paypal_subscription_id = subscription_id
+            if player.user is not None:
+                user = player.user
+                user.paypal_subscription_id = subscription_id
+                user.subscription_tier = SubscriptionTier.GALACTIC_CITIZEN.value
+                user.subscription_status = "active"
+                if user.subscription_started_at is None:
+                    user.subscription_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                user.subscription_expires_at = self._next_expiry(resource)
             logger.info(f"Activated galactic citizenship for player {player.id}")
+
+    async def _handle_subscription_renewed(self, session: AsyncSession, resource: Dict[str, Any]):
+        """Handle a successful recurring subscription payment (renewal).
+
+        ``BILLING.SUBSCRIPTION.PAYMENT.SUCCEEDED`` is the canonical renewal event
+        (ARCHITECTURE/async-workers.md): it extends ``subscription_expires_at`` and
+        re-affirms citizenship so a lapse-and-recover cycle restores access.
+        """
+        subscription_id = resource.get("id") or resource.get("billing_agreement_id")
+        if not subscription_id:
+            logger.warning("Renewal webhook missing subscription id; skipping")
+            return
+
+        result = await session.execute(
+            select(Player).options(selectinload(Player.user))
+            .join(User).where(User.paypal_subscription_id == subscription_id)
+        )
+        player = result.scalar_one_or_none()
+        if player is None:
+            logger.info(
+                "Renewal for subscription %s matched no citizen (may be a region sub)",
+                _sub_ref(subscription_id),  # lgtm[py/clear-text-logging-sensitive-data] -- _sub_ref() is SHA-256, non-recoverable
+            )
+            return
+
+        player.is_galactic_citizen = True
+        if player.user is not None:
+            user = player.user
+            user.subscription_status = "active"
+            user.subscription_expires_at = self._next_expiry(resource)
+        logger.info("Renewed galactic citizenship for player %s", player.id)
     
     async def _activate_regional_ownership(
         self, 
@@ -476,8 +595,8 @@ class PayPalService:
     async def get_user_subscriptions(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all active subscriptions for a user"""
         subscriptions = []
-        
-        async with get_async_session() as session:
+
+        async with AsyncSessionLocal() as session:
             # Check for galactic citizenship
             result = await session.execute(
                 select(Player).options(selectinload(Player.user))
@@ -497,7 +616,7 @@ class PayPalService:
                             "amount": "$5.00/month"
                         })
                     except Exception as e:
-                        logger.warning(f"Failed to get galactic subscription details: {e}")
+                        logger.exception("Failed to get galactic subscription details")
             
             # Check for owned regions
             result = await session.execute(
@@ -517,7 +636,7 @@ class PayPalService:
                             "amount": "$25.00/month"
                         })
                     except Exception as e:
-                        logger.warning(f"Failed to get region subscription details: {e}")
+                        logger.exception("Failed to get region subscription details")
         
         return subscriptions
     
@@ -536,9 +655,21 @@ class PayPalService:
                 logger.error("Missing required PayPal webhook headers")
                 return False
             
-            # Allow bypass only with explicit opt-in environment variable
-            if os.environ.get("PAYPAL_SKIP_WEBHOOK_VALIDATION", "").lower() == "true":
-                logger.warning("PayPal webhook signature validation bypassed - PAYPAL_SKIP_WEBHOOK_VALIDATION is set")
+            # Allow bypass only with explicit opt-in env var, and only outside
+            # production. The import-time guard already refuses to boot a prod
+            # server with the flag set; this is defence-in-depth in case the
+            # environment flips at runtime.
+            if os.environ.get(WEBHOOK_BYPASS_ENV, "").strip().lower() == "true":
+                if str(self.config.ENVIRONMENT).strip().lower() == "production":
+                    logger.error(
+                        "%s is set in production — refusing to bypass webhook validation",
+                        WEBHOOK_BYPASS_ENV,
+                    )
+                    return False
+                logger.warning(
+                    "PayPal webhook signature validation bypassed — %s is set (non-production)",
+                    WEBHOOK_BYPASS_ENV,
+                )
                 return True
             
             # For production, implement proper signature validation
@@ -585,11 +716,11 @@ class PayPalService:
                         logger.error(f"PayPal webhook signature validation failed: {verification_status}")
                         return False
                 else:
-                    logger.error(f"PayPal verification API error: {response.status_code} - {response.text}")
+                    logger.error("PayPal verification API error: status=%s", response.status_code)
                     return False
-                    
+
         except Exception as e:
-            logger.error(f"PayPal webhook signature validation error: {e}")
+            logger.exception("PayPal webhook signature validation error")
             return False
 
 

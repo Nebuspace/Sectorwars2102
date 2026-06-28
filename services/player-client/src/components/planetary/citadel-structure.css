@@ -1,0 +1,195 @@
+/* CitadelStructure — architectural silhouette states */
+
+.citadel-structure {
+  position: relative;
+  margin-bottom: 12px;
+  padding: 8px 8px 0;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 100%, rgba(74, 158, 255, 0.08), transparent 70%),
+    linear-gradient(180deg, rgba(4, 8, 20, 0.85) 0%, rgba(10, 16, 36, 0.65) 100%);
+  border: 1px solid rgba(74, 158, 255, 0.18);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.citadel-structure-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 220px;
+}
+
+/* Ground line */
+.cs-ground {
+  stroke: rgba(125, 211, 252, 0.35);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+/* ---- Base element styling (color comes from stratum state) ---- */
+.citadel-stratum {
+  stroke: currentColor;
+  transition: opacity 0.5s ease, color 0.5s ease;
+}
+
+.citadel-stratum .cs-dome,
+.citadel-stratum .cs-tower,
+.citadel-stratum .cs-tower-cap {
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+.citadel-stratum .cs-tower,
+.citadel-stratum .cs-tower-cap {
+  fill: rgba(8, 14, 32, 0.85);
+}
+
+.citadel-stratum .cs-mast,
+.citadel-stratum .cs-mast-strut,
+.citadel-stratum .cs-wall,
+.citadel-stratum .cs-wall-post,
+.citadel-stratum .cs-dish,
+.citadel-stratum .cs-ring,
+.citadel-stratum .cs-window {
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.citadel-stratum .cs-window {
+  stroke-width: 2.4;
+  stroke-dasharray: 2 4;
+  opacity: 0.85;
+}
+
+.citadel-stratum .cs-ring {
+  stroke-width: 2;
+}
+
+.citadel-stratum .cs-ring-node,
+.citadel-stratum .cs-light {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* ---- State: lit (already built) ---- */
+.citadel-stratum.state-lit {
+  color: #4a9eff;
+  opacity: 0.95;
+}
+
+.citadel-stratum.state-lit .cs-light {
+  fill: #00ffcc;
+}
+
+/* ---- State: current (held level — soft breathing glow) ---- */
+.citadel-stratum.state-current {
+  color: #00ffcc;
+  animation: cs-breathe 3.2s ease-in-out infinite;
+}
+
+.citadel-stratum.state-current .cs-light {
+  fill: #aaffee;
+}
+
+.citadel-stratum.state-current .cs-beacon-light {
+  filter: drop-shadow(0 0 4px rgba(0, 255, 204, 0.9));
+}
+
+@keyframes cs-breathe {
+  0%, 100% {
+    opacity: 0.85;
+    filter: drop-shadow(0 0 3px rgba(0, 255, 204, 0.35));
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 9px rgba(0, 255, 204, 0.7));
+  }
+}
+
+/* ---- State: ghost (future level — what you could become) ---- */
+.citadel-stratum.state-ghost {
+  color: #64748b;
+  opacity: 0.28;
+}
+
+.citadel-stratum.state-ghost .cs-dome,
+.citadel-stratum.state-ghost .cs-tower,
+.citadel-stratum.state-ghost .cs-tower-cap,
+.citadel-stratum.state-ghost .cs-mast,
+.citadel-stratum.state-ghost .cs-wall,
+.citadel-stratum.state-ghost .cs-ring,
+.citadel-stratum.state-ghost .cs-dish {
+  stroke-dasharray: 4 4;
+  fill: transparent;
+}
+
+.citadel-stratum.state-ghost .cs-beacon-beam,
+.citadel-stratum.state-ghost .cs-window {
+  opacity: 0;
+}
+
+/* ---- State: constructing (upgrade in progress — scaffold shimmer) ---- */
+.citadel-stratum.state-constructing {
+  color: #ffaa44;
+  opacity: 0.75;
+}
+
+.citadel-stratum.state-constructing .cs-dome,
+.citadel-stratum.state-constructing .cs-tower,
+.citadel-stratum.state-constructing .cs-tower-cap,
+.citadel-stratum.state-constructing .cs-mast,
+.citadel-stratum.state-constructing .cs-wall,
+.citadel-stratum.state-constructing .cs-ring,
+.citadel-stratum.state-constructing .cs-dish {
+  stroke-dasharray: 6 4;
+  fill: transparent;
+  /* Marching scaffold lines — construction in motion */
+  animation: cs-scaffold-march 1.6s linear infinite;
+}
+
+.citadel-stratum.state-constructing {
+  animation: cs-scaffold-shimmer 2.2s ease-in-out infinite;
+}
+
+.citadel-stratum.state-constructing .cs-beacon-beam,
+.citadel-stratum.state-constructing .cs-window {
+  opacity: 0;
+}
+
+@keyframes cs-scaffold-march {
+  to { stroke-dashoffset: -20; }
+}
+
+@keyframes cs-scaffold-shimmer {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.95; }
+}
+
+/* ---- Reduced motion: freeze all animation, keep static states ---- */
+@media (prefers-reduced-motion: reduce) {
+  .citadel-stratum.state-current {
+    animation: none;
+    opacity: 1;
+    filter: drop-shadow(0 0 6px rgba(0, 255, 204, 0.55));
+  }
+
+  .citadel-stratum.state-constructing,
+  .citadel-stratum.state-constructing .cs-dome,
+  .citadel-stratum.state-constructing .cs-tower,
+  .citadel-stratum.state-constructing .cs-tower-cap,
+  .citadel-stratum.state-constructing .cs-mast,
+  .citadel-stratum.state-constructing .cs-wall,
+  .citadel-stratum.state-constructing .cs-ring,
+  .citadel-stratum.state-constructing .cs-dish {
+    animation: none;
+  }
+
+  .citadel-stratum.state-constructing {
+    opacity: 0.85;
+  }
+
+  .citadel-stratum {
+    transition: none;
+  }
+}

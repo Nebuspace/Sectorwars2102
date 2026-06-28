@@ -25,7 +25,7 @@ interface PlanetTypeInfo {
 
 const PLANET_TYPES: PlanetTypeInfo[] = [
   {
-    type: 'terran',
+    type: 'TERRAN',
     name: 'Terran',
     icon: '🌍',
     description: 'Earth-like planets with balanced resources and high habitability',
@@ -39,7 +39,7 @@ const PLANET_TYPES: PlanetTypeInfo[] = [
     productionBonuses: { fuel: 1.0, organics: 1.0, equipment: 1.0 }
   },
   {
-    type: 'oceanic',
+    type: 'OCEANIC',
     name: 'Oceanic',
     icon: '🌊',
     description: 'Water-covered worlds rich in organic resources',
@@ -53,7 +53,7 @@ const PLANET_TYPES: PlanetTypeInfo[] = [
     productionBonuses: { fuel: 0.8, organics: 1.5, equipment: 0.7 }
   },
   {
-    type: 'mountainous',
+    type: 'MOUNTAINOUS',
     name: 'Mountainous',
     icon: '⛰️',
     description: 'Rocky planets abundant in minerals and fuel',
@@ -67,7 +67,7 @@ const PLANET_TYPES: PlanetTypeInfo[] = [
     productionBonuses: { fuel: 1.4, organics: 0.6, equipment: 1.3 }
   },
   {
-    type: 'desert',
+    type: 'DESERT',
     name: 'Desert',
     icon: '🏜️',
     description: 'Arid worlds with concentrated mineral deposits',
@@ -81,7 +81,7 @@ const PLANET_TYPES: PlanetTypeInfo[] = [
     productionBonuses: { fuel: 1.6, organics: 0.4, equipment: 1.1 }
   },
   {
-    type: 'frozen',
+    type: 'ICE',
     name: 'Frozen',
     icon: '❄️',
     description: 'Ice-covered planets with unique research opportunities',
@@ -100,37 +100,85 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
   onSuccess,
   onClose 
 }) => {
-  const { currentShip, updateShipGenesis } = useGame();
-  const [selectedType, setSelectedType] = useState<PlanetType>('terran');
+  const { currentShip, currentSector, updateShipGenesis, playerState } = useGame();
   const [planetName, setPlanetName] = useState('');
-  const [selectedSectorId, setSelectedSectorId] = useState('');
+  // Default the target to the player's current sector — you deploy where your
+  // ship is. The deploy API validates that the sector is empty/eligible. The
+  // player can still override with another sector id.
+  const currentSectorId = currentSector?.sector_id != null ? String(currentSector.sector_id) : '';
+  const [selectedSectorId, setSelectedSectorId] = useState(currentSectorId);
   const [deploying, setDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [loadingSectors, setLoadingSectors] = useState(true);
-  const [availableSectors, setAvailableSectors] = useState<Array<{id: string, name: string}>>([]);
+  // Tier: basic fuses 1 device, enhanced fuses 3, advanced sacrifices the
+  // Colony Ship for an instant Settlement colony (canon).
+  const [tier, setTier] = useState<'basic' | 'enhanced' | 'advanced'>('basic');
+  // Registration controls the new world's registry visibility + Fed legal status.
+  // Default 'registered' (on the charts in your name, no Fed protection).
+  const [registration, setRegistration] = useState<'clandestine' | 'registered' | 'chartered'>('registered');
+  // Holds the new colony's name while the deploy animation plays.
+  const [deployAnim, setDeployAnim] = useState<string | null>(null);
+  // Two-step confirm guard for the destructive advanced (ship-sacrifice) tier.
+  const [advancedArmed, setAdvancedArmed] = useState(false);
 
   const genesisDevices = currentShip?.genesis_devices ?? 0;
 
+  const isColonyShip = (currentShip?.type || '').toUpperCase() === 'COLONY_SHIP';
+
+  // Canon tiers (genesis-devices.md): basic fuses 1 device, enhanced fuses 3,
+  // advanced spends 1 device + sacrifices the Colony Ship for an instant colony.
+  const TIERS = [
+    { id: 'basic' as const, label: 'Basic', devices: 1, cost: 25000, hab: '40–60', blurb: 'One device · a starter world (forms ~48h)', sacrifice: false },
+    { id: 'enhanced' as const, label: 'Enhanced', devices: 3, cost: 75000, hab: '55–75', blurb: 'Three devices fused · a richer world (forms ~48h)', sacrifice: false },
+    { id: 'advanced' as const, label: 'Advanced', devices: 1, cost: 250000, hab: '70–90', blurb: 'Sacrifices your Colony Ship · INSTANT Settlement colony (5,000 colonists, L2 citadel, 4 turrets)', sacrifice: true },
+  ];
+  const tierInfo = TIERS.find(t => t.id === tier)!;
+  const tierEligible = (t: typeof TIERS[number]) =>
+    genesisDevices >= t.devices && (!t.sacrifice || isColonyShip);
+
+  // Registration fees (the server is authoritative; these mirror the fee contract
+  // so the player sees the cost before committing).
+  //   Registered  = 10,000
+  //   Clandestine = 60,000
+  //   Chartered   = 10,000 + 40,000 * (1 - clamp(rep/1000, 0, 1) * 0.75)
+  // Chartered scales DOWN with reputation: high standing earns a cheaper charter.
+  const personalReputation = playerState?.personal_reputation ?? 0;
+  const charteredFee = Math.round(
+    10000 + 40000 * (1 - Math.max(0, Math.min(1, personalReputation / 1000)) * 0.75)
+  );
+  const REGISTRATIONS = [
+    {
+      id: 'clandestine' as const,
+      label: 'Clandestine',
+      fee: 60000,
+      blurb: 'Off the registry — no Federation protection. Stays hidden from lookups.',
+    },
+    {
+      id: 'registered' as const,
+      label: 'Registered',
+      fee: 10000,
+      blurb: 'On the charts in your name — no Federation protection.',
+    },
+    {
+      id: 'chartered' as const,
+      label: 'Chartered',
+      fee: charteredFee,
+      blurb: 'Federation legal protection — fee scales down with your reputation.',
+    },
+  ];
+  const registrationInfo = REGISTRATIONS.find(r => r.id === registration)!;
+  const totalCost = tierInfo.cost + registrationInfo.fee;
+
+  // Fall back to basic if the selected tier becomes ineligible.
   useEffect(() => {
-    loadAvailableSectors();
-  }, []);
+    if (!tierEligible(tierInfo)) { setTier('basic'); setAdvancedArmed(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tier, genesisDevices, isColonyShip]);
 
-  const loadAvailableSectors = async () => {
-    setLoadingSectors(true);
-    try {
-      // No dedicated endpoint exists for sectors available for genesis deployment.
-      // The deploy API itself validates the target sector, so we let the player
-      // enter a sector ID manually. A future API endpoint could provide filtered sectors.
-      setAvailableSectors([]);
-    } catch {
-      setAvailableSectors([]);
-    } finally {
-      setLoadingSectors(false);
-    }
-  };
-
-  const selectedPlanetInfo = PLANET_TYPES.find(p => p.type === selectedType)!;
+  useEffect(() => {
+    // Keep the default in sync if the player moves while the panel is open.
+    if (currentSectorId) setSelectedSectorId(prev => prev || currentSectorId);
+  }, [currentSectorId]);
 
   const validatePlanetName = (name: string): boolean => {
     // Basic validation
@@ -157,8 +205,19 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       return;
     }
 
-    if (genesisDevices <= 0) {
-      setError('No Genesis Devices available');
+    if (genesisDevices < tierInfo.devices) {
+      setError(`The ${tierInfo.label} sequence needs ${tierInfo.devices} device${tierInfo.devices !== 1 ? 's' : ''} — you have ${genesisDevices}.`);
+      return;
+    }
+
+    if (tierInfo.sacrifice && !isColonyShip) {
+      setError('Advanced genesis requires a Colony Ship to sacrifice.');
+      return;
+    }
+
+    // Two-step confirm for the destructive advanced (ship-sacrifice) tier.
+    if (tierInfo.sacrifice && !advancedArmed) {
+      setAdvancedArmed(true);
       return;
     }
 
@@ -167,35 +226,42 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       setError(null);
       setSuccessMessage(null);
 
-      const deployment: GenesisDeploymentType = {
-        sectorId: selectedSectorId,
-        planetName: planetName.trim(),
-        planetType: selectedType
-      };
-
+      const deployedName = planetName.trim();
+      const wasSacrifice = tierInfo.sacrifice;
       const response = await gameAPI.planetary.deployGenesis(
-        deployment.sectorId,
-        deployment.planetName,
-        deployment.planetType
+        selectedSectorId.trim(),
+        deployedName,
+        tier,
+        registration
       );
 
       if (response.success) {
         updateShipGenesis(response.genesisDevicesRemaining);
-        setSuccessMessage(`Genesis Device deployed! ${planetName} will be ready in ${Math.floor(response.deploymentTime / 60)} minutes.`);
-        
+        setAdvancedArmed(false);
+        // Play the genesis formation animation, then surface the success line.
+        setDeployAnim(deployedName);
+        setTimeout(() => {
+          setSuccessMessage(
+            wasSacrifice
+              ? `Colony Ship sacrificed — ${deployedName} is established instantly at Settlement level. You've ejected to an escape pod.`
+              : `Genesis sequence initiated — ${deployedName} is forming (~48h). It will appear in your Colonial Registry when ready.`
+          );
+          setDeployAnim(null);
+        }, 2800);
+
         // Clear form
         setPlanetName('');
         setSelectedSectorId('');
-        
+
         // Notify parent
         if (onSuccess) {
           onSuccess(response.planetId);
         }
 
-        // Close after success message
+        // Close after the animation + success message
         setTimeout(() => {
           if (onClose) onClose();
-        }, 3000);
+        }, 5200);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to deploy Genesis Device');
@@ -222,6 +288,19 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
       </div>
 
       <div className="deployment-content">
+        {deployAnim && (
+          <div className="genesis-anim-stage" role="img" aria-label={`Genesis sequence forming ${deployAnim}`}>
+            <span className="genesis-anim-shock" />
+            <span className="genesis-anim-shock genesis-anim-shock-2" />
+            <span className="genesis-anim-core" />
+            <span className="genesis-anim-planet" />
+            <div className="genesis-anim-label">
+              <span className="genesis-anim-name">{deployAnim}</span>
+              <span className="genesis-anim-status">GENESIS SEQUENCE INITIATED</span>
+            </div>
+          </div>
+        )}
+
         <div className="device-status">
           <div className="status-item">
             <span className="status-label">Genesis Devices Available:</span>
@@ -230,8 +309,8 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
             </span>
           </div>
           <div className="status-item">
-            <span className="status-label">Deployment Time:</span>
-            <span className="status-value">5 minutes</span>
+            <span className="status-label">Formation Time:</span>
+            <span className="status-value">~48 hours</span>
           </div>
         </div>
 
@@ -252,7 +331,7 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
         {genesisDevices === 0 ? (
           <div className="no-devices-warning">
             <span className="warning-icon">⚠️</span>
-            <p>You have no Genesis Devices available. Purchase more from specialized ports or complete faction missions to earn them.</p>
+            <p>You have no Genesis Devices available. Purchase more from specialized ports.</p>
           </div>
         ) : (
           <>
@@ -272,80 +351,83 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
               </div>
 
               <div className="form-section">
-                <label htmlFor="sector-select">Target Sector</label>
-                {loadingSectors ? (
-                  <p className="input-hint">Loading available sectors...</p>
-                ) : availableSectors.length === 0 ? (
-                  <>
-                    <input
-                      id="sector-select"
-                      type="text"
-                      value={selectedSectorId}
-                      onChange={(e) => setSelectedSectorId(e.target.value)}
-                      placeholder="Enter sector ID..."
-                      className={error && error.includes('sector') ? 'error' : ''}
-                    />
-                    <span className="input-hint">Enter the ID of a sector with available planet slots. Navigate to a sector first to find valid targets.</span>
-                  </>
+                <label>Genesis Sequence</label>
+                <div className="genesis-tier-select">
+                  {TIERS.map(t => {
+                    const eligible = tierEligible(t);
+                    const reason = genesisDevices < t.devices
+                      ? `Needs ${t.devices} device${t.devices !== 1 ? 's' : ''} (you have ${genesisDevices})`
+                      : (t.sacrifice && !isColonyShip ? 'Requires a Colony Ship to sacrifice' : t.blurb);
+                    return (
+                      <button
+                        type="button"
+                        key={t.id}
+                        className={`genesis-tier-card ${tier === t.id ? 'selected' : ''} ${t.sacrifice ? 'sacrifice' : ''}`}
+                        disabled={!eligible}
+                        title={reason}
+                        onClick={() => { setTier(t.id); setAdvancedArmed(false); }}
+                      >
+                        <span className="tier-name">{t.label}</span>
+                        <span className="tier-devices">{t.sacrifice ? '1 device + ship' : `${t.devices} device${t.devices !== 1 ? 's' : ''}`}</span>
+                        <span className="tier-meta">{t.cost.toLocaleString()} cr · hab {t.hab}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {tierInfo.sacrifice ? (
+                  <span className="input-hint genesis-sacrifice-warn">⚠️ Advanced SACRIFICES your Colony Ship ({currentShip?.name || 'current hull'}) — you eject to an escape pod. In exchange the colony is built instantly at Settlement level (no 48h wait).</span>
                 ) : (
-                  <>
-                    <select
-                      id="sector-select"
-                      value={selectedSectorId}
-                      onChange={(e) => setSelectedSectorId(e.target.value)}
-                      className={error && error.includes('sector') ? 'error' : ''}
-                    >
-                      <option value="">Select a sector...</option>
-                      {availableSectors.map(sector => (
-                        <option key={sector.id} value={sector.id}>
-                          {sector.name}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="input-hint">Choose a sector with available planet slots</span>
-                  </>
+                  <span className="input-hint">Fuse more devices for a richer world. You have {genesisDevices} loaded{isColonyShip ? '; Advanced sacrifices this Colony Ship for an instant colony' : ''}.</span>
                 )}
+              </div>
+
+              <div className="form-section genesis-registration-section">
+                <label>Registration</label>
+                <div className="genesis-tier-select genesis-registration-select">
+                  {REGISTRATIONS.map(r => (
+                    <button
+                      type="button"
+                      key={r.id}
+                      className={`genesis-tier-card genesis-registration-card ${registration === r.id ? 'selected' : ''}`}
+                      title={r.blurb}
+                      onClick={() => setRegistration(r.id)}
+                    >
+                      <span className="tier-name">{r.label}</span>
+                      <span className="tier-meta">{r.fee.toLocaleString()} cr</span>
+                      <span className="registration-blurb">{r.blurb}</span>
+                    </button>
+                  ))}
+                </div>
+                <span className="input-hint">
+                  {registration === 'chartered'
+                    ? `Chartered fee scales with reputation (yours: ${personalReputation >= 0 ? '+' : ''}${personalReputation}). The final charge is confirmed by the Federation registry.`
+                    : registration === 'clandestine'
+                      ? 'A clandestine world stays off the public registry — no one can look it up, but the Federation will not protect it.'
+                      : 'A registered world appears on the charts under your name. The Federation does not protect registered worlds.'}
+                </span>
+              </div>
+
+              <div className="form-section">
+                <label htmlFor="sector-select">Target Sector</label>
+                <input
+                  id="sector-select"
+                  type="text"
+                  value={selectedSectorId}
+                  onChange={(e) => setSelectedSectorId(e.target.value)}
+                  placeholder="Enter sector number..."
+                  className={error && error.includes('sector') ? 'error' : ''}
+                />
+                <span className="input-hint">
+                  {currentSectorId
+                    ? `Defaults to your current sector (${currentSectorId}). The target must be empty — undock and fly to an empty sector to seed a world.`
+                    : 'Enter the number of an empty sector. Navigate to an empty sector first.'}
+                </span>
               </div>
             </div>
 
-            <div className="planet-types">
-              <h4>Select Planet Type</h4>
-              <div className="type-grid">
-                {PLANET_TYPES.map(planetType => (
-                  <div
-                    key={planetType.type}
-                    className={`planet-type-card ${selectedType === planetType.type ? 'selected' : ''}`}
-                    onClick={() => setSelectedType(planetType.type)}
-                  >
-                    <div className="type-header">
-                      <span className="type-icon">{planetType.icon}</span>
-                      <h5>{planetType.name}</h5>
-                    </div>
-                    <p className="type-description">{planetType.description}</p>
-                    
-                    <div className="type-stats">
-                      <div className="stat">
-                        <span className="stat-label">Max Population:</span>
-                        <span className="stat-value">{planetType.maxColonists.toLocaleString()}</span>
-                      </div>
-                      <div className="production-bonuses">
-                        <span className="bonus-label">Production:</span>
-                        <div className="bonus-values">
-                          <span className="bonus fuel">⛽ {(planetType.productionBonuses.fuel * 100).toFixed(0)}%</span>
-                          <span className="bonus organics">🌿 {(planetType.productionBonuses.organics * 100).toFixed(0)}%</span>
-                          <span className="bonus equipment">⚙️ {(planetType.productionBonuses.equipment * 100).toFixed(0)}%</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <ul className="characteristics">
-                      {planetType.characteristics.map((char, index) => (
-                        <li key={index}>{char}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
+            <div className="genesis-biome-note">
+              <span className="biome-icon">🌍</span>
+              <p>The genesis process forms the world over ~48 hours; its <strong>biome is determined by the device</strong> (higher tiers bias toward richer worlds). The planet is invulnerable while it forms, then appears in your Colonial Registry.</p>
             </div>
 
             <div className="deployment-summary">
@@ -356,20 +438,30 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
                   <span className="summary-value">{planetName || 'Not set'}</span>
                 </div>
                 <div className="summary-item">
-                  <span className="summary-label">Planet Type:</span>
-                  <span className="summary-value">
-                    {selectedPlanetInfo.icon} {selectedPlanetInfo.name}
-                  </span>
+                  <span className="summary-label">Sequence:</span>
+                  <span className="summary-value">{tierInfo.label} — {tierInfo.devices} device{tierInfo.devices !== 1 ? 's' : ''} · {tierInfo.cost.toLocaleString()} cr</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-label">Registration:</span>
+                  <span className="summary-value">{registrationInfo.label} · {registrationInfo.fee.toLocaleString()} cr</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-label">Biome:</span>
+                  <span className="summary-value">Determined by the genesis device</span>
                 </div>
                 <div className="summary-item">
                   <span className="summary-label">Target Sector:</span>
                   <span className="summary-value">
-                    {selectedSectorId ? (availableSectors.find(s => s.id === selectedSectorId)?.name || `Sector ${selectedSectorId}`) : 'Not selected'}
+                    {selectedSectorId ? `Sector ${selectedSectorId}` : 'Not selected'}
                   </span>
                 </div>
                 <div className="summary-item">
-                  <span className="summary-label">Max Colonists:</span>
-                  <span className="summary-value">{selectedPlanetInfo.maxColonists.toLocaleString()}</span>
+                  <span className="summary-label">Formation:</span>
+                  <span className="summary-value">{tierInfo.sacrifice ? 'Instant — Settlement level' : '~48 hours (invulnerable)'}</span>
+                </div>
+                <div className="summary-item summary-total">
+                  <span className="summary-label">Total Cost:</span>
+                  <span className="summary-value">{totalCost.toLocaleString()} cr</span>
                 </div>
               </div>
             </div>
@@ -377,17 +469,21 @@ export const GenesisDeployment: React.FC<GenesisDeploymentProps> = ({
             <div className="action-buttons">
               <button
                 className="button secondary"
-                onClick={onClose}
+                onClick={() => { if (advancedArmed) { setAdvancedArmed(false); } else { onClose && onClose(); } }}
                 disabled={deploying}
               >
-                Cancel
+                {advancedArmed ? 'Back' : 'Cancel'}
               </button>
               <button
-                className="button primary"
+                className={`button primary ${tierInfo.sacrifice && advancedArmed ? 'danger' : ''}`}
                 onClick={handleDeploy}
-                disabled={deploying || !planetName || !selectedSectorId}
+                disabled={deploying || !!deployAnim || !planetName || !selectedSectorId || !tierEligible(tierInfo)}
               >
-                {deploying ? 'Deploying...' : 'Deploy Genesis Device'}
+                {deploying
+                  ? 'Deploying...'
+                  : tierInfo.sacrifice
+                    ? (advancedArmed ? `⚠️ Confirm — sacrifice ${currentShip?.name || 'Colony Ship'}` : 'Deploy Advanced (sacrifices ship)')
+                    : `Deploy ${tierInfo.label} (${tierInfo.devices} device${tierInfo.devices !== 1 ? 's' : ''})`}
               </button>
             </div>
           </>

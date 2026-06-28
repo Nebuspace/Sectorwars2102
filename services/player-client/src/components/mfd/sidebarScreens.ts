@@ -1,0 +1,20 @@
+/**
+ * sidebarScreens — frozen screen configs for the two left-console MFDs.
+ */
+
+import type { MFDScreenConfig } from './mfdTypes';
+
+// WO-PLAYERINFO id=147: dropped the TURN (turn-economy) and REP (reputation)
+// softkeys — turns/regen/credits now live in the always-on HUD (id=145),
+// reputation in the PlayerInfo view (PLY, id=144), and TURN's autopilot
+// hop-costs are rehomed into NAV (NavPositionPage). The page components stay
+// registered; they're just no longer surfaced as sidebar softkeys.
+export const SIDEBAR_A: MFDScreenConfig = {
+  screenId: 'sidebar-a', systemLabel: 'MFD-A', defaultPageId: 'vessel-status',
+  pageIds: ['vessel-status', 'cargo', 'threat-readiness', 'quantum-drive'],
+};
+
+export const SIDEBAR_B: MFDScreenConfig = {
+  screenId: 'sidebar-b', systemLabel: 'MFD-B', defaultPageId: 'aria-terminal',
+  pageIds: ['nav-position', 'aria-terminal', 'comms-crew'],
+};

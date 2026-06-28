@@ -6,14 +6,14 @@ import random
 import math
 import uuid
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_admin
 from src.models.user import User
 from src.models.galaxy import Galaxy
 from src.models.cluster import Cluster, ClusterType
 from src.models.sector import Sector, SectorType, SectorSpecialType
 from src.models.warp_tunnel import WarpTunnel
-from src.models.station import Station
+from src.models.station import Station, StationClass, StationType, StationStatus
 from src.models.planet import Planet
 
 # Enhanced request schemas
@@ -55,6 +55,7 @@ class PlanetCreateRequest(BaseModel):
     citadel_level: int
     shield_level: int
     fighters: int
+    size: int = 5  # 1-10 planet size; caps the citadel level (max_citadel_level_for_size)
 
 class WarpTunnelEnhancedRequest(BaseModel):
     source_sector_id: int
@@ -77,7 +78,7 @@ async def update_sector(
     sector_id: int,
     request: SectorUpdateRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Update sector properties"""
     sector = db.query(Sector).filter(Sector.sector_id == sector_id).first()
@@ -128,7 +129,7 @@ async def update_sector(
 async def create_port(
     request: StationCreateRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Create a new port in a sector"""
     # Check if sector exists and doesn't have a port
@@ -139,33 +140,45 @@ async def create_port(
     
     if sector.has_port:
         raise HTTPException(status_code=400, detail="Sector already has a port")
-    
-    # Create port
+
+    # Validate station class
+    try:
+        station_class = StationClass(request.port_class)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid port class: {request.port_class}")
+
+    # Create port (defense values map into the Station.defenses JSONB)
     station = Station(
         name=request.name,
         sector_id=request.sector_id,
-        port_class=request.station_class,
+        sector_uuid=sector.id,
+        station_class=station_class,
+        type=StationType.TRADING,
+        status=StationStatus.OPERATIONAL,
         owner_id=None,  # Admin-created ports are NPC owned
         tax_rate=request.tax_rate,
-        defense_fighters=request.defense_drones,
-        shields_percentage=100.0,
-        armor_percentage=100.0,
-        under_attack=False,
-        lockdown=False,
         commodities=request.commodities,
         services=request.services,
-        has_defense_grid=request.has_turrets
+        defenses={
+            "defense_drones": request.defense_drones,
+            "max_defense_drones": 50,
+            "auto_turrets": request.has_turrets,
+            "defense_grid": False,
+            "shield_strength": 50,
+            "patrol_ships": 0,
+            "military_contract": False
+        }
     )
-    
-    db.add(port)
+
+    db.add(station)
     sector.has_port = True
     db.commit()
-    
+
     return {
         "id": str(station.id),
         "name": station.name,
         "sector_id": station.sector_id,
-        "station_class": station.station_class,
+        "station_class": station.station_class.value,
         "created": True
     }
 
@@ -174,7 +187,7 @@ async def create_port(
 async def create_planet(
     request: PlanetCreateRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Create a new planet in a sector"""
     # Check if sector exists and doesn't have a planet
@@ -185,14 +198,22 @@ async def create_planet(
     
     if sector.has_planet:
         raise HTTPException(status_code=400, detail="Sector already has a planet")
-    
+
+    # CRT size-gate: a planet's size caps its citadel level (small worlds can't pack a
+    # full citadel). Clamp the admin-requested level so an admin can't create an
+    # over-cap planet — the same invariant citadel_service.start_upgrade enforces.
+    from src.services.structures import max_citadel_level_for_size
+    planet_size = max(1, min(10, request.size))
+    clamped_citadel_level = max(0, min(request.citadel_level, max_citadel_level_for_size(planet_size)))
+
     # Create planet
     planet = Planet(
         name=request.name,
         sector_id=request.sector_id,
         planet_type=request.planet_type,
         owner_id=None,  # Uncolonized
-        citadel_level=request.citadel_level,
+        size=planet_size,
+        citadel_level=clamped_citadel_level,
         shield_level=request.shield_level,
         colonists=request.colonists,
         production=request.production_rates,
@@ -221,52 +242,70 @@ async def create_planet(
 async def create_enhanced_warp_tunnel(
     request: WarpTunnelEnhancedRequest,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Create a warp tunnel with enhanced options"""
-    # Validate sectors exist
+    from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
+
+    # Validate sectors exist (request carries human-readable Integer sector numbers;
+    # WarpTunnel FKs reference the Sector UUID primary key, so resolve to .id below).
     source = db.query(Sector).filter(Sector.sector_id == request.source_sector_id).first()
     target = db.query(Sector).filter(Sector.sector_id == request.target_sector_id).first()
-    
+
     if not source or not target:
         raise HTTPException(status_code=404, detail="Source or target sector not found")
-    
-    # Check if warp already exists
+
+    # Check if warp already exists (real model fields: origin_/destination_sector_id, by UUID)
     existing = db.query(WarpTunnel).filter(
-        ((WarpTunnel.source_sector_id == request.source_sector_id) & 
-         (WarpTunnel.destination_sector_id == request.target_sector_id)) |
-        ((WarpTunnel.source_sector_id == request.target_sector_id) & 
-         (WarpTunnel.destination_sector_id == request.source_sector_id))
+        ((WarpTunnel.origin_sector_id == source.id) &
+         (WarpTunnel.destination_sector_id == target.id)) |
+        ((WarpTunnel.origin_sector_id == target.id) &
+         (WarpTunnel.destination_sector_id == source.id))
     ).first()
-    
+
     if existing:
         raise HTTPException(status_code=400, detail="Warp tunnel already exists between these sectors")
-    
-    # Create warp tunnel
+
+    # Map the request's tunnel_type ("natural"/"artificial") to the model enum;
+    # unknown values fall back to STANDARD (matches admin_comprehensive's pattern).
+    try:
+        tunnel_type = WarpTunnelType[request.tunnel_type.upper()]
+    except KeyError:
+        tunnel_type = WarpTunnelType.STANDARD
+
+    # Access control / toll do not have dedicated WarpTunnel columns; persist them
+    # in the access_requirements JSONB so the intent isn't lost.
+    access_requirements = {
+        "access_control": request.access_control,
+        "toll_amount": request.toll_amount or 0,
+    }
+
+    # Create warp tunnel using the REAL model fields.
     warp = WarpTunnel(
-        source_sector_id=request.source_sector_id,
-        destination_sector_id=request.target_sector_id,
+        name=f"{source.name} <-> {target.name}",
+        origin_sector_id=source.id,
+        destination_sector_id=target.id,
+        type=tunnel_type,
+        status=WarpTunnelStatus.ACTIVE,
         is_bidirectional=not request.is_one_way,
         stability=request.stability / 100.0,
         turn_cost=request.turn_cost,
-        creator_id=None if request.tunnel_type == "natural" else current_admin.id,
-        toll_amount=request.toll_amount or 0,
-        access_list=[],  # TODO: Implement access control
-        max_ship_size=None,
-        hidden=False
+        is_public=(request.access_control == "public"),
+        access_requirements=access_requirements,
+        created_by_player_id=None,  # admin-created; no player owner
     )
-    
+
     db.add(warp)
     source.has_warp_tunnel = True
     if not request.is_one_way:
         target.has_warp_tunnel = True
-    
+
     db.commit()
-    
+
     return {
         "id": str(warp.id),
-        "source_sector_id": warp.source_sector_id,
-        "destination_sector_id": warp.destination_sector_id,
+        "source_sector_id": request.source_sector_id,
+        "target_sector_id": request.target_sector_id,
         "is_one_way": request.is_one_way,
         "stability": request.stability,
         "created": True
@@ -279,7 +318,7 @@ async def get_enhanced_sectors(
     cluster_id: Optional[str] = None,
     include_contents: bool = True,
     current_admin: User = Depends(get_current_admin),
-    db: Session = Depends(get_async_session)
+    db: Session = Depends(get_db)
 ):
     """Get sectors with enhanced information"""
     query = db.query(Sector)
@@ -326,7 +365,7 @@ async def get_enhanced_sectors(
             # Add port info if exists
             if has_port:
                 station = db.query(Station).filter(Station.sector_id == sector.sector_id).first()
-                if port:
+                if station:
                     sector_data["port"] = {
                         "id": str(station.id),
                         "name": station.name,

@@ -6,14 +6,14 @@ from typing import Optional, List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, desc, and_
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.core.database import get_db
 from src.auth.dependencies import require_admin
 from src.models.user import User
-from src.models.market_transaction import MarketPrice, MarketTransaction, EconomicMetrics
+from src.models.market_transaction import MarketPrice, MarketTransaction, EconomicMetrics, PriceAlert
 from src.models.station import Station
 from src.models.sector import Sector
 from src.models.player import Player
@@ -73,6 +73,13 @@ class InterventionResponse(BaseModel):
     timestamp: str
     result: dict
     message: str
+
+
+class PriceAlertCreateRequest(BaseModel):
+    station_id: str = Field(..., description="Station UUID the alert monitors")
+    commodity: str = Field(..., min_length=1, max_length=50)
+    alert_type: str = Field(..., description="price_spike, price_drop, high_volume, low_supply")
+    threshold_value: float
 
 
 @router.get("/market-data", response_model=List[MarketDataItem])
@@ -162,36 +169,74 @@ async def get_economic_metrics(
                 economic_health_score=latest_metrics.economic_health_score * 100 if latest_metrics.economic_health_score else 50.0
             )
         else:
-            # Calculate live metrics if no stored metrics exist
+            # Calculate live metrics if no stored metrics exist.
+            # (Ported from the retired legacy /admin/economy router so the
+            # time-period-aware live computation is not lost.)
+            now = datetime.utcnow()
+            time_filters = {
+                "24h": now - timedelta(hours=24),
+                "7d": now - timedelta(days=7),
+                "30d": now - timedelta(days=30)
+            }
+            time_threshold = time_filters.get(time_period or "24h", time_filters["24h"])
+
             total_credits = (
                 db.query(func.sum(Player.credits))
                 .filter(Player.is_active == True)
                 .scalar() or 0
             )
 
-            # Get trade volume from recent transactions
+            # Trade volume within the requested period
             trade_volume = (
                 db.query(func.sum(MarketTransaction.total_value))
+                .filter(MarketTransaction.timestamp >= time_threshold)
                 .scalar() or 0
             )
 
-            # Find most traded commodity
+            # Average profit margin within the requested period
+            profit_margin_result = (
+                db.query(func.avg(MarketTransaction.profit_margin))
+                .filter(
+                    and_(
+                        MarketTransaction.timestamp >= time_threshold,
+                        MarketTransaction.profit_margin.isnot(None)
+                    )
+                )
+                .scalar()
+            )
+            average_profit_margin = float(profit_margin_result) if profit_margin_result else 0.0
+
+            # Most traded commodity by quantity within the requested period
             most_traded = (
                 db.query(
                     MarketTransaction.commodity,
-                    func.count(MarketTransaction.id).label('count')
+                    func.sum(MarketTransaction.quantity).label('total_quantity')
                 )
+                .filter(MarketTransaction.timestamp >= time_threshold)
                 .group_by(MarketTransaction.commodity)
-                .order_by(func.count(MarketTransaction.id).desc())
+                .order_by(desc('total_quantity'))
                 .first()
             )
+
+            # Economic health score derived from trade volume, market
+            # activity, and profit margins (0-100 scale to match the
+            # stored-metrics branch above).
+            transactions_count = (
+                db.query(MarketTransaction)
+                .filter(MarketTransaction.timestamp >= time_threshold)
+                .count()
+            )
+            volume_factor = min(1.0, int(trade_volume) / 1_000_000)  # Normalize to 1M credits
+            activity_factor = min(1.0, transactions_count / 100)     # Normalize to 100 transactions
+            margin_factor = min(1.0, max(0.0, average_profit_margin / 50.0))  # Normalize to 50% margin
+            economic_health_score = ((volume_factor + activity_factor + margin_factor) / 3.0) * 100
 
             return EconomicMetricsResponse(
                 total_trade_volume=int(trade_volume),
                 total_credits_in_circulation=int(total_credits),
-                average_profit_margin=0.0,
+                average_profit_margin=average_profit_margin,
                 most_traded_commodity=most_traded.commodity if most_traded else "None",
-                economic_health_score=50.0
+                economic_health_score=economic_health_score
             )
     except Exception as e:
         raise HTTPException(
@@ -334,3 +379,81 @@ async def get_dashboard_summary(
             status_code=500,
             detail=f"Failed to generate dashboard summary: {str(e)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DB-backed price alert management (ported from the retired legacy
+# /admin/economy router so the still-working capability is not lost).
+# Note: GET /price-alerts above is analytics-derived anomaly detection;
+# these two endpoints manage persistent PriceAlert rows.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/create-alert")
+async def create_price_alert(
+    request: PriceAlertCreateRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new persistent price monitoring alert.
+
+    **Required permissions**: Admin access
+    """
+    station = db.query(Station).filter(Station.id == request.station_id).first()
+    if not station:
+        raise HTTPException(status_code=404, detail="Station not found")
+
+    # Capture the current market value for the monitored commodity so the
+    # alert has a real baseline (the model requires current_value).
+    market_price = db.query(MarketPrice).filter(
+        and_(
+            MarketPrice.station_id == station.id,
+            MarketPrice.commodity == request.commodity
+        )
+    ).first()
+    if not market_price:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No market price record for commodity '{request.commodity}' at this station"
+        )
+
+    alert = PriceAlert(
+        station_id=station.id,
+        commodity=request.commodity,
+        alert_type=request.alert_type,
+        threshold_value=request.threshold_value,
+        current_value=float(market_price.sell_price),
+        message=(
+            f"Admin alert: monitor {request.commodity} at {station.name} "
+            f"for {request.alert_type} (threshold {request.threshold_value})"
+        ),
+        is_active=True
+    )
+
+    db.add(alert)
+    db.commit()
+    db.refresh(alert)
+
+    return {"message": "Price alert created successfully", "alert_id": str(alert.id)}
+
+
+@router.delete("/alerts/{alert_id}")
+async def delete_price_alert(
+    alert_id: UUID,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a persistent price alert.
+
+    **Required permissions**: Admin access
+    """
+    alert = db.query(PriceAlert).filter(PriceAlert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Price alert not found")
+
+    db.delete(alert)
+    db.commit()
+
+    return {"message": "Price alert deleted successfully", "alert_id": str(alert_id)}

@@ -2,11 +2,14 @@
 Message Service for handling player communication
 """
 
-from typing import Optional, List, Dict, Any
+from collections import defaultdict, deque
+from typing import Optional, List, Dict, Any, Deque
 from datetime import datetime
+from time import monotonic
 from uuid import UUID, uuid4
 import logging
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, desc
 
@@ -14,16 +17,67 @@ from src.models.message import Message
 from src.models.player import Player
 from src.models.team import Team
 from src.services.websocket_service import ConnectionManager
+from src.services.notification_service import NotificationService
 
 # Global manager instance
 manager = ConnectionManager()
 
 logger = logging.getLogger(__name__)
 
+# Anti-spam send rate limit (sliding window).
+# NOTE: This window lives in process memory, so it is per-worker and resets on
+# restart — adequate for single-process dev. A multi-worker / multi-replica
+# deployment must move this to a shared store (e.g. a Redis sorted-set per
+# sender keyed on timestamp) for the limit to hold globally.
+_SEND_RATE_MAX = 5            # max sends ...
+_SEND_RATE_WINDOW = 60.0      # ... per this many seconds, per sender
+_send_history: Dict[UUID, Deque[float]] = defaultdict(deque)
+
+# Canonical thread depth cap (messaging.md "Threading" — Depth cap):
+# a conversation thread holds up to 50 messages. The 51st send/reply into an
+# existing thread is rejected with the canonical `thread_limit_exceeded` error
+# and is NOT persisted; the player must archive or start a new thread. Older
+# messages stay searchable via the thread_id index even when truncated from the
+# active-thread view. A brand-new thread (first message) is unaffected.
+THREAD_MESSAGE_CAP = 50
+THREAD_LIMIT_EXCEEDED = "thread_limit_exceeded"
+
 
 class MessageService:
     """Service for managing player messages"""
-    
+
+    @staticmethod
+    def check_send_rate_limit(sender_id: UUID) -> None:
+        """Enforce a per-sender sliding-window send limit.
+
+        Raises HTTPException(429) with an honest retry hint when the sender has
+        already sent _SEND_RATE_MAX messages within the last _SEND_RATE_WINDOW
+        seconds. On success it records the current send.
+
+        In-memory / per-process scope (see module note) — fine for dev; promote
+        to Redis for multi-worker production.
+        """
+        now = monotonic()
+        window_start = now - _SEND_RATE_WINDOW
+        history = _send_history[sender_id]
+
+        # Drop timestamps that have aged out of the window
+        while history and history[0] < window_start:
+            history.popleft()
+
+        if len(history) >= _SEND_RATE_MAX:
+            retry_after = max(1, int(history[0] + _SEND_RATE_WINDOW - now) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Too many messages — limit is {_SEND_RATE_MAX} per "
+                    f"{int(_SEND_RATE_WINDOW)}s. Try again in {retry_after}s."
+                ),
+            )
+
+        history.append(now)
+
+
     @staticmethod
     async def send_message(
         db: Session,
@@ -45,6 +99,10 @@ class MessageService:
         
         # Validate recipient or team
         if recipient_id:
+            # A player cannot hail themselves — reject cleanly (the route maps
+            # ValueError -> 400) rather than creating a useless self-message.
+            if recipient_id == sender_id:
+                raise ValueError("Cannot send a message to yourself")
             recipient = db.query(Player).filter(Player.id == recipient_id).first()
             if not recipient:
                 raise ValueError("Recipient not found")
@@ -60,18 +118,55 @@ class MessageService:
         else:
             raise ValueError("Either recipient_id or team_id must be provided")
         
-        # Handle threading
+        # Handle threading. A reply only inherits the referenced message's
+        # thread when the sender actually participated in it (was the original
+        # sender or recipient) — otherwise the reply link is silently ignored
+        # (treated as a fresh thread) so a guessed/forged reply_to_id can't
+        # splice a stranger into someone else's conversation. We never error on
+        # a bad reply_to_id; the message still sends as a new thread.
+        # `appending_to_existing_thread` is True only when this send genuinely
+        # joins a pre-existing conversation — either an authorized reply that
+        # inherits its parent's thread, or an explicit thread_id the caller
+        # supplied. A brand-new thread (fresh uuid4 below) is exempt from the
+        # depth cap, per canon ("a new message starts a new thread").
+        appending_to_existing_thread = False
         if reply_to_id:
-            # Get the original message to inherit thread_id
             original = db.query(Message).filter(Message.id == reply_to_id).first()
-            if original:
+            sender_participated = original is not None and sender_id in (
+                original.sender_id, original.recipient_id
+            )
+            if sender_participated:
                 thread_id = original.thread_id or original.id
+                appending_to_existing_thread = True
             else:
-                raise ValueError("Reply-to message not found")
-        elif not thread_id:
+                # Drop the unauthorized/unknown reply link; start a new thread.
+                reply_to_id = None
+                if not thread_id:
+                    thread_id = uuid4()
+                else:
+                    appending_to_existing_thread = True
+        elif thread_id:
+            # Caller targeted an explicit existing thread without a reply link.
+            appending_to_existing_thread = True
+        else:
             # New thread
             thread_id = uuid4()
-        
+
+        # Canonical depth cap (messaging.md "Threading" — Depth cap): a thread
+        # holds at most THREAD_MESSAGE_CAP messages. When appending to an
+        # existing thread, count what is already there; if the cap is reached the
+        # 51st send is rejected with `thread_limit_exceeded` and NOTHING is
+        # persisted. New threads (first message) skip this guard entirely.
+        if appending_to_existing_thread:
+            existing_count = db.query(Message).filter(
+                Message.thread_id == thread_id
+            ).count()
+            if existing_count >= THREAD_MESSAGE_CAP:
+                raise HTTPException(
+                    status_code=409,
+                    detail=THREAD_LIMIT_EXCEEDED,
+                )
+
         # Create message
         message = Message(
             sender_id=sender_id,
@@ -98,30 +193,17 @@ class MessageService:
     
     @staticmethod
     async def _send_notification(db: Session, message: Message, sender: Player):
-        """Send WebSocket notification for new message"""
-        notification = {
-            "type": "new_message",
-            "message_id": str(message.id),
-            "sender_id": str(message.sender_id),
-            "sender_name": sender.nickname,
-            "preview": message.content[:100] if message.content else "",
-            "sent_at": message.sent_at.isoformat() if message.sent_at else None,
-            "priority": message.priority
-        }
+        """Dispatch the live notification for a new message.
 
-        if message.recipient_id:
-            # Send to specific player
-            await manager.send_to_player(str(message.recipient_id), notification)
-        elif message.team_id:
-            # Send to all team members except the sender
-            team_members = db.query(Player).filter(
-                Player.team_id == message.team_id,
-                Player.id != message.sender_id,
-                Player.is_active == True
-            ).all()
-            for member in team_members:
-                await manager.send_to_player(str(member.id), notification)
-            logger.info(f"Team message notification sent to {len(team_members)} members of team {message.team_id}")
+        Priority-driven fan-out is owned by NotificationService (the module the
+        messaging canon names for this — see notification_service.py). It maps
+        the message's `priority` to a delivery-surface list (inbox / toast /
+        push / modal per messaging.md "Priority levels") and routes the WS frame
+        through the EXISTING ConnectionManager helper. Delivery failures there
+        are swallowed internally so they can never fail an already-committed
+        send.
+        """
+        await NotificationService.notify_new_message(db, message, sender, manager)
     
     @staticmethod
     async def get_inbox(
@@ -354,7 +436,7 @@ class MessageService:
                     "sender_id": str(message.sender_id),
                     "flagged_at": datetime.utcnow().isoformat()
                 }
-                await manager.send_to_player(str(admin_user.id), admin_notification)
+                await manager.send_personal_message(str(admin_user.id), admin_notification)
 
             logger.warning(
                 f"Message {message_id} flagged by {flagged_by} for: {reason}. "

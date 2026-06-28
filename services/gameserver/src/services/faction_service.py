@@ -6,16 +6,36 @@ from uuid import UUID
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, func
+from sqlalchemy.exc import IntegrityError
 import logging
 
-from src.models.faction import Faction, FactionType, FactionMission
+from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation, ReputationLevel
 from src.models.player import Player
 from src.models.sector import Sector
+from src.models.sector_faction_influence import SectorFactionInfluence
 from src.services.websocket_service import ConnectionManager
 
 logger = logging.getLogger(__name__)
+
+
+def _dispatch_faction_medals(db: Session, player_id: UUID) -> None:
+    """Fire the medals-lane faction hook
+    ``medal_service.check_and_award_faction_medals(db, player_id)`` after a
+    reputation transition reaches HONORED (diplomatic.peacemaker @3 /
+    ambassadors_star @10 — faction_honored count).
+
+    Defensive: resolved by ``getattr`` (the medals lane may be absent),
+    idempotent on the medals side, and any failure is logged and swallowed — a
+    medal hiccup must NEVER break a reputation adjustment."""
+    try:
+        import src.services.medal_service as _medal_module
+        hook = getattr(_medal_module, "check_and_award_faction_medals", None)
+        if callable(hook):
+            hook(db, player_id)
+    except Exception as e:  # never let a medal hiccup break reputation
+        logger.error("Faction medal dispatch hook failed: %s", e)
 manager = ConnectionManager()
 
 # Faction rivalry configuration: paired factions have a combined reputation cap.
@@ -42,9 +62,385 @@ TRADE_MODIFIERS = [
 TRADE_MODIFIER_PUBLIC_ENEMY = 1.50  # Fallback for -700 and below
 
 
+def apply_faction_rep_delta(
+    db: Session,
+    player_id: UUID,
+    faction_type: FactionType,
+    delta: int,
+    reason: str,
+) -> Optional[Reputation]:
+    """Apply a faction reputation delta from a SYNC, caller-owned transaction.
+
+    Built for in-transaction hooks (e.g. combat_service applying the
+    Marshal-kill −250 Federation delta, police-forces.md) where the async
+    ``FactionService.update_reputation`` cannot be used: it awaits, commits
+    internally mid-transaction, and fires WebSocket sends — calling it from
+    a sync combat path would double-commit and break the combat
+    transaction. This helper get-or-creates the Reputation row, clamps to
+    the model's documented [-800, +800] range, appends a history entry,
+    and FLUSHES ONLY — the caller owns the commit.
+
+    The faction is resolved by FactionType (the Faction model has no
+    ``code`` column, so roster faction codes like "terran_federation" need
+    an explicit mapping by the caller). Returns None — with an error log,
+    never an exception — when no faction row of that type exists, so a
+    missing seed degrades to a lost rep delta rather than a failed combat.
+
+    No rivalry cap is applied: the cap only constrains positive gains and
+    this helper exists for penalty hooks; route positive gains through
+    ``FactionService.update_reputation``.
+    """
+    faction = (
+        db.query(Faction)
+        .filter(Faction.faction_type == faction_type)
+        .first()
+    )
+    if faction is None:
+        logger.error(
+            "apply_faction_rep_delta: no %s faction row exists — delta %+d "
+            "for player %s dropped (reason: %s). Seed the faction "
+            "(npc_spawn_service._ensure_federation_faction).",
+            faction_type.name, delta, player_id, reason,
+        )
+        return None
+
+    reputation = (
+        db.query(Reputation)
+        .filter(
+            and_(
+                Reputation.player_id == player_id,
+                Reputation.faction_id == faction.id,
+            )
+        )
+        .first()
+    )
+    if reputation is None:
+        # Mirror initialize_player_reputations defaults for the new row.
+        reputation = Reputation(
+            player_id=player_id,
+            faction_id=faction.id,
+            current_value=0,
+            current_level=ReputationLevel.NEUTRAL,
+            title="Neutral",
+            trade_modifier=0.0,
+            port_access_level=0,
+            combat_response="neutral",
+            history=[],
+        )
+        db.add(reputation)
+
+    svc = FactionService(db)
+    old_value = reputation.current_value
+    reputation.current_value = max(-800, min(800, reputation.current_value + delta))
+    reputation.current_level = svc._calculate_reputation_level(reputation.current_value)
+    reputation.title = svc._get_reputation_title(reputation.current_level)
+    reputation.trade_modifier = svc._calculate_trade_modifier(reputation.current_value)
+    reputation.port_access_level = svc._calculate_port_access_level(reputation.current_value)
+    reputation.combat_response = svc._calculate_combat_response(reputation.current_value)
+
+    # Reassign (not in-place append) so SQLAlchemy detects the JSONB change.
+    history = list(reputation.history or [])
+    history.append({
+        "timestamp": datetime.utcnow().isoformat(),
+        "old_value": old_value,
+        "new_value": reputation.current_value,
+        "change": reputation.current_value - old_value,
+        "reason": reason,
+    })
+    reputation.history = history
+    reputation.last_updated = datetime.utcnow()
+
+    db.flush()
+    logger.info(
+        "Faction rep delta for player %s with %s (%s): %d -> %d (%s)",
+        player_id, faction.name, faction_type.name,
+        old_value, reputation.current_value, reason,
+    )
+    return reputation
+
+
+# Clamp range for per-sector faction influence (ADR-0021: 0-100% taxonomy input).
+SECTOR_INFLUENCE_MIN = 0.0
+SECTOR_INFLUENCE_MAX = 100.0
+
+
+def adjust_sector_influence(
+    db: Session,
+    sector_id: UUID,
+    faction_id: UUID,
+    delta: float,
+) -> Optional[SectorFactionInfluence]:
+    """UPSERT one faction's influence over one sector by ``delta`` (ADR-0021).
+
+    The WRITE half of SectorFactionInfluence: get-or-create the
+    ``(sector_id, faction_id)`` row, add ``delta`` to ``influence_percentage``,
+    CLAMP the stored value to [0, 100], and FLUSH only — the caller owns the
+    commit (built for in-transaction hooks like the colony-establish and
+    warp-gate-build paths, mirroring ``apply_faction_rep_delta``).
+
+    The READ-side taxonomy / patrol-spawn effects (ADR-0021) are deliberately
+    NOT computed here (Max-gated) — this only maintains the canonical stored
+    influence value. ``patrol_spawn_weight`` is left at its model default and is
+    untouched until the read-side lands.
+
+    Defensive: a ``None`` faction (or sector) is a no-op returning ``None`` so a
+    missing-faction hook degrades to a dropped influence delta rather than an
+    exception that breaks the caller's primary action.
+    """
+    if faction_id is None or sector_id is None:
+        return None
+
+    influence = (
+        db.query(SectorFactionInfluence)
+        .filter(
+            and_(
+                SectorFactionInfluence.sector_id == sector_id,
+                SectorFactionInfluence.faction_id == faction_id,
+            )
+        )
+        .first()
+    )
+    if influence is None:
+        # Contain the INSERT in a SAVEPOINT: under concurrency two callers can
+        # both miss the SELECT above and race to insert the same
+        # (sector_id, faction_id) — the table's UniqueConstraint makes the loser
+        # raise IntegrityError on flush. Without the savepoint that error would
+        # poison the whole session and the caller's later db.commit() (the colony
+        # founding / gate completion) would abort with PendingRollbackError. The
+        # savepoint rolls back ONLY the failed INSERT; we then re-SELECT the row
+        # that won the race and apply the delta to it. (Same guard medal_service
+        # uses for its identical get-or-create.)
+        try:
+            with db.begin_nested():
+                influence = SectorFactionInfluence(
+                    sector_id=sector_id,
+                    faction_id=faction_id,
+                    influence_percentage=0.0,
+                )
+                db.add(influence)
+                db.flush()
+        except IntegrityError:
+            influence = (
+                db.query(SectorFactionInfluence)
+                .filter(
+                    and_(
+                        SectorFactionInfluence.sector_id == sector_id,
+                        SectorFactionInfluence.faction_id == faction_id,
+                    )
+                )
+                .first()
+            )
+            if influence is None:
+                # Lost the race yet still can't see the winner — degrade to a
+                # dropped delta rather than re-raise into the caller's txn.
+                return None
+
+    old_value = influence.influence_percentage or 0.0
+    influence.influence_percentage = max(
+        SECTOR_INFLUENCE_MIN,
+        min(SECTOR_INFLUENCE_MAX, old_value + float(delta)),
+    )
+
+    db.flush()
+    logger.info(
+        "Sector influence for faction %s over sector %s: %.2f -> %.2f (delta %+.2f)",
+        faction_id, sector_id, old_value, influence.influence_percentage, float(delta),
+    )
+    return influence
+
+
+# ---------------------------------------------------------------------------
+# SectorFactionInfluence READ side (WO-FI / ADR-0021)
+#
+# The WRITE half (adjust_sector_influence, above) maintains the canonical
+# stored influence_percentage. These pure-READ helpers consume it for the
+# taxonomy / spawn-bias effects canon attributes to it
+# (FEATURES/gameplay/factions-and-teams.md "### Territory & influence"):
+#   - four-tier taxonomy (Core 100 / Controlled >=75 / Contested 40-60 across
+#     >=2 factions / Uncontrolled 0)
+#   - "Patrol spawn rate scales with influence ... Pirate spawn rate is
+#     inversely proportional".
+#
+# Reproduce-exactly invariant: a sector with NO influence rows reads as
+# Uncontrolled with a neutral spawn bias, so existing (un-seeded) sectors
+# behave EXACTLY as before these helpers existed.
+# ---------------------------------------------------------------------------
+
+# Canon taxonomy thresholds (factions-and-teams.md "### Territory & influence").
+TERRITORY_CORE_MIN = 100.0       # Core: 100%
+TERRITORY_CONTROLLED_MIN = 75.0  # Controlled: >= 75%
+TERRITORY_CONTESTED_MIN = 40.0   # Contested floor (40-60% across >= 2 factions)
+TERRITORY_CONTESTED_MAX = 60.0   # Contested ceiling
+
+# [NO-CANON] Secondary-influencer half-share threshold. factions-and-teams.md
+# states "secondary influencers >=25% receive half-share rep" for emergent-rep,
+# which is the only numeric handle canon gives on a "meaningful secondary
+# influencer"; reused here purely to label a sector Contested when a second
+# faction is materially present. Flagged for DECISIONS.md if the read-side
+# taxonomy ever needs its own threshold.
+TERRITORY_SECONDARY_PRESENCE_MIN = 25.0
+
+
+def get_sector_influence(
+    db: Session,
+    sector_id: UUID,
+) -> List[SectorFactionInfluence]:
+    """READ all per-faction influence rows for one sector, strongest first.
+
+    Pure read; ties broken DETERMINISTICALLY by ``faction_id`` so the ordering
+    (and therefore the derived "dominant" faction) never flaps between calls.
+    Returns ``[]`` for a sector with no influence rows — the Uncontrolled,
+    reproduce-exactly case.
+    """
+    if sector_id is None:
+        return []
+    return (
+        db.query(SectorFactionInfluence)
+        .filter(SectorFactionInfluence.sector_id == sector_id)
+        .order_by(
+            SectorFactionInfluence.influence_percentage.desc(),
+            SectorFactionInfluence.faction_id.asc(),
+        )
+        .all()
+    )
+
+
+def dominant_sector_faction(
+    db: Session,
+    sector_id: UUID,
+) -> Optional[SectorFactionInfluence]:
+    """READ the single highest-influence faction row for a sector, or ``None``.
+
+    ``None`` when the sector has no influence rows OR its strongest influence is
+    0 (genuinely Uncontrolled) — only a faction with positive influence is the
+    dominant one. Deterministic tie-break via ``get_sector_influence``.
+    """
+    rows = get_sector_influence(db, sector_id)
+    if not rows:
+        return None
+    top = rows[0]
+    if (top.influence_percentage or 0.0) <= 0.0:
+        return None
+    return top
+
+
+def sector_territory_tier(rows: List[SectorFactionInfluence]) -> str:
+    """Classify a sector into the canon four-tier taxonomy from its influence
+    rows (factions-and-teams.md "### Territory & influence").
+
+    ``rows`` is the output of ``get_sector_influence`` (already sorted
+    strongest-first). Returns one of ``"core"``, ``"controlled"``,
+    ``"contested"``, ``"uncontrolled"``. An empty / all-zero sector is
+    ``"uncontrolled"`` (reproduce-exactly).
+    """
+    if not rows:
+        return "uncontrolled"
+    top = rows[0].influence_percentage or 0.0
+    if top <= 0.0:
+        return "uncontrolled"
+    if top >= TERRITORY_CORE_MIN:
+        return "core"
+    if top >= TERRITORY_CONTROLLED_MIN:
+        return "controlled"
+    # Contested per canon needs the band 40-60% AND >= 2 factions materially
+    # present (a meaningful secondary influencer).
+    secondary = rows[1].influence_percentage if len(rows) > 1 else 0.0
+    secondary = secondary or 0.0
+    if (
+        TERRITORY_CONTESTED_MIN <= top <= TERRITORY_CONTESTED_MAX
+        and secondary >= TERRITORY_SECONDARY_PRESENCE_MIN
+    ):
+        return "contested"
+    # Below Controlled but not a canon-Contested split: a single weak holder.
+    # Canon names no tier for this band, so it degrades to "uncontrolled" for
+    # spawn purposes (low/no faction suppression) — the conservative, no-new-
+    # behavior reading. [NO-CANON] for the sub-40% single-holder band.
+    return "uncontrolled"
+
+
+# [NO-CANON] Patrol-versus-pirate spawn multiplier mapping. Canon states the
+# DIRECTION only ("Patrol spawn rate scales with influence ... Pirate spawn
+# rate is inversely proportional") but gives no formula. This conservative
+# linear mapping keys off the dominant influence (0-100) and is centered so
+# that an Uncontrolled sector (0%) reproduces TODAY's neutral behavior exactly
+# (pirate x1.0, patrol x1.0). Flagged for DECISIONS.md; the bias is read-only
+# advice — callers may ignore it, so an un-tuned multiplier never breaks spawn.
+PIRATE_SPAWN_FLOOR = 0.25  # high faction influence suppresses, never zeroes
+
+
+def sector_spawn_bias(
+    db: Session,
+    sector_id: UUID,
+) -> Dict[str, Any]:
+    """READ a sector's influence and derive a patrol-vs-pirate spawn bias.
+
+    Returns a small advisory dict — the NPC spawn layer consults it to TILT
+    patrol-versus-pirate weighting without changing canonical roster counts:
+
+        {
+          "tier": "core|controlled|contested|uncontrolled",
+          "dominant_faction_id": UUID | None,
+          "dominant_influence": float,   # 0-100
+          "patrol_multiplier": float,    # >= 1.0 as influence rises
+          "pirate_multiplier": float,    # <= 1.0 as influence rises (floor)
+        }
+
+    Reproduce-exactly: a sector with no influence rows (or 0% dominant) yields
+    tier "uncontrolled", patrol x1.0, pirate x1.0 — the pre-existing behavior.
+    """
+    rows = get_sector_influence(db, sector_id)
+    tier = sector_territory_tier(rows)
+    if not rows:
+        return {
+            "tier": tier,
+            "dominant_faction_id": None,
+            "dominant_influence": 0.0,
+            "patrol_multiplier": 1.0,
+            "pirate_multiplier": 1.0,
+        }
+    top = rows[0]
+    influence = max(0.0, min(100.0, top.influence_percentage or 0.0))
+    frac = influence / 100.0  # 0.0 (neutral) .. 1.0 (Core)
+    # Patrols scale UP with influence; pirates scale DOWN toward a floor.
+    patrol_multiplier = 1.0 + frac
+    pirate_multiplier = max(PIRATE_SPAWN_FLOOR, 1.0 - frac)
+    dominant_id = top.faction_id if influence > 0.0 else None
+    return {
+        "tier": tier,
+        "dominant_faction_id": dominant_id,
+        "dominant_influence": influence,
+        "patrol_multiplier": patrol_multiplier,
+        "pirate_multiplier": pirate_multiplier,
+    }
+
+
+def dominant_reputation_faction_id(db: Session, player_id: UUID) -> Optional[UUID]:
+    """Resolve the faction the player has the HIGHEST personal reputation with.
+
+    There is no dedicated "dominant faction" column on the player, so the
+    canonical signal is the player's strongest standing: the ``Reputation`` row
+    with the greatest ``current_value`` (ties broken DETERMINISTICALLY by
+    ``faction_id`` so the credited faction never flaps between calls). Returns
+    ``None`` when the player has no reputation rows or their best standing is not
+    positive — only a genuinely allied faction should be credited with sector
+    influence, not a merely-least-hostile one.
+    """
+    if player_id is None:
+        return None
+    top = (
+        db.query(Reputation)
+        .filter(Reputation.player_id == player_id)
+        .order_by(Reputation.current_value.desc(), Reputation.faction_id.asc())
+        .first()
+    )
+    if top is None or (top.current_value or 0) <= 0:
+        return None
+    return top.faction_id
+
+
 class FactionService:
     """Service for managing faction-related operations."""
-    
+
     def __init__(self, db: Session):
         self.db = db
     
@@ -148,23 +544,42 @@ class FactionService:
         reputation.port_access_level = self._calculate_port_access_level(reputation.current_value)
         reputation.combat_response = self._calculate_combat_response(reputation.current_value)
         
-        # Add to history
-        if not reputation.history:
-            reputation.history = []
-        reputation.history.append({
+        # Add to history — reassign (not in-place append) so SQLAlchemy
+        # detects the JSONB change; in-place mutation is not change-tracked.
+        history = list(reputation.history or [])
+        history.append({
             "timestamp": datetime.utcnow().isoformat(),
             "old_value": old_value,
             "new_value": reputation.current_value,
             "change": change,
             "reason": reason
         })
+        reputation.history = history
         
         reputation.last_updated = datetime.utcnow()
+
+        # Medal: diplomatic.peacemaker (3) / ambassadors_star (10) — count of
+        # factions at HONORED. Fires only on a level transition that REACHES
+        # HONORED (the genuine earning event). Dispatched BEFORE the commit below
+        # so the medal INSERT rides this transaction's commit (the durable
+        # pattern the other wired medals use — dispatch into the caller's open
+        # unit of work, never after it has already committed). Idempotent on the
+        # medals side; defensive dispatcher — never breaks the reputation
+        # adjustment. (Simplified faction_honored count; the docs'
+        # "mutually-rivalrous factions simultaneously" nuance for Ambassador's
+        # Star is NO-CANON here and is NOT enforced.)
+        if (old_level != reputation.current_level
+                and reputation.current_level == ReputationLevel.HONORED):
+            _dispatch_faction_medals(self.db, player_id)
+
         self.db.commit()
-        
+
         # Send WebSocket notification if reputation level changed
         if old_level != reputation.current_level:
-            await manager.send_to_player(str(player_id), {
+            recipient = self.db.query(Player).filter(Player.id == player_id).first()
+            if not (recipient and recipient.user_id):
+                return
+            await manager.send_personal_message(str(recipient.user_id), {
                 "type": "reputation_changed",
                 "faction_id": str(faction_id),
                 "faction_name": reputation.faction.name,
@@ -503,89 +918,6 @@ class FactionService:
                 "allowed": False, 
                 "reason": f"Insufficient reputation with {controlling_faction.name}"
             }
-    
-    async def get_available_missions(
-        self, 
-        player_id: UUID, 
-        faction_id: Optional[UUID] = None
-    ) -> List[FactionMission]:
-        """
-        Get available missions for a player.
-        
-        Args:
-            player_id: The player's ID
-            faction_id: Optional specific faction to filter by
-            
-        Returns:
-            List of available missions
-        """
-        # Get player info
-        player = self.db.query(Player).filter(Player.id == player_id).first()
-        if not player:
-            return []
-        
-        # Base query
-        query = self.db.query(FactionMission).filter(
-            and_(
-                FactionMission.is_active == 1,
-                or_(
-                    FactionMission.expires_at.is_(None),
-                    FactionMission.expires_at > datetime.utcnow()
-                )
-            )
-        )
-        
-        # Filter by faction if specified
-        if faction_id:
-            query = query.filter(FactionMission.faction_id == faction_id)
-        
-        missions = query.all()
-        available_missions = []
-        
-        for mission in missions:
-            # Check reputation requirement
-            reputation = await self.get_player_reputation(player_id, mission.faction_id)
-            if reputation and reputation.current_value >= mission.min_reputation:
-                # Check level requirement (you'll need to implement player level)
-                # For now, assume all players meet level requirements
-                available_missions.append(mission)
-        
-        return available_missions
-    
-    async def create_mission(
-        self,
-        faction_id: UUID,
-        title: str,
-        description: str,
-        mission_type: str,
-        credit_reward: int,
-        reputation_reward: int,
-        **kwargs
-    ) -> FactionMission:
-        """Create a new faction mission."""
-        mission = FactionMission(
-            faction_id=faction_id,
-            title=title,
-            description=description,
-            mission_type=mission_type,
-            credit_reward=credit_reward,
-            reputation_reward=reputation_reward,
-            min_reputation=kwargs.get('min_reputation', -800),
-            min_level=kwargs.get('min_level', 1),
-            item_rewards=kwargs.get('item_rewards', []),
-            target_sector_id=kwargs.get('target_sector_id'),
-            cargo_type=kwargs.get('cargo_type'),
-            cargo_quantity=kwargs.get('cargo_quantity'),
-            target_faction_id=kwargs.get('target_faction_id'),
-            expires_at=kwargs.get('expires_at'),
-            is_active=1
-        )
-        
-        self.db.add(mission)
-        self.db.commit()
-        self.db.refresh(mission)
-        
-        return mission
     
     async def update_faction_territory(
         self,

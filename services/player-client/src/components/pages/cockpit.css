@@ -9,8 +9,11 @@
   height: 100%;
   max-height: 100%;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  /* WO-INVERTED-L: positioning context for the full-bleed windshield (the
+     single scene canvas) + the absolutely-placed opaque console segments.
+     Children are positioned, not flowed, so the scene can sit behind the
+     console while the console masks the bottom-left. */
+  position: relative;
 }
 
 /* Override main-viewport padding for cockpit mode */
@@ -20,132 +23,13 @@
   margin: 0 !important;
 }
 
-/* Compress sidebar cockpit cards */
-.game-sidebar .cockpit-card {
-  padding: 0.5rem !important;
-  margin-bottom: 0.5rem !important;
-  min-height: 0 !important;
-  height: auto !important;
-  flex: 0 0 auto !important;
-}
-
-.game-sidebar .cockpit-card-header {
-  padding: 0.4rem 0.5rem !important;
-  margin-bottom: 0.4rem !important;
-  min-height: 0 !important;
-}
-
-.game-sidebar .cockpit-card-title {
-  font-size: 0.75rem !important;
-  margin: 0 !important;
-  line-height: 1.2 !important;
-}
-
-/* Ensure navigation stays at bottom with logout button visible */
-.game-sidebar .game-nav {
-  margin-top: auto !important;
-  flex-shrink: 0 !important;
-}
-
-.game-sidebar .nav-header {
-  font-size: 0.7rem !important;
-  margin-bottom: 0.5rem !important;
-  padding-bottom: 0.25rem !important;
-}
-
-.game-sidebar .nav-list {
-  gap: 0.3rem !important;
-}
-
-.game-sidebar .nav-link {
-  font-size: 0.75rem !important;
-  padding: 0.5rem 0.75rem !important;
-  line-height: 1.2 !important;
-}
-
-.game-sidebar .nav-footer {
-  margin-top: 0.75rem !important;
-  padding-top: 0.5rem !important;
-}
-
-/* Ultra-compress Commander section */
-.game-sidebar .commander-name {
-  font-size: 0.85rem !important;
-  margin-bottom: 0.5rem !important;
-}
-
-.game-sidebar .player-stats {
-  gap: 0.3rem !important;
-}
-
-.game-sidebar .stat-item {
-  padding: 0.3rem 0.4rem !important;
-}
-
-.game-sidebar .stat-label {
-  font-size: 0.65rem !important;
-}
-
-.game-sidebar .data-readout {
-  font-size: 0.85rem !important;
-}
-
-/* Ultra-compress Vessel Status section */
-.game-sidebar .ship-name {
-  font-size: 0.85rem !important;
-  margin-bottom: 0.25rem !important;
-}
-
-.game-sidebar .ship-type {
-  font-size: 0.7rem !important;
-  margin-bottom: 0.4rem !important;
-}
-
-.game-sidebar .cargo-header {
-  font-size: 0.7rem !important;
-  margin: 0.4rem 0 0.25rem 0 !important;
-}
-
-.game-sidebar .cargo-list {
-  gap: 0.2rem !important;
-}
-
-.game-sidebar .cargo-item {
-  padding: 0.25rem 0.3rem !important;
-  font-size: 0.7rem !important;
-}
-
-.game-sidebar .empty-cargo,
-.game-sidebar .no-ship {
-  padding: 0.5rem !important;
-  font-size: 0.7rem !important;
-}
-
-/* Ultra-compress Nav Coords section */
-.game-sidebar .sector-name {
-  font-size: 0.85rem !important;
-  margin-bottom: 0.25rem !important;
-}
-
-.game-sidebar .sector-designation {
-  font-size: 0.75rem !important;
-  margin-bottom: 0.25rem !important;
-}
-
-.game-sidebar .sector-type {
-  font-size: 0.65rem !important;
-  padding: 0.2rem 0.3rem !important;
-  margin-bottom: 0.3rem !important;
-}
-
-.game-sidebar .sector-hazard {
-  padding: 0.25rem 0.3rem !important;
-  margin-top: 0.3rem !important;
-}
-
-.game-sidebar .unknown-sector {
-  padding: 0.5rem !important;
-  font-size: 0.7rem !important;
+/* WO-INVERTED-L: cockpit mode makes .game-dashboard the positioning ancestor of
+   the absolute windshield/console/helm-rail, so the base hud-boot transform +
+   filter (game-dashboard.css) would scale them and form a transient stacking
+   context on every mount. Disable the boot animation in cockpit mode only
+   (non-cockpit dashboard variants keep it). */
+.game-dashboard.cockpit-mode {
+  animation: none;
 }
 
 /* ============================================
@@ -153,11 +37,483 @@
    ============================================ */
 
 .cockpit-windshield {
-  position: relative;
-  width: 100%;
-  height: 40%;
+  /* WO-INVERTED-L: the SINGLE full-bleed scene canvas. Fills the whole
+     dashboard (= the whole container) and sits at the BACK (z:1); the opaque
+     console overlays its bottom-left, so the visible scene reads as the
+     inverted-L (full-width top band + right column). No longer a fixed top
+     band and no flex-basis collapse — the band is just the part of this
+     full-bleed scene above the console, ~--band-h tall. */
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   overflow: hidden;
   background: #000;
+  /* Let the scene fill the full bleed (was centered for the small band). */
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+/* DOCKED-MINIMIZE: a few seconds after docking the low-value station-bay
+   scenery collapses to a thin identity strip, handing the band to the station
+   console (the buy/sell desk + venues). Toggleable by the player. */
+.cockpit-mode.docked-min .cockpit-windshield {
+  flex-basis: 34px;
+}
+/* Hide the bay canvas, frame and HUD chips while minimized — show only the
+   slim docked strip. */
+.cockpit-mode.docked-min .cockpit-windshield > *:not(.docked-min-bar) {
+  display: none !important;
+}
+.docked-min-bar { display: none; }
+.cockpit-mode.docked-min .docked-min-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  height: 34px;
+  padding: 0 14px;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(0, 30, 40, 0.95), rgba(0, 12, 20, 0.95));
+  border-bottom: 1px solid rgba(0, 217, 255, 0.3);
+  font-family: 'Courier New', monospace;
+}
+.docked-min-name {
+  color: #00d9ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.5);
+}
+.docked-min-expand {
+  flex-shrink: 0;
+  background: rgba(0, 217, 255, 0.1);
+  color: #00d9ff;
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.docked-min-expand:hover {
+  background: rgba(0, 217, 255, 0.22);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+/* Manual "minimize bay" button — bottom-center of the expanded bay. */
+.bay-minimize-btn {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  background: rgba(0, 12, 20, 0.7);
+  color: rgba(0, 217, 255, 0.85);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  padding: 3px 12px;
+  cursor: pointer;
+  backdrop-filter: blur(3px);
+  transition: all 0.15s ease;
+}
+.bay-minimize-btn:hover {
+  background: rgba(0, 217, 255, 0.18);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.35);
+}
+/* While minimized the manual button is irrelevant (whole bay hidden) */
+.cockpit-mode.docked-min .bay-minimize-btn { display: none; }
+
+/* LANDED-MINIMIZE: parity with docked-minimize for the planet-surface scene —
+   a few seconds after landing the surface vista collapses to a thin identity
+   strip, handing the band to the planetary console. Toggleable by the player.
+   Green/surface accent vs the cyan station treatment. */
+.cockpit-mode.landed-min .cockpit-windshield {
+  flex-basis: 34px;
+}
+.cockpit-mode.landed-min .cockpit-windshield > *:not(.landed-min-bar) {
+  display: none !important;
+}
+.landed-min-bar { display: none; }
+.cockpit-mode.landed-min .landed-min-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  height: 34px;
+  padding: 0 14px;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(0, 40, 22, 0.95), rgba(0, 18, 10, 0.95));
+  border-bottom: 1px solid rgba(0, 255, 127, 0.3);
+  font-family: 'Courier New', monospace;
+}
+.landed-min-name {
+  color: #00ff7f;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 0 8px rgba(0, 255, 127, 0.5);
+}
+.landed-min-expand {
+  flex-shrink: 0;
+  background: rgba(0, 255, 127, 0.1);
+  color: #00ff7f;
+  border: 1px solid rgba(0, 255, 127, 0.45);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.landed-min-expand:hover {
+  background: rgba(0, 255, 127, 0.22);
+  box-shadow: 0 0 8px rgba(0, 255, 127, 0.4);
+}
+/* Right-hand action cluster on the green landed bar: EXPAND SURFACE + the
+   single LIFT OFF (WO 129-C). */
+.landed-min-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* LIFT OFF lives on the green bar — amber so it reads as the depart action,
+   distinct from the green expand affordance beside it. */
+.landed-min-liftoff {
+  flex-shrink: 0;
+  background: rgba(251, 191, 36, 0.12);
+  color: #fde68a;
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.landed-min-liftoff:hover:not(:disabled) {
+  background: rgba(251, 191, 36, 0.24);
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.4);
+}
+.landed-min-liftoff:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* EXPANDED-state surface controls — Minimize Surface + Lift Off grouped as an
+   ABSOLUTE corner cluster over the vista (Max + Orchestrator placement decision,
+   superseding the earlier bottom-left dock). Anchored top-right at 3.4rem
+   (y≈54), sitting ABOVE the owner HUD chip (now at top:5.5rem / y≈88 after the
+   cascade fix — see .hud-overlay.top-right[data-hud-chip="owner"] below).
+   Both buttons are corner controls over the surface, so neither pushes/overlaps
+   the planet viewport. .cockpit-windshield is position:relative.
+   Scoped to the landed render's cluster, so the shared docked-bay
+   .bay-minimize-btn (bottom-center) is untouched. */
+.landed-surface-controls {
+  position: absolute;
+  top: 3.4rem;
+  right: 1.5rem;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Inside the cluster the buttons flow normally (override their standalone
+   absolute positioning — the docked bay-minimize-btn, NOT in this cluster,
+   keeps its bottom-center anchor). */
+.landed-surface-controls .bay-minimize-btn,
+.landed-surface-controls .landed-min-liftoff.expanded {
+  position: static;
+  transform: none;
+  bottom: auto;
+  left: auto;
+  backdrop-filter: blur(3px);
+}
+.cockpit-mode.landed-min .bay-minimize-btn { display: none; }
+
+/* Build-progress beacon in the minimized-surface strip (amber construction). */
+.landed-min-build {
+  flex-shrink: 0;
+  color: #ffaa44;
+  font-family: 'Courier New', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 8px rgba(255, 170, 68, 0.5);
+  white-space: nowrap;
+}
+
+/* CITADEL CONSTRUCTION INDICATOR — live time-based build readout in the landed
+   console (the server timer already runs; this surfaces it). Amber CRT idiom. */
+.citadel-construction {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 170, 68, 0.45);
+  border-radius: 4px;
+  background:
+    repeating-linear-gradient(transparent 0, transparent 3px, rgba(0, 0, 0, 0.18) 3px, rgba(0, 0, 0, 0.18) 4px),
+    linear-gradient(180deg, rgba(40, 26, 0, 0.6), rgba(20, 12, 0, 0.6));
+  font-family: 'Courier New', monospace;
+}
+.citadel-construction .cc-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.citadel-construction .cc-title {
+  color: #ffaa44;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 8px rgba(255, 170, 68, 0.5);
+  animation: cc-breathe 2s ease-in-out infinite;
+}
+.citadel-construction .cc-target {
+  color: rgba(255, 200, 130, 0.9);
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+}
+.citadel-construction .cc-bar {
+  height: 10px;
+  background: rgba(255, 170, 68, 0.12);
+  border: 1px solid rgba(255, 170, 68, 0.3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.citadel-construction .cc-fill {
+  height: 100%;
+  background-color: #ffaa44;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(0, 0, 0, 0.22) 0, rgba(0, 0, 0, 0.22) 6px,
+    transparent 6px, transparent 12px);
+  background-size: 24px 24px;
+  animation: cc-march 0.8s linear infinite;
+  transition: width 0.6s linear;
+  box-shadow: 0 0 8px rgba(255, 170, 68, 0.55);
+}
+.citadel-construction .cc-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 0.68rem;
+  color: rgba(255, 200, 140, 0.85);
+  font-variant-numeric: tabular-nums;
+}
+.citadel-construction .cc-pct { font-weight: 700; color: #ffaa44; }
+.citadel-construction .cc-eta { opacity: 0.75; }
+.citadel-construction .cc-cancel {
+  flex-shrink: 0;
+  background: rgba(255, 90, 90, 0.12);
+  color: #ff8a8a;
+  border: 1px solid rgba(255, 90, 90, 0.5);
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.citadel-construction .cc-cancel:hover:not(:disabled) {
+  background: rgba(255, 90, 90, 0.24);
+  box-shadow: 0 0 8px rgba(255, 90, 90, 0.4);
+}
+.citadel-construction .cc-cancel:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Defense buildings list (citadel-unlocked structures) in the defense panel. */
+.defense-buildings {
+  margin-top: 8px;
+  border-top: 1px solid rgba(255, 170, 68, 0.18);
+  padding-top: 6px;
+}
+.defense-buildings .db-head {
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(255, 190, 110, 0.9);
+  margin-bottom: 4px;
+}
+.defense-buildings .db-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+}
+.defense-buildings .db-name { color: var(--text-primary, #e0e0e0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.defense-buildings .db-count { color: rgba(255, 190, 110, 0.85); font-variant-numeric: tabular-nums; }
+.defense-buildings .db-cost { color: var(--text-secondary, #9aa); font-variant-numeric: tabular-nums; }
+.defense-buildings .db-build {
+  background: rgba(255, 170, 68, 0.14);
+  color: #ffaa44;
+  border: 1px solid rgba(255, 170, 68, 0.5);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.65rem;
+  padding: 2px 9px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.defense-buildings .db-build:hover:not(:disabled) { background: rgba(255, 170, 68, 0.26); box-shadow: 0 0 8px rgba(255, 170, 68, 0.4); }
+.defense-buildings .db-build:disabled { opacity: 0.45; cursor: not-allowed; }
+.defense-buildings .db-max { color: var(--text-secondary, #9aa); font-size: 0.62rem; letter-spacing: 0.05em; }
+.defense-buildings .db-row-wrap { padding: 1px 0; }
+.defense-buildings .db-queued { color: #ffce6a; font-style: normal; font-size: 0.62rem; }
+.defense-buildings .db-building {
+  color: #ffce6a;
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.defense-buildings .db-bar {
+  height: 3px;
+  margin: 1px 0 3px;
+  background: rgba(255, 170, 68, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.defense-buildings .db-bar-fill {
+  height: 100%;
+  background: repeating-linear-gradient(90deg, rgba(255, 170, 68, 0.85) 0 6px, rgba(255, 206, 106, 0.5) 6px 12px);
+  background-size: 12px 100%;
+  animation: cc-march 0.9s linear infinite;
+  transition: width 1s linear;
+}
+
+/* Cost sub-label inside an action button (e.g. shield upgrade). */
+.btn-sublabel { display: block; font-size: 0.6rem; opacity: 0.8; margin-top: 1px; font-weight: 400; }
+
+/* Pre-flight requirement checklist on the citadel upgrade confirm. */
+.preflight { list-style: none; margin: 5px 0 2px; padding: 0; font-family: 'Courier New', monospace; font-size: 0.66rem; }
+.preflight li { padding: 1px 0; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.preflight li.ok { color: #66dd99; }
+.preflight li.no { color: #ff7a6b; }
+
+/* 25/50/75 quick-fill presets in the citadel safe deposit/withdraw form. */
+.safe-presets { display: inline-flex; gap: 4px; }
+.safe-btn.preset { padding: 2px 7px; font-size: 0.62rem; }
+
+/* Citadel safe vault fill bar. */
+.vault-bar {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 200, 70, 0.1);
+  border: 1px solid rgba(255, 200, 70, 0.3);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 4px 0;
+}
+.vault-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(255, 200, 70, 0.7), rgba(255, 170, 40, 0.95));
+  box-shadow: 0 0 8px rgba(255, 200, 70, 0.5);
+  transition: width 0.4s ease;
+}
+@keyframes cc-march { from { background-position: 0 0; } to { background-position: 24px 0; } }
+@keyframes cc-breathe { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+
+/* STATION VENUE TABS — the places you can visit while docked, in the console
+   header. Buy/sell (TRADE) is the default tab. */
+.screen-hud-header.station-venue-header {
+  padding-top: 4px;
+  padding-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* UNDOCK & LAUNCH button in the regular-station header (non-SpaceDock docking).
+   Mirrors the SpaceDock hub-undock-btn aesthetic. */
+.station-undock-btn {
+  flex-shrink: 0;
+  padding: 0.3rem 0.65rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.5);
+  border-radius: 4px;
+  color: #00d9ff;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+.station-undock-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.22);
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.35);
+}
+.station-undock-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* B5 — visual separation: right-aligned action zone so it reads as a
+   departure control, not a 3rd tab. Box-shadow ambient glow and
+   margin-left:auto push it away from the tablist. */
+.station-undock-btn.station-undock-action {
+  margin-left: auto;
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.2);
+}
+.station-undock-btn.station-undock-action:not(:disabled) {
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+}
+.station-venue-tabs {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.venue-tab {
+  background: rgba(0, 217, 255, 0.06);
+  color: rgba(0, 217, 255, 0.7);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 4px 4px 0 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.venue-tab:hover {
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.14);
+}
+.venue-tab.active {
+  color: #00121a;
+  background: #00d9ff;
+  border-color: #00d9ff;
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.4);
 }
 
 /* Override SectorViewport styles for full immersion */
@@ -165,6 +521,7 @@
   border-radius: 0;
   width: 100%;
   height: 100%;
+  max-height: 100%; /* never push past the windshield band */
   box-shadow: none;
   background: transparent !important;
   display: flex;
@@ -197,7 +554,7 @@
 }
 
 /* Cockpit frame with corner brackets */
-.cockpit-frame {
+.windshield-frame {
   position: absolute;
   top: 0;
   left: 0;
@@ -208,7 +565,7 @@
 }
 
 /* Vignette effect - subtle edge darkening */
-.cockpit-frame::before {
+.windshield-frame::before {
   content: '';
   position: absolute;
   top: 0;
@@ -267,16 +624,76 @@
 
 .hud-overlay {
   position: absolute;
-  background: linear-gradient(135deg, rgba(0, 10, 20, 0.85) 0%, rgba(0, 5, 10, 0.9) 100%);
-  border: 1px solid rgba(0, 217, 255, 0.4);
+  /* True HUD glass: readouts float over the scene instead of hiding it —
+     near-transparent frosted panel, the glowing text carries the data.
+     Clicks pass through to the scenery (pointer-events: none); the tiny
+     minimize tab is the chip's only interactive surface. */
+  background: rgba(0, 10, 16, 0.38);
+  border: 1px solid rgba(0, 217, 255, 0.25);
   border-radius: 4px;
-  padding: 0.75rem 1rem;
-  backdrop-filter: blur(8px);
+  /* Extra right padding clears the minimize tab in the corner */
+  padding: 0.75rem 1.6rem 0.75rem 1rem;
+  backdrop-filter: blur(3px);
   box-shadow:
-    0 0 20px rgba(0, 217, 255, 0.2),
-    inset 0 1px 0 rgba(0, 217, 255, 0.1);
+    0 0 14px rgba(0, 217, 255, 0.12),
+    inset 0 1px 0 rgba(0, 217, 255, 0.08);
   z-index: 20;
   animation: hud-fade-in 0.6s ease-out;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+}
+
+/* Ghost-on-approach: GameDashboard toggles this class as the cursor nears a
+   chip (chips can't use :hover — they're pointer-events: none glass), fading
+   the chip so the scene behind it stays inspectable. */
+.hud-overlay.hud-ghost {
+  opacity: 0.12;
+}
+
+/* Minimize/restore tab — the chip's ONLY interactive surface */
+.hud-chip-tab {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  background: rgba(0, 10, 16, 0.5);
+  border: 1px solid rgba(0, 217, 255, 0.35);
+  border-radius: 2px;
+  color: rgba(0, 217, 255, 0.85);
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.hud-chip-tab:hover {
+  background: rgba(0, 217, 255, 0.18);
+  color: #00d9ff;
+}
+
+/* Minimized chip: a compact pill carrying only the essential datum */
+.hud-overlay.hud-minimized {
+  padding: 0.3rem 1.5rem 0.3rem 0.6rem;
+}
+
+.hud-pill {
+  font-family: 'Courier New', monospace;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #00d9ff;
+  text-shadow: 0 0 10px rgba(0, 217, 255, 0.7);
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Scan-line effect on HUD */
@@ -319,6 +736,39 @@
   left: 1.5rem;
 }
 
+/* LOCATION chip only: pulled slightly down from the band edge + tighter
+   internal vertical padding (WO-PLAYER-HEADER part 3 — pilot line removed,
+   chip is now smaller; give it breathing room above and compress slightly). */
+.hud-overlay[data-hud-chip="location"] {
+  top: 1.9rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+/* LANDED chips: the pvh-name+identity column and the pvh-logout button both
+   sit in .player-vitals-hud (top:0.3rem; total height ~2.6rem), so chips at
+   the default top:1.5rem overlap the HUD chrome. Push them below the HUD.
+   Scoped by chip id so in-flight chips (.top-left location, .top-right sector)
+   are unaffected.
+
+   SPECIFICITY NOTE — "landed" is top-left: its [data-hud-chip] rule appears
+   after .hud-overlay.top-left in document order (same (0,2,0) specificity →
+   later wins). That accident works in our favour.
+
+   "owner" is top-right: .hud-overlay.top-right (line below) appears AFTER the
+   bare attribute rule and has the same (0,2,0) specificity, so it would win and
+   restore top:1.5rem — defeating the offset entirely. Fix: combine the selector
+   to (0,3,0) so it beats .hud-overlay.top-right unconditionally. The expanded-
+   surface controls (Minimize + Lift Off) sit at top:3.4rem (y≈54–80); the owner
+   chip must clear them. top:5.5rem = 88px leaves 8px margin below Lift Off's
+   bottom edge (y≈80) and well below Logout (y≈12–32). */
+.hud-overlay[data-hud-chip="landed"] {
+  top: 3rem;
+}
+.hud-overlay.top-right[data-hud-chip="owner"] {
+  top: 5.5rem;
+}
+
 .hud-overlay.top-right {
   top: 1.5rem;
   right: 1.5rem;
@@ -341,6 +791,33 @@
   max-width: 600px;
 }
 
+/* Anchor normalization (GLASS LAW): opposing chips cap at 34% of the band
+   so left/right pairs can never collide, even at 1440x850 with long
+   region / station / planet names — the name lines ellipsize instead. The
+   34% cap (down from 42%) also leaves a wide-enough central gap for the
+   top-center .player-vitals-hud strip: gap = 0.32*W - 48px (~310px at the
+   1440 sidebar-open width), clearing the HUD's 280px cap. (id=139 item 1) */
+.hud-overlay.top-left,
+.hud-overlay.bottom-left,
+.hud-overlay.top-right,
+.hud-overlay.bottom-right {
+  max-width: 34%;
+}
+
+/* Entity-name readout inside a chip — smaller than the SECTOR numerals,
+   single line, ellipsized (full name in the title tooltip) */
+.hud-value.hud-chip-name {
+  font-size: 1.05rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-value.hud-chip-ok {
+  color: #00ff41;
+  text-shadow: 0 0 15px rgba(0, 255, 65, 0.8);
+}
+
 /* HUD Typography */
 .hud-label {
   font-size: 0.65rem;
@@ -359,6 +836,8 @@
   text-shadow: 0 0 15px rgba(0, 217, 255, 0.8);
   font-family: 'Courier New', monospace;
   margin-bottom: 0.2rem;
+  /* Short readouts (SECTOR n, n/10, %) must never wrap mid-line */
+  white-space: nowrap;
 }
 
 .hud-value.danger {
@@ -376,6 +855,19 @@
   font-weight: 600;
   color: rgba(0, 217, 255, 0.8);
   margin-bottom: 0.5rem;
+}
+
+/* Region name - friendly display_name on its own smaller line under the
+   primary SECTOR readout; single-line ellipsis (full name in tooltip) */
+.hud-region-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(0, 217, 255, 0.7);
+  margin-bottom: 0.3rem;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hud-pilot {
@@ -449,23 +941,62 @@
    ============================================ */
 
 .cockpit-console {
-  height: 60%;
-  background: linear-gradient(
+  /* DECK (id=149 REDEFINED — Max's exact layout): the instrument strip at the
+     BOTTOM, spanning the FULL width RIGHT of the narrow sidebar (left:
+     --sidebar-w → right:0). The 3 monitors (NAV warp-graph + course PLOT ·
+     PLANETARY · COMMS) lay out side-by-side in a WIDE 3-up grid with a real row
+     height (grid-template-rows:1fr → each .monitor-screen fills, no header-only
+     collapse). Scene shows in the right-of-sidebar area ABOVE this deck = the ⌐.
+     Docked/landed raise the top to fill the full right-of-sidebar height (the
+     container's --deck-h goes full under .console-expand). */
+  position: absolute;
+  left: var(--sidebar-w);
+  right: 0;
+  top: calc(100% - var(--deck-h));
+  bottom: 0;
+  z-index: 20;
+  box-sizing: border-box;
+  transition: left 0.3s ease, top 0.3s ease;
+  /* OPAQUE CRT backing — explicit background-COLOR (not only a gradient, which
+     is background-image and leaves background-color transparent → read as a
+     void, id=149). Subtle translucent sheen→shade overlay for the metal feel. */
+  background-color: #1a1d24;
+  background-image: linear-gradient(
     180deg,
-    #1a1d24 0%,
-    #0f1117 50%,
-    #0a0d12 100%
+    rgba(255, 255, 255, 0.015) 0%,
+    rgba(0, 0, 0, 0.22) 100%
   );
-  border-top: 3px solid #2a2f3a;
+  /* WO-PANEL-3D-EDGE: top edge (viewport-facing) gets a subtle raised/proud bevel —
+     inset inner highlight + upward outer shadow so the deck reads slightly proud of
+     the solar-system scene above it. CRT line-style, not heavy chrome. */
+  border-top: 2px solid rgba(77, 132, 253, 0.28);
   display: grid;
-  grid-template-columns: 460px 1fr 340px;
+  /* WO-COCKPIT-ADJ #4: PLANETARY · NAV · COMMS order, ~30/40/30 split.
+     gap:0 so fr units claim all content-box width directly.
+     3:4:3 = 30% / 40% / 30% rendered.
+     .planetary-monitor gets order:-1 to render first despite DOM order. */
+  grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr);
+  grid-template-rows: 1fr;
   gap: 0;
-  padding: 1rem;
+  /* WO-DECK-TIGHTEN: 0.5rem → 0.3rem outer padding — grows panels slightly;
+     3fr/4fr/3fr ratio untouched. */
+  padding: 0.3rem;
+  /* WO-PANEL-3D-EDGE: inset top highlight + upward outer shadow on top edge only. */
   box-shadow:
-    inset 0 8px 12px rgba(0, 0, 0, 0.6),
-    0 -4px 20px rgba(0, 0, 0, 0.8);
-  position: relative;
+    inset 0 0 24px rgba(0, 0, 0, 0.45),
+    inset 0 2px 5px rgba(255, 255, 255, 0.06),
+    0 -3px 8px rgba(0, 0, 0, 0.35);
   overflow: hidden;
+}
+
+/* WO-INVERTED-L retires the 34px green-bar collapse: the band is always present
+   and docked/landed EXPAND the console instead. GameDashboard no longer applies
+   .docked-min/.landed-min, so the windshield-collapse rules above never fire;
+   hide the now-defunct "minimize surface / bay" buttons (the min-bars they
+   toggled never render). LIFT OFF stays — it lives in .landed-surface-controls,
+   not on a min-bar. */
+.bay-minimize-btn {
+  display: none !important;
 }
 
 /* Metallic texture overlay */
@@ -499,10 +1030,18 @@
 
 .console-monitor {
   position: relative;
+  /* Grid items default to min-width:auto and refuse to shrink below their
+     content, defeating the minmax() columns above. */
+  min-width: 0;
   background: transparent;
-  padding: 0.75rem;
-  max-height: 85%;
+  /* WO-DECK-TIGHTEN: 0.4rem → 0.25rem inner padding — tightens inter-panel
+     gutter (0.4+0.4=0.8rem between content areas → 0.25+0.25=0.5rem). */
+  padding: 0.25rem;
+  max-height: 100%;
+  min-height: 0;  /* allow grid item to shrink so overflow works */
   border-right: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
 }
 
 .console-monitor:last-child {
@@ -573,7 +1112,12 @@
 .monitor-screen {
   position: relative;
   width: 100%;
-  height: 100%;
+  /* `flex: 1 1 0` + `min-height: 0` so this inner panel takes whatever
+     the console-monitor (a flex column) gives it without growing past
+     the parent. `height: 100%` alone is flaky when the parent is itself
+     a flex item with a `min-height: 0` constraint. */
+  flex: 1 1 0;
+  min-height: 0;
   background: rgba(0, 5, 10, 0.98);
   border: 1px solid rgba(0, 217, 255, 0.2);
   border-radius: 4px;
@@ -588,8 +1132,8 @@
 /* HUD Header - LED lines with label on screen */
 .screen-hud-header {
   position: relative;
-  padding: 0.5rem 0.75rem 0.5rem 0.5rem;
-  font-size: 0.65rem;
+  padding: 0.3rem 0.6rem 0.3rem 0.5rem;
+  font-size: 0.6rem;
   font-weight: 700;
   letter-spacing: 0.2em;
   color: rgba(0, 217, 255, 1);
@@ -610,8 +1154,9 @@
 /* HUD Content - displayed area */
 .screen-hud-content {
   flex: 1;
-  padding: 0.75rem;
-  margin: 0 0.5rem 0.5rem 0.5rem;
+  min-height: 0;  /* allow overflow-y to clip + scroll within available space */
+  padding: 0.4rem 0.5rem;
+  margin: 0 0.5rem 0.4rem 0.5rem;
   overflow-y: auto;
   overflow-x: hidden;
   border-left: 2px solid rgba(0, 217, 255, 0.5);
@@ -635,6 +1180,67 @@
   pointer-events: none;
 }
 
+/* ============================================
+   NAV SCAN STATE - spinner / timeout / retry
+   ============================================ */
+
+.nav-scan-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  height: 100%;
+  text-align: center;
+  padding: 1rem;
+}
+
+.nav-scan-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(0, 217, 255, 0.2);
+  border-top-color: #00d9ff;
+  border-radius: 50%;
+  animation: nav-scan-spin 1s linear infinite;
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+}
+
+@keyframes nav-scan-spin {
+  to { transform: rotate(360deg); }
+}
+
+.nav-scan-text {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: rgba(0, 217, 255, 0.8);
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+
+.nav-scan-text.warning {
+  color: #ffb000;
+  text-shadow: 0 0 8px rgba(255, 176, 0, 0.4);
+}
+
+.nav-scan-retry {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(0, 217, 255, 0.15);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 4px;
+  color: #00d9ff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nav-scan-retry:hover {
+  background: rgba(0, 217, 255, 0.25);
+  border-color: rgba(0, 217, 255, 0.7);
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
+}
+
 /* Specific monitor styling */
 .nav-monitor .monitor-bezel {
   border-color: rgba(0, 217, 255, 0.3);
@@ -649,6 +1255,21 @@
   bottom: 0;
   box-shadow: inset 0 0 40px rgba(0, 217, 255, 0.1);
   pointer-events: none;
+}
+
+/* WO-COCKPIT-ADJ-0628: PLANETARY moves to visual column 1 (left).
+   order:-1 beats the default order:0 on nav-monitor and comms-monitor,
+   so grid auto-placement puts PLANETARY first without touching HTML order. */
+.planetary-monitor {
+  order: -1;
+}
+
+/* The planetary monitor's content region is a named inline-size container
+   so planet/station pair internals (planet-port-pair.css) can adapt to the
+   monitor's real width instead of the viewport's. */
+.planetary-monitor .screen-hud-content {
+  container-type: inline-size;
+  container-name: planetary-content;
 }
 
 .planetary-monitor .monitor-bezel {
@@ -762,13 +1383,47 @@
   color: rgba(255, 255, 255, 0.9);
 }
 
+/* Claim refusal — the server's in-fiction message, amber-styled */
+.cockpit-alert.claim-denied {
+  border-color: #ffb000;
+  box-shadow: 0 0 30px rgba(255, 176, 0, 0.4);
+}
+
+.cockpit-alert.claim-denied .alert-header {
+  color: #ffb000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.cockpit-alert .alert-dismiss {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.cockpit-alert .alert-dismiss:hover {
+  color: #ffffff;
+}
+
 /* ============================================
    RESPONSIVE DESIGN
    ============================================ */
 
 @media (max-width: 1400px) {
-  .cockpit-console {
-    grid-template-columns: 380px 1fr 300px;
+  /* WO-INVERTED-L: the 3-up grid only applies when the console is EXPANDED
+     (docked/landed, --console-w:100%). In the narrow space console the base
+     single-column stack + internal scroll holds, so this must NOT re-impose
+     three columns there (it would overflow --console-w). */
+  /* WO-COCKPIT-ADJ #4: updated to match base rule (3fr/4fr/3fr → 30/40/30).
+     Cosmetic here — docked/landed monitors span grid-column:1/-1 anyway. */
+  .game-container.console-expand .cockpit-console {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr);
   }
 
   .nav-monitor .monitor-screen NavigationMap {
@@ -777,14 +1432,16 @@
 }
 
 @media (max-width: 1024px) {
-  .cockpit-windshield {
-    height: 50vh;
-  }
+  /* On narrower viewports the three monitors stack vertically (1
+     column). The windshield keeps its base clamp(240px, 34vh, 380px)
+     basis — a fixed band at every width (GLASS LAW).
 
-  .cockpit-console {
-    height: 50vh;
+     The grid rows use minmax(0, 1fr) so each monitor shrinks
+     correctly inside the flex-constrained console; without min-track-
+     size 0, the rows default to min-content and overflow again. */
+  .game-container.console-expand .cockpit-console {
     grid-template-columns: 1fr;
-    grid-template-rows: 300px 1fr 300px;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
     gap: 0.5rem;
   }
 }
@@ -793,7 +1450,8 @@
 @media (prefers-reduced-motion: reduce) {
   .hud-overlay,
   .cockpit-alert,
-  .hud-bar-fill {
+  .hud-bar-fill,
+  .nav-scan-spinner {
     animation: none;
     transition: none;
   }
@@ -805,80 +1463,13 @@
 }
 
 /* ============================================
-   DOCKED STATE - Station Interior View
+   DOCKED STATE — the band now renders the
+   station-bay canvas scene (SolarSystemViewscreen
+   scene="docked") + HUD chips. The old static
+   interior styles are gone; .station-icon and
+   .station-name remain because tactical cards
+   share those class names.
    ============================================ */
-
-.docked-viewport {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(
-    180deg,
-    #0a1628 0%,
-    #0d1a2d 30%,
-    #1a2a40 70%,
-    #2a3a50 100%
-  );
-  position: relative;
-  overflow: hidden;
-}
-
-/* Station wall texture pattern */
-.docked-viewport::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background:
-    /* Horizontal panels */
-    repeating-linear-gradient(
-      0deg,
-      transparent 0px,
-      transparent 80px,
-      rgba(0, 217, 255, 0.05) 80px,
-      rgba(0, 217, 255, 0.05) 82px
-    ),
-    /* Vertical panels */
-    repeating-linear-gradient(
-      90deg,
-      transparent 0px,
-      transparent 120px,
-      rgba(0, 217, 255, 0.03) 120px,
-      rgba(0, 217, 255, 0.03) 122px
-    );
-  pointer-events: none;
-}
-
-/* Ambient lighting effect */
-.docked-viewport::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: radial-gradient(
-    ellipse at center top,
-    rgba(0, 217, 255, 0.15) 0%,
-    transparent 60%
-  );
-  pointer-events: none;
-}
-
-.station-interior {
-  text-align: center;
-  z-index: 10;
-  padding: 2rem;
-  max-width: 600px;
-}
-
-.station-header {
-  margin-bottom: 2rem;
-}
 
 .station-icon {
   font-size: 4rem;
@@ -898,198 +1489,11 @@
   }
 }
 
-.station-header h2 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  color: #00d9ff;
-  text-shadow: 0 0 20px rgba(0, 217, 255, 0.8);
-  margin: 0 0 0.5rem 0;
-}
-
 .station-name {
   font-size: 1.1rem;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
   margin: 0;
-}
-
-.docking-bay-visual {
-  background: rgba(0, 20, 40, 0.8);
-  border: 2px solid rgba(0, 217, 255, 0.4);
-  border-radius: 8px;
-  padding: 1.5rem 2rem;
-  box-shadow:
-    0 0 30px rgba(0, 217, 255, 0.2),
-    inset 0 0 20px rgba(0, 0, 0, 0.5);
-}
-
-.bay-lights {
-  display: flex;
-  justify-content: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.bay-lights .light {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #333;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
-}
-
-.bay-lights .light.green {
-  background: #00ff41;
-  box-shadow:
-    0 0 10px #00ff41,
-    0 0 20px rgba(0, 255, 65, 0.5),
-    inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  animation: light-blink 2s ease-in-out infinite;
-}
-
-.bay-lights .light.green:nth-child(2) {
-  animation-delay: 0.3s;
-}
-
-.bay-lights .light.green:nth-child(3) {
-  animation-delay: 0.6s;
-}
-
-/* SpaceDock blue lights */
-.bay-lights .light.blue {
-  background: #00d9ff;
-  box-shadow:
-    0 0 10px #00d9ff,
-    0 0 20px rgba(0, 217, 255, 0.5),
-    inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  animation: light-blink-blue 2s ease-in-out infinite;
-}
-
-.bay-lights .light.blue:nth-child(2) {
-  animation-delay: 0.3s;
-}
-
-.bay-lights .light.blue:nth-child(3) {
-  animation-delay: 0.6s;
-}
-
-@keyframes light-blink-blue {
-  0%, 100% {
-    opacity: 1;
-    box-shadow:
-      0 0 10px #00d9ff,
-      0 0 20px rgba(0, 217, 255, 0.5),
-      inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  }
-  50% {
-    opacity: 0.7;
-    box-shadow:
-      0 0 5px #00d9ff,
-      0 0 10px rgba(0, 217, 255, 0.3),
-      inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  }
-}
-
-/* SpaceDock-specific interior styling */
-.station-interior.spacedock {
-  background: linear-gradient(180deg,
-    rgba(0, 30, 60, 0.95) 0%,
-    rgba(0, 50, 100, 0.9) 50%,
-    rgba(0, 30, 60, 0.95) 100%);
-  border-color: rgba(0, 217, 255, 0.5);
-  box-shadow:
-    0 0 40px rgba(0, 217, 255, 0.3),
-    inset 0 0 30px rgba(0, 0, 0, 0.5);
-}
-
-.station-interior.spacedock .station-icon {
-  filter: drop-shadow(0 0 15px rgba(0, 217, 255, 0.6));
-}
-
-.station-interior.spacedock h2 {
-  color: #00d9ff;
-  text-shadow: 0 0 20px rgba(0, 217, 255, 0.6);
-}
-
-.station-interior.spacedock .station-name {
-  color: #00d9ff;
-}
-
-.station-interior.spacedock .bay-message {
-  color: #00d9ff;
-  text-shadow: 0 0 10px rgba(0, 217, 255, 0.6);
-}
-
-.station-interior.spacedock .docking-bay-visual {
-  border-color: rgba(0, 217, 255, 0.4);
-  box-shadow:
-    0 0 30px rgba(0, 217, 255, 0.2),
-    inset 0 0 20px rgba(0, 0, 0, 0.5);
-}
-
-@keyframes light-blink {
-  0%, 100% {
-    opacity: 1;
-    box-shadow:
-      0 0 10px #00ff41,
-      0 0 20px rgba(0, 255, 65, 0.5),
-      inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  }
-  50% {
-    opacity: 0.7;
-    box-shadow:
-      0 0 5px #00ff41,
-      0 0 10px rgba(0, 255, 65, 0.3),
-      inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  }
-}
-
-.bay-message {
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: #00ff41;
-  text-shadow: 0 0 10px rgba(0, 255, 65, 0.6);
-  margin-bottom: 0.5rem;
-}
-
-.bay-status {
-  font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.7);
-}
-
-.undock-button {
-  margin-top: 1.5rem;
-  padding: 1rem 2rem;
-  background: linear-gradient(135deg, #ff6b00 0%, #ef4444 100%);
-  border: 2px solid rgba(255, 107, 0, 0.6);
-  border-radius: 8px;
-  color: white;
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow:
-    0 0 20px rgba(255, 107, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
-.undock-button:hover {
-  background: linear-gradient(135deg, #ff8533 0%, #f56565 100%);
-  border-color: rgba(255, 133, 51, 0.8);
-  transform: translateY(-2px);
-  box-shadow:
-    0 0 30px rgba(255, 107, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
-.undock-button:active {
-  transform: translateY(0);
-  box-shadow:
-    0 0 15px rgba(255, 107, 0, 0.4),
-    inset 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 /* ============================================
@@ -1098,7 +1502,9 @@
 
 .trading-monitor.full-width {
   grid-column: 1 / -1;
-  max-height: 90%;
+  /* Fill the console row — the old 90% cap left a dead band above the
+     viewport edge now that the helm rail owns the vertical seam. */
+  max-height: 100%;
 }
 
 .trading-monitor .monitor-bezel {
@@ -1203,9 +1609,23 @@
   border-color: rgba(0, 255, 65, 0.4);
 }
 
-.contact-list-name {
+/* COMMS-scoped name class: .contact-list-name collided with a tactical-layout
+   rule of the same name, cascading wrong styles onto the cockpit COMMS list */
+.comms-contact-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+/* Inner text ellipsizes so trailing badges (e.g. NPC) always stay visible */
+.comms-contact-name-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .status-indicator {
@@ -1237,79 +1657,64 @@
 }
 
 /* ============================================
-   LANDED STATE - Planetary Surface View
+   LANDED STATE — the band now renders the
+   planet-surface vista canvas scene
+   (SolarSystemViewscreen scene="landed") + HUD
+   chips. The vitals/status/rename console moved
+   into PLANETARY OPERATIONS COMMAND below. The
+   .planet-icon / .planet-name / .planet-type /
+   .planet-owner rules remain because tactical
+   cards share those class names.
    ============================================ */
 
-.landed-viewport {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(
-    180deg,
-    #1a0a28 0%,
-    #2d1a3d 30%,
-    #3a2a4a 70%,
-    #4a3a5a 100%
-  );
-  position: relative;
-  overflow: hidden;
+/* Planet-type accent tints (RGB triplets consumed via rgba(var(...))) —
+   now generic so any element (e.g. the console VITALS block) can carry
+   one. The attribute selector seeds the default purple at the same
+   specificity, ahead of the per-type overrides. */
+[class*='planet-tint-'] {
+  --planet-accent: 147, 51, 234;
 }
 
-/* Planetary surface texture pattern */
-.landed-viewport::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background:
-    /* Terrain lines */
-    repeating-linear-gradient(
-      0deg,
-      transparent 0px,
-      transparent 60px,
-      rgba(147, 51, 234, 0.05) 60px,
-      rgba(147, 51, 234, 0.05) 62px
-    ),
-    /* Rocky formations */
-    repeating-linear-gradient(
-      45deg,
-      transparent 0px,
-      transparent 100px,
-      rgba(147, 51, 234, 0.03) 100px,
-      rgba(147, 51, 234, 0.03) 102px
-    );
-  pointer-events: none;
+.planet-tint-terran,
+.planet-tint-terra,
+.planet-tint-m_class,
+.planet-tint-jungle {
+  --planet-accent: 34, 197, 94;
 }
 
-/* Atmospheric glow effect */
-.landed-viewport::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: radial-gradient(
-    ellipse at center top,
-    rgba(147, 51, 234, 0.2) 0%,
-    transparent 60%
-  );
-  pointer-events: none;
+.planet-tint-oceanic,
+.planet-tint-o_class {
+  --planet-accent: 56, 189, 248;
 }
 
-.planet-surface {
-  text-align: center;
-  z-index: 10;
-  padding: 2rem;
-  max-width: 600px;
+.planet-tint-desert,
+.planet-tint-k_class {
+  --planet-accent: 245, 158, 11;
 }
 
-.planet-header {
-  margin-bottom: 0;
+.planet-tint-volcanic,
+.planet-tint-h_class {
+  --planet-accent: 239, 68, 68;
+}
+
+.planet-tint-barren,
+.planet-tint-d_class {
+  --planet-accent: 148, 163, 184;
+}
+
+.planet-tint-ice,
+.planet-tint-frozen,
+.planet-tint-c_class {
+  --planet-accent: 125, 211, 252;
+}
+
+.planet-tint-mountainous,
+.planet-tint-l_class {
+  --planet-accent: 168, 162, 158;
+}
+
+.planet-tint-gas_giant {
+  --planet-accent: 192, 132, 252;
 }
 
 .planet-icon {
@@ -1405,63 +1810,6 @@
   box-shadow: 0 0 15px rgba(147, 51, 234, 0.4);
 }
 
-.planetary-surface-visual {
-  background: rgba(20, 10, 30, 0.8);
-  border: 2px solid rgba(147, 51, 234, 0.4);
-  border-radius: 8px;
-  padding: 1.5rem 2rem;
-  box-shadow:
-    0 0 30px rgba(147, 51, 234, 0.2),
-    inset 0 0 20px rgba(0, 0, 0, 0.5);
-}
-
-.surface-lights {
-  display: flex;
-  justify-content: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.surface-lights .light {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #333;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
-}
-
-.surface-lights .light.green {
-  background: #00ff41;
-  box-shadow:
-    0 0 10px #00ff41,
-    0 0 20px rgba(0, 255, 65, 0.5),
-    inset 0 2px 4px rgba(255, 255, 255, 0.3);
-  animation: light-blink 2s ease-in-out infinite;
-}
-
-.surface-lights .light.green:nth-child(2) {
-  animation-delay: 0.3s;
-}
-
-.surface-lights .light.green:nth-child(3) {
-  animation-delay: 0.6s;
-}
-
-.surface-message {
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: #00ff41;
-  text-shadow: 0 0 10px rgba(0, 255, 65, 0.6);
-  margin-bottom: 0.5rem;
-}
-
-.surface-status {
-  font-size: 0.8rem;
-  color: rgba(255, 255, 255, 0.7);
-  margin-bottom: 1rem;
-}
-
 .planet-stats {
   display: flex;
   flex-direction: column;
@@ -1493,38 +1841,159 @@
   font-family: 'Courier New', monospace;
 }
 
-.liftoff-button {
-  margin-top: 1.5rem;
-  padding: 1rem 2rem;
-  background: linear-gradient(135deg, #9333ea 0%, #7c3aed 100%);
-  border: 2px solid rgba(147, 51, 234, 0.6);
-  border-radius: 8px;
-  color: white;
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow:
-    0 0 20px rgba(147, 51, 234, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+/* Planet vitals — habitability dial + population/colonist bars.
+   Relocated from the old landed band into the PLANETARY OPERATIONS
+   console (the .planet-section.vitals block below). */
+.planet-vitals {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(var(--planet-accent, 147, 51, 234), 0.3);
 }
 
-.liftoff-button:hover {
-  background: linear-gradient(135deg, #a855f7 0%, #8b5cf6 100%);
+/* Console VITALS block — compact row at the top of planet-content,
+   tinted by the planet-tint-* accent it carries */
+.planet-section.vitals {
+  border-color: rgba(var(--planet-accent, 147, 51, 234), 0.35);
+  padding: 0.5rem 0.75rem;
+}
+
+.planet-section.vitals .planet-vitals {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* Inline planet rename (replaces the old native prompt()) */
+.planet-rename-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.2rem 0;
+}
+
+.planet-rename-input {
+  width: 170px;
+  padding: 0.15rem 0.35rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+  background: rgba(0, 5, 10, 0.8);
+  border: 1px solid rgba(147, 51, 234, 0.5);
+  border-radius: 3px;
+  color: #e9d5ff;
+}
+
+.planet-rename-input:focus {
+  outline: none;
   border-color: rgba(168, 85, 247, 0.8);
-  transform: translateY(-2px);
-  box-shadow:
-    0 0 30px rgba(147, 51, 234, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: 0 0 8px rgba(147, 51, 234, 0.35);
 }
 
-.liftoff-button:active {
-  transform: translateY(0);
-  box-shadow:
-    0 0 15px rgba(147, 51, 234, 0.4),
-    inset 0 2px 4px rgba(0, 0, 0, 0.3);
+.vital-dial {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
 }
+
+.vital-dial .dial-face {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at center, rgba(10, 5, 18, 0.95) 58%, transparent 59%),
+    conic-gradient(
+      rgba(var(--planet-accent, 147, 51, 234), 0.95) calc(var(--dial-pct, 0) * 1%),
+      rgba(255, 255, 255, 0.08) 0
+    );
+  box-shadow: 0 0 12px rgba(var(--planet-accent, 147, 51, 234), 0.35);
+}
+
+.vital-dial .dial-value {
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.vital-dial .dial-label {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.vital-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.vital-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.vital-bar-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.6);
+  width: 80px;
+  text-align: left;
+  flex-shrink: 0;
+}
+
+.vital-bar-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.vital-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.vital-bar-fill.population {
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+}
+
+.vital-bar-fill.colonists {
+  background: linear-gradient(90deg, #fbbf24, #fde047);
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.5);
+}
+
+.vital-bar-value {
+  font-size: 0.7rem;
+  font-family: 'Courier New', monospace;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+}
+
+.vital-bar-row.status {
+  justify-content: space-between;
+}
+
+.vital-bar-row.status .vital-bar-value {
+  color: rgb(var(--planet-accent, 147, 51, 234));
+  font-weight: 600;
+}
+
+/* (The old .liftoff-button is gone — LIFT OFF lives on the helm rail.) */
 
 /* Landing alert details */
 .landing-details {
@@ -1549,7 +2018,7 @@
 
 .planetary-ops-monitor.full-width {
   grid-column: 1 / -1;
-  max-height: 90%;
+  max-height: 100%;
 }
 
 .planetary-ops-monitor .monitor-bezel {
@@ -1586,8 +2055,13 @@
 
 .planetary-ops-content {
   padding: 0.5rem !important;
-  overflow-y: auto;
-  overflow-x: hidden;
+  /* The landed-owned view fits 1440x900 with no page scroll: the tabbed colony
+     console scrolls internally, so this outer area clips. A non-owned / not-yet-
+     owned landed view is short and fits without a scrollbar. */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   height: 100%;
   max-height: 100%;
 }
@@ -1762,9 +2236,128 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   padding: 0.5rem;
   gap: 0.25rem;
+  overflow: hidden; /* the tab body is the only scroller — the page never scrolls */
 }
+
+/* ── COMPACT VITALS STRIP — one slim always-visible row (replaces the tall
+   header + the habitability/population donut + the colonist-transfer panel) ── */
+.planet-vitals-strip {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.85rem;
+  flex-shrink: 0;
+  padding: 0.4rem 0.7rem;
+  background: linear-gradient(135deg, rgba(0, 30, 50, 0.9) 0%, rgba(0, 15, 35, 0.95) 100%);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+}
+
+.planet-vitals-strip .pvs-icon { font-size: 1.15rem; line-height: 1; }
+
+.planet-vitals-strip .pvs-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #e6f6ff;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+  white-space: nowrap;
+}
+
+.planet-vitals-strip .pvs-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.planet-vitals-strip .pvs-stat.type {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #7dd3fc;
+  opacity: 0.85;
+}
+
+.planet-vitals-strip .pvs-label {
+  font-size: 0.55rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6c8aa3;
+}
+
+.planet-vitals-strip .pvs-val {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #d8ecff;
+}
+
+.planet-vitals-strip .pvs-val.green { color: #86efac; }
+
+/* COLONIST TRANSFER group (WO 130-B) — a single labeled cluster pushed to
+   the far right of the strip: a title, the two counts, then the two move
+   buttons, all on one line so the relationship reads plainly. */
+.planet-vitals-strip .pvs-transfer {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  margin-left: auto;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid rgba(125, 211, 252, 0.25);
+  border-radius: 5px;
+  background: rgba(0, 30, 50, 0.4);
+}
+
+.planet-vitals-strip .pvs-transfer-label {
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+  white-space: nowrap;
+}
+
+.planet-vitals-strip .pvs-transfer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.planet-vitals-strip .pvs-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.32rem 0.6rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #bae6fd;
+  background: rgba(0, 30, 50, 0.7);
+  border: 1px solid rgba(125, 211, 252, 0.4);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.planet-vitals-strip .pvs-btn:hover:not(:disabled) {
+  background: rgba(0, 45, 70, 0.9);
+  box-shadow: 0 0 8px rgba(125, 211, 252, 0.35);
+}
+
+.planet-vitals-strip .pvs-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Header - Compact single row */
 .planet-header {
@@ -1956,9 +2549,11 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  /* The tabbed console inside owns its own internal scroll; the page must not
+     scroll, so this fill region clips rather than scrolling. */
+  overflow: hidden;
   margin: 0;
   padding: 0;
 }
@@ -2266,6 +2861,41 @@
   font-style: italic;
 }
 
+/* Colonist cargo callout — shown when the ship is carrying colonists */
+.colonists-aboard {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fbbf24;
+  padding: 0.25rem 0.4rem;
+  margin-bottom: 0.5rem;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 3px;
+}
+
+/* Inline result of the last colonist transfer */
+.transfer-notice {
+  font-size: 0.7rem;
+  padding: 0.3rem 0.45rem;
+  margin-bottom: 0.5rem;
+  border-radius: 3px;
+}
+
+.transfer-notice.success {
+  color: #4ade80;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.transfer-notice.error {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
 /* Production Allocation Section */
 .allocation-section {
   display: flex;
@@ -2352,6 +2982,191 @@
   width: 45px;
   text-align: right;
 }
+
+.alloc-stored {
+  font-size: 0.62rem;
+  color: #7dd3fc;
+  width: 66px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* WO-STORAGEDTO: per-commodity storage-cap cell — a thin fill bar plus a
+   "stored / cap · days-until-full" readout, taking the same right-rail slot as
+   .alloc-stored. Mirrors the .vault-bar fill idiom used by the citadel safe. */
+.alloc-storage-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  width: 116px;
+  white-space: nowrap;
+}
+.alloc-storage-bar {
+  width: 100%;
+  height: 5px;
+  background: rgba(125, 211, 252, 0.12);
+  border: 1px solid rgba(125, 211, 252, 0.25);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.alloc-storage-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(125, 211, 252, 0.6), rgba(96, 165, 250, 0.95));
+  transition: width 0.4s ease;
+}
+.alloc-storage-text {
+  font-size: 0.58rem;
+  color: #7dd3fc;
+  font-variant-numeric: tabular-nums;
+}
+/* Near cap (>=90%): amber. At/over cap: red — production is being wasted. */
+.alloc-storage-cell.near-cap .alloc-storage-fill {
+  background: linear-gradient(90deg, rgba(255, 200, 70, 0.7), rgba(255, 170, 40, 0.95));
+}
+.alloc-storage-cell.near-cap .alloc-storage-text { color: #ffca46; }
+.alloc-storage-cell.near-cap .alloc-storage-bar { border-color: rgba(255, 200, 70, 0.4); }
+.alloc-storage-cell.at-cap .alloc-storage-fill {
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.75), rgba(239, 68, 68, 0.95));
+}
+.alloc-storage-cell.at-cap .alloc-storage-text { color: #f87171; font-weight: 600; }
+.alloc-storage-cell.at-cap .alloc-storage-bar { border-color: rgba(248, 113, 113, 0.5); }
+
+/* Colony-wide overflow banner — server flagged WASTED production at the cap. */
+.storage-overflow-banner {
+  font-size: 0.62rem;
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 4px;
+  padding: 4px 7px;
+  margin-bottom: 5px;
+  line-height: 1.3;
+}
+
+/* Citadel safe — protected commodity storage rows */
+.safe-commodities {
+  width: 100%;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(59, 130, 246, 0.18);
+}
+.safe-commodities .sc-head {
+  font-size: 0.66rem;
+  color: rgba(125, 211, 252, 0.9);
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+.safe-commodities .sc-hint { color: var(--text-secondary, #9aa); font-size: 0.58rem; }
+.safe-commodities .sc-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.68rem;
+}
+.safe-commodities .sc-name {
+  color: var(--text-primary, #e0e0e0);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.safe-commodities .sc-name .sc-cmdty { color: var(--text-primary, #e0e0e0); }
+.safe-commodities .sc-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+/* Explicit, labelled counts replace the old slashed "0 / 29872" pair so a glance
+   tells the player what's protected (in safe) vs raidable (on planet). */
+.safe-commodities .sc-count.protected { color: #7dd3fc; }
+.safe-commodities .sc-count.raidable { color: var(--text-secondary, #9aa); }
+/* Legacy single-cell qty styles, retained for any other callers. */
+.safe-commodities .sc-qty { color: #7dd3fc; font-variant-numeric: tabular-nums; text-align: right; }
+.safe-commodities .sc-qty em { color: var(--text-secondary, #9aa); font-style: normal; }
+.safe-commodities .sc-btn { padding: 2px 8px; font-size: 0.62rem; white-space: nowrap; }
+/* One-line shared-vault explainer under the cap bar (stays one line; no page scroll). */
+.safe-vault-explainer {
+  margin: 0;
+  font-size: 0.6rem;
+  line-height: 1.3;
+  color: var(--text-secondary, #9aa);
+}
+/* Auto-deposit toggle sits at the right of the Stored-Goods header row. */
+.safe-commodities .sc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.safe-commodities .sc-head .sc-autodeposit {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Unified Safe vault (SafeVaultPanel) ── */
+/* The whole panel is the tab body; it fills the viewport-capped .cmc-body (a
+   flex column with a definite height) and scrolls INTERNALLY if it overflows, so
+   the landed view still fits 1440x900 without forcing a page scroll. Uses the
+   same flex:1 1 0 + min-height:0 idiom as the .cockpit-panel tab bodies. */
+.colony-mgmt-console .cmc-body > .safe-vault-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+/* Credit deposit / withdraw block (relocated from the Citadel tab). */
+.safe-credit-io {
+  width: 100%;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(251, 191, 36, 0.18);
+}
+.safe-credit-io .sc-head {
+  font-size: 0.66rem;
+  color: rgba(251, 191, 36, 0.9);
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.safe-credit-tabs {
+  display: inline-flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.safe-credit-tabs .safe-btn { padding: 3px 12px; font-size: 0.68rem; }
+/* The active direction reads brighter; inactive direction dims. */
+.safe-credit-tabs .safe-btn:not(.active) { opacity: 0.55; }
+.safe-credit-tabs .safe-btn.active { opacity: 1; box-shadow: inset 0 0 0 1px currentColor; }
+.safe-credit-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.safe-amount-input {
+  width: 110px;
+  text-align: right;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 4px;
+  color: #ffffff;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+  padding: 3px 6px;
+}
+.safe-amount-input:disabled { opacity: 0.5; cursor: not-allowed; }
+.safe-btn.confirm { padding: 3px 12px; font-size: 0.68rem; margin-left: auto; }
 
 /* Safe Grid - Expanded for all commodities */
 .planet-section.storage {
@@ -3652,4 +4467,653 @@
   .next-requirements {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* ============================================
+   CLAIM CEREMONY - Colony Established Overlay
+   ============================================ */
+
+.claim-celebration-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.78);
+  backdrop-filter: blur(4px);
+  cursor: pointer;
+  animation: claim-overlay-in 0.3s ease-out;
+}
+
+@keyframes claim-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.claim-celebration-card {
+  position: relative;
+  overflow: hidden;
+  text-align: center;
+  min-width: 340px;
+  max-width: 480px;
+  padding: 2.5rem 3rem 2rem;
+  background: linear-gradient(160deg, rgba(10, 25, 15, 0.96) 0%, rgba(4, 12, 8, 0.98) 100%);
+  border: 2px solid rgba(0, 255, 65, 0.55);
+  border-radius: 10px;
+  box-shadow:
+    0 0 40px rgba(0, 255, 65, 0.35),
+    inset 0 0 30px rgba(0, 255, 65, 0.08);
+  animation:
+    claim-card-in 0.45s cubic-bezier(0.18, 0.89, 0.32, 1.28),
+    claim-card-glow 2.4s ease-in-out 0.45s infinite;
+}
+
+@keyframes claim-card-in {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes claim-card-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 40px rgba(0, 255, 65, 0.35),
+      inset 0 0 30px rgba(0, 255, 65, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 60px rgba(0, 255, 65, 0.55),
+      inset 0 0 40px rgba(0, 255, 65, 0.14);
+  }
+}
+
+/* Scanline sweeping down the card */
+.claim-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, rgba(0, 255, 65, 0.9), transparent);
+  pointer-events: none;
+  animation: claim-scan-sweep 2.4s linear infinite;
+}
+
+@keyframes claim-scan-sweep {
+  0% {
+    top: 0;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    top: calc(100% - 3px);
+    opacity: 0;
+  }
+}
+
+.claim-banner {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.25em;
+  color: #00ff41;
+  text-shadow: 0 0 18px rgba(0, 255, 65, 0.7);
+  margin-bottom: 1.2rem;
+}
+
+.claim-planet-icon {
+  font-size: 4rem;
+  margin-bottom: 0.8rem;
+  filter: drop-shadow(0 0 24px rgba(0, 255, 65, 0.5));
+}
+
+.claim-planet-name {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.95);
+  margin-bottom: 1rem;
+}
+
+.claim-detail {
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: 'Courier New', monospace;
+  margin: 0.3rem 0;
+}
+
+.claim-dismiss-hint {
+  margin-top: 1.5rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ============================================
+   COLONIST TRANSFER MODAL
+   ============================================ */
+
+.colonist-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 12, 0.7);
+  backdrop-filter: blur(3px);
+}
+
+.colonist-modal {
+  width: min(420px, calc(100vw - 2rem));
+  background: linear-gradient(160deg, rgba(8, 18, 30, 0.97) 0%, rgba(4, 10, 18, 0.99) 100%);
+  border: 2px solid rgba(34, 197, 94, 0.5);
+  border-radius: 8px;
+  box-shadow: 0 0 40px rgba(34, 197, 94, 0.25);
+  padding: 1.25rem;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.colonist-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.colonist-modal-header h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  letter-spacing: 0.12em;
+  color: #4ade80;
+}
+
+.colonist-modal-close {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.colonist-modal-close:hover {
+  color: #ffffff;
+}
+
+.colonist-modal-route {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.65);
+  margin-bottom: 1rem;
+}
+
+.colonist-qty-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+
+.colonist-qty-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.colonist-qty-slider {
+  width: 100%;
+  accent-color: #22c55e;
+}
+
+.colonist-qty-input-group {
+  display: flex;
+  gap: 0.3rem;
+  justify-content: center;
+}
+
+.qty-step {
+  width: 30px;
+  height: 30px;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  color: #4ade80;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.qty-step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.colonist-qty-input {
+  width: 90px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 4px;
+  color: #ffffff;
+  font-family: 'Courier New', monospace;
+}
+
+.colonist-qty-presets {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.colonist-qty-presets button {
+  flex: 1;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.65rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.8);
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.colonist-qty-presets button:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+.colonist-qty-presets button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.colonist-transfer-summary {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.colonist-transfer-summary .summary-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.colonist-transfer-summary .summary-line .value {
+  font-family: 'Courier New', monospace;
+  color: #4ade80;
+}
+
+.colonist-modal-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.colonist-modal-cancel {
+  flex: 1;
+  padding: 0.5rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.75);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.colonist-modal-confirm {
+  flex: 2;
+  padding: 0.5rem;
+  background: linear-gradient(135deg, #16a34a, #22c55e);
+  border: 1px solid rgba(34, 197, 94, 0.7);
+  color: #04150a;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.colonist-modal-confirm:disabled,
+.colonist-modal-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Reduced motion: ceremony stays static */
+@media (prefers-reduced-motion: reduce) {
+  .claim-celebration-overlay,
+  .claim-celebration-card,
+  .claim-scanline {
+    animation: none;
+  }
+
+  .vital-bar-fill {
+    transition: none;
+  }
+}
+
+/* NAV header with an inline plot row (non-Warp-Jumper variant).
+   Mirrors the flex layout of .nav-header-with-modes (quantum-drive.css). */
+.nav-header-with-plot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* ============================================
+   ADR-0072 AUTOPILOT — NAV MONITOR PLOT ROW
+   Compact inline destination + PLOT button
+   in the screen-hud-header of the NAV monitor.
+   ============================================ */
+
+/* The plot row sits inline in the header; flexbox aligns it to the right */
+.nav-plot-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Numeric sector input — compact CRT styling */
+.nav-plot-input {
+  width: 80px;
+  height: 22px;
+  padding: 0 0.4rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  background: rgba(0, 5, 12, 0.85);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 3px;
+  color: #00d9ff;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+  outline: none;
+  /* Remove browser number spinners — cleaner CRT look */
+  -moz-appearance: textfield;
+}
+
+.nav-plot-input::-webkit-outer-spin-button,
+.nav-plot-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.nav-plot-input::placeholder {
+  color: rgba(0, 217, 255, 0.35);
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+}
+
+.nav-plot-input:focus {
+  border-color: rgba(0, 217, 255, 0.75);
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.3);
+}
+
+/* PLOT button */
+.nav-plot-btn {
+  height: 22px;
+  padding: 0 0.55rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.45);
+  border-radius: 3px;
+  color: #00d9ff;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  flex-shrink: 0;
+}
+
+.nav-plot-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.2);
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.35);
+}
+
+.nav-plot-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: rgba(120, 130, 150, 0.08);
+  border-color: rgba(120, 130, 150, 0.3);
+  color: rgba(180, 190, 210, 0.5);
+  text-shadow: none;
+}
+
+/* ============================================
+   ADR-0072 AUTOPILOT — NAV HEADER BUTTONS
+   Standalone engage/abort buttons that live
+   in the nav-plot-row (no helm-btn base).
+   ============================================ */
+
+/* ENGAGE — cyan, same palette as the plot row */
+.nav-autopilot-engage {
+  height: 22px;
+  padding: 0 0.55rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(0, 217, 255, 0.12);
+  border: 1px solid rgba(0, 217, 255, 0.6);
+  border-radius: 3px;
+  color: #00d9ff;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.7);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  flex-shrink: 0;
+}
+
+.nav-autopilot-engage:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.25);
+  box-shadow: 0 0 14px rgba(0, 217, 255, 0.45);
+}
+
+.nav-autopilot-engage:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ABORT — amber/red accent so it reads as cancel */
+.nav-autopilot-abort {
+  height: 22px;
+  padding: 0 0.55rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(255, 176, 0, 0.12);
+  border: 1px solid rgba(255, 176, 0, 0.6);
+  border-radius: 3px;
+  color: #ffb000;
+  text-shadow: 0 0 8px rgba(255, 176, 0, 0.7);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  flex-shrink: 0;
+}
+
+.nav-autopilot-abort:hover:not(:disabled) {
+  background: rgba(255, 176, 0, 0.25);
+  box-shadow: 0 0 14px rgba(255, 176, 0, 0.45);
+}
+
+.nav-autopilot-abort:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   PLANETARY MONITOR — ASTEROID FIELD STATE
+   HARVEST trigger shown when the sector is an
+   asteroid field with no planets or stations.
+   ============================================ */
+
+.planetary-asteroid-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 100%;
+}
+
+.planetary-asteroid-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: rgba(255, 200, 0, 0.7);
+  text-transform: uppercase;
+}
+
+.planetary-harvest-btn {
+  padding: 0.4rem 1.1rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: rgba(255, 200, 0, 0.1);
+  border: 1px solid rgba(255, 200, 0, 0.5);
+  border-radius: 4px;
+  color: #ffc800;
+  text-shadow: 0 0 6px rgba(255, 200, 0, 0.5);
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+
+.planetary-harvest-btn:hover:not(:disabled) {
+  background: rgba(255, 200, 0, 0.22);
+  box-shadow: 0 0 12px rgba(255, 200, 0, 0.35);
+}
+
+.planetary-harvest-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   ADR-0072 AUTOPILOT — COURSE STRIP
+   Rendered below the warp graph inside
+   .screen-hud-content. Must fit without
+   overflow at 1710x947 and 1440x707.
+   ============================================ */
+
+.nav-course-strip {
+  margin-top: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  background: rgba(0, 217, 255, 0.05);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex-shrink: 0;
+  /* Never overflow the monitor — hops wrap if needed */
+  overflow: hidden;
+}
+
+/* Unreachable refusal variant — amber tint */
+.nav-course-strip.nav-course-unreachable {
+  background: rgba(255, 176, 0, 0.06);
+  border-color: rgba(255, 176, 0, 0.3);
+  color: #ffb000;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
+  line-height: 1.3;
+}
+
+/* Breadcrumb row — hop sector numbers */
+.nav-course-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  flex-wrap: wrap;
+  row-gap: 0.15rem;
+}
+
+/* Individual hop chip */
+.nav-course-hop {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 0.1rem 0.3rem;
+  border-radius: 2px;
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  color: #00d9ff;
+  white-space: nowrap;
+  transition: opacity 0.2s ease;
+}
+
+/* Completed hop — dim it */
+.nav-course-hop.nav-course-hop-done {
+  opacity: 0.35;
+  background: rgba(0, 217, 255, 0.04);
+  border-color: rgba(0, 217, 255, 0.15);
+  color: rgba(0, 217, 255, 0.5);
+}
+
+/* Current (in-progress) hop — pulse */
+.nav-course-hop.nav-course-hop-current {
+  background: rgba(0, 217, 255, 0.22);
+  border-color: rgba(0, 217, 255, 0.7);
+  color: #00d9ff;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.8);
+  animation: hop-current-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes hop-current-pulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(0, 217, 255, 0.4); }
+  50% { box-shadow: 0 0 10px rgba(0, 217, 255, 0.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-course-hop.nav-course-hop-current { animation: none; }
+}
+
+/* Ellipsis between visible and last hop */
+.nav-course-ellipsis {
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  color: rgba(0, 217, 255, 0.4);
+  padding: 0 0.1rem;
+}
+
+/* Meta line: total turns + hop count */
+.nav-course-meta {
+  font-family: 'Courier New', monospace;
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: rgba(0, 217, 255, 0.65);
+  text-shadow: 0 0 4px rgba(0, 217, 255, 0.3);
 }

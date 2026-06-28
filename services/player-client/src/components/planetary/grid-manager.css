@@ -1,0 +1,587 @@
+/* Construction Grid Manager (CRT-2) — matches the citadel design language:
+   dark gradient panels, #4a9eff / #00ffcc accents, amber for warnings/limits. */
+.grid-manager {
+  /* Positioning ancestor for the in-region build popup (absolute, not fixed) —
+     mirrors SpecializationDrawer overlaying its tab body instead of a fixed
+     modal trapped by the transformed/backdrop-filter cockpit ancestor. */
+  position: relative;
+  padding: 16px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 1px solid var(--border-color, #334155);
+  border-radius: 8px;
+}
+
+.grid-manager.grid-loading,
+.grid-manager.grid-error,
+.grid-manager.grid-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 140px;
+  color: #889;
+  text-align: center;
+}
+
+.grid-empty-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #ccd;
+}
+
+.grid-empty-sub {
+  font-size: 0.78rem;
+  color: #889;
+  max-width: 360px;
+  line-height: 1.4;
+}
+
+.grid-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #444;
+  border-top-color: #4a9eff;
+  border-radius: 50%;
+  animation: grid-spin 0.8s linear infinite;
+}
+
+@keyframes grid-spin {
+  to { transform: rotate(360deg); }
+}
+
+.grid-retry-btn {
+  padding: 4px 12px;
+  border: 1px solid #4a9eff;
+  border-radius: 4px;
+  background: transparent;
+  color: #4a9eff;
+  cursor: pointer;
+}
+
+/* Header */
+.grid-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.grid-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #fff;
+}
+
+.grid-header-badges {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.grid-level-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: rgba(0, 255, 204, 0.15);
+  color: #00ffcc;
+  border: 1px solid rgba(0, 255, 204, 0.4);
+}
+
+.grid-cap-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: rgba(74, 158, 255, 0.15);
+  color: #4a9eff;
+  border: 1px solid rgba(74, 158, 255, 0.35);
+}
+
+.grid-cap-badge.at-cap {
+  background: rgba(255, 170, 68, 0.12);
+  color: #ffaa44;
+  border-color: rgba(255, 170, 68, 0.4);
+}
+
+.grid-hint {
+  font-size: 0.74rem;
+  color: #99aabb;
+  margin-bottom: 12px;
+  line-height: 1.35;
+}
+
+/* The plot board — PRIMARY ACTION (scroll-law: first, full width). */
+.grid-board {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(74, 158, 255, 0.18);
+  border-radius: 8px;
+}
+
+.grid-cell {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 5px;
+  background: rgba(16, 20, 42, 0.6);
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  min-width: 0;
+}
+
+.grid-cell.empty:hover:not(:disabled) {
+  border-color: rgba(74, 158, 255, 0.55);
+  background: rgba(74, 158, 255, 0.08);
+}
+
+.grid-cell.placeable {
+  border-style: dashed;
+  border-color: rgba(0, 255, 204, 0.5);
+  background: rgba(0, 255, 204, 0.06);
+}
+
+.grid-cell.placeable:hover:not(:disabled) {
+  border-color: #00ffcc;
+  background: rgba(0, 255, 204, 0.14);
+  box-shadow: 0 0 8px rgba(0, 255, 204, 0.35);
+}
+
+.grid-cell.occupied {
+  border-color: rgba(74, 158, 255, 0.5);
+  background: rgba(74, 158, 255, 0.1);
+}
+
+.grid-cell.occupied:hover:not(:disabled) {
+  border-color: #4a9eff;
+  box-shadow: 0 0 8px rgba(74, 158, 255, 0.35);
+}
+
+.grid-cell.selected {
+  border-color: #ffaa44;
+  background: rgba(255, 170, 68, 0.15);
+  box-shadow: 0 0 10px rgba(255, 170, 68, 0.45);
+}
+
+.grid-cell.building-pending {
+  border-style: dashed;
+}
+
+.grid-cell.hazard,
+.grid-cell.uncleared {
+  border-color: rgba(255, 80, 80, 0.4);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 80, 80, 0.1) 0,
+      rgba(255, 80, 80, 0.1) 4px,
+      transparent 4px,
+      transparent 8px
+    );
+  cursor: not-allowed;
+}
+
+.grid-cell.off-grid {
+  border-color: transparent;
+  background: transparent;
+  cursor: default;
+}
+
+.grid-cell:disabled {
+  cursor: not-allowed;
+}
+
+.cell-building {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  line-height: 1;
+}
+
+.cell-icon {
+  font-size: 1rem;
+}
+
+.cell-level {
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: #cde;
+  letter-spacing: 0.5px;
+}
+
+.cell-pending {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 0.6rem;
+}
+
+.cell-span {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(74, 158, 255, 0.3);
+}
+
+.cell-hazard {
+  font-size: 0.85rem;
+  color: #ff7070;
+}
+
+.cell-empty-dot {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.3);
+}
+
+/* Decommission panel */
+.grid-decommission {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(255, 170, 68, 0.35);
+  border-radius: 6px;
+  background: rgba(255, 170, 68, 0.06);
+}
+
+.decomm-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.decomm-name {
+  font-size: 0.85rem;
+  color: #ddd;
+  font-weight: 600;
+}
+
+.decomm-sub {
+  font-size: 0.7rem;
+  color: #99a;
+}
+
+.decomm-refund-note {
+  font-size: 0.7rem;
+  color: #00ffcc;
+}
+
+.decomm-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.grid-btn {
+  padding: 6px 12px;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: transparent;
+  color: #ddd;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.grid-btn:hover:not(:disabled) {
+  border-color: #4a9eff;
+  color: #fff;
+}
+
+.grid-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.decomm-btn {
+  border-color: #ffaa44;
+  color: #ffaa44;
+  font-weight: 600;
+}
+
+.decomm-btn:hover:not(:disabled) {
+  background: rgba(255, 170, 68, 0.15);
+  border-color: #ffaa44;
+  color: #ffd9a0;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  border-color: #889;
+  color: #ccd;
+}
+
+/* Highlight the plot whose build popup is currently open. */
+.grid-cell.popup-target {
+  border-color: #00ffcc;
+  background: rgba(0, 255, 204, 0.14);
+  box-shadow: 0 0 10px rgba(0, 255, 204, 0.45);
+}
+
+/* Build popup — plot-first catalog. Solid (opaque) surface so the list never
+   bleeds through onto the grid behind it.
+
+   Positioning: ABSOLUTE (not fixed) so it overlays only the Grid manager region
+   (its ancestor .grid-manager is position:relative), mirroring SpecializationDrawer.
+   `position:fixed` here sized to the transformed/backdrop-filter cockpit panel —
+   not the viewport — mis-centering and clipping the popup. Absolute scrim +
+   centered drawer with an INTERNAL-scrolling body fits 1440x900 (SCROLL LAW). */
+.grid-popup-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.8);
+  animation: grid-popup-fade 0.15s ease-out;
+}
+
+.grid-popup {
+  width: 100%;
+  max-width: 420px;
+  /* Cap to the smaller of the overlaid region (100%) and the viewport-minus-
+     chrome (so a tall content-sized .grid-manager can't let the popup exceed the
+     fold). vh compensated (--svh) so it tracks the real viewport under #root's
+     zoom at any UI scale. Either way a long catalog scrolls INTERNALLY. */
+  max-height: min(100%, calc(var(--svh, 100vh) - 120px));
+  display: flex;
+  flex-direction: column;
+  /* Explicit OPAQUE background (token with a hard fallback) — guaranteed solid. */
+  background: var(--surface-primary, #141a24);
+  border: 1px solid rgba(74, 158, 255, 0.4);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  animation: grid-popup-rise 0.18s ease-out;
+}
+
+.grid-popup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(74, 158, 255, 0.2);
+  background: rgba(74, 158, 255, 0.06);
+  flex: 0 0 auto;
+}
+
+.grid-popup-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #cde;
+}
+
+.grid-popup-close {
+  border: none;
+  background: transparent;
+  color: #99aabb;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.grid-popup-close:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@keyframes grid-popup-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes grid-popup-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* In-popup placement error (server reject) — surfaced here so it isn't hidden
+   behind the scrim. Fixed (non-scrolling) below the header. */
+.grid-popup-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 8px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  background: rgba(255, 80, 80, 0.1);
+  color: #ff9090;
+  border: 1px solid rgba(255, 80, 80, 0.4);
+  flex: 0 0 auto;
+}
+
+.catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  overflow-y: auto;
+  /* Scroll INTERNALLY within the height-capped popup (SCROLL LAW). */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.catalog-empty {
+  padding: 12px;
+  text-align: center;
+  color: #889;
+  font-size: 0.8rem;
+}
+
+.catalog-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 6px;
+  background: rgba(16, 20, 42, 0.5);
+  color: #ddd;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.catalog-item:hover:not(:disabled) {
+  border-color: rgba(74, 158, 255, 0.5);
+  background: rgba(74, 158, 255, 0.08);
+}
+
+.catalog-item.gated {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.catalog-item.unaffordable {
+  opacity: 0.85;
+}
+
+.catalog-item:disabled {
+  cursor: not-allowed;
+}
+
+.item-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.item-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #eef;
+}
+
+.item-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 0.68rem;
+  color: #889;
+}
+
+.item-domain {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.item-footprint {
+  color: #99aabb;
+}
+
+.item-cost {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.72rem;
+}
+
+.cost-credits {
+  color: var(--credits-color, #fbbf24);
+}
+
+.cost-credits.short {
+  color: #ff7070;
+}
+
+.cost-material {
+  color: #99aabb;
+}
+
+.item-state {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+}
+
+.item-gated {
+  color: #ffaa44;
+  white-space: nowrap;
+}
+
+.item-arrow {
+  color: #4a9eff;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+/* Action message */
+.grid-message {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.grid-message.ok {
+  background: rgba(0, 255, 204, 0.08);
+  color: #00ffcc;
+  border: 1px solid rgba(0, 255, 204, 0.25);
+}
+
+.grid-message.err {
+  background: rgba(255, 80, 80, 0.08);
+  color: #ff9090;
+  border: 1px solid rgba(255, 80, 80, 0.3);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .grid-spinner {
+    animation-duration: 2s;
+  }
+  .grid-cell {
+    transition: none;
+  }
+  .grid-popup-overlay,
+  .grid-popup {
+    animation-duration: 0.01s;
+  }
+}

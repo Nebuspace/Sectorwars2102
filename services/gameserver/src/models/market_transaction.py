@@ -22,8 +22,12 @@ class MarketTransaction(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
-    # Transaction participants
+    # Transaction participants. Exactly one of player_id / npc_id is set:
+    # npc_id attributes TRADER-archetype NPC trades (SYSTEMS/
+    # npc-lifecycle.md § Trade — NPCs are full market actors; attribution
+    # field itself is canon-silent, flagged in DECISIONS.md).
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
+    npc_id = Column(UUID(as_uuid=True), ForeignKey("npc_characters.id", ondelete="SET NULL"), nullable=True)
     station_id = Column(UUID(as_uuid=True), ForeignKey("stations.id", ondelete="SET NULL"), nullable=True)
     
     # Transaction details
@@ -46,14 +50,40 @@ class MarketTransaction(Base):
     # Transaction metadata
     profit_margin = Column(Float, nullable=True)  # calculated profit percentage
     market_impact = Column(Float, nullable=True)  # price impact of this transaction
+
+    # Tariff context at time of transaction (WO-TF — revenue analytics).
+    # owner_tariff_rate is the EFFECTIVE region COMMERCE tariff in force when the
+    # trade executed (the value compute_region_tariff_multiplier returned for the
+    # station's region, already sliding-cap clamped). port_owner_id is the Player
+    # who owned the station at trade time (NULL for unowned/NPC stations). These
+    # RECORD who taxed and at what rate — they do NOT change the charge. Both are
+    # nullable: pre-migration rows stay NULL, and a trade at an unowned station or
+    # with a zero/failed tariff lookup records NULL/0.0 respectively.
+    owner_tariff_rate = Column(Float, nullable=True)
+    port_owner_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
     
+    # Black-market context (WO-BLACKMARKET kernel — audit/design-briefs/black-market.md).
+    # is_illegal flags a contraband trade (ContrabandService buy/sell); illegal_commodity
+    # records which IllegalCommodity (core/illegal_commodities.py) was traded. Both nullable:
+    # pre-migration rows and all legal trades stay NULL/False — they do NOT alter the legal
+    # supply/demand ledger, only annotate the row for heat/analytics queries.
+    is_illegal = Column(Boolean, nullable=True)
+    illegal_commodity = Column(String(50), nullable=True)
+
     # Admin fields
     admin_notes = Column(String(500), nullable=True)
     flagged_suspicious = Column(Boolean, nullable=False, default=False)
     reviewed_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     
     # Relationships
-    player = relationship("Player", back_populates="enhanced_market_transactions")
+    # Two FKs now point at players.id (player_id, port_owner_id), so both
+    # player relationships must declare foreign_keys explicitly to disambiguate.
+    player = relationship(
+        "Player",
+        foreign_keys=[player_id],
+        back_populates="enhanced_market_transactions",
+    )
+    port_owner = relationship("Player", foreign_keys=[port_owner_id])
     station = relationship("Station")
     sector = relationship("Sector", foreign_keys=[sector_uuid])
     reviewer = relationship("User", foreign_keys=[reviewed_by])
@@ -64,6 +94,7 @@ class MarketTransaction(Base):
         Index('ix_market_transactions_commodity', 'commodity'),
         Index('ix_market_transactions_player_id', 'player_id'),
         Index('ix_market_transactions_station_id', 'station_id'),
+        Index('ix_market_transactions_npc_id', 'npc_id'),
     )
 
 

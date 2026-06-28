@@ -4,16 +4,21 @@ Faction API routes for managing faction relationships and missions.
 
 from uuid import UUID
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
-from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from src.core.database import get_async_session
+from src.core.database import get_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
-from src.models.faction import Faction, FactionType, FactionMission
+from src.models.faction import Faction, FactionType
 from src.models.reputation import Reputation
-from src.services.faction_service import FactionService
+from src.models.sector import Sector
+from src.services.faction_service import (
+    FactionService,
+    get_sector_influence,
+    sector_territory_tier,
+)
 
 router = APIRouter(prefix="/factions", tags=["factions"])
 
@@ -75,47 +80,6 @@ class ReputationResponse(BaseModel):
         )
 
 
-class MissionResponse(BaseModel):
-    id: str
-    faction_id: str
-    faction_name: str
-    title: str
-    description: Optional[str]
-    mission_type: str
-    credit_reward: int
-    reputation_reward: int
-    item_rewards: List[str]
-    target_sector_id: Optional[str]
-    cargo_type: Optional[str]
-    cargo_quantity: Optional[int]
-    expires_at: Optional[datetime]
-    
-    class Config:
-        from_attributes = True
-    
-    @classmethod
-    def from_mission(cls, mission: FactionMission) -> "MissionResponse":
-        return cls(
-            id=str(mission.id),
-            faction_id=str(mission.faction_id),
-            faction_name=mission.faction.name,
-            title=mission.title,
-            description=mission.description,
-            mission_type=mission.mission_type,
-            credit_reward=mission.credit_reward,
-            reputation_reward=mission.reputation_reward,
-            item_rewards=mission.item_rewards or [],
-            target_sector_id=str(mission.target_sector_id) if mission.target_sector_id else None,
-            cargo_type=mission.cargo_type,
-            cargo_quantity=mission.cargo_quantity,
-            expires_at=mission.expires_at
-        )
-
-
-class AcceptMissionRequest(BaseModel):
-    mission_id: str
-
-
 class TerritoryResponse(BaseModel):
     faction_id: str
     faction_name: str
@@ -123,10 +87,32 @@ class TerritoryResponse(BaseModel):
     home_sector_id: Optional[str]
 
 
+class SectorInfluenceEntry(BaseModel):
+    """One faction's influence over one sector (ADR-0021)."""
+    faction_id: str
+    faction_name: Optional[str]
+    influence_percentage: float
+
+
+class SectorInfluenceResponse(BaseModel):
+    """Per-sector faction influence + derived territory tier (ADR-0021).
+
+    The READ side of ``SectorFactionInfluence``: surfaces every faction's
+    influence over a sector and the four-tier taxonomy classification (Core /
+    Controlled / Contested / Uncontrolled). A sector with no influence rows
+    reads as ``tier="uncontrolled"`` with an empty list — reproduce-exactly.
+    """
+    sector_id: int
+    sector_uuid: str
+    tier: str
+    dominant_faction_id: Optional[str]
+    influences: List[SectorInfluenceEntry]
+
+
 # API Endpoints
 @router.get("/", response_model=List[FactionResponse])
 async def list_factions(
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get list of all factions."""
@@ -137,7 +123,7 @@ async def list_factions(
 
 @router.get("/reputation", response_model=List[ReputationResponse])
 async def get_player_reputations(
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get current player's reputation with all factions."""
@@ -154,7 +140,7 @@ async def get_player_reputations(
 @router.get("/{faction_id}/reputation", response_model=ReputationResponse)
 async def get_faction_reputation(
     faction_id: UUID,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get player's reputation with a specific faction."""
@@ -174,115 +160,10 @@ async def get_faction_reputation(
     return ReputationResponse.from_reputation(reputation)
 
 
-@router.get("/missions", response_model=List[MissionResponse])
-async def get_available_missions(
-    faction_id: Optional[UUID] = Query(None, description="Filter by faction ID"),
-    db=Depends(get_async_session),
-    current_player: Player = Depends(get_current_player)
-):
-    """Get available missions for the current player."""
-    service = FactionService(db)
-    missions = await service.get_available_missions(current_player.id, faction_id)
-    return [MissionResponse.from_mission(mission) for mission in missions]
-
-
-@router.get("/{faction_id}/missions", response_model=List[MissionResponse])
-async def get_faction_missions(
-    faction_id: UUID,
-    db=Depends(get_async_session),
-    current_player: Player = Depends(get_current_player)
-):
-    """Get available missions from a specific faction."""
-    service = FactionService(db)
-    
-    # Verify faction exists
-    faction = await service.get_faction_by_id(faction_id)
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    missions = await service.get_available_missions(current_player.id, faction_id)
-    return [MissionResponse.from_mission(mission) for mission in missions]
-
-
-@router.post("/{faction_id}/missions/accept")
-async def accept_mission(
-    faction_id: UUID,
-    request: AcceptMissionRequest,
-    db=Depends(get_async_session),
-    current_player: Player = Depends(get_current_player)
-):
-    """Accept a mission from a faction."""
-    service = FactionService(db)
-    
-    # Verify faction exists
-    faction = await service.get_faction_by_id(faction_id)
-    if not faction:
-        raise HTTPException(status_code=404, detail="Faction not found")
-    
-    # Get available missions and check if requested mission is available
-    missions = await service.get_available_missions(current_player.id, faction_id)
-    mission = next((m for m in missions if str(m.id) == request.mission_id), None)
-    
-    if not mission:
-        raise HTTPException(
-            status_code=404, 
-            detail="Mission not found or not available to you"
-        )
-    
-    # Track accepted missions in the player's settings JSONB field
-    player_settings = current_player.settings or {}
-    accepted_missions = player_settings.get("accepted_missions", [])
-
-    # Check if player already accepted this mission
-    if any(m.get("mission_id") == request.mission_id for m in accepted_missions):
-        raise HTTPException(
-            status_code=409,
-            detail="You have already accepted this mission"
-        )
-
-    # Check max concurrent missions (limit to 5)
-    active_missions = [m for m in accepted_missions if m.get("status") == "active"]
-    if len(active_missions) >= 5:
-        raise HTTPException(
-            status_code=400,
-            detail="You cannot accept more than 5 missions at a time"
-        )
-
-    # Record the accepted mission
-    accepted_missions.append({
-        "mission_id": request.mission_id,
-        "faction_id": str(faction_id),
-        "title": mission.title,
-        "mission_type": mission.mission_type,
-        "status": "active",
-        "accepted_at": datetime.utcnow().isoformat(),
-        "credit_reward": mission.credit_reward,
-        "reputation_reward": mission.reputation_reward,
-        "target_sector_id": str(mission.target_sector_id) if mission.target_sector_id else None,
-        "cargo_type": mission.cargo_type,
-        "cargo_quantity": mission.cargo_quantity,
-        "expires_at": mission.expires_at.isoformat() if mission.expires_at else None
-    })
-
-    player_settings["accepted_missions"] = accepted_missions
-    current_player.settings = player_settings
-
-    # Use flag_modified to ensure SQLAlchemy detects the JSONB change
-    from sqlalchemy.orm.attributes import flag_modified
-    flag_modified(current_player, "settings")
-    db.commit()
-
-    return {
-        "success": True,
-        "message": f"Mission '{mission.title}' accepted",
-        "mission_id": request.mission_id
-    }
-
-
 @router.get("/{faction_id}/territory", response_model=TerritoryResponse)
 async def get_faction_territory(
     faction_id: UUID,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get the territory controlled by a faction."""
@@ -300,10 +181,69 @@ async def get_faction_territory(
     )
 
 
+@router.get("/sectors/{sector_id}/influence", response_model=SectorInfluenceResponse)
+async def get_sector_faction_influence(
+    sector_id: int,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player)
+):
+    """READ per-sector faction influence + territory tier (WO-FI / ADR-0021).
+
+    ``sector_id`` is the GLOBAL human-readable sector number (the integer
+    ``sectors.sector_id`` column the rest of the player UI uses), resolved to
+    the sector UUID that ``SectorFactionInfluence`` keys on. A sector with no
+    influence rows returns ``tier="uncontrolled"`` with an empty list — the
+    pre-existing, reproduce-exactly behavior.
+    """
+    sector = (
+        db.query(Sector)
+        .filter(Sector.sector_id == sector_id)
+        .first()
+    )
+    if sector is None:
+        raise HTTPException(status_code=404, detail="Sector not found")
+
+    rows = get_sector_influence(db, sector.id)
+    tier = sector_territory_tier(rows)
+
+    # Resolve faction names in one batched query (avoid per-row lazy loads).
+    faction_ids = [row.faction_id for row in rows]
+    name_by_id = {}
+    if faction_ids:
+        name_by_id = {
+            f.id: f.name
+            for f in db.query(Faction.id, Faction.name)
+            .filter(Faction.id.in_(faction_ids))
+            .all()
+        }
+
+    influences = [
+        SectorInfluenceEntry(
+            faction_id=str(row.faction_id),
+            faction_name=name_by_id.get(row.faction_id),
+            influence_percentage=row.influence_percentage or 0.0,
+        )
+        for row in rows
+    ]
+    dominant = (
+        str(rows[0].faction_id)
+        if rows and (rows[0].influence_percentage or 0.0) > 0.0
+        else None
+    )
+
+    return SectorInfluenceResponse(
+        sector_id=sector.sector_id,
+        sector_uuid=str(sector.id),
+        tier=tier,
+        dominant_faction_id=dominant,
+        influences=influences,
+    )
+
+
 @router.get("/{faction_id}/pricing-modifier")
 async def get_pricing_modifier(
     faction_id: UUID,
-    db=Depends(get_async_session),
+    db: Session = Depends(get_db),
     current_player: Player = Depends(get_current_player)
 ):
     """Get the pricing modifier for trading at faction-controlled ports."""

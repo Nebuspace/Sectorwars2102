@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, insert, update, delete
 from sqlalchemy.orm import selectinload
 
+from src.core.commodity_economy import base_price as commodity_base_price
 from src.core.database import get_async_session
-from src.models.sector import Sector
+from src.models.sector import Sector, SectorType
 from src.models.planet import Planet
 from src.models.station import Station
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelType, WarpTunnelStatus
@@ -96,7 +97,8 @@ class NexusGenerationService:
                     str(cluster.id),
                     str(nexus_zone.id),  # Pass zone ID for sector assignment
                     start_sector,
-                    end_sector
+                    end_sector,
+                    cluster.type,  # WO-GX1: per-cluster-type seeding biases
                 )
 
                 # Update overall stats
@@ -204,47 +206,47 @@ class NexusGenerationService:
         """
         clusters = []
         cluster_types_distribution = [
-            ClusterType.TRADE_HUB,
-            ClusterType.POPULATION_CENTER,
-            ClusterType.TRADE_HUB,
-            ClusterType.TRADE_HUB,
-            ClusterType.STANDARD,
-            ClusterType.POPULATION_CENTER,
-            ClusterType.TRADE_HUB,
-            ClusterType.TRADE_HUB,
-            ClusterType.STANDARD,
-            ClusterType.STANDARD,
-            ClusterType.TRADE_HUB,
-            ClusterType.POPULATION_CENTER,
-            ClusterType.STANDARD,
-            ClusterType.TRADE_HUB,
-            ClusterType.STANDARD,
-            ClusterType.TRADE_HUB,
-            ClusterType.STANDARD,
-            ClusterType.POPULATION_CENTER,
-            ClusterType.STANDARD,
-            ClusterType.STANDARD
+            ClusterType.TRADE_HUB,          # 1  Commerce Central Hub (ANCHOR: starter, civic-safe)
+            ClusterType.POPULATION_CENTER,  # 2  Diplomatic Quarter
+            ClusterType.TRADE_HUB,          # 3  Industrial Complex
+            ClusterType.RESOURCE_RICH,      # 4  Prospect Belt
+            ClusterType.FRONTIER_OUTPOST,   # 5  Drift Reaches
+            ClusterType.FRONTIER_OUTPOST,   # 6  Outer Survey Station
+            ClusterType.TRADE_HUB,          # 7  Free Trade Zone
+            ClusterType.RESOURCE_RICH,      # 8  Lodestar Reach
+            ClusterType.STANDARD,           # 9  Quiet Quarter
+            ClusterType.STANDARD,           # 10 Gateway Plaza (ANCHOR: Capital, never FRONTIER/RESOURCE)
+            ClusterType.POPULATION_CENTER,  # 11 Settlers' Rest
+            ClusterType.STANDARD,           # 12 Transit Junction
+            ClusterType.RESOURCE_RICH,      # 13 Slag Fields
+            ClusterType.TRADE_HUB,          # 14 Starport Complex
+            ClusterType.FRONTIER_OUTPOST,   # 15 Marker's Edge
+            ClusterType.STANDARD,           # 16 The Bazaar
+            ClusterType.FRONTIER_OUTPOST,   # 17 Lonesome Span
+            ClusterType.STANDARD,           # 18 Wayfarer Hollow
+            ClusterType.STANDARD,           # 19 Merchant's Row
+            ClusterType.FRONTIER_OUTPOST    # 20 Frontier Gateway
         ]
 
         cluster_names = [
             "Commerce Central Hub",
             "Diplomatic Quarter",
             "Industrial Complex",
-            "Residential District Alpha",
-            "Transit Hub Prime",
-            "High Security Zone",
-            "Cultural Center",
-            "Research Campus",
+            "Prospect Belt",
+            "Drift Reaches",
+            "Outer Survey Station",
             "Free Trade Zone",
+            "Lodestar Reach",
+            "Quiet Quarter",
             "Gateway Plaza",
-            "Financial District",
-            "Medical Center",
-            "Technology Park",
+            "Settlers' Rest",
+            "Transit Junction",
+            "Slag Fields",
             "Starport Complex",
-            "Civic Center",
-            "Entertainment District",
-            "Manufacturing Zone",
-            "Academic Quarter",
+            "Marker's Edge",
+            "The Bazaar",
+            "Lonesome Span",
+            "Wayfarer Hollow",
             "Merchant's Row",
             "Frontier Gateway"
         ]
@@ -285,7 +287,8 @@ class NexusGenerationService:
         cluster_id: str,
         zone_id: str,
         start_sector: int,
-        end_sector: int
+        end_sector: int,
+        cluster_type: ClusterType = ClusterType.STANDARD,
     ) -> Dict[str, int]:
         """Generate sectors, ports, and planets for a cluster with sparse density
 
@@ -293,8 +296,32 @@ class NexusGenerationService:
         - 5% station density (vs 15% standard)
         - 10% planet density (vs 25% standard)
         - Sector 1 ALWAYS has both station and planet
+
+        WO-GX1 — per-cluster-type seeding biases (NO-CANON magnitudes):
+        - STANDARD: 1.0 baseline (unbiased — byte-identical to the legacy path).
+        - RESOURCE_RICH: every sector gets asteroids with +50% yield (×1.5 base).
+        - FRONTIER_OUTPOST: ~50% station density (fewer ports); some sectors
+          become NEBULA (per-sector nebula_chance) — but NEVER the starter.
+        - MILITARY_ZONE: patrol_ships seeded into sector_data['defenses'].
+        - CONTESTED: multi-faction overlay (controlling_faction left null /
+          uncontrolled — the baseline already leaves it null; the bias is
+          explicit non-assignment, so port/planet generation is unchanged).
+        The biases only fire for non-STANDARD clusters; STANDARD clusters take
+        the exact same code path (and RNG-call sequence) as before this WO, so
+        an unbiased Nexus is byte-identical to today.
         """
         stats = {"sectors": 0, "ports": 0, "planets": 0}
+
+        # WO-GX1 bias parameters (NO-CANON magnitudes from the work order)
+        is_resource_rich = cluster_type == ClusterType.RESOURCE_RICH
+        is_frontier = cluster_type == ClusterType.FRONTIER_OUTPOST
+        is_military = cluster_type == ClusterType.MILITARY_ZONE
+        # FRONTIER_OUTPOST halves effective station density (fewer ports).
+        effective_port_density = (
+            self.port_density * 0.5 if is_frontier else self.port_density
+        )
+        # FRONTIER_OUTPOST scatters nebula sectors (more nebula on the edge).
+        nebula_chance = 0.15 if is_frontier else 0.0
 
         batch_sectors = []
         batch_ports = []
@@ -324,11 +351,56 @@ class NexusGenerationService:
                 "traffic_level": 2,  # Low traffic (sparse)
                 "created_at": datetime.utcnow()
             }
+            # WO-GX1: per-cluster-type seeding biases. These ONLY add keys for
+            # non-STANDARD clusters — STANDARD's sector_data is left byte-for-byte
+            # identical to the legacy path. Heterogeneous param-dict key-sets are
+            # SAFE for bulk insert (SQLAlchemy 2.0 groups dicts by key-set and
+            # applies column defaults per group), so keys are added conditionally
+            # rather than homogenized; absent keys fall back to the column default.
+            if is_resource_rich and sector_num != 1:
+                # +50% asteroid yield: has_asteroids + asteroid_yield ×1.5 off a
+                # sensible base (ore 1000 / precious_metals 400 / radioactives 200).
+                sector_data["resources"] = {
+                    "has_asteroids": True,
+                    "asteroid_yield": {
+                        "ore": int(1000 * 1.5),
+                        "precious_metals": int(400 * 1.5),
+                        "radioactives": int(200 * 1.5),
+                    },
+                    "gas_clouds": [],
+                    "has_scanned": False,
+                }
+
+            if is_military and sector_num != 1:
+                # More patrols: seed patrol_ships into the defenses blob.
+                # NO-CANON patrol count: 2-4 patrol ships per military sector.
+                patrol_count = random.randint(2, 4)
+                # WO-GX1 CRITICAL: patrol_ships MUST be a SCALAR INT, never a
+                # list-of-dicts — four live consumers read it via int()
+                # (combat_service.py:3506, port_ownership_service.py:1792,
+                # admin.py:1495, admin_comprehensive.py:970); a list detonates
+                # combat + admin in every military sector.
+                sector_data["defenses"] = {
+                    "defense_drones": 0,
+                    "owner_id": None,
+                    "owner_name": None,
+                    "team_id": None,
+                    "mines": 0,
+                    "mine_owner_id": None,
+                    "patrol_ships": patrol_count,
+                }
+
+            # FRONTIER_OUTPOST: more nebula. NEVER the starter (sector 1).
+            if is_frontier and sector_num != 1 and random.random() < nebula_chance:
+                sector_data["type"] = SectorType.NEBULA
+
             batch_sectors.append(sector_data)
             stats["sectors"] += 1
 
-            # Generate port - ALWAYS create for Sector 1 (starter sector), otherwise sparse (5%)
-            if sector_num == 1 or random.random() < self.port_density:
+            # Generate port - ALWAYS create for Sector 1 (starter sector), otherwise sparse.
+            # FRONTIER_OUTPOST halves effective station density (fewer ports);
+            # all other cluster types use the baseline 5% density unchanged.
+            if sector_num == 1 or random.random() < effective_port_density:
                 port_data = self._generate_port_for_sector(sector_num, region_id)
                 batch_ports.append(port_data)
                 stats["ports"] += 1
@@ -370,7 +442,12 @@ class NexusGenerationService:
                 "station_class": StationClass.CLASS_0,  # Highest quality
                 "type": StationType.TRADING,
                 "status": StationStatus.OPERATIONAL,
-                "size": 10  # Maximum size
+                "size": 10,  # Maximum size
+                # Starport Prime discriminator (FEATURES/economy/docking-slips):
+                # this is THE Central Nexus Starport Prime — 200 transient / 50
+                # long-term docking slips, distinct from a regional Capital
+                # (also CLASS_0, but 80 / 30). docking_service reads this flag.
+                "is_starport_prime": True,
             }
 
         # Random port types for other sectors
@@ -428,7 +505,8 @@ class NexusGenerationService:
                 "habitability_score": 100,
                 "resource_richness": 2.0,
                 "resources": ["water", "minerals", "agriculture", "technology"],
-                "max_population": 10000000
+                # Canon (colonization.md:147 / ADR-0035): max_population = habitability_score × 1,000
+                "max_population": 100 * 1000
             }
 
         # Random planet type
@@ -459,9 +537,11 @@ class NexusGenerationService:
         habitability_score = habitability_map.get(planet_type, 50)
         status = PlanetStatus.HABITABLE if habitability_score > 50 else PlanetStatus.UNINHABITABLE
 
-        # Determine max population based on size and habitability
+        # Determine planet size (visual/resource scale only — not a population factor)
         size = random.randint(4, 9)
-        max_population = int((size * habitability_score * 100000) / 10)
+        # Canon (colonization.md:147 / ADR-0035): max_population = habitability_score × 1,000
+        # (habitability_score is on the 0-100 scale, matching genesis_service)
+        max_population = habitability_score * 1000
 
         # Generate resources
         resources = ["standard_resources"]
@@ -510,16 +590,23 @@ class NexusGenerationService:
         if not stations:
             return 0
 
-        # Base commodity definitions
+        # Base commodity definitions. base_price now derives from the WO-Y /
+        # ADR-0082 single source of truth (src.core.commodity_economy), the same
+        # table that feeds the trading-engine ranges and the citadel safe credit
+        # values — so nexus seeds can no longer drift from the live economy.
+        # quantity/capacity remain local bootstrap stock seeds (not price econ).
+        # Behaviour-preserving: commodity_base_price() reproduces ore 15 /
+        # organics 18 / equipment 35 / fuel 12 / luxury 100 / gourmet 80 /
+        # exotic 250 / colonists 50 exactly.
         base_commodities = {
-            "ore": {"base_price": 15, "quantity": 1000, "capacity": 5000},
-            "organics": {"base_price": 18, "quantity": 800, "capacity": 3000},
-            "equipment": {"base_price": 35, "quantity": 500, "capacity": 2000},
-            "fuel": {"base_price": 12, "quantity": 1500, "capacity": 4000},
-            "luxury_goods": {"base_price": 100, "quantity": 200, "capacity": 800},
-            "gourmet_food": {"base_price": 80, "quantity": 150, "capacity": 600},
-            "exotic_technology": {"base_price": 250, "quantity": 50, "capacity": 200},
-            "colonists": {"base_price": 50, "quantity": 100, "capacity": 500},
+            "ore": {"base_price": commodity_base_price("ore"), "quantity": 1000, "capacity": 5000},
+            "organics": {"base_price": commodity_base_price("organics"), "quantity": 800, "capacity": 3000},
+            "equipment": {"base_price": commodity_base_price("equipment"), "quantity": 500, "capacity": 2000},
+            "fuel": {"base_price": commodity_base_price("fuel"), "quantity": 1500, "capacity": 4000},
+            "luxury_goods": {"base_price": commodity_base_price("luxury_goods"), "quantity": 200, "capacity": 800},
+            "gourmet_food": {"base_price": commodity_base_price("gourmet_food"), "quantity": 150, "capacity": 600},
+            "exotic_technology": {"base_price": commodity_base_price("exotic_technology"), "quantity": 50, "capacity": 200},
+            "colonists": {"base_price": commodity_base_price("colonists"), "quantity": 100, "capacity": 500},
         }
 
         # Trading patterns by station class
@@ -715,8 +802,7 @@ class NexusGenerationService:
             WarpTunnelType.QUANTUM: 15,
             WarpTunnelType.ANCIENT: 10,
             WarpTunnelType.ARTIFICIAL: 8,
-            WarpTunnelType.UNSTABLE: 5,
-            WarpTunnelType.ONE_WAY: 2
+            WarpTunnelType.UNSTABLE: 7
         }
 
         choices = []
@@ -733,8 +819,7 @@ class NexusGenerationService:
             WarpTunnelType.STANDARD: random.uniform(0.9, 1.0),
             WarpTunnelType.QUANTUM: random.uniform(0.7, 0.9),
             WarpTunnelType.ANCIENT: random.uniform(0.5, 0.8),
-            WarpTunnelType.UNSTABLE: random.uniform(0.3, 0.6),
-            WarpTunnelType.ONE_WAY: random.uniform(0.7, 0.95)
+            WarpTunnelType.UNSTABLE: random.uniform(0.3, 0.6)
         }
         return stability_map.get(tunnel_type, 0.8)
 
@@ -750,8 +835,7 @@ class NexusGenerationService:
             WarpTunnelType.STANDARD: 1.0,
             WarpTunnelType.QUANTUM: 0.5,  # Faster
             WarpTunnelType.ANCIENT: 0.8,
-            WarpTunnelType.UNSTABLE: 1.5,  # Slower, riskier
-            WarpTunnelType.ONE_WAY: 0.9
+            WarpTunnelType.UNSTABLE: 1.5  # Slower, riskier
         }
 
         adjusted_cost = int(base_cost * multiplier_map.get(tunnel_type, 1.0))

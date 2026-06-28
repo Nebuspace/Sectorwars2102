@@ -8,15 +8,36 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import and_, or_, func
+from sqlalchemy.exc import IntegrityError
 
 from src.models.team import Team, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
 from src.models.player import Player
 from src.models.message import Message
-from src.services.audit_service import AuditService
+from src.models.treasury_transaction import TreasuryTransaction
+from src.services.audit_service import AuditService, AuditAction
 
 logger = logging.getLogger(__name__)
+
+# Treasury resources a Player row can actually hold as real columns. The Player
+# model has no commodity columns (fuel/organics/equipment/... live in ship
+# cargo), so a setattr for those would write a transient Python attribute that
+# evaporates at session end — silently destroying the resources on either a
+# deposit (player debit lost) or a withdraw/transfer (player credit lost).
+#
+# Both directions use this same whitelist so nothing becomes a one-way sink:
+# a resource you can deposit must be one a player can later retrieve, and vice
+# versa. Only columns confirmed to exist on BOTH Player (as `<resource>`) and
+# Team (as `treasury_<resource>`) belong here — currently credits and
+# quantum_crystals.
+PLAYER_TRANSFERABLE_RESOURCES = {"credits", "quantum_crystals"}
+
+# Honest, human-readable list of what a player may move to/from the treasury,
+# reused across deposit/withdraw/transfer so the error message can never drift
+# out of sync with the whitelist above.
+_TRANSFERABLE_LABEL = " and ".join(sorted(PLAYER_TRANSFERABLE_RESOURCES))
 
 
 class TeamService:
@@ -60,8 +81,10 @@ class TeamService:
     def create_team(self, creator_id: uuid.UUID, name: str, description: str = None, tag: str = None,
                    max_members: int = 4, recruitment_status: str = TeamRecruitmentStatus.OPEN.value) -> Team:
         """Create a new team with the creator as leader"""
-        # Check if player already has a team
-        creator = self.db.query(Player).filter(Player.id == creator_id).first()
+        # Check if player already has a team.
+        # Locks the creator row to prevent concurrent create/join race
+        # conditions (same lock pattern as ship_upgrades purchases).
+        creator = self.db.query(Player).filter(Player.id == creator_id).with_for_update().first()
         if not creator:
             raise ValueError("Player not found")
         
@@ -90,7 +113,15 @@ class TeamService:
         )
         
         self.db.add(team)
-        self.db.flush()
+        try:
+            self.db.flush()
+        except IntegrityError:
+            # Two creators raced past the SELECT-based name check above —
+            # the unique constraint is the backstop. Roll back the aborted
+            # transaction and surface the same clean ValueError the route
+            # layer already maps to a 400.
+            self.db.rollback()
+            raise ValueError("Team name already taken")
         
         # Create team member entry for the leader
         team_member = TeamMember(
@@ -110,10 +141,10 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=creator_id,
-            action="team.create",
+            user_id=creator_id,
+            action=AuditAction.CREATE,
             resource_type="team",
-            resource_id=team.id,
+            resource_id=str(team.id),
             details={"team_name": name, "team_id": str(team.id)}
         )
         
@@ -145,10 +176,10 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.update",
+            user_id=player_id,
+            action=AuditAction.UPDATE,
             resource_type="team",
-            resource_id=team_id,
+            resource_id=str(team_id),
             details={"updates": kwargs}
         )
         
@@ -173,10 +204,10 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.delete",
+            user_id=player_id,
+            action=AuditAction.DELETE,
             resource_type="team",
-            resource_id=team_id,
+            resource_id=str(team_id),
             details={"team_name": team.name}
         )
         
@@ -195,7 +226,9 @@ class TeamService:
         
         return [{
             "player_id": str(member.player_id),
-            "nickname": player.nickname,
+            # nickname is nullable — fall back to the Player.username
+            # property (nickname -> user.username -> "Unknown Player")
+            "nickname": player.nickname or player.username,
             "role": member.role,
             "joined_at": member.joined_at.isoformat() if member.joined_at else None,
             "last_active": member.last_active.isoformat() if member.last_active else None,
@@ -206,7 +239,9 @@ class TeamService:
             "can_manage_alliances": member.can_manage_alliances,
             "contribution_credits": member.contribution_credits,
             "current_sector": player.current_sector_id,
-            "combat_rating": player.combat_rating
+            # canon gap: no per-player combat rating exists yet
+            # (Team.combat_rating is the team aggregate)
+            "combat_rating": 0.0
         } for member, player in members]
     
     def invite_player(self, team_id: uuid.UUID, inviter_id: uuid.UUID, 
@@ -265,8 +300,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=inviter_id,
-            action="team.invite",
+            user_id=inviter_id,
+            action=AuditAction.UPDATE,  # was "team.invite"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -362,8 +397,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.join",
+            user_id=player_id,
+            action=AuditAction.UPDATE,  # was "team.join"
             resource_type="team",
             resource_id=team.id,
             details={"team_name": team.name, "method": "invitation" if invitation_code else "direct"}
@@ -418,8 +453,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=actor_id,
-            action="team.remove_member",
+            user_id=actor_id,
+            action=AuditAction.UPDATE,  # was "team.remove_member"
             resource_type="team",
             resource_id=team_id,
             details={"removed_member_id": str(member_id)}
@@ -450,8 +485,9 @@ class TeamService:
                     TeamMember.player_id != player_id
                 )
                 .order_by(
-                    # Prefer officers, then by join date
-                    TeamMember.role == TeamRole.OFFICER.value,
+                    # Prefer officers (desc puts the True matches first),
+                    # then by join date
+                    (TeamMember.role == TeamRole.OFFICER.value).desc(),
                     TeamMember.joined_at
                 )
                 .first()
@@ -498,8 +534,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.leave",
+            user_id=player_id,
+            action=AuditAction.UPDATE,  # was "team.leave"
             resource_type="team",
             resource_id=team.id if team else None,
             details={"team_name": team.name if team else "disbanded"}
@@ -569,8 +605,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=actor_id,
-            action="team.update_role",
+            user_id=actor_id,
+            action=AuditAction.UPDATE,  # was "team.update_role"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -662,8 +698,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=current_leader_id,
-            action="team.transfer_leadership",
+            user_id=current_leader_id,
+            action=AuditAction.UPDATE,  # was "team.transfer_leadership"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -676,7 +712,36 @@ class TeamService:
         return team
     
     # Treasury Management Methods
-    
+
+    def _record_treasury_transaction(
+        self,
+        team_id: uuid.UUID,
+        resource_type: str,
+        kind: str,
+        amount: int,
+        balance_after: int,
+        actor_player_id: Optional[uuid.UUID],
+        reason: Optional[str] = None,
+    ) -> None:
+        """Append one TreasuryTransaction ledger row for a treasury mutation.
+
+        Single-writer: called by each treasury mutation method AFTER the balance
+        is mutated but BEFORE the shared commit, so the ledger row lands in the
+        SAME transaction as the balance change (atomic — no orphan rows, no
+        missed events). The row is staged here; the caller's self.db.commit()
+        persists it together with the balance.
+        """
+        entry = TreasuryTransaction(
+            team_id=team_id,
+            resource_type=resource_type,
+            kind=kind,
+            amount=amount,
+            balance_after=balance_after,
+            actor_player_id=actor_player_id,
+            reason=reason,
+        )
+        self.db.add(entry)
+
     def deposit_to_treasury(self, team_id: uuid.UUID, player_id: uuid.UUID,
                            resource_type: str, amount: int) -> Dict[str, Any]:
         """Deposit resources to team treasury"""
@@ -691,7 +756,7 @@ class TeamService:
             raise ValueError("Player is not a team member")
 
         # Get player with lock
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
         
@@ -699,10 +764,21 @@ class TeamService:
         treasury_field = f"treasury_{resource_type}"
         if not hasattr(team, treasury_field):
             raise ValueError(f"Invalid resource type: {resource_type}")
-        
+
+        # Mirror the withdrawal/transfer whitelist: only resources a Player row
+        # can actually hold may be deposited. Without this, depositing a
+        # commodity would setattr a transient attribute on the player, "debit"
+        # nothing real, yet credit the treasury — minting resources from thin
+        # air. Same honest message as the outbound path.
+        if resource_type not in PLAYER_TRANSFERABLE_RESOURCES:
+            raise ValueError(
+                f"Players can only deposit {_TRANSFERABLE_LABEL} directly; "
+                "commodity transfers require cargo routing — not yet implemented"
+            )
+
         if amount <= 0:
             raise ValueError("Amount must be positive")
-        
+
         # Check if player has enough resources
         player_resource = getattr(player, resource_type, 0)
         if player_resource < amount:
@@ -713,15 +789,24 @@ class TeamService:
         current_treasury = getattr(team, treasury_field, 0)
         setattr(team, treasury_field, current_treasury + amount)
         
-        # Update member contribution tracking
-        if not member.contribution_credits:
-            member.contribution_credits = {}
-        
-        if resource_type not in member.contribution_credits:
-            member.contribution_credits[resource_type] = 0
-        
-        member.contribution_credits[resource_type] += amount
-        
+        # Update member contribution tracking (copy-reassign: in-place JSONB
+        # mutation is invisible to SQLAlchemy's change tracking)
+        contributions = dict(member.contribution_credits or {})
+        contributions[resource_type] = contributions.get(resource_type, 0) + amount
+        member.contribution_credits = contributions
+        flag_modified(member, "contribution_credits")
+
+        # Ledger: one row per mutation, same txn as the balance change.
+        self._record_treasury_transaction(
+            team_id=team_id,
+            resource_type=resource_type,
+            kind=TreasuryTransaction.KIND_DEPOSIT,
+            amount=amount,
+            balance_after=getattr(team, treasury_field),
+            actor_player_id=player_id,
+            reason=f"{player.nickname} deposited {amount} {resource_type}",
+        )
+
         # Send team notification
         self._send_notification(
             sender_id=player_id,
@@ -733,8 +818,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.treasury.deposit",
+            user_id=player_id,
+            action=AuditAction.UPDATE,  # was "team.treasury.deposit"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -768,7 +853,7 @@ class TeamService:
             raise ValueError("Insufficient permissions to manage treasury")
 
         # Get player with lock
-        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        player = self.db.query(Player).filter(Player.id == player_id).populate_existing().with_for_update().first()
         if not player:
             raise ValueError("Player not found")
         
@@ -776,20 +861,37 @@ class TeamService:
         treasury_field = f"treasury_{resource_type}"
         if not hasattr(team, treasury_field):
             raise ValueError(f"Invalid resource type: {resource_type}")
-        
+
+        if resource_type not in PLAYER_TRANSFERABLE_RESOURCES:
+            raise ValueError(
+                f"Players can only receive {_TRANSFERABLE_LABEL} directly; "
+                "commodity transfers require cargo routing — not yet implemented"
+            )
+
         if amount <= 0:
             raise ValueError("Amount must be positive")
-        
+
         # Check if treasury has enough resources
         treasury_balance = getattr(team, treasury_field, 0)
         if treasury_balance < amount:
             raise ValueError(f"Insufficient treasury {resource_type}: have {treasury_balance}, need {amount}")
-        
+
         # Transfer resources
         setattr(team, treasury_field, treasury_balance - amount)
         player_resource = getattr(player, resource_type, 0)
         setattr(player, resource_type, player_resource + amount)
-        
+
+        # Ledger: one row per mutation, same txn as the balance change.
+        self._record_treasury_transaction(
+            team_id=team_id,
+            resource_type=resource_type,
+            kind=TreasuryTransaction.KIND_WITHDRAW,
+            amount=amount,
+            balance_after=getattr(team, treasury_field),
+            actor_player_id=player_id,
+            reason=f"{player.nickname} withdrew {amount} {resource_type}",
+        )
+
         # Send team notification
         self._send_notification(
             sender_id=player_id,
@@ -802,8 +904,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=player_id,
-            action="team.treasury.withdraw",
+            user_id=player_id,
+            action=AuditAction.UPDATE,  # was "team.treasury.withdraw"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -826,17 +928,28 @@ class TeamService:
     def transfer_to_player(self, team_id: uuid.UUID, actor_id: uuid.UUID,
                           recipient_nickname: str, resource_type: str, amount: int) -> Dict[str, Any]:
         """Transfer resources from treasury to a specific player"""
-        team = self.get_team(team_id)
+        # Lock the team row before reading the treasury balance (mirrors
+        # deposit_to_treasury/withdraw_from_treasury; populate_existing()
+        # refreshes any already-loaded instance under the lock)
+        team = (
+            self.db.query(Team)
+            .filter(Team.id == team_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
         if not team:
             raise ValueError("Team not found")
-        
+
         # Check permissions
         actor_member = self._get_team_member(team_id, actor_id)
         if not actor_member or not actor_member.can_manage_treasury:
             raise ValueError("Insufficient permissions to manage treasury")
-        
-        # Find recipient
-        recipient = self.db.query(Player).filter(Player.nickname == recipient_nickname).first()
+
+        # Find recipient (locked — their balance is mutated below)
+        recipient = self.db.query(Player).filter(
+            Player.nickname == recipient_nickname
+        ).populate_existing().with_for_update().first()
         if not recipient:
             raise ValueError("Recipient player not found")
         
@@ -849,10 +962,16 @@ class TeamService:
         treasury_field = f"treasury_{resource_type}"
         if not hasattr(team, treasury_field):
             raise ValueError(f"Invalid resource type: {resource_type}")
-        
+
+        if resource_type not in PLAYER_TRANSFERABLE_RESOURCES:
+            raise ValueError(
+                f"Players can only receive {_TRANSFERABLE_LABEL} directly; "
+                "commodity transfers require cargo routing — not yet implemented"
+            )
+
         if amount <= 0:
             raise ValueError("Amount must be positive")
-        
+
         # Check treasury balance
         treasury_balance = getattr(team, treasury_field, 0)
         if treasury_balance < amount:
@@ -865,7 +984,19 @@ class TeamService:
         
         # Send notifications
         actor = self.db.query(Player).filter(Player.id == actor_id).first()
-        
+
+        # Ledger: one row per mutation, same txn as the balance change.
+        actor_name = actor.nickname if actor else "Someone"
+        self._record_treasury_transaction(
+            team_id=team_id,
+            resource_type=resource_type,
+            kind=TreasuryTransaction.KIND_TRANSFER,
+            amount=amount,
+            balance_after=getattr(team, treasury_field),
+            actor_player_id=actor_id,
+            reason=f"{actor_name} transferred {amount} {resource_type} to {recipient.nickname}",
+        )
+
         # Notify recipient
         self._send_notification(
             sender_id=actor_id,
@@ -887,8 +1018,8 @@ class TeamService:
         
         # Audit log
         self.audit_service.log_action(
-            actor_id=actor_id,
-            action="team.treasury.transfer",
+            user_id=actor_id,
+            action=AuditAction.UPDATE,  # was "team.treasury.transfer"
             resource_type="team",
             resource_id=team_id,
             details={
@@ -930,3 +1061,46 @@ class TeamService:
             "dark_matter": team.treasury_dark_matter,
             "quantum_crystals": team.treasury_quantum_crystals
         }
+
+    def get_treasury_history(
+        self,
+        team_id: uuid.UUID,
+        skip: int = 0,
+        limit: int = 25,
+    ) -> List[Dict[str, Any]]:
+        """Return the team's treasury ledger, newest-first, paginated.
+
+        Each row is the append-only record written at a mutation site. The actor
+        nickname is resolved for display; a deleted actor (SET NULL) renders as
+        None so the caller can show "Unknown".
+        """
+        rows = (
+            self.db.query(TreasuryTransaction)
+            .filter(TreasuryTransaction.team_id == team_id)
+            .order_by(TreasuryTransaction.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+        # Resolve actor nicknames in one pass (avoid N+1).
+        actor_ids = {r.actor_player_id for r in rows if r.actor_player_id is not None}
+        actor_names: Dict[uuid.UUID, str] = {}
+        if actor_ids:
+            for p in self.db.query(Player).filter(Player.id.in_(actor_ids)).all():
+                actor_names[p.id] = p.nickname
+
+        return [
+            {
+                "id": str(r.id),
+                "resource_type": r.resource_type,
+                "kind": r.kind,
+                "amount": r.amount,
+                "balance_after": r.balance_after,
+                "actor_player_id": str(r.actor_player_id) if r.actor_player_id else None,
+                "actor_name": actor_names.get(r.actor_player_id) if r.actor_player_id else None,
+                "reason": r.reason,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]

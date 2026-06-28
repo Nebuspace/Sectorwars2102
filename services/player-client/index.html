@@ -2,6 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Always revalidate the entry document so a PLAIN refresh picks up the
+         latest deploy: vite content-hashes the JS/CSS (safely cacheable), so only
+         this index.html could be served stale (the recurring "still broke until
+         hard-reload"). NOTE: meta http-equiv is a mitigation; the authoritative
+         fix is HTTP `Cache-Control: no-cache` on index.html at the serve layer
+         (nginx/CDN) — Orchestrator/infra lane. -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sector Wars 2102 - Player Client</title>

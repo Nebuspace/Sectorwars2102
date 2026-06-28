@@ -90,6 +90,7 @@ const RegionalGovernorDashboard: React.FC = () => {
   const [treaties, setTreaties] = useState<Treaty[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'governance' | 'economy' | 'policies' | 'elections' | 'diplomacy' | 'culture'>('overview');
   const isAdmin = user?.is_admin || false;
 
@@ -109,8 +110,6 @@ const RegionalGovernorDashboard: React.FC = () => {
     traditions: '',
     language: 'universal'
   });
-  const [showDiplomacyModal, setShowDiplomacyModal] = useState(false);
-  const [diplomacyAction, setDiplomacyAction] = useState<'trade' | 'defense' | 'cultural' | 'message'>('trade');
 
   // Economic configuration state
   const [economicConfig, setEconomicConfig] = useState({
@@ -289,7 +288,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       });
 
       if (response.ok) {
-        alert('Economic configuration updated successfully');
+        setSuccess('Economic configuration updated successfully');
         await loadRegionInfo();
       } else {
         const error = await response.json();
@@ -316,7 +315,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       });
 
       if (response.ok) {
-        alert('Governance configuration updated successfully');
+        setSuccess('Governance configuration updated successfully');
         await loadRegionInfo();
       } else {
         const error = await response.json();
@@ -343,7 +342,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       });
 
       if (response.ok) {
-        alert('Policy proposal created successfully');
+        setSuccess('Policy proposal created successfully');
         setShowPolicyForm(false);
         setNewPolicy({
           policy_type: 'tax_rate',
@@ -380,7 +379,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       });
 
       if (response.ok) {
-        alert(`Election for ${position} started successfully`);
+        setSuccess(`Election for ${position} started successfully`);
         await loadElections();
       } else {
         const error = await response.json();
@@ -389,83 +388,6 @@ const RegionalGovernorDashboard: React.FC = () => {
     } catch (err) {
       setError('Network error occurred');
       console.error('Start election error:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const openDiplomacyModal = (action: 'trade' | 'defense' | 'cultural' | 'message') => {
-    setDiplomacyAction(action);
-    setShowDiplomacyModal(true);
-  };
-
-  const handleDiplomacySubmit = async (targetRegionId: string, message: string) => {
-    if (!region) return;
-    setLoading(true);
-    try {
-      const actionMap: Record<string, string> = {
-        'trade': 'trade_agreement',
-        'defense': 'defense_pact',
-        'cultural': 'cultural_exchange',
-        'message': 'diplomatic_message'
-      };
-      const response = await fetch(`/api/v1/regions/${region.id}/diplomacy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          action_type: actionMap[diplomacyAction],
-          target_region_id: targetRegionId,
-          message: message
-        })
-      });
-
-      if (response.ok) {
-        alert(`Diplomatic action sent successfully!`);
-        setShowDiplomacyModal(false);
-        await loadTreaties();
-      } else {
-        const errData = await response.json().catch(() => ({ detail: 'Request failed' }));
-        setError(errData.detail || 'Failed to send diplomatic action');
-      }
-    } catch (err) {
-      setError('Network error occurred while sending diplomatic action');
-      console.error('Diplomacy error:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const updateCulturalConfig = async () => {
-    if (!region) return;
-    setLoading(true);
-    try {
-      const response = await fetch(`/api/v1/regions/${region.id}/culture`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          aesthetic_theme: { ...region.aesthetic_theme, variant: culturalConfig.theme },
-          language_pack: { ...region.language_pack, variant: culturalConfig.language },
-          motto: culturalConfig.motto,
-          traditions: culturalConfig.traditions
-        })
-      });
-
-      if (response.ok) {
-        alert('Cultural settings updated successfully');
-        await loadRegionInfo();
-      } else {
-        const errData = await response.json().catch(() => ({ detail: 'Request failed' }));
-        setError(errData.detail || 'Failed to update cultural settings');
-      }
-    } catch (err) {
-      setError('Network error occurred');
-      console.error('Culture update error:', err);
     } finally {
       setLoading(false);
     }
@@ -572,6 +494,13 @@ const RegionalGovernorDashboard: React.FC = () => {
         <div className="error-message">
           {error}
           <button onClick={() => setError(null)} className="error-close">×</button>
+        </div>
+      )}
+
+      {success && (
+        <div className="success-message">
+          {success}
+          <button onClick={() => setSuccess(null)} className="error-close">×</button>
         </div>
       )}
 
@@ -1028,7 +957,7 @@ const RegionalGovernorDashboard: React.FC = () => {
                           </span>
                         </td>
                         <td>
-                          <button className="action-button small">View Details</button>
+                          <button className="action-button small" disabled title="Treaty detail view is not yet available">View Details</button>
                         </td>
                       </tr>
                     ))}
@@ -1041,25 +970,12 @@ const RegionalGovernorDashboard: React.FC = () => {
 
             <div className="diplomatic-actions">
               <h4>Diplomatic Actions</h4>
-              <div className="action-buttons">
-                <button className="action-button primary" onClick={() => openDiplomacyModal('trade')}>Propose Trade Agreement</button>
-                <button className="action-button secondary" onClick={() => openDiplomacyModal('defense')}>Negotiate Defense Pact</button>
-                <button className="action-button secondary" onClick={() => openDiplomacyModal('cultural')}>Cultural Exchange</button>
-                <button className="action-button neutral" onClick={() => openDiplomacyModal('message')}>Send Diplomatic Message</button>
+              <div className="tab-unavailable-note">
+                Diplomatic actions (trade agreements, defense pacts, cultural exchange,
+                diplomatic messages) are not yet available — the server has no regional
+                diplomacy endpoint. Existing treaties are listed above when present.
               </div>
             </div>
-
-            {/* Diplomacy Modal */}
-            {showDiplomacyModal && (
-              <DiplomacyModal
-                actionType={diplomacyAction}
-                allRegions={allRegions}
-                currentRegionId={region.id}
-                onClose={() => setShowDiplomacyModal(false)}
-                onSubmit={handleDiplomacySubmit}
-                loading={loading}
-              />
-            )}
           </div>
         )}
 
@@ -1068,173 +984,23 @@ const RegionalGovernorDashboard: React.FC = () => {
             <h3>Cultural Identity</h3>
 
             <div className="culture-config">
-              <div className="form-group">
-                <label>Regional Theme</label>
-                <select
-                  value={culturalConfig.theme}
-                  onChange={(e) => setCulturalConfig(prev => ({ ...prev, theme: e.target.value }))}
-                >
-                  <option value="default">Default</option>
-                  <option value="imperial">Imperial</option>
-                  <option value="federation">Federation</option>
-                  <option value="pirate">Pirate Republic</option>
-                  <option value="corporate">Corporate State</option>
-                  <option value="tribal">Tribal Alliance</option>
-                  <option value="technocracy">Technocracy</option>
-                </select>
-                <small>Affects visual theme and cultural descriptions</small>
+              <div className="tab-unavailable-note">
+                Regional cultural identity (theme, motto, traditions, language) is set by a
+                region's <strong>owner</strong> from their own region console. There is currently
+                no admin endpoint to edit cultural identity for a selected region, so this control
+                is disabled here. Current values, when present, are shown in region details above.
               </div>
-
-              <div className="form-group">
-                <label>Regional Motto</label>
-                <input
-                  type="text"
-                  placeholder="Enter your region's motto..."
-                  maxLength={200}
-                  value={culturalConfig.motto}
-                  onChange={(e) => setCulturalConfig(prev => ({ ...prev, motto: e.target.value }))}
-                />
-                <small>Displayed in region information</small>
-              </div>
-
-              <div className="form-group">
-                <label>Cultural Traditions</label>
-                <textarea
-                  placeholder="Describe the cultural traditions and customs of your region..."
-                  rows={4}
-                  value={culturalConfig.traditions}
-                  onChange={(e) => setCulturalConfig(prev => ({ ...prev, traditions: e.target.value }))}
-                />
-                <small>Traditions that define your region's character</small>
-              </div>
-
-              <div className="form-group">
-                <label>Language Settings</label>
-                <select
-                  value={culturalConfig.language}
-                  onChange={(e) => setCulturalConfig(prev => ({ ...prev, language: e.target.value }))}
-                >
-                  <option value="universal">Universal (English)</option>
-                  <option value="imperial">Imperial Latin</option>
-                  <option value="techspeak">Tech Speak</option>
-                  <option value="trader">Trader Pidgin</option>
-                  <option value="military">Military Code</option>
-                </select>
-                <small>Language variant used in your region</small>
-              </div>
-
-              <button
-                className="action-button primary"
-                onClick={updateCulturalConfig}
-                disabled={loading}
-              >
-                {loading ? 'Updating...' : 'Update Cultural Settings'}
-              </button>
+              {region?.aesthetic_theme?.variant || region?.language_pack?.variant ? (
+                <div className="culture-current">
+                  <div className="stat-breakdown">
+                    <div>Theme: {region?.aesthetic_theme?.variant || '—'}</div>
+                    <div>Language: {region?.language_pack?.variant || '—'}</div>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         )}
-      </div>
-    </div>
-  );
-};
-
-// Diplomacy Modal Component
-interface DiplomacyModalProps {
-  actionType: 'trade' | 'defense' | 'cultural' | 'message';
-  allRegions: Region[];
-  currentRegionId: string;
-  onClose: () => void;
-  onSubmit: (targetRegionId: string, message: string) => void;
-  loading: boolean;
-}
-
-const DiplomacyModal: React.FC<DiplomacyModalProps> = ({ actionType, allRegions, currentRegionId, onClose, onSubmit, loading }) => {
-  const [targetRegionId, setTargetRegionId] = useState('');
-  const [message, setMessage] = useState('');
-
-  const actionLabels: Record<string, { title: string; placeholder: string }> = {
-    trade: { title: 'Propose Trade Agreement', placeholder: 'Describe the trade terms you would like to propose...' },
-    defense: { title: 'Negotiate Defense Pact', placeholder: 'Outline the mutual defense terms...' },
-    cultural: { title: 'Propose Cultural Exchange', placeholder: 'Describe the cultural exchange program...' },
-    message: { title: 'Send Diplomatic Message', placeholder: 'Enter your diplomatic message...' }
-  };
-
-  const label = actionLabels[actionType];
-  const otherRegions = allRegions.filter(r => r.id !== currentRegionId);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!targetRegionId) {
-      alert('Please select a target region.');
-      return;
-    }
-    if (!message.trim()) {
-      alert('Please enter a message.');
-      return;
-    }
-    onSubmit(targetRegionId, message);
-  };
-
-  return (
-    <div style={{
-      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-      backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
-    }} onClick={onClose}>
-      <div style={{
-        backgroundColor: '#1f2937', borderRadius: '12px', padding: '24px', maxWidth: '500px', width: '90%',
-        border: '1px solid #374151', boxShadow: '0 10px 40px rgba(0,0,0,0.4)'
-      }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <h3 style={{ margin: 0, color: '#e5e7eb' }}>{label.title}</h3>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: '1.5rem', cursor: 'pointer' }}>x</button>
-        </div>
-
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', marginBottom: '6px', color: '#9ca3af', fontSize: '0.9rem' }}>Target Region</label>
-            {otherRegions.length > 0 ? (
-              <select
-                value={targetRegionId}
-                onChange={(e) => setTargetRegionId(e.target.value)}
-                style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', background: '#111827', color: '#e5e7eb', border: '1px solid #374151' }}
-              >
-                <option value="">Select a region...</option>
-                {otherRegions.map(r => (
-                  <option key={r.id} value={r.id}>{r.display_name || r.name}</option>
-                ))}
-              </select>
-            ) : (
-              <p style={{ color: '#9ca3af', fontSize: '0.9rem' }}>No other regions available. Enter a region ID manually:</p>
-            )}
-            {otherRegions.length === 0 && (
-              <input
-                type="text"
-                value={targetRegionId}
-                onChange={(e) => setTargetRegionId(e.target.value)}
-                placeholder="Enter target region ID..."
-                style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', background: '#111827', color: '#e5e7eb', border: '1px solid #374151', marginTop: '8px' }}
-              />
-            )}
-          </div>
-
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ display: 'block', marginBottom: '6px', color: '#9ca3af', fontSize: '0.9rem' }}>Message</label>
-            <textarea
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder={label.placeholder}
-              rows={4}
-              style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', background: '#111827', color: '#e5e7eb', border: '1px solid #374151', resize: 'vertical' }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-            <button type="button" onClick={onClose} className="action-button secondary">Cancel</button>
-            <button type="submit" className="action-button primary" disabled={loading}>
-              {loading ? 'Sending...' : 'Send'}
-            </button>
-          </div>
-        </form>
       </div>
     </div>
   );

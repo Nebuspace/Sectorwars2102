@@ -217,7 +217,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         async def cleanup_loop():
             while True:
                 try:
-                    await asyncio.sleep(300)  # Run every 5 minutes
+                    await asyncio.sleep(60)  # Run every minute
                     current_time = time.time()
                     
                     # Remove clients with no recent activity (1 hour)

@@ -67,6 +67,208 @@
   margin-bottom: 12px;
 }
 
+/* Current-level flavor line under the structure visualization */
+.citadel-flavor {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: -4px 0 12px;
+  padding: 0 4px;
+}
+
+.citadel-flavor-name {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #00ffcc;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.citadel-flavor-text {
+  font-size: 0.75rem;
+  color: #99aabb;
+  font-style: italic;
+}
+
+/* 5-Level Stepped Progression Track */
+.citadel-track {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  margin-bottom: 16px;
+  padding: 10px 4px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(74, 158, 255, 0.15);
+  border-radius: 8px;
+}
+
+.citadel-step {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 2px;
+  text-align: center;
+  min-width: 0;
+}
+
+/* Connector line between steps */
+.citadel-step::before {
+  content: '';
+  position: absolute;
+  top: 16px;
+  left: -50%;
+  width: 100%;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  z-index: 0;
+}
+
+.citadel-step:first-child::before {
+  display: none;
+}
+
+.citadel-step.completed::before,
+.citadel-step.current::before {
+  background: linear-gradient(90deg, #4a9eff, #00ffcc);
+}
+
+.step-node {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  background: #10142a;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.step-level {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #667;
+  letter-spacing: 0.5px;
+}
+
+.citadel-step.completed .step-node {
+  border-color: rgba(0, 255, 204, 0.5);
+  background: rgba(0, 255, 204, 0.08);
+}
+
+.citadel-step.completed .step-level {
+  color: #00ffcc;
+}
+
+.citadel-step.current .step-node {
+  border-color: #00ffcc;
+  background: rgba(0, 255, 204, 0.15);
+  box-shadow: 0 0 12px rgba(0, 255, 204, 0.5);
+}
+
+.citadel-step.current .step-level {
+  color: #00ffcc;
+}
+
+.citadel-step.current .step-node {
+  animation: citadel-step-glow 2.5s ease-in-out infinite;
+}
+
+@keyframes citadel-step-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(0, 255, 204, 0.35); }
+  50% { box-shadow: 0 0 16px rgba(0, 255, 204, 0.65); }
+}
+
+.citadel-step.next-up .step-node {
+  border-style: dashed;
+  border-color: rgba(74, 158, 255, 0.6);
+}
+
+/* Flavor tooltip on hover/focus of a track step */
+.citadel-step {
+  outline: none;
+}
+
+.citadel-step:hover::after,
+.citadel-step:focus-visible::after {
+  content: attr(data-flavor);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  width: max-content;
+  max-width: 220px;
+  padding: 5px 8px;
+  background: rgba(6, 10, 24, 0.96);
+  border: 1px solid rgba(0, 255, 204, 0.35);
+  border-radius: 4px;
+  color: #cde;
+  font-size: 0.68rem;
+  font-style: italic;
+  line-height: 1.35;
+  white-space: normal;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.citadel-step:focus-visible .step-node {
+  border-color: #00ffcc;
+}
+
+.citadel-step.next-up .step-level {
+  color: #4a9eff;
+}
+
+.step-name {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #889;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.citadel-step.current .step-name {
+  color: #fff;
+}
+
+.citadel-step.completed .step-name {
+  color: #aac;
+}
+
+.step-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.6rem;
+  color: #667;
+  line-height: 1.3;
+}
+
+.citadel-step.current .step-stats,
+.citadel-step.completed .step-stats {
+  color: #99a;
+}
+
+.citadel-stat-row {
+  display: flex;
+  gap: 16px;
+}
+
+.citadel-stat-row .citadel-stat {
+  flex: 1;
+}
+
 .citadel-stats {
   display: flex;
   flex-direction: column;
@@ -93,19 +295,120 @@
   font-weight: 500;
 }
 
-.storage-bar {
+/* Vault gauge — segmented safe-storage display with gold shimmer */
+.vault-gauge {
+  position: relative;
   width: 100%;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
+  height: 14px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 4px;
   overflow: hidden;
 }
 
-.storage-fill {
+.vault-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
   height: 100%;
-  background: linear-gradient(90deg, #4a9eff, #00ffcc);
-  border-radius: 3px;
+  background: linear-gradient(
+    105deg,
+    #8a6d1f 0%,
+    #d4a72c 30%,
+    #ffe9a8 50%,
+    #d4a72c 70%,
+    #8a6d1f 100%
+  );
+  background-size: 220% 100%;
+  border-radius: 3px 0 0 3px;
   transition: width 0.4s ease;
+  animation: vault-shimmer 4.5s linear infinite;
+}
+
+@keyframes vault-shimmer {
+  0% { background-position: 110% 0; }
+  100% { background-position: -110% 0; }
+}
+
+/* Segment notches overlaying the fill */
+.vault-segments {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent calc(100% / 24 - 2px),
+    rgba(6, 10, 24, 0.9) calc(100% / 24 - 2px),
+    rgba(6, 10, 24, 0.9) calc(100% / 24)
+  );
+  pointer-events: none;
+}
+
+.vault-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 0.8rem;
+}
+
+.vault-amount {
+  color: var(--credits-color, #fbbf24);
+  font-weight: 600;
+}
+
+.vault-capacity {
+  color: #889;
+  font-size: 0.72rem;
+}
+
+.vault-percent {
+  margin-left: auto;
+  color: #99a;
+  font-size: 0.72rem;
+}
+
+/* Drone bay pip grid */
+.drone-bay {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drone-pips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 180px;
+}
+
+.drone-pip {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: 1px solid rgba(74, 158, 255, 0.45);
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.drone-pip.filled {
+  background: linear-gradient(135deg, #4a9eff, #00ffcc);
+  border-color: rgba(0, 255, 204, 0.7);
+  box-shadow: 0 0 4px rgba(0, 255, 204, 0.35);
+}
+
+.drone-pip.empty {
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.drone-pip.capacity {
+  border-color: rgba(74, 158, 255, 0.5);
+  background: rgba(74, 158, 255, 0.12);
+}
+
+.drone-count {
+  font-size: 0.75rem;
+  color: #ddd;
+  font-weight: 500;
 }
 
 .citadel-storage-controls {
@@ -201,6 +504,21 @@
   color: #888;
 }
 
+.upgrade-resources {
+  font-size: 0.7rem;
+  color: #99aabb;
+}
+
+.upgrade-prereq {
+  font-size: 0.7rem;
+  color: #ffaa44;
+}
+
+.upgrade-gains {
+  font-size: 0.7rem;
+  color: #00ffcc;
+}
+
 .upgrade-btn {
   border-color: #4a9eff;
   color: #4a9eff;
@@ -211,15 +529,69 @@
   background: rgba(74, 158, 255, 0.15);
 }
 
+/* Upgrade-in-progress construction panel */
 .citadel-upgrading {
-  padding: 8px;
-  border-radius: 4px;
-  background: rgba(255, 170, 68, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 6px;
+  background: rgba(255, 170, 68, 0.08);
   border: 1px solid rgba(255, 170, 68, 0.3);
-  color: #ffaa44;
   font-size: 0.8rem;
-  text-align: center;
   margin-bottom: 10px;
+}
+
+.upgrading-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.upgrading-label {
+  color: #ffaa44;
+  font-weight: 600;
+}
+
+.upgrading-countdown {
+  margin-left: auto;
+  color: #ffd9a0;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+}
+
+.upgrading-bar {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 170, 68, 0.25);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.upgrading-fill {
+  height: 100%;
+  background: repeating-linear-gradient(
+    -45deg,
+    #ffaa44 0,
+    #ffaa44 6px,
+    #cc7722 6px,
+    #cc7722 12px
+  );
+  background-size: 34px 100%;
+  border-radius: 3px;
+  transition: width 1s linear;
+  animation: upgrading-stripes 1.2s linear infinite;
+}
+
+@keyframes upgrading-stripes {
+  to { background-position: 17px 0; }
+}
+
+.upgrading-eta {
+  color: #aa8866;
+  font-size: 0.7rem;
 }
 
 .citadel-max-level {
@@ -233,6 +605,88 @@
   font-style: italic;
 }
 
+/* Size-capped variant of the terminal state — distinct from a true L5 max so
+   the player understands the limit is the planet's size, not a bug. */
+.citadel-max-level.size-capped {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: rgba(255, 170, 68, 0.07);
+  border-color: rgba(255, 170, 68, 0.3);
+  color: #ffd9a0;
+  font-style: normal;
+}
+
+.citadel-max-level.size-capped .max-level-title {
+  font-weight: 700;
+  color: #ffaa44;
+}
+
+.citadel-max-level.size-capped .max-level-sub {
+  font-size: 0.7rem;
+  color: #aa8866;
+  line-height: 1.35;
+}
+
+/* Always-visible planet-size ceiling line under the level name. */
+.citadel-size-cap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 12px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: rgba(74, 158, 255, 0.06);
+  border: 1px solid rgba(74, 158, 255, 0.18);
+  font-size: 0.72rem;
+  color: #99aabb;
+}
+
+.citadel-size-cap .size-cap-text strong {
+  color: #4a9eff;
+  font-weight: 700;
+}
+
+/* When the planet has actually reached its size ceiling, warm the badge so the
+   stop is unmistakable (matches the amber "construction/limit" language). */
+.citadel-size-cap.at-cap {
+  background: rgba(255, 170, 68, 0.08);
+  border-color: rgba(255, 170, 68, 0.3);
+  color: #ffd9a0;
+}
+
+.citadel-size-cap.at-cap .size-cap-text strong {
+  color: #ffaa44;
+}
+
+.citadel-size-cap .size-cap-flag {
+  color: #ffaa44;
+  font-weight: 600;
+}
+
+/* Progression-track steps above this planet's size ceiling: visibly out of
+   reach (dimmed + crosshatched node) so the ladder itself shows the cap. */
+.citadel-step.beyond-size-cap {
+  opacity: 0.4;
+}
+
+.citadel-step.beyond-size-cap .step-node {
+  border-style: dashed;
+  border-color: rgba(255, 170, 68, 0.4);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(255, 170, 68, 0.08) 0,
+      rgba(255, 170, 68, 0.08) 3px,
+      transparent 3px,
+      transparent 6px
+    );
+}
+
+.citadel-step.beyond-size-cap .step-level {
+  color: #aa8866;
+}
+
 .citadel-message {
   margin-top: 8px;
   padding: 6px 10px;
@@ -241,4 +695,27 @@
   color: #aaa;
   font-size: 0.8rem;
   text-align: center;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .citadel-spinner {
+    animation-duration: 2s;
+  }
+
+  .citadel-step.current .step-node {
+    animation: none;
+    box-shadow: 0 0 12px rgba(0, 255, 204, 0.5);
+  }
+
+  .vault-fill {
+    animation: none;
+    background: linear-gradient(105deg, #8a6d1f, #d4a72c 60%, #b8902a);
+    transition: none;
+  }
+
+  .upgrading-fill {
+    animation: none;
+    transition: none;
+  }
 }

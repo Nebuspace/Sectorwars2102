@@ -19,12 +19,6 @@
   padding: var(--space-xl);
 }
 
-.loading-spinner {
-  font-size: 1.2rem;
-  color: var(--accent-primary);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
 .error-message {
   display: flex;
   align-items: center;
@@ -54,17 +48,80 @@
   opacity: 0.8;
 }
 
-.empty-state {
+/* ============================================
+   COLONY SCAN STATE - spinner / timeout / retry
+   Copied from the cockpit.css nav-scan idiom (NAV monitor) so this
+   page owns its styles instead of depending on cockpit.css loading.
+   ============================================ */
+
+.planet-scan-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  height: 100%;
   text-align: center;
-  padding: var(--space-xl);
-  background: var(--surface-primary);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-primary);
+  padding: 1rem;
 }
 
-.empty-state h2 {
-  margin-bottom: var(--space-md);
-  color: var(--text-secondary);
+.planet-scan-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(0, 217, 255, 0.2);
+  border-top-color: #00d9ff;
+  border-radius: 50%;
+  animation: planet-scan-spin 1s linear infinite;
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+}
+
+@keyframes planet-scan-spin {
+  to { transform: rotate(360deg); }
+}
+
+.planet-scan-text {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: rgba(0, 217, 255, 0.8);
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+}
+
+.planet-scan-text.warning {
+  color: #ffb000;
+  text-shadow: 0 0 8px rgba(255, 176, 0, 0.4);
+}
+
+.planet-scan-retry {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(0, 217, 255, 0.15);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: 4px;
+  color: #00d9ff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.planet-scan-retry:hover {
+  background: rgba(0, 217, 255, 0.25);
+  border-color: rgba(0, 217, 255, 0.7);
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
+}
+
+/* Disabled control affordances */
+.action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.action-button:disabled:hover {
+  background: var(--surface-secondary);
+  border-color: var(--border-secondary);
+  color: var(--text-primary);
+  transform: none;
 }
 
 /* Planet List Sidebar */
@@ -235,9 +292,15 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-md);
   padding: var(--space-lg);
   border-bottom: 1px solid var(--border-primary);
-  background: var(--bg-secondary);
+  background: linear-gradient(
+    135deg,
+    var(--planet-accent-dim, rgba(0, 255, 255, 0.08)) 0%,
+    var(--bg-secondary) 55%
+  );
+  border-top: 2px solid var(--planet-accent, var(--accent-primary));
 }
 
 .planet-header h2 {
@@ -247,6 +310,204 @@
   gap: var(--space-sm);
   font-size: 1.5rem;
   color: var(--text-primary);
+}
+
+.planet-header-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+/* Per-type icon badge */
+.planet-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.planet-icon-badge.header-badge {
+  width: 48px;
+  height: 48px;
+  font-size: 1.75rem;
+  border-radius: 50%;
+  background: var(--planet-accent-dim, rgba(0, 255, 255, 0.1));
+  border: 1px solid var(--planet-accent, var(--accent-primary));
+  box-shadow: 0 0 12px var(--planet-accent-glow, rgba(0, 255, 255, 0.25));
+  flex-shrink: 0;
+}
+
+.hub-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* Planet-Type Theming
+   TERRAN green · OCEANIC blue · DESERT sand · ICE pale cyan
+   VOLCANIC red · BARREN gray · MOUNTAINOUS slate */
+[data-planet-type='terran'] {
+  --planet-accent: #34d399;
+  --planet-accent-dim: rgba(52, 211, 153, 0.12);
+  --planet-accent-glow: rgba(52, 211, 153, 0.3);
+}
+
+[data-planet-type='oceanic'] {
+  --planet-accent: #38bdf8;
+  --planet-accent-dim: rgba(56, 189, 248, 0.12);
+  --planet-accent-glow: rgba(56, 189, 248, 0.3);
+}
+
+[data-planet-type='desert'] {
+  --planet-accent: #e8c170;
+  --planet-accent-dim: rgba(232, 193, 112, 0.12);
+  --planet-accent-glow: rgba(232, 193, 112, 0.3);
+}
+
+[data-planet-type='ice'] {
+  --planet-accent: #a5f3fc;
+  --planet-accent-dim: rgba(165, 243, 252, 0.1);
+  --planet-accent-glow: rgba(165, 243, 252, 0.3);
+}
+
+[data-planet-type='volcanic'] {
+  --planet-accent: #f87171;
+  --planet-accent-dim: rgba(248, 113, 113, 0.12);
+  --planet-accent-glow: rgba(248, 113, 113, 0.3);
+}
+
+[data-planet-type='barren'] {
+  --planet-accent: #9ca3af;
+  --planet-accent-dim: rgba(156, 163, 175, 0.12);
+  --planet-accent-glow: rgba(156, 163, 175, 0.25);
+}
+
+[data-planet-type='mountainous'] {
+  --planet-accent: #94a3b8;
+  --planet-accent-dim: rgba(148, 163, 184, 0.12);
+  --planet-accent-glow: rgba(148, 163, 184, 0.25);
+}
+
+.planet-item[data-planet-type] {
+  border-left: 3px solid var(--planet-accent, var(--border-secondary));
+}
+
+/* Habitability Ring (SVG radial gauge) */
+.habitability-ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  cursor: help;
+}
+
+.habitability-ring .ring-track {
+  stroke: rgba(255, 255, 255, 0.08);
+}
+
+.habitability-ring .ring-value {
+  transition: stroke-dasharray 0.6s ease;
+}
+
+.habitability-ring.hab-low .ring-value {
+  stroke: #ef4444;
+  filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.5));
+}
+
+.habitability-ring.hab-mid .ring-value {
+  stroke: #f59e0b;
+  filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.5));
+}
+
+.habitability-ring.hab-high .ring-value {
+  stroke: #22c55e;
+  filter: drop-shadow(0 0 4px rgba(34, 197, 94, 0.5));
+}
+
+.habitability-ring.hab-unknown .ring-value {
+  stroke: rgba(255, 255, 255, 0.15);
+}
+
+.habitability-ring .ring-score {
+  fill: var(--text-primary, #fff);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.habitability-ring .ring-caption {
+  fill: var(--text-tertiary, #888);
+  font-size: 7px;
+  letter-spacing: 2px;
+}
+
+.habitability-ring.terraforming svg {
+  animation: terraform-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes terraform-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.75; transform: scale(1.05); }
+}
+
+.terraforming-tag {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #00ffcc;
+  white-space: nowrap;
+  animation: terraform-tag-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes terraform-tag-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Planet Tabs */
+.planet-tabs {
+  display: flex;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-lg) 0;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.planet-tab {
+  padding: var(--space-sm) var(--space-lg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  color: var(--text-secondary);
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.planet-tab:hover {
+  color: var(--text-primary);
+  background: var(--surface-secondary);
+}
+
+.planet-tab.active {
+  color: var(--accent-primary);
+  background: var(--surface-primary);
+  border-color: var(--border-primary);
+  border-bottom: 2px solid var(--accent-primary);
+  margin-bottom: -1px;
+}
+
+.citadel-tab-content {
+  padding: var(--space-lg);
 }
 
 .siege-warning {
@@ -287,6 +548,122 @@
   color: var(--accent-primary);
   border-bottom: 1px solid var(--border-tertiary);
   padding-bottom: var(--space-sm);
+}
+
+/* Population Panel — dual-ceiling visualization */
+.population-panel {
+  border-color: var(--planet-accent, var(--border-secondary));
+}
+
+.dual-ceiling {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.ceiling-bar-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.ceiling-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.ceiling-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: help;
+}
+
+.ceiling-label.workforce {
+  color: #00ffcc;
+}
+
+.ceiling-label.population {
+  color: #38bdf8;
+}
+
+.ceiling-numbers {
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ceiling-bar {
+  position: relative;
+  height: 18px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-tertiary, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.ceiling-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  transition: width 0.5s ease;
+}
+
+.ceiling-fill.workforce {
+  background: linear-gradient(90deg, rgba(0, 255, 204, 0.45), #00ffcc);
+  box-shadow: 0 0 10px rgba(0, 255, 204, 0.35);
+}
+
+.ceiling-fill.population {
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.35), rgba(56, 189, 248, 0.7));
+}
+
+/* Layered population bar: workforce overlay nested inside total population */
+.ceiling-bar.layered .ceiling-fill.workforce-overlay {
+  height: 6px;
+  top: auto;
+  bottom: 0;
+  background: linear-gradient(90deg, rgba(0, 255, 204, 0.5), #00ffcc);
+  box-shadow: 0 0 6px rgba(0, 255, 204, 0.45);
+}
+
+.ceiling-unavailable {
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--text-tertiary);
+}
+
+.growth-line {
+  margin-top: var(--space-md);
+  font-size: 0.85rem;
+  color: #34d399;
+  font-variant-numeric: tabular-nums;
+}
+
+.morale-line {
+  margin-top: var(--space-xs);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: help;
+}
+
+.morale-value.good {
+  color: #34d399;
+  font-weight: 600;
+}
+
+.morale-value.low {
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.morale-value.critical {
+  color: #ef4444;
+  font-weight: 600;
 }
 
 /* Info Grid */
@@ -704,15 +1081,17 @@
 }
 
 .genesis-mini-button {
-  padding: var(--space-xs);
-  background: transparent;
-  border: 1px solid var(--border-secondary);
+  padding: var(--space-xs) var(--space-sm);
+  background: rgba(124, 110, 255, 0.12);
+  border: 1px solid var(--accent-primary, rgba(124, 110, 255, 0.6));
   border-radius: var(--radius-sm);
-  color: var(--text-secondary);
+  color: var(--accent-primary, #b9afff);
   cursor: pointer;
   transition: all 0.2s;
-  font-size: 1.2rem;
-  line-height: 1;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .genesis-mini-button:hover {
@@ -780,4 +1159,377 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .habitability-ring.terraforming svg,
+  .terraforming-tag,
+  .siege-warning,
+  .planet-item.under-siege,
+  .siege-indicator,
+  .siege-section,
+  .building-item.upgrading {
+    animation: none;
+  }
+
+  .habitability-ring.terraforming svg {
+    opacity: 0.9;
+  }
+
+  .ceiling-fill,
+  .allocation-fill,
+  .habitability-ring .ring-value {
+    transition: none;
+  }
+
+  .modal-overlay,
+  .modal-content {
+    animation-duration: 0.01s;
+  }
+}
+/* Genesis terraforming-in-progress indicator (Colonial Registry list) */
+.planet-item.forming { border-color: rgba(124, 110, 255, 0.45); }
+.planet-item .forming-indicator { margin-left: auto; font-size: 0.9rem; animation: pm-forming-pulse 1.8s ease-in-out infinite; }
+.planet-forming { padding: 4px 0 2px; }
+.planet-forming .forming-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+.planet-forming .forming-label { font-size: 0.66rem; font-weight: 700; letter-spacing: 0.12em; color: #b9afff; }
+.planet-forming .forming-remain { font-size: 0.68rem; color: #d8d2ff; font-variant-numeric: tabular-nums; }
+.planet-forming .forming-bar {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  background: rgba(124, 110, 255, 0.15); margin-bottom: 5px;
+}
+.planet-forming .forming-bar-fill {
+  height: 100%;
+  background: repeating-linear-gradient(90deg, rgba(124,110,255,0.9) 0 7px, rgba(80,200,160,0.7) 7px 14px);
+  background-size: 14px 100%;
+  animation: pm-forming-march 0.9s linear infinite;
+  transition: width 1s linear;
+}
+.planet-forming .forming-note { font-size: 0.6rem; color: var(--text-secondary, #99a); margin-top: 3px; }
+@keyframes pm-forming-march { from { background-position: 0 0; } to { background-position: 28px 0; } }
+@keyframes pm-forming-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .planet-item .forming-indicator, .planet-forming .forming-bar-fill { animation: none; }
+}
+
+/* ============================================
+   COLONY ROSTER — read-only fleet glance + travel board.
+   Replaces the dual-pane list/detail layout: deep management
+   now lives in the landed cockpit. This screen is sortable
+   columns + a "Set course" travel action per colony.
+   ============================================ */
+
+.planet-manager.roster {
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  overflow: auto;
+}
+
+.roster-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-primary, rgba(123, 47, 255, 0.3));
+}
+
+.roster-title h3 {
+  margin: 0;
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+}
+
+.roster-subtitle {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--text-secondary, #99a);
+}
+
+.roster-totals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.roster-total {
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  background: var(--surface-secondary, rgba(123, 47, 255, 0.08));
+  border: 1px solid var(--border-secondary, rgba(123, 47, 255, 0.25));
+  border-radius: var(--radius-sm, 6px);
+  white-space: nowrap;
+}
+
+.roster-total.siege {
+  color: #ffb000;
+  border-color: rgba(255, 176, 0, 0.5);
+  background: rgba(255, 176, 0, 0.08);
+}
+
+/* Table: CSS grid so columns stay aligned across rows.
+   Columns: name · sector · citadel · pop/cap · fuel · org · equip · hab · eff · action */
+.roster-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-primary, rgba(123, 47, 255, 0.3));
+  border-radius: var(--radius-md, 8px);
+  overflow: hidden;
+}
+
+.roster-row {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 1.6fr)  /* colony */
+    minmax(90px, 1fr)     /* sector */
+    72px                  /* citadel */
+    minmax(110px, 1.1fr)  /* pop/cap */
+    64px 64px 64px        /* fuel / org / equip */
+    56px                  /* hab */
+    64px                  /* eff */
+    minmax(120px, 0.9fr); /* action */
+  align-items: center;
+  gap: var(--space-xs, 6px);
+  padding: 8px var(--space-md, 12px);
+  border-bottom: 1px solid var(--border-secondary, rgba(123, 47, 255, 0.12));
+}
+
+.roster-row:last-child {
+  border-bottom: none;
+}
+
+.roster-row:not(.roster-row-head):hover {
+  background: var(--surface-secondary, rgba(123, 47, 255, 0.06));
+}
+
+.roster-row-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-secondary, rgba(10, 6, 24, 0.95));
+}
+
+.roster-th {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #99a);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.roster-th.right {
+  text-align: right;
+  justify-self: end;
+}
+
+.roster-th:hover {
+  color: var(--text-primary);
+}
+
+.roster-th.active {
+  color: #00d9ff;
+}
+
+.roster-th.action-col {
+  cursor: default;
+}
+
+.sort-arrow {
+  font-size: 0.7rem;
+}
+
+.roster-td {
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.roster-td.right {
+  text-align: right;
+  justify-self: end;
+}
+
+.colony-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.colony-cell .colony-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.colony-cell .planet-icon-badge {
+  flex: 0 0 auto;
+  font-size: 1rem;
+}
+
+.pop-cell .pop-cap {
+  color: var(--text-secondary, #99a);
+  font-size: 0.74rem;
+}
+
+.roster-row.under-siege {
+  background: rgba(255, 59, 48, 0.06);
+  box-shadow: inset 3px 0 0 var(--error-color, #ff3b30);
+}
+
+.roster-row.under-siege .siege-indicator {
+  color: #ff3b30;
+  font-size: 0.9rem;
+}
+
+/* Habitability / efficiency pills — color-banded readouts */
+.hab-pill,
+.eff-pill {
+  display: inline-block;
+  min-width: 34px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.hab-pill.hab-low,
+.eff-pill.eff-low {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.hab-pill.hab-mid,
+.eff-pill.eff-mid {
+  color: #ffb000;
+  background: rgba(255, 176, 0, 0.12);
+}
+
+.hab-pill.hab-high,
+.eff-pill.eff-high {
+  color: #51cf66;
+  background: rgba(81, 207, 102, 0.12);
+}
+
+/* Set course travel action */
+.set-course-button {
+  padding: 5px 12px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.4);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.set-course-button:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.18);
+  border-color: rgba(0, 217, 255, 0.7);
+}
+
+.set-course-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Forming (genesis terraforming) row — spans the data columns with a progress bar */
+.roster-row.forming .forming-cell {
+  text-align: left;
+  justify-self: stretch;
+}
+
+.roster-row.forming .forming-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.roster-row.forming .forming-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #b9afff;
+}
+
+.roster-row.forming .forming-remain {
+  font-size: 0.7rem;
+  color: #d8d2ff;
+  font-variant-numeric: tabular-nums;
+}
+
+.roster-row.forming .forming-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(123, 47, 255, 0.18);
+  overflow: hidden;
+}
+
+.roster-row.forming .forming-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #7B2FFF, #b9afff);
+  background-size: 14px 100%;
+  animation: pm-forming-march 0.9s linear infinite;
+  transition: width 1s linear;
+}
+
+.roster-row.forming .forming-note {
+  font-size: 0.62rem;
+  color: var(--text-secondary, #99a);
+  margin-top: 3px;
+}
+
+.roster-error {
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.8rem;
+  color: #ffb000;
+  background: rgba(255, 176, 0, 0.08);
+  border: 1px solid rgba(255, 176, 0, 0.4);
+  border-radius: var(--radius-sm, 6px);
+}
+
+@media (max-width: 760px) {
+  /* Drop the production breakdown columns on narrow screens; keep the
+     glance-critical columns + the travel action. */
+  .roster-row {
+    grid-template-columns:
+      minmax(120px, 1.6fr)
+      minmax(70px, 1fr)
+      60px
+      minmax(90px, 1fr)
+      52px
+      minmax(110px, 0.9fr);
+  }
+  .roster-th:nth-child(5),  /* fuel */
+  .roster-th:nth-child(6),  /* org */
+  .roster-th:nth-child(7),  /* equip */
+  .roster-td:nth-child(5),
+  .roster-td:nth-child(6),
+  .roster-td:nth-child(7) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .roster-row.forming .forming-bar-fill { animation: none; }
 }

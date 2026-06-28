@@ -394,6 +394,31 @@ class TestTerranSpaceStarterInvariants:
         assert s1[0].name == "Earth Station"
         assert s1[0].is_spacedock is False
 
+    def test_earth_station_is_class_zero_capital(self, plan: InsertPlan) -> None:
+        # ADR-0005: the Sol capital is CLASS_0 and (per the class pattern)
+        # sells colonists so first-login players can begin colonizing.
+        earth = next(
+            s for s in plan.regions["terran_space"].stations if s.sector_int_id == 1
+        )
+        assert earth.station_class == StationClass.CLASS_0
+        assert earth.station_type == StationType.TRADING
+        colonists = earth.commodities["colonists"]
+        assert colonists["sells"] is True
+        assert colonists["quantity"] >= 1
+
+    def test_earth_station_orientation_stock(self, plan: InsertPlan) -> None:
+        # Galaxy-generation step 8: the capital carries standard commodities
+        # in low quantities for orientation trades.
+        earth = next(
+            s for s in plan.regions["terran_space"].stations if s.sector_int_id == 1
+        )
+        for key in ("ore", "organics", "fuel"):
+            commodity = earth.commodities[key]
+            assert commodity["sells"] is True, f"capital should sell {key}"
+            assert 1 <= commodity["quantity"] <= 1000, (
+                f"capital {key} stock should be modest, got {commodity['quantity']}"
+            )
+
     def test_new_earth_planet_present(self, plan: InsertPlan) -> None:
         p1 = [
             p for p in plan.regions["terran_space"].planets if p.sector_int_id == 1
@@ -420,6 +445,31 @@ class TestTerranSpaceStarterInvariants:
             "insurance",
         ):
             assert sdock.services[flag] is True
+
+    def test_stardock_not_fully_inert(self, plan: InsertPlan) -> None:
+        # The injected Stardock spec goes through the same class-pattern
+        # finalization as bang stations; CLASS_11 buys exotic_technology,
+        # so at least one commodity must be actively traded.
+        sdock = next(
+            s for s in plan.regions["terran_space"].stations if s.sector_int_id == 10
+        )
+        active = [
+            k for k, c in sdock.commodities.items() if c["buys"] or c["sells"]
+        ]
+        assert active, "Stardock commodities are fully inert"
+        assert sdock.commodities["exotic_technology"]["buys"] is True
+
+    def test_all_terran_stations_actively_trade(self, plan: InsertPlan) -> None:
+        # Class-pattern finalization guarantees no station imports inert:
+        # every class pattern references at least one real wire commodity.
+        for station in plan.regions["terran_space"].stations:
+            active = [
+                k for k, c in station.commodities.items() if c["buys"] or c["sells"]
+            ]
+            assert active, (
+                f"station {station.name} (sector {station.sector_int_id}, "
+                f"{station.station_class.name}) is fully inert"
+            )
 
 
 # ---------------------------------------------------------------------------

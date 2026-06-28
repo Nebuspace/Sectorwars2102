@@ -4,29 +4,38 @@ import { api } from '../../utils/auth';
 import './team-management.css';
 import './team-management-override.css';
 
+// Shape of GET /api/v1/admin/teams (admin.py get_all_teams) — snake_case,
+// and deliberately narrow: the backend does NOT provide tag, max members,
+// reputation, last activity, or combat ratings. Missing data renders as
+// an em-dash rather than crashing or inventing values.
 interface Team {
   id: string;
   name: string;
-  tag: string;
-  leaderId: string;
-  leaderName: string;
-  memberCount: number;
-  maxMembers: number;
-  reputation: number;
-  isActive: boolean;
-  founded: string;
-  lastActivity: string;
-  totalCombatRating: number;
-  averageCombatRating: number;
+  leader_id: string | null;
+  leader_name: string;
+  member_count: number;
+  total_credits: number;
+  created_at: string | null;
+  is_active: boolean;
 }
 
+// Shape of GET /api/v1/admin/alliances (admin.py get_all_alliances)
 interface Alliance {
   id: string;
   name: string;
-  type: 'mutual-defense' | 'trade' | 'non-aggression';
-  teams: string[];
-  founded: string;
-  active: boolean;
+  type: string;
+  team1Id: string;
+  team2Id: string;
+  status: string;
+  created_at: string | null;
+}
+
+// Shape of GET /api/v1/admin/teams/analytics (camelCase from backend)
+interface TeamStatsTeamRef {
+  id: string;
+  name: string;
+  memberCount?: number;
+  totalCombatRating?: number;
 }
 
 interface TeamStats {
@@ -35,9 +44,17 @@ interface TeamStats {
   totalMembers: number;
   averageTeamSize: number;
   totalAlliances: number;
-  mostPowerfulTeam: Team | null;
-  largestTeam: Team | null;
+  mostPowerfulTeam: TeamStatsTeamRef | null;
+  largestTeam: TeamStatsTeamRef | null;
 }
+
+const EM_DASH = '—';
+
+const formatDate = (iso: string | null): string => {
+  if (!iso) return EM_DASH;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? EM_DASH : d.toLocaleDateString();
+};
 
 export const TeamManagement: React.FC = () => {
   const [teams, setTeams] = useState<Team[]>([]);
@@ -54,21 +71,15 @@ export const TeamManagement: React.FC = () => {
 
   useEffect(() => {
     loadData();
-  }, [searchTerm, minSize, maxSize, activeOnly]);
+  }, []);
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      // Build query params
-      const params = new URLSearchParams();
-      if (searchTerm) params.append('search', searchTerm);
-      if (minSize !== undefined) params.append('min_size', minSize.toString());
-      if (maxSize !== undefined) params.append('max_size', maxSize.toString());
-      if (activeOnly) params.append('active_only', 'true');
-      
-      // Fetch teams
-      const teamsResponse = await api.get(`/api/v1/admin/teams?${params}`);
+      // Fetch teams. The backend endpoint takes no filter params;
+      // search/size/active filtering is applied client-side below.
+      const teamsResponse = await api.get('/api/v1/admin/teams');
       const teamsData = teamsResponse.data as { teams: Team[] };
       setTeams(teamsData.teams || []);
       
@@ -96,18 +107,20 @@ export const TeamManagement: React.FC = () => {
     }
   };
 
-  const handleTeamAction = async (teamId: string, action: string) => {
-    try {
-      await api.post(`/api/v1/admin/teams/${teamId}/action`, {
-        action: action
-      });
-      // Refresh data after action
-      await loadData();
-    } catch (error: any) {
-      console.error('Team action failed:', error);
-      alert(error.response?.data?.detail || 'Failed to perform team action');
-    }
-  };
+  // Client-side filtering (the list endpoint has no server-side filters)
+  const filteredTeams = teams.filter((team) => {
+    if (searchTerm && !team.name.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+    if (minSize !== undefined && team.member_count < minSize) return false;
+    if (maxSize !== undefined && team.member_count > maxSize) return false;
+    if (activeOnly && !team.is_active) return false;
+    return true;
+  });
+
+  // Team admin actions are disabled: the backend endpoint
+  // POST /api/v1/admin/teams/{id}/action does not exist. The controls
+  // below stay visible to document intent but are inert until the
+  // endpoint is implemented.
+  const TEAM_ACTION_ENDPOINT = 'POST /api/v1/admin/teams/{id}/action';
 
   return (
     <div className="team-management">
@@ -138,7 +151,9 @@ export const TeamManagement: React.FC = () => {
           </div>
           <div className="stat-card">
             <h3>Average Team Size</h3>
-            <div className="stat-value">{teamStats.averageTeamSize.toFixed(1)}</div>
+            <div className="stat-value">
+              {Number.isFinite(teamStats.averageTeamSize) ? teamStats.averageTeamSize.toFixed(1) : EM_DASH}
+            </div>
             <div className="stat-label">members per team</div>
           </div>
           <div className="stat-card">
@@ -154,7 +169,11 @@ export const TeamManagement: React.FC = () => {
           <div className="stat-card highlight">
             <h3>Largest Team</h3>
             <div className="stat-value">{teamStats.largestTeam?.name || 'N/A'}</div>
-            <div className="stat-label">{teamStats.largestTeam?.memberCount || 0} members</div>
+            <div className="stat-label">
+              {teamStats.largestTeam?.memberCount !== undefined
+                ? `${teamStats.largestTeam.memberCount} members`
+                : EM_DASH}
+            </div>
           </div>
         </div>
       )}
@@ -228,16 +247,17 @@ export const TeamManagement: React.FC = () => {
             {activeTab === 'overview' && (
               <div className="team-overview">
                 <div className="team-list-section">
-                  <h3>Teams ({teams.length})</h3>
-                  {teams.length === 0 ? (
+                  <h3>Teams ({filteredTeams.length})</h3>
+                  {filteredTeams.length === 0 ? (
                     <div className="empty-state">
                       <h3>No Teams Found</h3>
-                      <p>There are currently no teams in the system.</p>
-                      <p>Teams will appear here once players create them in the game.</p>
+                      <p>{teams.length === 0
+                        ? 'There are currently no teams in the system. Teams will appear here once players create them in the game.'
+                        : 'No teams match the current filters.'}</p>
                     </div>
                   ) : (
                     <div className="team-list">
-                      {teams.map((team) => (
+                      {filteredTeams.map((team) => (
                         <div
                           key={team.id}
                           className={`team-card ${selectedTeam?.id === team.id ? 'selected' : ''}`}
@@ -245,13 +265,12 @@ export const TeamManagement: React.FC = () => {
                         >
                           <div className="team-header">
                             <span className="team-name">{team.name}</span>
-                            <span className="team-tag">[{team.tag}]</span>
                           </div>
                           <div className="team-info">
-                            <span>Members: {team.memberCount}/{team.maxMembers}</span>
-                            <span>Rep: {team.reputation}</span>
-                            <span className={`status ${team.isActive ? 'active' : 'inactive'}`}>
-                              {team.isActive ? 'Active' : 'Inactive'}
+                            <span>Members: {team.member_count ?? EM_DASH}</span>
+                            <span>Credits: {typeof team.total_credits === 'number' ? team.total_credits.toLocaleString() : EM_DASH}</span>
+                            <span className={`status ${team.is_active ? 'active' : 'inactive'}`}>
+                              {team.is_active ? 'Active' : 'Inactive'}
                             </span>
                           </div>
                         </div>
@@ -267,36 +286,36 @@ export const TeamManagement: React.FC = () => {
                       <div className="team-details">
                         <div className="detail-row">
                           <span>Leader:</span>
-                          <span>{selectedTeam.leaderName}</span>
+                          <span>{selectedTeam.leader_name || EM_DASH}</span>
                         </div>
                         <div className="detail-row">
                           <span>Founded:</span>
-                          <span>{new Date(selectedTeam.founded).toLocaleDateString()}</span>
+                          <span>{formatDate(selectedTeam.created_at)}</span>
                         </div>
                         <div className="detail-row">
-                          <span>Last Activity:</span>
-                          <span>{new Date(selectedTeam.lastActivity).toLocaleString()}</span>
+                          <span>Members:</span>
+                          <span>{selectedTeam.member_count ?? EM_DASH}</span>
                         </div>
                         <div className="detail-row">
-                          <span>Total Combat Rating:</span>
-                          <span>{selectedTeam.totalCombatRating.toLocaleString()}</span>
+                          <span>Total Credits:</span>
+                          <span>{typeof selectedTeam.total_credits === 'number' ? selectedTeam.total_credits.toLocaleString() : EM_DASH}</span>
                         </div>
                         <div className="detail-row">
-                          <span>Average Combat Rating:</span>
-                          <span>{selectedTeam.averageCombatRating.toFixed(2)}</span>
+                          <span>Status:</span>
+                          <span>{selectedTeam.is_active ? 'Active' : 'Inactive'}</span>
                         </div>
                       </div>
 
                       <div className="team-strength-chart">
-                        <h3>Team Strength Comparison</h3>
+                        <h3>Team Credits Comparison</h3>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
                           {teams.slice(0, 10).map(team => {
-                            const maxRating = Math.max(...teams.map(t => t.totalCombatRating), 1);
-                            const widthPct = (team.totalCombatRating / maxRating) * 100;
+                            const maxCredits = Math.max(...teams.map(t => t.total_credits || 0), 1);
+                            const widthPct = ((team.total_credits || 0) / maxCredits) * 100;
                             return (
                               <div key={team.id} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <span style={{ minWidth: '100px', fontSize: '0.85rem', color: team.id === selectedTeam.id ? '#60a5fa' : '#9ca3af' }}>
-                                  [{team.tag}] {team.name}
+                                  {team.name}
                                 </span>
                                 <div style={{ flex: 1, height: '16px', backgroundColor: '#1f2937', borderRadius: '4px', overflow: 'hidden' }}>
                                   <div style={{
@@ -308,7 +327,7 @@ export const TeamManagement: React.FC = () => {
                                   }} />
                                 </div>
                                 <span style={{ minWidth: '60px', textAlign: 'right', fontSize: '0.8rem', color: '#9ca3af' }}>
-                                  {team.totalCombatRating.toLocaleString()}
+                                  {(team.total_credits || 0).toLocaleString()}
                                 </span>
                               </div>
                             );
@@ -342,40 +361,43 @@ export const TeamManagement: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {alliances.map(alliance => (
-                        <tr key={alliance.id}>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937' }}><strong>{alliance.name}</strong></td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937' }}>
-                            <span style={{
-                              padding: '2px 8px', borderRadius: '4px', fontSize: '0.8rem',
-                              backgroundColor: alliance.type === 'mutual-defense' ? 'rgba(239, 68, 68, 0.2)' :
-                                             alliance.type === 'trade' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(59, 130, 246, 0.2)',
-                              color: alliance.type === 'mutual-defense' ? '#ef4444' :
-                                     alliance.type === 'trade' ? '#22c55e' : '#3b82f6'
-                            }}>
-                              {alliance.type.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                            </span>
-                          </td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937' }}>
-                            {alliance.teams.map(teamId => {
-                              const team = teams.find(t => t.id === teamId);
-                              return team ? team.name : teamId;
-                            }).join(', ')}
-                          </td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937', color: '#9ca3af' }}>
-                            {new Date(alliance.founded).toLocaleDateString()}
-                          </td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937' }}>
-                            <span style={{
-                              padding: '2px 8px', borderRadius: '4px', fontSize: '0.8rem',
-                              backgroundColor: alliance.active ? 'rgba(34, 197, 94, 0.2)' : 'rgba(156, 163, 175, 0.2)',
-                              color: alliance.active ? '#22c55e' : '#9ca3af'
-                            }}>
-                              {alliance.active ? 'Active' : 'Inactive'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      {alliances.map(alliance => {
+                        const isActive = alliance.status === 'active';
+                        const memberNames = [alliance.team1Id, alliance.team2Id]
+                          .filter(Boolean)
+                          .map(teamId => teams.find(t => t.id === teamId)?.name || teamId);
+                        return (
+                          <tr key={alliance.id}>
+                            <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937' }}><strong>{alliance.name}</strong></td>
+                            <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937' }}>
+                              <span style={{
+                                padding: '2px 8px', borderRadius: '4px', fontSize: '0.8rem',
+                                backgroundColor: alliance.type === 'mutual-defense' ? 'rgba(239, 68, 68, 0.2)' :
+                                               alliance.type === 'trade' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(59, 130, 246, 0.2)',
+                                color: alliance.type === 'mutual-defense' ? '#ef4444' :
+                                       alliance.type === 'trade' ? '#22c55e' : '#3b82f6'
+                              }}>
+                                {(alliance.type || 'unknown').replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                              </span>
+                            </td>
+                            <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937' }}>
+                              {memberNames.length > 0 ? memberNames.join(', ') : EM_DASH}
+                            </td>
+                            <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937', color: '#9ca3af' }}>
+                              {formatDate(alliance.created_at)}
+                            </td>
+                            <td style={{ padding: '10px 12px', borderBottom: '1px solid #1f2937' }}>
+                              <span style={{
+                                padding: '2px 8px', borderRadius: '4px', fontSize: '0.8rem',
+                                backgroundColor: isActive ? 'rgba(34, 197, 94, 0.2)' : 'rgba(156, 163, 175, 0.2)',
+                                color: isActive ? '#22c55e' : '#9ca3af'
+                              }}>
+                                {isActive ? 'Active' : alliance.status || 'Unknown'}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
@@ -384,72 +406,59 @@ export const TeamManagement: React.FC = () => {
 
             {activeTab === 'admin' && selectedTeam && (
               <div className="admin-section">
-                <h3>Admin Actions: {selectedTeam.name} [{selectedTeam.tag}]</h3>
+                <h3>Admin Actions: {selectedTeam.name}</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginTop: '16px' }}>
                   <div style={{ padding: '16px', background: '#1f2937', borderRadius: '8px', border: '1px solid #374151' }}>
                     <h4 style={{ margin: '0 0 8px 0', color: '#e5e7eb' }}>Team Details</h4>
                     <div style={{ fontSize: '0.9rem', color: '#9ca3af', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                       <div>Team ID: <span style={{ color: '#e5e7eb' }}>{selectedTeam.id}</span></div>
-                      <div>Leader: <span style={{ color: '#e5e7eb' }}>{selectedTeam.leaderName}</span></div>
-                      <div>Members: <span style={{ color: '#e5e7eb' }}>{selectedTeam.memberCount}/{selectedTeam.maxMembers}</span></div>
-                      <div>Reputation: <span style={{ color: '#e5e7eb' }}>{selectedTeam.reputation}</span></div>
-                      <div>Status: <span style={{ color: selectedTeam.isActive ? '#22c55e' : '#ef4444' }}>{selectedTeam.isActive ? 'Active' : 'Inactive'}</span></div>
+                      <div>Leader: <span style={{ color: '#e5e7eb' }}>{selectedTeam.leader_name || EM_DASH}</span></div>
+                      <div>Members: <span style={{ color: '#e5e7eb' }}>{selectedTeam.member_count ?? EM_DASH}</span></div>
+                      <div>Total Credits: <span style={{ color: '#e5e7eb' }}>{typeof selectedTeam.total_credits === 'number' ? selectedTeam.total_credits.toLocaleString() : EM_DASH}</span></div>
+                      <div>Status: <span style={{ color: selectedTeam.is_active ? '#22c55e' : '#ef4444' }}>{selectedTeam.is_active ? 'Active' : 'Inactive'}</span></div>
                     </div>
                   </div>
 
                   <div style={{ padding: '16px', background: '#1f2937', borderRadius: '8px', border: '1px solid #374151' }}>
                     <h4 style={{ margin: '0 0 12px 0', color: '#e5e7eb' }}>Actions</h4>
+                    <div
+                      role="note"
+                      style={{
+                        margin: '0 0 12px 0', padding: '10px 12px',
+                        background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.35)',
+                        borderRadius: '6px', color: '#fbbf24', fontSize: '0.82rem', lineHeight: 1.4
+                      }}
+                    >
+                      Team admin actions are unavailable: the backend endpoint{' '}
+                      <code style={{ color: '#fde68a' }}>{TEAM_ACTION_ENDPOINT}</code> is not implemented.
+                      These controls are shown to document intended capability.
+                    </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       <button
-                        style={{ padding: '8px 16px', background: '#374151', color: '#e5e7eb', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}
-                        onClick={() => {
-                          if (confirm(`Are you sure you want to ${selectedTeam.isActive ? 'deactivate' : 'activate'} team "${selectedTeam.name}"?`)) {
-                            handleTeamAction(selectedTeam.id, selectedTeam.isActive ? 'deactivate' : 'activate');
-                          }
-                        }}
+                        disabled
+                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
+                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
                       >
-                        {selectedTeam.isActive ? 'Deactivate Team' : 'Activate Team'}
+                        {selectedTeam.is_active ? 'Deactivate Team' : 'Activate Team'}
                       </button>
                       <button
-                        style={{ padding: '8px 16px', background: '#374151', color: '#e5e7eb', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}
-                        onClick={() => {
-                          const newLeader = prompt('Enter the new leader player ID:');
-                          if (newLeader) {
-                            if (confirm(`Transfer leadership of "${selectedTeam.name}" to player ${newLeader}?`)) {
-                              handleTeamAction(selectedTeam.id, `change_leader:${newLeader}`);
-                            }
-                          }
-                        }}
+                        disabled
+                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
+                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
                       >
                         Change Team Leader
                       </button>
                       <button
-                        style={{ padding: '8px 16px', background: '#374151', color: '#e5e7eb', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}
-                        onClick={() => {
-                          const newRep = prompt('Enter new reputation value:', String(selectedTeam.reputation));
-                          if (newRep !== null) {
-                            const repNum = parseInt(newRep);
-                            if (!isNaN(repNum)) {
-                              if (confirm(`Set reputation for "${selectedTeam.name}" to ${repNum}?`)) {
-                                handleTeamAction(selectedTeam.id, `set_reputation:${repNum}`);
-                              }
-                            } else {
-                              alert('Please enter a valid number.');
-                            }
-                          }
-                        }}
+                        disabled
+                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
+                        style={{ padding: '8px 16px', background: '#374151', color: '#6b7280', border: '1px solid #4b5563', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
                       >
                         Modify Reputation
                       </button>
                       <button
-                        style={{ padding: '8px 16px', background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}
-                        onClick={() => {
-                          if (confirm(`WARNING: Are you sure you want to dissolve team "${selectedTeam.name}"? This action is irreversible!`)) {
-                            if (confirm(`FINAL CONFIRMATION: Dissolving "${selectedTeam.name}" will remove all members. Proceed?`)) {
-                              handleTeamAction(selectedTeam.id, 'dissolve');
-                            }
-                          }
-                        }}
+                        disabled
+                        title={`Disabled — missing backend endpoint ${TEAM_ACTION_ENDPOINT}`}
+                        style={{ padding: '8px 16px', background: 'rgba(239, 68, 68, 0.15)', color: '#9ca3af', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', cursor: 'not-allowed', textAlign: 'left', opacity: 0.6 }}
                       >
                         Dissolve Team
                       </button>

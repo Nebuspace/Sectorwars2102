@@ -73,6 +73,8 @@ class Fleet(Base):
     # Battle readiness
     morale = Column(Integer, default=100, nullable=False)  # 0-100
     supply_level = Column(Integer, default=100, nullable=False)  # 0-100
+    # Large-scale-combat coordination multiplier applied to aggregated firepower.
+    coordination_bonus = Column(Float, default=0.0, nullable=False)
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

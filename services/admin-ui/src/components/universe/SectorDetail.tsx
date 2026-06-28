@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../utils/auth';
+import { useToast } from '../../contexts/ToastContext';
 
 interface SectorDetailProps {
   sector: any;
@@ -10,6 +11,7 @@ interface SectorDetailProps {
 }
 
 const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick, onPlanetClick, onUpdate }) => {
+  const toast = useToast();
   const [portData, setPortData] = useState<any>(null);
   const [planetData, setPlanetData] = useState<any>(null);
   const [shipsInSector, setShipsInSector] = useState<any[]>([]);
@@ -79,8 +81,8 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       setIsUpdating(true);
       const value = editValues[field];
       
-      // Update sector via API
-      await api.patch(`/api/v1/admin/sectors/${sector.id}`, {
+      // Update sector via API (PUT — matches SectorEditModal; backend only has PUT)
+      await api.put(`/api/v1/admin/sectors/${sector.id}`, {
         [field]: value
       });
       
@@ -93,7 +95,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       setEditingField(null);
     } catch (error) {
       console.error(`Failed to update ${field}:`, error);
-      alert(`Failed to update ${field}`);
+      toast.error(`Failed to update ${field}`);
     } finally {
       setIsUpdating(false);
     }
@@ -127,7 +129,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       await loadSectorDetails(); // Reload to get the new port data
     } catch (error) {
       console.error('Failed to create port:', error);
-      alert('Failed to create port');
+      toast.error('Failed to create port');
     } finally {
       setIsUpdating(false);
     }
@@ -148,7 +150,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
       await loadSectorDetails(); // Reload to get the new planet data
     } catch (error) {
       console.error('Failed to create planet:', error);
-      alert('Failed to create planet');
+      toast.error('Failed to create planet');
     } finally {
       setIsUpdating(false);
     }
@@ -340,7 +342,7 @@ const SectorDetail: React.FC<SectorDetailProps> = ({ sector, onBack, onPortClick
                 <div className="feature-info">
                   <p>Class {portData.port_class || portData.class || 'Unknown'} Trading Post</p>
                   <p>Type: {portData.type || 'Unknown'}</p>
-                  <p>Tax Rate: {portData.tax_rate || 0}%</p>
+                  <p>Tax Rate: {((portData.tax_rate ?? 0) * 100).toFixed(1)}%</p>
                   <p>Defense Level: {portData.defense_level || portData.defense_weapons || 0}</p>
                   <p>Status: {portData.status || 'Unknown'}</p>
                   <button className="view-details">View Station Details →</button>

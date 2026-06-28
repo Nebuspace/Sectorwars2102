@@ -1,305 +1,287 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { teamAPI } from '../../services/api';
-import type { TeamMember, ResourceTransfer } from '../../types/team';
+import type { TeamMember, TreasuryBalanceApiResponse, TreasuryTransactionApiResponse } from '../../types/team';
 import './resource-sharing.css';
 
 interface ResourceSharingProps {
   teamId: string;
   playerId: string;
-  playerResources: {
-    credits: number;
-    fuel: number;
-    organics: number;
-    equipment: number;
-  };
+  /** Already-mapped roster from TeamManager (camelCase) */
+  members: TeamMember[];
+  /** Player's spendable credits (from GameContext) — the only personal balance the API exposes */
+  playerCredits: number;
+  /** Backend gates withdraw and transfer on can_manage_treasury */
+  canManageTreasury: boolean;
+  /** Called after a successful op so the parent can refresh team + player state */
+  onChanged?: () => void;
 }
 
-export const ResourceSharing: React.FC<ResourceSharingProps> = ({ 
-  teamId, 
-  playerId, 
-  playerResources 
-}) => {
-  const [members, setMembers] = useState<TeamMember[]>([]);
-  const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null);
-  const [transferType, setTransferType] = useState<'member' | 'treasury'>('member');
-  const [transferAmounts, setTransferAmounts] = useState({
-    credits: 0,
-    fuel: 0,
-    organics: 0,
-    equipment: 0
-  });
-  const [reason, setReason] = useState('');
-  const [recentTransfers, setRecentTransfers] = useState<ResourceTransfer[]>([]);
-  const [loading, setLoading] = useState(false);
+// Backend whitelist: PLAYER_TRANSFERABLE_RESOURCES = {credits, quantum_crystals}.
+// Other treasury columns exist but are server-fed; players can't move them.
+const TRANSFERABLE: Array<{ key: 'credits' | 'quantum_crystals'; label: string }> = [
+  { key: 'credits', label: 'Credits' },
+  { key: 'quantum_crystals', label: 'Quantum Crystals' }
+];
 
-  useEffect(() => {
-    loadMembers();
+// Read-only resources surfaced when the treasury holds them (loot, etc.).
+const READ_ONLY_KEYS: Array<keyof TreasuryBalanceApiResponse> = [
+  'fuel', 'organics', 'equipment', 'technology', 'luxury_items',
+  'precious_metals', 'raw_materials', 'plasma', 'bio_samples', 'dark_matter'
+];
+
+const LABELS: Record<string, string> = {
+  fuel: 'Fuel', organics: 'Organics', equipment: 'Equipment', technology: 'Technology',
+  luxury_items: 'Luxury Items', precious_metals: 'Precious Metals', raw_materials: 'Raw Materials',
+  plasma: 'Plasma', bio_samples: 'Bio Samples', dark_matter: 'Dark Matter'
+};
+
+const RESOURCE_LABELS: Record<string, string> = {
+  credits: 'Credits', quantum_crystals: 'Quantum Crystals', ...LABELS
+};
+
+// How each ledger kind reads + which sign to show on the amount.
+const KIND_META: Record<string, { label: string; sign: '+' | '−' | '' }> = {
+  deposit: { label: 'Deposit', sign: '+' },
+  withdraw: { label: 'Withdraw', sign: '−' },
+  transfer: { label: 'Transfer Out', sign: '−' },
+  tax: { label: 'Tax', sign: '−' },
+  payout: { label: 'Payout', sign: '−' }
+};
+
+type Operation = 'deposit' | 'withdraw' | 'transfer';
+
+export const ResourceSharing: React.FC<ResourceSharingProps> = ({
+  teamId,
+  playerId,
+  members,
+  playerCredits,
+  canManageTreasury,
+  onChanged
+}) => {
+  const [balance, setBalance] = useState<TreasuryBalanceApiResponse | null>(null);
+  const [operation, setOperation] = useState<Operation>('deposit');
+  const [resource, setResource] = useState<'credits' | 'quantum_crystals'>('credits');
+  const [amount, setAmount] = useState('');
+  const [recipient, setRecipient] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [history, setHistory] = useState<TreasuryTransactionApiResponse[] | null>(null);
+
+  const recipients = members.filter(m => m.playerId !== playerId);
+
+  const loadBalance = useCallback(async () => {
+    try {
+      const data = await teamAPI.getTreasuryBalance(teamId) as TreasuryBalanceApiResponse;
+      setBalance(data);
+    } catch (error) {
+      console.error('Failed to load treasury balance:', error);
+    }
   }, [teamId]);
 
-  const loadMembers = async () => {
+  const loadHistory = useCallback(async () => {
     try {
-      const memberData = await teamAPI.getMembers(teamId);
-      setMembers(memberData.filter(m => m.playerId !== playerId));
+      const data = await teamAPI.getTreasuryHistory(teamId) as TreasuryTransactionApiResponse[];
+      setHistory(data);
     } catch (error) {
-      console.error('Failed to load members:', error);
+      console.error('Failed to load treasury history:', error);
     }
+  }, [teamId]);
+
+  useEffect(() => {
+    void loadBalance();
+    void loadHistory();
+  }, [loadBalance, loadHistory]);
+
+  // Members can deposit; only treasury managers can withdraw or transfer.
+  const allowedOps: Operation[] = canManageTreasury ? ['deposit', 'withdraw', 'transfer'] : ['deposit'];
+
+  // "Available" depends on the direction of the flow.
+  const available = (): number | null => {
+    if (operation === 'deposit') {
+      return resource === 'credits' ? playerCredits : null; // personal QC balance not exposed by API
+    }
+    // withdraw / transfer pull from the treasury
+    return balance ? balance[resource] : null;
   };
 
-  const handleAmountChange = (resource: keyof typeof transferAmounts, value: string) => {
-    const numValue = parseInt(value) || 0;
-    const maxValue = playerResources[resource];
-    setTransferAmounts({
-      ...transferAmounts,
-      [resource]: Math.min(Math.max(0, numValue), maxValue)
-    });
-  };
-
-  const getTotalTransferValue = () => {
-    return Object.entries(transferAmounts).reduce((total, [resource, amount]) => {
-      // Rough credit equivalents for resources
-      const values: Record<string, number> = {
-        credits: 1,
-        fuel: 2,
-        organics: 3,
-        equipment: 5
-      };
-      return total + (amount * (values[resource] || 1));
-    }, 0);
-  };
-
-  const handleTransfer = async () => {
-    if (transferType === 'member' && !selectedMember) {
-      alert('Please select a team member to transfer to');
+  const handleSubmit = async () => {
+    setStatus(null);
+    const amt = parseInt(amount, 10);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setStatus({ kind: 'err', text: 'Enter an amount greater than zero.' });
       return;
     }
-
-    const hasResources = Object.values(transferAmounts).some(v => v > 0);
-    if (!hasResources) {
-      alert('Please enter at least one resource amount');
+    if (operation === 'transfer' && !recipient) {
+      setStatus({ kind: 'err', text: 'Select a member to transfer to.' });
+      return;
+    }
+    const avail = available();
+    if (avail !== null && amt > avail) {
+      setStatus({ kind: 'err', text: `Only ${avail.toLocaleString()} available.` });
       return;
     }
 
     setLoading(true);
     try {
-      if (transferType === 'treasury') {
-        await teamAPI.depositToTreasury(teamId, transferAmounts);
-        // Add to recent transfers
-        setRecentTransfers([{
-          id: `transfer-${Date.now()}`,
-          teamId,
-          fromPlayerId: playerId,
-          fromPlayerName: 'You',
-          toPlayerId: 'treasury',
-          toPlayerName: 'Team Treasury',
-          resources: { ...transferAmounts },
-          reason,
-          timestamp: new Date().toISOString(),
-          status: 'completed'
-        }, ...recentTransfers]);
+      const label = TRANSFERABLE.find(t => t.key === resource)!.label;
+      if (operation === 'deposit') {
+        await teamAPI.depositToTreasury(teamId, resource, amt);
+        setStatus({ kind: 'ok', text: `Deposited ${amt.toLocaleString()} ${label} to the treasury.` });
+      } else if (operation === 'withdraw') {
+        await teamAPI.withdrawFromTreasury(teamId, resource, amt);
+        setStatus({ kind: 'ok', text: `Withdrew ${amt.toLocaleString()} ${label} from the treasury.` });
       } else {
-        const transfer = await teamAPI.transferResources(teamId, {
-          toPlayerId: selectedMember!.playerId,
-          toPlayerName: selectedMember!.playerName,
-          resources: transferAmounts,
-          reason
-        });
-        setRecentTransfers([transfer, ...recentTransfers]);
+        await teamAPI.transferTreasury(teamId, recipient, resource, amt);
+        setStatus({ kind: 'ok', text: `Transferred ${amt.toLocaleString()} ${label} to ${recipient}.` });
       }
-
-      // Reset form
-      setTransferAmounts({ credits: 0, fuel: 0, organics: 0, equipment: 0 });
-      setReason('');
-      setSelectedMember(null);
-      
-      alert('Transfer successful!');
+      setAmount('');
+      await loadBalance();
+      await loadHistory();
+      onChanged?.();
     } catch (error) {
-      console.error('Failed to transfer resources:', error);
-      alert('Transfer failed. Please try again.');
+      setStatus({ kind: 'err', text: error instanceof Error ? error.message : 'Operation failed.' });
     } finally {
       setLoading(false);
     }
   };
 
-  const formatResourceAmount = (amount: number): string => {
-    return amount.toLocaleString();
-  };
+  const avail = available();
 
   return (
     <div className="resource-sharing">
       <div className="sharing-header">
-        <h3>Resource Sharing</h3>
-        <p>Share resources with team members or contribute to the team treasury</p>
+        <h3>Team Treasury</h3>
+        <p>Pool resources for the team. Deposits are open to all members; withdrawals and transfers require treasury permission.</p>
+      </div>
+
+      <div className="treasury-balance">
+        {TRANSFERABLE.map(t => (
+          <div key={t.key} className="resource-item">
+            <label>{t.label}</label>
+            <span className="amount">{balance ? balance[t.key].toLocaleString() : '—'}</span>
+          </div>
+        ))}
+        {balance && READ_ONLY_KEYS.filter(k => typeof balance[k] === 'number' && (balance[k] as number) > 0).map(k => (
+          <div key={k} className="resource-item readonly">
+            <label>{LABELS[k as string] ?? String(k)}</label>
+            <span className="amount">{(balance[k] as number).toLocaleString()}</span>
+          </div>
+        ))}
       </div>
 
       <div className="transfer-type-selector">
-        <button 
-          className={transferType === 'member' ? 'active' : ''}
-          onClick={() => setTransferType('member')}
-        >
-          Transfer to Member
-        </button>
-        <button 
-          className={transferType === 'treasury' ? 'active' : ''}
-          onClick={() => setTransferType('treasury')}
-        >
-          Deposit to Treasury
-        </button>
+        {allowedOps.map(op => (
+          <button
+            key={op}
+            className={operation === op ? 'active' : ''}
+            onClick={() => { setOperation(op); setStatus(null); }}
+          >
+            {op === 'deposit' ? 'Deposit' : op === 'withdraw' ? 'Withdraw' : 'Transfer to Member'}
+          </button>
+        ))}
       </div>
 
-      {transferType === 'member' && (
+      {operation === 'transfer' && (
         <div className="member-selector">
-          <h4>Select Recipient</h4>
-          <div className="member-list">
-            {members.map(member => (
-              <div 
-                key={member.id}
-                className={`member-option ${selectedMember?.id === member.id ? 'selected' : ''} ${member.online ? 'online' : 'offline'}`}
-                onClick={() => setSelectedMember(member)}
-              >
-                <div className="member-info">
-                  <span className="member-name">
-                    {member.playerName}
-                    {member.online && <span className="online-indicator">●</span>}
-                  </span>
-                  <span className="member-location">{member.location.sectorName}</span>
-                </div>
-                <div className="member-role">
+          <h4>Recipient</h4>
+          {recipients.length === 0 ? (
+            <p className="field-note">No other members to transfer to.</p>
+          ) : (
+            <div className="member-list">
+              {recipients.map(member => (
+                <div
+                  key={member.id}
+                  className={`member-option ${recipient === member.playerName ? 'selected' : ''}`}
+                  onClick={() => setRecipient(member.playerName)}
+                >
+                  <span className="member-name">{member.playerName}</span>
                   <span className={`role-badge ${member.role}`}>{member.role}</span>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
       <div className="resource-inputs">
-        <h4>Resources to Transfer</h4>
         <div className="resource-grid">
           <div className="resource-input">
-            <label>
-              Credits
-              <span className="available">({formatResourceAmount(playerResources.credits)} available)</span>
-            </label>
-            <input
-              type="number"
-              min="0"
-              max={playerResources.credits}
-              value={transferAmounts.credits || ''}
-              onChange={(e) => handleAmountChange('credits', e.target.value)}
-              placeholder="0"
-            />
+            <label>Resource</label>
+            <select value={resource} onChange={(e) => setResource(e.target.value as 'credits' | 'quantum_crystals')}>
+              {TRANSFERABLE.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+            </select>
           </div>
-          
           <div className="resource-input">
             <label>
-              Fuel
-              <span className="available">({formatResourceAmount(playerResources.fuel)} available)</span>
+              Amount
+              {avail !== null && <span className="available"> ({avail.toLocaleString()} available)</span>}
             </label>
             <input
               type="number"
               min="0"
-              max={playerResources.fuel}
-              value={transferAmounts.fuel || ''}
-              onChange={(e) => handleAmountChange('fuel', e.target.value)}
-              placeholder="0"
-            />
-          </div>
-          
-          <div className="resource-input">
-            <label>
-              Organics
-              <span className="available">({formatResourceAmount(playerResources.organics)} available)</span>
-            </label>
-            <input
-              type="number"
-              min="0"
-              max={playerResources.organics}
-              value={transferAmounts.organics || ''}
-              onChange={(e) => handleAmountChange('organics', e.target.value)}
-              placeholder="0"
-            />
-          </div>
-          
-          <div className="resource-input">
-            <label>
-              Equipment
-              <span className="available">({formatResourceAmount(playerResources.equipment)} available)</span>
-            </label>
-            <input
-              type="number"
-              min="0"
-              max={playerResources.equipment}
-              value={transferAmounts.equipment || ''}
-              onChange={(e) => handleAmountChange('equipment', e.target.value)}
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
               placeholder="0"
             />
           </div>
         </div>
 
-        <div className="reason-input">
-          <label>Reason (optional)</label>
-          <input
-            type="text"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder="e.g., For ship repairs, mission support..."
-            maxLength={100}
-          />
-        </div>
-
-        <div className="transfer-summary">
-          <div className="summary-item">
-            <label>Total Transfer Value:</label>
-            <value>~{formatResourceAmount(getTotalTransferValue())} credits</value>
+        {status && (
+          <div className={status.kind === 'ok' ? 'success-message' : 'form-error'} role="alert">
+            {status.text}
           </div>
-          {transferType === 'member' && selectedMember && (
-            <div className="summary-item">
-              <label>Recipient:</label>
-              <value>{selectedMember.playerName}</value>
-            </div>
-          )}
-        </div>
+        )}
 
-        <button 
+        <button
           className="transfer-button"
-          onClick={handleTransfer}
-          disabled={loading || (transferType === 'member' && !selectedMember) || getTotalTransferValue() === 0}
+          onClick={handleSubmit}
+          disabled={loading || !amount || (operation === 'transfer' && !recipient)}
         >
-          {loading ? 'Processing...' : 'Confirm Transfer'}
+          {loading ? 'Processing…'
+            : operation === 'deposit' ? 'Deposit to Treasury'
+            : operation === 'withdraw' ? 'Withdraw from Treasury'
+            : 'Transfer to Member'}
         </button>
       </div>
 
-      {recentTransfers.length > 0 && (
-        <div className="recent-transfers">
-          <h4>Recent Transfers</h4>
-          <div className="transfer-list">
-            {recentTransfers.slice(0, 5).map(transfer => (
-              <div key={transfer.id} className="transfer-item">
-                <div className="transfer-parties">
-                  <span className="from">You</span>
-                  <span className="arrow">→</span>
-                  <span className="to">{transfer.toPlayerName}</span>
-                </div>
-                <div className="transfer-resources">
-                  {Object.entries(transfer.resources).map(([resource, amount]) => 
-                    amount > 0 && (
-                      <span key={resource} className="resource-amount">
-                        {formatResourceAmount(amount)} {resource}
-                      </span>
-                    )
-                  )}
-                </div>
-                {transfer.reason && (
-                  <div className="transfer-reason">"{transfer.reason}"</div>
-                )}
-                <div className="transfer-time">
-                  {new Date(transfer.timestamp).toLocaleTimeString()}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="treasury-history">
+        <h4>Transaction History</h4>
+        {history === null ? (
+          <p className="field-note">Loading history…</p>
+        ) : history.length === 0 ? (
+          <p className="field-note">No treasury activity yet.</p>
+        ) : (
+          <table className="history-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Action</th>
+                <th>Resource</th>
+                <th className="num">Amount</th>
+                <th className="num">Balance</th>
+                <th>By</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map(tx => {
+                const meta = KIND_META[tx.kind] ?? { label: tx.kind, sign: '' as const };
+                return (
+                  <tr key={tx.id}>
+                    <td className="when">{tx.created_at ? new Date(tx.created_at).toLocaleString() : '—'}</td>
+                    <td><span className={`kind-badge ${tx.kind}`}>{meta.label}</span></td>
+                    <td>{RESOURCE_LABELS[tx.resource_type] ?? tx.resource_type}</td>
+                    <td className={`num ${meta.sign === '+' ? 'credit' : 'debit'}`}>
+                      {meta.sign}{tx.amount.toLocaleString()}
+                    </td>
+                    <td className="num">{tx.balance_after.toLocaleString()}</td>
+                    <td>{tx.actor_name ?? 'Unknown'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 };

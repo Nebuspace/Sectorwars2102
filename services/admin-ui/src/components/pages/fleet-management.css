@@ -812,3 +812,24 @@
     gap: 0.5rem;
   }
 }
+
+/* Fleet Health Report — maintenance table section (rescued report integration) */
+.fleet-health-report .maintenance-needed {
+  margin-top: 2rem;
+}
+
+.fleet-health-report .maintenance-needed h4 {
+  margin: 0 0 1rem 0;
+  color: var(--text-color, #e2e8f0);
+  font-size: 1.125rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fleet-health-report .maintenance-needed .table-container {
+  overflow-x: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+}

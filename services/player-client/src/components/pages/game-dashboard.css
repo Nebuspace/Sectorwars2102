@@ -5,12 +5,19 @@
   flex-direction: column;
   gap: 0.75rem;
   height: 100%;
-  min-height: 100vh;
+  /* Height follows the parent (.main-viewport): no `min-height: 100vh`, which
+     would force the dashboard taller than its flex-constrained parent and push
+     the cockpit console past the viewport bottom, clipping the bottom monitor
+     row. */
+  min-height: 0;
   width: 100%;
   padding: 0.75rem;
   box-sizing: border-box;
   animation: hud-boot 1s ease-out;
   background: transparent;
+  /* Cockpit-mode (which adds the .cockpit-mode class to this same
+     element) sets `overflow: hidden`, so the auto here is harmless;
+     it stays for the non-cockpit dashboard variants. */
   overflow-y: auto;
 }
 
@@ -842,15 +849,28 @@
   .sector-details h4 {
     font-size: 1rem;
   }
-  
+
   .port-item {
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-sm);
   }
-  
+
   .dock-button {
     margin-left: 0;
     align-self: stretch;
   }
+}
+
+/* COMMS contact list: NPC tag rendered after the contact name.
+   flex-shrink:0 keeps the badge visible while the name text ellipsizes;
+   spacing comes from .comms-contact-name's flex gap (cockpit.css). */
+.contact-npc-badge {
+  flex-shrink: 0;
+  font-size: 0.65em;
+  padding: 1px 4px;
+  border: 1px solid var(--color-error);
+  border-radius: 2px;
+  color: var(--color-error);
+  letter-spacing: 0.08em;
 }

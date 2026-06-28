@@ -1,3 +1,5 @@
+import { refreshAccessToken, getAccessToken } from './apiClient';
+
 export interface WebSocketMessage {
   type: string;
   [key: string]: any;
@@ -42,6 +44,18 @@ export interface NotificationMessage {
   timestamp: string;
 }
 
+export interface MedalAwardedMessage {
+  type: 'medal_awarded';
+  medal_id: string;
+  medal_name: string | null;
+  medal_category: string | null;
+  medal_tier: string | null;
+  medal_description: string | null;
+  medal_icon: string | null;
+  awarded_via: string;
+  timestamp: string;
+}
+
 export interface ARIAChatMessage {
   type: 'aria_chat';
   content: string;
@@ -79,10 +93,21 @@ class WebSocketService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000; // Start with 1 second
-  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private reconnectTimer: number | null = null;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private messageHandlers: Set<MessageHandler> = new Set();
   private isConnected = false;
   private shouldReconnect = true;
+  // Whether the CURRENT socket attempt ever reached onopen. A close without an
+  // open is a handshake/auth rejection (an expired token is rejected pre-accept
+  // and surfaces to the browser as code 1006, NOT the server's 4001).
+  private hadOpen = false;
+  // Guards against stacking multiple refresh-then-reconnect cycles at once.
+  private refreshingAuth = false;
+  // One refresh per outage: if a reconnect still fails AFTER a fresh token, the
+  // token isn't the problem (transport), so fall back to plain backoff instead
+  // of hammering the refresh endpoint. Reset on a successful open.
+  private didAuthRefresh = false;
 
   constructor() {
     this.setupEventListeners();
@@ -121,32 +146,55 @@ class WebSocketService {
       return `${protocol}//${gameserverHost}/api/v1/ws/connect`;
     }
     
-    // Use VITE_API_URL if set, otherwise fall back to same-host with port 8080
+    // Use VITE_API_URL if set, otherwise same-origin — the Vite proxy
+    // (ws: true) and the nginx gateway both forward /api/v1/ws upstream
     const apiUrl = import.meta.env.VITE_API_URL;
     if (apiUrl) {
       const wsUrl = apiUrl.replace(/^http/, 'ws');
       return `${wsUrl}/api/v1/ws/connect`;
     }
-    return `ws://${window.location.hostname}:8080/api/v1/ws/connect`;
+    return `${protocol}//${window.location.host}/api/v1/ws/connect`;
   }
 
+  /** Public entry (login / fresh session): re-arms auto-reconnect and resets
+   *  the backoff, then opens the socket. Reconnect attempts go through
+   *  openSocket() so they preserve the backoff counter. */
   connect(token?: string): void {
     if (token) {
       this.token = token;
     }
-
-    if (!this.token) {
-      console.error('WebSocket: No authentication token provided');
+    // Idempotent while live: the consumer effect re-fires connect() on every
+    // token-state change (a refresh re-renders AuthContext), and the
+    // visibility/online listeners also call it. Returning early here means
+    // those re-entries don't wipe the reconnect backoff counter or re-arm a
+    // deliberately-stopped (session-expired) loop.
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       return;
     }
+    this.shouldReconnect = true;
+    this.reconnectAttempts = 0;
+    this.reconnectDelay = 1000;
+    this.openSocket();
+  }
+
+  private openSocket(): void {
+    // Always use the LATEST token: apiClient keeps the refreshed accessToken in
+    // localStorage, so reading it here means a reconnect after a token refresh
+    // carries a live token rather than the stale one captured at login.
+    const token = getAccessToken() || this.token;
+    if (!token) {
+      console.error('WebSocket: No authentication token available');
+      return;
+    }
+    this.token = token;
 
     if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       return;
     }
 
+    this.hadOpen = false;
     try {
-      const wsUrl = `${this.getWebSocketUrl()}?token=${encodeURIComponent(this.token)}`;
-      
+      const wsUrl = `${this.getWebSocketUrl()}?token=${encodeURIComponent(token)}`;
       this.ws = new WebSocket(wsUrl);
       this.setupWebSocketHandlers();
     } catch (error) {
@@ -160,6 +208,8 @@ class WebSocketService {
 
     this.ws.onopen = () => {
       this.isConnected = true;
+      this.hadOpen = true;
+      this.didAuthRefresh = false;
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
       this.startHeartbeat();
@@ -194,7 +244,19 @@ class WebSocketService {
         timestamp: new Date().toISOString()
       });
 
-      if (this.shouldReconnect && event.code !== 4001 && event.code !== 4002) {
+      if (!this.shouldReconnect) return;
+      // 4002 = player profile not found — not retryable.
+      if (event.code === 4002) return;
+      // Auth failure surfaces two ways: the server's explicit 4001 (post-accept
+      // close) OR, when an expired token is rejected before accept, a handshake
+      // that never opened (browser code 1006). In both cases the token is the
+      // suspect, so refresh it before retrying instead of looping on a dead
+      // token ("WebSocket: Connection error" every interval). A clean drop
+      // AFTER a successful open (network blip) just reconnects.
+      const authSuspect = event.code === 4001 || !this.hadOpen;
+      if (authSuspect && !this.didAuthRefresh) {
+        this.reconnectWithRefresh();
+      } else {
         this.scheduleReconnect();
       }
     };
@@ -224,11 +286,58 @@ class WebSocketService {
 
     console.warn(`WebSocket: Scheduling reconnect attempt ${this.reconnectAttempts + 1} in ${this.reconnectDelay}ms`);
     
-    setTimeout(() => {
+    this.reconnectTimer = window.setTimeout(() => {
+      // Re-check at fire time: a logout (disconnect) between scheduling and
+      // firing must not resurrect the dead session's socket.
+      if (!this.shouldReconnect) return;
       this.reconnectAttempts++;
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000); // Max 30 seconds
-      this.connect();
+      // openSocket() (not connect()) so the backoff counter is preserved and
+      // the latest token is used.
+      this.openSocket();
     }, this.reconnectDelay);
+  }
+
+  // Refresh the access token, then reconnect. Used when a close looks like an
+  // auth failure (4001, or a handshake that never opened). If the refresh token
+  // is also dead, stop reconnecting and surface a session-expired event rather
+  // than error-looping on a token that will never work.
+  private reconnectWithRefresh(): void {
+    if (this.refreshingAuth) return; // a refresh+reconnect is already in flight
+    this.refreshingAuth = true;
+    this.didAuthRefresh = true; // one refresh per outage (reset on next open)
+    refreshAccessToken()
+      .then((newToken) => {
+        this.refreshingAuth = false;
+        if (!this.shouldReconnect) return;
+        if (newToken) {
+          // Fresh token now in localStorage; reconnect promptly with it.
+          this.reconnectAttempts = 0;
+          this.reconnectDelay = 1000;
+          this.scheduleReconnect();
+        } else {
+          this.endSession();
+        }
+      })
+      .catch(() => {
+        this.refreshingAuth = false;
+        this.endSession();
+      });
+  }
+
+  // Terminal state: the refresh token is also dead. Stop reconnecting AND null
+  // the token so the visibility/online listeners (gated on this.token) cannot
+  // restart a loop with a credential that will never work. The REST 401 path
+  // owns the redirect to login; this just surfaces the state and ends the
+  // error-loop cleanly.
+  private endSession(): void {
+    this.shouldReconnect = false;
+    this.token = null;
+    this.notifyHandlers({
+      type: 'session_expired',
+      message: 'Session expired — please sign in again',
+      timestamp: new Date().toISOString(),
+    });
   }
 
   private startHeartbeat(): void {
@@ -344,12 +453,19 @@ class WebSocketService {
   disconnect(): void {
     this.shouldReconnect = false;
     this.stopHeartbeat();
-    
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    // Drop the token so online/visibility handlers cannot reconnect a
+    // logged-out session.
+    this.token = null;
+
     if (this.ws) {
       this.ws.close(1000, 'Client disconnect');
       this.ws = null;
     }
-    
+
     this.isConnected = false;
   }
 
@@ -410,6 +526,17 @@ class WebSocketService {
     const handler = (message: WebSocketMessage) => {
       if (message.type === 'connection_status') {
         callback(message.connected, message);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // Medal-award realtime push (medal_service.award_medal → send_medal_awarded)
+  onMedalAwarded(callback: (message: MedalAwardedMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'medal_awarded') {
+        callback(message as MedalAwardedMessage);
       }
     };
     this.addMessageHandler(handler);

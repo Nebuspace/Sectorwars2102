@@ -9,12 +9,24 @@ from src.models.player import Player
 from src.models.sector import Sector
 from src.models.planet import Planet
 from src.models.station import Station
+from src.services.celestial_service import generate_system
+from src.services import salvage_service
 
 router = APIRouter(
     prefix="/sectors",
     tags=["sectors"],
     responses={404: {"description": "Not found"}},
 )
+
+
+class SalvageRequest(BaseModel):
+    wreck_id: str
+
+
+class SalvageResponse(BaseModel):
+    salvaged: Dict[str, int]
+    suspect_flagged: bool
+    wreck_cleared: bool
 
 class PlanetResponse(BaseModel):
     id: str
@@ -27,6 +39,9 @@ class PlanetResponse(BaseModel):
     population: int
     max_population: int
     habitability_score: float
+    # Capital hubs are public worlds under regional administration — the
+    # claim endpoint refuses them, so the client must not advertise a claim
+    is_population_hub: bool = False
 
 class StationResponse(BaseModel):
     id: str
@@ -38,6 +53,8 @@ class StationResponse(BaseModel):
     owner_id: str | None = None
     services: Dict[str, Any]
     faction_affiliation: str | None = None
+    is_spacedock: bool = False
+    tradedock_tier: str | None = None
 
 class SectorPlanetsResponse(BaseModel):
     planets: List[PlanetResponse]
@@ -77,7 +94,9 @@ async def get_sector_planets(
     for planet in planets:
         planet_responses.append(PlanetResponse(
             id=str(planet.id),
-            name=planet.name,
+            # ADR-0073: show the discoverer's custom name (else auto/legacy) so
+            # the PLANETARY panel + helm controls match the windshield label.
+            name=planet.display_name,
             type=planet.type.value if hasattr(planet.type, 'value') else str(planet.type),
             status=planet.status.value if hasattr(planet.status, 'value') else str(planet.status),
             sector_id=planet.sector_id,
@@ -85,7 +104,8 @@ async def get_sector_planets(
             resources=planet.resources or {},
             population=planet.population,
             max_population=planet.max_population,
-            habitability_score=planet.habitability_score
+            habitability_score=planet.habitability_score,
+            is_population_hub=bool(planet.is_population_hub)
         ))
     
     return SectorPlanetsResponse(planets=planet_responses)
@@ -124,6 +144,8 @@ async def get_sector_stations(
             id=str(station.id),
             name=station.name,
             station_class=station.station_class.value if hasattr(station.station_class, 'value') else station.station_class,
+            is_spacedock=bool(station.is_spacedock),
+            tradedock_tier=station.tradedock_tier,
             type=station.type.value if hasattr(station.type, 'value') else str(station.type),
             status=station.status.value if hasattr(station.status, 'value') else str(station.status),
             sector_id=station.sector_id,
@@ -133,3 +155,76 @@ async def get_sector_stations(
         ))
 
     return SectorStationsResponse(stations=station_responses)
+
+@router.get("/{sector_id}/system", response_model=Dict[str, Any])
+async def get_sector_system(
+    sector_id: int,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Get the deterministic celestial system composition for a sector.
+
+    Procedurally generated star(s)/nebula/belt/filler bodies (seeded from the
+    sector id — identical sector always returns an identical response) with
+    the sector's real Planet and Station rows merged onto stable orbits.
+    """
+    # Get player's current region (or None for regionless sectors)
+    player_region_id = player.current_region_id
+
+    # Verify sector exists in player's current region
+    sector_query = db.query(Sector).filter(Sector.sector_id == sector_id)
+    if player_region_id:
+        sector_query = sector_query.filter(Sector.region_id == player_region_id)
+    else:
+        # For players without region, get sectors with no region
+        sector_query = sector_query.filter(Sector.region_id == None)
+
+    sector = sector_query.first()
+    if not sector:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Sector {sector_id} not found in your region"
+        )
+
+    # Two simple queries: real planets + real stations in this sector (by UUID)
+    planets = db.query(Planet).filter(Planet.sector_uuid == sector.id).all()
+    stations = db.query(Station).filter(Station.sector_uuid == sector.id).all()
+
+    # ADR-0073: viewing a sector's system discovers its planets (first wins);
+    # mark BEFORE generating so the merged bodies carry the fresh discoverer.
+    from src.services.discovery_service import mark_planet_discovered, mark_feature_discovered
+    for p in planets:
+        mark_planet_discovered(db, p, player.id)
+
+    result = generate_system(db, sector, planets, stations)
+
+    # Discover the per-sector features present (kept separate from planets).
+    for feat in ("belt", "debris", "nebula"):
+        if result.get(feat):
+            mark_feature_discovered(db, sector.id, feat, player.id)
+
+    # can_rename: only the discoverer may rename a planet (claimed or not).
+    pid = str(player.id)
+    for b in (result.get("bodies") or []):
+        if b.get("real"):
+            b["can_rename"] = (b.get("discovered_by") == pid)
+
+    db.commit()  # persist celestial skeleton + discovery marks
+    return result
+
+
+@router.post("/salvage", response_model=SalvageResponse)
+async def salvage_wreck(
+    request: SalvageRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Salvage a CargoWreck sitting in the player's CURRENT sector.
+
+    Transfers as much of the wreck's cargo as fits the player's free hold;
+    the wreck row is deleted once emptied. ADR-0007: salvaging another team's
+    wreck inside its 1-hour grace window is allowed but flags the salvager
+    Suspect (original owner / a current team-mate / the killing-blow pilot are
+    exempt).
+    """
+    return salvage_service.salvage_wreck(db, player, request.wreck_id)

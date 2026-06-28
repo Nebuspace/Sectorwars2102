@@ -4,6 +4,7 @@ Military Ranking, Reputation & Bounty API Routes
 Player-facing and admin endpoints for ranking, reputation, and bounty systems.
 """
 
+import logging
 import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,6 +18,9 @@ from src.models.user import User
 from src.services.ranking_service import RankingService, RANK_DEFINITIONS
 from src.services.bounty_service import BountyService
 from src.services.personal_reputation_service import PersonalReputationService
+from src.services.websocket_service import connection_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/ranking",
@@ -50,6 +54,11 @@ class RankInfoResponse(BaseModel):
     is_max_rank: bool
     effective_max_turns: int = 1000
     aria_multiplier: float = 1.0
+    # ADR-0004 journey win-state + law standing (produced by ranking_service)
+    is_game_complete: bool = False
+    rank_victory_at: Optional[str] = None
+    is_suspect: bool = False
+    is_wanted: bool = False
 
 
 class RankDefinitionResponse(BaseModel):
@@ -69,6 +78,9 @@ class LeaderboardEntry(BaseModel):
     military_rank: str
     rank_points: int
     rank_level: int
+    is_game_complete: bool = False
+    is_suspect: bool = False
+    is_wanted: bool = False
 
 
 class LeaderboardResponse(BaseModel):
@@ -265,32 +277,10 @@ async def get_public_leaderboard(
             ))
             pos += 1
 
-        # Find requesting player's combat position
-        if not any(e.player_id == str(player.id) for e in entries):
-            # Count this player's victories
-            player_wins_as_attacker = (
-                db.query(sa_func.count(CombatLog.id))
-                .filter(
-                    CombatLog.attacker_id == player.id,
-                    CombatLog.outcome == "attacker_win",
-                )
-                .scalar() or 0
-            )
-            player_wins_as_defender = (
-                db.query(sa_func.count(CombatLog.id))
-                .filter(
-                    CombatLog.defender_id == player.id,
-                    CombatLog.outcome == "defender_win",
-                )
-                .scalar() or 0
-            )
-            player_wins = player_wins_as_attacker + player_wins_as_defender
-
-            # Count players with more wins (approximate position)
-            higher_count = sum(1 for e in entries if e.score > player_wins)
-            # If player not in top N, position is at least limit+1
-            player_position = higher_count + 1 if player_wins > 0 else total_players
-        else:
+        # Find requesting player's combat position. Outside the visible
+        # top-N we'd need a full aggregate scan to know the real position,
+        # so leave it as None rather than fabricate one.
+        if any(e.player_id == str(player.id) for e in entries):
             player_position = next(
                 e.position for e in entries if e.player_id == str(player.id)
             )
@@ -336,16 +326,10 @@ async def get_public_leaderboard(
             ))
             pos += 1
 
-        # Find requesting player's trading position
-        if not any(e.player_id == str(player.id) for e in entries):
-            player_volume = (
-                db.query(sa_func.sum(MarketTransaction.total_value))
-                .filter(MarketTransaction.player_id == player.id)
-                .scalar() or 0
-            )
-            higher_count = sum(1 for e in entries if e.score > int(player_volume))
-            player_position = higher_count + 1 if player_volume > 0 else total_players
-        else:
+        # Find requesting player's trading position. Outside the visible
+        # top-N we'd need a full aggregate scan to know the real position,
+        # so leave it as None rather than fabricate one.
+        if any(e.player_id == str(player.id) for e in entries):
             player_position = next(
                 e.position for e in entries if e.player_id == str(player.id)
             )
@@ -459,11 +443,14 @@ async def get_rank_progress(
     requirements: List[RankRequirement] = []
     next_rank_points = rank_info.get("next_rank_points_required")
 
+    # Informational: promotion happens automatically when the threshold is
+    # crossed, so this can only read "met" at max rank — never render it as
+    # a permanently failed requirement.
     requirements.append(RankRequirement(
         name="Rank Points",
         current=rank_info["rank_points"],
         required=next_rank_points,
-        met=rank_info["is_max_rank"] or (rank_info["rank_points"] >= (next_rank_points or 0)),
+        met=rank_info["is_max_rank"],
     ))
     requirements.append(RankRequirement(
         name="Combat Victories",
@@ -541,9 +528,14 @@ async def get_player_medals(
     medal_service = MedalService(db)
     result = medal_service.get_player_medals(player.id)
     if not result.get("success"):
+        detail = result.get("error") or result.get("message") or "Failed to get medals"
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("message", "Failed to get medals"),
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+                if detail == "Player not found"
+                else status.HTTP_400_BAD_REQUEST
+            ),
+            detail=detail,
         )
     # Project to a known-safe subset so any exception detail / stack-trace the
     # service may have stuffed into the dict can't reach the client
@@ -585,7 +577,7 @@ async def get_player_reputation(
 # ------------------------------------------------------------------
 
 class PlaceBountyRequest(BaseModel):
-    target_id: str
+    target_id: uuid.UUID
     amount: int = Field(..., gt=0, le=1000000, description="Bounty amount (1 to 1,000,000 credits)")
 
 
@@ -598,7 +590,7 @@ async def place_bounty(
     """Place a bounty on another player. Costs amount + 10% fee."""
     bounty_service = BountyService(db)
     result = bounty_service.place_bounty(
-        player.id, uuid.UUID(request.target_id), request.amount
+        player.id, request.target_id, request.amount
     )
     if not result.get("success"):
         raise HTTPException(
@@ -606,18 +598,82 @@ async def place_bounty(
             detail=result.get("message", "Failed to place bounty"),
         )
     db.commit()
+
+    # Best-effort realtime broadcast — a websocket failure must never undo the
+    # committed credit transaction, so it runs AFTER commit inside try/except.
+    try:
+        await connection_manager.send_bounty_update(
+            action="placed",
+            bounty_data={
+                "bounty_id": result.get("bounty_id"),
+                "target_id": str(request.target_id),
+                "amount": result.get("amount"),
+                "placed_by": str(player.id),
+                "placed_by_name": player.nickname,
+            },
+            placer_id=str(player.id),
+            target_id=str(request.target_id),
+        )
+    except Exception as e:  # noqa: BLE001 — broadcast is non-critical
+        logger.error("Failed to broadcast bounty_placed event: %s", e)
+
+    return result
+
+
+class CancelBountyRequest(BaseModel):
+    target_id: uuid.UUID = Field(..., description="The player the bounty was placed on")
+
+
+@router.post("/bounties/{bounty_id}/cancel")
+async def cancel_bounty(
+    bounty_id: str,
+    request: CancelBountyRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Cancel one of YOUR OWN uncollected bounties and get refunded.
+
+    Only the original placer may cancel, and only a not-yet-collected bounty is
+    refundable. The escrowed principal is refunded; the 10% placement fee is
+    non-refundable (canon invariant #9).
+    """
+    bounty_service = BountyService(db)
+    result = bounty_service.cancel_bounty(player.id, bounty_id, request.target_id)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Failed to cancel bounty"),
+        )
+    db.commit()
+
+    # Best-effort realtime broadcast (post-commit, never undoes the refund).
+    try:
+        await connection_manager.send_bounty_update(
+            action="cancelled",
+            bounty_data={
+                "bounty_id": result.get("bounty_id"),
+                "target_id": str(request.target_id),
+                "refund": result.get("refund"),
+                "placed_by": str(player.id),
+            },
+            placer_id=str(player.id),
+            target_id=str(request.target_id),
+        )
+    except Exception as e:  # noqa: BLE001 — broadcast is non-critical
+        logger.error("Failed to broadcast bounty_cancelled event: %s", e)
+
     return result
 
 
 @router.get("/bounties/target/{player_id}")
 async def get_bounties_on_player(
-    player_id: str,
+    player_id: uuid.UUID,
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
     """Get all bounties on a specific player."""
     bounty_service = BountyService(db)
-    result = bounty_service.get_bounties_on_player(uuid.UUID(player_id))
+    result = bounty_service.get_bounties_on_player(player_id)
     if not result.get("success"):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

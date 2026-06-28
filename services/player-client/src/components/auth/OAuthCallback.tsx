@@ -1,7 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { useAuth } from '../../contexts/AuthContext';
+import apiClient from '../../services/apiClient';
+
+// The ADR-0085 OAuth authorization code is SINGLE-USE. React StrictMode (dev)
+// double-invokes effects, which would POST /auth/exchange twice — the second call
+// hits the already-consumed code and 400s, flashing a false "Authentication
+// Failed" even though login actually succeeded. Track handled codes module-side so
+// each code is exchanged at most once across re-mounts/re-renders.
+const handledCodes = new Set<string>();
 
 const OAuthCallback: React.FC = () => {
   const location = useLocation();
@@ -10,7 +17,6 @@ const OAuthCallback: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [userInfo, setUserInfo] = useState<any>(null);
   const [playerInfo, setPlayerInfo] = useState<any>(null);
-  const { refreshToken: authRefreshToken } = useAuth();
 
   useEffect(() => {
     const handleOAuthCallback = async () => {
@@ -18,14 +24,31 @@ const OAuthCallback: React.FC = () => {
         // Parse the URL search params
         const params = new URLSearchParams(location.search);
 
-        const accessToken = params.get('access_token');
-        const refreshToken = params.get('refresh_token');
-        const userId = params.get('user_id');
+        // ADR-0085: prefer the single-use authorization code — tokens are no
+        // longer placed in the redirect URL (they would leak to history /
+        // Referer / logs). Fall back to legacy URL tokens during the transition
+        // window so this stays compatible until the server flips to code-only.
+        let accessToken = params.get('access_token');
+        let refreshToken = params.get('refresh_token');
+        let userId = params.get('user_id');
         // Check for new user indicators either from query param or in session storage
-        const isNewUser = params.get('is_new_user') === 'true' || sessionStorage.getItem('oauth_register') === 'true';
+        let isNewUser = params.get('is_new_user') === 'true' || sessionStorage.getItem('oauth_register') === 'true';
+
+        const code = params.get('code');
+        if (code) {
+          // Single-use code: if a prior (StrictMode/double-mount) invocation already
+          // exchanged this code, bail out silently rather than POST again and 400.
+          if (handledCodes.has(code)) return;
+          handledCodes.add(code);
+          const { data } = await apiClient.post('/api/v1/auth/exchange', { code });
+          accessToken = data.access_token;
+          refreshToken = data.refresh_token;
+          userId = data.user_id;
+          if (data.is_new_user) isNewUser = true;
+        }
 
         if (!accessToken || !refreshToken || !userId) {
-          throw new Error(`Invalid OAuth callback parameters: accessToken=${Boolean(accessToken)}, refreshToken=${Boolean(refreshToken)}, userId=${Boolean(userId)}`);
+          throw new Error(`Invalid OAuth callback parameters: code=${Boolean(code)}, accessToken=${Boolean(accessToken)}, refreshToken=${Boolean(refreshToken)}, userId=${Boolean(userId)}`);
         }
 
         // Store tokens in localStorage
@@ -49,29 +72,23 @@ const OAuthCallback: React.FC = () => {
         // The main app will fetch user/player info after redirect using proper authentication context
         setStatus(`Login successful! Launching game...`);
 
-        // Force a reload of authentication state in the AuthContext
-        try {
-          await authRefreshToken();
-        } catch {
-          // Continue anyway, as we'll do a full page reload
-        }
-        
+        // Do NOT refresh here: the tokens we just stored are freshly issued by
+        // the OAuth flow (or the code-exchange above). Refreshing immediately
+        // rotates — and therefore revokes — the brand-new refresh token, and
+        // burns one of the limited /auth/refresh calls. The AuthContext
+        // bootstraps from the stored tokens (via /auth/me) on the /game reload.
+
         // Set a sessionStorage flag to track the redirect
         sessionStorage.setItem('oauth_redirect_completed', 'true');
         
         // Create a function to directly navigate to the dashboard with the token
         const navigateWithToken = () => {
           try {
-            // Make sure the token is correctly set in localStorage
-            if (localStorage.getItem('accessToken') !== accessToken) {
-              localStorage.setItem('accessToken', accessToken);
-              localStorage.setItem('refreshToken', refreshToken);
-              localStorage.setItem('userId', userId);
-              
-              // Set axios defaults for current session
-              axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
-            }
-            
+            // Tokens are already in localStorage (stored above) and the axios
+            // default header is set. Do NOT re-write them from the captured
+            // vars here — if anything rotated the token in the meantime, that
+            // would clobber the live token with a stale/revoked one (the cause
+            // of the post-login refresh storm → 429 → bounce). Just navigate.
             window.location.href = '/game';
           } catch (err) {
             console.error('Error during navigation:', err);
@@ -89,7 +106,7 @@ const OAuthCallback: React.FC = () => {
     };
 
     handleOAuthCallback();
-  }, [location, navigate, authRefreshToken]);
+  }, [location, navigate]);
 
   return (
     <div className="oauth-callback-container">

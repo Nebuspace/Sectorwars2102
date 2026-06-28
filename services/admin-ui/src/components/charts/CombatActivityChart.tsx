@@ -1,20 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 
-interface CombatEvent {
-  id: string;
-  timestamp: string;
-  type: 'player_vs_player' | 'player_vs_npc' | 'fleet_battle';
-  attacker: string;
-  defender: string;
-  winner?: string;
-  damageDealt: number;
-  disputed?: boolean;
-  sector: string;
-}
-
 interface CombatActivityChartProps {
-  events: CombatEvent[];
+  // Loosely typed at the boundary; the real runtime payload is the backend
+  // CombatFeedItem (started_at, combat_stats, ...), read defensively below.
+  events: any[];
   width?: number;
   height?: number;
 }
@@ -48,14 +38,17 @@ export const CombatActivityChart: React.FC<CombatActivityChartProps> = ({
     }
 
     // Aggregate events into buckets
-    events.forEach(event => {
-      const eventTime = new Date(event.timestamp);
-      if (eventTime >= hourAgo && eventTime <= now) {
+    events.forEach((event: any) => {
+      // Real payload (CombatFeedItem) uses started_at + a combat_stats dict.
+      // Read both defensively so a non-empty feed can't throw (the previous
+      // code read event.timestamp + event.result.* which don't exist).
+      const eventTime = new Date(event.started_at ?? event.timestamp);
+      if (!isNaN(eventTime.getTime()) && eventTime >= hourAgo && eventTime <= now) {
         const key = eventTime.toISOString().slice(0, 16);
         const bucket = buckets.get(key);
         if (bucket) {
           bucket.battles++;
-          bucket.damage += event.result.damageDealt + event.result.damageReceived;
+          bucket.damage += (event.combat_stats?.damageDealt ?? 0) + (event.combat_stats?.damageReceived ?? 0);
         }
       }
     });
@@ -117,8 +110,8 @@ export const CombatActivityChart: React.FC<CombatActivityChartProps> = ({
     g.append('g')
       .attr('transform', `translate(0,${innerHeight})`)
       .call(d3.axisBottom(xScale)
-        .tickFormat(d3.timeFormat('%H:%M'))
-        .ticks(6))
+        .tickFormat(d3.timeFormat('%H:%M') as any)
+        .ticks(6) as any)
       .append('text')
       .attr('x', innerWidth / 2)
       .attr('y', 35)

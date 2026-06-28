@@ -1,0 +1,496 @@
+"""Unit tests for the CRT grid spine (WO-K1a): structures.settle/seed + the _via_settle guard.
+
+DB-free: these exercise the guard (I5), the domain-consistent cold-start anchor seed (I8 math),
+the anchor round-trip / monotonic gate, and seed idempotency. The behavioral I1 (re-run
+byte-identical), I3 (stale-now no-op) and I10 (reproduce-exactly) run as in-process proofs against
+a real planet on dev (they need the shipped bodies + a session).
+"""
+import types
+from datetime import datetime, timedelta, UTC
+
+import pytest
+
+import src.services.structures as S
+
+
+@pytest.fixture(autouse=True)
+def _noop_flag_modified(monkeypatch):
+    """These DB-free tests use SimpleNamespace planets; sqlalchemy.flag_modified requires a mapped
+    instance. The real flag_modified is exercised in the in-process dev proof against a real Planet
+    row. Reassigning planet.structures (which the code also does) is what actually marks the column
+    dirty on a mapped instance — flag_modified is belt-and-suspenders."""
+    monkeypatch.setattr(S, "flag_modified", lambda *a, **k: None)
+
+
+def _planet(**kw):
+    p = types.SimpleNamespace()
+    p.structures = kw.get("structures")
+    p.last_production = kw.get("last_production")
+    p.active_events = kw.get("active_events", {})
+    p.under_siege = kw.get("under_siege", False)
+    p.siege_started_at = kw.get("siege_started_at")
+    p.siege_turns = kw.get("siege_turns", 0)
+    p.id = kw.get("id", "test-planet")
+    for n in ("size", "citadel_level", "research_level", "factory_level",
+              "farm_level", "mine_level", "defense_level", "defense_shields",
+              "defense_fighters", "radiation_level"):
+        setattr(p, n, kw.get(n, 0))
+    for n in ("terrain", "temperature", "water_coverage", "planet_type"):
+        setattr(p, n, kw.get(n))
+    return p
+
+
+def test_via_settle_guard_trips_loudly_under_strict():
+    S.STRICT_VIA_SETTLE = True
+    try:
+        with pytest.raises(AssertionError):
+            S._via_settle_guard("apply_resource_production", False)  # stray direct caller
+        S._via_settle_guard("apply_resource_production", True)        # spine call: no raise
+    finally:
+        S.STRICT_VIA_SETTLE = False
+
+
+def test_via_settle_guard_warns_but_does_not_raise_by_default():
+    S.STRICT_VIA_SETTLE = False
+    S._via_settle_guard("apply_resource_production", False)  # WARN-logs a stray; never crashes prod
+
+
+def _cleared_grid(cols=4, rows=4):
+    plots = [{"x": i % cols, "y": i // cols, "terrain": "FLAT", "hazard": None,
+              "axes": {"thermal": 50, "hydro": 10}, "axes_at": None, "cleared": True,
+              "surveyed": False, "building_id": None} for i in range(cols * rows)]
+    return {"v": 1, "grid": {"cols": cols, "rows": rows}, "plots": plots,
+            "buildings": [], "instability": 0}
+
+
+def test_grid_dims_clamped_and_box_covers_count():
+    for size, exp_count in [(1, 6), (3, 10), (5, 14), (10, 24), (50, 30)]:
+        cols, rows, count = S._grid_dims_for(size)
+        assert count == exp_count, f"size {size} → plots {count} (expected {exp_count})"
+        assert cols * rows >= count  # bounding box covers the plot count
+
+
+def test_seed_builds_grid_and_keeps_spine_anchor():
+    p = _planet(size=5, temperature=10.0, water_coverage=40.0)
+    s = S.seed(p)
+    assert s["grid"]["cols"] * s["grid"]["rows"] >= len(s["plots"])
+    assert len(s["plots"]) == S._grid_dims_for(5)[2]
+    assert s["buildings"] == [] and s["instability"] == 0
+    assert s["terraform_meta"]["last_settle_at"]  # spine anchor preserved
+    # axes seeded from dormant columns (NO-CANON mapping): thermal 50+10=60, hydro=40
+    assert s["plots"][0]["axes"] == {"thermal": 60, "hydro": 40}
+
+
+def test_seed_radiation_makes_uncleared_hazard_plots():
+    p = _planet(size=2, radiation_level=0.9)
+    s = S.seed(p)
+    assert all(pl["hazard"] and pl["hazard"]["kind"] == "radiation" for pl in s["plots"])
+    assert all(pl["cleared"] is False for pl in s["plots"])
+
+
+def test_place_occupies_footprint_and_returns_building():
+    st = _cleared_grid()
+    b = S.place(st, "MINE", 0, 0)
+    assert b["kind"] == "MINE" and b["domain"] == "economy" and b["id"] == "b_1"
+    assert S._plot_index(st)[(0, 0)]["building_id"] == "b_1"
+    assert len(st["buildings"]) == 1
+
+
+def test_place_multicell_spaceport_occupies_two_cells():
+    st = _cleared_grid()
+    b = S.place(st, "SPACEPORT", 1, 0)  # 2x1
+    occ = S._plot_index(st)
+    assert occ[(1, 0)]["building_id"] == b["id"] and occ[(2, 0)]["building_id"] == b["id"]
+
+
+def test_can_place_rejects_occupied_offgrid_and_hazard():
+    st = _cleared_grid()
+    S.place(st, "MINE", 0, 0)
+    assert S.can_place(st, "FARM", 0, 0)[0] is False         # occupied
+    assert S.can_place(st, "FARM", 99, 99)[0] is False        # off-grid
+    st["plots"][5]["hazard"] = {"kind": "radiation", "sev": 1}
+    st["plots"][5]["cleared"] = False
+    x, y = st["plots"][5]["x"], st["plots"][5]["y"]
+    assert S.can_place(st, "FARM", x, y)[0] is False          # hazard/uncleared
+
+
+def test_decommission_reclaims_plot_for_reuse():
+    st = _cleared_grid()
+    b = S.place(st, "MINE", 0, 0)
+    removed = S.decommission(st, b["id"])
+    assert removed["id"] == b["id"]
+    assert S._plot_index(st)[(0, 0)]["building_id"] is None
+    assert len(st["buildings"]) == 0
+    # plot accepts a new building after reclaim (the K1b-3 acceptance shape)
+    b2 = S.place(st, "FARM", 0, 0)
+    assert S._plot_index(st)[(0, 0)]["building_id"] == b2["id"]
+
+
+def test_place_unknown_kind_raises():
+    st = _cleared_grid()
+    with pytest.raises(ValueError):
+        S.place(st, "NOT_A_KIND", 0, 0)
+
+
+def _bld(kind, level=1, x=0, y=0, browned_out=False, complete_at=None):
+    from src.services import building_catalog
+    return {"id": f"b_{kind}_{x}_{y}", "domain": building_catalog.get(kind)["domain"],
+            "kind": kind, "x": x, "y": y, "level": level,
+            "complete_at": complete_at, "browned_out": browned_out}
+
+
+def _grid(buildings):
+    return {"v": 1, "grid": {"cols": 8, "rows": 8}, "plots": [], "buildings": buildings, "instability": 0}
+
+
+def test_derive_empty_grid_is_zero():
+    assert S.derive_citadel_level(_grid([])) == 0
+    assert S.derive_citadel_level(None) == 0
+
+
+def test_derive_l1_outpost():
+    g = _grid([_bld("HAB_DOME", 5), _bld("MINE", 5, x=1)])  # hab + economy, no scanner
+    assert S.derive_citadel_level(g) == 1
+
+
+def test_derive_l3_colony():
+    g = _grid([_bld("HAB_DOME", 5, x=0), _bld("HAB_DOME", 5, x=1), _bld("POWER_PLANT", 5, x=2),
+               _bld("SCANNER_ARRAY", 1, x=3), _bld("MINE", 5, x=4)])
+    assert S.derive_citadel_level(g) == 3  # 2 domes + power + scanner; no spaceport/3-eco for L4
+
+
+def test_derive_l5_planetary_capital():
+    g = _grid([_bld("HAB_DOME", 5, x=0), _bld("HAB_DOME", 5, x=1), _bld("POWER_PLANT", 5, x=2),
+               _bld("SCANNER_ARRAY", 1, x=3), _bld("SPACEPORT", 3, x=4),
+               _bld("MINE", 5, x=6), _bld("FARM", 5, x=7), _bld("FABRICATOR", 5, x=0, y=1),
+               _bld("ADMIN_SPIRE", 1, x=2, y=2)])
+    assert S.derive_citadel_level(g) == 5
+
+
+def test_derive_brownout_derives_down():
+    full = [_bld("HAB_DOME", 5, x=0), _bld("HAB_DOME", 5, x=1), _bld("POWER_PLANT", 5, x=2),
+            _bld("SCANNER_ARRAY", 1, x=3), _bld("SPACEPORT", 3, x=4),
+            _bld("MINE", 5, x=6), _bld("FARM", 5, x=7), _bld("FABRICATOR", 5, x=0, y=1),
+            _bld("ADMIN_SPIRE", 1, x=2, y=2, browned_out=True)]  # ADMIN_SPIRE browned out
+    assert S.derive_citadel_level(_grid(full)) == 4  # loses L5 (admin spire not operational)
+
+
+def test_derive_unbuilt_building_does_not_count():
+    # a building still in the build queue (complete_at set) is not operational
+    g = _grid([_bld("HAB_DOME", 5), _bld("MINE", 5, x=1, complete_at="2099-01-01T00:00:00+00:00")])
+    assert S.derive_citadel_level(g) == 0  # MINE not yet operational -> no economy -> not even L1
+
+
+def _tgrid(plots, buildings=None, instability=0):
+    return {"v": 1, "grid": {"cols": 8, "rows": 8}, "plots": plots,
+            "buildings": buildings or [], "instability": instability}
+
+
+def _plot(x, y, thermal, hydro):
+    return {"x": x, "y": y, "terrain": "FLAT", "hazard": None,
+            "axes": {"thermal": thermal, "hydro": hydro}, "axes_at": None,
+            "cleared": True, "surveyed": False, "building_id": None}
+
+
+def test_terraform_decay_toward_natural_band():
+    # OCEANIC natural_band thermal=65 hydro=75; an un-fed plot below band decays UP toward it
+    g = _tgrid([_plot(0, 0, 50, 40)])
+    S.terraform_grid_tick(g, "OCEANIC")
+    ax = g["plots"][0]["axes"]
+    assert ax["thermal"] == 52 and ax["hydro"] == 42  # +DECAY_RATE(2) toward 65/75
+
+
+def test_terraform_decay_down_toward_band():
+    # VOLCANIC band thermal=25; a plot ABOVE band decays DOWN
+    g = _tgrid([_plot(0, 0, 90, 30)])
+    S.terraform_grid_tick(g, "VOLCANIC")
+    assert g["plots"][0]["axes"]["thermal"] == 88  # -2 toward 25
+
+
+def test_terraform_rig_pushes_own_plot_flat():
+    rig = {"id": "r_1", "domain": "terraform", "kind": "THERMAL_RIG", "x": 0, "y": 0,
+           "level": 2, "push_base": 5.0, "axis": "thermal", "complete_at": None}
+    g = _tgrid([_plot(0, 0, 50, 40), _plot(1, 0, 50, 40)], buildings=[rig])
+    S.terraform_grid_tick(g, "OCEANIC", intensity="standard")
+    idx = S._plot_index(g)
+    assert idx[(0, 0)]["axes"]["thermal"] == 60   # fed: 50 + 5*2*1.0 = 60
+    assert idx[(0, 0)]["axes"]["hydro"] == 40      # fed plot doesn't decay
+    assert idx[(1, 0)]["axes"]["thermal"] == 52    # un-fed neighbor decays toward 65 (NO falloff push)
+
+
+def test_terraform_instability_penalises_habitability():
+    rig = {"id": "r_1", "domain": "terraform", "kind": "THERMAL_RIG", "x": 0, "y": 0,
+           "level": 4, "push_base": 5.0, "axis": "thermal", "complete_at": None}
+    g = _tgrid([_plot(0, 0, 50, 50)], buildings=[rig])
+    hab = S.terraform_grid_tick(g, "OCEANIC", intensity="aggressive")
+    assert g["instability"] > 0  # aggressive push destabilises
+    # hab = floor(area-weighted mean) - instability//5 ; mean over 1 plot = (thermal+hydro)/2
+    ax = g["plots"][0]["axes"]
+    expect = int((ax["thermal"] + ax["hydro"]) / 2) - (g["instability"] // 5)
+    assert hab == max(0, expect)
+
+
+def test_terraform_unfed_rig_pushes_at_floor():
+    rig = {"id": "r_1", "domain": "terraform", "kind": "THERMAL_RIG", "x": 0, "y": 0,
+           "level": 1, "push_base": 10.0, "axis": "thermal", "complete_at": None, "browned_out": True}
+    g = _tgrid([_plot(0, 0, 50, 50)], buildings=[rig])
+    S.terraform_grid_tick(g, "OCEANIC", intensity="standard")
+    # browned-out rig pushes at 40% floor: 50 + 10*1*1.0*0.4 = 54
+    assert g["plots"][0]["axes"]["thermal"] == 54
+
+
+def test_k1b5_cold_start_gate():
+    # K1b-5 4-clause cold-start: a null-structures planet seeds to a COHERENT CRT init (zero-research).
+    p = _planet(planet_type="OCEANIC")
+    p.structures = None
+    s = S.seed(p)
+    assert isinstance(s.get("plots"), list) and len(s["plots"]) > 0          # (1) grid built
+    assert s["terraform_meta"]["last_settle_at"]                              # (2) spine anchor seeded
+    assert isinstance(S.derive_citadel_level(s), int)                        # (3) derive coherent (no crash)
+    r = S.confirm_biome(s, "OCEANIC")                                        # (4) capstone READ works
+    assert set(r) == {"confirmed", "hold_ticks", "axes"} and r["hold_ticks"] == 0
+    assert getattr(p, "type", None) is None                                  # type-reclass NOT written (Max-gated)
+
+
+def test_confirm_biome_in_and_out_of_band():
+    g = S.confirm_biome(_tgrid([_plot(0, 0, 65, 75), _plot(1, 0, 70, 70)]), "OCEANIC")  # near OCEANIC 65/75
+    assert g["confirmed"] is True
+    assert S.confirm_biome(_tgrid([_plot(0, 0, 0, 0)]), "OCEANIC")["confirmed"] is False  # far off-band
+    assert S.confirm_biome(_tgrid([_plot(0, 0, 65, 75)]), None)["confirmed"] is False     # no target
+
+
+def test_decommission_with_refund():
+    g = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    rig = S.place(g, "THERMAL_RIG", 0, 0, level=1)
+    res = S.decommission_with_refund(g, rig["id"])
+    assert res is not None
+    assert res["refund_credits"] == 10000          # THERMAL_RIG L1 = 40000 cr × 0.25 salvage
+    assert res["removed"]["id"] == rig["id"]
+    assert all(b.get("id") != rig["id"] for b in g["buildings"])   # building gone
+
+
+def test_decommission_with_refund_missing_returns_none():
+    assert S.decommission_with_refund(_tgrid([_plot(0, 0, 40, 40)]), "nope") is None
+
+
+def test_climate_anchor_pins_plot_against_decay():
+    # BARREN natural_band 0/0: an un-anchored plot decays DOWN from 40; an anchored plot HOLDS.
+    g = _tgrid([_plot(0, 0, 40, 40), _plot(1, 0, 40, 40)])
+    S.place(g, "CLIMATE_ANCHOR", 0, 0, level=1)     # pins plot (0,0)
+    S.terraform_grid_tick(g, "BARREN", "standard")
+    idx = S._plot_index(g)
+    assert idx[(0, 0)]["axes"]["thermal"] == 40 and idx[(0, 0)]["axes"]["hydro"] == 40  # held
+    assert idx[(1, 0)]["axes"]["thermal"] < 40      # unanchored decayed toward natural_band 0
+
+
+def test_advance_grid_field_seeds_then_idempotent():
+    p = _planet(planet_type="OCEANIC")
+    p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    # first call seeds the wall-clock anchor + advances 0 ticks
+    assert S._advance_grid_field(p, p.structures) == 0
+    assert p.structures["terraform_meta"]["last_grid_tick_at"]
+    # immediate re-call → caught-up (≈0 canonical hours elapsed) → 0 ticks (idempotent)
+    assert S._advance_grid_field(p, p.structures) == 0
+
+
+def test_advance_grid_field_advances_after_elapsed():
+    p = _planet(planet_type="OCEANIC")
+    p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    past = (S._canonical_now() - timedelta(hours=10)).isoformat()   # anchor 10 wall-h in the past
+    p.structures["terraform_meta"] = {"last_grid_tick_at": past}
+    ticks = S._advance_grid_field(p, p.structures)
+    assert ticks > 0
+    # unfed OCEANIC plots decayed UP toward natural_band (65/75) from 40 → grid-hab rose above 40
+    assert S.grid_habitability(p.structures) > 40
+
+
+def test_advance_grid_field_caps_runaway():
+    p = _planet(planet_type="OCEANIC")
+    p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    ancient = (S._canonical_now() - timedelta(days=3650)).isoformat()  # absurd elapsed
+    p.structures["terraform_meta"] = {"last_grid_tick_at": ancient}
+    assert S._advance_grid_field(p, p.structures) == S.GRID_TICK_CAP    # capped, not runaway
+
+
+def test_step2_cutover_writes_habitability():
+    p = _planet(planet_type="OCEANIC")
+    p.structures = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    p.habitability_score = 99      # deliberately wrong → cutover overwrites with the grid value
+    p.terraforming_active = False
+    S._step2_terraform(p, None)    # ts is unused when terraforming is inactive
+    assert p.habitability_score == S.grid_habitability(p.structures)
+    assert p.habitability_score != 99   # re-baselined to grid (ends the read-only shadow)
+
+
+def test_grid_habitability_pure_read_no_mutation():
+    g = _tgrid([_plot(0, 0, 60, 40), _plot(1, 0, 80, 20)], instability=10)
+    before = [dict(p["axes"]) for p in g["plots"]]
+    h1 = S.grid_habitability(g)
+    h2 = S.grid_habitability(g)
+    # ((60+40)/2 + (80+20)/2)/2 = (50+50)/2 = 50; penalty = 10//5 = 2 → 48
+    assert h1 == 48 and h2 == 48
+    assert [dict(p["axes"]) for p in g["plots"]] == before  # READ-ONLY: no push/decay
+
+
+def test_grid_habitability_none_on_empty_grid():
+    assert S.grid_habitability({"plots": []}) is None
+    assert S.grid_habitability({}) is None
+
+
+def test_grid_habitability_matches_tick_return():
+    g = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    S.place_terraform_preset(g, 2)
+    ret = S.terraform_grid_tick(g, "OCEANIC", intensity="standard")
+    assert ret == S.grid_habitability(g)  # tick's return IS the post-tick grid_habitability
+
+
+def test_terraform_preset_places_bundle_and_pushes():
+    g = _tgrid([_plot(x, 0, 40, 40) for x in range(6)])
+    rigs = S.place_terraform_preset(g, 3)
+    assert len(rigs) == 3
+    assert all(r["domain"] == "terraform" and r["push_base"] > 0 and r["axis"] in ("thermal", "hydro")
+               for r in rigs)
+    S.terraform_grid_tick(g, "OCEANIC", intensity="standard")
+    idx = S._plot_index(g)
+    pushed = sum(1 for r in rigs if idx[(r["x"], r["y"])]["axes"][r["axis"]] > 40)
+    assert pushed == 3  # every rig plot's pushed axis rose above its start
+
+
+def test_terraform_preset_level_scales_rig_count():
+    g1 = S.place_terraform_preset(_tgrid([_plot(x, 0, 40, 40) for x in range(6)]), 1)
+    g5 = S.place_terraform_preset(_tgrid([_plot(x, y, 40, 40) for y in range(2) for x in range(6)]), 5)
+    assert len(g1) == 1 and len(g5) == 5  # N rigs for level N
+
+
+def test_terraform_rigless_planet_returns_natural_habitability():
+    g = _tgrid([_plot(0, 0, 65, 75), _plot(1, 0, 65, 75)])  # already at OCEANIC band
+    hab = S.terraform_grid_tick(g, "OCEANIC")
+    assert hab == 70  # mean of (65+75)/2 = 70, no instability
+
+
+def test_i4_grep_gate_no_stray_clock_callers():
+    """I4 (grep-gate): after the cutover, the clock bodies must have ZERO call-sites outside
+    structures.settle() — the sole allowed exception is realize_production's pass-through to
+    apply_resource_production."""
+    import os
+    import re
+
+    src = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+    bodies = ("apply_resource_production", "advance_siege", "_advance_terraforming",
+              "sweep_research_faucet", "realize_production", "process_terraforming_tick")
+    allow_lines = {"return self.apply_resource_production(planet, _via_settle=_via_settle)"}
+    strays = []
+    for root, _dirs, files in os.walk(src):
+        for fn in files:
+            if not fn.endswith(".py") or fn == "structures.py":
+                continue
+            path = os.path.join(root, fn)
+            with open(path) as f:
+                for i, line in enumerate(f, 1):
+                    stripped = line.strip()
+                    if stripped.startswith(("def ", "#", '"', "'", "*")):
+                        continue
+                    code = line.split("#", 1)[0]
+                    for b in bodies:
+                        if re.search(rf"{b}\(", code) and stripped not in allow_lines:
+                            strays.append(f"{os.path.relpath(path, src)}:{i}: {stripped}")
+    assert not strays, "I4 grep-gate — stray clock-advancing callers outside settle():\n" + "\n".join(strays)
+
+
+def test_settle_anchor_roundtrip_and_set_under_terraform_meta():
+    p = _planet()
+    when = datetime(2026, 6, 21, 2, 0, 0, tzinfo=UTC)
+    S._set_settle_anchor(p, when)
+    assert S._read_settle_anchor(p) == when
+    assert p.structures["terraform_meta"]["last_settle_at"] == when.isoformat()
+
+
+def test_seed_anchor_is_max_of_inner_anchors():
+    lp = datetime(2026, 6, 20, 0, 0, 0, tzinfo=UTC)
+    tt = datetime(2026, 6, 21, 0, 0, 0, tzinfo=UTC)  # the latest
+    p = _planet(last_production=lp,
+                active_events={"terraforming": {"last_tick_at": tt.isoformat()}})
+    assert S._seed_anchor_value(p) == tt
+
+
+def test_seed_brand_new_planet_uses_now():
+    v = S._seed_anchor_value(_planet())
+    assert (datetime.now(UTC) - v).total_seconds() < 5
+
+
+def test_seed_siege_converts_canonical_turns_to_wall_hours():
+    from src.services.planetary_service import SIEGE_TURN_HOURS, SIEGE_TURNS_THRESHOLD
+    from src.core.game_time import GAME_TIME_SCALE
+    ss = datetime(2026, 6, 20, 0, 0, 0, tzinfo=UTC)
+    p = _planet(under_siege=True, siege_started_at=ss,
+                siege_turns=SIEGE_TURNS_THRESHOLD + 2, last_production=ss)
+    expected = ss + timedelta(hours=(2 * SIEGE_TURN_HOURS) / (GAME_TIME_SCALE or 1.0))
+    assert S._seed_anchor_value(p) == expected
+
+
+def test_seed_is_idempotent():
+    p = _planet()
+    a1 = S.seed(p)["terraform_meta"]["last_settle_at"]
+    a2 = S.seed(p)["terraform_meta"]["last_settle_at"]
+    assert a1 == a2  # second seed() never re-stamps
+
+
+def test_seed_captures_legacy_map_without_touching_derived():
+    p = _planet(size=5, citadel_level=2, research_level=3)
+    s = S.seed(p)
+    assert s["version"] == 1
+    assert s["legacy_seed"]["size"] == 5
+    assert s["legacy_seed"]["citadel_level"] == 2
+    assert p.citadel_level == 2  # derived field untouched
+
+
+def test_settle_requires_db():
+    with pytest.raises(ValueError):
+        S.settle(_planet(), datetime.now(UTC), db=None)
+
+
+def test_settle_gated_returns_noop_without_advancing_anchor(monkeypatch):
+    """Spine gate (I3): a stale `now` (<= last_settle_at) is a spine no-op — the anchor does NOT
+    advance. DB-free: stub the six steps + the service classes so settle() never touches a real
+    body/session, isolating the gate branch."""
+    import src.services.planetary_service as PS
+    import src.services.terraforming_service as TS
+
+    class _Dummy:
+        def __init__(self, db):
+            pass
+
+    monkeypatch.setattr(PS, "PlanetaryService", _Dummy)
+    monkeypatch.setattr(TS, "TerraformingService", _Dummy)
+    for fn in ("_step1_build_queue", "_step2_terraform", "_step3_power_siege",
+               "_step4_production", "_step5_research", "_step6_event_roll"):
+        monkeypatch.setattr(S, fn, lambda *a, **k: False)
+
+    future = datetime.now(UTC) + timedelta(hours=1)
+    p = _planet(structures={"terraform_meta": {"last_settle_at": future.isoformat()}})
+    result = S.settle(p, datetime.now(UTC), db=object())  # now < future → GATED
+    assert result.changed is False
+    assert S._read_settle_anchor(p) == future  # anchor unmoved
+
+
+def test_settle_advances_anchor_on_forward_now(monkeypatch):
+    """Non-gated forward `now` advances the spine anchor to `now` (the single-writer, §1.4)."""
+    import src.services.planetary_service as PS
+    import src.services.terraforming_service as TS
+
+    class _Dummy:
+        def __init__(self, db):
+            pass
+
+    monkeypatch.setattr(PS, "PlanetaryService", _Dummy)
+    monkeypatch.setattr(TS, "TerraformingService", _Dummy)
+    for fn in ("_step1_build_queue", "_step2_terraform", "_step3_power_siege",
+               "_step4_production", "_step5_research", "_step6_event_roll"):
+        monkeypatch.setattr(S, fn, lambda *a, **k: False)
+
+    past = datetime.now(UTC) - timedelta(hours=1)
+    now = datetime.now(UTC)
+    p = _planet(structures={"terraform_meta": {"last_settle_at": past.isoformat()}})
+    result = S.settle(p, now, db=object())  # now > past → NOT gated
+    assert result.changed is True
+    assert S._read_settle_anchor(p) == now

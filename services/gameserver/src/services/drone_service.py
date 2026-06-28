@@ -1,22 +1,26 @@
 """
 Drone management service for Sectorwars2102.
 
-Handles drone creation, deployment, combat, and strategy.
+Handles drone creation, deployment, and strategy.
 """
 
 from uuid import UUID
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-import json
-import random
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 
-from src.models.drone import Drone, DroneDeployment, DroneCombat, DroneType, DroneStatus
+from src.models.drone import Drone, DroneDeployment, DroneType, DroneStatus
 from src.models.player import Player
 from src.models.sector import Sector
 from src.models.team import Team
+from src.models.ship import Ship, ShipSpecification, UpgradeType
+
+# ship-systems.md §2.7 / drones.md:62 — each Drone Bay upgrade level adds +2 drone
+# capacity. Mirrors GENESIS_CONTAINMENT's +2/level (genesis_service consumes that one
+# the same way). The level lives in ``Ship.upgrades[UpgradeType.DRONE_BAY.value]``.
+DRONE_CAPACITY_BONUS_PER_BAY_LEVEL = 2
 
 
 class DroneService:
@@ -47,10 +51,30 @@ class DroneService:
         # Validate drone type
         if drone_type not in [dt.value for dt in DroneType]:
             raise ValueError(f"Invalid drone type: {drone_type}")
-            
+
+        # Anti-exploit: enforce the per-player drone cap (ShipSpecification
+        # .max_drones for the current ship) so a player cannot spam unlimited
+        # drone rows. Lock the owning player row FOR UPDATE FIRST so the
+        # check-then-insert is atomic per player — two concurrent creates
+        # serialize on this lock and cannot both read an under-cap count and
+        # then both insert past the cap.
+        locked = await self.session.execute(
+            select(Player.id).where(Player.id == player_id).with_for_update()
+        )
+        if locked.scalar_one_or_none() is None:
+            raise ValueError("Player not found")
+
+        max_drones = await self._get_max_drones(player_id)
+        current = await self._count_live_drones(player_id)
+        if current + 1 > max_drones:
+            raise ValueError(
+                f"Drone capacity reached: your current ship holds at most "
+                f"{max_drones} drone(s) (you have {current})."
+            )
+
         # Set base stats based on drone type
         base_stats = self._get_base_stats(drone_type)
-        
+
         drone = Drone(
             player_id=player_id,
             team_id=team_id,
@@ -111,7 +135,98 @@ class DroneService:
         }
         
         return stats.get(drone_type, stats[DroneType.DEFENSE.value])
-        
+
+    async def _get_max_drones(self, player_id: UUID) -> int:
+        """Resolve the per-player drone cap from the player's current-ship spec.
+
+        The cap is ``ShipSpecification.max_drones`` for the player's
+        ``current_ship`` (the same source the armory loadout caps use —
+        armory.py /purchase reads ``spec.max_drones`` off the current ship)
+        PLUS the installed Drone Bay upgrade bonus (+2 per level, ship-systems.md
+        §2.7 / drones.md:62). The Drone Bay level lives in
+        ``Ship.upgrades[UpgradeType.DRONE_BAY.value]`` — the same legacy upgrades
+        JSONB the Genesis Containment cap consumer reads
+        (genesis_service._get_ship_genesis_capacity). Before this, the Drone Bay
+        upgrade was purchasable but read by no consumer (pay-for-nothing).
+
+        A player with no active ship has a cap of 0 (you need a ship to carry
+        drones — matches the armory "You need an active ship to carry armory
+        items" rule). A ship with no Drone Bay upgrade (``upgrades`` absent/empty)
+        yields the static ``spec.max_drones`` unchanged (bonus 0).
+        """
+        player = await self.session.get(Player, player_id)
+        if player is None or player.current_ship_id is None:
+            return 0
+
+        ship = await self.session.get(Ship, player.current_ship_id)
+        if ship is None:
+            return 0
+
+        result = await self.session.execute(
+            select(ShipSpecification.max_drones).where(
+                ShipSpecification.type == ship.type
+            )
+        )
+        max_drones = result.scalar_one_or_none()
+        base_max = int(max_drones) if max_drones is not None else 0
+
+        return base_max + self._drone_bay_bonus(ship)
+
+    @staticmethod
+    def _drone_bay_bonus(ship: Ship) -> int:
+        """The Drone Bay upgrade's +2/level capacity bonus for ``ship``.
+
+        Reads the installed Drone Bay level from ``Ship.upgrades`` (the
+        UpgradeType-keyed JSONB ship_upgrade_service writes on purchase) and
+        multiplies by ``DRONE_CAPACITY_BONUS_PER_BAY_LEVEL``. A ship with no
+        Drone Bay level (upgrades absent/empty/non-dict) contributes 0.
+        """
+        upgrades = getattr(ship, "upgrades", None)
+        if not isinstance(upgrades, dict):
+            return 0
+        try:
+            level = int(upgrades.get(UpgradeType.DRONE_BAY.value, 0))
+        except (TypeError, ValueError):
+            return 0
+        return max(0, level) * DRONE_CAPACITY_BONUS_PER_BAY_LEVEL
+
+    async def _count_live_drones(self, player_id: UUID) -> int:
+        """Count a player's non-destroyed drones (the ones that occupy a cap slot)."""
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(Drone)
+            .where(and_(
+                Drone.player_id == player_id,
+                Drone.status != DroneStatus.DESTROYED.value,
+            ))
+        )
+        return int(result.scalar() or 0)
+
+    async def _count_deployed_drones(
+        self, player_id: UUID, exclude_drone_id: Optional[UUID] = None
+    ) -> int:
+        """Count a player's drones currently in the field (deployed/combat).
+
+        ``exclude_drone_id`` omits a specific drone from the tally — used on the
+        deploy path so the drone being (re)deployed is not counted against the
+        cap as both the existing field drone and the new one.
+        """
+        conditions = [
+            Drone.player_id == player_id,
+            Drone.status.in_((
+                DroneStatus.DEPLOYED.value,
+                DroneStatus.COMBAT.value,
+            )),
+        ]
+        if exclude_drone_id is not None:
+            conditions.append(Drone.id != exclude_drone_id)
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(Drone)
+            .where(and_(*conditions))
+        )
+        return int(result.scalar() or 0)
+
     async def deploy_drone(
         self,
         drone_id: UUID,
@@ -135,18 +250,57 @@ class DroneService:
         drone = await self.session.get(Drone, drone_id)
         if not drone:
             raise ValueError("Drone not found")
-            
+
         if drone.status == DroneStatus.DESTROYED.value:
             raise ValueError("Cannot deploy destroyed drone")
-            
-        # Recall any active deployment
-        await self.recall_drone(drone_id)
-        
+
+        # Anti-exploit: enforce the per-player drone cap on deploy as well as on
+        # create — a player must not field more drones than their current ship's
+        # ShipSpecification.max_drones. Lock the owning player row FOR UPDATE
+        # FIRST so the count-then-deploy is atomic: concurrent deploys serialize
+        # on this lock and cannot both pass an under-cap field count and then
+        # both flip a drone to DEPLOYED past the cap. The drone being deployed
+        # is excluded from the field tally (it is about to occupy one slot, not
+        # two), so a no-op re-deploy of an already-fielded drone is unchanged.
+        locked = await self.session.execute(
+            select(Player.id).where(Player.id == drone.player_id).with_for_update()
+        )
+        if locked.scalar_one_or_none() is None:
+            raise ValueError("Player not found")
+
+        max_drones = await self._get_max_drones(drone.player_id)
+        deployed = await self._count_deployed_drones(
+            drone.player_id, exclude_drone_id=drone_id
+        )
+        if deployed + 1 > max_drones:
+            raise ValueError(
+                f"Drone deployment limit reached: your current ship can field "
+                f"at most {max_drones} drone(s) (you have {deployed} deployed)."
+            )
+
+        # Recall any active deployment for this drone IN-LINE (no intermediate
+        # commit). recall_drone() commits internally, which would release the
+        # FOR UPDATE player lock acquired above before this deploy's own final
+        # commit — opening a race window where a concurrent deploy could slip
+        # past the cap. Doing the recall in the same transaction keeps the lock
+        # held continuously from the cap check through the single commit below.
+        prior = await self.session.execute(
+            select(DroneDeployment)
+            .where(and_(
+                DroneDeployment.drone_id == drone_id,
+                DroneDeployment.is_active == True
+            ))
+        )
+        prior_deployment = prior.scalar_one_or_none()
+        if prior_deployment is not None:
+            prior_deployment.is_active = False
+            prior_deployment.recalled_at = datetime.utcnow()
+
         # Update drone status and location
         drone.status = DroneStatus.DEPLOYED.value
         drone.sector_id = sector_id
         drone.deployed_at = datetime.utcnow()
-        
+
         # Create deployment record
         deployment = DroneDeployment(
             drone_id=drone_id,
@@ -156,11 +310,11 @@ class DroneService:
             target_id=target_id,
             is_active=True
         )
-        
+
         self.session.add(deployment)
         await self.session.commit()
         await self.session.refresh(deployment)
-        
+
         return deployment
         
     async def recall_drone(self, drone_id: UUID) -> Optional[DroneDeployment]:
@@ -187,10 +341,18 @@ class DroneService:
             deployment.is_active = False
             deployment.recalled_at = datetime.utcnow()
             
-            # Update drone status
+            # Update drone status. Recall is instantaneous in this API (sector_id
+            # is cleared synchronously), and there is no scheduler/tick anywhere
+            # that completes a RETURNING drone's transit back to base. Leaving the
+            # drone in RETURNING was a terminal dead-end: nothing ever moved it
+            # back to IDLE, so a recalled drone was permanently stuck in a phantom
+            # state (sector_id None but status not idle), passing the
+            # "undeployed" re-deploy filter while never being cleanly available.
+            # The correct terminal state for a completed recall is IDLE ("created
+            # but not deployed to any sector" — see DroneStatus.IDLE).
             drone = await self.session.get(Drone, drone_id)
             if drone and drone.status != DroneStatus.DESTROYED.value:
-                drone.status = DroneStatus.RETURNING.value
+                drone.status = DroneStatus.IDLE.value
                 drone.sector_id = None
                 
             await self.session.commit()
@@ -208,140 +370,6 @@ class DroneService:
             .options(selectinload(Drone.player))
         )
         return result.scalars().all()
-        
-    async def initiate_combat(
-        self,
-        attacker_id: UUID,
-        defender_id: UUID,
-        sector_id: UUID
-    ) -> DroneCombat:
-        """
-        Initiate combat between two drones.
-        
-        Args:
-            attacker_id: ID of the attacking drone
-            defender_id: ID of the defending drone
-            sector_id: ID of the sector where combat occurs
-            
-        Returns:
-            The combat record
-        """
-        # Get both drones
-        attacker = await self.session.get(Drone, attacker_id)
-        defender = await self.session.get(Drone, defender_id)
-        
-        if not attacker or not defender:
-            raise ValueError("One or both drones not found")
-            
-        # Update drone statuses
-        attacker.status = DroneStatus.COMBAT.value
-        defender.status = DroneStatus.COMBAT.value
-        attacker.last_action = datetime.utcnow()
-        defender.last_action = datetime.utcnow()
-        
-        # Create combat record
-        combat = DroneCombat(
-            attacker_drone_id=attacker_id,
-            defender_drone_id=defender_id,
-            sector_id=sector_id
-        )
-        
-        self.session.add(combat)
-        
-        # Simulate combat
-        combat_log = await self._simulate_combat(attacker, defender, combat)
-        combat.combat_log = json.dumps(combat_log)
-        
-        await self.session.commit()
-        await self.session.refresh(combat)
-        
-        return combat
-        
-    async def _simulate_combat(
-        self,
-        attacker: Drone,
-        defender: Drone,
-        combat: DroneCombat
-    ) -> List[Dict[str, Any]]:
-        """
-        Simulate combat between two drones.
-        
-        Returns a log of combat events.
-        """
-        log = []
-        round_num = 0
-        max_rounds = 20
-        
-        while (
-            attacker.health > 0 and 
-            defender.health > 0 and 
-            round_num < max_rounds
-        ):
-            round_num += 1
-            
-            # Calculate damage based on stats and randomness
-            attacker_damage = max(1, attacker.attack_power - defender.defense_power // 2 + random.randint(-3, 3))
-            defender_damage = max(1, defender.attack_power - attacker.defense_power // 2 + random.randint(-3, 3))
-            
-            # Apply speed modifiers (faster drones sometimes attack twice)
-            if attacker.speed > defender.speed and random.random() < 0.3:
-                attacker_damage *= 1.5
-                
-            if defender.speed > attacker.speed and random.random() < 0.3:
-                defender_damage *= 1.5
-                
-            # Apply damage
-            defender_destroyed = defender.take_damage(int(attacker_damage))
-            attacker_destroyed = attacker.take_damage(int(defender_damage))
-            
-            # Update combat stats
-            combat.attacker_damage_dealt += int(attacker_damage)
-            combat.defender_damage_dealt += int(defender_damage)
-            
-            # Log the round
-            log.append({
-                "round": round_num,
-                "attacker_damage": int(attacker_damage),
-                "defender_damage": int(defender_damage),
-                "attacker_health": attacker.health,
-                "defender_health": defender.health
-            })
-            
-            # Check for destruction
-            if defender_destroyed or attacker_destroyed:
-                break
-                
-        # Determine winner
-        combat.rounds = round_num
-        combat.ended_at = datetime.utcnow()
-        
-        if attacker.health > 0 and defender.health == 0:
-            combat.winner_drone_id = attacker.id
-            attacker.kills += 1
-            attacker.status = DroneStatus.DEPLOYED.value
-            log.append({"result": "attacker_victory"})
-            
-        elif defender.health > 0 and attacker.health == 0:
-            combat.winner_drone_id = defender.id
-            defender.kills += 1
-            defender.status = DroneStatus.DEPLOYED.value
-            log.append({"result": "defender_victory"})
-            
-        else:
-            # Draw or timeout
-            if attacker.health > 0:
-                attacker.status = DroneStatus.DEPLOYED.value
-            if defender.health > 0:
-                defender.status = DroneStatus.DEPLOYED.value
-            log.append({"result": "draw"})
-            
-        # Update battle counts
-        attacker.battles_fought += 1
-        defender.battles_fought += 1
-        attacker.damage_dealt += combat.attacker_damage_dealt
-        defender.damage_dealt += combat.defender_damage_dealt
-        
-        return log
         
     async def repair_drone(self, drone_id: UUID, repair_amount: int) -> Drone:
         """
@@ -444,26 +472,4 @@ class DroneService:
             query = query.where(DroneDeployment.is_active == True)
             
         result = await self.session.execute(query.options(selectinload(DroneDeployment.drone)))
-        return result.scalars().all()
-        
-    async def get_combat_history(
-        self,
-        drone_id: Optional[UUID] = None,
-        sector_id: Optional[UUID] = None,
-        limit: int = 10
-    ) -> List[DroneCombat]:
-        """Get combat history for a drone or sector."""
-        query = select(DroneCombat)
-        
-        if drone_id:
-            query = query.where(or_(
-                DroneCombat.attacker_drone_id == drone_id,
-                DroneCombat.defender_drone_id == drone_id
-            ))
-        if sector_id:
-            query = query.where(DroneCombat.sector_id == sector_id)
-            
-        query = query.order_by(DroneCombat.started_at.desc()).limit(limit)
-        
-        result = await self.session.execute(query)
         return result.scalars().all()

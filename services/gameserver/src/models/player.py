@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func
+from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from src.models.combat_log import CombatLog
     from src.models.warp_tunnel import WarpTunnel
     from src.models.genesis_device import GenesisDevice
-    from src.models.resource import MarketTransaction
     from src.models.first_login import FirstLoginSession, PlayerFirstLoginState
     from src.models.region import Region, RegionalMembership, InterRegionalTravel
     from src.models.enhanced_ai_models import AIComprehensiveAssistant
@@ -30,6 +29,17 @@ class Player(Base):
     nickname = Column(String(50), nullable=True, default=None)  # Optional in-game name different from username
     credits = Column(Integer, nullable=False, default=10000)
     turns = Column(Integer, nullable=False, default=1000)
+    # Monotonic count of turns ever spent (refunds decrement). NOT the
+    # regenerating balance above — this is the cumulative clock ADR-0042
+    # police arrival watchers compare against. Mutate ONLY through
+    # turn_service.spend_turns/refund_turns.
+    lifetime_turns_spent = Column(Integer, nullable=False, default=0)
+    # Monotonic count of colonists this player has ever LANDED onto a planet
+    # (claim founding + disembark transfers). Counts the ACTUAL settled amount
+    # after free-cap clamping — what truly decanted into a workforce. Drives the
+    # `colonists_transported_lifetime` medal trigger (pioneer_office_pillar
+    # @10,000). Embarking colonists back onto a ship does NOT decrement it.
+    colonists_transported_lifetime = Column(Integer, nullable=False, default=0, server_default=text("0"))
     reputation = Column(JSONB, nullable=False, default={})  # Faction reputations
 
     # Personal Reputation System (good vs evil alignment)
@@ -58,12 +68,51 @@ class Player(Base):
     attack_drones = Column(Integer, nullable=False, default=0)
     defense_drones = Column(Integer, nullable=False, default=0)
     mines = Column(Integer, nullable=False, default=0)
+    # Quantum resource wallet (ADR-0009 venue split, ADR-0030 Quantum Jump).
+    # Shards are the raw harvested resource; crystals are the assembled form
+    # used for warp gate construction. Refined Quantum Charges live on the
+    # Warp Jumper itself (ships.quantum_charges), not here.
+    quantum_shards = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    quantum_crystals = Column(Integer, nullable=False, default=0, server_default=text("0"))
     genesis_devices = Column(Integer, nullable=False, default=0)
     insurance = Column(JSONB, nullable=True)
     last_game_login = Column(DateTime(timezone=True), nullable=True)  # Renamed from last_login to avoid confusion
     turn_reset_at = Column(DateTime(timezone=True), nullable=True)
+    return_boost_until = Column(DateTime(timezone=True), nullable=True)  # WO-RE1: welcome-back ×1.5 emergent-rep window
+    # ADR-0004: continuous turn regeneration anchor + stored cap.
+    last_turn_regeneration = Column(DateTime(timezone=True), nullable=True)
+    max_turns = Column(Integer, nullable=False, default=1000, server_default=text("1000"))
+    # Suspect / Wanted lifecycle (Fringe/Federation contraband + bounty law).
+    is_suspect = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    is_wanted = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    suspect_declared_at = Column(DateTime(timezone=True), nullable=True)
+    wanted_declared_at = Column(DateTime(timezone=True), nullable=True)
+    # Grey-flag PvP status (WO-BL, Max-ruled). A temporary "open season" mark
+    # earned by aggressing on a lawful target:
+    #   - attacking a GOOD-STANDING player → grey 1h (grey_kind="player_attack");
+    #     while grey, GOOD-STANDING players may attack this player penalty-free.
+    #   - attacking a STATION → grey 1 day (grey_kind="station_attack"); while
+    #     grey, ANY player may attack this player penalty-free.
+    # grey_until is the UTC expiry (NULL = not grey); a lesser later offense never
+    # shortens it (MAX of existing/new). Cleared early by paying a fine. NO-CANON
+    # numbers (durations / fines / good-standing threshold) — flagged for Max.
+    grey_until = Column(DateTime(timezone=True), nullable=True)
+    grey_kind = Column(String(20), nullable=True)  # "player_attack" | "station_attack"
+    # Journey victory (rank-1 completion of the campaign).
+    is_game_complete = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    rank_victory_at = Column(DateTime(timezone=True), nullable=True)
     settings = Column(JSONB, nullable=False, default={})
     first_login = Column(JSONB, nullable=False, default={"completed": False})
+    # CRT WO-K0-2: the research ledger. ONE additive NULLABLE JSONB column — the
+    # whole research kernel rides this single field (no per-system columns; the
+    # tree is read at point-of-use, never written onto buffed entities). NULL is
+    # the cold-start state and means rp:0 / unlocked:[t.root.0] — the lazy-seed
+    # contract lives in research_service (NOT a DB default), so the seed is
+    # deterministic and the WIPE+REFUND sweep can detect a never-swept player.
+    # Shape: {"rp": int, "insight": int, "doctrine": int, "unlocked": [node_id],
+    #         "swept_at": iso8601 | absent}. swept_at present == A.4 one-time
+    #         wipe+refund already applied (idempotency anchor).
+    research_ledger = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)  # When the player was created
     is_active = Column(Boolean, default=True, nullable=False)  # Player can be deactivated in-game
     
@@ -92,8 +141,18 @@ class Player(Base):
     combat_logs_as_attacker = relationship("CombatLog", foreign_keys="CombatLog.attacker_id", back_populates="attacker")
     combat_logs_as_defender = relationship("CombatLog", foreign_keys="CombatLog.defender_id", back_populates="defender")
     created_warp_tunnels = relationship("WarpTunnel", back_populates="created_by")
-    market_transactions = relationship("src.models.resource.MarketTransaction", back_populates="player")
-    enhanced_market_transactions = relationship("src.models.market_transaction.MarketTransaction", back_populates="player")
+    # ADR-0045: per-player warp knowledge (latent-warp discovery state).
+    warp_knowledge = relationship(
+        "PlayerWarpKnowledge", back_populates="player", cascade="all, delete-orphan"
+    )
+    # WO-TF added a 2nd FK to players (port_owner_id) on MarketTransaction, so this
+    # reverse relationship must declare foreign_keys to disambiguate the join (else
+    # AmbiguousForeignKeysError). It pairs with MarketTransaction.player (player_id).
+    enhanced_market_transactions = relationship(
+        "src.models.market_transaction.MarketTransaction",
+        back_populates="player",
+        foreign_keys="src.models.market_transaction.MarketTransaction.player_id",
+    )
     first_login_sessions = relationship("FirstLoginSession", back_populates="player", cascade="all, delete-orphan")
     first_login_state = relationship("PlayerFirstLoginState", back_populates="player", uselist=False, cascade="all, delete-orphan")
     

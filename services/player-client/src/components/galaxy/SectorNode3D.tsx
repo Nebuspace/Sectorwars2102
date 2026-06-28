@@ -246,24 +246,66 @@ export default function SectorNode3D({
     );
   };
 
-  // Connection indicators (special features)
+  // Special-formation anomaly markers (WO-SFM). Keyed on the discovery-aware
+  // `special_formations` field (NOT the legacy `special_features` string array,
+  // which the 3D map never populated). A DISCOVERED formation shows a steady
+  // amber glyph plus its NAME · TYPE label; an UNDISCOVERED one shows a dimmer,
+  // identity-less cyan glyph labelled only "ANOMALY" — name/type are withheld
+  // by the server until the sector is visited (mirrors the WO-CA HUD chip rule),
+  // so the map never leaks a formation's identity before discovery.
   const renderFeatureIndicators = () => {
     if (!lodLevel.showEffects || lodLevel.detail === 'low') return null;
 
-    const indicators = [];
+    const formations = sector.special_formations;
+    if (!formations || formations.length === 0) return null;
 
-    // Show special features if any
-    if (sector.special_features && sector.special_features.length > 0) {
-      indicators.push(
-        <group key="features" position={[sectorConfig.scale + 0.5, 0, 0]}>
-          <Box args={[0.2, 0.2, 0.2]}>
-            <meshBasicMaterial color="#ffaa00" />
-          </Box>
-        </group>
-      );
-    }
+    const anyDiscovered = formations.some(f => f.is_discovered);
+    const discovered = formations.filter(f => f.is_discovered);
 
-    return indicators;
+    // Build a concise label: discovered formations by NAME · TYPE, else a
+    // generic count of unknown anomalies (no identity).
+    const label = anyDiscovered
+      ? discovered
+          .map(f =>
+            `${(f.name || 'UNNAMED').toUpperCase()}${f.type ? ` · ${f.type.replace(/_/g, ' ').toUpperCase()}` : ''}`
+          )
+          .join('\n')
+      : formations.length > 1
+        ? `${formations.length} ANOMALIES`
+        : 'ANOMALY';
+
+    // Discovered markers glow steady amber; undiscovered ones use a dimmer cyan
+    // so an unidentified anomaly reads as "there is *something* here" without
+    // revealing what.
+    const glyphColor = anyDiscovered ? '#ffaa00' : '#33ccdd';
+
+    return [
+      <group key="formations" position={[sectorConfig.scale + 0.6, 0, 0]}>
+        <mesh>
+          <octahedronGeometry args={[0.28, 0]} />
+          <meshBasicMaterial
+            color={glyphColor}
+            transparent
+            opacity={anyDiscovered ? 0.95 : 0.6}
+          />
+        </mesh>
+        {lodLevel.showLabels && (
+          <Text
+            position={[0, 0.55, 0]}
+            fontSize={0.28}
+            color={glyphColor}
+            anchorX="center"
+            anchorY="bottom"
+            maxWidth={6}
+            textAlign="center"
+            outlineWidth={0.02}
+            outlineColor="#000000"
+          >
+            {label}
+          </Text>
+        )}
+      </group>
+    ];
   };
 
   return (

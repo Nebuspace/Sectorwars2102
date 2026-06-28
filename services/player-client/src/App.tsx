@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import './App.css'
@@ -7,7 +7,9 @@ import './App.css'
 import { AuthProvider } from './contexts/AuthContext'
 import { GameProvider } from './contexts/GameContext'
 import { FirstLoginProvider } from './contexts/FirstLoginContext'
+import { AutopilotProvider } from './contexts/AutopilotContext'
 import { WebSocketProvider } from './contexts/WebSocketContext'
+import { SettingsProvider } from './contexts/SettingsContext'
 import { ThemeProvider } from './themes/ThemeProvider'
 
 // Import components
@@ -17,6 +19,8 @@ import UserProfile from './components/auth/UserProfile'
 import OAuthCallback from './components/auth/OAuthCallback'
 import GameDashboard from './components/pages/GameDashboard'
 import GalaxyMap from './components/pages/GalaxyMap'
+import RankingPage from './components/pages/RankingPage'
+import SettingsPage from './components/pages/SettingsPage'
 import DebugPage from './components/pages/DebugPage'
 import TestAuthPage from './components/pages/TestAuthPage'
 import { FirstLoginContainer } from './components/first-login'
@@ -27,6 +31,12 @@ import { CombatInterface } from './components/combat'
 import { PlanetManager } from './components/planetary'
 import { ShipSelector } from './components/ships'
 import { TradingInterface } from './components/trading'
+import PlayerInfo from './components/player/PlayerInfo'
+
+// Dev-only lab route — dead-code-eliminated from prod builds by Vite
+// Dev-only: the dynamic import is gated on import.meta.env.DEV so Vite
+// dead-code-eliminates the VistaLab chunk from prod builds entirely.
+const VistaLab = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaLab')) : null;
 
 interface ApiResponse {
   message?: string;
@@ -53,14 +63,16 @@ function MainApp() {
     { id: 5, type: 'join', message: '18-rank military progression system' },
   ];
   
-  // Simple API URL - use env var or default to localhost:8080
+  // API URL: explicit env override, else same-origin (the Vite proxy and
+  // nginx gateway both route /api to the gameserver in every tier, so the
+  // page origin always works — localhost:8080 only worked on the dev box).
   const getApiUrl = () => {
-    // In GitHub Codespaces, use the Vite proxy (current origin) instead of localhost
+    // In GitHub Codespaces, always use the Vite proxy (current origin)
     const isCodespaces = window.location.hostname.includes('.app.github.dev');
     if (isCodespaces) {
-      return window.location.origin; // Use Vite proxy via current origin
+      return window.location.origin;
     }
-    return import.meta.env.VITE_API_URL || 'http://localhost:8080';
+    return import.meta.env.VITE_API_URL || window.location.origin;
   };
 
   useEffect(() => {
@@ -602,11 +614,17 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
 function App() {
   return (
+    <SettingsProvider>
     <ThemeProvider defaultTheme="cockpit">
       <Router>
         <AuthProvider>
           <WebSocketProvider>
             <GameProvider>
+              {/* AutopilotProvider must sit ABOVE the route tree: GameDashboard
+                  calls useAutopilot in its own body and renders GameLayout as
+                  its wrapper, so a provider inside GameLayout can never cover
+                  it. Inside GameProvider (consumes moveToSector). */}
+              <AutopilotProvider>
               <FirstLoginProvider>
                 <Routes>
               <Route path="/oauth-callback" element={<OAuthCallback />} />
@@ -642,20 +660,40 @@ function App() {
                   <ShipSelector />
                 </ProtectedRoute>
               } />
+              <Route path="/game/player" element={
+                <ProtectedRoute>
+                  <PlayerInfo />
+                </ProtectedRoute>
+              } />
               <Route path="/game/trading" element={
                 <ProtectedRoute>
                   <TradingInterface />
                 </ProtectedRoute>
               } />
+              <Route path="/game/ranking" element={
+                <ProtectedRoute>
+                  <RankingPage />
+                </ProtectedRoute>
+              } />
+              <Route path="/game/settings" element={
+                <ProtectedRoute>
+                  <SettingsPage />
+                </ProtectedRoute>
+              } />
+              {import.meta.env.DEV && VistaLab && (
+                <Route path="/lab/vista" element={<Suspense fallback={<div>Loading Vista Lab…</div>}><VistaLab /></Suspense>} />
+              )}
               <Route path="*" element={<MainApp />} />
                 </Routes>
                 <FirstLoginContainer />
               </FirstLoginProvider>
+              </AutopilotProvider>
             </GameProvider>
           </WebSocketProvider>
         </AuthProvider>
       </Router>
     </ThemeProvider>
+    </SettingsProvider>
   );
 }
 

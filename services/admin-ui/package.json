@@ -34,12 +34,15 @@
   "scripts": {
     "dev": "vite",
     "dev:watch": "node live-reload.js",
-    "build": "vite build",
+    "build": "tsc --noEmit && vite build",
+    "build:novcheck": "vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext ts,tsx",
     "preview": "vite preview",
     "test:e2e": "node ./scripts/run-tests.js",
     "test:e2e:ui": "playwright test -c playwright.config.ts --ui",
-    "test:e2e:docker": "node ./scripts/run-docker-tests.js"
+    "test:e2e:docker": "node ./scripts/run-docker-tests.js",
+    "i18n:extract": "node ./scripts/extract-strings.js",
+    "i18n:validate": "node ./scripts/validate-translations.js"
   }
 }

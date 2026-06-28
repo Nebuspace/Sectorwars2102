@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
-from src.auth.dependencies import get_current_player
+from src.auth.dependencies import get_current_player, get_current_admin_user
 from src.models.player import Player
+from src.models.user import User
 from src.models.first_login import ShipChoice
 from src.services.first_login_service import FirstLoginService
 from src.services.ai_dialogue_service import get_ai_dialogue_service, AIDialogueService
@@ -341,18 +342,40 @@ async def answer_dialogue(
         first_line = str(value).splitlines()[0] if value else ""
         return first_line[:limit] if first_line else None
 
+    def _safe_score(value: Any) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return 0.0
+
     raw_analysis = result.get("analysis") or {}
     safe_analysis = {
         "summary": _safe_str(raw_analysis.get("summary")),
         "ai_used": bool(raw_analysis.get("ai_used")),
         "intent": _safe_str(raw_analysis.get("intent"), limit=128),
         "sentiment": _safe_str(raw_analysis.get("sentiment"), limit=64),
+        # Numeric scores drive the TrustMeter; without them the trust UI
+        # never moves off its initial value.
+        "persuasiveness": _safe_score(raw_analysis.get("persuasiveness")),
+        "confidence": _safe_score(
+            raw_analysis.get("confidence", raw_analysis.get("confidence_level"))
+        ),
+        "consistency": _safe_score(raw_analysis.get("consistency")),
+        "overall_believability": _safe_score(raw_analysis.get("overall_believability")),
     }
     raw_outcome = result.get("outcome") or {}
+    # Field set must match FirstLoginContext.DialogueAnalysis['outcome'] —
+    # the UI renders ACCESS GRANTED/DENIED, the awarded ship, and skill from
+    # these; omitting them makes every outcome render as a denied escape pod.
     safe_outcome = {
-        "ship_type": _safe_str(raw_outcome.get("ship_type"), limit=64),
+        "outcome": _safe_str(raw_outcome.get("outcome"), limit=32),
+        "awarded_ship": _safe_str(raw_outcome.get("awarded_ship"), limit=64),
         "starting_credits": int(raw_outcome.get("starting_credits") or 0),
-        "narrative": _safe_str(raw_outcome.get("narrative"), limit=2048),
+        "negotiation_skill": _safe_str(raw_outcome.get("negotiation_skill"), limit=32),
+        "final_persuasion_score": _safe_score(raw_outcome.get("final_persuasion_score")),
+        "negotiation_bonus": bool(raw_outcome.get("negotiation_bonus")),
+        "notoriety_penalty": bool(raw_outcome.get("notoriety_penalty")),
+        "guard_response": _safe_str(raw_outcome.get("guard_response"), limit=2048),
     } if raw_outcome else None
 
     return {
@@ -397,13 +420,21 @@ async def complete_first_login(
 
 @router.get("/debug", include_in_schema=False)
 async def debug_first_login_state(
-    player: Player = Depends(get_current_player),
+    player_id: UUID,
+    admin: User = Depends(get_current_admin_user),
     db: Session = Depends(get_db),
     ai_service: AIDialogueService = Depends(get_ai_dialogue_service)
 ):
-    """Debug endpoint to check player's first login state"""
+    """Admin-only debug endpoint to inspect a player's first login state"""
+    player = db.query(Player).filter(Player.id == player_id).first()
+    if not player:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Player not found"
+        )
+
     service = FirstLoginService(db, ai_service)
-    
+
     # Get all the player's state
     state = service.get_player_first_login_state(player.id)
     

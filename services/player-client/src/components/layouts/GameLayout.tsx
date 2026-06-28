@@ -1,10 +1,17 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
+import { useWebSocket } from '../../contexts/WebSocketContext';
+import { useAutopilot } from '../../contexts/AutopilotContext';
 // import { useTheme } from '../../themes/ThemeProvider'; // Available for future use
-import UserProfile from '../auth/UserProfile';
-import LogoutButton from '../auth/LogoutButton';
+import PlayerVitalsHud from './PlayerVitalsHud';
+import { MFDProvider, useMFD } from '../mfd/MFDContext';
+import MFDScreen from '../mfd/MFDScreen';
+import { SIDEBAR_A, SIDEBAR_B } from '../mfd/sidebarScreens';
+import { ariaFeed } from '../mfd/ariaFeedStore';
+import RouteRail from '../mfd/RouteRail';
+import MedalToast from '../ranking/MedalToast';
+import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -13,12 +20,119 @@ interface GameLayoutProps {
   children: React.ReactNode;
 }
 
+/* MFD alert wiring — lives inside the MFDProvider subtree so it can badge
+   softkeys; renders nothing. Each effect compares against the previous
+   value held in a ref, so alerts fire on TRANSITIONS only (growth /
+   became-paused / unread increase) and never on mount — a reload doesn't
+   badge stale state. raiseAlert itself skips pages currently visible on
+   either screen, so no visibility check is needed here. */
+const MFDAlertWiring: React.FC = () => {
+  const { raiseAlert } = useMFD();
+  const { ariaMessages } = useWebSocket();
+  const { status, course, pauseReason } = useAutopilot();
+  const { unreadMessageCount } = useGame();
+
+  const prevAriaCount = React.useRef(ariaMessages.length);
+  React.useEffect(() => {
+    if (ariaMessages.length > prevAriaCount.current) {
+      raiseAlert('aria-event');
+    }
+    prevAriaCount.current = ariaMessages.length;
+  }, [ariaMessages.length, raiseAlert]);
+
+  // Autopilot transitions: badge AND narrate into the ARIA feed store.
+  // Narration lives here (always mounted) rather than in AriaTerminalPage,
+  // which unmounts whenever another MFD-B page is shown — transitions must
+  // never be lost to softkey state (ADR-0072 §B3).
+  const prevStatus = React.useRef(status);
+  React.useEffect(() => {
+    const prev = prevStatus.current;
+    prevStatus.current = status;
+    if (status === prev) return;
+
+    if (status === 'engaged') {
+      const totalHops = course?.hops?.length ?? 0;
+      ariaFeed.appendNav(`Autopilot engaged — ${totalHops} hop${totalHops !== 1 ? 's' : ''}.`);
+    }
+    if (status === 'paused') {
+      raiseAlert('autopilot-pause');
+      ariaFeed.appendNav(`Autopilot paused — ${pauseReason ?? 'unknown reason'}.`);
+    }
+    if (status === 'arrived') {
+      const targetId = course?.target_sector_id ?? '?';
+      const totalTurns = course?.total_turns ?? '?';
+      ariaFeed.appendNav(`Arrival: Sector ${targetId}. ${totalTurns} turns spent. Logged.`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, raiseAlert]);
+
+  const prevUnread = React.useRef(unreadMessageCount);
+  React.useEffect(() => {
+    if (unreadMessageCount > prevUnread.current) {
+      raiseAlert('new-message');
+    }
+    prevUnread.current = unreadMessageCount;
+  }, [unreadMessageCount, raiseAlert]);
+
+  return null;
+};
+
 const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const { user } = useAuth();
-  const { playerState, currentShip, currentSector, isLoading, refreshPlayerState } = useGame();
+  const { playerState, isLoading, isRefreshing, refreshPlayerState } = useGame();
   // const { currentTheme } = useTheme(); // Available for future use
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  
+
+  // ── Scroll contract (Law 2) ──────────────────────────────────────────
+  // On /game routes the DOCUMENT never scrolls: the shell locks html/body
+  // overflow while mounted and restores the previous values on unmount
+  // (login/landing pages keep their normal scroll behavior). Only monitor
+  // interiors (.screen-hud-content) scroll.
+  React.useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtmlOverflow = html.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    html.style.overflow = 'hidden';
+    body.style.overflow = 'hidden';
+    return () => {
+      html.style.overflow = prevHtmlOverflow;
+      body.style.overflow = prevBodyOverflow;
+    };
+  }, []);
+
+  // ── Cockpit stability ────────────────────────────────────────────────
+  // GameContext semantics after the isLoading split: `isLoading` is true
+  // ONLY during initial hydration (playerState still null); background
+  // refreshes flip the lightweight `isRefreshing` flag instead and never
+  // unmount anything. The viewport children render unconditionally:
+  //   • full loading overlay ONLY during the true initial load (we have
+  //     never seen player state), rendered absolutely OVER the viewport;
+  //   • background refreshes get at most a subtle SYNC indicator (keyed on
+  //     isRefreshing) that appears only past ~300ms (no flicker).
+  // State (not just a ref) so the SYNC-indicator effect below re-runs the
+  // moment the latch flips. A pure ref flip during render does not retrigger
+  // effects, leaving a dead window where a refresh that begins right as the
+  // latch flips mid-load never starts the SYNC timer.
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  if (playerState && !hasLoadedOnce) {
+    // Idempotent render-time latch: flips false→true exactly once,
+    // safe under StrictMode double-render (setState during render with an
+    // already-true value is a no-op).
+    setHasLoadedOnce(true);
+  }
+  const isInitialLoad = isLoading && !hasLoadedOnce;
+
+  const [showSyncIndicator, setShowSyncIndicator] = useState(false);
+  React.useEffect(() => {
+    if (isRefreshing && hasLoadedOnce) {
+      const timer = window.setTimeout(() => setShowSyncIndicator(true), 300);
+      return () => window.clearTimeout(timer);
+    }
+    setShowSyncIndicator(false);
+    return undefined;
+  }, [isRefreshing, hasLoadedOnce]);
+
   // Try to refresh player state on mount if we don't have it
   const hasAttemptedRefresh = React.useRef(false);
   React.useEffect(() => {
@@ -36,180 +150,143 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
   const toggleSidebar = () => {
     setSidebarOpen(!sidebarOpen);
   };
-  
+
+  // ── Auto-collapse the sidebar on landing (WO 129-B) ──────────────────
+  // Landing hands the full band to the planetary console, so the nav rail
+  // is dead weight; auto-collapse it on the landing TRANSITION and restore
+  // it on lift-off. Mirrors the windshield landed-min auto-behavior. We key
+  // off the is_landed edge (tracked via a ref) — not every render — so the
+  // manual ◀/▶ toggle is never fought while the player stays landed.
+  const prevIsLandedRef = React.useRef<boolean>(!!playerState?.is_landed);
+  React.useEffect(() => {
+    const isLanded = !!playerState?.is_landed;
+    if (isLanded !== prevIsLandedRef.current) {
+      // close on the false→true (land) edge, open on the true→false (lift-off) edge
+      setSidebarOpen(!isLanded);
+      prevIsLandedRef.current = isLanded;
+    }
+  }, [playerState?.is_landed]);
+
+  // ── Windshield minimize / expand (id=151) ────────────────────────────
+  // Docked/landed hand the lower area to the station/colony console, so AUTO-
+  // minimize the windshield band on the dock/land EDGE — shrinking --band-h at
+  // the container so the helm + sidebar + deck rise and the console gets the
+  // reclaimed vertical space (SCROLL LAW) — and restore it on the undock/
+  // lift-off edge. A manual toggle (button in the band) lets the player expand
+  // the scene back at will. Keyed off the edge (ref), not every render, so the
+  // manual toggle isn't fought while the player stays grounded. (Restores the
+  // retired green-bar minimize, recomposed for the inverted-L.)
+  const grounded = !!(playerState?.is_docked || playerState?.is_landed);
+  const [windshieldMin, setWindshieldMin] = useState(false);
+  const prevGroundedRef = React.useRef<boolean>(grounded);
+  React.useEffect(() => {
+    const g = !!(playerState?.is_docked || playerState?.is_landed);
+    if (g !== prevGroundedRef.current) {
+      setWindshieldMin(g); // minimize on dock/land, restore on undock/lift-off
+      prevGroundedRef.current = g;
+    }
+  }, [playerState?.is_docked, playerState?.is_landed]);
+  const toggleWindshield = () => setWindshieldMin((m) => !m);
+
   return (
     <div className="game-layout-wrapper">
+      {/* Cockpit-wide realtime medal toast: consumes the medal_awarded WS event
+          so a freshly-earned decoration pops on any /game route. */}
+      <MedalToast />
+      {/* Priority-driven hail surfaces (WO-B6): the in-game notification toast
+          stack (normal/high messages + other WS toasts) and the urgent
+          action-interrupting modal — per messaging.md "Priority levels". */}
+      <PriorityHailConsumer />
       <div className="game-layout">
-        <header className="game-header hud-panel">
-          <div className="game-header-left">
-            <button className="cockpit-btn sidebar-toggle" onClick={toggleSidebar}>
+        {/* WO-INVERTED-L: .console-expand → docked/landed make the opaque
+            console fill the lower area (right viewport column collapses);
+            .console-collapsed → the edge-toggle hides the console for an
+            unobstructed scene (rail-peek retired; logout lives in the HUD). */}
+        <div
+          className={`game-container${
+            playerState?.is_docked || playerState?.is_landed ? ' console-expand' : ''
+          }${sidebarOpen ? '' : ' console-collapsed'}${
+            windshieldMin && grounded ? ' windshield-min' : ''
+          }${
+            playerState?.is_landed && !windshieldMin ? ' landed-expanded' : ''
+          }`}
+        >
+          {/* Left console (NEON15): route rail on top, then two MFD
+              screens splitting the remaining height. MFDProvider hosts
+              page selection/alert state plus the alert wiring effects. */}
+          <aside className={`game-sidebar hud-panel ${sidebarOpen ? 'open' : 'closed'}`}>
+            <MFDProvider>
+              <RouteRail />
+              <MFDScreen config={SIDEBAR_A} />
+              <MFDScreen config={SIDEBAR_B} />
+              <MFDAlertWiring />
+            </MFDProvider>
+          </aside>
+
+          <main className="game-content" aria-busy={isInitialLoad}>
+            {/* Sidebar toggle, relocated from the deleted top header to the
+                left edge of the viewport (the rail still owns the commander
+                name). Keeps the original handler + ◀/▶ icon. */}
+            <button
+              className="cockpit-btn sidebar-toggle sidebar-edge-toggle"
+              onClick={toggleSidebar}
+              aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+              title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+            >
               <span className="toggle-icon">{sidebarOpen ? '◀' : '▶'}</span>
             </button>
-            <h1 className="game-title">
-              <span className="title-main">SECTOR WARS</span>
-              <span className="title-year">2102</span>
-            </h1>
-          </div>
-          <div className="game-header-center">
-            <div className="status-display">
-              <div className="status-indicator online"></div>
-              <span>SYSTEMS ONLINE</span>
-            </div>
-          </div>
-          <div className="game-header-right">
-            <UserProfile />
-          </div>
-        </header>
-      
-        <div className="game-container">
-          <aside className={`game-sidebar hud-panel ${sidebarOpen ? 'open' : 'closed'}`}>
-            <div className="cockpit-card player-info">
-              <div className="cockpit-card-header">
-                <h3 className="cockpit-card-title">COMMANDER</h3>
-                {!playerState && !isLoading && (
-                  <button 
-                    onClick={refreshPlayerState}
-                    className="refresh-btn"
-                    style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem', marginLeft: 'auto' }}
-                  >
-                    Refresh
-                  </button>
-                )}
-              </div>
-              <div className="commander-name">{user?.username}</div>
-              <div className="player-stats">
-                <div className="stat-item">
-                  <span className="stat-label">CREDITS</span>
-                  <span className="data-readout credits">{playerState?.credits?.toLocaleString() || '0'}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">TURNS</span>
-                  <span className="data-readout turns">{playerState?.turns?.toLocaleString() || '0'}</span>
-                </div>
-                <div className="stat-item">
-                  <span className="stat-label">DRONES</span>
-                  <span className="data-readout">{playerState?.defense_drones || '0'}</span>
-                </div>
-              </div>
-            </div>
-          
-            <div className="cockpit-card ship-info">
-              <div className="cockpit-card-header">
-                <h3 className="cockpit-card-title">VESSEL STATUS</h3>
-              </div>
-              {currentShip ? (
-                <div className="current-ship">
-                  <div className="ship-name">{currentShip.name || 'UNNAMED VESSEL'}</div>
-                  <div className="ship-type">{currentShip.type || 'UNKNOWN CLASS'}</div>
-                  <div className="ship-cargo">
-                    <h4 className="cargo-header">CARGO BAY</h4>
-                    {currentShip.cargo && Object.keys(currentShip.cargo).length > 0 ? (
-                      <ul className="cargo-list">
-                        {Object.entries(currentShip.cargo).map(([resource, amount]) => (
-                          <li key={resource} className="cargo-item">
-                            <span className="resource-name">{resource}</span>
-                            <span className="data-readout">
-                              {typeof amount === 'object' ? JSON.stringify(amount) : amount}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="empty-cargo">CARGO BAY EMPTY</p>
-                    )}
-                  </div>
-
-                  {/* Genesis Device Display - Special Items */}
-                  {(currentShip.max_genesis_devices ?? 0) > 0 && (
-                    <div className="ship-genesis">
-                      <h4 className="genesis-header">
-                        <span className="genesis-icon">🌍</span>
-                        GENESIS BAY
-                      </h4>
-                      <div className="genesis-status">
-                        <div className="genesis-slots">
-                          {Array.from({ length: currentShip.max_genesis_devices || 0 }, (_, i) => (
-                            <div
-                              key={i}
-                              className={`genesis-slot ${i < (currentShip.genesis_devices || 0) ? 'loaded' : 'empty'}`}
-                              title={i < (currentShip.genesis_devices || 0) ? 'Genesis Device Loaded' : 'Empty Slot'}
-                            >
-                              {i < (currentShip.genesis_devices || 0) ? '🌍' : '○'}
-                            </div>
-                          ))}
-                        </div>
-                        <div className="genesis-count">
-                          <span className={`data-readout ${(currentShip.genesis_devices || 0) > 0 ? 'genesis-active' : ''}`}>
-                            {currentShip.genesis_devices || 0} / {currentShip.max_genesis_devices || 0}
-                          </span>
-                        </div>
-                      </div>
-                      {(currentShip.genesis_devices || 0) > 0 && (
-                        <div className="genesis-ready-indicator">
-                          <span className="pulse-dot"></span>
-                          TERRAFORM READY
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="no-ship">NO ACTIVE VESSEL</div>
+            {/* Children render UNCONDITIONALLY — never unmounted by a
+                background refresh (see cockpit-stability note above).
+                During the initial-load overlay the viewport is `inert`
+                so its controls can't be tab-focused underneath. */}
+            <div
+              className="main-viewport"
+              // `inert` isn't in the installed @types/react (18.x) surface yet,
+              // but the DOM supports it and React passes unknown lowercase
+              // attrs through. Spread it so hidden controls under the
+              // initial-load overlay can't be tab-focused.
+              {...(isInitialLoad ? { inert: '' } : {})}
+            >
+              <PlayerVitalsHud />
+              {/* Windshield minimize/expand (id=151 + id=151b) — only while
+                  docked/landed. Both states show a CENTERED, labeled button.
+                  MINIMIZED: "Expand Viewport" near top of the thin 60px band.
+                  EXPANDED: "Minimize Viewport" centered-bottom of the scene
+                  band (uses --band-h via .windshield-minimize). */}
+              {grounded && windshieldMin && (
+                <button
+                  type="button"
+                  className="windshield-expand"
+                  onClick={toggleWindshield}
+                  aria-label="Expand viewport"
+                  title="Expand the viewport"
+                >
+                  ⤢ Expand Viewport
+                </button>
               )}
-            </div>
-          
-            <div className="cockpit-card location-info">
-              <div className="cockpit-card-header">
-                <h3 className="cockpit-card-title">NAV COORDS</h3>
-              </div>
-              {currentSector ? (
-                <div className="current-sector">
-                  <div className="sector-name">SECTOR {playerState?.current_sector_id || currentSector.id || 'UNKNOWN'}</div>
-                  <div className="sector-designation">{currentSector.name || 'UNCHARTED'}</div>
-                  <div className="sector-type">{currentSector.type?.toUpperCase() || 'UNKNOWN'}</div>
-                  {(currentSector.hazard_level || 0) > 0 && (
-                    <div className="sector-hazard">
-                      <span className="hazard-label">THREAT LEVEL:</span>
-                      <span className="data-readout hazard">{currentSector.hazard_level || 0}</span>
-                    </div>
-                  )}
-                </div>
-              ) : playerState?.current_sector_id ? (
-                <div className="current-sector">
-                  <div className="sector-name">SECTOR {playerState.current_sector_id}</div>
-                  <div className="unknown-sector">LOADING SECTOR DATA...</div>
-                </div>
-              ) : (
-                <div className="unknown-sector">COORDINATES UNKNOWN</div>
+              {grounded && !windshieldMin && (
+                <button
+                  type="button"
+                  className="windshield-minimize"
+                  onClick={toggleWindshield}
+                  aria-label="Minimize viewport"
+                  title="Minimize viewport — give the console more room"
+                >
+                  ▾ MINIMIZE VIEWPORT
+                </button>
               )}
+              {children}
             </div>
-          
-            <nav className="game-nav">
-              <div className="nav-header">SHIP SYSTEMS</div>
-              <ul className="nav-list">
-                <li><Link to="/game" className="nav-link cockpit-btn">🚀 COMMAND</Link></li>
-                <li><Link to="/game/map" className="nav-link cockpit-btn">🗺️ NAV CHART</Link></li>
-                <li><Link to="/game/ships" className="nav-link cockpit-btn">🛸 HANGAR</Link></li>
-                <li><Link to="/game/trading" className="nav-link cockpit-btn">💹 TRADE</Link></li>
-                <li><Link to="/game/planets" className="nav-link cockpit-btn">🪐 COLONIES</Link></li>
-                <li><Link to="/game/combat" className="nav-link cockpit-btn">⚔️ WEAPONS</Link></li>
-                <li><Link to="/game/team" className="nav-link cockpit-btn">👥 CREW</Link></li>
-              </ul>
-              <div className="nav-footer">
-                <LogoutButton className="nav-link cockpit-btn logout-btn" />
-              </div>
-            </nav>
-          </aside>
-        
-          <main className="game-content">
-            {isLoading ? (
-              <div className="loading-overlay">
+            {isInitialLoad && (
+              <div className="viewport-loading-overlay">
                 <div className="loading-spinner"></div>
                 <p className="loading-text animate-typing">INITIALIZING SYSTEMS...</p>
               </div>
-            ) : (
-              <div className="main-viewport">
-                {children}
+            )}
+            {showSyncIndicator && !isInitialLoad && (
+              <div className="sync-indicator" role="status" aria-live="polite" aria-label="Synchronizing">
+                <span className="sync-indicator-dot"></span>
+                <span className="sync-indicator-label">SYNC</span>
               </div>
             )}
           </main>
