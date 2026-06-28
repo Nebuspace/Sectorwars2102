@@ -192,6 +192,23 @@ class ShipService:
         except Exception as e:
             logger.error("Tow detach-on-destruction failed for ship %s: %s", ship.id, e)
 
+        # Pioneer colonist reabsorb: cryosleep pods are lost with the hull
+        # (canon: pioneer_service.py docstring). Zeroes `loaded` on the
+        # player's open MigrationContracts and VOIDs any that have never
+        # delivered. Best-effort — a ledger hiccup must never block
+        # destruction. Wrapped in begin_nested() (SAVEPOINT) so that a
+        # reabsorb DB error does not poison the outer transaction — mirrors
+        # the _spawn_cargo_wreck pattern in combat_service.py.
+        try:
+            from src.services.pioneer_service import reabsorb_on_ship_loss
+            with self.db.begin_nested():
+                reabsorb_on_ship_loss(self.db, player.id)
+        except Exception as e:
+            logger.error(
+                "Pioneer reabsorb on ship loss failed for player %s (ship %s): %s",
+                player.id, ship.id, e,
+            )
+
         is_planned_dismantle = cause == "warp_gate_anchor"
         # A voluntary genesis sacrifice (advanced tier) behaves like the planned
         # dismantle for property handling: ALL non-bound cargo transfers to the
