@@ -682,7 +682,17 @@ async def delete_ship(
         # If this is the player's current ship, clear it
         if owner and owner.current_ship_id == ship.id:
             owner.current_ship_id = None
-        
+
+        # Reabsorb pioneer colonists before hull is removed.  Mirrors the
+        # pattern in ship_service.destroy_ship — SAVEPOINT-isolated so that a
+        # ledger hiccup cannot block the admin delete.
+        try:
+            from src.services.pioneer_service import reabsorb_on_ship_loss
+            with db.begin_nested():
+                reabsorb_on_ship_loss(db, ship.owner_id)
+        except Exception:
+            logger.exception("pioneer reabsorb on admin ship-delete failed")
+
         db.delete(ship)
         db.commit()
         

@@ -5,9 +5,12 @@ Provides administrative controls for individual ship operations,
 emergency interventions, and fleet health monitoring.
 """
 
+import logging
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -576,10 +579,20 @@ async def delete_ship(
         details=ship_info
     )
     
+    # Reabsorb pioneer colonists before hull is removed.  Mirrors the
+    # pattern in ship_service.destroy_ship — SAVEPOINT-isolated so that a
+    # ledger hiccup cannot block the admin delete.
+    try:
+        from src.services.pioneer_service import reabsorb_on_ship_loss
+        with db.begin_nested():
+            reabsorb_on_ship_loss(db, ship.owner_id)
+    except Exception:
+        logger.exception("pioneer reabsorb on admin ship-delete failed")
+
     # Delete ship
     db.delete(ship)
     db.commit()
-    
+
     return DeleteShipResponse(success=True)
 
 
