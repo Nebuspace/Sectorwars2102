@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import './App.css'
@@ -32,6 +32,11 @@ import { PlanetManager } from './components/planetary'
 import { ShipSelector } from './components/ships'
 import { TradingInterface } from './components/trading'
 import PlayerInfo from './components/player/PlayerInfo'
+
+// Dev-only lab route — dead-code-eliminated from prod builds by Vite
+// Dev-only: the dynamic import is gated on import.meta.env.DEV so Vite
+// dead-code-eliminates the VistaLab chunk from prod builds entirely.
+const VistaLab = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaLab')) : null;
 
 interface ApiResponse {
   message?: string;
@@ -675,6 +680,9 @@ function App() {
                   <SettingsPage />
                 </ProtectedRoute>
               } />
+              {import.meta.env.DEV && VistaLab && (
+                <Route path="/lab/vista" element={<Suspense fallback={<div>Loading Vista Lab…</div>}><VistaLab /></Suspense>} />
+              )}
               <Route path="*" element={<MainApp />} />
                 </Routes>
                 <FirstLoginContainer />
