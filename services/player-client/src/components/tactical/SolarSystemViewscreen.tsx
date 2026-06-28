@@ -1971,12 +1971,25 @@ function dayCycleAt(t: number, phaseOffset: number): DayCycle {
   return { dayPhase, sunAlt, sunUp, bright, warm, skyDim, bodyBright };
 }
 
+// ---------------------------------------------------------------------------
+// UNIFIED SKY PROJECTION — shared altitude→y and azimuth→x mapping for ALL
+// landed-scene celestial bodies (moons, sibling planets, and the sun via its
+// equivalent inline formula using the same SKY_Y_SCALE constant). One scale
+// means the sun and every moon arc through the SAME dome height.
+// ---------------------------------------------------------------------------
+/** Common altitude→screen-height factor for ALL sky bodies. Previously 0.78 for
+ *  moons/planets and 0.74 for the sun — now unified so all arcs share one dome. */
+const SKY_Y_SCALE = 0.78;
+
 /** Parametric arc for a celestial body across the sky. Each body advances its own
  *  azimuth with t (rate + seeded offset); altitude is the sin of that azimuth so
  *  it rises on one side, crosses, and sets on the other. Returns screen x/y plus
  *  an above-horizon flag + a near-horizon fade factor. Reduced-motion (t=0): the
- *  body sits at a fixed daytime position from its offset only. */
-function bodyArcPos(
+ *  body sits at a fixed daytime position from its offset only.
+ *
+ *  Used by ALL bodies except the sun, which shares the same dome geometry via
+ *  its dayCycleAt() phase with SKY_Y_SCALE applied to its y formula. */
+function skyProjection(
   t: number, rate: number, phaseOffset: number, azDir: number,
   w: number, horizonY: number
 ): { x: number; y: number; alt: number; up: boolean; fade: number; azFrac: number } {
@@ -1989,8 +2002,8 @@ function bodyArcPos(
   const az = phase;                          // 0..1 left→right (or reversed)
   const xu = azDir > 0 ? az : 1 - az;
   const x = w * (0.06 + xu * 0.88);
-  // altitude → height above the horizon (upper sky only).
-  const y = horizonY - Math.max(0, alt) * horizonY * 0.78;
+  // altitude → height above the horizon (upper sky only) — shared scale.
+  const y = horizonY - Math.max(0, alt) * horizonY * SKY_Y_SCALE;
   const up = alt > 0.0;
   // atmospheric extinction: fade out near the horizon, full strength up high.
   const fade = Math.max(0, Math.min(1, alt * 3.0));
@@ -2220,7 +2233,7 @@ type VolcanicScene = {
  *  its terminator (lit fraction + the orientation the shadow sweeps from). */
 type MoonSeed = {
   r: number;
-  /** day-cycle arc params (positions computed per frame; see bodyArcPos) */
+  /** day-cycle arc params (positions computed per frame; see skyProjection) */
   arcRate: number; arcOffset: number; arcDir: number;
   /** 0 = new (dark) … 1 = full (fully lit) */
   illum: number;
@@ -2250,6 +2263,10 @@ type WaveLine = {
   fine: boolean;        // true → a thin fast ripple line (no filled face/foam)
   chopAmp: number;      // high-frequency chop amplitude base (scaled by weather)
   chopWavelength: number; // short wavelength of the chop ripple
+  // DIAGONAL APPROACH (item 6): foreground swells tilt toward an angled shoreline.
+  // tilt > 0 → crest slopes right-down (wave rolling in from the left), < 0 → left-down.
+  // Applied as: yAt(x) += tilt * (x - w/2), so the crest is no longer horizontal.
+  tilt: number;
 };
 
 /** A sibling planet rendered as a distant disc high in the landed sky. Position,
@@ -2257,7 +2274,7 @@ type WaveLine = {
  *  cosmetic shimmer varies per frame. */
 type SkyPlanet = {
   r: number;
-  /** day-cycle arc params (positions computed per frame; see bodyArcPos) */
+  /** day-cycle arc params (positions computed per frame; see skyProjection) */
   arcRate: number; arcOffset: number; arcDir: number;
   treatment: Treatment;
   hue: number; sat: number;
@@ -2644,11 +2661,21 @@ function buildLandedCache(
       // multiple moons show different phases (crescent / gibbous / full).
       const ill = 0.5 + 0.5 * Math.cos(basePhase + i * 2.0 + mRng() * Math.PI);
       const lightAngle = basePhase + i * 0.7 + (mRng() - 0.5) * 0.6;
-      // Pale CRT tint, slightly per-moon varied.
+      // STAR-TINTED moon reflectance (item 5): moon tint = reflected sunlight,
+      // so it inherits the star's color cast. sc = starColor RGB (0–255).
+      // A warm orange/red star gives golden-amber moons; a blue-white star gives
+      // pale blue-silver moons; default yellow → near-white with a warm hint.
+      // The per-moon warmth seed still introduces slight variety between moons.
+      // STAR COLOR PROP: env.starColor IS available and already wired as `sc` in
+      // this buildLandedCache scope — no prop changes needed.
       const warmth = mRng();
-      const tint = warmth > 0.6
-        ? '210, 200, 180'
-        : warmth > 0.3 ? '200, 210, 225' : '190, 200, 215';
+      // Blend star color (sc) into the baseline pale-gray moon tint. Weights are
+      // intentionally light so moons never go wildly colored — JUDGMENT CALL for
+      // Max: increase sc blend coefficients (0.30 / 0.22 / 0.28) for stronger effect.
+      const tintR = Math.min(240, Math.round(160 + sc.r * 0.30 + warmth * 22));
+      const tintG = Math.min(238, Math.round(155 + sc.g * 0.22 + (1 - warmth) * 10));
+      const tintB = Math.min(238, Math.round(170 + sc.b * 0.28 - warmth * 15));
+      const tint = `${tintR}, ${tintG}, ${tintB}`;
       // Precompute the darker mare tint + the static halo gradient (all inputs
       // are cached constants — only the per-frame alpha "breathing" varies).
       const mareTint = tint.split(',').map((s) => Math.max(0, parseInt(s, 10) - 40)).join(', ');
@@ -2750,6 +2777,14 @@ function buildLandedCache(
       const lin = i / (swellCount - 1);          // 0 = waterline … 1 = foreground
       const f = lin * lin;                       // perspective spacing
       const sizeJitter = 0.6 + wRng() * 0.9;     // each swell a different size
+      // DIAGONAL TILT (item 6): foreground swells (f > 0.4) get a seeded tilt so
+      // their crests are angled rather than perfectly horizontal — they read as waves
+      // rolling in at an angle to the shore. Horizon swells (f < 0.4) stay flat
+      // (correct for distant water). Max tilt of ±0.10 gives a ~6° angle per crest.
+      // JUDGMENT CALL for Max: increase 0.10 for steeper approach angles.
+      const swellTilt = f > 0.4
+        ? (wRng() - 0.5) * 0.10 * ((f - 0.4) / 0.6)  // grows with depth into scene
+        : (wRng() * 0.001);                             // near-zero for horizon swells
       waves.push({
         yFrac: f,
         amp: (2 + f * 16) * sizeJitter * wx.waveAmpMul, // weather-scaled swell height
@@ -2766,6 +2801,7 @@ function buildLandedCache(
         fine: false,
         chopAmp: (0.6 + f * 1.2) * wx.choppiness,
         chopWavelength: (10 + f * 24) * (0.7 + wRng() * 0.6),
+        tilt: swellTilt,
       });
     }
     // FINE ripple lines — thin, fast, between the swells; denser in rougher seas.
@@ -2788,6 +2824,7 @@ function buildLandedCache(
         fine: true,
         chopAmp: (0.4 + f * 0.8) * wx.choppiness,
         chopWavelength: (8 + f * 16),
+        tilt: 0,  // fine ripple lines stay horizontal
       });
     }
 
@@ -3490,6 +3527,32 @@ function drawLandedScene(
     ctx.restore();
   }
 
+  // 1a2) SUNRISE / SUNSET ATMOSPHERIC BAND — a warm orange/red gradient band
+  //      near the horizon that appears ONLY when the sun is low (dc.warm > 0).
+  //      This adds an atmospheric "scattering" tint on top of the sky gradient's
+  //      horizon warmth, giving sunrise/sunset a visible extra bloom layer.
+  //      The star color (sc) shifts the hue: red/orange stars deepen toward red,
+  //      blue/white stars give a cooler magenta-pink near the horizon.
+  //      JUDGMENT CALL for Max: band height (0.28 factor) and max alpha (0.52)
+  //      — increase both for a more dramatic sunrise, reduce for subtlety.
+  if (dc.warm > 0.04) {
+    const bandH = horizonY * (0.22 + dc.warm * 0.28);  // taller band at peak twilight
+    const warmAlpha = dc.warm * 0.52;                   // max ~0.52 at peak warm
+    // Star-tinted warm channel: orange baseline, shifted by sc toward the star's hue
+    const wR = Math.min(255, Math.round(255 * 0.96 + sc.r * 0.04));
+    const wG = Math.min(255, Math.round(100 + sc.g * 0.18));
+    const wB = Math.min(255, Math.round(20 + sc.b * 0.22));
+    const sunriseBand = ctx.createLinearGradient(0, horizonY - bandH, 0, horizonY);
+    sunriseBand.addColorStop(0,   `rgba(${wR}, ${wG}, ${wB}, 0)`);
+    sunriseBand.addColorStop(0.5, `rgba(${wR}, ${Math.max(0, wG - 30)}, ${Math.max(0, wB - 10)}, ${(warmAlpha * 0.55).toFixed(3)})`);
+    sunriseBand.addColorStop(1,   `rgba(${wR}, ${Math.max(0, wG - 60)}, 10, ${warmAlpha.toFixed(3)})`);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = sunriseBand;
+    ctx.fillRect(0, horizonY - bandH, w, bandH + 2);
+    ctx.restore();
+  }
+
   // 1b) WEATHER SKY — shared biome-tinted overcast overlay (storm-grey for rain,
   //     tan for sand, white for snow, smoky-red for ash). Darkens + tints by tier.
   if (cache.weather && cache.weather.skyDarken > 0) {
@@ -3572,11 +3635,14 @@ function drawLandedScene(
   const sunPhase = dc.dayPhase;
   const sunXu = cache.sunAzDir > 0 ? sunPhase : 1 - sunPhase;
   const sunX = w * (0.06 + sunXu * 0.88);
-  const sunY = horizonY - Math.max(-0.05, dc.sunAlt) * horizonY * 0.74;
+  // Sun y uses SKY_Y_SCALE (same as skyProjection) so the sun arcs through the
+  // same dome height as moons/planets. Small clamp to -0.05 lets the disc sit
+  // just above its true geometric position near the horizon (softer sunrise feel).
+  const sunY = horizonY - Math.max(-0.05, dc.sunAlt) * horizonY * SKY_Y_SCALE;
   // TRUE (unclamped) sun position used for lighting the moons — even when the sun
   // is below the horizon at night, the moons are still lit from its real direction.
   const sunWorldX = sunX;
-  const sunWorldY = horizonY - dc.sunAlt * horizonY * 0.74;
+  const sunWorldY = horizonY - dc.sunAlt * horizonY * SKY_Y_SCALE;
   if (dc.sunUp) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -3699,12 +3765,18 @@ function drawLandedScene(
       const chopDrift = t === 0 ? 0 : t * (12 + f * 30) * wv.dir;
       const swell = t === 0 ? 1 : 1 + 0.4 * Math.sin(t * wv.swellRate + wv.swellPhase);
       const amp = wv.amp * swell;
+      // TILT (item 6): foreground swells use a seeded tilt so their crests angle
+      // diagonally — reads as waves rolling in at an angle to the shore rather than
+      // perfectly horizontal bands. wv.tilt * (x - w/2) slopes the crest across its
+      // width. Horizon swells have tilt ≈ 0, so the horizon stays correctly flat.
       const yAt = (x: number): number =>
         baseY
         + Math.sin((x + drift) / wv.wavelength * Math.PI * 2 + wv.phase) * amp
         + Math.sin((x + crossDrift) / wv.crossWavelength * Math.PI * 2 + wv.swellPhase) * wv.crossAmp
         // weather chop — high-frequency ripple riding on the swell (0 when calm).
-        + (wv.chopAmp > 0 ? Math.sin((x + chopDrift) / wv.chopWavelength * Math.PI * 2 + wv.phase * 2) * wv.chopAmp : 0);
+        + (wv.chopAmp > 0 ? Math.sin((x + chopDrift) / wv.chopWavelength * Math.PI * 2 + wv.phase * 2) * wv.chopAmp : 0)
+        // diagonal approach angle: tilts the crest so it's not purely horizontal
+        + wv.tilt * (x - w * 0.5);
 
       // FINE ripple layer: a single thin fast stroke between the big swells — no
       // filled face, no foam. Adds multi-scale richness cheaply.
@@ -3765,6 +3837,84 @@ function drawLandedScene(
         }
         ctx.restore();
       }
+    }
+
+    // 2b) BREAKING WAVE SWASHES (item 6): for non-cliff ocean worlds, 3 animated
+    //     diagonal wave arcs roll in from alternating sides and break near the shore.
+    //     Each swash sweeps toward the centre in a curved arc, building a crest then
+    //     bursting into foam at the break point — giving the "side-on beach" read.
+    //     Reduced-motion (t=0): skip (these are pure animation, no static value).
+    //     JUDGMENT CALL for Max:
+    //       • swashCount (3) — more swashes for rougher seas
+    //       • swashPeriod (5.5s) — cycle time per swash; increase for slower waves
+    //       • maxAlpha (0.52) — peak opacity of the break arc
+    //       • crestHalfW (w*0.26) — how wide the breaking crest arc spans
+    if (t !== 0 && !cache.headland) {
+      const swashCount = 3;
+      const swashPeriod = 5.5;  // seconds per full swash cycle
+      const swashBaseY = wt + wh * 0.62;  // start mid-lower water band
+      const swashEndY = wt + wh * 0.90;   // break point near the foreground shore
+      ctx.save();
+      for (let sw = 0; sw < swashCount; sw++) {
+        // Stagger each swash by 1/swashCount of the period; alternate sides.
+        const phaseRaw = (t / swashPeriod + sw / swashCount) % 1;
+        // Only animate during the active part of the cycle (0..0.82); pause the rest.
+        if (phaseRaw > 0.82) continue;
+        const u = phaseRaw / 0.82;   // normalise 0..1 over the active window
+        // Ease-in: waves accelerate as they near the shore (quadratic ease-in).
+        const ue = u * u;
+        const sweepDir = sw % 2 === 0 ? 1 : -1;          // L-to-R vs R-to-L
+        // The arc sweeps from the far edge toward the centre of the scene.
+        const startX = sweepDir > 0 ? -w * 0.10 : w * 1.10;
+        const peakX  = w * (0.38 + (sw % 3) * 0.14);     // varied centre hit
+        const cx = startX + (peakX - startX) * ue;
+        const cy = swashBaseY + (swashEndY - swashBaseY) * ue;
+        // Crest arc half-width shrinks as the wave focuses near the break.
+        const crestHalfW = w * (0.26 - ue * 0.14);
+        // Alpha: fade in quickly, then decay sharply at the break.
+        const alpha = Math.min(0.52, u < 0.5
+          ? u * 1.04                                 // ramp up to ~0.52
+          : (1 - u) * 1.04);                         // ramp down from ~0.52
+        if (alpha < 0.02) continue;
+
+        // Wave crest arc: a quadratic curve arching slightly upward at the centre.
+        const archLift = crestHalfW * 0.14;          // crest arch height
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = `rgba(${crestRGB}, 1)`;
+        ctx.lineWidth = 2.0 + ue * 5;               // thickens as it approaches
+        ctx.beginPath();
+        ctx.moveTo(cx - crestHalfW, cy + archLift * 0.3);
+        ctx.quadraticCurveTo(cx, cy - archLift, cx + crestHalfW, cy + archLift * 0.3);
+        ctx.stroke();
+
+        // Foam burst at the break point — appears in the final third of the sweep.
+        if (u > 0.6) {
+          const burstU = (u - 0.6) / 0.4;            // 0..1 over the burst window
+          const burstAlpha = alpha * burstU * 0.85;
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = burstAlpha;
+          ctx.fillStyle = 'rgba(235, 250, 255, 1)';
+          // Foam flecks spray from the crest, angled in the sweep direction.
+          for (let p = 0; p < 10; p++) {
+            const ang = (p / 10) * Math.PI + (sweepDir > 0 ? 0 : Math.PI);
+            const dist = burstU * crestHalfW * (0.2 + (p % 3) * 0.15);
+            const px = cx + Math.cos(ang) * dist;
+            const py = cy + Math.sin(ang) * dist * 0.35 - burstU * 7;
+            const ps = Math.max(1.2, 4 * (1 - burstU));
+            ctx.fillRect(px - ps * 0.5, py - ps * 0.5, ps, ps);
+          }
+          // Thin foam rush line along the break arc.
+          ctx.globalAlpha = burstAlpha * 0.8;
+          ctx.strokeStyle = 'rgba(245, 252, 255, 1)';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.moveTo(cx - crestHalfW * 0.7, cy + archLift * 0.15);
+          ctx.quadraticCurveTo(cx, cy - archLift * 0.6, cx + crestHalfW * 0.7, cy + archLift * 0.15);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
     }
 
     // 3) reflection glitter column under the LIVE light source: the sun while it's
@@ -5333,7 +5483,7 @@ function drawLandedSkyPlanets(
   for (let i = 0; i < cache.skyPlanets.length; i++) {
     const p = cache.skyPlanets[i];
     // arc position this frame; skip when below the horizon.
-    const pos = bodyArcPos(t, p.arcRate, p.arcOffset, p.arcDir, w, horizonY);
+    const pos = skyProjection(t, p.arcRate, p.arcOffset, p.arcDir, w, horizonY);
     if (!pos.up) continue;
     const px = pos.x, py = pos.y;
     // alpha: base distance dim × horizon extinction × day-cycle prominence (still
@@ -5419,7 +5569,7 @@ function drawLandedMoons(
   for (let i = 0; i < cache.moons.length; i++) {
     const m = cache.moons[i];
     // arc position this frame; skip when below the horizon.
-    const pos = bodyArcPos(t, m.arcRate, m.arcOffset, m.arcDir, w, horizonY);
+    const pos = skyProjection(t, m.arcRate, m.arcOffset, m.arcDir, w, horizonY);
     if (!pos.up) continue;
     const mx = pos.x, my = pos.y;
     const ext = pos.fade;        // atmospheric extinction near the horizon
@@ -5439,16 +5589,39 @@ function drawLandedMoons(
     // no carved terminator (a shadowed moon beside a visible sun reads as wrong).
     // The proper sun-lit phase is only shown at night/twilight (sun at/below horizon).
     const dayMoon = dc.sunUp;
-    const dayFaint = dayMoon ? 0.4 : 1;                 // washed-out by daylight
+    // SMOOTH FADE (item 1): replace the old boolean snap (0.4 / 1) with a
+    // smoothstep over a small altitude band so the moon fades in/out gradually
+    // as the sun clears the horizon — no lightswitch. The band runs from
+    // sunAlt -0.12 (twilight, moon still near-full brightness) to +0.30
+    // (sun well up, moon faded to a faint ~0.15 remnant).
+    //   • JUDGMENT CALL: the 0.12/0.30 band and 0.15 daytime floor are tunable
+    //     for Max — widen the band for a slower fade, raise the floor for a
+    //     more visible daytime ghost-moon.
+    const sunAltNorm = Math.max(0, Math.min(1, (dc.sunAlt + 0.12) / 0.42)); // 0 at -0.12, 1 at +0.30
+    const sunAltSmooth = sunAltNorm * sunAltNorm * (3 - 2 * sunAltNorm);   // smoothstep
+    const dayFaint = 0.15 + (1 - sunAltSmooth) * 0.85;                     // 1.0 at night → 0.15 at noon
 
+    // NIGHT GLOW (item 4): the moon's reflected glow should feel luminous at night.
+    // Two halo passes: an inner bloom (starting from the disc centre, not the edge)
+    // that scales with night darkness, plus the existing outer atmospheric ring.
+    //   • nightGlow multiplier: 1.0 at full day → 3.0 at pitch night — JUDGMENT
+    //     CALL for Max: increase the 2.0 coefficient for a more dramatic night halo.
+    const nightGlow = 1.0 + (1 - dc.bright) * 2.0;
     ctx.save();
-    // soft halo (additive) — gradient rebuilt per frame at the live position.
+    // Inner bloom (NEW): originates from the moon's centre for a luminous glow-core.
     ctx.globalCompositeOperation = 'lighter';
-    const halo = ctx.createRadialGradient(mx, my, m.r * 0.6, mx, my, m.r * 2.6);
-    halo.addColorStop(0, `rgba(${m.tint}, ${(0.18 * prom * ext * sunWash * dayFaint).toFixed(3)})`);
-    halo.addColorStop(1, `rgba(${m.tint}, 0)`);
-    ctx.fillStyle = halo;
-    ctx.fillRect(mx - m.r * 2.6, my - m.r * 2.6, m.r * 5.2, m.r * 5.2);
+    const innerHalo = ctx.createRadialGradient(mx, my, m.r * 0.2, mx, my, m.r * 2.0);
+    innerHalo.addColorStop(0, `rgba(${m.tint}, ${(0.10 * prom * ext * sunWash * dayFaint * nightGlow).toFixed(3)})`);
+    innerHalo.addColorStop(1, `rgba(${m.tint}, 0)`);
+    ctx.fillStyle = innerHalo;
+    ctx.fillRect(mx - m.r * 2.0, my - m.r * 2.0, m.r * 4.0, m.r * 4.0);
+    // Outer atmospheric ring — wider at night, same narrow radius by day.
+    const outerR = m.r * (2.6 + (1 - dc.bright) * 1.4);
+    const outerHalo = ctx.createRadialGradient(mx, my, m.r * 0.6, mx, my, outerR);
+    outerHalo.addColorStop(0, `rgba(${m.tint}, ${(0.12 * prom * ext * sunWash * dayFaint * nightGlow).toFixed(3)})`);
+    outerHalo.addColorStop(1, `rgba(${m.tint}, 0)`);
+    ctx.fillStyle = outerHalo;
+    ctx.fillRect(mx - outerR, my - outerR, outerR * 2, outerR * 2);
     ctx.restore();
 
     // lit disc
