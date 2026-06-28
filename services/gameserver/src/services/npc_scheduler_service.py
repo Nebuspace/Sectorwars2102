@@ -475,6 +475,16 @@ RECLAIM_FLAG_CHECK_SECONDS = int(
 PRICE_RECOMPUTE_FLUSH_SECONDS = int(
     os.environ.get("PRICE_RECOMPUTE_FLUSH_SECONDS", str(60))
 )
+# Price-alert sweep cadence — evaluate every active PriceAlert against the
+# current MarketPrice rows so NPC-driven price moves (Loop A trades,
+# flush_pending_recomputes, production restocks) trigger alerts within one
+# cadence, not only on a player's own trade. Runs at the same default cadence
+# as the price-recompute flush so freshly settled prices are evaluated promptly;
+# per-alert cooldown_seconds (DEFAULT_COOLDOWN_SECONDS=300 in
+# price_alert_service) is the fine-grained flap suppressor.
+PRICE_ALERT_SWEEP_SECONDS = int(
+    os.environ.get("PRICE_ALERT_SWEEP_SECONDS", str(60))
+)
 
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
@@ -3746,6 +3756,65 @@ def _run_price_recompute_flush_sync() -> int:
         db.close()
 
 
+def _run_price_alert_sweep_sync() -> int:
+    """Evaluate every active PriceAlert against current MarketPrice rows and
+    emit price_alert_triggered WS frames to any owner whose threshold was
+    crossed.
+
+    Before this sweep existed, sweep_price_alerts (price_alert_service) was
+    never called from anywhere — alerts only fired from the request path when a
+    *player* traded the exact (station, commodity) pair, so NPC-driven price
+    moves (Loop A trades via npc_trading_service, flush_pending_recomputes,
+    production restocks) silently skipped threshold evaluation. This sweep
+    closes that gap: every active alert is checked on the scheduler cadence so
+    an NPC move past an alert threshold triggers delivery within one tick.
+
+    PRICE REFERENCE — uses MarketPrice.sell_price (what the station charges
+    players to buy the commodity) as the canonical price fed to
+    evaluate_price_alerts.  This matches the dominant alert use-case ("alert me
+    when commodity X costs more than Y at this station") and is consistent with
+    the midpoint published by publish_trade_tick.  Once the PriceAlert model
+    gains a price_kind column the injected price_lookup can be split per kind
+    without touching this sweep.
+
+    DISCIPLINE — own SessionLocal (never the request session, never the async
+    engine), commit after the sweep so last_triggered_at stamps persist,
+    close on exit.  No advisory lock needed: sweep_price_alerts does no
+    row-locking (it only writes last_triggered_at on matched alerts) and a
+    second instance racing the sweep would merely re-evaluate cooldowns, which
+    are idempotent.
+
+    Returns the count of alerts fired (0 when nothing crossed a threshold)."""
+    from src.core.database import SessionLocal
+    from src.models.market_transaction import MarketPrice
+    from src.services.price_alert_service import sweep_price_alerts
+
+    db = SessionLocal()
+    try:
+        def price_lookup(station_id, commodity):
+            row = (
+                db.query(MarketPrice)
+                .filter(
+                    MarketPrice.station_id == station_id,
+                    MarketPrice.commodity == commodity,
+                )
+                .first()
+            )
+            if row is None:
+                return None
+            return float(row.sell_price)
+
+        fired = sweep_price_alerts(db, price_lookup)
+        db.commit()
+        return len(fired)
+    except Exception:
+        logger.exception("Price-alert sweep failed")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
@@ -5136,6 +5205,27 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: price-recompute flush sweep crashed (loop continues)")
+
+        # Price-alert sweep — evaluate every active PriceAlert against the
+        # current MarketPrice rows so NPC-driven price moves (Loop A trades,
+        # flush_pending_recomputes, production restocks) trigger alerts within
+        # one cadence, not only when the owning player trades the exact
+        # commodity.  Runs at the same default cadence as the price-recompute
+        # flush so freshly settled prices are evaluated promptly; per-alert
+        # cooldown (DEFAULT_COOLDOWN_SECONDS=300 in price_alert_service) is
+        # the fine-grained flap suppressor.
+        if elapsed % PRICE_ALERT_SWEEP_SECONDS == 0:
+            try:
+                alerted = await asyncio.to_thread(_run_price_alert_sweep_sync)
+                if alerted:
+                    logger.info(
+                        "NPC scheduler: price-alert sweep — fired %d alert(s)",
+                        alerted,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: price-alert sweep crashed (loop continues)")
 
         # ARIA storage-prune pass (WO-F16) — evict each player's oldest ARIA
         # memory/market-intelligence rows until their combined payload is back

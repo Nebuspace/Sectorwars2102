@@ -334,17 +334,15 @@ class RealTimeMarketService:
                     confidence=snapshot.ai_prediction["confidence"]
                 ))
         
-        # Volume spike signal
-        # (Would need historical average volume for accurate calculation)
-        if snapshot.volume_24h > 10000:  # Placeholder threshold
-            signals.append(TradingSignal(
-                signal_type="alert",
-                commodity=commodity,
-                strength=0.5,
-                reason=f"High trading volume: {snapshot.volume_24h:,} units",
-                confidence=0.6
-            ))
-        
+        # Volume spike signal — gated off: no stored multi-day volume baseline
+        # exists.  MarketTransaction retains only a rolling 24h window, and
+        # PriceHistory.daily_volume has no guaranteed writers, so there is no
+        # queryable average to compare against.  Emitting a signal off the
+        # previous arbitrary constant ("> 10000  # Placeholder") produced
+        # false positives across the full commodity range.  Wire this signal
+        # once a reliable daily-volume baseline is available (e.g. a scheduled
+        # 7-day rolling average persisted to PriceHistory).
+
         # Spread opportunity
         if snapshot.bid_ask_spread > 5:  # 5% spread
             signals.append(TradingSignal(
@@ -362,59 +360,6 @@ class RealTimeMarketService:
             pass
         
         return signals
-    
-    # =============================================================================
-    # REAL-TIME STREAMING
-    # =============================================================================
-    
-    async def stream_market_updates(self, commodities: List[str], db: AsyncSession, 
-                                  callback: callable, stop_event: asyncio.Event):
-        """
-        Stream real-time market updates for specified commodities
-        Calls callback function with updates
-        """
-        logger.info(f"Starting market stream for commodities: {commodities}")
-        
-        last_snapshots = {}
-        
-        try:
-            while not stop_event.is_set():
-                # Get current snapshots
-                current_snapshots = await self.get_multi_commodity_data(commodities, db)
-                
-                # Detect changes and send updates
-                updates = {}
-                for commodity, snapshot in current_snapshots.items():
-                    last_snapshot = last_snapshots.get(commodity)
-                    
-                    # Send update if price changed or first update
-                    if not last_snapshot or last_snapshot.current_price != snapshot.current_price:
-                        updates[commodity] = snapshot
-                        
-                        # Generate trading signals
-                        signals = await self.generate_trading_signals(commodity, snapshot)
-                        if signals:
-                            updates[commodity].signals = [asdict(s) for s in signals]
-                
-                # Send updates if any
-                if updates:
-                    await callback({
-                        "type": "market_update",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                        "updates": {k: v.to_dict() for k, v in updates.items()}
-                    })
-                
-                # Update last snapshots
-                last_snapshots = current_snapshots
-                
-                # Wait before next update
-                await asyncio.sleep(self.market_update_interval)
-                
-        except Exception as e:
-            logger.error(f"Error in market stream: {e}")
-            raise
-        finally:
-            logger.info("Market stream stopped")
     
     # =============================================================================
     # CACHING
