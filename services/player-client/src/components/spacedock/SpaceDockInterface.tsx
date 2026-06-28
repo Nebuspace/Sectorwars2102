@@ -190,7 +190,12 @@ const SLOT_PAYOUTS: Record<string, number> = {
   '💳💳💳': 3,   // Credits
 };
 
-const SpaceDockInterface: React.FC = () => {
+interface SpaceDockProps {
+  onUndock?: () => void;
+  helmBusy?: boolean;
+}
+
+const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = false }) => {
   const { playerState, stationsInSector, updatePlayerCredits, updateShipGenesis, refreshPlayerState, loadShips, getStationSlips } = useGame();
   const [activeVenue, setActiveVenue] = useState<VenueType>('hub');
 
@@ -1742,6 +1747,16 @@ const SpaceDockInterface: React.FC = () => {
               </div>
             )}
           </div>
+          {onUndock && (
+            <button
+              className="hub-undock-btn"
+              onClick={onUndock}
+              disabled={helmBusy}
+              title="Undock and launch into space"
+            >
+              {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
+            </button>
+          )}
         </div>
 
         <div className="hub-welcome">

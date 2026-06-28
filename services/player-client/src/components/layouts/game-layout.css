@@ -92,9 +92,7 @@
      RIGHT of the sidebar. The scene shows through the band + the right-of-sidebar
      area ABOVE the deck = the ⌐. (% of the already scale-correct container.) */
   --band-h: 20%;
-  /* Full-width helm rail (DOCK/LAND/UNDOCK/LIFT OFF) just below the band. */
-  --helm-h: 44px;
-  /* NARROW natural sidebar (rail + MFD-A/B), NOT half the screen.
+  /* NARROW natural sidebar (MFD-A/B), NOT half the screen.
      WO-COCKPIT-ADJ-0628: slimmed ~12% (300-420 → 260-370) to reclaim
      deck width. */
   --sidebar-w: clamp(260px, 22%, 370px);
@@ -108,12 +106,12 @@
    planetary terminal needs the room); the upper-right scene collapses. GameLayout
    sets .console-expand on the container from playerState (is_docked||is_landed). */
 .game-container.console-expand {
-  --deck-h: calc(100% - var(--band-h) - var(--helm-h));
+  --deck-h: calc(100% - var(--band-h));
 }
 
 /* SIDEBAR — narrow, full-height left column (id=149 REDEFINED, Max's exact
-   layout). rail + MFD-A + MFD-B at a NATURAL width (--sidebar-w, ~320–420px,
-   NOT half the screen), inset below the band + helm rail and spanning to the
+   layout). MFD-A + MFD-B at a NATURAL width (--sidebar-w, ~320–420px,
+   NOT half the screen), inset below the band and spanning to the
    screen bottom. Opaque CRT backing. Scrolling stays INSIDE each MFD page body
    (mfd.css), never at this level.
    Selector is `.game-container .game-sidebar` (0,2,0) so `position:absolute` +
@@ -122,7 +120,7 @@
    sized to content, rendered SHORT and left a bottom-left gap (id=149 re-prove). */
 .game-container .game-sidebar {
   position: absolute;
-  top: calc(var(--band-h) + var(--helm-h));
+  top: var(--band-h);
   left: 0;
   bottom: 0;
   width: var(--sidebar-w);

@@ -2510,96 +2510,6 @@ const GameDashboard: React.FC = () => {
           )}
         </div>
 
-        {/* HELM ACTION RAIL — the home of the primary state actions (SCROLL
-            LAW): DOCK / LAND in flight, UNDOCK while docked. While LANDED the
-            rail is suppressed: the single LIFT OFF lives on the green landed
-            bar (WO 129-C), so the gray rail is not rendered on the surface. */}
-        {!(playerState?.is_landed && !playerState?.is_docked) && (
-        <div className="helm-rail">
-          <div className="helm-state">
-            {playerState?.is_docked ? (
-              <>DOCKED AT {(dockedStation?.name || (isDockedAtSpaceDock ? 'SPACEDOCK' : 'STATION')).toUpperCase()}</>
-            ) : (
-              <>IN FLIGHT{currentSector ? ` — SECTOR ${currentSector.sector_number || currentSector.sector_id}` : ''}</>
-            )}
-          </div>
-          <div className={`helm-actions${helmBusy ? ' busy' : ''}`}>
-            {playerState?.is_docked ? (
-              <button className="helm-btn undock" onClick={handleUndock} disabled={helmBusy}>
-                {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
-              </button>
-            ) : (
-              <>
-                {/* Autopilot course controls — visible in IN FLIGHT only */}
-                {autopilot.course && autopilot.status !== 'arrived' && (
-                  autopilot.status === 'engaged' ? (
-                    <button
-                      className="helm-btn autopilot-abort"
-                      onClick={() => autopilot.abort('manual abort')}
-                      disabled={helmBusy}
-                      title="Abort autopilot"
-                    >
-                      🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}
-                    </button>
-                  ) : (
-                    <button
-                      className="helm-btn autopilot-engage"
-                      onClick={() => autopilot.engage()}
-                      disabled={helmBusy}
-                      title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
-                    >
-                      🧭 ENGAGE AUTOPILOT · {autopilot.course.hops.length} HOPS · <TurnsIcon /> {autopilot.course.total_turns}
-                    </button>
-                  )
-                )}
-                {(stationsInSector || []).map((station: any) => (
-                  <button
-                    key={station.id}
-                    className="helm-btn dock"
-                    onClick={() => handleDock(station.id)}
-                    disabled={helmBusy}
-                    title={`Dock at ${station.name}`}
-                  >
-                    ⚓ DOCK · <span className="helm-btn-target">{station.name}</span>
-                  </button>
-                ))}
-                {(planetsInSector || []).map((planet: any) => (
-                  <button
-                    key={planet.id}
-                    className="helm-btn land"
-                    onClick={() => handleLand(planet.id)}
-                    disabled={helmBusy}
-                    title={`Land on ${planet.name}`}
-                  >
-                    🛬 LAND · <span className="helm-btn-target">{planet.name}</span>
-                  </button>
-                ))}
-                {/* HARVEST (WO-UI-MINING) — only in an asteroid-field sector while
-                    undocked (this IN FLIGHT branch). Server enforces the full gate
-                    set (laser/turns/cargo); failures surface as a banner below. */}
-                {currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' && (
-                  <button
-                    className="helm-btn harvest"
-                    onClick={handleHarvest}
-                    disabled={helmBusy || harvestBusy}
-                    title="Deploy the mining laser to harvest ore from the asteroid field"
-                  >
-                    {harvestBusy ? '⛏️ MINING…' : '⛏️ HARVEST'}
-                  </button>
-                )}
-                {/* SCANNING until the sector telemetry resolves, so we never
-                    flash a false "NO TARGETS" during the in-flight load. */}
-                {!currentSector || !stationsInSector || !planetsInSector ? (
-                  <span className="helm-empty scanning">SCANNING SECTOR…</span>
-                ) : (stationsInSector.length === 0 && planetsInSector.length === 0) && (
-                  <span className="helm-empty">NO DOCK / LANDING TARGETS IN SECTOR</span>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-        )}
-
         {/* CONSOLE - Metal panel with embedded monitors */}
         <div className="cockpit-console">
           {/* DOCKED STATE: Show SpaceDock or Trading Interface */}
@@ -2642,10 +2552,23 @@ const GameDashboard: React.FC = () => {
                       </button>
                     </div>
                   )}
+                  {/* UNDOCK & LAUNCH — for regular (non-SpaceDock) stations.
+                      SpaceDock has this button in its own hub-header via the
+                      SpaceDockInterface onUndock prop. */}
+                  {!isDockedAtSpaceDock && (
+                    <button
+                      className="station-undock-btn"
+                      onClick={handleUndock}
+                      disabled={helmBusy}
+                      title="Undock and launch into space"
+                    >
+                      {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
+                    </button>
+                  )}
                 </div>
                 <div className="screen-hud-content trading-content">
                   {isDockedAtSpaceDock ? (
-                    <SpaceDockInterface />
+                    <SpaceDockInterface onUndock={handleUndock} helmBusy={helmBusy} />
                   ) : stationTerminal === 'portoffice' && playerState?.current_port_id ? (
                     <PortOfficeVenue
                       stationId={playerState.current_port_id}
@@ -3151,6 +3074,28 @@ const GameDashboard: React.FC = () => {
                         >
                           {autopilot.status === 'plotting' ? '…' : 'PLOT'}
                         </button>
+                        {/* Autopilot engage / abort — shown when a course is plotted */}
+                        {autopilot.course && autopilot.status !== 'arrived' && (
+                          autopilot.status === 'engaged' ? (
+                            <button
+                              className="nav-autopilot-abort"
+                              onClick={() => autopilot.abort('manual abort')}
+                              disabled={helmBusy}
+                              title="Abort autopilot"
+                            >
+                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}
+                            </button>
+                          ) : (
+                            <button
+                              className="nav-autopilot-engage"
+                              onClick={() => autopilot.engage()}
+                              disabled={helmBusy}
+                              title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                            >
+                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}
+                            </button>
+                          )
+                        )}
                       </div>
                     </div>
                   ) : (
@@ -3184,6 +3129,28 @@ const GameDashboard: React.FC = () => {
                         >
                           {autopilot.status === 'plotting' ? '…' : 'PLOT'}
                         </button>
+                        {/* Autopilot engage / abort — shown when a course is plotted */}
+                        {autopilot.course && autopilot.status !== 'arrived' && (
+                          autopilot.status === 'engaged' ? (
+                            <button
+                              className="nav-autopilot-abort"
+                              onClick={() => autopilot.abort('manual abort')}
+                              disabled={helmBusy}
+                              title="Abort autopilot"
+                            >
+                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}
+                            </button>
+                          ) : (
+                            <button
+                              className="nav-autopilot-engage"
+                              onClick={() => autopilot.engage()}
+                              disabled={helmBusy}
+                              title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
+                            >
+                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}
+                            </button>
+                          )
+                        )}
                       </div>
                     </div>
                   )}
@@ -3316,9 +3283,25 @@ const GameDashboard: React.FC = () => {
                       isDocked={playerState?.is_docked || false}
                     />
                   ))}
-                  {/* Empty state when neither planets nor stations */}
+                  {/* Empty state when neither planets nor stations.
+                      Asteroid fields get a HARVEST trigger; all other empty
+                      sectors get the generic "nothing detected" label. */}
                   {planetsInSector.length === 0 && stationsInSector.length === 0 && (
-                    <div className="empty-state">No planetary bodies or stations detected</div>
+                    currentSector?.type?.toUpperCase() === 'ASTEROID_FIELD' ? (
+                      <div className="planetary-asteroid-state">
+                        <div className="planetary-asteroid-label">⚫ ASTEROID FIELD</div>
+                        <button
+                          className="planetary-harvest-btn"
+                          onClick={handleHarvest}
+                          disabled={helmBusy || harvestBusy}
+                          title="Deploy the mining laser to harvest ore from the asteroid field"
+                        >
+                          {harvestBusy ? '⛏️ MINING…' : '⛏️ HARVEST'}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="empty-state">No planetary bodies or stations detected</div>
+                    )
                   )}
                   </div>
                 </div>

@@ -89,6 +89,36 @@
   color: #00ff41;
 }
 
+/* UNDOCK & LAUNCH — lives in the SpaceDock hub header; mirrors the helm-rail
+   CRT aesthetic (cyan accent) without depending on helm-btn. */
+.hub-undock-btn {
+  flex-shrink: 0;
+  padding: 0.35rem 0.75rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.5);
+  border-radius: 4px;
+  color: #00d9ff;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+
+.hub-undock-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.22);
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.35);
+}
+
+.hub-undock-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .hub-welcome {
   text-align: center;
   padding: 0 8px;

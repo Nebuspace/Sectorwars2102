@@ -443,6 +443,38 @@
 .screen-hud-header.station-venue-header {
   padding-top: 4px;
   padding-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+/* UNDOCK & LAUNCH button in the regular-station header (non-SpaceDock docking).
+   Mirrors the SpaceDock hub-undock-btn aesthetic. */
+.station-undock-btn {
+  flex-shrink: 0;
+  padding: 0.3rem 0.65rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: rgba(0, 217, 255, 0.1);
+  border: 1px solid rgba(0, 217, 255, 0.5);
+  border-radius: 4px;
+  color: #00d9ff;
+  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+.station-undock-btn:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.22);
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.35);
+}
+.station-undock-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .station-venue-tabs {
   display: flex;
@@ -861,157 +893,6 @@
 }
 
 /* ============================================
-   HELM ACTION RAIL — primary state actions
-   SCROLL LAW: DOCK / LAND / UNDOCK / LIFT OFF
-   live here — a fixed 44px strip between the
-   glass band and the console, always visible.
-   ============================================ */
-
-.helm-rail {
-  /* WO-INVERTED-L: was an in-flow 44px flex strip between the band and console;
-     since .cockpit-mode is no longer a flex column, it is pinned as a full-width
-     strip just below the band (the same "between band and console" position),
-     ALWAYS visible above the scene + console (z:35 > console z:20). The console
-     region starts below it (top includes --helm-h). DOCK/LAND/UNDOCK/LIFT OFF
-     stay reachable in every state. */
-  position: absolute;
-  top: var(--band-h);
-  left: 0;
-  right: 0;
-  height: var(--helm-h);
-  z-index: 35;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0 0.75rem;
-  background: linear-gradient(180deg, #161a22 0%, #0c0f15 100%);
-  border-top: 1px solid rgba(0, 217, 255, 0.25);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.8);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  font-family: 'Courier New', monospace;
-  overflow: hidden;
-  box-sizing: border-box;
-}
-
-/* Compact state legend — IN FLIGHT / DOCKED AT … / LANDED ON … */
-.helm-state {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgba(0, 217, 255, 0.85);
-  text-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.helm-actions {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.4rem;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-}
-
-/* CRT action button — cyan flight-ops base */
-.helm-btn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  height: 30px;
-  padding: 0 0.7rem;
-  font-family: 'Courier New', monospace;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  background: rgba(0, 217, 255, 0.08);
-  border: 1px solid rgba(0, 217, 255, 0.45);
-  border-radius: 3px;
-  color: #00d9ff;
-  text-shadow: 0 0 6px rgba(0, 217, 255, 0.5);
-  cursor: pointer;
-  transition: background 0.15s ease, box-shadow 0.15s ease;
-  white-space: nowrap;
-}
-
-.helm-btn:hover {
-  background: rgba(0, 217, 255, 0.2);
-  box-shadow: 0 0 12px rgba(0, 217, 255, 0.35);
-}
-
-.helm-btn .helm-btn-target {
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Planetary actions tint violet (per-system accent language) */
-.helm-btn.land,
-.helm-btn.liftoff {
-  background: rgba(123, 47, 255, 0.12);
-  border-color: rgba(123, 47, 255, 0.55);
-  color: #b794ff;
-  text-shadow: 0 0 6px rgba(123, 47, 255, 0.5);
-}
-
-.helm-btn.land:hover,
-.helm-btn.liftoff:hover {
-  background: rgba(123, 47, 255, 0.24);
-  box-shadow: 0 0 12px rgba(123, 47, 255, 0.35);
-}
-
-/* Disabled (a helm action is in flight): dim the CRT and kill the glow so
-   the rail visibly reads "busy" and can't be double-fired. Overrides the
-   hover rules above for both the cyan dock/undock and the violet land/liftoff
-   buttons. */
-.helm-btn:disabled,
-.helm-btn:disabled:hover {
-  opacity: 0.4;
-  cursor: not-allowed;
-  background: rgba(120, 130, 150, 0.08);
-  border-color: rgba(120, 130, 150, 0.35);
-  color: rgba(180, 190, 210, 0.6);
-  text-shadow: none;
-  box-shadow: none;
-}
-
-/* While the whole rail is busy, hint it at the container level too. */
-.helm-actions.busy {
-  cursor: progress;
-}
-
-.helm-empty {
-  font-size: 0.65rem;
-  letter-spacing: 0.1em;
-  color: rgba(255, 255, 255, 0.35);
-  text-transform: uppercase;
-}
-
-/* SCANNING placeholder — a soft pulse so it reads as "working", not "empty". */
-.helm-empty.scanning {
-  color: rgba(0, 217, 255, 0.55);
-  animation: helm-scan-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes helm-scan-pulse {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .helm-empty.scanning { animation: none; }
-}
-
-/* ============================================
    CONSOLE - Metal control panel
    ============================================ */
 
@@ -1043,12 +924,11 @@
   );
   border-top: 2px solid rgba(77, 132, 253, 0.2);
   display: grid;
-  /* WO-COCKPIT-ADJ-0628: PLANETARY · NAV · COMMS order.
-     Col 1 (PLANETARY, left, wider +15%): minmax(275px, 540px).
-     Col 2 (NAV, center, flexible):       minmax(0, 1fr).
-     Col 3 (COMMS, right, narrower -15%): minmax(185px, 290px).
+  /* WO-COCKPIT-ADJ #4: PLANETARY · NAV · COMMS order, ~30/40/30 split.
+     gap:0 so fr units claim all content-box width directly.
+     3:4:3 = 30% / 40% / 30% rendered.
      .planetary-monitor gets order:-1 to render first despite DOM order. */
-  grid-template-columns: minmax(275px, 540px) minmax(0, 1fr) minmax(185px, 290px);
+  grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr);
   grid-template-rows: 1fr;
   gap: 0;
   padding: 0.5rem;
@@ -1485,10 +1365,10 @@
      (docked/landed, --console-w:100%). In the narrow space console the base
      single-column stack + internal scroll holds, so this must NOT re-impose
      three columns there (it would overflow --console-w). */
-  /* WO-COCKPIT-ADJ-0628: matches new PLANETARY · NAV · COMMS column order.
-     PLANETARY: 450px (+18%), NAV: 1fr, COMMS: 255px (-15%). */
+  /* WO-COCKPIT-ADJ #4: updated to match base rule (3fr/4fr/3fr → 30/40/30).
+     Cosmetic here — docked/landed monitors span grid-column:1/-1 anyway. */
   .game-container.console-expand .cockpit-console {
-    grid-template-columns: 450px 1fr 255px;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr);
   }
 
   .nav-monitor .monitor-screen NavigationMap {
@@ -4885,42 +4765,6 @@
 }
 
 /* ============================================
-   ADR-0072 AUTOPILOT — HELM RAIL BUTTONS
-   Cyan accent matching the base .helm-btn CRT
-   idiom; abort uses a red-tinted variant.
-   ============================================ */
-
-/* ENGAGE AUTOPILOT — cyan, same family as .helm-btn */
-.helm-btn.autopilot-engage {
-  background: rgba(0, 217, 255, 0.12);
-  border-color: rgba(0, 217, 255, 0.6);
-  color: #00d9ff;
-  text-shadow: 0 0 8px rgba(0, 217, 255, 0.7);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.helm-btn.autopilot-engage:hover:not(:disabled) {
-  background: rgba(0, 217, 255, 0.25);
-  box-shadow: 0 0 14px rgba(0, 217, 255, 0.45);
-}
-
-/* ABORT — amber/red accent so it reads as a cancel action */
-.helm-btn.autopilot-abort {
-  background: rgba(255, 176, 0, 0.12);
-  border-color: rgba(255, 176, 0, 0.6);
-  color: #ffb000;
-  text-shadow: 0 0 8px rgba(255, 176, 0, 0.7);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.helm-btn.autopilot-abort:hover:not(:disabled) {
-  background: rgba(255, 176, 0, 0.25);
-  box-shadow: 0 0 14px rgba(255, 176, 0, 0.45);
-}
-
-/* ============================================
    ADR-0072 AUTOPILOT — NAV MONITOR PLOT ROW
    Compact inline destination + PLOT button
    in the screen-hud-header of the NAV monitor.
@@ -5002,6 +4846,120 @@
   border-color: rgba(120, 130, 150, 0.3);
   color: rgba(180, 190, 210, 0.5);
   text-shadow: none;
+}
+
+/* ============================================
+   ADR-0072 AUTOPILOT — NAV HEADER BUTTONS
+   Standalone engage/abort buttons that live
+   in the nav-plot-row (no helm-btn base).
+   ============================================ */
+
+/* ENGAGE — cyan, same palette as the plot row */
+.nav-autopilot-engage {
+  height: 22px;
+  padding: 0 0.55rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(0, 217, 255, 0.12);
+  border: 1px solid rgba(0, 217, 255, 0.6);
+  border-radius: 3px;
+  color: #00d9ff;
+  text-shadow: 0 0 8px rgba(0, 217, 255, 0.7);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  flex-shrink: 0;
+}
+
+.nav-autopilot-engage:hover:not(:disabled) {
+  background: rgba(0, 217, 255, 0.25);
+  box-shadow: 0 0 14px rgba(0, 217, 255, 0.45);
+}
+
+.nav-autopilot-engage:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ABORT — amber/red accent so it reads as cancel */
+.nav-autopilot-abort {
+  height: 22px;
+  padding: 0 0.55rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  background: rgba(255, 176, 0, 0.12);
+  border: 1px solid rgba(255, 176, 0, 0.6);
+  border-radius: 3px;
+  color: #ffb000;
+  text-shadow: 0 0 8px rgba(255, 176, 0, 0.7);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  flex-shrink: 0;
+}
+
+.nav-autopilot-abort:hover:not(:disabled) {
+  background: rgba(255, 176, 0, 0.25);
+  box-shadow: 0 0 14px rgba(255, 176, 0, 0.45);
+}
+
+.nav-autopilot-abort:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   PLANETARY MONITOR — ASTEROID FIELD STATE
+   HARVEST trigger shown when the sector is an
+   asteroid field with no planets or stations.
+   ============================================ */
+
+.planetary-asteroid-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 100%;
+}
+
+.planetary-asteroid-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: rgba(255, 200, 0, 0.7);
+  text-transform: uppercase;
+}
+
+.planetary-harvest-btn {
+  padding: 0.4rem 1.1rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: rgba(255, 200, 0, 0.1);
+  border: 1px solid rgba(255, 200, 0, 0.5);
+  border-radius: 4px;
+  color: #ffc800;
+  text-shadow: 0 0 6px rgba(255, 200, 0, 0.5);
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+
+.planetary-harvest-btn:hover:not(:disabled) {
+  background: rgba(255, 200, 0, 0.22);
+  box-shadow: 0 0 12px rgba(255, 200, 0, 0.35);
+}
+
+.planetary-harvest-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ============================================
