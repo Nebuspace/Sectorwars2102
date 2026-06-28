@@ -1,49 +1,31 @@
-"""Price-alert evaluator.
+"""Price-alert evaluator — ops/admin surface only.
 
-Implements the canon **Price-alert evaluation cycle** from
-``sw2102-docs/SYSTEMS/market-pricing.md`` (§ "Price-alert evaluation cycle" and
-the "Alert flap" failure mode):
+``PriceAlert`` is an operations model (``station_id`` NOT NULL,
+``alert_type``, ``threshold_value``, ``current_value``, ``is_active``,
+``triggered_at``, acknowledgement fields). It has no ``player_id`` and is not
+a player-facing notification channel.
 
-> On each ``update_market_prices`` call, after persistence, the alert evaluator:
->   1. Loads alerts matching ``(commodity, station_id_or_any)``.
->   2. For each alert, compares the new price against ``threshold``.
->   3. On match, emits a ``price_alert_triggered`` realtime event to the player;
->      marks alert ``last_triggered_at``; honors the alert's cooldown so a
->      flapping price does not spam.
+The evaluator:
+  1. Loads active alerts matching ``(commodity, station_id_or_any)``.
+  2. For each alert, compares the current price against ``threshold_value``
+     using the alert's direction (``alert_type`` heuristic → ``<=`` / ``>=``).
+  3. On a crossing NOT inside the cooldown window: stamps
+     ``last_triggered_at`` (where the model carries it) and records the alert
+     as fired — returning it to the caller for ops handling (logging,
+     auto-resolve, acknowledgement).
 
-The evaluator is a clean, side-effect-scoped callable. It does NOT wire itself
-into ``update_market_prices`` or any scheduler — the lead wires the trigger.
-
-────────────────────────────────────────────────────────────────────────────
-MODEL SHAPE NOTE (read before extending)
-────────────────────────────────────────────────────────────────────────────
-The canon player-facing alert references ``(player_id, commodity, station_id?,
-condition={op, price_kind, threshold}, last_triggered_at, cooldown)``. The
-*current* ``PriceAlert`` model in ``models/market_transaction.py`` is an
-admin/operations alert and does NOT yet carry ``player_id``, a direction/
-comparison, ``last_triggered_at`` or ``cooldown_seconds`` — it carries
-``station_id`` (NOT NULL), ``commodity``, ``alert_type``, ``threshold_value``,
-``current_value``, ``is_active``, ``triggered_at`` and admin acknowledgement
-fields.
-
-Rather than require a schema migration (out of scope for this unit of work), the
-evaluator reads the canon fields through defensive attribute access so it is
-forward-compatible: once the model gains the player-alert columns it will honor
-them automatically, and on the current schema it degrades gracefully (an alert
-with no resolvable player simply cannot be unicast and is skipped). No alert is
-ever mutated in a way the current schema cannot persist.
+No player notification is emitted. The evaluator is a clean, side-effect-
+scoped callable; it does not wire itself into any scheduler or route.
 """
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from src.models.market_transaction import PriceAlert
-from src.models.player import Player
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +34,13 @@ logger = logging.getLogger(__name__)
 # market-pricing.md specifies the alert "honors the alert's cooldown" and the
 # failure-mode table names a per-alert ``cooldown_seconds`` field, but does not
 # fix a default value for alerts that omit one. A conservative non-zero default
-# prevents a threshold-straddling price from spamming a player every recompute
+# prevents a threshold-straddling price from retriggering on every recompute
 # (the "Alert flap" failure mode). The model has no cooldown column today, so
 # this default applies whenever the resolved cooldown is None.
 DEFAULT_COOLDOWN_SECONDS = 300  # NO-CANON: 5 min anti-flap cooldown default
 
-# Canon comparison op is ``"<="`` | ``">="`` over a ``buy``/``sell`` price_kind.
-# An alert whose direction cannot be resolved falls back to ">=" (price rose to
-# or above threshold) — the most common "alert me when it gets expensive" case.
+# An alert whose direction cannot be resolved from alert_type falls back to
+# ">=" (price rose to/above threshold) — the most common ops-alert case.
 _DEFAULT_OP = ">="  # NO-CANON: default comparison when alert omits a direction
 
 
@@ -153,76 +134,6 @@ def _crosses(op: str, new_price: float, threshold: float) -> bool:
     return new_price >= threshold
 
 
-def _resolve_recipient_user_id(db: Session, alert: PriceAlert) -> Optional[str]:
-    """Resolve the owning User id string the WS connection map routes on.
-
-    ``send_personal_message`` is keyed by the owning *User* id (not Player.id).
-    The alert carries (canon) a ``player_id``; we resolve it to its
-    ``Player.user_id``. Returns None when the alert has no resolvable player
-    (e.g. an admin-operations alert on the current schema), in which case it
-    cannot be unicast and is skipped.
-    """
-    player_id = getattr(alert, "player_id", None)
-    if player_id is None:
-        return None
-    player = db.query(Player).filter(Player.id == player_id).first()
-    if player is None or not getattr(player, "user_id", None):
-        return None
-    return str(player.user_id)
-
-
-def _build_frame(alert: PriceAlert, commodity: str, station_id: Any,
-                 new_price: float, op: str, threshold: float,
-                 now: datetime) -> dict:
-    """Construct the ``price_alert_triggered`` unicast frame.
-
-    Mirrors the typed, personal-scope frames in websocket_service
-    (send_turn_pool_update / send_hostile_detected): a ``type`` discriminator,
-    an ISO ``timestamp``, and a flat payload.
-    """
-    return {
-        "type": "price_alert_triggered",
-        "timestamp": now.isoformat(),
-        "alert_id": str(getattr(alert, "id", "")) or None,
-        "commodity": commodity,
-        "station_id": str(station_id) if station_id is not None else None,
-        "price": new_price,
-        "comparison": op,
-        "threshold": threshold,
-    }
-
-
-def _dispatch_frame(user_id: str, frame: dict) -> None:
-    """Schedule the unicast frame on the running loop, never blocking the caller.
-
-    Mirrors movement_service._notify_hostile_detected / docking notifications:
-    import the manager inside the function, grab the running loop, schedule the
-    coroutine so it runs after the caller's transaction yields, and swallow any
-    failure (no loop, no socket) so a quiet socket can never break price
-    recompute. When no event loop is running (sync context), fall back to a
-    fresh ``asyncio.run`` so the frame is still attempted.
-    """
-    try:
-        from src.services.websocket_service import connection_manager
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is not None:
-            loop.create_task(
-                connection_manager.send_personal_message(user_id, frame)
-            )
-        else:
-            asyncio.run(connection_manager.send_personal_message(user_id, frame))
-    except Exception:
-        logger.debug(
-            "Skipped price_alert_triggered WS notice (no loop or socket)",
-            exc_info=True,
-        )
-
-
 def evaluate_price_alerts(
     db: Session,
     station_id: Any,
@@ -230,21 +141,19 @@ def evaluate_price_alerts(
     new_price: float,
     now: Optional[datetime] = None,
 ) -> List[PriceAlert]:
-    """Evaluate active price alerts for one ``(station, commodity, new_price)``.
+    """Evaluate active ops price alerts for one ``(station, commodity, new_price)``.
 
-    The canon evaluator, run after ``update_market_prices`` persists. Loads
-    active alerts matching ``(commodity, station_id_or_any)`` — an alert with a
-    NULL ``station_id`` (where the schema permits it) matches any station for
-    that commodity — compares ``new_price`` against each alert's threshold per
-    its direction, and for each crossing NOT inside its cooldown window:
+    Loads active alerts matching ``(commodity, station_id_or_any)`` — an alert
+    with a NULL ``station_id`` (where the schema permits it) matches any station
+    for that commodity — compares ``new_price`` against each alert's threshold
+    per its direction (``alert_type`` heuristic), and for each crossing NOT
+    inside its cooldown window:
 
-      * emits a ``price_alert_triggered`` personal WS frame to the alert's
-        player,
-      * sets ``last_triggered_at = now`` (only where the model carries it;
-        otherwise the call is a no-op flag write the current schema persists via
-        ``triggered_at`` only if explicitly present),
-      * honors ``cooldown_seconds`` (skips an alert that fired within the
-        window).
+      * stamps ``last_triggered_at = now`` (only where the model carries it),
+      * appends the alert to the returned list for the caller to handle
+        (ops logging, auto-resolve, acknowledgement).
+
+    No player notification is emitted. PriceAlert is an ops/admin model.
 
     Args:
         db:         active SQLAlchemy session.
@@ -254,9 +163,7 @@ def evaluate_price_alerts(
         now:        evaluation instant; defaults to UTC now.
 
     Returns:
-        The list of alerts that fired this call (useful for tests/telemetry).
-        It never raises on a delivery failure — a missed live frame is a
-        degraded-but-acceptable outcome, consistent with notification_service.
+        The list of alerts that fired this call (useful for ops telemetry).
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -303,21 +210,10 @@ def evaluate_price_alerts(
         if _in_cooldown(alert, now):
             continue
 
-        user_id = _resolve_recipient_user_id(db, alert)
-        if user_id is None:
-            # No resolvable player (e.g. admin-ops alert on current schema) —
-            # cannot unicast; do not fire.
-            continue
-
-        frame = _build_frame(
-            alert, commodity, station_id, price, op, threshold, now
-        )
-        _dispatch_frame(user_id, frame)
-
-        # Stamp the last-fire time on whichever column the model actually
-        # carries, so the cooldown is honored next time. Guarded so the current
-        # schema (no ``last_triggered_at``) is never assigned a non-existent
-        # attribute that SQLAlchemy can't persist.
+        # Stamp the last-fire time on whichever column the model carries so
+        # the cooldown is honored next cycle. Guarded so the current schema
+        # (no ``last_triggered_at``) is never assigned a column that doesn't
+        # exist and can't be persisted by SQLAlchemy.
         if hasattr(alert, "last_triggered_at"):
             alert.last_triggered_at = now
 
