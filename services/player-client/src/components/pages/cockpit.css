@@ -744,6 +744,18 @@
   padding-bottom: 0.5rem;
 }
 
+/* LANDED chips: the pvh-name+identity column and the pvh-logout button both
+   sit in .player-vitals-hud (top:0.3rem; total height ~2.6rem), so chips at
+   the default top:1.5rem overlap the HUD chrome. Push them below the HUD
+   (~top:3rem gives ~0.4rem breathing room). Scoped by chip id so in-flight
+   chips (.top-left location, .top-right sector) are unaffected. */
+.hud-overlay[data-hud-chip="landed"] {
+  top: 3rem;
+}
+.hud-overlay[data-hud-chip="owner"] {
+  top: 3rem;
+}
+
 .hud-overlay.top-right {
   top: 1.5rem;
   right: 1.5rem;

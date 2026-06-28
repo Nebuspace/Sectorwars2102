@@ -249,9 +249,10 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
             >
               <PlayerVitalsHud />
               {/* Windshield minimize/expand (id=151 + id=151b) — only while
-                  docked/landed. MINIMIZED: a CENTERED, labeled "Expand Viewport"
-                  button (prominent — Max couldn't see the corner glyph).
-                  EXPANDED: the slim ▴ corner minimize. */}
+                  docked/landed. Both states show a CENTERED, labeled button.
+                  MINIMIZED: "Expand Viewport" near top of the thin 60px band.
+                  EXPANDED: "Minimize Viewport" centered-bottom of the scene
+                  band (uses --band-h via .windshield-minimize). */}
               {grounded && windshieldMin && (
                 <button
                   type="button"
@@ -266,12 +267,12 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
               {grounded && !windshieldMin && (
                 <button
                   type="button"
-                  className="windshield-toggle"
+                  className="windshield-minimize"
                   onClick={toggleWindshield}
                   aria-label="Minimize viewport"
                   title="Minimize viewport — give the console more room"
                 >
-                  ▴
+                  ▾ MINIMIZE VIEWPORT
                 </button>
               )}
               {children}

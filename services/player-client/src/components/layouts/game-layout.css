@@ -171,31 +171,40 @@
   --band-h: 65%;
 }
 
-/* Minimize / expand-viewport toggle — small button pinned to the band top-right
-   (inside .main-viewport; z above the HUD/helm, below alerts). */
-.windshield-toggle {
+/* CENTERED, prominent "Minimize Viewport" button — symmetric to
+   .windshield-expand; shown only while the viewport is EXPANDED (grounded +
+   windshieldMin=false). Anchored to the BOTTOM of the visual scene band using
+   `--band-h` (set on .game-container and inherited). Formula:
+     bottom = 100% (full .main-viewport height) − var(--band-h) + 0.7rem
+   places the button's bottom edge 0.7rem inside the band from its lower border
+   for any --band-h value (20% docked, 65% landed-expanded). */
+.windshield-minimize {
   position: absolute;
-  top: 0.4rem;
-  right: 0.5rem;
-  z-index: 36;
+  bottom: calc(100% - var(--band-h) + 0.7rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 37;
   pointer-events: auto;
-  width: 1.5rem;
-  height: 1.5rem;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-size: 0.8rem;
-  line-height: 1;
+  gap: 0.35rem;
+  padding: 0.28rem 0.95rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
   color: var(--color-primary, #00d9ff);
-  background: rgba(0, 10, 16, 0.55);
-  border: 1px solid rgba(0, 217, 255, 0.35);
+  background: rgba(0, 12, 20, 0.82);
+  border: 1px solid rgba(0, 217, 255, 0.5);
   border-radius: 4px;
   cursor: pointer;
+  box-shadow: 0 0 12px rgba(0, 217, 255, 0.3);
 }
 
-.windshield-toggle:hover {
-  background: rgba(0, 217, 255, 0.15);
-  box-shadow: 0 0 8px rgba(0, 217, 255, 0.4);
+.windshield-minimize:hover {
+  background: rgba(0, 217, 255, 0.18);
+  box-shadow: 0 0 16px rgba(0, 217, 255, 0.5);
 }
 
 /* CENTERED, prominent "Expand Viewport" button shown only while MINIMIZED
