@@ -89,21 +89,39 @@ DEFENSE_BUILDINGS = {
     },
     # planetary_defense_grid (defense.md §"Defense grid"): citadel L3+; 200,000 cr
     # + 15,000 equipment; 96h; a DRONE-DAMAGE MODIFIER (+15% drone damage &
-    # accuracy, upgradable to L2 for +25% total). Key renamed defense_grid ->
-    # planetary_defense_grid (blessed rename) to avoid colliding with the
-    # unrelated Station.defense_grid boolean. ``effects`` encodes the canon
-    # drone-damage role; max_count 1 per level is the L1 install (the +25% L2
-    # upgrade is a later upgrade path, not a second building).
+    # accuracy). Key renamed defense_grid -> planetary_defense_grid (blessed
+    # rename) to avoid colliding with the unrelated Station.defense_grid bool.
+    #
+    # Two-level build path (WO-DEFGRID-L2, defense.md §"Defense grid"):
+    #   L1 (count 1): 200,000 cr, 96h, +15% drone damage & accuracy.
+    #   L2 (count 2): 300,000 cr, 96h, +25% total (defense.md: "Upgradable to
+    #     L2 (+25% total) for 300k cr"). The examples section totals L1+L2=500k
+    #     (defense.md §"Defensive strength examples").
+    # ``tier_costs`` maps the count-being-built to its canon unit cost; the
+    # flat ``cost`` is the L1 (count=0→1) cost. ``max_count`` allows a 2nd
+    # unit at L4+ citadel (the L2 upgrade prereq per citadels.md). L3 stays
+    # capped at 1 (grid L1 satisfies the L3 prereq; L2 needs L4+).
+    # Build hours are 96h for both units (the system model: all units of a
+    # building type share one ``build_hours`` value — no per-count variation
+    # for any existing building; canon states 96h for L1 only, no ladder).
     "planetary_defense_grid": {
         "name": "Planetary Defense Grid",
         "min_citadel_level": 3,
-        "max_count": {3: 1, 4: 1, 5: 1},
-        "cost": 200000,
-        "build_hours": 96,
+        "max_count": {3: 1, 4: 2, 5: 2},      # L2 upgrade (2nd unit) available at L4+
+        "cost": 200000,                          # L1 initial build (defense.md: 200k cr)
+        # ``tier_costs`` MUST key every count whose price ≠ spec["cost"]; the
+        # unkeyed fallback to spec["cost"] is only correct here because count=1
+        # (L1) IS spec["cost"] (200k).  Any count not keyed falls back to 200k.
+        "tier_costs": {2: 300000},               # L2 (2nd unit): 300k cr (defense.md)
+        "build_hours": 96,                       # per-unit build time (L1 and L2)
         "effects": {
-            # Drone-damage modifier (defense.md §defense-grid).
+            # L1 (count=1): +15% drone damage and accuracy.
             "drone_damage_bonus_pct": 15,
             "drone_accuracy_bonus_pct": 15,
+            # L2 (count=2): +25% total (replaces L1 bonus, not additive).
+            # combat_service reads count>=2 as 0.25 (already implemented).
+            "l2_drone_damage_bonus_pct": 25,
+            "l2_drone_accuracy_bonus_pct": 25,
         },
         "research_node": "t.defense.grid.1",
     },
@@ -136,6 +154,56 @@ DEFENSE_BUILDINGS = {
             # (build_defense_building charges credits only, like rail_gun).
             "equipment_cost": 10000,
         },
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Per-level defensive prerequisites for citadel upgrade (ADR-0059 N-D4).
+# Canon source: FEATURES/planets/citadels.md §"Upgrade workflow" table.
+#
+# "mode": "any" — OR logic; at least one requirement must be satisfied (L3).
+# "mode": "all" — AND logic; every requirement must be satisfied (L4–L5).
+#
+# Requirement spec keys:
+#   type   "building" → check active_events["defense_buildings"][key] >= min
+#          "shield"   → check planet.defense_shields >= min
+#   key    building dict key, or "defense_shields" (cosmetic — type drives logic)
+#   min    minimum operational count / level required
+#   name   human-readable label surfaced in API error messages
+#
+# Defense Grid L2 (WO-DEFGRID-L2): SHIPPED. The DEFENSE_BUILDINGS catalog
+# now allows max_count=2 for planetary_defense_grid at L4+ citadel, with
+# tier_costs encoding the canon 300k cr cost for the 2nd unit. The L4/L5
+# prereqs below (min=2) are now satisfiable once the 2nd unit completes.
+# combat_service already interprets count>=2 as +25% drone-damage bonus.
+# ---------------------------------------------------------------------------
+CITADEL_UPGRADE_PREREQS: Dict[int, Dict] = {
+    # L3 Colony: Defense Grid L1 OR Automated Turret Network
+    3: {
+        "mode": "any",
+        "requirements": [
+            {"type": "building", "key": "planetary_defense_grid", "min": 1, "name": "Defense Grid L1"},
+            {"type": "building", "key": "turret_network",          "min": 1, "name": "Automated Turret Network"},
+        ],
+    },
+    # L4 Major Colony: Defense Grid L2 AND Automated Turret Network AND Shield Generator L4
+    4: {
+        "mode": "all",
+        "requirements": [
+            {"type": "building", "key": "planetary_defense_grid", "min": 2, "name": "Defense Grid L2"},
+            {"type": "building", "key": "turret_network",          "min": 1, "name": "Automated Turret Network"},
+            {"type": "shield",   "key": "defense_shields",        "min": 4, "name": "Shield Generator L4"},
+        ],
+    },
+    # L5 Planetary Capital: Defense Grid L2 AND Orbital Defense Platform AND Rail Gun Battery AND Shield Generator L8
+    5: {
+        "mode": "all",
+        "requirements": [
+            {"type": "building", "key": "planetary_defense_grid", "min": 2, "name": "Defense Grid L2"},
+            {"type": "building", "key": "orbital_platform",        "min": 1, "name": "Orbital Defense Platform"},
+            {"type": "building", "key": "rail_gun",               "min": 1, "name": "Rail Gun Battery"},
+            {"type": "shield",   "key": "defense_shields",        "min": 8, "name": "Shield Generator L8"},
+        ],
     },
 }
 
@@ -421,21 +489,12 @@ class CitadelService:
                 ),
             }
 
-        # Prerequisite validation: higher citadel levels require planetary defenses
-        prerequisite_defense = {
-            3: (2, "basic defenses (defense level 2+)"),
-            4: (5, "advanced defenses (defense level 5+)"),
-            5: (8, "fortified defenses (defense level 8+)"),
-        }
-        if next_level in prerequisite_defense:
-            required_defense, description = prerequisite_defense[next_level]
-            planet_defense = getattr(planet, "defense_level", 0) or 0
-            if planet_defense < required_defense:
-                return {
-                    "success": False,
-                    "message": f"Requires defense level {required_defense}+ to upgrade to {next_info['name']}. "
-                               f"Current defense level: {planet_defense}.",
-                }
+        # Prerequisite validation: specific defensive buildings must be operational
+        # (ADR-0059 N-D4; replaces the former flat defense_level scalar check).
+        # Applies to NEW upgrade attempts only — existing in-progress upgrades are unaffected.
+        prereq_failure = self._check_upgrade_prereqs(planet, next_level)
+        if prereq_failure:
+            return prereq_failure
 
         # Level 0 -> 1 is free: apply immediately
         if current_level == 0:
@@ -1061,6 +1120,157 @@ class CitadelService:
             )
         return moved
 
+    # ------------------------------------------------------------------
+    # Upgrade prerequisite helpers (ADR-0059 N-D4)
+    # ------------------------------------------------------------------
+
+    def _eval_prereq(
+        self,
+        planet: Planet,
+        req: Dict[str, Any],
+        level_name: str,
+        operational: Dict[str, int],
+        queued_types: set,
+    ) -> Optional[Dict[str, Any]]:
+        """Evaluate one prerequisite entry. Returns None if satisfied, else a failure dict.
+
+        Failure dict keys:
+          "success"  False
+          "reason"   "prerequisite_building_missing"  — structure absent (not in buildings or queue)
+                     "prerequisite_building_offline"  — present but under construction / upgrading
+          "message"  Human-readable explanation.
+        """
+        name = req["name"]
+        level_name_str = level_name  # the upgrade target, e.g. "Colony"
+
+        if req["type"] == "building":
+            key = req["key"]
+            min_count = req["min"]
+            if operational.get(key, 0) >= min_count:
+                return None  # satisfied
+            reason = (
+                "prerequisite_building_offline"
+                if key in queued_types
+                else "prerequisite_building_missing"
+            )
+            if reason == "prerequisite_building_offline":
+                msg = (
+                    f"Upgrade to {level_name_str} requires {name} to be operational, "
+                    f"but it is still under construction."
+                )
+            else:
+                msg = f"Upgrade to {level_name_str} requires {name} — build it first."
+            return {"success": False, "reason": reason, "message": msg}
+
+        if req["type"] == "shield":
+            min_level = req["min"]
+            current = getattr(planet, "defense_shields", 0) or 0
+            if current >= min_level:
+                return None  # satisfied
+            events = planet.active_events
+            upgrading = isinstance(events, dict) and bool(events.get("shield_upgrade"))
+            reason = (
+                "prerequisite_building_offline" if upgrading
+                else "prerequisite_building_missing"
+            )
+            if reason == "prerequisite_building_offline":
+                msg = (
+                    f"Upgrade to {level_name_str} requires {name}, but the shield "
+                    f"generator is still upgrading (current: L{current})."
+                )
+            else:
+                msg = (
+                    f"Upgrade to {level_name_str} requires {name} "
+                    f"(current shield generator: L{current})."
+                )
+            return {"success": False, "reason": reason, "message": msg}
+
+        # Unknown requirement type: log a warning and return a blocking failure.
+        # Silently returning None (= satisfied) here would let a future config
+        # typo bypass a prerequisite entirely — failing loud is far safer.
+        logger.warning(
+            "_eval_prereq: unrecognized requirement type %r for prereq %r targeting "
+            "level %r — treating as missing to prevent a silent bypass",
+            req.get("type"), name, level_name_str,
+        )
+        return {
+            "success": False,
+            "reason": "prerequisite_building_missing",
+            "message": (
+                f"Upgrade to {level_name_str} is blocked by a misconfigured prerequisite "
+                f"({name!r} — unrecognized type {req.get('type')!r}). "
+                f"Contact an administrator."
+            ),
+        }
+
+    def _check_upgrade_prereqs(
+        self, planet: Planet, next_level: int
+    ) -> Optional[Dict[str, Any]]:
+        """Check all per-level defensive prerequisites for a citadel upgrade (ADR-0059 N-D4).
+
+        Scans Planet.active_events["defense_buildings"] for specific operational
+        structures, and planet.defense_shields for shield generator level.
+
+        Returns None when all prerequisites are satisfied (or there are none).
+        On failure, returns a dict with "success": False, "reason", and "message".
+        Reasons: "prerequisite_building_missing" or "prerequisite_building_offline".
+
+        Only gates NEW upgrade attempts; does not touch in-progress upgrade records.
+        """
+        if next_level not in CITADEL_UPGRADE_PREREQS:
+            return None
+
+        spec = CITADEL_UPGRADE_PREREQS[next_level]
+        mode = spec["mode"]
+        requirements = spec["requirements"]
+        level_name = CITADEL_LEVELS[next_level]["name"]
+
+        operational = self._get_defense_buildings(planet)
+        queue = self._get_build_queue(planet)
+        queued_types: set = {e.get("type") for e in queue if e.get("type")}
+
+        failures: List[Dict[str, Any]] = []
+        for req in requirements:
+            result = self._eval_prereq(planet, req, level_name, operational, queued_types)
+            if result is None:
+                if mode == "any":
+                    return None  # one satisfied → OR condition met
+            else:
+                failures.append(result)
+
+        if mode == "any":
+            # No requirement was satisfied — prefer "missing" over "offline" in the message
+            if not failures:
+                return None
+            missing = [f for f in failures if f["reason"] == "prerequisite_building_missing"]
+            return missing[0] if missing else failures[0]
+        else:
+            # All requirements must be satisfied.  Surface EVERY failing requirement
+            # so the player sees all blockers in one attempt rather than one-per-retry.
+            # Callers only check truthiness or read "message" / "reason", so the
+            # additive ``missing`` list is non-breaking; single-failure callers still
+            # work (the dict is still truthy and carries the primary reason/message).
+            if not failures:
+                return None
+            if len(failures) == 1:
+                return failures[0]
+            # Multiple failures: build a combined response.
+            reasons = [f["reason"] for f in failures]
+            primary_reason = (
+                "prerequisite_building_missing"
+                if "prerequisite_building_missing" in reasons
+                else reasons[0]
+            )
+            combined_msg = "; ".join(f["message"] for f in failures)
+            return {
+                "success": False,
+                "reason": primary_reason,
+                "message": combined_msg,
+                "missing": [
+                    {"reason": f["reason"], "message": f["message"]} for f in failures
+                ],
+            }
+
     def _get_defense_buildings(self, planet: Planet) -> Dict[str, int]:
         """Extract defense_buildings sub-dict from planet.active_events JSONB.
 
@@ -1207,10 +1417,26 @@ class CitadelService:
             in_progress.sort(key=lambda e: e["remaining_seconds"])
             queued_count = len(in_progress)
 
+            can_build = (current_count + queued_count) < max_at_level
+
+            # Tiered-cost buildings (e.g. planetary_defense_grid) charge a
+            # different amount for the 2nd unit than the 1st.  Surface the cost
+            # for the NEXT unit the player would enqueue.  When already at max
+            # (can_build=False) set to None — the tier_costs fallback would
+            # otherwise return the L1 price (200k) for a slot that doesn't exist,
+            # which the client would wrongly surface as the next buy price.
+            if can_build:
+                next_count = current_count + queued_count + 1
+                next_unit_cost: Optional[int] = spec.get("tier_costs", {}).get(
+                    next_count, spec["cost"]
+                )
+            else:
+                next_unit_cost = None
+
             buildings.append({
                 "type": building_type,
                 "name": spec["name"],
-                "cost": spec["cost"],
+                "cost": next_unit_cost,        # None when at capacity
                 "build_hours": spec["build_hours"],
                 "effects": spec["effects"],
                 "current_count": current_count,
@@ -1218,7 +1444,7 @@ class CitadelService:
                 "in_progress": in_progress,
                 "max_count": max_at_level,
                 # A pending build reserves a slot, so capacity counts operational + queued.
-                "can_build": (current_count + queued_count) < max_at_level,
+                "can_build": can_build,
             })
 
         return {
@@ -1317,21 +1543,29 @@ class CitadelService:
                 ),
             }
 
+        # Tiered cost: buildings with ``tier_costs`` charge a different amount
+        # for higher-count units (e.g. planetary_defense_grid charges 200k for
+        # the 1st unit and 300k for the 2nd — canon: defense.md §"Defense grid"
+        # "Upgradable to L2 for 300k cr"). Falls back to the flat ``cost`` for
+        # building types without ``tier_costs`` (no behaviour change for those).
+        count_to_be = current_count + queued_count + 1
+        unit_cost = spec.get("tier_costs", {}).get(count_to_be, spec["cost"])
+
         # --- Lock player for credit deduction ---
         player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
         if not player:
             return {"success": False, "message": "Player not found"}
 
-        if player.credits < spec["cost"]:
+        if player.credits < unit_cost:
             return {
                 "success": False,
                 "message": (
-                    f"Insufficient credits. Need {spec['cost']:,}, have {player.credits:,}."
+                    f"Insufficient credits. Need {unit_cost:,}, have {player.credits:,}."
                 ),
             }
 
         # --- Execute construction: deduct credits and enqueue a timed build ---
-        player.credits -= spec["cost"]
+        player.credits -= unit_cost
 
         complete_at = now + timedelta(hours=spec["build_hours"])
         queue.append({
@@ -1360,9 +1594,13 @@ class CitadelService:
             ),
             "building_type": building_type,
             "building_name": spec["name"],
+            # ``count`` = pre-settle operational count at enqueue time (legacy field,
+            # kept for any callers already reading it).  ``operational_count`` is the
+            # same value under an unambiguous name for new callers.
             "count": current_count,
+            "operational_count": current_count,
             "max_count": max_at_level,
-            "credits_deducted": spec["cost"],
+            "credits_deducted": unit_cost,
             "player_credits": player.credits,
             "build_hours": spec["build_hours"],
             "effects": spec["effects"],
