@@ -21,7 +21,7 @@ fastapi = ">=0.138.1,<0.139"
 # earlier Range-header FileResponse + multipart DoS. 1.3.1 closes all of them.
 # FastAPI pulls starlette transitively; pin the floor so poetry takes the fix.
 starlette = ">=1.3.1,<2.0.0"
-uvicorn = {extras = ["standard"], version = ">=0.23.2,<0.49.0"}
+uvicorn = {extras = ["standard"], version = ">=0.23.2,<0.50.0"}
 websockets = ">=11.0.3,<17.0.0"
 sqlalchemy = "^2.0.20"
 psycopg2-binary = "^2.9.7"
@@ -47,7 +47,7 @@ prophet = "^1.1.4"
 pandas = "^2.0.3"
 numpy = ">=1.24.3,<3.0.0"
 scipy = "^1.11.2"
-anthropic = ">=0.18.1,<0.106.0"
+anthropic = ">=0.18.1,<0.113.0"
 openai = ">=1.12,<3.0"
 pyotp = "^2.9.0"
 qrcode = {extras = ["pil"], version = ">=7.4.2,<9.0.0"}
@@ -60,7 +60,7 @@ black = "^26.3.0"
 isort = ">=5.12,<9.0"
 flake8 = ">=6.1,<8.0"
 mypy = ">=1.5.1,<3.0.0"
-ruff = ">=0.0.287,<0.15.16"
+ruff = ">=0.0.287,<0.15.21"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

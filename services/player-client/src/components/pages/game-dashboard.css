@@ -158,18 +158,6 @@
   margin-bottom: 0.5rem;
 }
 
-.sector-type-badge {
-  display: inline-block;
-  background: rgba(77, 132, 253, 0.2);
-  color: #4d84fd;
-  padding: 0.25rem 0.75rem;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  margin-bottom: 1rem;
-}
-
 .log-header {
   font-family: var(--font-monospace);
   font-size: 0.8rem;
@@ -643,10 +631,17 @@
 }
 
 .offline-note {
-  font-size: var(--text-sm) !important;
-  color: var(--color-primary) !important;
-  font-family: var(--font-secondary) !important;
-  text-transform: none !important;
+  font-size: var(--text-sm);
+  color: var(--color-primary);
+  font-family: var(--font-secondary);
+  text-transform: none;
+}
+
+.no-players .offline-note {
+  font-size: var(--text-sm);
+  color: var(--color-primary);
+  font-family: var(--font-secondary);
+  text-transform: none;
 }
 
 .players-list {
