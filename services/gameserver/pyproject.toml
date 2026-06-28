@@ -27,6 +27,9 @@ asyncpg = ">=0.28,<0.32"
 pydantic = {extras = ["email"], version = ">=2.3.0,<2.14.0"}
 pydantic-settings = ">=2.0.3,<2.15.0"
 alembic = "^1.12.0"
+# Explicit pin: CVE needs >=48.0.1; cap at <49 to avoid taking an unreviewed
+# major (48→49) on a package that underpins JWT + argon2 auth paths.
+cryptography = ">=48.0.1,<49"
 pyjwt = {extras = ["crypto"], version = "^2.10.0"}
 python-multipart = ">=0.0.18"
 passlib = {extras = ["argon2"], version = "^1.7.4"}
