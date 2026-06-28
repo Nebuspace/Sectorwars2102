@@ -16,6 +16,7 @@ updates:
   # ---------------------------------------------------------------------
   - package-ecosystem: "npm"
     directory: "/"
+    target-branch: "feat/expeditions-vista"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -35,6 +36,7 @@ updates:
 
   - package-ecosystem: "npm"
     directory: "/services/player-client"
+    target-branch: "feat/expeditions-vista"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -55,6 +57,7 @@ updates:
 
   - package-ecosystem: "npm"
     directory: "/services/admin-ui"
+    target-branch: "feat/expeditions-vista"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -78,6 +81,7 @@ updates:
   # ---------------------------------------------------------------------
   - package-ecosystem: "pip"
     directory: "/services/gameserver"
+    target-branch: "feat/expeditions-vista"
     schedule:
       interval: "weekly"
       day: "monday"
