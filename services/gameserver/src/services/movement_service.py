@@ -1530,6 +1530,25 @@ class MovementService:
                             "Failed NOVA_FIRST_SCAN_RESEARCH_SECTOR emergent-rep "
                             "hook: %s", e
                         )
+                # Award rank points for discovering a new sector (first visit only).
+                # Idempotent by construction: this is the new-row branch, which
+                # fires exactly once per (player, sector) pair — the `if visit:`
+                # branch above handles all subsequent arrivals and never re-awards.
+                #
+                # Flush the ARIAExplorationMap insert into the outer txn FIRST so
+                # it is validated there (fails loudly if bad — same as before this
+                # change). Then wrap the rank award in a SAVEPOINT (begin_nested):
+                # if award_rank_points' internal flush hits a DB error, only the
+                # savepoint rolls back; the outer move txn is preserved and the
+                # subsequent db.commit() still succeeds.
+                self.db.flush()
+                try:
+                    from src.services.ranking_service import RankingService as _RS
+                    _expl_pts = _RS.calculate_exploration_points()
+                    with self.db.begin_nested():
+                        _RS(self.db).award_rank_points(player.id, _expl_pts, "exploration")
+                except Exception as e:
+                    logger.error("Failed to award exploration rank points: %s", e)
         except Exception as e:
             logger.error("Failed ARIA exploration-map hook during movement: %s", e)
 

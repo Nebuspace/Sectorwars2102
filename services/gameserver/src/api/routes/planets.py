@@ -551,6 +551,27 @@ async def claim_planet(
     except Exception:
         logger.exception("Exploration medal dispatch failed on colony founding")
 
+    # Award rank points for establishing a colony. Claim is the once-per-planet
+    # path: planet.owner_id was None entering this route (enforced above), so
+    # this fires exactly once per claimed planet.
+    #
+    # Flush the core claim mutations (owner_id, status, player_planets insert)
+    # into the OUTER txn unconditionally before the rank savepoint. The medal
+    # hook above only flushes them when it actually awards (no-ops on a 2nd+
+    # colony once the Colonizer medal is already held). Without this flush,
+    # begin_nested below drags the un-flushed claim into the rank savepoint —
+    # a rank error would then silently roll back the colony while the route
+    # still 200s. Flush here ensures a genuine claim error 500s loudly (correct)
+    # and the rank savepoint isolates ONLY the rank award.
+    db.flush()
+    try:
+        from src.services.ranking_service import RankingService as _RS
+        _colony_pts = _RS.calculate_colony_points()
+        with db.begin_nested():
+            _RS(db).award_rank_points(player.id, _colony_pts, "colony_establishment")
+    except Exception:
+        logger.exception("Failed to award rank points for colony establishment")
+
     # Lifetime colonist-transport counter (WO-PC1): credit the ACTUAL colonists
     # that just decanted into this colony's workforce — the post-clamp
     # `colonists_settled`, NOT base_settled (which is the physical pods consumed
