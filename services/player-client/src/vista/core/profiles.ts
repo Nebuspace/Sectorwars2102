@@ -1626,3 +1626,16 @@ const PROFILES: Partial<Record<PlanetType, PlanetProfile>> = {
 export function getProfile(type: PlanetType): PlanetProfile {
   return PROFILES[type] ?? GENERIC_PROFILE;
 }
+
+/**
+ * True when `type` has a dedicated profile (vs. resolving to GENERIC_PROFILE).
+ * Single-sourced from the PROFILES registry keys so the invariants check can
+ * never drift from the implemented set (was a hardcoded {TERRAN,VOLCANIC} list).
+ */
+export function isProfiledType(type: PlanetType): boolean {
+  return type in PROFILES;
+}
+
+/** The PlanetTypes that have a dedicated profile — single-sourced from the
+ *  PROFILES registry so describe()/UIs never drift from the implemented set. */
+export const PROFILED_TYPES = Object.keys(PROFILES) as PlanetType[];

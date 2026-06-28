@@ -30,7 +30,7 @@
 import { VistaInput, VistaModel, RGB } from '../contract';
 import { SeedBus } from './rng';
 import { SeededRng } from './rng';
-import { getProfile, ArchetypeEntry, LandmarkKind, WaterType } from './profiles';
+import { getProfile, isProfiledType, ArchetypeEntry, LandmarkKind, WaterType } from './profiles';
 import { derivePalette, hexToRgb } from './palette';
 import {
   placeFloraScatters,
@@ -730,7 +730,7 @@ export function generateVista(input: VistaInput): VistaModel {
 
   // ── Stage 1: profile lookup ─────────────────────────────────────────────
   const profile = getProfile(input.planet.type);
-  if (!['TERRAN', 'VOLCANIC'].includes(input.planet.type)) {
+  if (!isProfiledType(input.planet.type)) {
     notes.push(`planet.type "${input.planet.type}" uses generic fallback profile`);
   }
 

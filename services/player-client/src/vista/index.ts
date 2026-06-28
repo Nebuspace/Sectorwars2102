@@ -11,6 +11,7 @@
  */
 
 import { generateVista } from './core/pipeline';
+import { PROFILED_TYPES } from './core/profiles';
 import { mount } from './render/canvas2d/backend';
 import { VISTA_CONTRACT_VERSION } from './contract';
 import type { VistaEngine, PlanetType } from './contract';
@@ -39,7 +40,7 @@ export function createVistaEngine(): VistaEngine {
     mount,
     describe(): { types: PlanetType[]; backends: ('canvas2d' | 'webgl')[] } {
       return {
-        types: ['TERRAN', 'VOLCANIC'],
+        types: PROFILED_TYPES,
         backends: ['canvas2d'],
       };
     },
