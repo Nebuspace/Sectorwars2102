@@ -96,8 +96,9 @@ Full protocol = the parent **`Nebuspace/CLAUDE.md`** (auto-loaded) + `.samantha/
 4. **Arm the heartbeat** (Bash, `run_in_background: true`, `dangerouslyDisableSandbox: true`):
    ```bash
    /Users/mrathbone/github/Nebuspace/.claude/heartbeat.sh \
-     ./CROSS-CLAUDE.md <YOUR-IDENTITY> 20 300
+     ./CROSS-CLAUDE.md <YOUR-IDENTITY> 20 120
    ```
+   _(heartbeat.sh is now a v2 **backup-notifier**: CHECK_SEC default 120 — if your watcher dies, the next heartbeat tick delivers the missed peer delta + wakes you within CHECK_SEC. Drop the 4th arg to take the 120 default.)_
 
 Identity = the lane you own (e.g. `player-client`, `gameserver`, `admin-ui`). If you need a name, use the identity-bootstrap handshake in the reference pack (provisional `pending-<uuid>` → Orchestrator assigns → atomic rename). Re-arm watcher + heartbeat each session and each time they self-cap (~6h); re-arm the watcher as your **LAST** action of a wake-cycle, after all mailbox writes. On a `💓 HEARTBEAT` wake: if mid-task, CONTINUE where you left off; if your queue is genuinely empty, re-arm and stand by.
 
