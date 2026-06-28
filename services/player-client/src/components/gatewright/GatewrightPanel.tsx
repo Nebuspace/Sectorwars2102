@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import apiClient from '../../services/apiClient';
 import { useGame } from '../../contexts/GameContext';
+import { TurnsIcon } from '../icons/TurnsIcon';
 import './gatewright-panel.css';
 
 /**
@@ -831,7 +832,7 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
                       <span className="gw-gate-owner">
                         {gate.owner_name ? `GATEWRIGHT: ${gate.owner_name}` : 'GATEWRIGHT UNKNOWN'}
                       </span>
-                      <span className="gw-badge turns">0 TURNS</span>
+                      <span className="gw-badge turns"><TurnsIcon /> 0</span>
                       {gate.is_public && <span className="gw-badge public">PUBLIC</span>}
                     </li>
                   ))}

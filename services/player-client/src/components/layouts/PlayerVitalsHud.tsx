@@ -3,6 +3,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import LogoutButton from '../auth/LogoutButton';
 import { formatCredits } from '../../utils/formatters';
+import { TurnsIcon } from '../icons/TurnsIcon';
 import './player-vitals-hud.css';
 
 /**
@@ -52,7 +53,7 @@ const PlayerVitalsHud: React.FC = () => {
           {formatCredits(playerState?.credits)}
         </span>
         <span className="pvh-stat" title={turnsTitle}>
-          <span className="pvh-k">TRN</span>
+          <span className="pvh-k"><TurnsIcon /></span>
           <span className="pvh-v">
             {turnsNow.toLocaleString()}
             {typeof maxTurns === 'number' && (

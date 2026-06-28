@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { TurnsIcon } from '../icons/TurnsIcon';
 import './navigation-map.css';
 
 interface Sector {
@@ -405,22 +406,64 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
 
                 {/* Warp prompt on hover for available sectors */}
                 {isAvailable && isHovered && !isCurrent && (
-                  <text
-                    x={node.x}
-                    y={node.y - nodeSize - 8}
-                    textAnchor="middle"
-                    className="warp-prompt"
-                    fill="#00d9ff"
-                    fontSize="9"
-                    fontWeight="bold"
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    {isMoving
-                      ? '⟐ WARPING...'
-                      : moveCosts?.[node.id] != null
-                        ? `▶ CLICK TO WARP — ${moveCosts[node.id]} TURN${moveCosts[node.id] === 1 ? '' : 'S'}`
-                        : '▶ CLICK TO WARP'}
-                  </text>
+                  <g style={{ pointerEvents: 'none' }}>
+                    {isMoving ? (
+                      <text
+                        x={node.x}
+                        y={node.y - nodeSize - 8}
+                        textAnchor="middle"
+                        className="warp-prompt"
+                        fill="#00d9ff"
+                        fontSize="9"
+                        fontWeight="bold"
+                      >
+                        ⟐ WARPING...
+                      </text>
+                    ) : moveCosts?.[node.id] != null ? (
+                      <>
+                        <text
+                          x={node.x - 6}
+                          y={node.y - nodeSize - 8}
+                          textAnchor="end"
+                          className="warp-prompt"
+                          fill="#00d9ff"
+                          fontSize="9"
+                          fontWeight="bold"
+                        >
+                          ▶ CLICK TO WARP —
+                        </text>
+                        <TurnsIcon
+                          x={node.x - 5}
+                          y={node.y - nodeSize - 16}
+                          size={10}
+                          color="#00d9ff"
+                        />
+                        <text
+                          x={node.x + 6}
+                          y={node.y - nodeSize - 8}
+                          textAnchor="start"
+                          className="warp-prompt"
+                          fill="#00d9ff"
+                          fontSize="9"
+                          fontWeight="bold"
+                        >
+                          {moveCosts[node.id]}
+                        </text>
+                      </>
+                    ) : (
+                      <text
+                        x={node.x}
+                        y={node.y - nodeSize - 8}
+                        textAnchor="middle"
+                        className="warp-prompt"
+                        fill="#00d9ff"
+                        fontSize="9"
+                        fontWeight="bold"
+                      >
+                        ▶ CLICK TO WARP
+                      </text>
+                    )}
+                  </g>
                 )}
 
                 {/* Current sector indicator */}

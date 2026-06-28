@@ -15,6 +15,7 @@ import React, { useState, useEffect } from 'react';
 import { useGame } from '../../../contexts/GameContext';
 import { useAutopilot } from '../../../contexts/AutopilotContext';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDInsufficient } from '../atoms';
+import { TurnsIcon } from '../../icons/TurnsIcon';
 import './pages-ship.css';
 
 const ACCENT = '#00FF7F';
@@ -96,7 +97,7 @@ const TurnEconomyPage: React.FC = () => {
           <MFDField label="NEXT HOP" value={nextHop ? nextHop.name : '—'} />
           <MFDField
             label="HOP COST"
-            value={nextHop ? `${nextHop.turn_cost} T` : '—'}
+            value={nextHop ? <><TurnsIcon /> {nextHop.turn_cost}</> : '—'}
             accent={nextHop !== null}
           />
         </div>

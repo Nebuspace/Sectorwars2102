@@ -25,6 +25,7 @@ import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSlide
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import { regionOwnerAPI } from '../../services/api';
 import apiClient from '../../services/apiClient';
+import { TurnsIcon } from '../icons/TurnsIcon';
 import './game-dashboard.css';
 import './cockpit.css';
 import '../tactical/tactical-layout.css';
@@ -2060,10 +2061,10 @@ const GameDashboard: React.FC = () => {
                   +{harvestResult.ore ?? 0} ORE
                   {harvestResult.precious_metals ? ` · +${harvestResult.precious_metals} PRECIOUS METALS` : ''}
                   {harvestResult.quantum_shards ? ` · +${harvestResult.quantum_shards} QUANTUM SHARDS` : ''}
-                  {` · ${harvestResult.turns_spent ?? 0} TURNS SPENT`}
+                  {' · '}<TurnsIcon /> {harvestResult.turns_spent ?? 0} SPENT
                   {typeof harvestResult.remaining_turns === 'number'
-                    ? ` · ${harvestResult.remaining_turns} TURNS LEFT`
-                    : ''}
+                    ? <>{' · '}<TurnsIcon /> {harvestResult.remaining_turns} LEFT</>
+                    : null}
                 </div>
                 {harvestResult.am_rep_delta < 0 && (
                   <div className="alert-message">
@@ -2547,7 +2548,7 @@ const GameDashboard: React.FC = () => {
                       disabled={helmBusy}
                       title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
                     >
-                      🧭 ENGAGE AUTOPILOT · {autopilot.course.hops.length} HOPS · {autopilot.course.total_turns} TURNS
+                      🧭 ENGAGE AUTOPILOT · {autopilot.course.hops.length} HOPS · <TurnsIcon /> {autopilot.course.total_turns}
                     </button>
                   )
                 )}
@@ -3266,7 +3267,7 @@ const GameDashboard: React.FC = () => {
                                 )}
                               </div>
                               <div className="nav-course-meta">
-                                {apCourse.total_turns} TURNS · {hops.length} HOPS
+                                <TurnsIcon /> {apCourse.total_turns} · {hops.length} HOPS
                               </div>
                             </div>
                           );

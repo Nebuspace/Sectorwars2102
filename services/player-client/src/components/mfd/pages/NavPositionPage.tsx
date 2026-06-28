@@ -11,6 +11,7 @@ import { useGame } from '../../../contexts/GameContext';
 import type { MoveOption } from '../../../contexts/GameContext';
 import { useAutopilot } from '../../../contexts/AutopilotContext';
 import { MFDPageHeader, MFDPageBody, MFDField, MFDEmpty, MFDInsufficient } from '../atoms';
+import { TurnsIcon } from '../../icons/TurnsIcon';
 import './pages-ops.css';
 
 const ACCENT = '#00D9FF';
@@ -22,7 +23,7 @@ const ExitRow: React.FC<{ move: MoveOption; tunnel: boolean }> = ({ move, tunnel
     <span className="mfd-page-nav-exit-name">{move.name || '—'}</span>
     {tunnel && <span className="mfd-page-nav-exit-tag">TUN</span>}
     <span className={`mfd-page-nav-exit-cost${move.can_afford ? '' : ' over'}`}>
-      {move.turn_cost}T
+      <TurnsIcon /> {move.turn_cost}
     </span>
   </li>
 );
@@ -62,9 +63,9 @@ const NavPositionPage: React.FC = () => {
           <>
             <div className="mfd-page-section-label">AUTOPILOT COURSE</div>
             <MFDField label="NEXT HOP" value={nextHop.name} accent />
-            <MFDField label="HOP COST" value={`${nextHop.turn_cost} T`} />
+            <MFDField label="HOP COST" value={<><TurnsIcon /> {nextHop.turn_cost}</>} />
             {typeof course?.total_turns === 'number' && (
-              <MFDField label="COURSE TOTAL" value={`${course.total_turns} T`} />
+              <MFDField label="COURSE TOTAL" value={<><TurnsIcon /> {course.total_turns}</>} />
             )}
           </>
         )}

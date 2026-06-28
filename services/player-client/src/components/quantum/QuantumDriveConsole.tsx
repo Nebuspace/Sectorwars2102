@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useGame, type QuantumBearing, type QuantumScanResult, type QuantumJumpResult, type QuantumHarvestResult } from '../../contexts/GameContext';
 import apiClient from '../../services/apiClient';
+import { TurnsIcon } from '../icons/TurnsIcon';
 import QuantumBearingViewport, { type MinimapSector } from './QuantumBearingViewport';
 import './quantum-drive.css';
 
@@ -469,7 +470,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
             {scanBlockReason || 'ECHO SCAN'}
             {!scanBlockReason && (
               <span className="qd-cost-tag">
-                {rangeBand === 'far' ? `${SCAN_TURN_COST} TURNS + 1 SHARD` : `${SCAN_TURN_COST} TURNS`}
+                {rangeBand === 'far' ? <><TurnsIcon /> {SCAN_TURN_COST} + 1 SHARD</> : <><TurnsIcon /> {SCAN_TURN_COST}</>}
               </span>
             )}
           </button>
@@ -554,7 +555,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
             disabled={!!jumpBlockReason || jumpPhase === 'outcome'}
           >
             {jumpBlockReason || 'JUMP COMMIT'}
-            {!jumpBlockReason && <span className="qd-cost-tag">1 CHARGE + {JUMP_TURN_COST} TURNS</span>}
+            {!jumpBlockReason && <span className="qd-cost-tag">1 CHARGE + <TurnsIcon /> {JUMP_TURN_COST}</span>}
           </button>
         ) : (
           <div className="qd-confirm-row">
@@ -600,7 +601,7 @@ const QuantumDriveConsole: React.FC<QuantumDriveConsoleProps> = ({ onOpenGatewri
                 : <>Arrived <strong>{jumpResult.destination_name}</strong></>}
             </div>
             <div className="qd-outcome-meta">
-              DISTANCE {jumpResult.distance_jumped} SECTORS · TURNS REMAINING {jumpResult.turns_remaining.toLocaleString()}
+              DISTANCE {jumpResult.distance_jumped} SECTORS · <TurnsIcon /> {jumpResult.turns_remaining.toLocaleString()} REMAINING
             </div>
             <button className="qd-outcome-dismiss" onClick={dismissOutcome}>
               ACKNOWLEDGE
