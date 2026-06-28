@@ -23,16 +23,15 @@ import { VistaInput } from '../../contract';
 //   megafauna  → 'megafauna-marker'
 //   radiation  → 'radiation-haze'
 //
-// Named hazards contract.ts:184: "Named hazards force their visual into the sky."
-// The current model output (VistaModel.layers.hazards.overlays) carries
-// { hazard, severity, visual, region } per overlay — there is no forcesSky flag
-// yet in the P0 model shape.  What we CAN assert now:
-//   (a) the named hazard IS present in overlays (not filtered out)
-//   (b) its visual is 'storm-cell', a sky-category type per the TERRAN profile
-// The coordinate-level sky-push (region above horizonY) and a dedicated forcesSky
-// flag are post-P0 deliverables; assertions (a)+(b) prove the contract is not
-// violated today and are sufficient to catch any future regression that drops or
-// suppresses the named hazard overlay.
+// The storm hazard uses `named: true` (contract.ts:185).  The `named` field is
+// accepted by VistaInput but NOT currently acted on by the pipeline — sky-push
+// for named hazards is deferred to P2 (see it.todo at the bottom of this suite).
+// What this file DOES assert:
+//   (a) the named hazard IS present in overlays (truthfulness — not filtered out)
+//   (b) storm kind maps to 'storm-cell' per the TERRAN hazardVisuals profile
+//   (c) CURRENT REALITY: the named overlay's region stays on the ground plane
+// A separate it.todo marks the unimplemented named→sky contract so the suite
+// is honest about what is and is not built.
 
 const LUSH_HAZARD_INPUT: VistaInput = {
   contractVersion: 1,
@@ -68,7 +67,7 @@ const LUSH_HAZARD_INPUT: VistaInput = {
       { kind: 'ore', richness: 0.7 },
     ],
     hazards: [
-      { kind: 'storm', severity: 0.75, named: true  },   // NAMED: must force sky visual
+      { kind: 'storm', severity: 0.75, named: true  },   // named flag stored; sky-push unimplemented (P2)
       { kind: 'flood', severity: 0.40, named: false },   // unnamed ground hazard
     ],
   },
@@ -117,17 +116,33 @@ describe('hazard truthfulness — lush world with site hazards', () => {
     expect(stormOverlay!.severity).toBeCloseTo(0.75);
   });
 
-  it('named storm hazard carries a sky-class visual (storm-cell)', () => {
-    // contract.ts:184 — "Named hazards force their visual into the sky."
-    // TERRAN profile maps storm → 'storm-cell' (atmospheric / sky-class).
-    // Asserting 'storm-cell' proves the profile mapping is exercised and the
-    // visual is sky-category, consistent with the sky-forcing contract.
-    // (Coordinate-level sky placement and a forcesSky flag are post-P0 work.)
+  it('storm kind maps to storm-cell visual per the TERRAN profile', () => {
+    // PROFILE MAPPING ASSERTION — not a named→sky proof.
+    // The TERRAN hazardVisuals map (profiles.ts:314-319) keys storm → 'storm-cell'.
+    // This asserts that lookup resolves correctly — placeHazardOverlays picks the
+    // type-specific visual, not the 'impact-scar' fallback.
+    // What this does NOT prove: that the named flag pushes the region into the sky.
+    // That contract (contract.ts:184) is tracked by the it.todo below.
     const stormOverlay = model.layers.hazards.overlays.find(
       o => o.hazard === 'storm',
     );
     expect(stormOverlay!.visual).toBe('storm-cell');
   });
+
+  it('named storm overlay is currently ground-side — P2 regression anchor', () => {
+    // CURRENT REALITY: named→sky is unimplemented.  The named overlay's region
+    // quad sits fully below the terrain horizon line (all y-coords ≥ horizonY).
+    // This assertion will INTENTIONALLY FAIL when P2 builds named→sky — that
+    // failure is the "sky-push landed" signal.  At that point, remove or invert
+    // this anchor and promote the it.todo below to a real test.
+    const horizonY = model.layers.terrain.horizonY;
+    const stormOverlay = model.layers.hazards.overlays.find(o => o.hazard === 'storm')!;
+    for (const [, ry] of stormOverlay.region) {
+      expect(ry).toBeGreaterThanOrEqual(horizonY);
+    }
+  });
+
+  it.todo('named hazard forces its visual into the sky — contract.ts:184, UNIMPLEMENTED, deferred to P2 atmospheric-events');
 
   it('unnamed flood hazard also appears in overlays', () => {
     // Confirms truthfulness applies to all hazards, not just named ones.

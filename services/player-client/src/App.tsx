@@ -33,10 +33,11 @@ import { ShipSelector } from './components/ships'
 import { TradingInterface } from './components/trading'
 import PlayerInfo from './components/player/PlayerInfo'
 
-// Dev-only lab route — dead-code-eliminated from prod builds by Vite
-// Dev-only: the dynamic import is gated on import.meta.env.DEV so Vite
-// dead-code-eliminates the VistaLab chunk from prod builds entirely.
-const VistaLab = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaLab')) : null;
+// Dev-only lab routes — dead-code-eliminated from prod builds by Vite
+// Both imports are gated on import.meta.env.DEV so Vite dead-code-eliminates
+// the VistaLab and VistaProof chunks from prod builds entirely.
+const VistaLab   = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaLab'))   : null;
+const VistaProof = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaProof')) : null;
 
 interface ApiResponse {
   message?: string;
@@ -682,6 +683,9 @@ function App() {
               } />
               {import.meta.env.DEV && VistaLab && (
                 <Route path="/lab/vista" element={<Suspense fallback={<div>Loading Vista Lab…</div>}><VistaLab /></Suspense>} />
+              )}
+              {import.meta.env.DEV && VistaProof && (
+                <Route path="/lab/vista-proof" element={<Suspense fallback={<div>Loading…</div>}><VistaProof /></Suspense>} />
               )}
               <Route path="*" element={<MainApp />} />
                 </Routes>

@@ -100,9 +100,26 @@ const STAR_COLORS: Record<StarKind, string> = {
 const DEPOSIT_PRESETS = ['ore', 'gas', 'thermal', 'hydrocarbon', 'crystal', 'biolumin'] as const;
 type DepositKind = typeof DEPOSIT_PRESETS[number];
 
-/** Preset hazard kinds for the Site panel (matches VistaModel hazard overlay visuals). */
-const HAZARD_PRESETS = ['lava-flow', 'storm-cell', 'radiation-haze', 'flood-zone', 'megafauna'] as const;
+/**
+ * Preset hazard kinds for the Site panel.
+ * These are semantic hazard KIND strings, not visual names.  They match the keys
+ * in each PlanetProfile's hazardVisuals map (profiles.ts).  All four are present
+ * in the TERRAN profile — the lab default — so the default scene renders
+ * type-specific visuals with zero 'impact-scar' fallbacks.
+ *
+ * (The old list used visual names as kinds, which caused every preset to miss
+ * the profile's hazardVisuals lookup and fall back to 'impact-scar'.)
+ */
+const HAZARD_PRESETS = ['storm', 'flood', 'megafauna', 'radiation'] as const;
 type HazardKind = typeof HAZARD_PRESETS[number];
+
+/** Human-readable label for each hazard preset kind shown in the Site panel. */
+const HAZARD_KIND_LABELS: Record<HazardKind, string> = {
+  storm:     'Storm',
+  flood:     'Flood',
+  megafauna: 'Megafauna',
+  radiation: 'Radiation',
+};
 
 /** Generate a unique non-guessable seed string. */
 function makeSeed(): string {
@@ -635,7 +652,7 @@ export default function VistaLab() {
                   <label style={styles.subLabel}>Hazards (0 = absent)</label>
                   {HAZARD_PRESETS.map(k => (
                     <div key={k} style={styles.presetRow}>
-                      <span style={styles.presetName}>{k}</span>
+                      <span style={styles.presetName}>{HAZARD_KIND_LABELS[k]}</span>
                       <input
                         type="range"
                         min={0}
