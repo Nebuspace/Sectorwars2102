@@ -220,10 +220,11 @@
 
 /* EXPANDED-state surface controls — Minimize Surface + Lift Off grouped as an
    ABSOLUTE corner cluster over the vista (Max + Orchestrator placement decision,
-   superseding the earlier bottom-left dock). Anchored top-right, offset BELOW
-   the owner HUD chip (.hud-overlay.top-right sits at top/right:1.5rem) so it
-   clears it. Both buttons are corner controls over the surface, so neither
-   pushes/overlaps the planet viewport. .cockpit-windshield is position:relative.
+   superseding the earlier bottom-left dock). Anchored top-right at 3.4rem
+   (y≈54), sitting ABOVE the owner HUD chip (now at top:5.5rem / y≈88 after the
+   cascade fix — see .hud-overlay.top-right[data-hud-chip="owner"] below).
+   Both buttons are corner controls over the surface, so neither pushes/overlaps
+   the planet viewport. .cockpit-windshield is position:relative.
    Scoped to the landed render's cluster, so the shared docked-bay
    .bay-minimize-btn (bottom-center) is untouched. */
 .landed-surface-controls {
@@ -746,14 +747,26 @@
 
 /* LANDED chips: the pvh-name+identity column and the pvh-logout button both
    sit in .player-vitals-hud (top:0.3rem; total height ~2.6rem), so chips at
-   the default top:1.5rem overlap the HUD chrome. Push them below the HUD
-   (~top:3rem gives ~0.4rem breathing room). Scoped by chip id so in-flight
-   chips (.top-left location, .top-right sector) are unaffected. */
+   the default top:1.5rem overlap the HUD chrome. Push them below the HUD.
+   Scoped by chip id so in-flight chips (.top-left location, .top-right sector)
+   are unaffected.
+
+   SPECIFICITY NOTE — "landed" is top-left: its [data-hud-chip] rule appears
+   after .hud-overlay.top-left in document order (same (0,2,0) specificity →
+   later wins). That accident works in our favour.
+
+   "owner" is top-right: .hud-overlay.top-right (line below) appears AFTER the
+   bare attribute rule and has the same (0,2,0) specificity, so it would win and
+   restore top:1.5rem — defeating the offset entirely. Fix: combine the selector
+   to (0,3,0) so it beats .hud-overlay.top-right unconditionally. The expanded-
+   surface controls (Minimize + Lift Off) sit at top:3.4rem (y≈54–80); the owner
+   chip must clear them. top:5.5rem = 88px leaves 8px margin below Lift Off's
+   bottom edge (y≈80) and well below Logout (y≈12–32). */
 .hud-overlay[data-hud-chip="landed"] {
   top: 3rem;
 }
-.hud-overlay[data-hud-chip="owner"] {
-  top: 3rem;
+.hud-overlay.top-right[data-hud-chip="owner"] {
+  top: 5.5rem;
 }
 
 .hud-overlay.top-right {
