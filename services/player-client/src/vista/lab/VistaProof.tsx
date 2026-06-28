@@ -8,10 +8,12 @@
  * Route: /lab/vista-proof  (App.tsx registers it inside import.meta.env.DEV)
  *
  * Readiness protocol:
- *   VistaCanvas mounts and paints synchronously in its useEffect.
- *   VistaProof's useEffect schedules a requestAnimationFrame that fires
- *   AFTER that first canvas paint.  When it fires, [data-testid="vista-proof-ready"]
- *   is added to the DOM.  Playwright waits for that element before screenshotting.
+ *   A polling rAF loop reads the canvas pixel buffer (getImageData) and marks
+ *   ready only when non-black pixels are confirmed.  A single rAF would race
+ *   with the ResizeObserver: rAF fires BEFORE ResizeObserver in the browser
+ *   rendering loop, so a one-shot gate would fire before the first resize+redraw
+ *   cycle that VistaCanvas's ResizeObserver triggers.  The poll survives any
+ *   ordering of effects, ResizeObserver, and paint callbacks.
  *
  * P2 reuse:
  *   When named→sky lands, add a second test that asserts storm-cell overlays
@@ -81,14 +83,72 @@ const PROOF_INPUT: VistaInput = {
 // Component
 // ---------------------------------------------------------------------------
 
+// Maximum rAF iterations before giving up and marking ready anyway (so the
+// spec's content guard applies its verdict rather than hanging indefinitely).
+const MAX_SETTLE_FRAMES = 60;
+
 export default function VistaProof() {
-  // Readiness gate for Playwright.  The rAF fires after the canvas2d backend
-  // has flushed its first drawHazardGlyph calls, so the DOM marker appears
-  // only after the canvas visually contains the hazard glyphs.
+  // Readiness gate for Playwright.
+  //
+  // WHY POLL INSTEAD OF A SINGLE RAF:
+  // requestAnimationFrame fires BEFORE ResizeObserver in the browser rendering
+  // loop.  VistaCanvas's ResizeObserver fires on its initial observation (frame
+  // N+1 after mount), sets canvas.width = w (clearing the buffer), then calls
+  // handle.resize() → render() (redrawing it).  A single-rAF gate fires in
+  // that same frame BEFORE the ResizeObserver clears-and-redraws, so Playwright
+  // could screenshot an empty canvas even though render() has already been called.
+  //
+  // The polling loop reads the canvas pixel buffer directly (getImageData, NOT
+  // the compositor) and advances until non-black pixels are confirmed.  This
+  // is immune to compositor timing and ResizeObserver ordering.
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    const id = requestAnimationFrame(() => setReady(true));
-    return () => cancelAnimationFrame(id);
+    let rafId: number;
+    let attempts = 0;
+
+    function poll() {
+      attempts++;
+
+      const container = document.querySelector('[data-testid="vista-proof-container"]');
+      const canvas = container?.querySelector('canvas') as HTMLCanvasElement | null;
+
+      if (canvas && canvas.width > 1 && canvas.height > 1) {
+        try {
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            // Sample the center strip (sky + upper terrain) for color content.
+            // A lush TERRAN world always has sky pixels well above the 5/5/5 threshold.
+            const sW = Math.min(200, canvas.width);
+            const sH = Math.min(100, canvas.height);
+            const ox = Math.floor((canvas.width  - sW) / 2);
+            const oy = Math.floor((canvas.height - sH) / 2);
+            const { data } = ctx.getImageData(ox, oy, sW, sH);
+
+            let colorCount = 0;
+            for (let i = 0; i < data.length; i += 16) { // sample every 4th pixel
+              if (data[i] > 5 || data[i + 1] > 5 || data[i + 2] > 5) colorCount++;
+            }
+
+            if (colorCount >= 20) {
+              setReady(true);
+              return; // canvas has real content — signal Playwright
+            }
+          }
+        } catch {
+          // getImageData can throw on tainted canvases — skip and retry
+        }
+      }
+
+      if (attempts < MAX_SETTLE_FRAMES) {
+        rafId = requestAnimationFrame(poll);
+      } else {
+        // Cap reached — mark ready so the spec's content guard applies its verdict
+        setReady(true);
+      }
+    }
+
+    rafId = requestAnimationFrame(poll);
+    return () => cancelAnimationFrame(rafId);
   }, []);
 
   return (
@@ -106,9 +166,10 @@ export default function VistaProof() {
         Vista Proof &nbsp;|&nbsp; seed: {PROOF_INPUT.seed} &nbsp;|&nbsp; t=0 (frozen) &nbsp;|&nbsp; DEV-only
       </div>
 
-      {/* Playwright readiness gate: rendered in the DOM after one rAF,
-          by which time the canvas has painted its initial frame.
-          Playwright: await page.locator('[data-testid="vista-proof-ready"]').waitFor({ state: 'attached' }) */}
+      {/* Playwright readiness gate: appears only after the canvas pixel poll
+          confirms non-black content.  Playwright waits on this element.
+          The spec then reads the canvas via toDataURL() (direct buffer read,
+          not compositor capture) to avoid any compositor-timing races. */}
       {ready && <div data-testid="vista-proof-ready" style={{ display: 'none' }} aria-hidden="true" />}
     </div>
   );

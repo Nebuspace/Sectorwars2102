@@ -102,12 +102,35 @@ test('Fix-A proof — storm-cell + flood-zone render distinct (non-blank), byte-
   expect(content.nonBlack, 'canvas must not be blank/black').toBeGreaterThanOrEqual(MIN_NONBLACK_SAMPLES);
   expect(content.distinctColors, 'canvas must show a real multi-color scene, not a flat fill').toBeGreaterThanOrEqual(MIN_DISTINCT_COLORS);
 
-  // Capture A — primary proof.
-  const bufA = await canvas.screenshot({ path: PROOF_PNG, type: 'png' });
+  // ── CAPTURE via toDataURL (not locator.screenshot) ───────────────────────
+  //
+  // WHY toDataURL, NOT locator.screenshot():
+  // locator.screenshot() captures the COMPOSITOR FRAME via CDP.  In headless
+  // Chromium, the compositor can lag by one frame behind the canvas buffer
+  // after a ResizeObserver-triggered clear+redraw cycle.  The result: a fully
+  // black PNG even though the canvas buffer has correct content — exactly what
+  // caused the v1 harness failure (2689-byte black frame).
+  //
+  // toDataURL() runs synchronously in the browser's JS thread and reads the
+  // canvas PIXEL BUFFER directly.  No compositor, no CDP round-trip race.
+  // Since we already confirmed non-black content above, this is guaranteed
+  // to read a real scene.
+
+  const dataUrlA = await page.evaluate(() => {
+    const c = document.querySelector('[data-testid="vista-proof-container"] canvas') as HTMLCanvasElement;
+    return c.toDataURL('image/png');
+  });
+  const bufA = Buffer.from(dataUrlA.split(',')[1], 'base64');
+  fs.writeFileSync(PROOF_PNG, bufA);
   console.log(`[proof] A: ${PROOF_PNG}  (${bufA.length} bytes)`);
 
-  // Capture B — determinism check; same frozen canvas, must be byte-identical.
-  const bufB = await canvas.screenshot({ path: PROOF_PNG_B, type: 'png' });
+  // Capture B — second toDataURL read; same unmodified frozen canvas.
+  const dataUrlB = await page.evaluate(() => {
+    const c = document.querySelector('[data-testid="vista-proof-container"] canvas') as HTMLCanvasElement;
+    return c.toDataURL('image/png');
+  });
+  const bufB = Buffer.from(dataUrlB.split(',')[1], 'base64');
+  fs.writeFileSync(PROOF_PNG_B, bufB);
   console.log(`[proof] B: ${PROOF_PNG_B}  (${bufB.length} bytes)`);
 
   expect(bufA.length, 'capture sizes must match').toBe(bufB.length);
