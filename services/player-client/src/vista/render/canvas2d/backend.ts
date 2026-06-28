@@ -227,6 +227,12 @@ type VistaCache = {
 
   // Hazard overlay screen polygons — model 0..1 region mapped to pixel coords
   hazardScreens: { visual: string; severity: number; pts: [number, number][] }[];
+
+  // Feature scatters — flora/rock/glitter instances with baked screen coords
+  scatterScreens: {
+    kind: string;
+    instances: { sx: number; sy: number; sizePx: number; tint: RGB; glow: number }[];
+  }[];
 };
 
 // ---------------------------------------------------------------------------
@@ -750,6 +756,20 @@ function buildVistaCache(
     return { visual: hz.visual, severity: hz.severity, pts };
   });
 
+  // ---- Feature scatters — bake screen coords for flora / rock / glitter instances ----
+  // groundH is already computed above.  sizePx uses a small fraction of min(w,h) so
+  // scattered vegetation stays proportional at any canvas size.
+  const scatterScreens: VistaCache['scatterScreens'] = model.layers.features.scatters.map((group) => ({
+    kind: group.kind,
+    instances: group.instances.map((inst) => ({
+      sx:     inst.pos[0] * w,
+      sy:     horizonY + inst.pos[1] * groundH * 0.80,
+      sizePx: Math.max(2, inst.scale * Math.min(w, h) * 0.012),
+      tint:   inst.tint,
+      glow:   inst.glow ?? 0,
+    })),
+  }));
+
   return {
     key: '', // filled by caller
     ctx,
@@ -786,6 +806,7 @@ function buildVistaCache(
     depositScreens,
     energyScreen,
     hazardScreens,
+    scatterScreens,
   };
 }
 
@@ -1978,6 +1999,146 @@ function drawHazardGlyph(
 }
 
 // ---------------------------------------------------------------------------
+// drawScatterInstances — renders model.layers.features.scatters.
+//
+// Two-pass design to avoid composite bleed:
+//   Pass 1 (source-over): flora tufts + rock blobs — all non-glitter kinds.
+//   Pass 2 (lighter):     glitter-spark — additive halo driven by inst.glow.
+// After pass 2, ctx.restore() resets globalCompositeOperation to source-over.
+//
+// Kind classification:
+//   rock / boulder / stone / gravel / pebble / regolith / rubble
+//                       → flattened ellipse blob + shadow
+//   glitter-spark       → 4-point star + additive radial glow halo
+//   everything else     → vegetation tuft (3–4 upward-curving strokes)
+//   truly unknown       → generic tinted dot (never throws)
+// ---------------------------------------------------------------------------
+function drawScatterInstances(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle
+): void {
+  if (cache.scatterScreens.length === 0) return;
+
+  const brightK = 0.55 + dc.bright * 0.45;
+
+  const isRock = (kind: string): boolean => {
+    const k = kind.toLowerCase();
+    return k.includes('rock') || k.includes('boulder') || k.includes('stone') ||
+           k.includes('gravel') || k.includes('pebble') || k.includes('regolith') ||
+           k.includes('rubble');
+  };
+
+  // ---- Pass 1: source-over (flora tufts + rock blobs) ----
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+
+  for (const group of cache.scatterScreens) {
+    if (group.kind === 'glitter-spark') continue;
+
+    const rock = isRock(group.kind);
+    ctx.globalAlpha = brightK * 0.75;
+
+    for (const inst of group.instances) {
+      const { sx, sy, sizePx, tint } = inst;
+      const [tr, tg, tb] = tint;
+
+      if (rock) {
+        // Rounded blob — slightly flattened to sit on the ground
+        ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+        ctx.beginPath();
+        ctx.ellipse(sx, sy, sizePx, sizePx * 0.60, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Subtle cast shadow below
+        ctx.globalAlpha = brightK * 0.22;
+        ctx.fillStyle   = 'rgba(0, 0, 0, 0.5)';
+        ctx.beginPath();
+        ctx.ellipse(sx, sy + sizePx * 0.28, sizePx * 0.85, sizePx * 0.22, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = brightK * 0.75;
+
+      } else {
+        // Vegetation tuft: 3–4 blades curving upward, spread by sizePx.
+        // Blade count is deterministic from position (no per-frame RNG).
+        const blades = 3 + (Math.round(sx + sy) & 1);
+        ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
+        ctx.lineWidth   = Math.max(0.8, sizePx * 0.22);
+        ctx.lineCap     = 'round';
+        for (let bi = 0; bi < blades; bi++) {
+          const spread = (bi / (blades - 1) - 0.5) * sizePx * 1.6;
+          const lean   = spread * 0.28;  // blades lean outward
+          ctx.beginPath();
+          ctx.moveTo(sx + spread * 0.3, sy);
+          ctx.quadraticCurveTo(
+            sx + spread * 0.5 + lean, sy - sizePx * 0.6,
+            sx + spread + lean,       sy - sizePx
+          );
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  ctx.restore();
+
+  // ---- Pass 2: additive composite for glitter-spark ----
+  // Check first so we don't enter the save/restore for worlds with no glitter.
+  let hasGlitter = false;
+  for (const group of cache.scatterScreens) {
+    if (group.kind === 'glitter-spark') { hasGlitter = true; break; }
+  }
+  if (!hasGlitter) return;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (const group of cache.scatterScreens) {
+    if (group.kind !== 'glitter-spark') continue;
+
+    for (const inst of group.instances) {
+      const { sx, sy, sizePx, tint, glow } = inst;
+      const [tr, tg, tb] = tint;
+      const glowStr = glow * brightK;
+
+      // Radial glow halo — intensity driven by the `glow` field
+      if (glowStr > 0.02) {
+        const haloR = sizePx * (2.0 + glow * 2.5);
+        const halo  = ctx.createRadialGradient(sx, sy, 0, sx, sy, haloR);
+        halo.addColorStop(0, `rgba(${tr}, ${tg}, ${tb}, ${(glowStr * 0.55).toFixed(3)})`);
+        halo.addColorStop(1, `rgba(${tr}, ${tg}, ${tb}, 0)`);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle   = halo;
+        ctx.fillRect(sx - haloR, sy - haloR, haloR * 2, haloR * 2);
+      }
+
+      // 4-point star: two full arms + two shorter diagonal arms
+      const starLen = sizePx * (1.0 + glow * 0.5);
+      const starR   = Math.min(255, tr + 60);
+      const starG   = Math.min(255, tg + 60);
+      const starB   = Math.min(255, tb + 60);
+      ctx.strokeStyle = `rgb(${starR}, ${starG}, ${starB})`;
+      ctx.lineCap     = 'round';
+
+      ctx.lineWidth   = Math.max(0.8, sizePx * 0.30);
+      ctx.globalAlpha = Math.min(1, glowStr * 1.2 + 0.4);
+      ctx.beginPath(); ctx.moveTo(sx - starLen, sy); ctx.lineTo(sx + starLen, sy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx, sy - starLen); ctx.lineTo(sx, sy + starLen); ctx.stroke();
+
+      const diagLen   = starLen * 0.55;
+      ctx.lineWidth   = Math.max(0.6, sizePx * 0.18);
+      ctx.globalAlpha = Math.min(1, glowStr * 0.8 + 0.25);
+      ctx.beginPath(); ctx.moveTo(sx - diagLen, sy - diagLen); ctx.lineTo(sx + diagLen, sy + diagLen); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx + diagLen, sy - diagLen); ctx.lineTo(sx - diagLen, sy + diagLen); ctx.stroke();
+    }
+  }
+
+  // ctx.restore() resets globalCompositeOperation to 'source-over' — no bleed into
+  // the haze / particles / night-dim layers that follow.
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // drawScene — the per-frame compositor
 //
 // Ported from drawLandedScene (SolarSystemViewscreen.tsx L3477), adapted to
@@ -2311,6 +2472,14 @@ function drawScene(
   //     Drawn for 'surface' and 'plating'; GAS_GIANT emits none so this is a no-op.
   if (cache.landmarks.length > 0) {
     drawLandmarks(ctx, cache, dc);
+  }
+
+  // 5f) Feature scatters — flora tufts / rock blobs / glitter-sparks.
+  //     Drawn after landmarks (scatters sit on the ground surface), before resource
+  //     markers (which are more prominent signals on top of ambient scatter).
+  //     Glitter-spark uses additive composite; reset to source-over afterward.
+  if (cache.scatterScreens.length > 0) {
+    drawScatterInstances(ctx, t, cache, dc);
   }
 
   // 5c) Deposit markers — ore-vein / gas-seep / thermal-vent / hydrocarbon-pool /

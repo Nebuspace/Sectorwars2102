@@ -764,10 +764,8 @@ export function generateVista(input: VistaInput): VistaModel {
   const atmosphere = buildAtmosphere(input, profile, palette, bus.atmo);
 
   // ── Stage 7: terrain ─────────────────────────────────────────────────────
-  // Read terrainMode from the profile (field declared by Lane 1 in profiles.ts;
-  // cast until it lands — tsc error on this line is expected until Lane 1 ships).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const terrainMode = ((profile as any).terrainMode ?? 'surface') as TerrainMode;
+  // Read terrainMode from the profile (PlanetProfile.terrainMode, contract.ts).
+  const terrainMode: TerrainMode = profile.terrainMode ?? 'surface';
 
   // GAS_GIANT → cloud-deck: no strata, no landmarks, no rock ground plane.
   // All others → normal terrain path (ARTIFICIAL override applied below).
@@ -790,9 +788,8 @@ export function generateVista(input: VistaInput): VistaModel {
         }
       : terrainBase;
 
-  // Attach terrain.mode for the renderer (Lane 1 adds this field to contract.ts;
-  // cast so tsc is satisfied until the field is declared — runtime value is correct).
-  const terrain = { ...terrainLayer, mode: terrainMode } as VistaModel['layers']['terrain'];
+  // Attach terrain.mode for the renderer (VistaModel.layers.terrain.mode, contract.ts).
+  const terrain: VistaModel['layers']['terrain'] = { ...terrainLayer, mode: terrainMode };
 
   // ── Stage 8: water / lava (aquatic profiles only) ───────────────────────
   const water = buildWater(profile, palette, terrain.horizonY, bus.water);
