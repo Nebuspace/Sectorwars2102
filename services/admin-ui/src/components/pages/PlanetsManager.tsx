@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../../utils/auth';
 import PageHeader from '../ui/PageHeader';
 import PlanetDetailModal from '../universe/PlanetDetailModal';
@@ -43,55 +43,29 @@ const PlanetsManager: React.FC = () => {
   const fetchPlanets = useCallback(async () => {
     try {
       setLoading(true);
-      // Fetch first batch with large limit to get all planets
-      const pageSize = 100;
-      const firstResponse = await api.get('/api/v1/admin/planets/comprehensive', {
+      const response = await api.get('/api/v1/admin/planets/comprehensive', {
         params: {
-          page: 1,
-          limit: pageSize,
+          page: currentPage,
+          limit: itemsPerPage,
           filter_type: filterType !== 'all' ? filterType : undefined,
-          filter_colonized: filterType === 'colonized' ? true : filterType === 'uncolonized' ? false : undefined
+          filter_colonized: filterType === 'colonized' ? true : filterType === 'uncolonized' ? false : undefined,
+          search: searchTerm || undefined
         }
       });
 
-      const totalCount = firstResponse.data.total_count || 0;
-      const totalPages = firstResponse.data.total_pages || 1;
-      let allPlanets = firstResponse.data.planets || [];
-
-      // Fetch remaining pages if there are more
-      if (totalPages > 1) {
-        const remainingRequests = [];
-        for (let page = 2; page <= totalPages; page++) {
-          remainingRequests.push(
-            api.get('/api/v1/admin/planets/comprehensive', {
-              params: {
-                page,
-                limit: pageSize,
-                filter_type: filterType !== 'all' ? filterType : undefined,
-                filter_colonized: filterType === 'colonized' ? true : filterType === 'uncolonized' ? false : undefined
-              }
-            })
-          );
-        }
-        const remainingResponses = await Promise.all(remainingRequests);
-        for (const resp of remainingResponses) {
-          allPlanets = allPlanets.concat(resp.data.planets || []);
-        }
-      }
-
-      setPlanets(allPlanets);
-      setTotalPlanets(totalCount);
+      setPlanets(response.data.planets || []);
+      setTotalPlanets(response.data.total_count || 0);
       setError(null);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to fetch planets');
     } finally {
       setLoading(false);
     }
-  }, [filterType]);
+  }, [currentPage, itemsPerPage, filterType, searchTerm]);
 
   useEffect(() => {
     fetchPlanets();
-  }, [filterType, fetchPlanets]);
+  }, [fetchPlanets]);
 
   const handleViewPlanet = (planet: Planet) => {
     setSelectedPlanet(planet);
@@ -126,10 +100,15 @@ const PlanetsManager: React.FC = () => {
   };
 
   // Filter and search logic
-  const filteredPlanets = planets.filter(planet => {
-    const matchesSearch = planet.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         planet.sector_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         planet.owner_name?.toLowerCase().includes(searchTerm.toLowerCase());
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+  const filteredPlanets = useMemo(() => planets.filter(planet => {
+    const planetName = planet.name.toLowerCase();
+    const sectorName = planet.sector_name?.toLowerCase() ?? '';
+    const ownerName = planet.owner_name?.toLowerCase() ?? '';
+
+    const matchesSearch = planetName.includes(normalizedSearchTerm) ||
+                         sectorName.includes(normalizedSearchTerm) ||
+                         ownerName.includes(normalizedSearchTerm);
     
     const matchesFilter = filterType === 'all' || 
                          (filterType === 'habitable' && planet.is_habitable) ||
@@ -138,7 +117,7 @@ const PlanetsManager: React.FC = () => {
                          (filterType === 'uncolonized' && !planet.owner_id);
     
     return matchesSearch && matchesFilter;
-  });
+  }), [planets, normalizedSearchTerm, filterType]);
 
   // Pagination
   const totalPages = Math.ceil(filteredPlanets.length / itemsPerPage);
