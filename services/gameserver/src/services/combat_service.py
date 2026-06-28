@@ -1143,9 +1143,21 @@ class CombatService:
 
         self.db.add(combat_log)
 
-        # Handle cargo salvage before the wreck is finalized
+        # Handle cargo salvage before the wreck is finalized. Snapshot the
+        # attacker's hold before transfer so we can report the capped-actual
+        # quantity — the requested haul may exceed remaining hold capacity.
+        actual_cargo_looted: Dict[str, int] = {}
         if combat_result["cargo_stolen"]:
+            _hold_before = dict(
+                (attacker.current_ship.cargo or {}).get("contents") or {}
+            )
             self._transfer_cargo(npc_ship, attacker.current_ship, combat_result["cargo_stolen"])
+            _hold_after = (attacker.current_ship.cargo or {}).get("contents") or {}
+            actual_cargo_looted = {
+                resource: int(_hold_after.get(resource, 0)) - int(_hold_before.get(resource, 0))
+                for resource in _hold_after
+                if int(_hold_after.get(resource, 0)) - int(_hold_before.get(resource, 0)) > 0
+            }
 
         # Apply combat effects
         if combat_result["defender_ship_destroyed"]:
@@ -1361,7 +1373,7 @@ class CombatService:
             "combat_log_id": str(combat_log.id),
             "credits_looted": looted_credits,
             "credits_minted": minted_loot,
-            "cargo_looted": combat_result["cargo_stolen"] or {},
+            "cargo_looted": actual_cargo_looted,
         }
         if police_response:
             result_dict["police_response"] = police_response
