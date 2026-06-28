@@ -422,7 +422,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                     ) : moveCosts?.[node.id] != null ? (
                       <>
                         <text
-                          x={node.x - 6}
+                          x={node.x - 15}
                           y={node.y - nodeSize - 8}
                           textAnchor="end"
                           className="warp-prompt"
@@ -433,13 +433,13 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
                           ▶ CLICK TO WARP —
                         </text>
                         <TurnsIcon
-                          x={node.x - 5}
-                          y={node.y - nodeSize - 16}
-                          size={10}
+                          x={node.x - 13}
+                          y={node.y - nodeSize - 24}
+                          size={26}
                           color="#00d9ff"
                         />
                         <text
-                          x={node.x + 6}
+                          x={node.x + 15}
                           y={node.y - nodeSize - 8}
                           textAnchor="start"
                           className="warp-prompt"
