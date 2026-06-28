@@ -20,14 +20,22 @@
   pointer-events: none;
 }
 
-/* LEFT — commander name, tinted by playerState.name_color (relocated from the
-   route rail .rr-pilot). Display-only. */
+/* LEFT — commander identity block: callsign + rank + reputation
+   (WO-PLAYER-HEADER). Flex column so name and rank+rep sit on separate lines. */
 .pvh-name {
   position: relative;
   z-index: 1;
   flex: 0 1 auto;
   min-width: 0;
   max-width: 30%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  pointer-events: none;
+}
+
+/* Callsign — commander name, tinted by name_color */
+.pvh-callsign {
   color: var(--pilot-color, #00d9ff);
   font-family: var(--font-primary, inherit);
   font-size: 0.8rem;
@@ -38,7 +46,18 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none;
+}
+
+/* Rank + reputation — secondary identity line, dimmer/smaller */
+.pvh-identity {
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: rgba(0, 217, 255, 0.65);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* CENTER — SINGLE-ROW inline vitals strip (Max: "too tall, make it wider").

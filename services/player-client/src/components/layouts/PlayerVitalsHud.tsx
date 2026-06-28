@@ -40,12 +40,18 @@ const PlayerVitalsHud: React.FC = () => {
 
   return (
     <div className="player-vitals-hud">
+      {/* LEFT — commander identity: callsign + rank + reputation (WO-PLAYER-HEADER) */}
       <div
         className="pvh-name"
         title={user?.username}
         style={{ '--pilot-color': playerState?.name_color || '#00D9FF' } as React.CSSProperties}
       >
-        {user?.username || '—'}
+        <span className="pvh-callsign">{user?.username || '—'}</span>
+        {playerState && (
+          <span className="pvh-identity">
+            {playerState.military_rank?.toUpperCase() || ''}{playerState.military_rank ? ' · ' : ''}{playerState.reputation_tier || 'Neutral'} ({((playerState.personal_reputation ?? 0) >= 0 ? '+' : '')}{playerState.personal_reputation ?? 0})
+          </span>
+        )}
       </div>
 
       <div className="pvh-vitals">

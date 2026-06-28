@@ -2385,17 +2385,6 @@ const GameDashboard: React.FC = () => {
                 <div className="hud-value-secondary">
                   {currentSector.type ? currentSector.type.replace(/_/g, ' ').toUpperCase() : 'STANDARD'}
                 </div>
-                {playerState && (
-                  <div className="hud-pilot">
-                    <span className="status-indicator online"></span>
-                    <span style={{ color: playerState.name_color || '#FFFFFF' }}>
-                      {playerState.military_rank.toUpperCase()} {playerState.username.toUpperCase()}
-                    </span>
-                    <div className="hud-reputation-tier" style={{ fontSize: '0.7em', opacity: 0.8 }}>
-                      {playerState.reputation_tier} ({playerState.personal_reputation >= 0 ? '+' : ''}{playerState.personal_reputation})
-                    </div>
-                  </div>
-                )}
               </HudChip>
 
               {currentSector.hazard_level > 0 && (

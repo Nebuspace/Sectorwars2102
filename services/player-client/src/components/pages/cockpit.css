@@ -735,6 +735,15 @@
   left: 1.5rem;
 }
 
+/* LOCATION chip only: pulled slightly down from the band edge + tighter
+   internal vertical padding (WO-PLAYER-HEADER part 3 — pilot line removed,
+   chip is now smaller; give it breathing room above and compress slightly). */
+.hud-overlay[data-hud-chip="location"] {
+  top: 1.9rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
 .hud-overlay.top-right {
   top: 1.5rem;
   right: 1.5rem;
