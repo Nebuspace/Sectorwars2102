@@ -476,9 +476,13 @@ async def get_current_sector(
     if sector.region:
         region_name = sector.region.display_name or sector.region.name
 
-    # Enrich NPC presence entries with LIVE activity + mission so the client can
-    # render ships honestly (a transiting ship cruises out; a working ship
-    # loiters at the right dock type for its mission) rather than guessing.
+    # Enrich NPC presence entries with LIVE activity + mission + archetype so
+    # the client can render ships honestly (a transiting ship cruises out; a
+    # working ship loiters at the right dock type) and color glyphs by real
+    # archetype rather than guessing from the ship name. Archetype is also
+    # stored in the JSONB entry at spawn time (npc_spawn_service._presence_entry),
+    # but enriching it here guarantees the authoritative value for legacy JSONB
+    # rows that pre-date the archetype field.
     present = list(sector.players_present or [])
     npc_ids = [e.get("player_id") for e in present
                if isinstance(e, dict) and e.get("is_npc") and e.get("player_id")]
@@ -495,6 +499,7 @@ async def get_current_sector(
                     act = n.current_activity
                     e["activity"] = (act.name if hasattr(act, "name") else str(act)) if act else None
                     e["mission"] = (n.daily_schedule or {}).get("mission") or "commerce"
+                    e["archetype"] = n.archetype.name if n.archetype else None
             enriched.append(e)
         present = enriched
 

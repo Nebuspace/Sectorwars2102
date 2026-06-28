@@ -208,21 +208,37 @@ interface ShipPresence {
   mission?: string | null;
 }
 
-/** Faction read of a ship — drives glyph color + label. Uses the authoritative
- *  archetype when present (falls back to ship_type/name); traders are further
- *  graded by notoriety so a paladin can tell an honest merchant (green) from a
- *  shady one (amber) or a notorious smuggler (orange) at a glance. */
+/** Faction read of a ship — drives glyph color + label. When `archetype` is
+ *  present it is used authoritatively (no name-heuristic bleed). Name/type
+ *  heuristics apply only as a fallback for legacy entries that pre-date the
+ *  archetype field. Traders are further graded by notoriety so a paladin can
+ *  tell an honest merchant (green) from a shady one (amber) or a notorious
+ *  smuggler (orange) at a glance. */
 function shipFaction(s: ShipPresence): { key: string; color: string; label: string; lawful: boolean } {
   if (!s.is_npc) return { key: 'pilot', color: '#00d9ff', label: 'PILOT', lawful: false };
   const arch = (s.archetype || '').toUpperCase();
   const tp = (s.ship_type || '').toUpperCase();
   const nm = (s.ship_name || '').toUpperCase();
-  const isLaw = arch === 'LAW_ENFORCEMENT'
-    || tp.includes('MARSHAL') || tp.includes('SENTINEL') || tp.includes('INTERDICTOR');
-  if (isLaw) return { key: 'law', color: '#5b8dff', label: 'LAW ENFORCEMENT', lawful: false };
-  const isRaider = arch === 'HOSTILE_RAIDER' || nm.includes('MARAUDER') || tp.includes('PIRATE');
-  if (isRaider) return { key: 'raider', color: '#ff5a5a', label: 'HOSTILE', lawful: true };
-  // Trader — grade by notoriety
+
+  if (arch) {
+    // Archetype present — authoritative; do not bleed into name heuristics.
+    // LAW_ENFORCEMENT / FACTION_PATROL / STATION_SECURITY → blue (law).
+    if (arch === 'LAW_ENFORCEMENT' || arch === 'FACTION_PATROL' || arch === 'STATION_SECURITY')
+      return { key: 'law', color: '#5b8dff', label: 'LAW ENFORCEMENT', lawful: false };
+    // HOSTILE_RAIDER → red (hostile).
+    if (arch === 'HOSTILE_RAIDER')
+      return { key: 'raider', color: '#ff5a5a', label: 'HOSTILE', lawful: true };
+    // All other archetypes (TRADER, RESEARCHER, CIVILIAN, FACTION_LEADER,
+    // STATION_OFFICIAL, MISSION_GIVER) fall through to the notoriety gradient.
+  } else {
+    // Archetype absent — name / ship-type heuristic as last resort.
+    const isLaw = tp.includes('MARSHAL') || tp.includes('SENTINEL') || tp.includes('INTERDICTOR');
+    if (isLaw) return { key: 'law', color: '#5b8dff', label: 'LAW ENFORCEMENT', lawful: false };
+    const isRaider = nm.includes('MARAUDER') || tp.includes('PIRATE');
+    if (isRaider) return { key: 'raider', color: '#ff5a5a', label: 'HOSTILE', lawful: true };
+  }
+
+  // Trader / neutral — grade by notoriety.
   const n = typeof s.notoriety === 'number' ? s.notoriety : 0;
   if (n >= 75) return { key: 'notorious', color: '#ff7a3c', label: 'NOTORIOUS TRADER', lawful: true };
   if (n >= 50) return { key: 'unscrupulous', color: '#ffb000', label: 'UNSCRUPULOUS TRADER', lawful: true };
