@@ -20,7 +20,7 @@ Land the two open Dependabot frontend major PRs (#35 admin-ui, #36 player-client
 |---|---|---|
 | `react` + `react-dom` | 18.3.1 → 19.2.6 | **React 19**: new compiler hooks, ref-as-prop, deprecated `forwardRef` pattern, new error semantics in `useEffect`. Strict-mode behavior tightened. |
 | `vite` | 4.5 → 8.0 | **Major version cascade 4 → 5 → 6 → 7 → 8.** Each had config-shape changes. Vite 5 dropped Node 14; Vite 6 changed environment API; Vite 7+ require ESM-only plugins. |
-| `react-router-dom` | 6 → 7 | **API rewrite**: `createBrowserRouter` is now the only path; `<Routes>` + `<Route>` declarative API deprecated/removed. All admin-ui routing needs migration. |
+| `react-router-dom` | 6 → 7 | **API evolution**: `createBrowserRouter`/data routers are the recommended direction in v7, but `<Routes>` + `<Route>` declarative API is still supported. Review admin-ui routing for compatibility and migrate where it provides clear benefit. |
 | `react-i18next` | 13 → 17 | Hook signature changes; `useTranslation` namespace param semantics shifted. |
 | `i18next` | 23 → 26 | Resource type augmentation reworked (`ResourceNamespaceMap`); type errors expected. |
 | `i18next-http-backend` | 2 → 4 | Default fetch behavior tightened; options renamed. |

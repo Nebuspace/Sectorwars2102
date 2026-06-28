@@ -1359,7 +1359,7 @@ async def get_sector_port(
     """Get port details for a specific sector"""
     station = db.query(Station).filter(Station.sector_id == sector_id).first()
 
-    if not port:
+    if not station:
         return {
             "has_port": False,
             "station": None
@@ -1543,7 +1543,7 @@ async def update_port(
     try:
         station = db.query(Station).filter(Station.id == station_id).first()
         
-        if not port:
+        if not station:
             raise HTTPException(status_code=404, detail="Station not found")
         
         # Handle commodity updates
@@ -1558,8 +1558,8 @@ async def update_port(
         for field, value in port_updates.items():
             if field == 'commodities':
                 continue  # Already handled above
-            elif hasattr(port, field):
-                setattr(port, field, value)
+            elif hasattr(station, field):
+                setattr(station, field, value)
             elif field.endswith('_quantity'):
                 # Handle direct quantity updates like "ore_quantity"
                 commodity_name = field.replace('_quantity', '')
@@ -2219,5 +2219,4 @@ async def delete_game_event(
         db.rollback()
         logger.error(f"Error deleting game event {event_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete game event: {str(e)}")
-
 

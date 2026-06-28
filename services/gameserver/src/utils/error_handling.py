@@ -31,7 +31,7 @@ class BusinessLogicError(HTTPException):
 
 def generate_error_id() -> str:
     """Generate unique error ID for tracking"""
-    return str(uuid.uuid4())[:8]
+    return str(uuid.uuid4())
 
 
 def sanitize_error_message(error: Exception, show_details: bool = False) -> str:
