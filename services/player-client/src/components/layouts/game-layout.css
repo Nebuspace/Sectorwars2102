@@ -94,10 +94,14 @@
   --band-h: 20%;
   /* Full-width helm rail (DOCK/LAND/UNDOCK/LIFT OFF) just below the band. */
   --helm-h: 44px;
-  /* NARROW natural sidebar (rail + MFD-A/B), NOT half the screen. */
-  --sidebar-w: clamp(300px, 25%, 420px);
-  /* Deck height — the bottom instrument strip, right of the sidebar. */
-  --deck-h: 38%;
+  /* NARROW natural sidebar (rail + MFD-A/B), NOT half the screen.
+     WO-COCKPIT-ADJ-0628: slimmed ~12% (300-420 → 260-370) to reclaim
+     deck width. */
+  --sidebar-w: clamp(260px, 22%, 370px);
+  /* Deck height — the bottom instrument strip, right of the sidebar.
+     WO-COCKPIT-ADJ-0628: raised ~26% (38% → 48%) so the bottom panels
+     have room to surface primary actions without internal scrolling. */
+  --deck-h: 48%;
 }
 
 /* DOCKED / LANDED: the deck fills the FULL right-of-sidebar height (the trade /

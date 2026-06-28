@@ -1043,7 +1043,12 @@
   );
   border-top: 2px solid rgba(77, 132, 253, 0.2);
   display: grid;
-  grid-template-columns: minmax(240px, 460px) minmax(0, 1fr) minmax(220px, 340px);
+  /* WO-COCKPIT-ADJ-0628: PLANETARY · NAV · COMMS order.
+     Col 1 (PLANETARY, left, wider +15%): minmax(275px, 540px).
+     Col 2 (NAV, center, flexible):       minmax(0, 1fr).
+     Col 3 (COMMS, right, narrower -15%): minmax(185px, 290px).
+     .planetary-monitor gets order:-1 to render first despite DOM order. */
+  grid-template-columns: minmax(275px, 540px) minmax(0, 1fr) minmax(185px, 290px);
   grid-template-rows: 1fr;
   gap: 0;
   padding: 0.5rem;
@@ -1317,6 +1322,13 @@
   pointer-events: none;
 }
 
+/* WO-COCKPIT-ADJ-0628: PLANETARY moves to visual column 1 (left).
+   order:-1 beats the default order:0 on nav-monitor and comms-monitor,
+   so grid auto-placement puts PLANETARY first without touching HTML order. */
+.planetary-monitor {
+  order: -1;
+}
+
 /* The planetary monitor's content region is a named inline-size container
    so planet/station pair internals (planet-port-pair.css) can adapt to the
    monitor's real width instead of the viewport's. */
@@ -1473,8 +1485,10 @@
      (docked/landed, --console-w:100%). In the narrow space console the base
      single-column stack + internal scroll holds, so this must NOT re-impose
      three columns there (it would overflow --console-w). */
+  /* WO-COCKPIT-ADJ-0628: matches new PLANETARY · NAV · COMMS column order.
+     PLANETARY: 450px (+18%), NAV: 1fr, COMMS: 255px (-15%). */
   .game-container.console-expand .cockpit-console {
-    grid-template-columns: 380px 1fr 300px;
+    grid-template-columns: 450px 1fr 255px;
   }
 
   .nav-monitor .monitor-screen NavigationMap {
