@@ -104,10 +104,17 @@ async def predict_price(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Predict the future price of a single commodity (optionally at a station)."""
-    prediction = await _engine.predict_prices(
-        db, commodity=commodity, station_id=station_id, hours_ahead=hours_ahead
-    )
-    if prediction is None:
+    try:
+        prediction = await _engine.predict_prices(
+            db, commodity=commodity, station_id=station_id, hours_ahead=hours_ahead
+        )
+    except Exception as e:
+        logger.exception("Price prediction failed for commodity %s", commodity)
+        raise HTTPException(
+            status_code=500,
+            detail="Market prediction is temporarily unavailable",
+        )
+    if prediction is None or (isinstance(prediction, dict) and prediction.get("status") == "error"):
         raise HTTPException(
             status_code=503,
             detail="Market prediction is temporarily unavailable",
@@ -127,9 +134,21 @@ async def predict_all_prices(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Predict prices for every core commodity (optionally at a single station)."""
-    predictions = await _engine.batch_predict(
-        db, station_id=station_id, hours_ahead=hours_ahead
-    )
+    try:
+        predictions = await _engine.batch_predict(
+            db, station_id=station_id, hours_ahead=hours_ahead
+        )
+    except Exception as e:
+        logger.exception("Batch price prediction failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Market prediction is temporarily unavailable",
+        )
+    if isinstance(predictions, dict) and predictions.get("status") == "error":
+        raise HTTPException(
+            status_code=503,
+            detail="Market prediction is temporarily unavailable",
+        )
     return [PricePredictionResponse.from_engine(p) for p in predictions.values()]
 
 
@@ -146,9 +165,21 @@ async def find_opportunities(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Scan the galaxy for buy-low / sell-high trade opportunities."""
-    opportunities = await _engine.find_opportunities(
-        db, min_profit_margin=min_profit_margin, limit=limit
-    )
+    try:
+        opportunities = await _engine.find_opportunities(
+            db, min_profit_margin=min_profit_margin, limit=limit
+        )
+    except Exception as e:
+        logger.exception("Opportunity scan failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Market opportunity scan is temporarily unavailable",
+        )
+    if isinstance(opportunities, dict) and opportunities.get("status") == "error":
+        raise HTTPException(
+            status_code=503,
+            detail="Market opportunity scan is temporarily unavailable",
+        )
     return [TradeOpportunityResponse.from_engine(o) for o in opportunities]
 
 
@@ -162,6 +193,19 @@ async def commodity_analysis(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Return a comprehensive market analysis for a single commodity."""
-    return await _engine.get_commodity_analysis(
-        db, commodity=commodity, station_id=station_id
-    )
+    try:
+        result = await _engine.get_commodity_analysis(
+            db, commodity=commodity, station_id=station_id
+        )
+    except Exception as e:
+        logger.exception("Commodity analysis failed for %s", commodity)
+        raise HTTPException(
+            status_code=500,
+            detail="Market analysis is temporarily unavailable",
+        )
+    if isinstance(result, dict) and result.get("status") == "error":
+        raise HTTPException(
+            status_code=503,
+            detail="Market analysis temporarily unavailable",
+        )
+    return result

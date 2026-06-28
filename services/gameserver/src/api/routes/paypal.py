@@ -162,7 +162,7 @@ async def create_subscription(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to create subscription: {str(e)}")
+        logger.exception("Failed to create subscription")
         raise HTTPException(status_code=500, detail="Failed to create subscription")
 
 
@@ -176,7 +176,7 @@ async def get_user_subscriptions(
         return {"subscriptions": subscriptions}
     
     except Exception as e:
-        logger.error(f"Failed to get user subscriptions: {str(e)}")
+        logger.exception("Failed to get user subscriptions")
         raise HTTPException(status_code=500, detail="Failed to retrieve subscriptions")
 
 
@@ -214,7 +214,7 @@ async def get_subscription_details(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get subscription details: {str(e)}")
+        logger.exception("Failed to get subscription details")
         raise HTTPException(status_code=500, detail="Failed to retrieve subscription details")
 
 
@@ -250,7 +250,7 @@ async def cancel_subscription(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to cancel subscription: {str(e)}")
+        logger.exception("Failed to cancel subscription")
         raise HTTPException(status_code=500, detail="Failed to cancel subscription")
 
 
@@ -313,7 +313,7 @@ async def handle_paypal_webhook(
         # to a 500, which would tell PayPal to retry the rejected event.
         raise
     except Exception as e:
-        logger.error(f"Webhook processing error: {str(e)}")
+        logger.exception("Webhook processing error")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
@@ -408,7 +408,7 @@ async def check_region_name_availability(
         }
     
     except Exception as e:
-        logger.error(f"Error checking region name availability: {str(e)}")
+        logger.exception("Error checking region name availability")
         raise HTTPException(status_code=500, detail="Failed to check name availability")
 
 
@@ -480,5 +480,5 @@ async def admin_get_all_subscriptions(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Admin subscription query failed: {str(e)}")
+        logger.exception("Admin subscription query failed")
         raise HTTPException(status_code=500, detail="Failed to retrieve subscription data")
