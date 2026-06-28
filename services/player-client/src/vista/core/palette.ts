@@ -184,6 +184,11 @@ export function derivePalette(
   // Stage 7: accent.
   const accent = deriveAccent(profile, input);
 
+  // Stage 8: warm secondary accent — passed through without jitter (it is a
+  // designed engineering constant, not a natural palette sample).
+  // Present only when the profile sets it (currently: ARTIFICIAL only).
+  const accentWarm: RGB | undefined = bp.accentWarm;
+
   return {
     skyTop,
     skyHorizon,
@@ -192,8 +197,9 @@ export function derivePalette(
     surface,
     geologyBands,
     flora,
-    ...(water !== undefined ? { water } : {}),
-    ...(foam  !== undefined ? { foam  } : {}),
+    ...(water      !== undefined ? { water }      : {}),
+    ...(foam       !== undefined ? { foam  }      : {}),
     accent,
+    ...(accentWarm !== undefined ? { accentWarm } : {}),
   };
 }

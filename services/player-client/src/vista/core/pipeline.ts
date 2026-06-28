@@ -789,7 +789,13 @@ export function generateVista(input: VistaInput): VistaModel {
       : terrainBase;
 
   // Attach terrain.mode for the renderer (VistaModel.layers.terrain.mode, contract.ts).
-  const terrain: VistaModel['layers']['terrain'] = { ...terrainLayer, mode: terrainMode };
+  // Also thread the profile's emissive params when present (currently: ARTIFICIAL only);
+  // absent for all 11 natural types so their models are byte-identical to before.
+  const terrain: VistaModel['layers']['terrain'] = {
+    ...terrainLayer,
+    mode: terrainMode,
+    ...(profile.emissive ? { emissive: profile.emissive } : {}),
+  };
 
   // ── Stage 8: water / lava (aquatic profiles only) ───────────────────────
   const water = buildWater(profile, palette, terrain.horizonY, bus.water);

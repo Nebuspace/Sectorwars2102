@@ -310,6 +310,13 @@ export interface VistaModel {
 
     /** Deposit / energy glow tint. */
     accent: RGB;
+
+    /**
+     * Optional warm secondary accent (sodium/amber city-light).
+     * Present only for ARTIFICIAL; absent for all 11 natural types.
+     * Contrast pair: cold conduit glow (accent) + warm window light (accentWarm).
+     */
+    accentWarm?: RGB;
   };
 
   lighting: {
@@ -399,6 +406,13 @@ export interface VistaModel {
        * 'plating'    → ARTIFICIAL: flat engineered substrate.
        */
       mode?: 'surface' | 'cloud-deck' | 'plating';
+
+      /**
+       * Optional emissive window/signage grid parameters.
+       * Present only for ARTIFICIAL; absent for all 11 natural types.
+       * color: sRGB of the window glow; density: fraction of grid cells lit (0–1).
+       */
+      emissive?: { color: RGB; density: number };
 
       /** Normalized Y position of the horizon line (0=top, 1=bottom). */
       horizonY: number;

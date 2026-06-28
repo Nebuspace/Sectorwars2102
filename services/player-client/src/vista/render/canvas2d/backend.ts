@@ -1227,13 +1227,73 @@ function drawLandmarks(
       // Tall thin triangle — reads as an isolated rock needle or alien spire.
       const sw = width * 0.22;  // very narrow base
       const sh = height * 1.3;  // very tall (can exceed the "standard" height cap)
+      const spireH  = Math.min(sh, cache.horizonY * 1.1);
+      const spireTY = baseY - spireH;
       ctx.fillStyle = lm.fillColor;
       ctx.beginPath();
       ctx.moveTo(cx - sw, baseY);
-      ctx.lineTo(cx, baseY - Math.min(sh, cache.horizonY * 1.1));
+      ctx.lineTo(cx, spireTY);
       ctx.lineTo(cx + sw, baseY);
       ctx.closePath();
       ctx.fill();
+
+      // ARTIFICIAL emissive pass — warm window bands + cold conduit edge traces.
+      // Guard: accentWarm is only set on ARTIFICIAL so this is a zero-cost no-op
+      // for all 11 natural types.
+      const accentWarmSp = cache.model.palette.accentWarm;
+      if (accentWarmSp) {
+        const [wr, wg, wb] = accentWarmSp;
+        const [cr, cg, cb] = cache.model.palette.accent;   // cold cyan conduit
+
+        // Per-spire PRNG seed: position-keyed so each tower has its own lit pattern.
+        const rngSp = splitmix32(deriveChildSeed(cache.model.seed, `spire-em-${Math.round(cx)}`));
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+
+        // Warm window bands — horizontal dashes at deterministic heights along the spire.
+        // Always consume 2 rng values per band (lit-roll + alpha-roll) so the
+        // sequence is stable across branches.
+        const nBands = 4 + Math.floor(rngSp() * 4);   // 4–7 bands, 1 consume
+        for (let bi = 0; bi < nBands; bi++) {
+          const yFrac  = 0.12 + (bi / Math.max(1, nBands - 1)) * 0.72;
+          const bandY  = spireTY + spireH * yFrac;
+          // Spire width at bandY (linear interpolation; 0 at tip, sw*2 at base)
+          const wAtY   = sw * 2 * (1 - (baseY - bandY) / spireH);
+          const bandW  = Math.max(3, wAtY * 0.55);
+          const bandH2 = Math.max(1.5, bandW * 0.16);
+          const litRoll   = rngSp();           // consume 1
+          const alphaRoll = rngSp();           // consume 1 (always)
+          // splitmix32() returns [0,1) — compare against the fraction directly.
+          const lit = litRoll < 0.62;
+          if (lit) {
+            ctx.globalAlpha = (0.48 + alphaRoll * 0.42) * brightK;
+            ctx.fillStyle = `rgb(${wr}, ${wg}, ${wb})`;
+            ctx.fillRect(
+              Math.round(cx - bandW * 0.5),
+              Math.round(bandY - bandH2 * 0.5),
+              Math.round(bandW),
+              Math.max(1, Math.round(bandH2)),
+            );
+          }
+        }
+
+        // Cold conduit traces — thin lines along the left and right spire edges.
+        // Reads as illuminated structural conduit running up the antenna mast.
+        ctx.globalAlpha = (0.14 * dc.bright + 0.06) * brightK;
+        ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, 0.88)`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx - sw, baseY);
+        ctx.lineTo(cx, spireTY);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx + sw, baseY);
+        ctx.lineTo(cx, spireTY);
+        ctx.stroke();
+
+        ctx.restore();
+      }
 
     } else if (kind === 'crater') {
       // Shallow ellipse rim sitting on the ground line.
@@ -1488,6 +1548,71 @@ function drawPlating(
   }
 
   ctx.restore();
+
+  // ---- Emissive window/signage grid — ARTIFICIAL only ----
+  // A deterministic seed-driven grid of lit/dark cells that reads as windows
+  // and signage panels on a space station surface at night.
+  // The warm accent (accentWarm) is used for colour; cells are toggled on/off
+  // via splitmix32 seeded from model.seed so the pattern is per-seed stable.
+  const emissiveParams = model.layers.terrain.emissive;
+  const accentWarm = model.palette.accentWarm;
+  if (emissiveParams && accentWarm) {
+    const [wr, wg, wb] = accentWarm;
+    const { density } = emissiveParams;
+    const rngEm = splitmix32(deriveChildSeed(model.seed, 'emissive'));
+
+    // Window cell: a small rectangle centred in each plating panel.
+    // Size scales with panel size so smaller panels = smaller windows.
+    const winW = Math.max(3, Math.round(platingPx * 0.28));
+    const winH = Math.max(2, Math.round(platingPx * 0.18));
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (let ci = 0; ci < cols; ci++) {
+      const xLeft = ci * platingPx;
+      const xCentre = xLeft + platingPx * 0.5;
+      for (let ri = 0; ri < rows; ri++) {
+        // Per-cell: always draw 2 rng values so the sequence is position-stable.
+        const litRoll  = rngEm();          // lit/dark decision
+        const alphaRaw = rngEm();          // per-cell brightness variation
+
+        const tFracPrev = Math.pow(ri       / rows, 1.8);
+        const tFracNext = Math.pow((ri + 1) / rows, 1.8);
+        const yTop  = horizonY + tFracPrev * groundH;
+        const yBot  = horizonY + tFracNext * groundH;
+        const panH  = yBot - yTop;
+        if (yTop >= h) break;
+
+        // Cells near the horizon are smaller in perspective; skip if too tiny
+        if (panH < winH * 0.8) continue;
+
+        // splitmix32() returns [0,1) — compare against density directly.
+        const lit = litRoll < density;
+        if (!lit) continue;
+
+        const alpha = 0.52 + alphaRaw * 0.40;
+        ctx.globalAlpha = alpha * (0.55 + dc.bright * 0.45);
+
+        const wx = Math.round(xCentre - winW * 0.5);
+        const wy = Math.round(yTop + (panH - winH) * 0.5);
+        ctx.fillStyle = `rgb(${wr}, ${wg}, ${wb})`;
+        ctx.fillRect(wx, wy, winW, Math.max(1, winH));
+      }
+    }
+
+    // Warm city-light bleed just above the ground-horizon seam: a narrow
+    // additive gradient that reads as ambient light from massed windows.
+    ctx.globalAlpha = 0.12 * dc.bright + 0.05;
+    const bleedH = Math.min(groundH * 0.22, h * 0.08);
+    const warmBleed = ctx.createLinearGradient(0, horizonY, 0, horizonY + bleedH);
+    warmBleed.addColorStop(0,   `rgba(${wr}, ${wg}, ${wb}, 0.70)`);
+    warmBleed.addColorStop(1,   `rgba(${wr}, ${wg}, ${wb}, 0)`);
+    ctx.fillStyle = warmBleed;
+    ctx.fillRect(0, horizonY, w, bleedH);
+
+    ctx.restore();
+  }
 }
 
 // ---------------------------------------------------------------------------

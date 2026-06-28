@@ -146,6 +146,13 @@ export interface BasePalette {
   foam?: RGB;
   /** Default accent for this type: deposit glow / energy signature. */
   accent: RGB;
+
+  /**
+   * Optional warm secondary accent (sodium/amber).
+   * Absent for all natural types.  Set only for ARTIFICIAL, where it provides
+   * a two-tone contrast pair: cold conduit (accent) + warm window-light (accentWarm).
+   */
+  accentWarm?: RGB;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +192,15 @@ export interface PlanetProfile {
   hazardVisuals: Record<string, string>;
   /** Deposit kind → VistaModel depositMarker visual string for this type. */
   depositVisuals: Record<string, string>;
+
+  /**
+   * Optional emissive window/signage grid parameters.
+   * Absent for all natural types.  Set only for ARTIFICIAL: the renderer
+   * draws a deterministic seed-driven grid of lit/dark cells on the plating
+   * surface and on spire structures.
+   * color: sRGB of the window glow; density: fraction of cells lit (0–1).
+   */
+  emissive?: { color: RGB; density: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -1439,16 +1455,17 @@ const ARTIFICIAL_PROFILE: PlanetProfile = {
   terrainMode: 'plating',
 
   basePalette: {
-    skyTop:      [8,   10,  20],   // dark space / low orbit (canonical)
+    skyTop:      [8,   10,  20],   // dark space / low orbit — CANONICAL, never lifted
     skyHorizon:  [38,  58,  88],   // atmospheric glow / station haze (canonical)
     scatterBand: [78,  108, 150],  // light-pollution scatter (canonical)
-    ridgeFar:    [52,  62,  82],   // distant superstructure silhouette (canonical)
-    ridgeMid:    [38,  48,  65],   // mid structure tier (canonical)
-    ridgeNear:   [24,  30,  46],   // near foreground structure (canonical)
-    surface:     [48,  58,  72],   // engineered plating surface (canonical)
+    ridgeFar:    [64,  78,  102],  // distant superstructure silhouette (lifted from [52,62,82])
+    ridgeMid:    [48,  60,  80],   // mid structure tier (lifted from [38,48,65])
+    ridgeNear:   [32,  42,  60],   // near foreground structure (lifted from [24,30,46])
+    surface:     [68,  82,  100],  // engineered plating surface (lifted from [48,58,72])
     floraMax:    [78,  178, 118],  // hydroponics / engineered plants (canonical)
     floraMin:    [38,  78,  58],   // sparse engineered vegetation (canonical)
-    accent:      [78,  198, 255],  // energy / plasma conduit glow (canonical)
+    accent:      [78,  198, 255],  // cold: energy / plasma conduit glow (canonical)
+    accentWarm:  [255, 175, 55],   // warm: sodium/amber window & signage glow (ARTIFICIAL only)
   },
 
   coherence: {
@@ -1531,6 +1548,11 @@ const ARTIFICIAL_PROFILE: PlanetProfile = {
     crystal: 'crystal',
     gas:     'gas-seep',
   },
+
+  // Emissive window/signage grid — ARTIFICIAL only.
+  // The renderer uses density to decide which plating-panel cells are lit and
+  // draws warm-tinted rectangles at those positions, seeded from model.seed.
+  emissive: { color: [255, 200, 100], density: 0.52 },
 };
 
 // ---------------------------------------------------------------------------
