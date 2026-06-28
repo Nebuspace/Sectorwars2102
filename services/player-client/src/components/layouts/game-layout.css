@@ -133,8 +133,13 @@
   padding: 0.75rem;
   /* OPAQUE CRT backing — solid, no scene behind the sidebar. */
   background: linear-gradient(180deg, #131b2c 0%, #0f1620 100%);
-  border-right: 2px solid rgba(77, 132, 253, 0.2);
-  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.55);
+  /* WO-PANEL-3D-EDGE: right edge (viewport-facing) gets a subtle raised/proud
+     bevel — inset inner highlight on the right inner wall + existing outer
+     rightward shadow. CRT line-style, not heavy chrome. */
+  border-right: 2px solid rgba(77, 132, 253, 0.28);
+  box-shadow:
+    4px 0 24px rgba(0, 0, 0, 0.55),
+    inset -2px 0 4px rgba(255, 255, 255, 0.06);
   box-sizing: border-box;
 }
 

@@ -2525,7 +2525,11 @@ const GameDashboard: React.FC = () => {
                 <div className="bezel-corner br"></div>
               </div>
               <div className="monitor-screen">
-                <div className="screen-hud-header station-venue-header">
+                <div
+                  className="screen-hud-header station-venue-header"
+                  role="region"
+                  aria-label="Station operations"
+                >
                   {isDockedAtSpaceDock ? (
                     <span>SPACEDOCK TERMINAL</span>
                   ) : (
@@ -2557,9 +2561,11 @@ const GameDashboard: React.FC = () => {
                       SpaceDockInterface onUndock prop. */}
                   {!isDockedAtSpaceDock && (
                     <button
-                      className="station-undock-btn"
+                      className="station-undock-btn station-undock-action"
                       onClick={handleUndock}
                       disabled={helmBusy}
+                      aria-disabled={helmBusy}
+                      aria-label={helmBusy ? 'Undock unavailable — helm is busy' : 'Undock and launch into space'}
                       title="Undock and launch into space"
                     >
                       {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}
@@ -3081,18 +3087,22 @@ const GameDashboard: React.FC = () => {
                               className="nav-autopilot-abort"
                               onClick={() => autopilot.abort('manual abort')}
                               disabled={helmBusy}
+                              aria-disabled={helmBusy}
+                              aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
                               title="Abort autopilot"
                             >
-                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}
+                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
                             </button>
                           ) : (
                             <button
                               className="nav-autopilot-engage"
                               onClick={() => autopilot.engage()}
                               disabled={helmBusy}
+                              aria-disabled={helmBusy}
+                              aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
                               title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
                             >
-                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}
+                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
                             </button>
                           )
                         )}
@@ -3136,18 +3146,22 @@ const GameDashboard: React.FC = () => {
                               className="nav-autopilot-abort"
                               onClick={() => autopilot.abort('manual abort')}
                               disabled={helmBusy}
+                              aria-disabled={helmBusy}
+                              aria-label={helmBusy ? 'Abort unavailable — helm is busy' : 'Abort autopilot'}
                               title="Abort autopilot"
                             >
-                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}
+                              🛑 ABORT · HOP {autopilot.currentHopIndex + 1}/{autopilot.course.hops.length}{helmBusy ? ' (busy)' : ''}
                             </button>
                           ) : (
                             <button
                               className="nav-autopilot-engage"
                               onClick={() => autopilot.engage()}
                               disabled={helmBusy}
+                              aria-disabled={helmBusy}
+                              aria-label={helmBusy ? 'Autopilot unavailable — helm is busy' : `Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
                               title={`Engage autopilot — ${autopilot.course.hops.length} hops, ${autopilot.course.total_turns} turns`}
                             >
-                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}
+                              🧭 ENGAGE · {autopilot.course.hops.length} HOP{autopilot.course.hops.length !== 1 ? 'S' : ''}{helmBusy ? ' (busy)' : ''}
                             </button>
                           )
                         )}
@@ -3294,9 +3308,11 @@ const GameDashboard: React.FC = () => {
                           className="planetary-harvest-btn"
                           onClick={handleHarvest}
                           disabled={helmBusy || harvestBusy}
+                          aria-disabled={helmBusy || harvestBusy}
+                          aria-label={helmBusy ? 'Harvest unavailable — helm is busy' : 'Deploy the mining laser to harvest ore from the asteroid field'}
                           title="Deploy the mining laser to harvest ore from the asteroid field"
                         >
-                          {harvestBusy ? '⛏️ MINING…' : '⛏️ HARVEST'}
+                          {harvestBusy ? '⛏️ MINING…' : helmBusy ? '⛏️ HARVEST (busy)' : '⛏️ HARVEST'}
                         </button>
                       </div>
                     ) : (

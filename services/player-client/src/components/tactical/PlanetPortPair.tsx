@@ -155,21 +155,27 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
           className={`planet-section ${!isLanded ? 'clickable' : 'landed'} ${isPlanetUnclaimed ? 'unclaimed' : ''}`}
           onClick={handlePlanetClick}
         >
-          <span className="planet-icon">{planetIcon}</span>
           <div className="planet-details">
+            {/* icon + name always on ONE line — icon scaled to line-height */}
             <div className="planet-name-line">
+              <span className="planet-icon">{planetIcon}</span>
               <span className="planet-name">{planet.name}</span>
-              {isPlanetUnclaimed && onClaimPlanet ? (
-                <>
-                  <span className="planet-claim-hint">Click to Claim</span>
-                  <span className="planet-claim-reqs">💰 10,000cr · 👥 100+ colonists aboard</span>
-                </>
-              ) : isPopulationHub ? (
-                <span className="planet-hub-tag">POPULATION HUB · REGIONAL ADMINISTRATION</span>
-              ) : (
-                ownerDisplay && <span className="planet-owner">{ownerDisplay}</span>
-              )}
             </div>
+            {/* badges: claim/hub/owner — rendered only when present */}
+            {((isPlanetUnclaimed && !!onClaimPlanet) || isPopulationHub || !!ownerDisplay) && (
+              <div className="planet-meta">
+                {isPlanetUnclaimed && onClaimPlanet ? (
+                  <>
+                    <span className="planet-claim-hint">Click to Claim</span>
+                    <span className="planet-claim-reqs">💰 10,000cr · 👥 100+ colonists aboard</span>
+                  </>
+                ) : isPopulationHub ? (
+                  <span className="planet-hub-tag">POPULATION HUB · REGIONAL ADMINISTRATION</span>
+                ) : (
+                  ownerDisplay && <span className="planet-owner">{ownerDisplay}</span>
+                )}
+              </div>
+            )}
             <div className="planet-stats">
               {planet.habitability_score !== undefined && (
                 <span className="stat">🌡️ {planet.habitability_score}%</span>
@@ -191,19 +197,20 @@ const PlanetPortPair: React.FC<PlanetPortPairProps> = ({
           className={`station-section ${!isDocked && station.status.toLowerCase() === 'operational' ? 'clickable' : 'inactive'}`}
           onClick={handleStationClick}
         >
-          <span
-            className="station-icon"
-            style={stationClassInfo ? { color: stationClassInfo.accent } : undefined}
-          >
-            {stationClassInfo ? (
-              <StationClassMark group={stationClassInfo.group} size={18} />
-            ) : (
-              '🛰️'
-            )}
-          </span>
           <div className="station-details">
             <div className="station-name-line">
+              {/* icon + name + status on ONE line */}
               <div className="station-name-status">
+                <span
+                  className="station-icon"
+                  style={stationClassInfo ? { color: stationClassInfo.accent } : undefined}
+                >
+                  {stationClassInfo ? (
+                    <StationClassMark group={stationClassInfo.group} size={16} />
+                  ) : (
+                    '🛰️'
+                  )}
+                </span>
                 <span className="station-name">{station.name}</span>
                 <span className="station-status">
                   {station.status.toLowerCase() === 'operational' ? '🟢' : '🔴'}

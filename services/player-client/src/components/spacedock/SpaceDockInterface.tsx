@@ -1752,6 +1752,8 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
               className="hub-undock-btn"
               onClick={onUndock}
               disabled={helmBusy}
+              aria-disabled={helmBusy}
+              aria-label={helmBusy ? 'Undock unavailable — helm is busy' : 'Undock and launch into space'}
               title="Undock and launch into space"
             >
               {helmBusy ? '🚀 LAUNCHING…' : '🚀 UNDOCK & LAUNCH'}

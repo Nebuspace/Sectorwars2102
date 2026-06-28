@@ -476,6 +476,16 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+/* B5 — visual separation: right-aligned action zone so it reads as a
+   departure control, not a 3rd tab. Box-shadow ambient glow and
+   margin-left:auto push it away from the tablist. */
+.station-undock-btn.station-undock-action {
+  margin-left: auto;
+  box-shadow: 0 0 8px rgba(0, 217, 255, 0.2);
+}
+.station-undock-btn.station-undock-action:not(:disabled) {
+  box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+}
 .station-venue-tabs {
   display: flex;
   gap: 6px;
@@ -922,7 +932,10 @@
     rgba(255, 255, 255, 0.015) 0%,
     rgba(0, 0, 0, 0.22) 100%
   );
-  border-top: 2px solid rgba(77, 132, 253, 0.2);
+  /* WO-PANEL-3D-EDGE: top edge (viewport-facing) gets a subtle raised/proud bevel —
+     inset inner highlight + upward outer shadow so the deck reads slightly proud of
+     the solar-system scene above it. CRT line-style, not heavy chrome. */
+  border-top: 2px solid rgba(77, 132, 253, 0.28);
   display: grid;
   /* WO-COCKPIT-ADJ #4: PLANETARY · NAV · COMMS order, ~30/40/30 split.
      gap:0 so fr units claim all content-box width directly.
@@ -931,8 +944,14 @@
   grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr);
   grid-template-rows: 1fr;
   gap: 0;
-  padding: 0.5rem;
-  box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.45);
+  /* WO-DECK-TIGHTEN: 0.5rem → 0.3rem outer padding — grows panels slightly;
+     3fr/4fr/3fr ratio untouched. */
+  padding: 0.3rem;
+  /* WO-PANEL-3D-EDGE: inset top highlight + upward outer shadow on top edge only. */
+  box-shadow:
+    inset 0 0 24px rgba(0, 0, 0, 0.45),
+    inset 0 2px 5px rgba(255, 255, 255, 0.06),
+    0 -3px 8px rgba(0, 0, 0, 0.35);
   overflow: hidden;
 }
 
@@ -981,7 +1000,9 @@
      content, defeating the minmax() columns above. */
   min-width: 0;
   background: transparent;
-  padding: 0.4rem;
+  /* WO-DECK-TIGHTEN: 0.4rem → 0.25rem inner padding — tightens inter-panel
+     gutter (0.4+0.4=0.8rem between content areas → 0.25+0.25=0.5rem). */
+  padding: 0.25rem;
   max-height: 100%;
   min-height: 0;  /* allow grid item to shrink so overflow works */
   border-right: 1px solid rgba(255, 255, 255, 0.05);

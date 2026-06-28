@@ -493,11 +493,11 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
       <div className="navigation-instructions">
         <div className="instruction-item">
           <span className="instruction-icon" style={{ color: '#00ff41' }}>●</span>
-          <span>Current Location</span>
+          <span>Here</span>
         </div>
         <div className="instruction-item">
           <span className="instruction-icon" style={{ color: '#00d9ff' }}>●</span>
-          <span>Available (Click to Warp)</span>
+          <span>In Range</span>
         </div>
         <div className="instruction-item">
           <span className="instruction-icon" style={{ color: '#6b7280' }}>●</span>

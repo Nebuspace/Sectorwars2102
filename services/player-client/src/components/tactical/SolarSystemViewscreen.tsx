@@ -1270,7 +1270,9 @@ function drawScene(
   // fall on-screen instead of the left arc clipping the cap. Small seeded
   // jitter keeps systems from sharing one fixed skeleton.
   const starX = w * 0.54 + (anchorRng() - 0.5) * 2 * (w * 0.03);
-  const starY = h * 0.52 + (anchorRng() - 0.5) * 2 * (h * 0.04);
+  // h is the VISIBLE scene height (container clips to calc(100% - var(--deck-h))),
+  // so h/2 lands at the visual centre regardless of the deck-h setting.
+  const starY = h / 2 + (anchorRng() - 0.5) * 2 * (h * 0.04);
   const margin = 14;
   // Cap orbital extent so the outermost ellipse stays fully on-screen on BOTH
   // sides of the (now more central) star — left reach (starX - margin), right
