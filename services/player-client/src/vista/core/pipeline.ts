@@ -32,6 +32,19 @@ import { SeedBus } from './rng';
 import { SeededRng } from './rng';
 import { getProfile, ArchetypeEntry, LandmarkKind, WaterType } from './profiles';
 import { derivePalette, hexToRgb } from './palette';
+import {
+  placeFloraScatters,
+  placeRockScatters,
+  placeDepositMarkers,
+  placeEnergyMarker,
+  placeHazardOverlays,
+} from './features';
+
+// TerrainMode: declared in contract.ts + profiles.ts by Lane 1
+// (PlanetProfile.terrainMode field + VistaModel.layers.terrain.mode field).
+// Defined locally here so Lane 3 compiles independently.  Remove this alias
+// and the two casts in generateVista when Lane 1 lands.
+type TerrainMode = 'surface' | 'cloud-deck' | 'plating';
 
 // ---------------------------------------------------------------------------
 // Internal math helpers
@@ -168,6 +181,7 @@ function buildSky(
   input: VistaInput,
   palette: VistaModel['palette'],
   rng: SeededRng,
+  desirability: number,
 ): VistaModel['layers']['sky'] {
   const atmoPresent = input.planet.atmosphere.present;
   const atmoDensity = atmoPresent ? input.planet.atmosphere.density : 0;
@@ -204,10 +218,12 @@ function buildSky(
     color:   palette.scatterBand,
   };
 
-  // starCount: 30 (low-hab atmo world) → 200 (high-hab or vacuum).
-  // Vacuum worlds show full stars even at midday (BRIEF §3.3).
+  // starCount: 30 (low-hab atmo) → up to 220 (high-hab + high-desirability).
+  // Desirability boosts night-sky density — a lush, rich world glitters.
+  // Vacuum worlds always show full density regardless (BRIEF §3.3 airless stars-at-noon).
+  const starBase  = Math.round(lerp(30, 180, hab01));
   const starCount = atmoPresent
-    ? Math.round(lerp(30, 180, hab01))
+    ? Math.round(clamp(starBase * lerp(0.80, 1.35, desirability), 30, 220))
     : 200;
 
   return { gradient, scatterBands, haze, starCount };
@@ -551,100 +567,72 @@ function buildWater(
 }
 
 // ---------------------------------------------------------------------------
-// Stage 9 — buildFeatures
+// Stage 7a — buildCloudDeckTerrain  (GAS_GIANT special case)
 // ---------------------------------------------------------------------------
 
 /**
- * Scatter N instances of a given kind at pseudo-random normalized positions.
- * Uses uniform random placement for P0; upgrade to Poisson-disk in P1.
+ * Emit a cloud-deck terrain layer for gas giants.
+ *
+ * GAS_GIANTs have no solid surface: no terrain strata, no landmarks, no rock
+ * ground plane.  The horizonY here divides the sky wedge above from the
+ * banded cloud deck below; the renderer branches on terrain.mode = 'cloud-deck'
+ * to draw cloud bands rather than rock ridges.
+ *
+ * Draws exactly 1 float from rng (horizonY jitter in [0.50..0.60]).
+ * Leaving most of the terrain rng stream unconsumed is intentional — other
+ * streams are independent and are unaffected.
  */
-function scatterInstances(
-  rng: SeededRng,
-  kind: string,
-  count: number,
-  palette: VistaModel['palette'],
-  horizonY: number,
-  glow?: number,
-): VistaModel['layers']['features']['scatters'][number] {
-  const instances: VistaModel['layers']['features']['scatters'][number]['instances'] = [];
-  for (let i = 0; i < count; i++) {
-    const x = 0.02 + rng.next01() * 0.96;
-    // Scatter in the lower portion of the scene (ground plane area)
-    const y = horizonY + rng.next01() * (1 - horizonY) * 0.85;
-    instances.push({
-      pos:   [x, y],
-      scale: 0.018 + rng.next01() * 0.04,
-      tint:  lerpRgb(palette.flora, [255, 255, 255], rng.next01() * 0.2),
-      ...(glow !== undefined ? { glow: glow * (0.5 + rng.next01() * 0.5) } : {}),
-    });
-  }
-  return { kind, instances };
+function buildCloudDeckTerrain(rng: SeededRng): VistaModel['layers']['terrain'] {
+  // Horizon sits mid-to-lower in the frame: generous sky area + cloud deck below.
+  const horizonY   = 0.50 + rng.next01() * 0.10;   // [0.50..0.60]
+
+  const groundPoly: [number, number][] = [
+    [0, horizonY], [1, horizonY], [1, 1.0], [0, 1.0],
+  ];
+
+  return {
+    horizonY,
+    strata:    [],           // no ridge silhouettes — cloud banding lives in atmosphere layer
+    groundPlane: {
+      poly:         groundPoly,
+      material:     'regolith', // stand-in; renderer overrides when mode = 'cloud-deck'
+      slopeProfile: new Array(10).fill(0) as number[],
+    },
+    landmarks: [],           // no solid-surface landmarks on a gas giant
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Stage 9 — buildFeatures
+// ---------------------------------------------------------------------------
 
 function buildFeatures(
   input: VistaInput,
   profile: ReturnType<typeof getProfile>,
   palette: VistaModel['palette'],
   horizonY: number,
+  desirability: number,
   rng: SeededRng,
 ): VistaModel['layers']['features'] {
-  const hab01    = clamp01(input.planet.habitability / 100);
-  const scatters: VistaModel['layers']['features']['scatters'] = [];
+  const hab01 = clamp01(input.planet.habitability / 100);
 
-  // Flora scatter (density scales with habitability)
-  if (profile.floraKinds.length > 0) {
-    const floraCount = Math.round(lerp(0, 14, hab01));
-    if (floraCount > 0) {
-      const floraKind = rng.pick(profile.floraKinds);
-      scatters.push(scatterInstances(rng, floraKind, floraCount, palette, horizonY));
-      // Second flora layer for high-hab worlds (variety)
-      if (hab01 > 0.6 && profile.floraKinds.length > 1) {
-        const secondKind = rng.pick(profile.floraKinds);
-        const secondCount = Math.round(lerp(0, 6, (hab01 - 0.6) / 0.4));
-        if (secondCount > 0) {
-          scatters.push(scatterInstances(rng, secondKind, secondCount, palette, horizonY));
-        }
-      }
-    }
-  }
+  // Flora + rock: Poisson-disk placement via features.ts helpers.
+  // Flora density scales with both habitability and desirability (beauty budget)
+  // so the lab's habitability slider alone produces visibly different scenes.
+  const floraScatters = placeFloraScatters(
+    rng, profile.floraKinds, palette, horizonY, hab01, desirability,
+  );
+  const rockScatters  = placeRockScatters(rng, profile.rockKinds, palette, horizonY);
+  const scatters      = [...floraScatters, ...rockScatters];
 
-  // Rock scatter (always present; type-specific kinds)
-  if (profile.rockKinds.length > 0) {
-    const rockKind  = rng.pick(profile.rockKinds);
-    const rockCount = rng.int(2, 7);
-    scatters.push(scatterInstances(rng, rockKind, rockCount, palette, horizonY));
-  }
+  // Deposit markers and energy marker: site-gated (BRIEF §2.2 degradation).
+  const depositMarkers = input.site
+    ? placeDepositMarkers(rng, input.site.deposits, profile.depositVisuals, horizonY)
+    : [];
 
-  // Deposit markers and energy marker: site-gated (BRIEF §2.2 degradation)
-  const depositMarkers: VistaModel['layers']['features']['depositMarkers'] = [];
-  let energyMarker: VistaModel['layers']['features']['energyMarker'] | undefined;
-
-  if (input.site) {
-    // Map each deposit to a visual marker
-    for (const deposit of input.site.deposits) {
-      const visual = (profile.depositVisuals[deposit.kind]
-        ?? 'ore-vein') as VistaModel['layers']['features']['depositMarkers'][number]['visual'];
-      depositMarkers.push({
-        deposit:   deposit.kind,
-        pos: [
-          0.08 + rng.next01() * 0.84,
-          horizonY + rng.next01() * (1 - horizonY) * 0.65,
-        ],
-        intensity: deposit.richness,
-        visual,
-      });
-    }
-
-    // Energy marker
-    energyMarker = {
-      source:    input.site.energy.source,
-      pos: [
-        0.1 + rng.next01() * 0.8,
-        horizonY + rng.next01() * (1 - horizonY) * 0.55,
-      ],
-      intensity: input.site.energy.tier / 4,
-    };
-  }
+  const energyMarker = input.site
+    ? placeEnergyMarker(rng, input.site.energy, horizonY)
+    : undefined;
 
   return {
     scatters,
@@ -663,33 +651,14 @@ function buildHazards(
   horizonY: number,
   rng: SeededRng,
 ): VistaModel['layers']['hazards'] {
-  if (!input.site) {
-    return { overlays: [] };  // site absent → no hazard layer
-  }
+  // site absent → no hazard layer (BRIEF §2.2 degradation)
+  if (!input.site) return { overlays: [] };
 
-  const overlays: VistaModel['layers']['hazards']['overlays'] = [];
-
-  for (const hazard of input.site.hazards) {
-    const visual = (profile.hazardVisuals[hazard.kind]
-      ?? 'impact-scar') as VistaModel['layers']['hazards']['overlays'][number]['visual'];
-
-    // Hazard region: a rough quad covering a seeded portion of the scene
-    const x0 = rng.next01() * 0.5;
-    const x1 = x0 + 0.2 + rng.next01() * 0.5;
-    const y0 = horizonY + rng.next01() * (1 - horizonY) * 0.4;
-    const y1 = y0 + rng.next01() * 0.3;
-    const region: [number, number][] = [
-      [x0, y0], [x1, y0], [x1, y1], [x0, y1],
-    ];
-
-    overlays.push({
-      hazard:   hazard.kind,
-      severity: hazard.severity,
-      visual,
-      region,
-    });
-  }
-
+  // TRUTHFULNESS (BRIEF §2.5): placeHazardOverlays emits an overlay for every
+  // hazard unconditionally — desirability never suppresses a hazard visual.
+  const overlays = placeHazardOverlays(
+    rng, input.site.hazards, profile.hazardVisuals, horizonY,
+  );
   return { overlays };
 }
 
@@ -786,7 +755,7 @@ export function generateVista(input: VistaInput): VistaModel {
   const lighting = deriveLighting(input, palette, desirability, sunAzimuth, sunElevation);
 
   // ── Stage 5: sky + celestial ─────────────────────────────────────────────
-  const sky       = buildSky(input, palette, bus.sky);
+  const sky       = buildSky(input, palette, bus.sky, desirability);
   // Celestial rng was already consumed for sun position above; the remaining
   // draws (secondary star, moons, siblings) continue from the same stream.
   const celestial = buildCelestial(input, bus.celestial);
@@ -795,13 +764,41 @@ export function generateVista(input: VistaInput): VistaModel {
   const atmosphere = buildAtmosphere(input, profile, palette, bus.atmo);
 
   // ── Stage 7: terrain ─────────────────────────────────────────────────────
-  const terrain = buildTerrain(archetype, palette, profile.coherence, bus.terrain);
+  // Read terrainMode from the profile (field declared by Lane 1 in profiles.ts;
+  // cast until it lands — tsc error on this line is expected until Lane 1 ships).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const terrainMode = ((profile as any).terrainMode ?? 'surface') as TerrainMode;
+
+  // GAS_GIANT → cloud-deck: no strata, no landmarks, no rock ground plane.
+  // All others → normal terrain path (ARTIFICIAL override applied below).
+  const terrainBase: VistaModel['layers']['terrain'] =
+    terrainMode === 'cloud-deck'
+      ? buildCloudDeckTerrain(bus.terrain)
+      : buildTerrain(archetype, palette, profile.coherence, bus.terrain);
+
+  // ARTIFICIAL ('plating'): force flat plating material + zero slope;
+  // keep whatever landmarks the archetype provides (spires on engineered terrain).
+  const terrainLayer: VistaModel['layers']['terrain'] =
+    terrainMode === 'plating'
+      ? {
+          ...terrainBase,
+          groundPlane: {
+            ...terrainBase.groundPlane,
+            material:     'plating',
+            slopeProfile: new Array(10).fill(0) as number[],
+          },
+        }
+      : terrainBase;
+
+  // Attach terrain.mode for the renderer (Lane 1 adds this field to contract.ts;
+  // cast so tsc is satisfied until the field is declared — runtime value is correct).
+  const terrain = { ...terrainLayer, mode: terrainMode } as VistaModel['layers']['terrain'];
 
   // ── Stage 8: water / lava (aquatic profiles only) ───────────────────────
   const water = buildWater(profile, palette, terrain.horizonY, bus.water);
 
   // ── Stage 9: features ────────────────────────────────────────────────────
-  const features = buildFeatures(input, profile, palette, terrain.horizonY, bus.features);
+  const features = buildFeatures(input, profile, palette, terrain.horizonY, desirability, bus.features);
 
   // ── Stage 10: hazards (site-gated) ──────────────────────────────────────
   const hazards = buildHazards(input, profile, terrain.horizonY, bus.hazard);

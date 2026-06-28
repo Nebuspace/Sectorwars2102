@@ -393,6 +393,13 @@ export interface VistaModel {
     };
 
     terrain: {
+      /**
+       * Rendering mode for the terrain layer.  Absent → 'surface'.
+       * 'cloud-deck' → GAS_GIANT: cloud-band horizon replaces ridge/ground-plane.
+       * 'plating'    → ARTIFICIAL: flat engineered substrate.
+       */
+      mode?: 'surface' | 'cloud-deck' | 'plating';
+
       /** Normalized Y position of the horizon line (0=top, 1=bottom). */
       horizonY: number;
 

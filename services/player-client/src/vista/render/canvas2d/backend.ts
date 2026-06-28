@@ -207,6 +207,26 @@ type VistaCache = {
 
   // Cached gradient objects (bound to this ctx; rebuilt on remount)
   glowGrad: CanvasGradient;
+
+  // Terrain mode derived from the model (Lane 1 contract field; optional).
+  // 'surface' | 'cloud-deck' | 'plating' — defaults to 'surface' when absent
+  // so the normal P0 path is never disturbed.
+  terrainMode: string;
+
+  // Cloud-deck bands — GAS_GIANT special case (empty for all other modes)
+  cloudBands: { yFrac: number; thickFrac: number; rgb: RGB; speed: number; alpha: number }[];
+
+  // Plating grid cell size in pixels — ARTIFICIAL special case
+  platingPx: number;
+
+  // Deposit markers — pre-baked screen coords + visual descriptor
+  depositScreens: { sx: number; sy: number; visual: string; intensity: number }[];
+
+  // Energy source marker — null when the model has none
+  energyScreen: { sx: number; sy: number; source: string; intensity: number } | null;
+
+  // Hazard overlay screen polygons — model 0..1 region mapped to pixel coords
+  hazardScreens: { visual: string; severity: number; pts: [number, number][] }[];
 };
 
 // ---------------------------------------------------------------------------
@@ -664,6 +684,72 @@ function buildVistaCache(
   glowGrad.addColorStop(0, rgba(glowRgb, 0.18));
   glowGrad.addColorStop(1, rgba(glowRgb, 0));
 
+  // ---- Terrain mode (contract.ts terrain.mode; absent → 'surface' so P0 path is unchanged) ----
+  const terrainMode = model.layers.terrain.mode ?? 'surface';
+
+  // ---- Cloud-deck bands — GAS_GIANT (mode === 'cloud-deck') ----
+  const cloudBands: VistaCache['cloudBands'] = [];
+  if (terrainMode === 'cloud-deck') {
+    const rngBand = splitmix32(deriveChildSeed(model.seed, 'cloudbands'));
+    const bandCount = 5 + Math.round(rngBand() * 2);  // 5–7 receding layers
+    const ridgeArr = model.palette.ridge;
+    for (let bi = 0; bi < bandCount; bi++) {
+      const tFar = bi / Math.max(1, bandCount - 1);   // 0 = near horizon, 1 = foreground
+      // Tint: far bands take skyHorizon; near bands blend toward the ridge palette
+      const palA = model.palette.skyHorizon;
+      const palB = ridgeArr[Math.min(bi, ridgeArr.length - 1)] ?? palA;
+      const blend = tFar * 0.55;
+      const bandRgb: RGB = [
+        Math.round(palA[0] * (1 - blend) + palB[0] * blend),
+        Math.round(palA[1] * (1 - blend) + palB[1] * blend),
+        Math.round(palA[2] * (1 - blend) + palB[2] * blend),
+      ];
+      cloudBands.push({
+        yFrac:     tFar,
+        thickFrac: 0.040 + (1 - tFar) * 0.14 + rngBand() * 0.05,  // far=thin, near=thick
+        rgb:       bandRgb,
+        speed:     (0.5 + rngBand() * 0.8) * (0.3 + tFar * 0.7),  // far=slow, near=fast
+        alpha:     0.52 + rngBand() * 0.32,
+      });
+    }
+  }
+
+  // ---- Plating grid cell size (ARTIFICIAL: mode === 'plating') ----
+  const platingPx = Math.max(28, Math.round(w * 0.062));  // ~89px @1440
+
+  // ---- Deposit markers — bake screen coords from model 0..1 positions ----
+  // y anchors to the ground band (horizonY + a fraction of groundH so markers
+  // sit on the terrain, not floating above it).
+  const groundH = h - horizonY;
+  const depositScreens: VistaCache['depositScreens'] =
+    model.layers.features.depositMarkers.map((dm) => ({
+      sx: dm.pos[0] * w,
+      sy: horizonY + dm.pos[1] * groundH * 0.65,
+      visual: dm.visual,
+      intensity: dm.intensity,
+    }));
+
+  // ---- Energy marker — screen coords (null when absent) ----
+  const emLayer = model.layers.features.energyMarker;
+  const energyScreen = emLayer
+    ? {
+        sx: emLayer.pos[0] * w,
+        sy: horizonY + emLayer.pos[1] * groundH * 0.50,
+        source: emLayer.source,
+        intensity: emLayer.intensity,
+      }
+    : null;
+
+  // ---- Hazard overlay polygons — map 0..1 region to screen pixels ----
+  // A missing/empty region defaults to full-ground coverage so every hazard
+  // is guaranteed to render somewhere visible.
+  const hazardScreens: VistaCache['hazardScreens'] = model.layers.hazards.overlays.map((hz) => {
+    const pts: [number, number][] = hz.region.length >= 3
+      ? hz.region.map(([rx, ry]) => [rx * w, horizonY + ry * groundH] as [number, number])
+      : [[0, horizonY], [w, horizonY], [w, h], [0, h]];
+    return { visual: hz.visual, severity: hz.severity, pts };
+  });
+
   return {
     key: '', // filled by caller
     ctx,
@@ -694,6 +780,12 @@ function buildVistaCache(
     particleKind,
     landmarks,
     glowGrad,
+    terrainMode,
+    cloudBands,
+    platingPx,
+    depositScreens,
+    energyScreen,
+    hazardScreens,
   };
 }
 
@@ -1222,6 +1314,670 @@ function drawLandmarks(
 }
 
 // ---------------------------------------------------------------------------
+// drawCloudDeck — GAS_GIANT terrain mode.
+// Replaces terrain ridges + ground plane with a banded cloud-deck horizon.
+// Called only when model.layers.terrain.mode === 'cloud-deck'.
+// The platform silhouette in the foreground reads as "floating above cloud tops."
+// ---------------------------------------------------------------------------
+function drawCloudDeck(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle
+): void {
+  const { horizonY } = cache;
+  const pal = model.palette;
+  const deckH = h - horizonY;
+
+  // Deep atmospheric base — gradient from the horizon tint down to a dark purple base
+  {
+    const [hr, hg, hb] = pal.skyHorizon;
+    const [tr, tg, tb] = pal.skyTop;
+    const base = ctx.createLinearGradient(0, horizonY, 0, h);
+    base.addColorStop(0,   `rgb(${Math.round(hr * 0.82)}, ${Math.round(hg * 0.82)}, ${Math.round(hb * 0.82)})`);
+    base.addColorStop(0.4, `rgb(${Math.round(hr * 0.35 + tr * 0.12)}, ${Math.round(hg * 0.35 + tg * 0.12)}, ${Math.round(hb * 0.35 + tb * 0.15)})`);
+    base.addColorStop(1,   `rgb(${Math.round(tr * 0.18)}, ${Math.round(tg * 0.18)}, ${Math.round(tb * 0.25)})`);
+    ctx.fillStyle = base;
+    ctx.fillRect(0, horizonY, w, deckH);
+  }
+
+  // Receding cloud bands — each baked in buildVistaCache with a parallax speed.
+  // Far bands (low yFrac) drift slowly; near bands drift fast — suggests depth.
+  for (const band of cache.cloudBands) {
+    const bandY   = horizonY + band.yFrac * deckH;
+    const thick   = band.thickFrac * deckH;
+    const drift   = t === 0 ? 0 : (t * band.speed * 10) % w;
+    const widthR  = 0.55 + band.yFrac * 0.55;  // wider near-camera, narrow at horizon
+    const [br, bg2, bb] = band.rgb;
+    const alpha   = band.alpha * (0.65 + dc.bright * 0.35);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    const bgrad = ctx.createLinearGradient(0, bandY - thick, 0, bandY + thick);
+    bgrad.addColorStop(0,    `rgba(${br}, ${bg2}, ${bb}, 0)`);
+    bgrad.addColorStop(0.30, `rgba(${br}, ${bg2}, ${bb}, ${(alpha * 0.85).toFixed(3)})`);
+    bgrad.addColorStop(0.70, `rgba(${br}, ${bg2}, ${bb}, ${alpha.toFixed(3)})`);
+    bgrad.addColorStop(1,    `rgba(${br}, ${bg2}, ${bb}, 0)`);
+    ctx.fillStyle = bgrad;
+    // Ellipse suggests a curved cloud-layer receding toward the horizon
+    ctx.beginPath();
+    ctx.ellipse(w * 0.5 + drift, bandY, w * widthR, thick, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Foreground platform / observation-deck silhouette — reads as "standing on a
+  // floating structure above the cloud tops."
+  {
+    const platW  = w * 0.30;
+    const railH  = Math.max(4, h * 0.028);
+    const pilH   = Math.min(h * 0.16, deckH * 0.55);
+    const pilW   = Math.max(4, w * 0.014);
+    const railY  = h - pilH - railH;
+    const [sr, sg, sb] = pal.surface;
+    const platCol = `rgba(${Math.round(sr * 0.35)}, ${Math.round(sg * 0.38)}, ${Math.round(sb * 0.45)}, 0.94)`;
+
+    ctx.save();
+    ctx.fillStyle = platCol;
+    ctx.fillRect(w * 0.5 - platW * 0.5, railY, platW, railH);
+    for (const pf of [0.15, 0.38, 0.62, 0.85]) {
+      ctx.fillRect(w * 0.5 - platW * 0.5 + platW * pf - pilW * 0.5, railY + railH, pilW, pilH);
+    }
+    // Rail accent edge — subtle energy/tint glow from palette.accent
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.18 * dc.bright;
+    const [ar, ag, ab] = pal.accent;
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, 0.9)`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(w * 0.5 - platW * 0.5, railY);
+    ctx.lineTo(w * 0.5 + platW * 0.5, railY);
+    ctx.stroke();
+    ctx.restore();
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawPlating — ARTIFICIAL terrain mode.
+// Replaces terrain ridges with a flat engineered plating ground: a solid fill
+// plus a perspective-squashed seam grid.
+// Landmarks (spires/towers the model emits) are drawn afterward by the normal
+// drawLandmarks call in drawScene.
+// ---------------------------------------------------------------------------
+function drawPlating(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle
+): void {
+  const { horizonY, platingPx } = cache;
+  const pal = model.palette;
+  const groundH = h - horizonY;
+  const [sr, sg, sb] = pal.surface;
+
+  // Base plating fill — gradient lighter at horizon, darker at camera
+  const fill = ctx.createLinearGradient(0, horizonY, 0, h);
+  fill.addColorStop(0,   `rgb(${Math.round(sr * 0.72)}, ${Math.round(sg * 0.72)}, ${Math.round(sb * 0.78)})`);
+  fill.addColorStop(0.5, `rgb(${Math.round(sr * 0.55)}, ${Math.round(sg * 0.55)}, ${Math.round(sb * 0.60)})`);
+  fill.addColorStop(1,   `rgb(${Math.round(sr * 0.38)}, ${Math.round(sg * 0.38)}, ${Math.round(sb * 0.42)})`);
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, horizonY, w, groundH);
+
+  // Panel seam grid: horizontal seams with perspective crowding near the horizon,
+  // vertical seams parallel.
+  ctx.save();
+  const seamAlpha = 0.18 + dc.bright * 0.08;
+  // Seam lines: a lighter tint than the base
+  ctx.strokeStyle = `rgba(${Math.min(255, Math.round(sr * 1.4 + 30))}, ${Math.min(255, Math.round(sg * 1.4 + 30))}, ${Math.min(255, Math.round(sb * 1.4 + 35))}, ${seamAlpha.toFixed(3)})`;
+  ctx.lineWidth = 1;
+
+  // Horizontal seams — exponential crowding so they converge at horizonY
+  const rows = Math.ceil(groundH / platingPx) + 2;
+  for (let ri = 0; ri <= rows; ri++) {
+    const tFrac = Math.pow(ri / rows, 1.8);
+    const yLine = horizonY + tFrac * groundH;
+    if (yLine > h) break;
+    ctx.beginPath(); ctx.moveTo(0, yLine); ctx.lineTo(w, yLine); ctx.stroke();
+  }
+
+  // Vertical seams — uniform spacing (not perspective-converging in 2.5D)
+  const cols = Math.ceil(w / platingPx) + 1;
+  for (let ci = 0; ci <= cols; ci++) {
+    const xLine = ci * platingPx;
+    ctx.beginPath(); ctx.moveTo(xLine, horizonY); ctx.lineTo(xLine, h); ctx.stroke();
+  }
+
+  // Panel bevel top-edge highlight — a thin lighter line just below each seam
+  const bevelAlpha = 0.09 * dc.bright * (0.6 + 0.4 * Math.sin(t * 0.3 + 1));
+  ctx.strokeStyle = `rgba(220, 230, 245, ${bevelAlpha.toFixed(3)})`;
+  ctx.lineWidth = 1;
+  for (let ri = 1; ri <= rows; ri++) {
+    const prevFrac = Math.pow((ri - 1) / rows, 1.8);
+    const yLine = horizonY + prevFrac * groundH + 2;
+    if (yLine > h) break;
+    ctx.beginPath(); ctx.moveTo(0, yLine); ctx.lineTo(w, yLine); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawDepositGlyph — one deposit-marker canvas glyph at (sx, sy).
+// Each visual maps to a recognizable shape, tinted from palette.accent.
+// ---------------------------------------------------------------------------
+function drawDepositGlyph(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  sx: number,
+  sy: number,
+  visual: string,
+  intensity: number,
+  accentRgb: RGB
+): void {
+  const sz  = Math.max(12, Math.min(w * 0.025, h * 0.04) * (0.6 + intensity * 0.7));
+  const [ar, ag, ab] = accentRgb;
+  ctx.save();
+
+  if (visual === 'ore-vein') {
+    // Jagged zigzag vein exposed in the terrain surface, in accent color
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.55 + intensity * 0.35).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(1.5, sz * 0.14);
+    ctx.lineCap     = 'round';
+    const vw = sz * 1.8;
+    ctx.beginPath();
+    ctx.moveTo(sx - vw * 0.5, sy);
+    for (let i = 1; i <= 5; i++) {
+      ctx.lineTo(sx - vw * 0.5 + (i / 5) * vw, sy - (i % 2 === 1 ? sz * 0.55 : sz * 0.18));
+    }
+    ctx.stroke();
+    // Glint glow around the vein apex
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.25 * intensity;
+    const gg = ctx.createRadialGradient(sx, sy - sz * 0.3, 0, sx, sy - sz * 0.3, sz * 0.7);
+    gg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.9)`);
+    gg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = gg;
+    ctx.fillRect(sx - sz * 0.7, sy - sz * 0.9, sz * 1.4, sz * 1.0);
+
+  } else if (visual === 'gas-seep') {
+    // Wispy upward puffs — greenish-yellow accent tinted
+    const gR = Math.round(ar * 0.3 + 110);
+    const gG = Math.round(ag * 0.4 + 140);
+    const gB = Math.round(ab * 0.2 + 60);
+    ctx.globalCompositeOperation = 'lighter';
+    for (let pi = 0; pi < 3; pi++) {
+      const px2  = sx + (pi - 1) * sz * 0.7;
+      const rise = t === 0 ? sz * 0.4 : sz * 0.4 + (t * 8 + pi * 2.1) % (sz * 1.4);
+      const pr   = sz * (0.30 + pi * 0.10);
+      const pg   = ctx.createRadialGradient(px2, sy - rise, 0, px2, sy - rise, pr * 1.8);
+      pg.addColorStop(0, `rgba(${gR}, ${gG}, ${gB}, ${(0.30 * intensity).toFixed(3)})`);
+      pg.addColorStop(1, `rgba(${gR}, ${gG}, ${gB}, 0)`);
+      ctx.fillStyle = pg;
+      ctx.fillRect(px2 - pr * 1.8, sy - rise - pr * 1.8, pr * 3.6, pr * 3.6);
+    }
+
+  } else if (visual === 'thermal-vent') {
+    // Steam column widening upward + bright base glow
+    const ventH  = sz * 2.0;
+    const topW   = sz * 0.80;
+    const botW   = sz * 0.22;
+    ctx.globalCompositeOperation = 'lighter';
+    const vg = ctx.createLinearGradient(sx, sy, sx, sy - ventH);
+    vg.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, ${(0.55 * intensity).toFixed(3)})`);
+    vg.addColorStop(0.6, `rgba(230, 230, 240, ${(0.30 * intensity).toFixed(3)})`);
+    vg.addColorStop(1,   `rgba(230, 230, 240, 0)`);
+    ctx.fillStyle = vg;
+    ctx.beginPath();
+    ctx.moveTo(sx - botW, sy);
+    ctx.quadraticCurveTo(sx - topW * 0.5, sy - ventH * 0.5, sx - topW, sy - ventH);
+    ctx.lineTo(sx + topW, sy - ventH);
+    ctx.quadraticCurveTo(sx + topW * 0.5, sy - ventH * 0.5, sx + botW, sy);
+    ctx.closePath();
+    ctx.fill();
+    const bg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 0.9);
+    bg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, ${(0.6 * intensity).toFixed(3)})`);
+    bg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = bg;
+    ctx.fillRect(sx - sz * 0.9, sy - sz * 0.9, sz * 1.8, sz * 1.8);
+
+  } else if (visual === 'hydrocarbon-pool') {
+    // Dark oval pool on the ground with a shimmering highlight
+    const pw = sz * 1.6;
+    const ph = sz * 0.50;
+    ctx.globalCompositeOperation = 'source-over';
+    const pg = ctx.createRadialGradient(sx, sy, 0, sx, sy, pw);
+    pg.addColorStop(0,   `rgba(${Math.round(ar * 0.15)}, ${Math.round(ag * 0.12)}, ${Math.round(ab * 0.20)}, ${(0.75 * intensity).toFixed(3)})`);
+    pg.addColorStop(0.7, `rgba(${Math.round(ar * 0.10)}, ${Math.round(ag * 0.10)}, ${Math.round(ab * 0.15)}, ${(0.55 * intensity).toFixed(3)})`);
+    pg.addColorStop(1,   `rgba(${Math.round(ar * 0.05)}, ${Math.round(ag * 0.05)}, ${Math.round(ab * 0.08)}, 0)`);
+    ctx.fillStyle = pg;
+    ctx.save(); ctx.scale(1, ph / pw);
+    ctx.beginPath(); ctx.arc(sx, sy * (pw / ph), pw, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    // Shimmer stripe
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.25 * intensity * (t === 0 ? 1 : 0.5 + 0.5 * Math.sin(t * 1.5));
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, 1)`;
+    ctx.lineWidth   = Math.max(1, sz * 0.08);
+    ctx.beginPath();
+    ctx.ellipse(sx - pw * 0.15, sy - ph * 0.1, pw * 0.35, ph * 0.18, -0.3, 0, Math.PI * 2);
+    ctx.stroke();
+
+  } else if (visual === 'crystal') {
+    // Cluster of angular gem shapes glowing in accent color
+    ctx.globalCompositeOperation = 'lighter';
+    for (let ci = 0; ci < 4; ci++) {
+      const cAngle = (ci / 4) * Math.PI * 2 + Math.PI * 0.15;
+      const cDist  = sz * (0.22 + ci * 0.18);
+      const cx2    = sx + Math.cos(cAngle) * cDist;
+      const cy2    = sy + Math.sin(cAngle) * cDist * 0.4;  // flatten to ground plane
+      const ch     = sz * (0.60 + ci * 0.15);
+      const cw2    = ch * 0.32;
+      ctx.globalAlpha = (0.55 + intensity * 0.35) * (ci < 2 ? 0.9 : 0.6);
+      ctx.fillStyle   = `rgba(${ar}, ${ag}, ${ab}, 1)`;
+      ctx.beginPath();
+      ctx.moveTo(cx2, cy2 - ch);
+      ctx.lineTo(cx2 + cw2, cy2 - ch * 0.4);
+      ctx.lineTo(cx2, cy2);
+      ctx.lineTo(cx2 - cw2, cy2 - ch * 0.4);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // Halo glow around cluster
+    ctx.globalAlpha = 0.18 * intensity;
+    const glowR = sz * 1.1;
+    const cg = ctx.createRadialGradient(sx, sy - sz * 0.3, 0, sx, sy - sz * 0.3, glowR);
+    cg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.8)`);
+    cg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = cg;
+    ctx.fillRect(sx - glowR, sy - glowR - sz * 0.3, glowR * 2, glowR * 2);
+
+  } else if (visual === 'biolumin') {
+    // Soft pulsing glowing dots — bioluminescent cyan-green tinted by accent
+    const blR = Math.round(ar * 0.3 + 40);
+    const blG = Math.round(ag * 0.5 + 100);
+    const blB = Math.round(ab * 0.5 + 140);
+    ctx.globalCompositeOperation = 'lighter';
+    for (let di = 0; di < 5; di++) {
+      const dAngle = (di / 5) * Math.PI * 2;
+      const dDist  = sz * (0.30 + di * 0.08);
+      const dx     = sx + Math.cos(dAngle) * dDist;
+      const dy     = sy + Math.sin(dAngle) * dDist * 0.45;
+      const pulse  = t === 0 ? 1.0 : 0.5 + 0.5 * Math.sin(t * 1.2 + di * 1.3);
+      const dr     = sz * (0.18 + di * 0.04);
+      const dg2    = ctx.createRadialGradient(dx, dy, 0, dx, dy, dr * 2.2);
+      dg2.addColorStop(0, `rgba(${blR}, ${blG}, ${blB}, ${(0.7 * pulse * intensity).toFixed(3)})`);
+      dg2.addColorStop(1, `rgba(${blR}, ${blG}, ${blB}, 0)`);
+      ctx.fillStyle = dg2;
+      ctx.fillRect(dx - dr * 2.2, dy - dr * 2.2, dr * 4.4, dr * 4.4);
+      ctx.globalAlpha = 0.7 * pulse * intensity;
+      ctx.fillStyle   = `rgba(${Math.min(255, blR + 40)}, ${Math.min(255, blG + 40)}, ${Math.min(255, blB + 20)}, 1)`;
+      ctx.beginPath(); ctx.arc(dx, dy, Math.max(1.5, dr * 0.4), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+  } else {
+    // Generic fallback: accent-colored radial glow at the marker position
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.4 * intensity;
+    const fg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz);
+    fg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.8)`);
+    fg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = fg;
+    ctx.fillRect(sx - sz, sy - sz, sz * 2, sz * 2);
+  }
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawEnergyGlyph — energy-source marker glyph at (sx, sy).
+// source: 'GEOTHERMAL' | 'TIDAL' | 'SOLAR' | 'WIND'
+// ---------------------------------------------------------------------------
+function drawEnergyGlyph(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  sx: number,
+  sy: number,
+  source: string,
+  intensity: number,
+  accentRgb: RGB
+): void {
+  const sz  = Math.max(16, Math.min(w * 0.040, h * 0.055) * (0.5 + intensity * 0.6));
+  const [ar, ag, ab] = accentRgb;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  if (source === 'GEOTHERMAL') {
+    // Large steam geyser column with base orange-accent glow
+    const colH = sz * 3.5;
+    const topW = sz * 1.2;
+    const botW = sz * 0.3;
+    const col  = ctx.createLinearGradient(sx, sy, sx, sy - colH);
+    col.addColorStop(0,   `rgba(${ar}, ${Math.min(255, ag + 40)}, ${ab}, ${(0.7 * intensity).toFixed(3)})`);
+    col.addColorStop(0.4, `rgba(210, 225, 240, ${(0.50 * intensity).toFixed(3)})`);
+    col.addColorStop(1,   `rgba(200, 220, 240, 0)`);
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(sx - botW, sy);
+    ctx.quadraticCurveTo(sx - topW * 0.6, sy - colH * 0.55, sx - topW, sy - colH);
+    ctx.lineTo(sx + topW, sy - colH);
+    ctx.quadraticCurveTo(sx + topW * 0.6, sy - colH * 0.55, sx + botW, sy);
+    ctx.closePath();
+    ctx.fill();
+    const bg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 1.5);
+    bg.addColorStop(0, `rgba(${ar}, ${Math.min(255, ag + 20)}, ${ab}, ${(0.8 * intensity).toFixed(3)})`);
+    bg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = bg;
+    ctx.fillRect(sx - sz * 1.5, sy - sz * 1.5, sz * 3, sz * 3);
+
+  } else if (source === 'TIDAL') {
+    // Three concentric wave arcs (semi-circles, open downward)
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.65 * intensity).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(1.5, sz * 0.10);
+    ctx.lineCap     = 'round';
+    for (let wi = 0; wi < 3; wi++) {
+      const wr    = sz * (0.35 + wi * 0.45);
+      const shift = t === 0 ? 0 : Math.sin(t * 1.5 + wi * 1.0) * 0.06;
+      ctx.globalAlpha = (0.70 - wi * 0.18) * intensity;
+      ctx.beginPath();
+      ctx.arc(sx, sy, wr, Math.PI + shift, Math.PI * 2 - shift);
+      ctx.stroke();
+    }
+
+  } else if (source === 'SOLAR') {
+    // Eight-ray sunburst + center disc, slowly rotating
+    const rayCount = 8;
+    const innerR   = sz * 0.25;
+    const outerR   = sz * 0.90;
+    const rot      = t === 0 ? 0 : t * 0.12;
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.70 * intensity).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(1.5, sz * 0.08);
+    ctx.lineCap     = 'round';
+    for (let ri = 0; ri < rayCount; ri++) {
+      const ang = (ri / rayCount) * Math.PI * 2 + rot;
+      ctx.globalAlpha = (0.60 + (ri % 2) * 0.25) * intensity;
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(ang) * innerR, sy + Math.sin(ang) * innerR);
+      ctx.lineTo(sx + Math.cos(ang) * outerR, sy + Math.sin(ang) * outerR);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 0.75 * intensity;
+    ctx.fillStyle   = `rgba(${ar}, ${ag}, ${ab}, 0.9)`;
+    ctx.beginPath(); ctx.arc(sx, sy, innerR, 0, Math.PI * 2); ctx.fill();
+
+  } else if (source === 'WIND') {
+    // Three nested spiral arcs suggesting airflow, slowly rotating
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.70 * intensity).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(1.5, sz * 0.09);
+    ctx.lineCap     = 'round';
+    const rot = t === 0 ? 0 : t * 0.20;
+    for (let wi = 0; wi < 3; wi++) {
+      const r = sz * (0.25 + wi * 0.22);
+      ctx.globalAlpha = (0.55 + wi * 0.12) * intensity;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, (wi / 3) * Math.PI * 2 + rot, (wi / 3) * Math.PI * 2 + rot + Math.PI * 1.35);
+      ctx.stroke();
+    }
+
+  } else {
+    // Generic fallback: pulsing ring
+    ctx.globalAlpha = 0.5 * intensity;
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, 0.8)`;
+    ctx.lineWidth   = Math.max(2, sz * 0.12);
+    ctx.beginPath(); ctx.arc(sx, sy, sz * 0.6, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawHazardGlyph — one hazard overlay glyph in its screen region polygon.
+//
+// TRUTHFULNESS (§2.5): all hazards use source-over (NOT lighter), and carry
+// a minimum alpha floor so they remain visible even on bright/lush worlds.
+// A scarred beautiful world still shows its scar.
+// ---------------------------------------------------------------------------
+function drawHazardGlyph(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  visual: string,
+  severity: number,
+  pts: [number, number][]
+): void {
+  if (pts.length < 2) return;
+
+  // Bounding box for quick fills + center calc
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [px, py] of pts) {
+    if (px < minX) minX = px; if (px > maxX) maxX = px;
+    if (py < minY) minY = py; if (py > maxY) maxY = py;
+  }
+  const rW = Math.max(1, maxX - minX);
+  const rH = Math.max(1, maxY - minY);
+  const cx = (minX + maxX) * 0.5;
+  const cy = (minY + maxY) * 0.5;
+
+  // TRUTHFULNESS: alpha floor — hazard never renders below this on any world.
+  // source-over prevents the bloom/lighter pass from washing the overlay out.
+  const alphaFloor = 0.32 + severity * 0.38;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+
+  if (visual === 'lava-flow') {
+    // Orange-red wash with diagonal animated flow stripes
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      if (i === 0) ctx.moveTo(pts[i][0], pts[i][1]); else ctx.lineTo(pts[i][0], pts[i][1]);
+    }
+    ctx.closePath();
+    ctx.clip();
+    const lg = ctx.createLinearGradient(minX, minY, maxX, maxY);
+    lg.addColorStop(0,   `rgba(200, 60, 10, ${(alphaFloor * 0.70).toFixed(3)})`);
+    lg.addColorStop(0.5, `rgba(240, 100, 20, ${(alphaFloor * 0.85).toFixed(3)})`);
+    lg.addColorStop(1,   `rgba(180, 40, 5,  ${(alphaFloor * 0.60).toFixed(3)})`);
+    ctx.fillStyle = lg;
+    ctx.fillRect(minX, minY, rW, rH);
+    ctx.globalAlpha = 0.18 * severity;
+    ctx.strokeStyle = `rgba(255, 200, 60, 1)`;
+    ctx.lineWidth   = Math.max(2, rH * 0.10);
+    for (let si = 0; si < 5; si++) {
+      const ox      = minX + (si / 4) * rW;
+      const flowOff = t === 0 ? 0 : (t * 12 * severity) % rH;
+      ctx.beginPath();
+      ctx.moveTo(ox - rH, maxY + flowOff); ctx.lineTo(ox + rH, minY + flowOff);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+  } else if (visual === 'fault-line') {
+    // Dark jagged crack across the region — always contrasts with the ground
+    const segs = 8;
+    ctx.globalAlpha = alphaFloor;
+    ctx.strokeStyle = `rgba(30, 18, 10, 1)`;
+    ctx.lineWidth   = Math.max(2, rW * 0.035);
+    ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(minX, cy);
+    for (let si = 1; si <= segs; si++) {
+      ctx.lineTo(minX + (si / segs) * rW, cy + (si % 2 === 0 ? 1 : -1) * rH * (0.18 + severity * 0.15));
+    }
+    ctx.stroke();
+    // Pale highlight on one edge for depth
+    ctx.strokeStyle = `rgba(180, 140, 80, ${(alphaFloor * 0.55).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(1, rW * 0.010);
+    ctx.beginPath(); ctx.moveTo(minX, cy - 2);
+    for (let si = 1; si <= segs; si++) {
+      ctx.lineTo(minX + (si / segs) * rW, cy + (si % 2 === 0 ? 1 : -1) * rH * (0.18 + severity * 0.15) - 2);
+    }
+    ctx.stroke();
+
+  } else if (visual === 'storm-cell') {
+    // Rotating spiral arms + dark eye
+    const rot    = t === 0 ? 0 : t * 0.6 * severity;
+    const maxR   = Math.min(rW, rH) * 0.48;
+    ctx.strokeStyle = `rgba(80, 100, 140, 1)`;
+    ctx.lineWidth   = Math.max(2, Math.min(rW, rH) * 0.060);
+    ctx.lineCap     = 'round';
+    for (let arm = 0; arm < 3; arm++) {
+      const baseAng = (arm / 3) * Math.PI * 2 + rot;
+      ctx.globalAlpha = alphaFloor * (0.45 + arm * 0.10);
+      ctx.beginPath();
+      for (let step = 0; step <= 40; step++) {
+        const frac = step / 40;
+        const r    = maxR * (1 - frac * 0.88);
+        const ang  = baseAng + frac * Math.PI * 3.2;
+        const px2  = cx + Math.cos(ang) * r;
+        const py2  = cy + Math.sin(ang) * r * 0.55;
+        if (step === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = alphaFloor * 0.55;
+    ctx.fillStyle   = 'rgba(20, 25, 40, 0.8)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, Math.min(rW, rH) * 0.08, Math.min(rW, rH) * 0.06, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+  } else if (visual === 'radiation-haze') {
+    // Sickly yellow-green wash + pulsing particle dots
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      if (i === 0) ctx.moveTo(pts[i][0], pts[i][1]); else ctx.lineTo(pts[i][0], pts[i][1]);
+    }
+    ctx.closePath();
+    ctx.clip();
+    const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rW, rH) * 0.6);
+    rg.addColorStop(0,   `rgba(160, 200, 60, ${(alphaFloor * 0.55).toFixed(3)})`);
+    rg.addColorStop(0.6, `rgba(110, 160, 30, ${(alphaFloor * 0.40).toFixed(3)})`);
+    rg.addColorStop(1,   `rgba(80, 120, 20, 0)`);
+    ctx.fillStyle = rg;
+    ctx.fillRect(minX, minY, rW, rH);
+    const pulse = t === 0 ? 1 : 0.6 + 0.4 * Math.sin(t * 2.5);
+    ctx.globalAlpha = 0.45 * severity;
+    ctx.fillStyle   = `rgba(190, 230, 80, 1)`;
+    for (let di = 0; di < 10; di++) {
+      const dx2 = minX + ((di * 137.5) % rW);
+      const dy2 = minY + ((di * 97.3)  % rH);
+      const dr2 = Math.max(1.5, rW * 0.012) * pulse;
+      ctx.beginPath(); ctx.arc(dx2, dy2, dr2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+
+  } else if (visual === 'flood-zone') {
+    // Blue semi-transparent wash with ripple lines
+    const fg2 = ctx.createLinearGradient(minX, minY, minX, maxY);
+    fg2.addColorStop(0,   `rgba(40, 80, 160, ${(alphaFloor * 0.45).toFixed(3)})`);
+    fg2.addColorStop(0.5, `rgba(30, 65, 140, ${(alphaFloor * 0.60).toFixed(3)})`);
+    fg2.addColorStop(1,   `rgba(20, 50, 110, ${(alphaFloor * 0.40).toFixed(3)})`);
+    ctx.fillStyle = fg2;
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      if (i === 0) ctx.moveTo(pts[i][0], pts[i][1]); else ctx.lineTo(pts[i][0], pts[i][1]);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 0.22 * severity;
+    ctx.strokeStyle = 'rgba(140, 200, 255, 1)';
+    ctx.lineWidth   = Math.max(1, rH * 0.035);
+    for (let ri = 1; ri <= 3; ri++) {
+      const ry2  = minY + (ri / 4) * rH;
+      const rOff = t === 0 ? 0 : Math.sin(t * 1.2 + ri) * rW * 0.04;
+      ctx.beginPath();
+      ctx.moveTo(minX, ry2 + rOff); ctx.lineTo(maxX, ry2 - rOff); ctx.stroke();
+    }
+
+  } else if (visual === 'snow-band') {
+    // White horizontal stripes across the region
+    const stripeCount = Math.max(3, Math.round(rH / 12));
+    ctx.lineWidth = Math.max(1, rH / stripeCount * 0.35);
+    ctx.lineCap   = 'butt';
+    for (let si = 0; si < stripeCount; si++) {
+      const sy2 = minY + (si + 0.5) / stripeCount * rH;
+      ctx.globalAlpha = alphaFloor * (si % 2 === 0 ? 0.80 : 0.40);
+      ctx.strokeStyle  = `rgba(230, 240, 255, ${alphaFloor.toFixed(3)})`;
+      ctx.beginPath(); ctx.moveTo(minX, sy2); ctx.lineTo(maxX, sy2); ctx.stroke();
+    }
+
+  } else if (visual === 'dust-front') {
+    // Tan/brown gradient wall advancing across the region
+    const advance = t === 0 ? 0.5 : ((t * 0.04 * severity) % 1.0);
+    const frontX  = minX + advance * rW;
+    const df      = ctx.createLinearGradient(frontX - rW * 0.3, 0, frontX + rW * 0.05, 0);
+    df.addColorStop(0,   `rgba(180, 130, 70, 0)`);
+    df.addColorStop(0.6, `rgba(180, 130, 70, ${(alphaFloor * 0.65).toFixed(3)})`);
+    df.addColorStop(1,   `rgba(150, 100, 50, ${(alphaFloor * 0.45).toFixed(3)})`);
+    ctx.fillStyle = df;
+    ctx.fillRect(minX, minY, rW, rH);
+
+  } else if (visual === 'megafauna-marker') {
+    // Pawprint silhouette — recognizable animal presence signal
+    ctx.globalAlpha = alphaFloor * 0.65;
+    ctx.fillStyle   = `rgba(20, 14, 8, 0.85)`;
+    const pawR = Math.min(rW, rH) * 0.22;
+    ctx.beginPath(); ctx.ellipse(cx, cy + pawR * 0.3, pawR, pawR * 0.75, 0, 0, Math.PI * 2); ctx.fill();
+    const toeR = pawR * 0.32;
+    for (const [tx, ty] of [
+      [cx - pawR * 0.65, cy - pawR * 0.55] as [number, number],
+      [cx - pawR * 0.20, cy - pawR * 0.85] as [number, number],
+      [cx + pawR * 0.25, cy - pawR * 0.85] as [number, number],
+      [cx + pawR * 0.70, cy - pawR * 0.55] as [number, number],
+    ]) {
+      ctx.beginPath(); ctx.arc(tx, ty, toeR, 0, Math.PI * 2); ctx.fill();
+    }
+
+  } else if (visual === 'impact-scar') {
+    // Circular crater ring with ejecta halo and dark interior
+    const craterR = Math.min(rW, rH) * 0.40;
+    // Ejecta spray
+    ctx.globalAlpha = alphaFloor;
+    ctx.strokeStyle = `rgba(160, 140, 110, ${(alphaFloor * 0.45).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(2, craterR * 0.20);
+    ctx.beginPath(); ctx.arc(cx, cy, craterR * 1.18, 0, Math.PI * 2); ctx.stroke();
+    // Rim
+    ctx.strokeStyle = `rgba(80, 65, 45, 1)`;
+    ctx.lineWidth   = Math.max(2, craterR * 0.10);
+    ctx.beginPath(); ctx.arc(cx, cy, craterR, 0, Math.PI * 2); ctx.stroke();
+    // Dark interior
+    const ifill = ctx.createRadialGradient(cx, cy, 0, cx, cy, craterR * 0.88);
+    ifill.addColorStop(0, `rgba(25, 20, 15, ${(alphaFloor * 0.55).toFixed(3)})`);
+    ifill.addColorStop(1, `rgba(25, 20, 15, 0)`);
+    ctx.fillStyle = ifill;
+    ctx.beginPath(); ctx.arc(cx, cy, craterR * 0.88, 0, Math.PI * 2); ctx.fill();
+
+  } else {
+    // Generic fallback: tinted polygon — unknown visual kinds degrade gracefully
+    ctx.globalAlpha = alphaFloor * 0.40;
+    ctx.fillStyle   = 'rgba(200, 60, 60, 1)';
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      if (i === 0) ctx.moveTo(pts[i][0], pts[i][1]); else ctx.lineTo(pts[i][0], pts[i][1]);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Suppress unused-param warnings (w, h referenced for sizing in calling code)
+  void w; void h;
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // drawScene — the per-frame compositor
 //
 // Ported from drawLandedScene (SolarSystemViewscreen.tsx L3477), adapted to
@@ -1505,45 +2261,75 @@ function drawScene(
     ctx.restore();
   }
 
-  // 5) Terrain ridges (non-water worlds use parallax ridges from model strata)
-  if (!cache.hasWater && cache.ridgePts.length > 0) {
-    for (let li = 0; li < cache.ridgePts.length; li++) {
-      const layer = cache.ridgePts[li];
-      const isFront = li === cache.ridgePts.length - 1;
-      const off = isFront ? 0 : t * layer.speed;
-      const period = layer.period;
-      const n = layer.pts.length;
-      ctx.beginPath();
-      ctx.moveTo(0, h);
-      for (let x = 0; x <= w; x += 8) {
-        const u = (((x + off) % period) + period) % period;
-        const fi = (u / period) * n;
-        const i0 = Math.floor(fi) % n;
-        const i1 = (i0 + 1) % n;
-        const frac = fi - Math.floor(fi);
-        const s = frac * frac * (3 - 2 * frac);
-        const v = layer.pts[i0] * (1 - s) + layer.pts[i1] * s;
-        const yTop = h * layer.base - v * h * layer.amp;
-        ctx.lineTo(x, yTop);
+  // 5) Terrain layer — mode-branched.
+  //    'cloud-deck' → GAS_GIANT floating cloud horizon (no ridges, no ground plane)
+  //    'plating'    → ARTIFICIAL engineered flat surface (no ridges)
+  //    'surface'/default → P0 parallax ridges + ground plane (unchanged)
+  if (cache.terrainMode === 'cloud-deck') {
+    drawCloudDeck(ctx, w, h, t, model, cache, dc);
+  } else if (cache.terrainMode === 'plating') {
+    drawPlating(ctx, w, h, t, model, cache, dc);
+  } else {
+    // Default surface path — EXACTLY as P0 (no changes to this branch)
+    if (!cache.hasWater && cache.ridgePts.length > 0) {
+      for (let li = 0; li < cache.ridgePts.length; li++) {
+        const layer = cache.ridgePts[li];
+        const isFront = li === cache.ridgePts.length - 1;
+        const off = isFront ? 0 : t * layer.speed;
+        const period = layer.period;
+        const n = layer.pts.length;
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        for (let x = 0; x <= w; x += 8) {
+          const u = (((x + off) % period) + period) % period;
+          const fi = (u / period) * n;
+          const i0 = Math.floor(fi) % n;
+          const i1 = (i0 + 1) % n;
+          const frac = fi - Math.floor(fi);
+          const s = frac * frac * (3 - 2 * frac);
+          const v = layer.pts[i0] * (1 - s) + layer.pts[i1] * s;
+          const yTop = h * layer.base - v * h * layer.amp;
+          ctx.lineTo(x, yTop);
+        }
+        ctx.lineTo(w, h);
+        ctx.closePath();
+        ctx.fillStyle = layer.color;
+        ctx.fill();
       }
-      ctx.lineTo(w, h);
-      ctx.closePath();
-      ctx.fillStyle = layer.color;
-      ctx.fill();
+    }
+
+    // 5a) Ground plane (fallback if no ridges or water)
+    if (cache.ridgePts.length === 0 && !cache.hasWater) {
+      const groundY = horizonY;
+      const gfill = rgba(model.palette.surface, 1);
+      ctx.fillStyle = gfill;
+      ctx.fillRect(0, groundY, w, h - groundY);
     }
   }
 
-  // 5a) Ground plane (fallback if no ridges or water)
-  if (cache.ridgePts.length === 0 && !cache.hasWater) {
-    const groundY = horizonY;
-    const gfill = rgba(model.palette.surface, 1);
-    ctx.fillStyle = gfill;
-    ctx.fillRect(0, groundY, w, h - groundY);
-  }
-
-  // 5b) Terrain landmarks — silhouettes from model.layers.terrain.landmarks
+  // 5b) Terrain landmarks — silhouettes from model.layers.terrain.landmarks.
+  //     Drawn for 'surface' and 'plating'; GAS_GIANT emits none so this is a no-op.
   if (cache.landmarks.length > 0) {
     drawLandmarks(ctx, cache, dc);
+  }
+
+  // 5c) Deposit markers — ore-vein / gas-seep / thermal-vent / hydrocarbon-pool /
+  //     crystal / biolumin — drawn after terrain so they sit on the ground surface.
+  for (const dm of cache.depositScreens) {
+    drawDepositGlyph(ctx, w, h, t, dm.sx, dm.sy, dm.visual, dm.intensity, model.palette.accent);
+  }
+
+  // 5d) Energy source marker — GEOTHERMAL / TIDAL / SOLAR / WIND
+  if (cache.energyScreen) {
+    const em = cache.energyScreen;
+    drawEnergyGlyph(ctx, w, h, t, em.sx, em.sy, em.source, em.intensity, model.palette.accent);
+  }
+
+  // 5e) Hazard overlays — drawn with source-over + alpha floor (Truthfulness clause §2.5).
+  //     Must remain visible even on high-desirability lush worlds: source-over prevents
+  //     the bloom/lighter composite from washing the glyph out.
+  for (const hz of cache.hazardScreens) {
+    drawHazardGlyph(ctx, w, h, t, hz.visual, hz.severity, hz.pts);
   }
 
   // 6) Atmosphere haze overlay (atmospheric worlds only)

@@ -25,7 +25,7 @@ interface PlanetTypeInfo {
 
 const PLANET_TYPES: PlanetTypeInfo[] = [
   {
-    type: 'terran',
+    type: 'TERRAN',
     name: 'Terran',
     icon: '🌍',
     description: 'Earth-like planets with balanced resources and high habitability',
@@ -39,7 +39,7 @@ const PLANET_TYPES: PlanetTypeInfo[] = [
     productionBonuses: { fuel: 1.0, organics: 1.0, equipment: 1.0 }
   },
   {
-    type: 'oceanic',
+    type: 'OCEANIC',
     name: 'Oceanic',
     icon: '🌊',
     description: 'Water-covered worlds rich in organic resources',
@@ -53,7 +53,7 @@ const PLANET_TYPES: PlanetTypeInfo[] = [
     productionBonuses: { fuel: 0.8, organics: 1.5, equipment: 0.7 }
   },
   {
-    type: 'mountainous',
+    type: 'MOUNTAINOUS',
     name: 'Mountainous',
     icon: '⛰️',
     description: 'Rocky planets abundant in minerals and fuel',
@@ -67,7 +67,7 @@ const PLANET_TYPES: PlanetTypeInfo[] = [
     productionBonuses: { fuel: 1.4, organics: 0.6, equipment: 1.3 }
   },
   {
-    type: 'desert',
+    type: 'DESERT',
     name: 'Desert',
     icon: '🏜️',
     description: 'Arid worlds with concentrated mineral deposits',
@@ -81,7 +81,7 @@ const PLANET_TYPES: PlanetTypeInfo[] = [
     productionBonuses: { fuel: 1.6, organics: 0.4, equipment: 1.1 }
   },
   {
-    type: 'frozen',
+    type: 'ICE',
     name: 'Frozen',
     icon: '❄️',
     description: 'Ice-covered planets with unique research opportunities',
