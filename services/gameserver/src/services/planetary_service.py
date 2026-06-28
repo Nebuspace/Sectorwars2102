@@ -202,19 +202,21 @@ SIEGE_STOCKPILE_COMMODITIES = (
 
 # Shield Generator Levels (0-10)
 # Uses planet.defense_shields to track generator level, planet.shields for strength
+# Per-step credit costs and equipment costs from FEATURES/planets/defense.md:133-142.
+# Cumulative L0→L10 = 5,235,000 cr + 523,500 equipment (matches canon totals).
 SHIELD_GENERATOR_MAX_LEVEL = 10
 SHIELD_GENERATOR_LEVELS = {
-    0: {"name": "No Shields", "strength": 0, "regen_per_hour": 0, "cost": 0},
-    1: {"name": "Basic Shield", "strength": 1000, "regen_per_hour": 100, "cost": 50000},
-    2: {"name": "Reinforced Shield", "strength": 2500, "regen_per_hour": 250, "cost": 100000},
-    3: {"name": "Military Shield", "strength": 5000, "regen_per_hour": 500, "cost": 200000},
-    4: {"name": "Advanced Shield", "strength": 10000, "regen_per_hour": 1000, "cost": 350000},
-    5: {"name": "Heavy Shield", "strength": 15000, "regen_per_hour": 1500, "cost": 500000},
-    6: {"name": "Fortress Shield", "strength": 20000, "regen_per_hour": 2500, "cost": 750000},
-    7: {"name": "Citadel Shield", "strength": 30000, "regen_per_hour": 3500, "cost": 1000000},
-    8: {"name": "Planetary Shield", "strength": 40000, "regen_per_hour": 5000, "cost": 1500000},
-    9: {"name": "Quantum Shield", "strength": 50000, "regen_per_hour": 6500, "cost": 2000000},
-    10: {"name": "Impervious Shield", "strength": 75000, "regen_per_hour": 7500, "cost": 3000000},
+    0:  {"name": "No Shields",       "strength": 0,     "regen_per_hour": 0,    "cost": 0,         "equipment_cost": 0},
+    1:  {"name": "Basic Shield",     "strength": 1000,  "regen_per_hour": 100,  "cost": 10000,     "equipment_cost": 1000},
+    2:  {"name": "Reinforced Shield","strength": 2500,  "regen_per_hour": 250,  "cost": 25000,     "equipment_cost": 2500},
+    3:  {"name": "Military Shield",  "strength": 5000,  "regen_per_hour": 500,  "cost": 50000,     "equipment_cost": 5000},
+    4:  {"name": "Advanced Shield",  "strength": 10000, "regen_per_hour": 1000, "cost": 100000,    "equipment_cost": 10000},
+    5:  {"name": "Heavy Shield",     "strength": 15000, "regen_per_hour": 1500, "cost": 200000,    "equipment_cost": 20000},
+    6:  {"name": "Fortress Shield",  "strength": 20000, "regen_per_hour": 2500, "cost": 400000,    "equipment_cost": 40000},
+    7:  {"name": "Citadel Shield",   "strength": 30000, "regen_per_hour": 3500, "cost": 700000,    "equipment_cost": 70000},
+    8:  {"name": "Planetary Shield", "strength": 40000, "regen_per_hour": 5000, "cost": 1000000,   "equipment_cost": 100000},
+    9:  {"name": "Quantum Shield",   "strength": 50000, "regen_per_hour": 6500, "cost": 1250000,   "equipment_cost": 125000},
+    10: {"name": "Impervious Shield","strength": 75000, "regen_per_hour": 7500, "cost": 1500000,   "equipment_cost": 150000},
 }
 
 # Shield-generator upgrades are time-based (ADR-0086): upgrading to level N takes
@@ -1949,9 +1951,13 @@ class PlanetaryService:
             raise ValueError("Planet not found or not owned by player")
 
         # Settle any already-finished upgrade FIRST so a completed-but-unsettled
-        # build doesn't block the next one.
+        # build doesn't block the next one.  Commit the settlement immediately
+        # (isolated, same as get_defense_info:2050-2051) so the completed level-
+        # advance is durable even if the subsequent credit/equipment check fails
+        # and the new-upgrade charge transaction is rolled back.
         now = datetime.now(UTC)
-        self._settle_shield_upgrade(planet, now)
+        if self._settle_shield_upgrade(planet, now):
+            self.db.commit()
 
         if self._get_shield_upgrade(planet):
             su = self._get_shield_upgrade(planet)
@@ -1969,8 +1975,9 @@ class PlanetaryService:
         next_level = current_level + 1
         next_level_info = SHIELD_GENERATOR_LEVELS[next_level]
         upgrade_cost = next_level_info["cost"]
+        equipment_cost = next_level_info["equipment_cost"]
 
-        # Lock player for credit deduction
+        # Lock player for credit deduction (planet already locked above via with_for_update)
         player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
         if not player:
             raise ValueError("Player not found")
@@ -1980,8 +1987,17 @@ class PlanetaryService:
                 f"Insufficient credits. Need {upgrade_cost:,}, have {player.credits:,}"
             )
 
-        # Charge credits now; the level/strength advance on completion (settle).
+        # Equipment is drawn from planet stockpile (planet.equipment column)
+        planet_equipment = planet.equipment or 0
+        if planet_equipment < equipment_cost:
+            raise ValueError(
+                f"Insufficient equipment on planet. Need {equipment_cost:,}, have {planet_equipment:,}"
+            )
+
+        # Charge credits + equipment up front; level/strength advance on completion (settle).
         player.credits -= upgrade_cost
+        if equipment_cost > 0:
+            planet.equipment = planet_equipment - equipment_cost
         build_hours = next_level * SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL
         complete_at = now + timedelta(hours=build_hours)
         self._set_shield_upgrade(planet, {
@@ -1991,12 +2007,14 @@ class PlanetaryService:
             "complete_at": complete_at.isoformat(),
         })
 
-        self.db.commit()
-        self.db.refresh(player)
+        # Flush only — caller (route) owns the commit, mirroring the citadel upgrade pattern.
+        self.db.flush()
 
         logger.info(
-            "Shield generator upgrade started: level %s -> %s (%s), %sh, on planet %s (id=%s)",
-            current_level, next_level, next_level_info["name"], build_hours, planet.name, planet.id,
+            "Shield generator upgrade started: level %s -> %s (%s), %sh, %s cr + %s equipment, "
+            "on planet %s (id=%s)",
+            current_level, next_level, next_level_info["name"], build_hours,
+            upgrade_cost, equipment_cost, planet.name, planet.id,
         )
 
         return {
@@ -2015,7 +2033,9 @@ class PlanetaryService:
             "completeAt": complete_at.isoformat(),
             "remainingSeconds": build_hours * 3600,
             "creditsCost": upgrade_cost,
+            "equipmentCost": equipment_cost,
             "creditsRemaining": player.credits,
+            "equipmentRemaining": planet.equipment,
         }
 
     def get_defense_info(self, planet_id: UUID) -> Dict[str, Any]:
@@ -2063,12 +2083,14 @@ class PlanetaryService:
                 "remainingSeconds": remaining_seconds,
             }
 
-        # Next level upgrade cost (only meaningful when not already upgrading)
+        # Next level upgrade costs (only meaningful when not already upgrading)
         next_upgrade_cost = None
+        next_upgrade_equipment_cost = None
         next_level_info = None
         if shield_level < SHIELD_GENERATOR_MAX_LEVEL:
             next_level_info = SHIELD_GENERATOR_LEVELS[shield_level + 1]
             next_upgrade_cost = next_level_info["cost"]
+            next_upgrade_equipment_cost = next_level_info["equipment_cost"]
 
         # Defense level info
         defense_level = planet.defense_level or 0
@@ -2090,6 +2112,7 @@ class PlanetaryService:
                     "strength": next_level_info["strength"],
                     "regenPerHour": next_level_info["regen_per_hour"],
                     "cost": next_upgrade_cost,
+                    "equipmentCost": next_upgrade_equipment_cost,
                     "buildHours": (shield_level + 1) * SHIELD_GENERATOR_BUILD_HOURS_PER_LEVEL,
                 } if next_level_info else None,
                 "isUpgrading": upgrade_block is not None,
