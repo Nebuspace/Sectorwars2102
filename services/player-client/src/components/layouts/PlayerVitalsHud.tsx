@@ -4,6 +4,7 @@ import { useGame } from '../../contexts/GameContext';
 import LogoutButton from '../auth/LogoutButton';
 import { formatCredits } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
+import { MineIcon } from '../icons/MineIcon';
 import './player-vitals-hud.css';
 
 /**
@@ -58,13 +59,17 @@ const PlayerVitalsHud: React.FC = () => {
         <span className="pvh-stat pvh-credits" title="Credits">
           {formatCredits(playerState?.credits)}
         </span>
+        {/* Change 1: TurnsIcon sized to match digit cap-height (0.8rem = pvh-v font-size). */}
+        {/* Change 3: regen is a sub-line beneath the turn count, not inline-right. */}
         <span className="pvh-stat" title={turnsTitle}>
-          <span className="pvh-k"><TurnsIcon /></span>
-          <span className="pvh-v">
-            {turnsNow.toLocaleString()}
-            {typeof maxTurns === 'number' && (
-              <span className="pvh-sub">/{maxTurns.toLocaleString()}</span>
-            )}
+          <span className="pvh-k"><TurnsIcon size="0.8rem" /></span>
+          <span className="pvh-v pvh-turns-stack">
+            <span className="pvh-turns-count">
+              {turnsNow.toLocaleString()}
+              {typeof maxTurns === 'number' && (
+                <span className="pvh-sub">/{maxTurns.toLocaleString()}</span>
+              )}
+            </span>
             {regenPerHr > 0 && (
               <span className="pvh-regen">+{Math.round(regenPerHr)}/hr</span>
             )}
@@ -77,8 +82,9 @@ const PlayerVitalsHud: React.FC = () => {
             <span className="pvh-drone" title="Defense drones">🛡 {playerState?.defense_drones ?? 0}</span>
           </span>
         </span>
+        {/* Change 6: MineIcon glyph (naval-mine sphere+spikes) replaces the MINE text label. */}
         <span className="pvh-stat" title="Mines">
-          <span className="pvh-k">MINE</span>
+          <span className="pvh-k"><MineIcon size="0.8rem" /></span>
           <span className="pvh-v">{playerState?.mines ?? 0}</span>
         </span>
         {bounty > 0 && (
