@@ -5,4 +5,3 @@ export { ResourceSharing } from './ResourceSharing';
 export { MissionPlanner } from './MissionPlanner';
 export { AllianceManager } from './AllianceManager';
 export { DiplomacyInterface } from './DiplomacyInterface';
-export { TeamAnalytics } from './TeamAnalytics';
