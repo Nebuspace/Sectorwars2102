@@ -1,11 +1,9 @@
 /**
  * TurnsIcon — shared inline SVG for the turns metric throughout the cockpit.
  *
- * Design: a clockwise near-full ring (330° arc, 30° gap at 12 o'clock) with a
- * filled arrowhead at the leading edge (11:30 position), suggesting cycle /
- * regen cadence (the +N/hr turns-per-hour rhythm). CRT line style — stroke +
- * fill use `currentColor` so the icon auto-tints with the palette per context
- * (HUD green, amber warning, etc.).
+ * Design: fast-forward mark (two right-pointing solid triangles), suggesting
+ * advance / spend a turn. Both triangles use `currentColor` so the icon
+ * auto-tints with the palette per context (HUD green, amber warning, etc.).
  *
  * Swap the path/polygon here to restyle the turns glyph globally across the
  * cockpit (mirrors CREDITS_SYMBOL / formatCredits pattern in
@@ -20,7 +18,7 @@ export interface TurnsIconProps extends React.SVGProps<SVGSVGElement> {
 }
 
 /**
- * Inline SVG turns icon — a clockwise near-full ring with arrowhead.
+ * Inline SVG turns icon — fast-forward (two right triangles).
  *
  * Self-labeled as "Turns" (aria-label + <title>); renders inline with a baked-in
  * vertical-align: -0.125em baseline correction.
@@ -57,28 +55,8 @@ export const TurnsIcon: React.FC<TurnsIconProps> = ({
   >
     <title>Turns</title>
 
-    {/*
-     * Arc: clockwise 330° from (9.42, 2.69) [θ=285°, just right of 12 o'clock]
-     * to (6.58, 2.69) [θ=255°, just left of 12 o'clock].
-     * large-arc=1 selects the 330° path; sweep=1 = clockwise on screen.
-     * Center (8,8), radius 5.5, stroke-width 1.5.
-     */}
-    <path
-      d="M 9.42 2.69 A 5.5 5.5 0 1 1 6.58 2.69"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      fill="none"
-    />
-
-    {/*
-     * Arrowhead: filled triangle at the arc's leading edge (11:30 position).
-     * Tip at (6.58, 2.69); base wings ±1.2px perpendicular to the clockwise
-     * tangent (0.966, −0.259) at θ=255° — points rightward toward 12 o'clock.
-     */}
-    <polygon
-      points="6.58,2.69 4.34,2.05 4.96,4.37"
-      fill="currentColor"
-    />
+    {/* Fast-forward turns mark: two solid right-pointing triangles (▶▶), 1-unit gap between them. */}
+    <polygon points="1.5,4 1.5,12 7.5,8" fill="currentColor" />
+    <polygon points="8.5,4 8.5,12 14.5,8" fill="currentColor" />
   </svg>
 );
