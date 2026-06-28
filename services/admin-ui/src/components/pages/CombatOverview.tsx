@@ -9,17 +9,9 @@ import { api } from '../../utils/auth';
 import { useCombatUpdates } from '../../contexts/WebSocketContext';
 import './combat-overview.css';
 
-interface CombatEvent {
-  id: string;
-  timestamp: string;
-  type: 'player_vs_player' | 'player_vs_npc' | 'fleet_battle';
-  attacker: string;
-  defender: string;
-  winner?: string;
-  damageDealt: number;
-  disputed?: boolean;
-  sector: string;
-}
+// CombatEvent local type removed (NH10): it was a stale flat shape that did not
+// match the nested backend payload (CombatFeedItem). combatEvents is now any[]
+// — CombatFeed accepts any[] and reads the payload defensively.
 
 interface CombatStats {
   timestamp: string | null;
@@ -74,7 +66,7 @@ interface CombatDispute {
 }
 
 export const CombatOverview: React.FC = () => {
-  const [combatEvents, setCombatEvents] = useState<CombatEvent[]>([]);
+  const [combatEvents, setCombatEvents] = useState<any[]>([]);
   const [combatStats, setCombatStats] = useState<CombatStats | null>(null);
   const [rankings, setRankings] = useState<CombatRanking[]>([]);
   const [disputes, setDisputes] = useState<CombatDispute[]>([]);
@@ -120,7 +112,7 @@ export const CombatOverview: React.FC = () => {
 
     // Process combat events
     if (eventsRes.status === 'fulfilled') {
-      setCombatEvents(eventsRes.value.data as CombatEvent[]);
+      setCombatEvents(eventsRes.value.data);
     } else {
       setCombatEvents([]);
       errors.push('Combat feed unavailable');
