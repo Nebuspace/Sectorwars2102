@@ -26,6 +26,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 import asyncio
 import json
+import time
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -821,13 +822,15 @@ class EnhancedAIService:
             intent_analysis = await self._analyze_user_intent(sanitized_input, conversation_context)
             
             # Generate response based on intent
+            _gen_start = time.perf_counter()
             response = await self._generate_ai_response(intent_analysis, assistant, conversation_context)
-            
+            _gen_elapsed_ms = int((time.perf_counter() - _gen_start) * 1000)
+
             # SECURITY: Sanitize AI response content
             response = self._sanitize_response(response)
-            
+
             # Log conversation for learning and audit
-            await self._log_conversation(assistant_id, sanitized_input, response, conversation_context)
+            await self._log_conversation(assistant_id, sanitized_input, response, conversation_context, _gen_elapsed_ms)
             
             return {
                 "response": response,
@@ -1175,7 +1178,8 @@ What would you like help with today?"""
         return "I'm here to help with your space trading strategy! You can ask me about trading opportunities, market analysis, strategic planning, or say 'help' to see what I can do."
 
     async def _log_conversation(self, assistant_id: uuid.UUID, user_input: str,
-                               ai_response: str, context: ConversationContext):
+                               ai_response: str, context: ConversationContext,
+                               elapsed_ms: int = 0):
         """
         Log conversation for audit and learning purposes
         GDPR-compliant with automatic expiration
@@ -1193,7 +1197,7 @@ What would you like help with today?"""
                 ai_response_text=ai_response,
                 response_type="answer",
                 response_confidence=0.8,  # Default confidence
-                response_time_ms=100,  # Placeholder
+                response_time_ms=elapsed_ms,
                 conversation_context={
                     "topic": context.current_topic,
                     # security_level may be a SecurityLevel enum or already a raw
