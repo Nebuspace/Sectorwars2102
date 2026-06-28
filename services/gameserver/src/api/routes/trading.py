@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from typing import List, Dict, Any
@@ -23,7 +24,7 @@ from src.services.trading_service import (
     compute_station_lever_multiplier,
 )
 from src.services.ranking_service import RankingService
-from src.services.medal_service import MedalService
+from src.services.medal_service import MedalService, check_and_award_trade_medals
 from src.services import docking_service
 from src.services.turn_service import spend_turns, regenerate_turns
 
@@ -157,6 +158,45 @@ def _medal_trading_discount_rate(db: Session, player: Player) -> float:
     except Exception:
         logger.warning("medal trading-discount read failed; using neutral", exc_info=True)
         return 0.0
+
+
+def _dispatch_trade_medals(db: Session, player: Player) -> None:
+    """Fire check_and_award_trade_medals for ``player`` after a completed trade.
+
+    Computes ``total_trades`` and ``lifetime_credits`` from the live
+    ``enhanced_market_transactions`` table (MarketTransaction).
+
+    IMPORTANT: the session is created with ``autoflush=False`` (database.py:19).
+    The caller MUST call ``db.flush()`` immediately before invoking this
+    function so the current trade's MarketTransaction row is visible to the
+    COUNT and SUM queries.  Do NOT rely on an incidental flush from
+    award_rank_points — that path returns early without flushing for trades
+    under 1,000 cr, causing an off-by-one at the exact milestone threshold.
+
+    Defensive: any failure is logged and swallowed; a medal hiccup must never
+    roll back an already-completed buy/sell.
+    """
+    try:
+        if player is None or getattr(player, "id", None) is None:
+            return
+        total_trades: int = (
+            db.query(MarketTransaction)
+            .filter(MarketTransaction.player_id == player.id)
+            .count()
+        )
+        lifetime_revenue: int = int(
+            db.query(func.sum(MarketTransaction.total_value))
+            .filter(MarketTransaction.player_id == player.id)
+            .scalar()
+            or 0
+        )
+        check_and_award_trade_medals(
+            db,
+            player,
+            {"total_trades": total_trades, "lifetime_credits": lifetime_revenue},
+        )
+    except Exception:
+        logger.warning("_dispatch_trade_medals failed (non-fatal)", exc_info=True)
 
 
 def compute_effective_unit_price(
@@ -562,12 +602,10 @@ async def buy_resource(
                 if current_player.aria_total_interactions >= threshold and current_player.aria_consciousness_level < level:
                     current_player.aria_consciousness_level = level
                     current_player.aria_bonus_multiplier = multiplier
-            # Check trading medals
-            trade_count = db.query(MarketTransaction).filter(
-                MarketTransaction.player_id == current_player.id
-            ).count()
-            medal_service = MedalService(db)
-            medal_service.check_trading_medals(current_player.id, trade_count, current_player.credits)
+            # Check trading medals (lifetime trade-count + revenue from MarketTransaction).
+            # Explicit flush required: session is autoflush=False (database.py:19).
+            db.flush()
+            _dispatch_trade_medals(db, current_player)
         except Exception as e:
             logger.error("Failed ARIA/medal hooks for buy trade: %s", e)
 
@@ -911,12 +949,10 @@ async def sell_resource(
                 if current_player.aria_total_interactions >= threshold and current_player.aria_consciousness_level < level:
                     current_player.aria_consciousness_level = level
                     current_player.aria_bonus_multiplier = multiplier
-            # Check trading medals
-            trade_count = db.query(MarketTransaction).filter(
-                MarketTransaction.player_id == current_player.id
-            ).count()
-            medal_service = MedalService(db)
-            medal_service.check_trading_medals(current_player.id, trade_count, current_player.credits)
+            # Check trading medals (lifetime trade-count + revenue from MarketTransaction).
+            # Explicit flush required: session is autoflush=False (database.py:19).
+            db.flush()
+            _dispatch_trade_medals(db, current_player)
         except Exception as e:
             logger.error("Failed ARIA/medal hooks for sell trade: %s", e)
 
