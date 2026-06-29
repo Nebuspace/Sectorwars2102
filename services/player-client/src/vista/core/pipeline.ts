@@ -824,7 +824,6 @@ function buildFeatures(
   const nativeLife     = clamp01(input.planet.nativeLife);
   const lifeHab        = clamp01(nativeLife * hab01);
   const rawDenseCount  = Math.round(lerp(0, 200, lifeHab * lifeHab));
-  const lifeDenseCount = Math.round(rawDenseCount * profile.denseFloraFactor);
   // Constrain Y to the visible land band: stop at waterlineY so the full
   // scatter budget fills [horizonY..waterlineY] rather than wasting most
   // of it below the shoreline.  Clamp against the 90%-limit so we never
@@ -833,6 +832,19 @@ function buildFeatures(
   const floraBandY1 = waterlineY !== undefined
     ? Math.min(waterlineY, groundY1)
     : groundY1;
+  // Shore-height multiplier: scale dense-flora count proportionally to the
+  // available land band so thin-shore worlds (OCEANIC, shoreH≈0.11) get fewer
+  // plants and avoid the over-packed spindly-band look.
+  // referenceShoreH=0.20 is chosen so TERRAN (shoreH≈0.26–0.32) and JUNGLE
+  // (shoreH≈0.20–0.26, jitter ±0.03) both clamp to 1.0 — byte-identical output.
+  // OCEANIC (shoreH≈0.08–0.14) lands at ~0.40–0.70 × count, a meaningful drop.
+  // minFrac=0.25 ensures even the thinnest possible shore keeps some native life.
+  // DETERMINISM: poissonDiskScatter draws the same RNG sequence from the front,
+  // so wide shores where shoreFrac=1.0 produce byte-identical output to before.
+  const shoreH          = floraBandY1 - horizonY;
+  const referenceShoreH = 0.20;
+  const shoreFrac       = clamp(shoreH / referenceShoreH, 0.25, 1.0);
+  const lifeDenseCount  = Math.round(rawDenseCount * profile.denseFloraFactor * shoreFrac);
   if (lifeDenseCount > 0 && profile.floraKinds.length > 0) {
     const denseRng  = new SeededRng(deriveChildSeed(input.seed, 'dense-flora'));
     // Tighter minimum spacing at high density so instances pack without z-fighting.
