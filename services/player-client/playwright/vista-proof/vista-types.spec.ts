@@ -150,3 +150,56 @@ for (const type of TYPES) {
     ).toBeGreaterThan(MIN_PNG_BYTES);
   });
 }
+
+// ---------------------------------------------------------------------------
+// WO-V3-CELESTIAL draw-path coverage
+// Verify that the 5 special draw paths introduced in Wave 3 each produce a
+// real, non-blank scene.  The thresholds are intentionally relaxed vs the
+// regular type suite — a BLACK_HOLE / NEUTRON world is legitimately very dark.
+// ---------------------------------------------------------------------------
+
+const V3_SPECIAL_CASES = [
+  { key: 'BLACK_HOLE',     label: 'accretion disc',       minColors: 30, minNonBlack: 100 },
+  { key: 'NEUTRON',        label: 'pulsar beams',         minColors: 30, minNonBlack: 100 },
+  { key: 'RING_ARC',       label: 'overhead ring arc',    minColors: 50, minNonBlack: 200 },
+  { key: 'RINGED_MOON',    label: 'ringed moon',          minColors: 50, minNonBlack: 200 },
+  { key: 'PHASED_SIBLING', label: 'phased sibling body',  minColors: 50, minNonBlack: 200 },
+] as const;
+
+for (const { key, label, minColors, minNonBlack } of V3_SPECIAL_CASES) {
+  test(`V3-CELESTIAL draw-path — ${key} (${label}) renders non-blank`, async ({ page }) => {
+    await page.goto(`/lab/vista-proof?type=${key}`);
+
+    const canvas = page.locator('[data-testid="vista-proof-container"] canvas');
+    await expect(canvas).toBeVisible();
+
+    await page.waitForFunction(
+      ([nb, nc]) => {
+        const c = document.querySelector('[data-testid="vista-proof-container"] canvas') as HTMLCanvasElement | null;
+        if (!c) return false;
+        const ctx = c.getContext('2d');
+        if (!ctx || !c.width || !c.height) return false;
+        const data = ctx.getImageData(0, 0, c.width, c.height).data;
+        let nonBlack = 0;
+        const colors = new Set<string>();
+        for (let i = 0; i < data.length; i += 4 * 997) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          if (r || g || b) nonBlack++;
+          colors.add(`${r},${g},${b}`);
+        }
+        return nonBlack >= nb && colors.size >= nc;
+      },
+      [minNonBlack, minColors] as const,
+      { timeout: 15_000, polling: 100 },
+    );
+
+    const content = await page.evaluate(sampleCanvas);
+    console.log(
+      `[v3-proof] ${key}: canvas ${content.w}x${content.h}` +
+      ` | nonBlack=${content.nonBlack} | distinctColors=${content.distinctColors}`,
+    );
+    expect(content.ok,             `${key}: canvas must exist`).toBe(true);
+    expect(content.nonBlack,       `${key}: must not be blank`).toBeGreaterThanOrEqual(minNonBlack);
+    expect(content.distinctColors, `${key}: must show a multi-color scene`).toBeGreaterThanOrEqual(minColors);
+  });
+}

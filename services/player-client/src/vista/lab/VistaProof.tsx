@@ -6,13 +6,20 @@
  * randomVistaInput is never called here so before/after captures are
  * always comparable against the same pixel budget.
  *
- * Route: /lab/vista-proof              → default named-storm TERRAN scene
- * Route: /lab/vista-proof?type=JUNGLE  → FIXED_INPUTS['JUNGLE']
+ * Route: /lab/vista-proof                    → default named-storm TERRAN scene
+ * Route: /lab/vista-proof?type=JUNGLE        → FIXED_INPUTS['JUNGLE']   (daytime, t=0)
+ * Route: /lab/vista-proof?type=OCEANIC&phase=night → FIXED_INPUTS['OCEANIC'] at 3am
  *
- * Supported ?type= values (9):
+ * Supported ?type= values (14):
  *   TERRAN · JUNGLE · TROPICAL · MOUNTAINOUS · ICE · VOLCANIC · OCEANIC · BARREN · DESERT
+ *   BLACK_HOLE · NEUTRON · RING_ARC · RINGED_MOON · PHASED_SIBLING
  * Unknown or absent ?type → falls back to the original named-storm PROOF_INPUT
  * so the existing vista-named-storm-proof.spec.ts continues to pass unchanged.
+ *
+ * Supported ?phase= values:
+ *   day (default) — t=0, frozen at FROZEN_DAY_PHASE=0.40; sun always up.
+ *   night         — seed-specific clock placing the scene at 3am (sunAlt≈−0.71,
+ *                   sunUp=false); starfields, moon glitter, and night-sky FX visible.
  *
  * Readiness protocol:
  *   A polling rAF loop reads the canvas pixel buffer (getImageData) and marks
@@ -32,6 +39,31 @@
 import { useState, useEffect } from 'react';
 import type { VistaInput } from '../contract';
 import VistaCanvas from '../react';
+import { SeededRng, deriveChildSeed } from '../core/rng';
+import { DAY_CYCLE_SECONDS } from '../render/canvas2d/backend';
+
+// ---------------------------------------------------------------------------
+// Night-clock helper
+// ---------------------------------------------------------------------------
+//
+// Computes the clock value (seconds) that places a specific seed at 3 am
+// (dayPhase=0.875, sunAlt≈−0.71, sunUp=false) so night-only FX are visible.
+//
+// Mirrors the exact RNG chain in backend.ts buildVistaCache():
+//   phaseOffset = splitmix32(deriveChildSeed(model.seed, 'renderer'))()
+// SeededRng from rng.ts uses the same SplitMix32 algorithm as the inline
+// splitmix32 in backend.ts, so the outputs are byte-identical.
+//
+// At t = nightClockFor(seed):
+//   dayCycleAt(t, phaseOffset).dayPhase ≡ 0.875
+//   → sunAlt = sin((0.875−0.25)×2π) ≈ −0.707 → sunUp = false
+
+function nightClockFor(seed: string): number {
+  const phaseOffset = new SeededRng(deriveChildSeed(seed, 'renderer')).next01();
+  const targetPhase = 0.875;   // 3 am — sun clearly below horizon
+  const tFrac = ((targetPhase - phaseOffset) % 1 + 1) % 1;
+  return tFrac * DAY_CYCLE_SECONDS;
+}
 
 // ---------------------------------------------------------------------------
 // Default proof input (named-storm regression anchor)
@@ -112,7 +144,7 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
     celestial: {
       star:                { kind: 'G_YELLOW', color: '#fff4d0' },
       orbitAu:             1.0,
-      phaseDeg:            45,
+      phaseDeg:            60,
       rotationPeriodHours: 24,
       axialTiltDeg:        23,
     },
@@ -143,7 +175,7 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
     celestial: {
       star:                { kind: 'G_YELLOW', color: '#fff4d0' },
       orbitAu:             0.9,
-      phaseDeg:            90,
+      phaseDeg:            60,
       rotationPeriodHours: 28,
       axialTiltDeg:        15,
     },
@@ -175,7 +207,7 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
     celestial: {
       star:                { kind: 'G_YELLOW', color: '#fff4d0' },
       orbitAu:             0.95,
-      phaseDeg:            120,
+      phaseDeg:            60,
       rotationPeriodHours: 22,
       axialTiltDeg:        8,
     },
@@ -206,7 +238,7 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
     celestial: {
       star:                { kind: 'K_ORANGE', color: '#ffd090' },
       orbitAu:             1.1,
-      phaseDeg:            200,
+      phaseDeg:            60,
       rotationPeriodHours: 30,
       axialTiltDeg:        30,
     },
@@ -238,7 +270,7 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
     celestial: {
       star:                { kind: 'K_ORANGE', color: '#ffcc80' },
       orbitAu:             2.2,
-      phaseDeg:            310,
+      phaseDeg:            60,
       rotationPeriodHours: 48,
       axialTiltDeg:        5,
     },
@@ -301,7 +333,7 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
     celestial: {
       star:                { kind: 'G_YELLOW', color: '#fff4d0' },
       orbitAu:             1.05,
-      phaseDeg:            180,
+      phaseDeg:            60,
       rotationPeriodHours: 26,
       axialTiltDeg:        12,
     },
@@ -333,7 +365,7 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
     celestial: {
       star:                { kind: 'G_YELLOW', color: '#fff4d0' },
       orbitAu:             1.8,
-      phaseDeg:            270,
+      phaseDeg:            60,
       rotationPeriodHours: 60,
       axialTiltDeg:        1,
     },
@@ -365,7 +397,7 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
     celestial: {
       star:                { kind: 'A_BLUE', color: '#e0eeff' },
       orbitAu:             1.4,
-      phaseDeg:            140,
+      phaseDeg:            60,
       rotationPeriodHours: 36,
       axialTiltDeg:        20,
     },
@@ -381,6 +413,152 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
       ],
     },
   },
+
+  // ── WO-V3-CELESTIAL special-case draw-path coverage ────────────────────────
+
+  // BLACK_HOLE → suns[0].special === 'accretion' → drawAccretionDisc()
+  BLACK_HOLE: {
+    contractVersion: 1,
+    seed: 'v3-proof-BLACK_HOLE-001',
+    planet: {
+      type:         'BARREN',
+      habitability: 0,
+      atmosphere:   { present: false, kind: null, density: 0.0 },
+      nativeLife:   0.0,
+      temperature:  0.5,
+      waterCoverage: 0.0,
+    },
+    celestial: {
+      star:                { kind: 'BLACK_HOLE', color: '#0a0010' },
+      orbitAu:             0.5,
+      phaseDeg:            60,
+      rotationPeriodHours: 24,
+      axialTiltDeg:        5,
+    },
+    site: {
+      shape: 'SPRAWLING', usableSlots: 12, citadelCeiling: 1,
+      energy: { source: 'SOLAR', tier: 1, magnitude: 0.10 },
+      deposits: [],
+      hazards: [],
+    },
+  },
+
+  // NEUTRON → suns[0].special === 'pulsar' → drawPulsar()
+  NEUTRON: {
+    contractVersion: 1,
+    seed: 'v3-proof-NEUTRON-001',
+    planet: {
+      type:         'BARREN',
+      habitability: 0,
+      atmosphere:   { present: false, kind: null, density: 0.0 },
+      nativeLife:   0.0,
+      temperature:  0.7,
+      waterCoverage: 0.0,
+    },
+    celestial: {
+      star:                { kind: 'NEUTRON', color: '#d0c0ff' },
+      orbitAu:             0.3,
+      phaseDeg:            60,
+      rotationPeriodHours: 24,
+      axialTiltDeg:        5,
+    },
+    site: {
+      shape: 'SPRAWLING', usableSlots: 12, citadelCeiling: 1,
+      energy: { source: 'SOLAR', tier: 1, magnitude: 0.12 },
+      deposits: [],
+      hazards: [],
+    },
+  },
+
+  // RING_ARC — rings:true → pipeline emits ringArc → drawRingArc()
+  RING_ARC: {
+    contractVersion: 1,
+    seed: 'v3-proof-RING_ARC-001',
+    planet: {
+      type:         'TERRAN',
+      habitability: 70,
+      atmosphere:   { present: true, kind: null, density: 0.65 },
+      nativeLife:   0.50,
+      temperature:  0.05,
+      waterCoverage: 0.50,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             1.0,
+      phaseDeg:            60,
+      rotationPeriodHours: 24,
+      axialTiltDeg:        35,    // high tilt → visible arc
+      rings:               true,
+    },
+    site: {
+      shape: 'SPRAWLING', usableSlots: 16, citadelCeiling: 3,
+      energy: { source: 'SOLAR', tier: 2, magnitude: 0.65 },
+      deposits: [{ kind: 'mineral', richness: 0.60 }],
+      hazards: [],
+    },
+  },
+
+  // RINGED_MOON — moon with hasRings:true → ring ellipse drawn in drawLandedMoons()
+  RINGED_MOON: {
+    contractVersion: 1,
+    seed: 'v3-proof-RINGED_MOON-001',
+    planet: {
+      type:         'TERRAN',
+      habitability: 72,
+      atmosphere:   { present: true, kind: null, density: 0.70 },
+      nativeLife:   0.45,
+      temperature:  0.08,
+      waterCoverage: 0.52,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             1.0,
+      phaseDeg:            60,
+      rotationPeriodHours: 24,
+      axialTiltDeg:        15,
+      moons: [
+        { sizeClass: 3, phaseDeg: 90,  hasRings: true },
+        { sizeClass: 2, phaseDeg: 200, hasRings: false },
+      ],
+    },
+    site: {
+      shape: 'SPRAWLING', usableSlots: 16, citadelCeiling: 3,
+      energy: { source: 'SOLAR', tier: 2, magnitude: 0.68 },
+      deposits: [{ kind: 'ore', richness: 0.55 }],
+      hazards: [],
+    },
+  },
+
+  // PHASED_SIBLING — sibling body in the sky → phase terminator in drawLandedSkyPlanets()
+  PHASED_SIBLING: {
+    contractVersion: 1,
+    seed: 'v3-proof-PHASED_SIBLING-001',
+    planet: {
+      type:         'TERRAN',
+      habitability: 68,
+      atmosphere:   { present: true, kind: null, density: 0.72 },
+      nativeLife:   0.40,
+      temperature:  0.12,
+      waterCoverage: 0.48,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             1.0,
+      phaseDeg:            60,
+      rotationPeriodHours: 24,
+      axialTiltDeg:        10,
+      siblings: [
+        { kind: 'GAS_GIANT', sizeClass: 3, phaseDeg: 140, hue: 35,  sat: 0.55 },
+        { kind: 'TERRAN',    sizeClass: 2, phaseDeg: 280, hue: 195, sat: 0.40 },
+      ],
+    },
+    site: {
+      shape: 'SPRAWLING', usableSlots: 16, citadelCeiling: 3,
+      energy: { source: 'SOLAR', tier: 2, magnitude: 0.65 },
+      deposits: [{ kind: 'food', richness: 0.62 }],
+      hazards: [],
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -393,11 +571,21 @@ const MAX_SETTLE_FRAMES = 60;
 
 export default function VistaProof() {
   // Select input: ?type=<PLANET_TYPE> → FIXED_INPUTS lookup; absent/unknown → PROOF_INPUT.
-  const typeParam  = new URLSearchParams(window.location.search).get('type') ?? '';
+  // Select phase: ?phase=night → night-mode clock (3 am, sun below horizon); default = day.
+  const params     = new URLSearchParams(window.location.search);
+  const typeParam  = params.get('type') ?? '';
+  const phaseParam = params.get('phase') ?? 'day';
+  const isNight    = phaseParam === 'night';
+
   const activeInput: VistaInput = FIXED_INPUTS[typeParam] ?? PROOF_INPUT;
   const activeLabel = typeParam && FIXED_INPUTS[typeParam]
     ? `type: ${typeParam}`
     : 'named-storm (default)';
+
+  // At day (default), t=0 freezes the scene at FROZEN_DAY_PHASE=0.40 (sun always up).
+  // At night, we compute the seed-specific clock that places the scene at 3 am
+  // so starfields, moon glitter, and night-sky FX are visible.
+  const activeClock = isNight ? nightClockFor(activeInput.seed) : 0;
 
   // Readiness gate for Playwright.
   //
@@ -470,11 +658,12 @@ export default function VistaProof() {
         data-testid="vista-proof-container"
         style={{ width: 1440, height: 900, position: 'relative', marginTop: 20 }}
       >
-        <VistaCanvas input={activeInput} clock={0} />
+        <VistaCanvas input={activeInput} clock={activeClock} />
       </div>
 
       <div style={{ color: '#666', fontSize: 11, fontFamily: 'monospace', marginTop: 8 }}>
-        Vista Proof &nbsp;|&nbsp; {activeLabel} &nbsp;|&nbsp; seed: {activeInput.seed} &nbsp;|&nbsp; t=0 (frozen) &nbsp;|&nbsp; DEV-only
+        Vista Proof &nbsp;|&nbsp; {activeLabel} &nbsp;|&nbsp; seed: {activeInput.seed} &nbsp;|&nbsp;
+        {isNight ? ` t=${activeClock.toFixed(1)}s (night/3am)` : ' t=0 (frozen/day)'} &nbsp;|&nbsp; DEV-only
       </div>
 
       {/* Playwright readiness gate: appears only after the canvas pixel poll
