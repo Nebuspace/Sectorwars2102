@@ -1793,7 +1793,8 @@ function buildFloraSprite(
     case 'cactus':      drawScatterCactus(sc, cx, by, sz, tr, tg, tb);          break;
     case 'shrub':       drawScatterShrub(sc, cx, by, sz, tr, tg, tb, 0);        break;
     case 'moss':        drawScatterMoss(sc, cx, by, sz, tr, tg, tb);            break;
-    case 'flower':      drawScatterFlower(sc, cx, by, sz, tr, tg, tb, 0);       break;
+    case 'flower':      drawScatterFlower(sc, cx, by, sz, tr, tg, tb, 0);        break;
+    case 'engineered':  drawScatterPlanter(sc, cx, by, sz, tr, tg, tb, 0);      break;
     case 'grass':
     case 'generic':
     default:            drawScatterGrass(sc, cx, by, sz, tr, tg, tb, 0);        break;
@@ -3181,12 +3182,16 @@ function instPhase(sx: number, sy: number): number {
 }
 
 type FloraClass =
-  | 'broad-tree' | 'canopy-tree' | 'conifer' | 'palm'
-  | 'vine'       | 'fern'        | 'kelp'    | 'seagrass' | 'coral'
-  | 'cactus'     | 'shrub'       | 'moss'    | 'grass'
-  | 'flower'     | 'generic';
+  | 'broad-tree' | 'canopy-tree' | 'conifer'    | 'palm'
+  | 'vine'       | 'fern'        | 'kelp'        | 'seagrass' | 'coral'
+  | 'cactus'     | 'shrub'       | 'moss'        | 'grass'
+  | 'flower'     | 'engineered'  | 'generic';
 
-/** Map a scatter kind string → visual flora class for per-kind dispatch. */
+/** Map a scatter kind string → visual flora class for per-kind dispatch.
+ *
+ *  DEV invariant: every floraKind listed in profiles.ts must map to a non-'generic'
+ *  class.  The drawScatterInstances DEV assert fires if 'generic' is reached —
+ *  add a case here before shipping any new profile floraKind. */
 function getFloraClass(kind: string): FloraClass {
   const k = kind.toLowerCase();
   if (k === 'canopy-tree')                                       return 'canopy-tree';
@@ -3199,8 +3204,12 @@ function getFloraClass(kind: string): FloraClass {
   if (k.includes('seagrass'))                                    return 'seagrass';
   if (k.includes('coral'))                                       return 'coral';
   if (k === 'cactiform' || k.includes('cactus'))                return 'cactus';
-  if (k.includes('shrub') || k.includes('scrub')
-      || k === 'hydroponic-tray' || k === 'engineered-plant')   return 'shrub';
+  // Engineered / ARTIFICIAL flora: check before 'shrub' so 'hydroponic-tray' and
+  // 'engineered-plant' route to drawScatterPlanter, not the organic shrub humps.
+  if (k.includes('engineered') || k.includes('hydroponic')
+      || k.includes('tray')    || k.includes('planter')
+      || k.includes('pod'))                                      return 'engineered';
+  if (k.includes('shrub') || k.includes('scrub'))               return 'shrub';
   if (k.includes('moss') || k.includes('lichen'))               return 'moss';
   if (k.includes('grass') || k.includes('tuft'))                return 'grass';
   if (k.includes('flower'))                                      return 'flower';
@@ -3223,6 +3232,7 @@ function getSwayAmplitude(fc: FloraClass): number {
     case 'shrub':       return 0.12;
     case 'broad-tree':  return 0.10;
     case 'conifer':     return 0.08;
+    case 'engineered':  return 0.06;  // staked / sheltered plants — minimal sway
     case 'cactus':      return 0.00;
     case 'moss':        return 0.00;
   }
@@ -3233,21 +3243,42 @@ function getSwayAmplitude(fc: FloraClass): number {
 // Helpers touch only fillStyle / strokeStyle / lineWidth / lineCap / lineJoin.
 // swayX = gustSway(sx, t, sizePx, getSwayAmplitude(fc)) — tip lateral offset.
 
-/** Broadleaf or jungle-canopy tree: trunk + multi-lobe scalloped crown.
- *  isCanopy (canopy-tree) → wide flat crown, 5 lobes, shadow tier;
- *  !isCanopy (broad-tree) → oval upright crown, 4 lobes, no shadow tier.
- *  Per-instance lobe rotation derived from screen pos hash (matches existing idiom). */
+/** Broadleaf or jungle-canopy tree: tall trunk + STACKED TIERED crown layers.
+ *  isCanopy (canopy-tree) → 3 tiers, tall aspect, wide-to-narrow taper (jungle read);
+ *  !isCanopy (broad-tree) → 2 tiers, rounded taper (parkland/temperate read).
+ *
+ *  Crown redesign: lobes are arranged in HORIZONTAL ROWS at distinct Y levels, not
+ *  orbiting a single center in a ring.  Each tier is positioned above the previous
+ *  and narrower than it, producing a stacked-layer silhouette instead of a round blob.
+ *  Shadow lobes (wider spread, displaced down) + primary lobes (narrower, centered) overlap
+ *  to create scalloped tier edges.
+ *
+ *  Per-instance x-jitter derived from screen-pos hash (same idiom as Cactus/Shrub). */
 function drawScatterTree(
   ctx: CanvasRenderingContext2D,
   sx: number, sy: number, sizePx: number,
   tr: number, tg: number, tb: number,
   swayX: number, isCanopy: boolean,
 ): void {
-  const trunkH   = sizePx * 0.48;
-  const trunkW   = Math.max(1.5, sizePx * 0.14);
-  const canopyR  = sizePx * (isCanopy ? 0.62 : 0.54);
-  const canopyCx = sx + swayX * 0.45;
-  const canopyCy = sy - trunkH - canopyR * 0.52;
+  const trunkH     = sizePx * (isCanopy ? 0.58 : 0.48);
+  const trunkW     = Math.max(1.5, sizePx * 0.13);
+  const crownBaseY = sy - trunkH;   // y at top of trunk / base of crown
+
+  // Crown total vertical span and max half-width at widest (bottom) tier.
+  const crownTotalH = sizePx * (isCanopy ? 1.05 : 0.82);
+  const crownMaxHW  = sizePx * (isCanopy ? 0.50 : 0.54);  // half-width of widest tier
+
+  // Per-instance x-jitter — same hash idiom (deterministic, no Math.random).
+  const instSeed   = (Math.round(sx * 7 + sy * 3)) & 0xff;
+  const instJitter = (instSeed / 255 - 0.5) * 0.14;  // ±0.07 fraction of crownMaxHW
+
+  // Tier layout: [yFrac, widthFrac, lobeCount]
+  //   yFrac      — tier center Y = crownBaseY - crownTotalH * yFrac
+  //   widthFrac  — half-width = crownMaxHW * widthFrac (tapers toward top)
+  //   lobeCount  — lobes in horizontal row at this tier
+  const tiers: [number, number, number][] = isCanopy
+    ? [[0.20, 1.00, 5], [0.56, 0.68, 4], [0.88, 0.40, 3]]
+    : [[0.20, 1.00, 5], [0.76, 0.58, 3]];
 
   // --- Bark trunk: dark body + key-lit left strip ---
   const barkR = Math.round(tr * 0.45), barkG = Math.round(tg * 0.42), barkB = Math.round(tb * 0.35);
@@ -3256,73 +3287,80 @@ function drawScatterTree(
   ctx.fillStyle = `rgb(${Math.min(255, barkR + 22)}, ${Math.min(255, barkG + 18)}, ${Math.min(255, barkB + 14)})`;
   ctx.fillRect(sx - trunkW * 0.5, sy - trunkH, trunkW * 0.40, trunkH);
 
-  // --- Canopy shadow tier (canopy-tree only: flat wide underside reads as tropical spread) ---
-  if (isCanopy) {
-    ctx.fillStyle = `rgb(${Math.round(tr * 0.60)}, ${Math.round(tg * 0.60)}, ${Math.round(tb * 0.56)})`;
+  // --- Stacked crown tiers (drawn bottom → top so upper tiers paint over lower) ---
+  for (let ti = 0; ti < tiers.length; ti++) {
+    const [yFrac, widthFrac, lobeN] = tiers[ti];
+    const tierFrac   = ti / Math.max(1, tiers.length - 1);  // 0=bottom, 1=top
+
+    const tierCY  = crownBaseY - crownTotalH * yFrac;
+    const tierHW  = crownMaxHW * widthFrac;
+    const lobeR   = tierHW * (isCanopy ? 0.56 : 0.58);
+
+    // Sway increases toward top (crown tip moves more than the base).
+    const swayFrac = isCanopy ? 0.22 + tierFrac * 0.64 : 0.28 + tierFrac * 0.48;
+    const tierCX   = sx + swayX * swayFrac + instJitter * tierHW;
+
+    // Shadow lobes: wider spread, displaced downward — simulate depth at tier underside.
+    const shadeK = 0.74 + tierFrac * 0.06;  // upper tiers slightly brighter (sky-lit)
+    ctx.fillStyle = `rgb(${Math.round(tr * (shadeK - 0.14))}, ${Math.round(tg * (shadeK - 0.12))}, ${Math.round(tb * (shadeK - 0.16))})`;
     ctx.beginPath();
-    ctx.ellipse(canopyCx, canopyCy + canopyR * 0.46, canopyR * 1.18, canopyR * 0.65, 0, 0, Math.PI * 2);
+    for (let li = 0; li < lobeN; li++) {
+      const t2 = lobeN > 1 ? li / (lobeN - 1) - 0.5 : 0;   // -0.5 … +0.5
+      const lx = tierCX + t2 * tierHW * 1.52;
+      const ly = tierCY + lobeR * 0.24;   // displaced downward from tier center
+      ctx.moveTo(lx + lobeR, ly);
+      ctx.arc(lx, ly, lobeR, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    // Primary lobes: narrower spread, at tier center — overlap with shadow creates scallop.
+    ctx.fillStyle = `rgb(${Math.round(tr * shadeK)}, ${Math.round(tg * shadeK)}, ${Math.round(tb * (shadeK - 0.02))})`;
+    ctx.beginPath();
+    for (let li = 0; li < lobeN; li++) {
+      const t2 = lobeN > 1 ? li / (lobeN - 1) - 0.5 : 0;
+      const lx = tierCX + t2 * tierHW * 1.18;
+      const ly = tierCY;
+      ctx.moveTo(lx + lobeR * 0.86, ly);
+      ctx.arc(lx, ly, lobeR * 0.86, 0, Math.PI * 2);
+    }
     ctx.fill();
   }
 
-  // --- Multi-lobe crown ---
-  // Per-instance lobe rotation — same hash idiom as drawScatterCactus/Shrub (deterministic, no Math.random).
-  const instSeed  = (Math.round(sx * 7 + sy * 3)) & 0xff;
-  const lobeRot   = (instSeed / 255) * Math.PI * 2;
-  const lobeCount = isCanopy ? 5 : 4;
-  const lobeR     = canopyR * 0.66;
-  const lobeSpread = canopyR * (isCanopy ? 0.44 : 0.38);
-  const lobeYSc   = isCanopy ? 0.68 : 0.82;   // canopy-tree flat crown; broad-tree oval
-
-  // Shadow lobes (darker, slightly rotated — simulate depth inside the crown)
-  ctx.fillStyle = `rgb(${Math.round(tr * 0.80)}, ${Math.round(tg * 0.82)}, ${Math.round(tb * 0.78)})`;
-  ctx.beginPath();
-  for (let li = 0; li < lobeCount; li++) {
-    const ang = lobeRot + (li / lobeCount) * Math.PI * 2 + Math.PI * 0.20;
-    const lx  = canopyCx + Math.cos(ang) * lobeSpread;
-    const ly  = canopyCy + Math.sin(ang) * lobeSpread * lobeYSc;
-    ctx.moveTo(lx + lobeR, ly);
-    ctx.arc(lx, ly, lobeR, 0, Math.PI * 2);
-  }
-  ctx.fill();
-
-  // Primary lobes (full-brightness, slightly inward — overlap with shadow lobes makes scalloped edge)
-  ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
-  ctx.beginPath();
-  for (let li = 0; li < lobeCount; li++) {
-    const ang = lobeRot + (li / lobeCount) * Math.PI * 2;
-    const lx  = canopyCx + Math.cos(ang) * lobeSpread * 0.76;
-    const ly  = canopyCy + Math.sin(ang) * lobeSpread * 0.76 * lobeYSc;
-    ctx.moveTo(lx + lobeR * 0.82, ly);
-    ctx.arc(lx, ly, lobeR * 0.82, 0, Math.PI * 2);
-  }
-  ctx.fill();
-
-  // Sky-lit highlight cap (upper-left of crown)
+  // Sky-lit highlight cap — upper-left of the top tier
+  const [topYFrac, topWF] = tiers[tiers.length - 1];
+  const topHW   = crownMaxHW * topWF;
+  const topLobeR = topHW * (isCanopy ? 0.56 : 0.58);
+  const topCX   = sx + swayX * (isCanopy ? 0.86 : 0.76) + instJitter * topHW;
+  const topCY   = crownBaseY - crownTotalH * topYFrac;
   ctx.fillStyle = `rgb(${Math.min(255, tr + 40)}, ${Math.min(255, tg + 36)}, ${Math.min(255, tb + 26)})`;
   ctx.beginPath();
-  ctx.arc(canopyCx - canopyR * 0.18, canopyCy - canopyR * 0.26, canopyR * 0.36, 0, Math.PI * 2);
+  ctx.arc(topCX - topHW * 0.22, topCY - topLobeR * 0.34, topLobeR * 0.38, 0, Math.PI * 2);
   ctx.fill();
 }
 
-/** Conifer — three stacked triangular tiers, apex tracks the gust. */
+/** Conifer — four stacked triangular tiers, taller + more layered than the old 3-tier.
+ *  Tiers overlap to produce the characteristic stepped silhouette of a spruce or pine.
+ *  Apex of each tier sways proportionally; base corners grounded. */
 function drawScatterConifer(
   ctx: CanvasRenderingContext2D,
   sx: number, sy: number, sizePx: number,
   tr: number, tg: number, tb: number,
   swayX: number,
 ): void {
-  // [yBase, yApex, halfWidth, apexSwayFrac]
+  // [yBase, yApex, halfWidth, apexSwayFrac] — 4 tiers, total height ~1.42 × sizePx.
+  // Each tier's base overlaps the tier below, creating the layered stepped silhouette.
   const tiers: [number, number, number, number][] = [
-    [sy,               sy - sizePx * 0.45, sizePx * 0.52, 0.18],
-    [sy - sizePx * 0.32, sy - sizePx * 0.73, sizePx * 0.34, 0.52],
-    [sy - sizePx * 0.60, sy - sizePx * 1.02, sizePx * 0.18, 1.00],
+    [sy,                   sy - sizePx * 0.38, sizePx * 0.54, 0.10],
+    [sy - sizePx * 0.22,   sy - sizePx * 0.68, sizePx * 0.38, 0.32],
+    [sy - sizePx * 0.48,   sy - sizePx * 0.98, sizePx * 0.24, 0.60],
+    [sy - sizePx * 0.76,   sy - sizePx * 1.42, sizePx * 0.11, 1.00],
   ];
   ctx.lineCap = 'round';
   for (let ti = 0; ti < tiers.length; ti++) {
     const [yBase, yApex, hw, sf] = tiers[ti];
-    // Lighter toward top for sky-lit silhouette
-    const shade = (2 - ti) * 8;
-    ctx.fillStyle = `rgb(${Math.min(255, tr + shade)}, ${Math.min(255, tg + shade)}, ${Math.min(255, tb + shade * 0.8)})`;
+    // Lighter toward top for sky-lit silhouette (3 steps → 4 steps)
+    const shade = (3 - ti) * 7;
+    ctx.fillStyle = `rgb(${Math.min(255, tr + shade)}, ${Math.min(255, tg + shade)}, ${Math.min(255, tb + Math.round(shade * 0.8))})`;
     ctx.beginPath();
     ctx.moveTo(sx + swayX * sf, yApex);   // apex sways; base corners grounded
     ctx.lineTo(sx - hw, yBase);
@@ -3330,13 +3368,82 @@ function drawScatterConifer(
     ctx.closePath();
     ctx.fill();
   }
-  // Dark trunk seam
+  // Dark trunk seam up through the full height
   ctx.strokeStyle = `rgb(${Math.round(tr * 0.55)}, ${Math.round(tg * 0.55)}, ${Math.round(tb * 0.50)})`;
   ctx.lineWidth   = Math.max(0.5, sizePx * 0.06);
   ctx.beginPath();
   ctx.moveTo(sx, sy);
-  ctx.lineTo(sx + swayX, sy - sizePx * 1.02);
+  ctx.lineTo(sx + swayX, sy - sizePx * 1.42);
   ctx.stroke();
+}
+
+/** Hydroponic tray / engineered-plant — geometric planter box with structured uniform plants.
+ *  Reads as clearly artificial: a metallic tray base + evenly-spaced upright stems + oval
+ *  leaf caps.  Contrasts with organic flora (no random lobe spread; tray baseline is flat).
+ *  Sway is minimal (0.06 amplitude) — engineered plants are sheltered / staked.
+ *  Deterministic: swayX from gustSway; instSeed from sx/sy hash for plantCount variety. */
+function drawScatterPlanter(
+  ctx: CanvasRenderingContext2D,
+  sx: number, sy: number, sizePx: number,
+  tr: number, tg: number, tb: number,
+  swayX: number,
+): void {
+  const trayH = sizePx * 0.28;
+  const trayW = sizePx * 1.10;
+  const trayY = sy - trayH;
+
+  // --- Tray body: dark metallic container ---
+  const boxR = Math.round(tr * 0.32 + 18), boxG = Math.round(tg * 0.40 + 14), boxB = Math.round(tb * 0.44 + 18);
+  ctx.fillStyle = `rgb(${boxR}, ${boxG}, ${boxB})`;
+  ctx.fillRect(sx - trayW * 0.5, trayY, trayW, trayH);
+
+  // Rim highlight (top lip of tray — catches key light)
+  const rimH = Math.max(1, trayH * 0.15);
+  ctx.fillStyle = `rgb(${Math.min(255, boxR + 32)}, ${Math.min(255, boxG + 30)}, ${Math.min(255, boxB + 26)})`;
+  ctx.fillRect(sx - trayW * 0.5, trayY, trayW, rimH);
+
+  // Right-face edge shadow (3-D sense: front face slightly darker)
+  const sideW = Math.max(1, sizePx * 0.06);
+  ctx.fillStyle = `rgb(${Math.round(boxR * 0.70)}, ${Math.round(boxG * 0.70)}, ${Math.round(boxB * 0.70)})`;
+  ctx.fillRect(sx + trayW * 0.5 - sideW, trayY + rimH, sideW, trayH - rimH);
+
+  // --- Structured plants: 3 or 4 uniform stem + leaf-cap units ---
+  const instSeed   = (Math.round(sx * 7 + sy * 3)) & 0xff;
+  const plantCount = 3 + (instSeed & 1);   // 3 or 4, deterministic
+  const plantH     = sizePx * 0.52;
+  const stemW      = Math.max(1, sizePx * 0.09);
+  const spacing    = trayW / (plantCount + 1);
+
+  for (let pi = 0; pi < plantCount; pi++) {
+    const px  = sx - trayW * 0.5 + spacing * (pi + 1);
+    // Alternating slight lean for a regular engineered-garden look (deterministic)
+    const lean = ((pi ^ (instSeed >> 1)) & 1) === 0 ? sizePx * 0.025 : -sizePx * 0.025;
+    const topX = px + lean + swayX * 0.12;
+    const topY = trayY - plantH;
+
+    // Stem (dark greenish)
+    ctx.fillStyle = `rgb(${Math.round(tr * 0.48)}, ${Math.round(tg * 0.56)}, ${Math.round(tb * 0.44)})`;
+    ctx.fillRect(px - stemW * 0.5 + lean * 0.5, topY, stemW, plantH);
+
+    // Leaf cap: compact horizontal oval, slightly wider than stem
+    const capRx = sizePx * 0.17, capRy = sizePx * 0.12;
+    ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+    ctx.beginPath();
+    ctx.ellipse(topX, topY - capRy * 0.45, capRx, capRy, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Two horizontal leaf nubs mid-stem (engineered-plant silhouette cue)
+    const nubY   = topY + plantH * 0.42;
+    const nubLen = sizePx * 0.15;
+    const nubH   = Math.max(0.8, sizePx * 0.055);
+    ctx.fillStyle = `rgb(${Math.round(tr * 0.80)}, ${Math.round(tg * 0.85)}, ${Math.round(tb * 0.78)})`;
+    ctx.beginPath();
+    ctx.ellipse(px + lean - nubLen * 0.58, nubY, nubLen * 0.60, nubH, -Math.PI * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(px + lean + nubLen * 0.58, nubY, nubLen * 0.60, nubH, Math.PI * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 /** Palm — curved trunk bezier + 5 radiating fronds from crown. */
@@ -3873,10 +3980,11 @@ function drawGrassGroundCover(
 //   seagrass                    → drawScatterKelp   (isSeagrass=true)
 //   coral                       → drawScatterCoral  (Y-branch + rounded tips)
 //   cactus / cactiform          → drawScatterCactus (trunk + two arms; rigid)
-//   shrub / scrub               → drawScatterShrub  (2–3 rounded humps)
-//   moss / lichen               → drawScatterMoss   (flat patch + bumps; rigid)
+//   shrub / scrub               → drawScatterShrub   (2–3 rounded humps)
+//   moss / lichen               → drawScatterMoss    (flat patch + bumps; rigid)
 //   grass / tuft                → drawGrassGroundCover (not the NEAR switch)
-//   flower                      → drawScatterFlower (petaled blooms on stems)
+//   flower                      → drawScatterFlower  (petaled blooms on stems)
+//   engineered-plant / hydroponic-tray → drawScatterPlanter (metallic tray + structured plants)
 //   rock / boulder / stone …    → rock blob (no sway)
 //   glitter-spark               → Pass 2 only (skipped in Pass 1)
 //   unknown → 'generic' class   → drawScatterGrass fallback + DEV warning
@@ -4087,6 +4195,7 @@ function drawScatterInstances(
         case 'shrub':       drawScatterShrub(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
         case 'moss':        drawScatterMoss(ctx, sx, sy, sizePx, tr, tg, tb);                break;
         case 'flower':      drawScatterFlower(ctx, sx, sy, sizePx, tr, tg, tb, swayX);       break;
+        case 'engineered':  drawScatterPlanter(ctx, sx, sy, sizePx, tr, tg, tb, swayX);      break;
         case 'generic':
         default:            drawScatterGrass(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
       }

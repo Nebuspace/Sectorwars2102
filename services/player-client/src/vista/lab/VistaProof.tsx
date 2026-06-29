@@ -126,7 +126,7 @@ const PROOF_INPUT: VistaInput = {
 // NOT calls to randomVistaInput — so the same input runs on any branch and
 // a pixel diff between before/after reflects only engine changes, not entropy.
 //
-// Coverage: 9 of the 12 PlanetTypes (GAS_GIANT / ARCTIC / ARTIFICIAL deferred).
+// Coverage: 10 of the 12 PlanetTypes (GAS_GIANT / ARCTIC deferred).
 
 const FIXED_INPUTS: Record<string, VistaInput> = {
 
@@ -556,6 +556,34 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
       shape: 'SPRAWLING', usableSlots: 16, citadelCeiling: 3,
       energy: { source: 'SOLAR', tier: 2, magnitude: 0.65 },
       deposits: [{ kind: 'food', richness: 0.62 }],
+      hazards: [],
+    },
+  },
+
+  // ── ARTIFICIAL — engineered station / hab-ring ──────────────────────────────
+  // flora: hydroponic-tray + engineered-plant → drawScatterPlanter proof target.
+  ARTIFICIAL: {
+    contractVersion: 1,
+    seed: 'type-proof-ARTIFICIAL-001',
+    planet: {
+      type:          'ARTIFICIAL',
+      habitability:  62,
+      atmosphere:    { present: true, kind: null, density: 0.45 },
+      nativeLife:    0.70,   // high → plenty of hydroponic flora to render
+      temperature:   0.20,
+      waterCoverage: 0.00,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             1.2,
+      phaseDeg:            80,
+      rotationPeriodHours: 24,
+      axialTiltDeg:        10,
+    },
+    site: {
+      shape: 'ENGINEERED', usableSlots: 14, citadelCeiling: 2,
+      energy: { source: 'SOLAR', tier: 3, magnitude: 0.80 },
+      deposits: [{ kind: 'ore', richness: 0.55 }],
       hazards: [],
     },
   },
