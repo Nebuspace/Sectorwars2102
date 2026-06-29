@@ -34,6 +34,90 @@ export type LandmarkKind =
   | 'cone' | 'caldera' | 'arch' | 'mesa' | 'crater' | 'spire' | 'canyon' | 'glacier';
 
 // ---------------------------------------------------------------------------
+// CoastalSig — terrain-signature params for the TERRAN coastal-land renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the TERRAN coastal-land renderer (drawCoastalLand).
+ * Present only on TERRAN_PROFILE; absent for all other planet types.
+ * Consumed by drawCoastalLand in backend.ts; ignored everywhere else.
+ */
+export interface CoastalSig {
+  /**
+   * Maximum Y-deviation of the meandering shoreline, as a fraction of canvas
+   * height.  0.055 → shore wanders ±~40px on a 720-tall canvas, giving a
+   * visibly organic coast without excessive overlap into the water band.
+   */
+  shorelineAmplitude: number;
+  /**
+   * Number of river-delta channels carved into the shoreline (1–4).
+   * Each channel is a V-notch that lets water intrude into the land, seeded
+   * to a deterministic position and width.
+   */
+  deltaInletCount: number;
+  /**
+   * Depth of the sandy beach gradient strip above the water's edge, as a
+   * fraction of canvas height.  0.022 → ~16px on a 720-tall canvas.
+   */
+  beachDepth: number;
+}
+
+// ---------------------------------------------------------------------------
+// FrozenSheetConfig — terrain-signature params for the ICE pack-ice renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the ICE frozen-sheet renderer (drawFrozenSheet).
+ * Present only on ICE_PROFILE; absent for all other planet types including
+ * ARCTIC (which carries water.type='frozen' but is visually handled by
+ * WO-V5-ARCTIC and renders the simpler base gradient in this wave).
+ */
+export interface FrozenSheetConfig {
+  /**
+   * Range [min, max] for the number of major horizontal plate seams drawn
+   * across the frozen band.  More seams → smaller plates (high-latitude
+   * fragmentation); fewer → large continental-shelf slabs.
+   */
+  hSeamRange: [number, number];
+  /**
+   * Contrast of the crack lines (0 = invisible, 1 = full-strength dark).
+   * Scaled into the multiply-mode globalAlpha for the primary crack stroke
+   * and its shadow underlayer.
+   */
+  crackContrast: number;
+  /**
+   * Intensity of subsurface glacial tint pockets — the deep blue-green
+   * visible through the ice to trapped water/air below.
+   * 0 = none, 1 = vivid.  Scaled into the tint-pocket radial-gradient alpha.
+   */
+  glacialDepth: number;
+}
+
+// ---------------------------------------------------------------------------
+// DuneSeaConfig — terrain-signature params for the DESERT dune-sea renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the DESERT dune-sea terrain renderer (drawDuneSea).
+ * Present only on DESERT_PROFILE; absent for all other planet types.
+ * Consumed by drawDuneSea in backend.ts; ignored everywhere else.
+ */
+export interface DuneSeaConfig {
+  /** Number of dune ridges to render, distributed far→near. */
+  ridgeCount: number;
+  /**
+   * Wind-drift scroll speed multiplier applied to the per-depth speed table.
+   * 1.0 = default speed; increase for sandstorm worlds, decrease for still erg.
+   */
+  windScale: number;
+  /**
+   * Crest highlight width scale relative to the default calculation.
+   * 1.0 = standard lit crest; >1 widens the highlight, <1 narrows it.
+   */
+  crestScale: number;
+}
+
+// ---------------------------------------------------------------------------
 // TypeGrade — per-type "film stock" for the post-process compositor
 // ---------------------------------------------------------------------------
 
@@ -235,6 +319,27 @@ export interface PlanetProfile {
   emissive?: { color: RGB; density: number };
 
   /**
+   * Coastal-land terrain-signature configuration.
+   * Present only on TERRAN; absent for all other types.
+   * Consumed by drawCoastalLand in backend.ts; ignored everywhere else.
+   */
+  coastalSig?: CoastalSig;
+
+  /**
+   * Frozen-sheet terrain-signature configuration.
+   * Present only on ICE; absent for all other types (including ARCTIC).
+   * Consumed by drawFrozenSheet in backend.ts; ignored everywhere else.
+   */
+  frozenSheet?: FrozenSheetConfig;
+
+  /**
+   * Dune-sea terrain-signature configuration.
+   * Present only on DESERT; absent for all other types.
+   * Consumed by drawDuneSea in backend.ts; ignored everywhere else.
+   */
+  duneSeaConfig?: DuneSeaConfig;
+
+  /**
    * Per-type "film stock" for the post-process compositor.
    * Absent → post.ts defaults (warmthBias=0, vignetteStrength=0.55, grainScale=1).
    * Set these to give each planet type a distinct cinematic character.
@@ -380,6 +485,11 @@ const TERRAN_PROFILE: PlanetProfile = {
   // Warm-golden film stock: lush highlights, gentle vignette, minimal grain.
   grade: { warmthBias: 0.15, vignetteStrength: 0.45, grainScale: 0.7 },
 
+  // Coastal-land signature: gently meandering shore + 2 river-delta inlets.
+  // shorelineAmplitude 0.055 → ≈40px meander on a 720-tall canvas.
+  // beachDepth 0.022 → ≈16px sandy transition strip at the water's edge.
+  coastalSig: { shorelineAmplitude: 0.055, deltaInletCount: 2, beachDepth: 0.022 },
+
   // Full natural lushness — meadows and forests carpet the land band.
   denseFloraFactor: 1.0,
 };
@@ -498,6 +608,12 @@ const VOLCANIC_PROFILE: PlanetProfile = {
 
   // Scorched film stock: pushed warm (embers/magma), deep vignette, heavy grain.
   grade: { warmthBias: 0.30, vignetteStrength: 0.65, grainScale: 1.5 },
+
+  // Lava-sea signature (WO-V4-VOLCANIC) — palette fields consumed by drawLavaSea:
+  //   basePalette.water  [200,  58, 10]  → outer diffuse glow (channel color)
+  //   basePalette.accent [255,  90, 20]  → inner core + junction node (hottest)
+  //   basePalette.foam   [115,  78, 55]  → reserved for future ash-crust rim detail
+  //   water: 'lava'                      → routes §4b to the drawLavaSea branch
 
   // floraKinds: [] already blocks flora; 0.0 makes the intent explicit.
   denseFloraFactor: 0.0,
@@ -736,6 +852,10 @@ const DESERT_PROFILE: PlanetProfile = {
 
   // Sparse xerophyte scrub only; half density relative to lush types.
   denseFloraFactor: 0.3,
+
+  // Dune-sea terrain signature — 6-layer erg, standard wind drift, full crest width.
+  // Consumed exclusively by drawDuneSea in backend.ts.
+  duneSeaConfig: { ridgeCount: 6, windScale: 1.0, crestScale: 1.0 },
 };
 
 // ---------------------------------------------------------------------------
@@ -852,6 +972,11 @@ const ICE_PROFILE: PlanetProfile = {
 
   // Glacial film stock: cool-blue cast, crisp vignette, fine grain.
   grade: { warmthBias: -0.32, vignetteStrength: 0.58, grainScale: 0.9 },
+
+  // Pack-ice signature: 2–3 major plate seams, high-contrast cracks, vivid glacial depth.
+  // ARCTIC also uses water.type='frozen' but carries no frozenSheet config; its sea-ice +
+  // aurora treatment is WO-V5-ARCTIC.
+  frozenSheet: { hSeamRange: [2, 3], crackContrast: 0.80, glacialDepth: 0.60 },
 
   // Extremophile lichen/moss only; quarter density.
   denseFloraFactor: 0.15,

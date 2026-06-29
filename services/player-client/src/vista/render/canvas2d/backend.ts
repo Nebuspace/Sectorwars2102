@@ -2657,6 +2657,220 @@ function drawPlating(
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// drawDuneSea — WO-V4-DESERT terrain signature.
+//
+// Sculpted dune sea: N sinuous ridge layers receding far→near, each with a
+// lit windward crest and a shadowed leeward slip-face.  Replaces the generic
+// parallax ridge renderer for DESERT worlds.
+//
+// Design notes:
+//   • depthFrac 0 = farthest ridge (near horizonY); 1 = nearest (near h).
+//   • Each crest is two summed sine waves for organic, non-repeating shape.
+//   • Aerial-perspective haze matches the generic ridge renderer (0.50 far scalar).
+//   • Wind-drift scroll (very slow; near dunes faster) gives life; seeded via
+//     model.seed — no Math.random / Date.now.
+//   • Crest highlight uses palette.accent (amber-gold) biased toward sunX side.
+//   • Shadow strip at the crest base punches in the slip-face depth read.
+//   • ctx.save / restore: one outer save wrapping the full dune loop.
+//   • DuneSeaConfig from DESERT_PROFILE drives ridgeCount / windScale / crestScale.
+// ---------------------------------------------------------------------------
+function drawDuneSea(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number
+): void {
+  const { horizonY, hasAtmosphere } = cache;
+  const pal     = model.palette;
+  const groundH = h - horizonY;
+
+  // Read terrain-signature config from the DESERT profile.
+  const dsConf     = getProfile(model.planetType).duneSeaConfig;
+  const duneCount  = dsConf?.ridgeCount ?? 6;
+  const windScale  = dsConf?.windScale  ?? 1.0;
+  const crestScale = dsConf?.crestScale ?? 1.0;
+
+  // Seeded PRNG — sub-stream 'dune-sea' is unique to this renderer.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'dune-sea'));
+
+  // Sun azimuth fraction (0=left, 1=right) — biases the crest highlight gradient.
+  const sunFrac = w > 0 ? sunX / w : 0.5;
+
+  // Horizon haze color for aerial-perspective blending (same derivation as the
+  // generic ridge renderer so far ridges desaturate into the same atmosphere).
+  const horBase = pal.skyHorizon;
+  const b       = dc.bright;
+  const hazeR   = hasAtmosphere ? Math.min(255, Math.round(horBase[0] * (0.4 + b * 0.6))) : 8;
+  const hazeG   = hasAtmosphere ? Math.min(255, Math.round(horBase[1] * (0.4 + b * 0.6))) : 8;
+  const hazeB   = hasAtmosphere ? Math.min(255, Math.round(horBase[2] * (0.4 + b * 0.6))) : 20;
+
+  // Ground-plane sand fill — drawn first so the terrain band has a sand base
+  // beneath all dune ridges.
+  {
+    const [sr, sg, sb] = pal.surface;
+    const fill = ctx.createLinearGradient(0, horizonY, 0, h);
+    fill.addColorStop(0, `rgb(${Math.round(sr * 0.82)}, ${Math.round(sg * 0.82)}, ${Math.round(sb * 0.84)})`);
+    fill.addColorStop(1, `rgb(${Math.round(sr * 0.52)}, ${Math.round(sg * 0.52)}, ${Math.round(sb * 0.54)})`);
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, horizonY, w, groundH);
+  }
+
+  ctx.save();
+
+  for (let di = 0; di < duneCount; di++) {
+    // depthFrac: 0 = farthest (near horizon), 1 = nearest (camera foreground).
+    const depthFrac = di / Math.max(1, duneCount - 1);
+
+    // Crest Y: exponential distribution gives convincing perspective recession.
+    // Far dunes (di=0) sit just below horizonY; near dunes sit close to h.
+    const tFrac      = Math.pow(depthFrac, 0.75);
+    const crestBaseY = horizonY + tFrac * groundH * 0.90;
+
+    // Crest undulation amplitude — larger for near dunes (they loom over camera).
+    const amplitude = groundH * (0.030 + depthFrac * 0.090);
+
+    // Per-dune seeded shape: two sine frequencies + independent phase offsets.
+    const phaseA = rng() * Math.PI * 2;
+    const freqA  = 0.55 + rng() * 0.70;          // primary frequency scale
+    const phaseB = rng() * Math.PI * 2;
+    const freqB  = freqA * 1.72 + rng() * 0.40;  // harmonic — organic erg texture
+    const bRatio = 0.35 + rng() * 0.20;           // harmonic amplitude fraction
+
+    // Slow wind-drift parallax: near dunes scroll faster → depth sensation.
+    const windSpeed = (0.06 + depthFrac * 0.28) * windScale * (w / 1440);
+    const scrollOff = t * windSpeed;
+    const period    = w * (1.35 + rng() * 0.55);  // tiling period wider than frame
+
+    // Sample step: 4 px for smooth sinuous lines without over-sampling.
+    const step   = 4;
+    const numPts = Math.ceil(w / step) + 2;
+
+    // Inline crest-Y sampler at a pre-scrolled normalised position [0, 1].
+    const crestAt = (xNorm: number): number =>
+      crestBaseY
+      + Math.sin(xNorm * Math.PI * 2 * freqA + phaseA) * amplitude
+      + Math.sin(xNorm * Math.PI * 2 * freqB + phaseB) * amplitude * bRatio;
+
+    // --- Fill color: interpolate through pal.ridge[] array by depthFrac (0=far, 1=near) ---
+    // Mirrors the getRidgeColor pattern in pipeline.ts so dune fill colors track
+    // the same per-stratum palette as the generic ridge renderer would assign.
+    const ridge    = pal.ridge;
+    const ridgeLen = ridge.length;
+    const rawPos   = depthFrac * Math.max(1, ridgeLen - 1);
+    const lo       = Math.floor(rawPos);
+    const hi       = Math.min(lo + 1, ridgeLen - 1);
+    const ridgeMix = rawPos - lo;
+    const [loR, loG, loB] = ridge[lo]  ?? ([92, 48, 20] as RGB);
+    const [hiR, hiG, hiB] = ridge[hi]  ?? ([loR, loG, loB] as RGB);
+    const baseR = Math.round(loR * (1 - ridgeMix) + hiR * ridgeMix);
+    const baseG = Math.round(loG * (1 - ridgeMix) + hiG * ridgeMix);
+    const baseB = Math.round(loB * (1 - ridgeMix) + hiB * ridgeMix);
+
+    // Aerial-perspective haze: far ridges blend ~50% toward sky horizon color.
+    // Slightly softer than the generic ridge scalar (0.55) because sand is a
+    // lower-contrast, more atmospheric-looking surface than rocky strata.
+    const hazeAmt  = 0.50 * (1 - depthFrac) * (hasAtmosphere ? 1.0 : 0.10);
+    const hazeAmtC = 1 - hazeAmt;
+    const fillR    = Math.round(baseR * hazeAmtC + hazeR * hazeAmt);
+    const fillG    = Math.round(baseG * hazeAmtC + hazeG * hazeAmt);
+    const fillB    = Math.round(baseB * hazeAmtC + hazeB * hazeAmt);
+
+    // --- Slip-face body fill (the shadow face visible from the viewer) ---
+    ctx.beginPath();
+    ctx.moveTo(-step, h);
+    for (let xi = 0; xi <= numPts; xi++) {
+      const x    = (xi - 1) * step;
+      const xScr = (((x + scrollOff) % period) + period) % period;
+      ctx.lineTo(x, crestAt(xScr / period));
+    }
+    ctx.lineTo(w + step, h);
+    ctx.closePath();
+    ctx.fillStyle = `rgb(${fillR}, ${fillG}, ${fillB})`;
+    ctx.fill();
+
+    // --- Deep shadow strip just under the crest (slip-face top edge) ---
+    // A thin darkening band at the crest base sharpens the sculpted read and
+    // separates consecutive dune layers.
+    const shadowDepth = Math.max(3, 3 + depthFrac * 8);
+    if (dc.bright > 0.06) {
+      const shdAlpha = (0.30 + depthFrac * 0.22) * Math.max(0.1, dc.bright);
+      const shdR     = Math.round(fillR * 0.28);
+      const shdG     = Math.round(fillG * 0.28);
+      const shdB     = Math.round(fillB * 0.28);
+
+      ctx.save();
+      ctx.lineWidth   = shadowDepth;
+      ctx.lineJoin    = 'round';
+      ctx.strokeStyle = `rgba(${shdR}, ${shdG}, ${shdB}, ${shdAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      for (let xi = 0; xi <= numPts; xi++) {
+        const x    = (xi - 1) * step;
+        const xScr = (((x + scrollOff) % period) + period) % period;
+        const y    = crestAt(xScr / period) + shadowDepth * 0.5;
+        if (xi === 0) ctx.moveTo(x, y);
+        else          ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // --- Lit windward crest highlight ---
+    // Warm amber strip at the dune apex — the windward face facing the sun.
+    // Width scales with depth (near dunes have wider, more prominent crests).
+    // A horizontal gradient biases the brightness toward the sun's azimuth.
+    if (dc.bright > 0.06) {
+      const [acR, acG, acB] = pal.accent;
+      const crestW   = Math.max(1.0, (1.2 + depthFrac * 3.5) * crestScale);
+      const crestAlp = (0.60 + depthFrac * 0.30) * dc.bright;
+
+      // Warm day-tint blend: accent (amber-gold) drives the lit crest read.
+      const warmBias = dc.warm * 24;
+      const crestR   = Math.min(255, Math.round(fillR * 0.30 + acR * 0.70 + warmBias));
+      const crestG   = Math.min(255, Math.round(fillG * 0.30 + acG * 0.70 + warmBias * 0.35));
+      const crestB   = Math.min(255, Math.round(fillB * 0.30 + acB * 0.70));
+
+      // Horizontal gradient: strong on the sun side, weak on the shadow side.
+      const strongAlp = crestAlp.toFixed(3);
+      const weakAlp   = (crestAlp * 0.40).toFixed(3);
+      const crestGrad = ctx.createLinearGradient(0, 0, w, 0);
+      if (sunFrac < 0.5) {
+        // Sun on left → windward (lit) faces left, slip-face faces right
+        crestGrad.addColorStop(0.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${strongAlp})`);
+        crestGrad.addColorStop(0.6, `rgba(${crestR}, ${crestG}, ${crestB}, ${weakAlp})`);
+        crestGrad.addColorStop(1.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${weakAlp})`);
+      } else {
+        // Sun on right → windward (lit) faces right, slip-face faces left
+        crestGrad.addColorStop(0.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${weakAlp})`);
+        crestGrad.addColorStop(0.4, `rgba(${crestR}, ${crestG}, ${crestB}, ${weakAlp})`);
+        crestGrad.addColorStop(1.0, `rgba(${crestR}, ${crestG}, ${crestB}, ${strongAlp})`);
+      }
+
+      ctx.save();
+      ctx.lineWidth   = crestW;
+      ctx.lineJoin    = 'round';
+      ctx.strokeStyle = crestGrad;
+      ctx.beginPath();
+      for (let xi = 0; xi <= numPts; xi++) {
+        const x    = (xi - 1) * step;
+        const xScr = (((x + scrollOff) % period) + period) % period;
+        const y    = crestAt(xScr / period);
+        if (xi === 0) ctx.moveTo(x, y);
+        else          ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------------------
 // drawDepositGlyph — one deposit-marker canvas glyph at (sx, sy).
 // Each visual maps to a recognizable shape, tinted from palette.accent.
@@ -4517,6 +4731,241 @@ function drawGodRays(
 }
 
 // ---------------------------------------------------------------------------
+// drawFrozenSheet — WO-V4-ICE
+// Cracked pack-ice surface: irregular ice plates separated by dark crack lines,
+// pressure ridges at plate collision seams, and subsurface glacial tint pockets.
+// Called from drawScene §4b — ICE planet type ONLY (water.type === 'frozen').
+// ARCTIC also carries water.type='frozen' but uses the base gradient; its full
+// sea-ice + aurora treatment is WO-V5-ARCTIC.
+// Seeded from model.seed via splitmix32; no Math.random / Date.now.
+// ctx.save/restore balanced throughout.
+// ---------------------------------------------------------------------------
+function drawFrozenSheet(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+  wt: number,   // waterTopY in pixels
+  wh: number,   // h - wt (frozen band height)
+): void {
+  const model     = cache.model;
+  const { sc }    = cache;
+  const fsProfile = getProfile(model.planetType).frozenSheet;
+  if (!fsProfile) return;   // guard: only ICE carries this profile field
+
+  // Master PRNG for plate layout — one stable sequence per seed, no Date.now.
+  const rngFs = splitmix32(deriveChildSeed(model.seed, 'frozen-sheet'));
+
+  // ---- 1. Glacial subsurface tint pockets -----------------------------------
+  // Radial spots of deep blue-green visible through the ice to trapped water/air.
+  // Uses 'multiply' to darken/cool the pale base surface without clobbering it.
+  const TINT_COUNT = 4 + Math.floor(rngFs() * 4);  // 4–7 pockets
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    for (let i = 0; i < TINT_COUNT; i++) {
+      const tx = rngFs() * w;
+      const ty = wt + rngFs() * wh;
+      const tr = 40 + rngFs() * 80;                                // radius 40–120 px
+      const ta = fsProfile.glacialDepth * (0.08 + rngFs() * 0.10); // 0.05–0.18 scaled
+      const tg = ctx.createRadialGradient(tx, ty, 0, tx, ty, tr);
+      tg.addColorStop(0,   `rgba(62, 118, 185, ${ta.toFixed(3)})`);
+      tg.addColorStop(0.6, `rgba(80, 140, 205, ${(ta * 0.40).toFixed(3)})`);
+      tg.addColorStop(1,   'rgba(80, 140, 205, 0)');
+      ctx.fillStyle = tg;
+      const fy = Math.max(wt, ty - tr);
+      ctx.fillRect(Math.max(0, tx - tr), fy, tr * 2, Math.min(h, ty + tr) - fy);
+    }
+    ctx.restore();
+  }
+
+  // ---- 2. Build crack network -----------------------------------------------
+  // Horizontal seams cross the full width, fragmenting the band into strips.
+  // Vertical arms extend from those seams to further fragment each strip into plates.
+  interface CrackPath { pts: [number, number][]; kind: 'seam' | 'arm' }
+  const cracks: CrackPath[] = [];
+
+  // 2a) Horizontal plate seams
+  const hSeamMin     = fsProfile.hSeamRange[0];
+  const hSeamMax     = fsProfile.hSeamRange[1];
+  const H_SEAM_COUNT = hSeamMin + Math.floor(rngFs() * (hSeamMax - hSeamMin + 1));
+  const seamYFracs: number[] = [];
+  for (let i = 0; i < H_SEAM_COUNT; i++) {
+    const baseFrac = (i + 1) / (H_SEAM_COUNT + 1);
+    seamYFracs.push(Math.max(0.08, Math.min(0.92, baseFrac + (rngFs() - 0.5) * 0.18)));
+  }
+  seamYFracs.sort((a, b) => a - b);
+
+  for (const yFrac of seamYFracs) {
+    const baseY  = wt + yFrac * wh;
+    const STEPS  = 8 + Math.floor(rngFs() * 6);   // 8–13 waypoints
+    const pts: [number, number][] = [[0, baseY + (rngFs() - 0.5) * 8]];
+    for (let j = 1; j < STEPS; j++) {
+      const xj = (j / STEPS) * w;
+      const yj = baseY + (rngFs() - 0.5) * 22;    // ±11 px vertical jitter
+      pts.push([xj, yj]);
+    }
+    pts.push([w, baseY + (rngFs() - 0.5) * 8]);
+    cracks.push({ pts, kind: 'seam' });
+  }
+
+  // 2b) Vertical crack arms — 3–5 per strip; grow from the seam edge inward
+  const stripCount = seamYFracs.length + 1;
+  for (let si = 0; si < stripCount; si++) {
+    const stripTop = wt + (si === 0 ? 0 : seamYFracs[si - 1] * wh);
+    const stripBtm = wt + (si >= seamYFracs.length ? wh : seamYFracs[si] * wh);
+    const stripH   = stripBtm - stripTop;
+    if (stripH < 12) continue;
+    const nArms = 3 + Math.floor(rngFs() * 3);     // 3–5 arms per strip
+    for (let ai = 0; ai < nArms; ai++) {
+      const ax      = (0.08 + rngFs() * 0.84) * w;          // avoid canvas edges
+      const armH    = stripH * (0.30 + rngFs() * 0.55);     // 30–85% of strip height
+      const fromTop = rngFs() < 0.55;                        // grow from top or bottom edge
+      const startY  = fromTop ? stripTop : stripBtm;
+      const endY    = fromTop ? stripTop + armH : stripBtm - armH;
+      const ASTEPS  = 3 + Math.floor(rngFs() * 4);           // 3–6 waypoints
+      const pts: [number, number][] = [[ax, startY]];
+      for (let j = 1; j <= ASTEPS; j++) {
+        const frac = j / ASTEPS;
+        const axy  = ax + (rngFs() - 0.5) * 14;             // ±7 px horizontal drift
+        const ayy  = startY + frac * (endY - startY);
+        pts.push([axy, ayy]);
+      }
+      cracks.push({ pts, kind: 'arm' });
+    }
+  }
+
+  // ---- 3. Draw crack shadow underlayer (depth) ------------------------------
+  // A wider, darker stroke behind each crack gives visual depth to the fractures.
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    for (const crack of cracks) {
+      ctx.save();
+      ctx.globalAlpha = crack.kind === 'seam'
+        ? fsProfile.crackContrast * 0.48
+        : fsProfile.crackContrast * 0.35;
+      ctx.strokeStyle = 'rgba(22, 38, 62, 1)';       // deep navy shadow
+      ctx.lineWidth   = crack.kind === 'seam' ? 5.5 : 3.0;
+      ctx.beginPath();
+      for (let j = 0; j < crack.pts.length; j++) {
+        const [px, py] = crack.pts[j];
+        if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---- 4. Draw primary crack lines ------------------------------------------
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    for (const crack of cracks) {
+      ctx.save();
+      ctx.globalAlpha = crack.kind === 'seam'
+        ? fsProfile.crackContrast * 0.72
+        : fsProfile.crackContrast * 0.52;
+      ctx.strokeStyle = 'rgba(34, 54, 82, 1)';       // dark navy crack line
+      ctx.lineWidth   = crack.kind === 'seam' ? 2.8 : 1.6;
+      ctx.beginPath();
+      for (let j = 0; j < crack.pts.length; j++) {
+        const [px, py] = crack.pts[j];
+        if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---- 5. Pressure ridges — bright seams along plate collision lines --------
+  // Pack-ice plates buckle upward where they collide: a bright snow-white
+  // highlight above the seam, a cooler blue-shadow below.
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    const ridgeBright = dc.sunUp ? Math.max(0.06, dc.bright * 0.28) : 0.04;
+    for (const crack of cracks) {
+      if (crack.kind !== 'seam') continue;    // ridges only on major plate seams
+      ctx.save();
+      // Bright snow-white edge above the seam (plate catching sunlight)
+      ctx.globalAlpha = ridgeBright;
+      ctx.strokeStyle = `rgba(${Math.min(255, sc.r + 80)}, ${Math.min(255, sc.g + 80)}, 255, 1)`;
+      ctx.lineWidth   = 1.4;
+      ctx.beginPath();
+      for (let j = 0; j < crack.pts.length; j++) {
+        const [px, py] = crack.pts[j];
+        if (j === 0) ctx.moveTo(px, py - 2); else ctx.lineTo(px, py - 2);
+      }
+      ctx.stroke();
+      // Cooler blue-white shadow below the seam (plate underside in shade)
+      ctx.globalAlpha = ridgeBright * 0.55;
+      ctx.strokeStyle = 'rgba(148, 188, 228, 1)';
+      ctx.lineWidth   = 0.9;
+      ctx.beginPath();
+      for (let j = 0; j < crack.pts.length; j++) {
+        const [px, py] = crack.pts[j];
+        if (j === 0) ctx.moveTo(px, py + 2); else ctx.lineTo(px, py + 2);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---- 6. Plate-surface sun glint -------------------------------------------
+  // Broad flat elliptical glints scattered across the plate surfaces.
+  // Ice reflects a diffuse solar patch (softer + flatter than liquid specular).
+  // Glints pulse slowly with t; all RNG consumed before the skip-check so the
+  // sequence stays deterministic regardless of which glints pass the alpha gate.
+  if (dc.sunUp && dc.bright > 0.10) {
+    const GLINT_COUNT = 5 + Math.floor(rngFs() * 6);    // 5–10 glints
+    const rngGl = splitmix32(deriveChildSeed(model.seed, 'ice-glint'));
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < GLINT_COUNT; i++) {
+      // Consume all per-glint values before any conditional skip.
+      const gx   = rngGl() * w;
+      const gy   = wt + rngGl() * wh;
+      const gRad = 18 + rngGl() * 52;           // radius 18–70 px
+      const gAR  = 0.25 + rngGl() * 0.40;       // vertical aspect ratio (flat ellipse)
+      const gOff = rngGl();                      // [0,1) — speed offset + base alpha
+      const gPh  = rngGl() * Math.PI * 2;        // animation phase
+
+      const dxN  = (gx - sunX) / w;
+      const dFac = Math.max(0, 1 - Math.abs(dxN) * 1.6);   // dim away from sun column
+      const pulse = t === 0 ? 0.72 : 0.50 + 0.50 * Math.sin(t * (0.28 + gOff * 0.22) + gPh);
+      const alpha = dFac * dc.bright * (0.038 + gOff * 0.052) * pulse;
+      if (alpha < 0.01) continue;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.scale(1, gAR);   // flatten circle → ellipse; restore() undoes the scale
+      const gg = ctx.createRadialGradient(gx, gy / gAR, 0, gx, gy / gAR, gRad);
+      gg.addColorStop(0, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 1)`);
+      gg.addColorStop(1, `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+      ctx.fillStyle = gg;
+      ctx.beginPath();
+      ctx.arc(gx, gy / gAR, gRad, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // drawWaterFX — WO-V3-WATER-FX
 // Specular glitter column, sky flip-reflection, and whitecap/storm foam FX.
 // Called from drawScene §4b — liquid water types only (ocean/coastal/tidal-flat).
@@ -4685,6 +5134,341 @@ function drawWaterFX(
     }
     ctx.globalAlpha = Math.min(0.48, stormExtra * 0.24 * (t === 0 ? 0.88 : 0.76 + 0.24 * Math.sin(t * 1.9)));
     ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawCoastalLand — WO-V4-TERRAN
+//
+// Organic coastal-land signature for TERRAN worlds with water.type='coastal'.
+// Called from drawScene §5a in place of the flat fillRect ground strip.
+// Renders:
+//   1. Land polygon with a meandering lower edge (the composite shoreline).
+//   2. River-delta inlets — V-notch depressions in the shoreline that expose
+//      the water layer already painted beneath.
+//   3. Sandy beach gradient strip above the composite shore edge.
+//   4. Thin shore-edge highlight (daytime only).
+//
+// Seeding: one splitmix32 stream derived from model.seed+'coastal-land'.
+// No Math.random, no Date.now; ctx.save/restore balanced throughout.
+// ---------------------------------------------------------------------------
+function drawCoastalLand(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  horizonY: number,
+  wTopY: number,
+): void {
+  void t;  // structural param; shore shape is static (seeded, not animated)
+
+  const pal = model.palette;
+  const [sr, sg, sb] = pal.surface;
+  const [wr, wg, wb] = pal.water as [number, number, number];
+  const b = dc.bright;
+
+  // Profile-driven signature params — read once, used throughout.
+  const sig = getProfile(model.planetType).coastalSig;
+  const shoreAmp   = (sig?.shorelineAmplitude ?? 0.055) * h;  // max Y-deviation in pixels
+  const inletCount = sig?.deltaInletCount ?? 2;
+  const beachDepth = (sig?.beachDepth ?? 0.022) * h;          // beach strip height in pixels
+
+  // One seeded PRNG stream for this world's coastline — stable per model.seed.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'coastal-land'));
+
+  // ---- Shore control points (meandering baseline) ----
+  // 15 anchor Y values spanning [0..w]; each deviates ±shoreAmp from the
+  // nominal waterline.  Smoothstep-interpolated between anchors in shoreYAt().
+  const N_CTRL = 14;
+  const ctrlY: number[] = [];
+  for (let i = 0; i <= N_CTRL; i++) {
+    ctrlY.push(wTopY + (rng() * 2 - 1) * shoreAmp);
+  }
+
+  // ---- Delta inlet placement ----
+  // Each inlet is a V-notch that lifts the shore upward (inland), letting the
+  // pre-painted water layer show through.  Reject placements too close together.
+  const MIN_GAP = w * 0.22;
+  const inlets: { cx: number; hwBase: number; depth: number }[] = [];
+  let att = 0;
+  while (inlets.length < inletCount && att < 40) {
+    att++;
+    const cx     = w * (0.14 + rng() * 0.72);           // clear of extreme edges
+    const hwBase = 14 + rng() * 24;                      // half-width at shore (14–38 px)
+    const depth  = shoreAmp * (0.85 + rng() * 1.20);    // how deep the channel cuts inland
+    if (!inlets.some((p) => Math.abs(p.cx - cx) < MIN_GAP)) {
+      inlets.push({ cx, hwBase, depth });
+    }
+  }
+
+  // ---- Composite shore Y function ----
+  // Returns the land-water boundary Y at canvas X.
+  // = smooth meander baseline + V-notch upward carves from each inlet.
+  // Smaller Y = inland (toward horizon); larger Y = toward viewer / into water.
+  const shoreYAt = (x: number): number => {
+    const fi = (x / w) * N_CTRL;
+    const i0 = Math.floor(fi);
+    const i1 = Math.min(i0 + 1, N_CTRL);
+    const f  = fi - i0;
+    const sm = f * f * (3 - 2 * f);                       // smoothstep blend
+    const base = ctrlY[i0] * (1 - sm) + ctrlY[i1] * sm;
+    let mod = 0;
+    for (const inlet of inlets) {
+      const dx = Math.abs(x - inlet.cx);
+      if (dx < inlet.hwBase) {
+        const p  = 1 - dx / inlet.hwBase;                 // 0 at edges, 1 at centre
+        const ps = p * p * (3 - 2 * p);                   // smoothstep for soft walls
+        mod = Math.min(mod, -inlet.depth * ps);            // negative → shore lifts inland
+      }
+    }
+    return base + mod;
+  };
+
+  // ---- Pre-fill narrow shore band with water color ----
+  // The composite shore can rise above wTopY, exposing canvas layers below.
+  // Pre-painting the water palette color into [wTopY - shoreAmp .. wTopY]
+  // ensures inlet channels and meander troughs reveal water, not sky.
+  ctx.save();
+  ctx.fillStyle = rgba(pal.water, 0.86);
+  ctx.fillRect(0, Math.max(horizonY, wTopY - shoreAmp - 4), w, shoreAmp + 4);
+  ctx.restore();
+
+  // ---- Land polygon ----
+  // Top edge at horizonY (flat); lower edge traces the composite shore curve.
+  ctx.save();
+  const landGrad = ctx.createLinearGradient(0, horizonY, 0, wTopY + shoreAmp * 0.6);
+  landGrad.addColorStop(0,    `rgb(${Math.round(sr * 0.86)}, ${Math.round(sg * 0.86)}, ${Math.round(sb * 0.86)})`);
+  landGrad.addColorStop(0.65, `rgb(${sr}, ${sg}, ${sb})`);
+  landGrad.addColorStop(1,    `rgb(${Math.round(sr * 0.78)}, ${Math.round(sg * 0.82)}, ${Math.round(sb * 0.74)})`);
+  ctx.fillStyle = landGrad;
+
+  ctx.beginPath();
+  ctx.moveTo(0, horizonY);
+  ctx.lineTo(w, horizonY);
+  // Shore right→left; closePath implicitly connects back to (0, horizonY).
+  for (let x = w; x >= 0; x -= 6) ctx.lineTo(x, shoreYAt(x));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // ---- Sandy beach gradient ----
+  // Warm-sandy tonal strip of height beachDepth following the composite shore,
+  // blending transparent (inland) → sandy (at the water's edge).
+  // Clipped to the land polygon so beach colour never spills onto the water body.
+  const sandR = Math.min(255, Math.round(sr * 0.68 + wr * 0.18 + 64));
+  const sandG = Math.min(255, Math.round(sg * 0.70 + wg * 0.18 + 54));
+  const sandB = Math.min(255, Math.round(sb * 0.68 + wb * 0.18 + 38));
+  const beachA = Math.min(0.88, 0.55 * b + 0.22);
+
+  ctx.save();
+  // Clip to land polygon.
+  ctx.beginPath();
+  ctx.moveTo(0, horizonY);
+  ctx.lineTo(w, horizonY);
+  for (let x = w; x >= 0; x -= 6) ctx.lineTo(x, shoreYAt(x));
+  ctx.closePath();
+  ctx.clip();
+
+  // Beach strip: from shore edge upward beachDepth.
+  ctx.beginPath();
+  for (let x = 0; x <= w; x += 6) {
+    const sy = shoreYAt(x);
+    if (x === 0) ctx.moveTo(x, sy); else ctx.lineTo(x, sy);
+  }
+  for (let x = w; x >= 0; x -= 6) {
+    ctx.lineTo(x, Math.max(horizonY, shoreYAt(x) - beachDepth));
+  }
+  ctx.closePath();
+
+  const beachGrad = ctx.createLinearGradient(0, wTopY - beachDepth, 0, wTopY + shoreAmp * 0.5);
+  beachGrad.addColorStop(0,    `rgba(${sandR}, ${sandG}, ${sandB}, 0)`);
+  beachGrad.addColorStop(0.45, `rgba(${sandR}, ${sandG}, ${sandB}, ${(beachA * 0.52).toFixed(3)})`);
+  beachGrad.addColorStop(1,    `rgba(${sandR}, ${sandG}, ${sandB}, ${beachA.toFixed(3)})`);
+  ctx.fillStyle = beachGrad;
+  ctx.fill();
+  ctx.restore();
+
+  // ---- Shore-edge highlight (daytime only) ----
+  // Thin bright stroke along the shoreline; mimics sun glancing off wet sand.
+  if (dc.sunUp) {
+    ctx.save();
+    ctx.globalAlpha = 0.22 * b;
+    ctx.strokeStyle = `rgb(${Math.min(255, sandR + 24)}, ${Math.min(255, sandG + 20)}, ${Math.min(255, sandB + 16)})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 6) {
+      const sy = shoreYAt(x);
+      if (x === 0) ctx.moveTo(x, sy); else ctx.lineTo(x, sy);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawLavaSea — WO-V4-VOLCANIC
+// Lava-sea signature: cooled basalt crust tessellated by a glowing molten
+// crack network.  Self-emissive — brightness is NOT keyed to the day cycle.
+// Called from drawScene §4b — lava water type only.
+// ctx.save/restore balanced inside every branch; 'lighter' composite always
+// reset before return.  No Math.random, no Date.now — seeded + deterministic.
+// ---------------------------------------------------------------------------
+function drawLavaSea(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  cache: VistaCache,
+): void {
+  const model = cache.model;
+  const wt    = cache.waterTopY;   // pixel Y of the waterline (top of lava band)
+  const wh    = h - wt;            // height of the lava band in pixels
+  if (wh <= 0) return;
+
+  const pal = model.palette;
+  // Lava surface color from palette.water — [200, 58, 10] for VOLCANIC.
+  const [wr, wg, wb] = pal.water  as [number, number, number];
+  // Hottest channel core from palette.accent — [255, 90, 20] for VOLCANIC.
+  const [ar, ag, ab] = pal.accent as [number, number, number];
+
+  // Seeded child RNG — isolated from every other draw path.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'lava-sea'));
+
+  // ---- 1. Cooled crust overlay -----------------------------------------------
+  // Dark basalt layer on top of the base waterBand gradient.
+  // Opacity decreases near the camera (thinner crust, more glow leaking through).
+  {
+    ctx.save();
+    const crustGrad = ctx.createLinearGradient(0, wt, 0, h);
+    crustGrad.addColorStop(0,    'rgba(10, 4, 2, 0.80)');   // cool/thick at horizon
+    crustGrad.addColorStop(0.50, 'rgba(16, 6, 3, 0.64)');
+    crustGrad.addColorStop(1,    'rgba(24, 8, 4, 0.42)');   // thinner/warmer near camera
+    ctx.fillStyle = crustGrad;
+    ctx.fillRect(0, wt, w, wh);
+    ctx.restore();
+  }
+
+  // ---- 2. Crack channel network ----------------------------------------------
+  // Scatter N junction points (square Y-bias: more near horizon for perspective
+  // compression).  Connect nearby pairs with glowing crack lines — outer diffuse
+  // orange + narrow bright core.  Glow intensity and line width both scale toward
+  // the camera to reinforce depth.
+  const N = 52;
+  const jxArr: number[] = [];
+  const jyArr: number[] = [];
+  for (let i = 0; i < N; i++) {
+    jxArr.push(rng() * w);
+    // Squaring f concentrates junctions near the horizon (y=wt).
+    const f = rng();
+    jyArr.push(wt + f * f * wh);
+  }
+
+  // Max connection radius — roughly a quarter of the band span.
+  const RADIUS = Math.min(w * 0.30, wh * 0.55);
+
+  for (let i = 0; i < N; i++) {
+    const ax = jxArr[i];
+    const ay = jyArr[i];
+    // depthF: 0=near waterline (horizon, far), 1=near bottom (camera, close).
+    const depthF = Math.max(0, Math.min(1, (ay - wt) / Math.max(1, wh)));
+
+    const glowAlpha  = 0.08 + depthF * 0.50;   // outer diffuse alpha
+    const coreAlpha  = 0.14 + depthF * 0.62;   // inner core alpha
+    const outerWidth = 5  + depthF * 18;        // outer line width (px)
+    const coreWidth  = 1.2 + depthF * 5.2;      // inner line width (px)
+
+    const maxConn = rng() < 0.36 ? 3 : 2;
+    let   conn    = 0;
+
+    for (let j = i + 1; j < N && conn < maxConn; j++) {
+      const bx  = jxArr[j];
+      const by  = jyArr[j];
+      const dx  = bx - ax;
+      const dy  = by - ay;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 8 || len > RADIUS) continue;
+      conn++;
+
+      // Midpoint jitter — seeded once per edge (same for outer + inner draw).
+      const mx = (ax + bx) * 0.5 + (rng() - 0.5) * len * 0.20;
+      const my = (ay + by) * 0.5 + (rng() - 0.5) * len * 0.22;
+
+      // Outer diffuse glow — wide, dim orange channel.
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap   = 'round';
+      ctx.lineJoin  = 'round';
+      ctx.lineWidth = outerWidth;
+      ctx.strokeStyle = `rgba(${wr}, ${wg}, ${wb}, ${glowAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.quadraticCurveTo(mx, my, bx, by);
+      ctx.stroke();
+      ctx.restore();
+
+      // Inner core — narrow, bright yellow-orange; the visible molten channel.
+      const cR = Math.min(255, ar + 8);
+      const cG = Math.min(255, ag + 62);
+      const cB = Math.min(255, ab + 32);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap   = 'round';
+      ctx.lineJoin  = 'round';
+      ctx.lineWidth = coreWidth;
+      ctx.strokeStyle = `rgba(${cR}, ${cG}, ${cB}, ${coreAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.quadraticCurveTo(mx, my, bx, by);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Hot junction node — radial glow where cracks converge.
+    const nodeR = 3 + depthF * 10;
+    const nodeA = 0.08 + depthF * 0.44;
+    const rimA  = 0.04 + depthF * 0.18;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const nodeGrad = ctx.createRadialGradient(ax, ay, 0, ax, ay, nodeR * 2.8);
+    nodeGrad.addColorStop(0,    `rgba(${Math.min(255, ar + 10)}, ${Math.min(255, ag + 90)}, ${Math.min(255, ab + 50)}, ${nodeA.toFixed(3)})`);
+    nodeGrad.addColorStop(0.45, `rgba(${wr}, ${wg}, ${wb}, ${rimA.toFixed(3)})`);
+    nodeGrad.addColorStop(1,    `rgba(${wr}, ${wg}, ${wb}, 0)`);
+    ctx.fillStyle = nodeGrad;
+    ctx.beginPath();
+    ctx.arc(ax, ay, nodeR * 2.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ---- 3. Shoreline incandescence -------------------------------------------
+  // Bright emissive band immediately below the waterline: the land–lava contact.
+  {
+    const shoreH = Math.min(wh * 0.20, 52);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const shoreGrad = ctx.createLinearGradient(0, wt, 0, wt + shoreH);
+    shoreGrad.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.44)`);
+    shoreGrad.addColorStop(1, `rgba(${wr}, ${wg}, ${wb}, 0)`);
+    ctx.fillStyle = shoreGrad;
+    ctx.fillRect(0, wt, w, shoreH);
+    ctx.restore();
+  }
+
+  // ---- 4. Ground-uplift radiance -------------------------------------------
+  // Near-camera base glow: the molten sea under the crust radiates upward.
+  // Subtly underlights the foreground — reads as "facing a lava sea."
+  {
+    const radH = Math.min(wh * 0.38, 90);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const radGrad = ctx.createLinearGradient(0, h - radH, 0, h);
+    radGrad.addColorStop(0, `rgba(${wr}, ${wg}, ${wb}, 0)`);
+    radGrad.addColorStop(1, `rgba(${wr}, ${Math.round(wg * 0.65)}, ${Math.round(wb * 0.28)}, 0.24)`);
+    ctx.fillStyle = radGrad;
+    ctx.fillRect(0, h - radH, w, radH);
     ctx.restore();
   }
 }
@@ -5027,6 +5811,19 @@ function drawScene(
     ctx.fillStyle = cache.waterBand;
     ctx.fillRect(0, wt, w, wh);
 
+    // Lava sea: cooled-crust crackle + emissive channel network over the base gradient.
+    // Self-emissive — not keyed to the day cycle; always visible.
+    if (cache.waterType === 'lava') {
+      drawLavaSea(ctx, w, h, cache);
+    }
+
+    // Frozen sheet: cracked pack-ice plates + pressure ridges + glacial tint.
+    // ICE only — ARCTIC frozen water uses the simpler base gradient here;
+    // its sea-ice + aurora treatment is WO-V5-ARCTIC.
+    if (cache.waterType === 'frozen' && cache.model.planetType === 'ICE') {
+      drawFrozenSheet(ctx, w, h, t, cache, dc, sunX, wt, wh);
+    }
+
     const crestRGB = dc.sunUp
       ? `${Math.min(255, sc.r + 30)}, ${Math.min(255, sc.g + 50)}, ${Math.min(255, sc.b + 60)}`
       : '150, 185, 210';
@@ -5084,20 +5881,24 @@ function drawScene(
       ctx.restore();
     }
 
-    // Water surface waterline foam — color from model palette.foam
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = `rgba(${cache.foamColor}, 1)`;
-    ctx.lineWidth = 1.4 * Math.min(2.5, cache.foamMul);
-    ctx.beginPath();
-    for (let x = 0; x <= w; x += 8) {
-      const drift = t === 0 ? 0 : t * 18;
-      const fy = wt + 1 + Math.sin((x + drift) / 40 * Math.PI * 2) * 1.6 * cache.foamMul;
-      if (x === 0) ctx.moveTo(x, fy); else ctx.lineTo(x, fy);
+    // Water surface waterline foam — color from model palette.foam.
+    // Skipped for lava: the shoreline incandescence in drawLavaSea handles the
+    // waterline edge; liquid-surface seafoam compositing doesn't apply to molten rock.
+    if (cache.waterType !== 'lava') {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(${cache.foamColor}, 1)`;
+      ctx.lineWidth = 1.4 * Math.min(2.5, cache.foamMul);
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 8) {
+        const drift = t === 0 ? 0 : t * 18;
+        const fy = wt + 1 + Math.sin((x + drift) / 40 * Math.PI * 2) * 1.6 * cache.foamMul;
+        if (x === 0) ctx.moveTo(x, fy); else ctx.lineTo(x, fy);
+      }
+      ctx.globalAlpha = Math.min(0.6, (0.22 + (t === 0 ? 0 : 0.06 * Math.sin(t * 2))) * cache.foamMul);
+      ctx.stroke();
+      ctx.restore();
     }
-    ctx.globalAlpha = Math.min(0.6, (0.22 + (t === 0 ? 0 : 0.06 * Math.sin(t * 2))) * cache.foamMul);
-    ctx.stroke();
-    ctx.restore();
 
     // WO-V3-WATER-FX: specular glitter, flip-reflection, whitecap foam.
     // Liquid types only — frozen and lava have no liquid-surface light optics.
@@ -5109,13 +5910,18 @@ function drawScene(
   }
 
   // 5) Terrain layer — mode-branched.
-  //    'cloud-deck' → GAS_GIANT floating cloud horizon (no ridges, no ground plane)
-  //    'plating'    → ARTIFICIAL engineered flat surface (no ridges)
+  //    'cloud-deck'     → GAS_GIANT floating cloud horizon (no ridges, no ground plane)
+  //    'plating'        → ARTIFICIAL engineered flat surface (no ridges)
+  //    DESERT           → sculpted dune sea — sinuous ridges + lit/shadow crests (WO-V4-DESERT)
   //    'surface'/default → P0 parallax ridges + ground plane (unchanged)
   if (cache.terrainMode === 'cloud-deck') {
     drawCloudDeck(ctx, w, h, t, model, cache, dc);
   } else if (cache.terrainMode === 'plating') {
     drawPlating(ctx, w, h, t, model, cache, dc);
+  } else if (model.planetType === 'DESERT') {
+    // DESERT signature — replaces the generic ridge renderer with a sculpted dune sea.
+    // No water on DESERT worlds (waterAllowList: []), so no water-clip needed here.
+    drawDuneSea(ctx, w, h, t, model, cache, dc, sunX);
   } else {
     // Default surface path — ridges + ground plane draw regardless of water presence.
     // When water is present, ridge fills clip to [0, waterTopY] so they remain visible
@@ -5225,12 +6031,18 @@ function drawScene(
     // With water: always fills the land strip [horizonY..waterTopY] (the foreshore
     // between the terrain horizon and the waterline, even when ridges are also present).
     // When ridges are present and no water: ridges provide all fill — no extra rect needed.
+    // TERRAN/coastal branch: drawCoastalLand replaces the flat fillRect with an
+    // organic meandering shoreline + river-delta inlet channels (WO-V4-TERRAN).
     if (cache.ridgePts.length === 0 || cache.hasWater) {
-      const groundY    = horizonY;
-      const groundBtm  = cache.hasWater ? wTopY : h;
+      const groundY   = horizonY;
+      const groundBtm = cache.hasWater ? wTopY : h;
       if (groundBtm > groundY) {
-        ctx.fillStyle = rgba(model.palette.surface, 1);
-        ctx.fillRect(0, groundY, w, groundBtm - groundY);
+        if (cache.waterType === 'coastal' && model.planetType === 'TERRAN') {
+          drawCoastalLand(ctx, w, h, t, model, cache, dc, horizonY, wTopY);
+        } else {
+          ctx.fillStyle = rgba(model.palette.surface, 1);
+          ctx.fillRect(0, groundY, w, groundBtm - groundY);
+        }
       }
     }
   }
