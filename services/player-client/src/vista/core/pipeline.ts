@@ -787,14 +787,106 @@ function buildFeatures(
 ): VistaModel['layers']['features'] {
   const hab01 = clamp01(input.planet.habitability / 100);
 
+  // ── floraBandY1 — computed early (needed by citadel anchor + dense-flora loop) ──
+  // Dry worlds use 90% of the ground height; aquatic worlds cap at the waterline.
+  const groundY1    = horizonY + (1 - horizonY) * 0.90;
+  const floraBandY1 = waterlineY !== undefined
+    ? Math.min(waterlineY, groundY1)
+    : groundY1;
+
+  // ── Citadel clearing — site-gated; NO-OP when site absent or citadelCeiling=0 ──
+  //
+  // Derives a deterministic anchor position from an isolated 'citadel-anchor' child
+  // seed so no other named RNG stream is shifted.  The anchor is the ground-level
+  // base of the citadel structure in model space [0..1 × horizonY..1].
+  //
+  // Flora within clearingR of the anchor is dropped (after Poisson positions are
+  // placed so RNG draw counts stay fixed).  Dense-flora draws (scale/tintMix/kind)
+  // are always consumed regardless of acceptance to preserve the downstream sequence.
+  //
+  // Scale: citadelClearR grows with level so a larger base gets a wider clearing.
+  //   L1 → 0.085  L2 → 0.100  L3 → 0.115  L4 → 0.130  L5 → 0.145
+  const citadelLevel   = (input.site?.citadelCeiling ?? 0) as number;
+  const planetType     = input.planet.type;
+  // River mode: TERRAN + JUNGLE with water use a river corridor as the primary
+  // citadel-prominence mechanism.  All other types (TROPICAL etc.) use the circular
+  // clearing fallback — a river would look forced in those visual languages.
+  const riverMode      = citadelLevel > 0 && waterlineY !== undefined
+    && (planetType === 'TERRAN' || planetType === 'JUNGLE');
+  let   citadelAnchorX = 0;
+  let   citadelAnchorY = horizonY;
+  let   citadelClearR2 = 0;
+  // Corridor clearing in model space [0..1] — sized slightly WIDER than the backend's
+  // visual water channel so no flora stands inside the rendered river strip.
+  //   corridorHalfTop    : half-width at citadelAnchorY (narrow, far/horizon end).
+  //   corridorHalfBottom : half-width at waterlineY      (wide,   near/viewer end).
+  let   corridorHalfTop    = 0;
+  let   corridorHalfBottom = 0;
+  if (citadelLevel > 0) {
+    const citRng      = new SeededRng(deriveChildSeed(input.seed, 'citadel-anchor'));
+    // X: center-biased [0.38..0.62] — never clipped at canvas edges.
+    citadelAnchorX    = 0.38 + citRng.next01() * 0.24;
+    // Y: upper 18% of the visible land band — appears mid-ground, just past the horizon.
+    citadelAnchorY    = horizonY + (floraBandY1 - horizonY) * 0.18;
+    const clearR      = 0.07 + citadelLevel * 0.015;
+    citadelClearR2    = clearR * clearR;
+    if (riverMode) {
+      corridorHalfTop    = 0.042 + citadelLevel * 0.008;  // narrow at citadel (far end)
+      corridorHalfBottom = 0.072 + citadelLevel * 0.010;  // wide at waterline (near viewer)
+    }
+  }
+  // River meander arm in MODEL space — mirrors the backend exactly so the flora
+  // corridor tracks the rendered channel at every Y rather than padding an envelope.
+  //
+  // Both this pipeline code and backend.ts drawRiverCorridor use the SplitMix32
+  // algorithm (SeededRng = splitmix32 — identical byte output for the same seed).
+  // The same deriveChildSeed key ('river-meander') and the same coefficient (1.6)
+  // mean riverRandV and mrng() in the backend produce the IDENTICAL float, so
+  // mAmpFrac (model space) === mAmp / minDim (backend pixel space) exactly.
+  //
+  // Curve: sin(2π·tf) completes one full oscillation between citadel (tf=0) and
+  // waterline (tf=1) — curves right then left (or vice versa), returning to the
+  // citadel X at both ends.  This is the same formula used in backend.ts.
+  //
+  // NO-OP (mAmpFrac=0) when riverMode is false.
+  let mAmpFrac = 0;
+  if (riverMode) {
+    const riverRng   = new SeededRng(deriveChildSeed(input.seed, 'river-meander'));
+    const riverRandV = riverRng.next01();                           // mirrors mrng() in backend
+    const hwTopFrac  = 0.032 + citadelLevel * 0.006;               // matches backend hwTopPx / minDim
+    mAmpFrac = (riverRandV - 0.5) * hwTopFrac * 1.6;              // max ±0.8 × hwTopFrac
+  }
+
   // Flora + rock: Poisson-disk placement via features.ts helpers.
   // Flora density scales with both habitability and desirability (beauty budget)
   // so the lab's habitability slider alone produces visibly different scenes.
   // Pass waterlineY so the regular scatter is also bounded to the visible land band.
-  const floraScatters = placeFloraScatters(
+  const rawFloraScatters = placeFloraScatters(
     rng, profile.floraKinds, palette, horizonY, hab01, desirability, waterlineY,
     profile.floraKindWeights,
   );
+  // Citadel clearing for primary flora: post-filter (no RNG draws at filter time).
+  // Circular footprint + river corridor (riverMode) — flora absent from both zones.
+  const floraScatters = citadelLevel > 0
+    ? rawFloraScatters.map(g => ({
+        ...g,
+        instances: g.instances.filter(inst => {
+          const [px, py] = inst.pos;
+          // Circular clearing around the citadel base.
+          const dx = px - citadelAnchorX;
+          const dy = py - citadelAnchorY;
+          if (dx * dx + dy * dy < citadelClearR2) return false;
+          // River corridor: tapered channel from citadelAnchorY down to waterlineY.
+          if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
+            const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
+            const hw = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf
+                       + riverMaxMeander * Math.sin(Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX) < hw) return false;
+          }
+          return true;
+        }),
+      }))
+    : rawFloraScatters;
   const rockScatters  = placeRockScatters(rng, profile.rockKinds, palette, horizonY);
   const scatters      = [...floraScatters, ...rockScatters];
 
@@ -824,14 +916,7 @@ function buildFeatures(
   const nativeLife     = clamp01(input.planet.nativeLife);
   const lifeHab        = clamp01(nativeLife * hab01);
   const rawDenseCount  = Math.round(lerp(0, 200, lifeHab * lifeHab));
-  // Constrain Y to the visible land band: stop at waterlineY so the full
-  // scatter budget fills [horizonY..waterlineY] rather than wasting most
-  // of it below the shoreline.  Clamp against the 90%-limit so we never
-  // scatter into the very last sliver of the canvas on dry worlds.
-  const groundY1    = horizonY + (1 - horizonY) * 0.90;
-  const floraBandY1 = waterlineY !== undefined
-    ? Math.min(waterlineY, groundY1)
-    : groundY1;
+  // floraBandY1 is computed above (early, before primary scatter) — do not recompute.
   // Shore-height multiplier: scale dense-flora count proportionally to the
   // available land band so thin-shore worlds (OCEANIC, shoreH≈0.11) get fewer
   // plants and avoid the over-packed spindly-band look.
@@ -866,13 +951,28 @@ function buildFeatures(
       const kindMap = new Map<string, VistaModel['layers']['features']['scatters'][number]['instances']>();
       const bandHeight = Math.max(floraBandY1 - horizonY, 1e-6);
       for (const pos of positions) {
-        // Depth-aware scale: 0=far (at horizonY), 1=near (at floraBandY1).
+        // Always consume the 3 per-instance draws (scale, tintMix, kind) before the
+        // citadel check so that clearing does not shift the denseRng sequence for
+        // subsequent un-cleared instances — same principle as poissonDiskScatter's
+        // fixed-draw-count contract.
         const depthFrac = clamp01((pos[1] - horizonY) / bandHeight);
-        // FAR: base≈0.030  NEAR: base≈0.120 — jitter is 1 rng draw.
         const baseScale = lerp(0.030, 0.120, depthFrac);
-        const scale     = baseScale + denseRng.next01() * 0.040;
-        const tintMix   = denseRng.next01() * 0.25;
-        const kind      = denseRng.pickWeighted(floraKindArr, kindWeights);
+        const scale     = baseScale + denseRng.next01() * 0.040;  // draw 1
+        const tintMix   = denseRng.next01() * 0.25;                // draw 2
+        const kind      = denseRng.pickWeighted(floraKindArr, kindWeights);  // draw 3
+        // Citadel clearing: circular footprint + river corridor (riverMode).
+        if (citadelLevel > 0) {
+          const [px, py] = pos;
+          const dx = px - citadelAnchorX;
+          const dy = py - citadelAnchorY;
+          if (dx * dx + dy * dy < citadelClearR2) continue;
+          if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
+            const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
+            const hw = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf
+                       + riverMaxMeander * Math.sin(Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX) < hw) continue;
+          }
+        }
         if (!kindMap.has(kind)) kindMap.set(kind, []);
         kindMap.get(kind)!.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });
       }
@@ -898,8 +998,23 @@ function buildFeatures(
       const white: RGB = [255, 255, 255];
       const heroInstances: VistaModel['layers']['features']['scatters'][number]['instances'] = [];
       for (const pos of heroPos) {
+        // Always draw scale + tintMix before the citadel check so the heroRng
+        // sequence stays fixed for any un-cleared trees downstream.
         const scale   = 0.160 + heroRng.next01() * 0.060;  // 0.16..0.22
         const tintMix = heroRng.next01() * 0.15;
+        // Citadel clearing: circular footprint + river corridor (riverMode).
+        if (citadelLevel > 0) {
+          const [px, py] = pos;
+          const dx = px - citadelAnchorX;
+          const dy = py - citadelAnchorY;
+          if (dx * dx + dy * dy < citadelClearR2) continue;
+          if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
+            const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
+            const hw = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf
+                       + riverMaxMeander * Math.sin(Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX) < hw) continue;
+          }
+        }
         heroInstances.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });
       }
       scatters.push({ kind: profile.heroFloraKind, instances: heroInstances });
@@ -914,6 +1029,26 @@ function buildFeatures(
   const energyMarker = input.site
     ? placeEnergyMarker(rng, input.site.energy, horizonY)
     : undefined;
+
+  // Citadel anchor scatter — site-gated; NO-OP when citadelLevel=0.
+  //
+  // The 'citadel' kind is a single-instance sentinel that carries the model-space
+  // anchor position and level-derived scale.  It is NEVER drawn by drawScatterInstances;
+  // instead the backend picks it up in step 5g (drawCitadelStructure) and draws it
+  // AFTER flora so the structure always occludes the canopy at its footprint.
+  //
+  // Scale: (0.08 + level × 0.04) — at h=900 and scaleFactor=0.85:
+  //   L1 → 0.12 × 900 × 0.85 = 92 px   L2 → 122 px   L3 → 153 px   L5 → 214 px
+  // Tint: neutral structural gray-white ([210, 215, 220]) — contrasts with any
+  //   organic flora tints; backend overrides body/shadow/glow from model.palette.
+  if (citadelLevel > 0) {
+    const citScale = 0.08 + citadelLevel * 0.04;
+    const citTint: RGB = [210, 215, 220];
+    scatters.push({
+      kind: 'citadel',
+      instances: [{ pos: [citadelAnchorX, citadelAnchorY], scale: citScale, tint: citTint }],
+    });
+  }
 
   return {
     scatters,

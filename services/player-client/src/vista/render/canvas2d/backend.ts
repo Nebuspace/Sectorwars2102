@@ -1065,6 +1065,7 @@ function buildVistaCache(
   const floraGroupCaches: VistaCache['floraGroupCaches'] = [];
   for (const group of scatterScreens) {
     if (group.kind === 'glitter-spark') continue;
+    if (group.kind === 'citadel') continue;  // drawn by drawCitadelStructure; no sprite needed
     if (group.instances.length === 0) continue;
     if (isRock(group.kind)) continue;
     // Median instance tint is the representative color for the cached sprite
@@ -4818,6 +4819,7 @@ function drawScatterInstances(
 
   for (const group of cache.scatterScreens) {
     if (group.kind === 'glitter-spark') continue;
+    if (group.kind === 'citadel') continue;  // drawn in post-flora pass (step 5g)
 
     if (isRock(group.kind)) {
       // ---- ROCKS: unchanged — flattened blob + directional cast shadow ----
@@ -5041,6 +5043,285 @@ function drawScatterInstances(
 
   // ctx.restore() resets globalCompositeOperation to 'source-over' — no bleed into
   // the haze / particles / night-dim layers that follow.
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawCitadelStructure — settlement base drawn AFTER flora (step 5g).
+//
+// Reads the 'citadel' scatter group placed by pipeline.ts buildFeatures when
+// site.citadelCeiling > 0.  Draws a multi-tier settlement silhouette (central
+// tower + side wings + base platform + windows + night beacon) on top of the
+// flora canopy so the base is never occluded by the forest.
+//
+// Colors are derived from model.palette to read as a constructed surface:
+//   body  = ridge[0] lifted +50% toward white + warm offset → concrete/stone
+//   dark  = ridge[0] × 0.65                                  → shadow faces
+//   glow  = palette.accent                                    → windows / beacon
+//
+// All dimensions are proportional to inst.sizePx (the citadel's height in px):
+//   L2 at h=900 → sizePx ≈ 122 px   L3 → 153 px
+// ---------------------------------------------------------------------------
+function drawCitadelStructure(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+): void {
+  const group = cache.scatterScreens.find(g => g.kind === 'citadel');
+  if (!group || group.instances.length === 0) return;
+
+  const inst             = group.instances[0];
+  const { sx, sy, sizePx } = inst;
+  const pal              = cache.model.palette;
+
+  // ---- Body colors — lifted from ridge base (world-matched concrete / stone) ----
+  const ridge = pal.ridge.length > 0 ? pal.ridge[0] : pal.surface;
+  const [rr, rg, rb] = ridge;
+  // Lit front face: +50% toward white, +8/+4 warm offset for concrete legibility.
+  const bR = Math.min(255, Math.round(rr + (255 - rr) * 0.50) + 8);
+  const bG = Math.min(255, Math.round(rg + (255 - rg) * 0.50) + 4);
+  const bB = Math.min(255, Math.round(rb + (255 - rb) * 0.50));
+  // Shadow face: darkened ridge.
+  const dR = Math.round(rr * 0.65);
+  const dG = Math.round(rg * 0.65);
+  const dB = Math.round(rb * 0.65);
+  // Wing face: intermediate tint between body and shadow.
+  const wR = Math.round(bR * 0.88);
+  const wG = Math.round(bG * 0.88);
+  const wB = Math.round(bB * 0.88);
+  // Window / beacon glow from palette accent.
+  const [ar, ag, ab] = pal.accent;
+  const brightK  = 0.35 + dc.bright * 0.65;
+  // Windows glow brighter at night; dim during daytime.
+  const winAlpha = Math.min(0.95, dc.bright < 0.45
+    ? 0.55 + (0.45 - dc.bright) * 1.1
+    : dc.bright * 0.28);
+
+  // ---- Proportional dimensions (all relative to sizePx = tower height) ----
+  const tH       = sizePx;                         // main tower height
+  const tW       = sizePx * 0.28;                  // main tower width
+  const lH       = sizePx * 0.60;                  // left wing height
+  const lW       = sizePx * 0.22;                  // left wing width
+  const rH       = sizePx * 0.52;                  // right wing height
+  const rW       = sizePx * 0.22;                  // right wing width
+  const platH    = Math.max(4, sizePx * 0.06);     // base platform strip
+  const shadowW  = tW * 0.18;                      // shadow face width (right of tower)
+  const gap      = tW * 0.08;                      // gap between tower and wings
+  const baseY    = sy;                              // ground line (bottom of structure)
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---- Base platform — spans full settlement footprint ----
+  ctx.globalAlpha = brightK;
+  ctx.fillStyle   = `rgb(${dR}, ${dG}, ${dB})`;
+  const platX0 = sx - tW * 0.5 - lW - gap;
+  const platX1 = sx + tW * 0.5 + rW + gap + shadowW;
+  ctx.fillRect(platX0, baseY - platH, platX1 - platX0, platH);
+
+  // ---- Left wing ----
+  ctx.fillStyle = `rgb(${wR}, ${wG}, ${wB})`;
+  ctx.fillRect(sx - tW * 0.5 - lW - gap, baseY - lH, lW, lH);
+  // Left wing inner shadow cap.
+  ctx.fillStyle = `rgb(${dR}, ${dG}, ${dB})`;
+  ctx.fillRect(sx - tW * 0.5 - gap, baseY - lH, gap * 0.5, lH);
+
+  // ---- Right wing ----
+  ctx.fillStyle = `rgb(${Math.round(bR * 0.85)}, ${Math.round(bG * 0.85)}, ${Math.round(bB * 0.85)})`;
+  ctx.fillRect(sx + tW * 0.5 + gap, baseY - rH, rW, rH);
+  // Right wing shadow face.
+  ctx.fillStyle = `rgb(${dR}, ${dG}, ${dB})`;
+  ctx.fillRect(sx + tW * 0.5 + gap + rW, baseY - rH, shadowW * 0.6, rH);
+
+  // ---- Main tower front face (brightest — lit side) ----
+  ctx.fillStyle = `rgb(${bR}, ${bG}, ${bB})`;
+  ctx.fillRect(sx - tW * 0.5, baseY - tH, tW, tH);
+  // Main tower shadow side (right).
+  ctx.fillStyle = `rgb(${dR}, ${dG}, ${dB})`;
+  ctx.fillRect(sx + tW * 0.5, baseY - tH, shadowW, tH);
+
+  // ---- Tower cap — peaked triangle above the main tower ----
+  ctx.fillStyle = `rgb(${bR}, ${bG}, ${bB})`;
+  ctx.beginPath();
+  ctx.moveTo(sx - tW * 0.5, baseY - tH);
+  ctx.lineTo(sx,             baseY - tH - tW * 0.40);   // apex
+  ctx.lineTo(sx + tW * 0.5, baseY - tH);
+  ctx.closePath();
+  ctx.fill();
+
+  // ---- Windows — main tower ----
+  ctx.globalAlpha = winAlpha;
+  ctx.fillStyle   = `rgb(${ar}, ${ag}, ${ab})`;
+  const winRows = Math.max(1, Math.floor(tH / (tW * 0.65)));
+  const winW    = Math.max(2, tW * 0.20);
+  const winH    = Math.max(2, tW * 0.14);
+  const winRowH = tH / (winRows + 1);
+  for (let row = 1; row <= winRows; row++) {
+    const wy = baseY - row * winRowH;
+    ctx.fillRect(sx - tW * 0.28, wy - winH * 0.5, winW, winH);
+    ctx.fillRect(sx + tW * 0.08, wy - winH * 0.5, winW, winH);
+  }
+
+  // ---- Windows — left wing (one central window) ----
+  if (lH > tW * 0.5) {
+    const lwW = Math.max(2, lW * 0.28);
+    const lwH = Math.max(2, lH * 0.12);
+    ctx.fillRect(sx - tW * 0.5 - lW - gap + lW * 0.28, baseY - lH * 0.5 - lwH * 0.5, lwW, lwH);
+  }
+
+  // ---- Beacon: top of the cap — pulsing at night, dim by day ----
+  const beaconY = baseY - tH - tW * 0.38;
+  const beaconR = Math.max(2, tW * 0.10);
+  const pulse   = dc.bright < 0.3
+    ? Math.min(0.95, 0.75 + Math.sin(t * 1.5) * 0.20)
+    : dc.bright * 0.28;
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle   = `rgb(${ar}, ${ag}, ${ab})`;
+  ctx.beginPath();
+  ctx.arc(sx, beaconY, beaconR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// drawRiverCorridor — WO-V7-CITADEL (river mode)
+//
+// Draws a tapered water corridor from the waterline (wTopY) up to the citadel
+// anchor, creating a natural river-valley scene: settlement on the far bank,
+// river receding in perspective toward the viewer.  The forest parts around BOTH
+// the river and the citadel footprint (cleared by pipeline.ts buildFeatures
+// riverMode path).
+//
+// Called from drawScene §5a+ — after all ground fills (§5a / §5a' / §5a''),
+// before flora scatter (§5f) — so the river sits beneath the canopy layer but
+// above the base ground gradient.
+//
+// Only invoked for TERRAN and JUNGLE when a 'citadel' scatter group is present.
+// TROPICAL and other types use the clearing fallback and never call this function.
+//
+// Corridor geometry: tapered trapezoid (wide at wTopY, narrow at citadel sy);
+// a sine-curve meander derived from model.seed prevents the ruler-straight look.
+// Visual channel sized slightly NARROWER than the pipeline's flora clearing so no
+// trees appear inside the rendered water strip.
+//
+// No Math.random, no Date.now.  ctx.save/restore balanced throughout.
+// ---------------------------------------------------------------------------
+function drawRiverCorridor(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  _t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  _horizonY: number,
+  wTopY: number,
+): void {
+  void _t;       // static feature — seeded geometry, not animated
+  void _horizonY;
+
+  const citGroup = cache.scatterScreens.find(g => g.kind === 'citadel');
+  if (!citGroup || citGroup.instances.length === 0) return;
+
+  const inst              = citGroup.instances[0];
+  const { sx: citSX, sy: citSY, sizePx } = inst;
+  const pal               = model.palette;
+  const b                 = dc.bright;
+  const [wr, wg, wb]      = pal.water as [number, number, number];
+  const [sr, sg, sb]      = pal.surface;
+
+  // Re-derive citadelLevel from sizePx (inverse of the buildVistaCache scale formula:
+  //   sizePx = (0.08 + level * 0.04) * Math.min(w, h) * 0.85).
+  const minDim   = Math.min(w, h);
+  const modelSc  = sizePx / (minDim * 0.85);
+  const citLevel = Math.max(1, Math.min(5, Math.round((modelSc - 0.08) / 0.04)));
+
+  // Corridor half-widths in pixels — sized narrower than the pipeline's clearing
+  // corridor so the rendered water strip stays clean of trees at all winding points.
+  const hwTopPx    = (0.032 + citLevel * 0.006) * minDim;
+  const hwBottomPx = (0.062 + citLevel * 0.009) * minDim;  // modest width bump for readability
+
+  // Winding meander: one seeded horizontal displacement applied as sin(π·tf) so the
+  // channel starts/ends at citadelAnchorX with a visible S-curve between.
+  // Amplitude 1.375 → max |mAmp| = 0.6875 × hwTopPx (~2.5× the previous 0.275×).
+  // The pipeline flora-clearing corridor tracks this envelope via:
+  //   clearHW(tf) = lerp(top, bottom, tf) + riverMaxMeander × sin(π·tf)
+  // where riverMaxMeander = 0.75 × hwTopFrac (>0.6875) — always covers the render.
+  const mrng = splitmix32(deriveChildSeed(model.seed, 'river-meander'));
+  const mAmp = (mrng() - 0.5) * hwTopPx * 1.375;  // ±69% of top half-width → visible winding
+
+  // Build left/right edge arrays (N_STEPS) along the corridor.
+  // tf=0 → citadel top (narrow/far), tf=1 → waterline bottom (wide/near).
+  const N_STEPS   = 24;
+  const riverTopY = citSY;
+  const riverBotY = wTopY;
+  const leftPts : [number, number][] = [];
+  const rightPts: [number, number][] = [];
+  for (let i = 0; i <= N_STEPS; i++) {
+    const tf  = i / N_STEPS;
+    const py  = riverTopY + (riverBotY - riverTopY) * tf;
+    const cx  = citSX + mAmp * Math.sin(Math.PI * tf);    // gentle S-meander
+    const hw  = hwTopPx + (hwBottomPx - hwTopPx) * tf;
+    leftPts.push([cx - hw, py]);
+    rightPts.push([cx + hw, py]);
+  }
+
+  // ---- Fill river corridor with water color ----
+  const fillAlpha = Math.min(0.92, 0.72 + b * 0.18);
+  ctx.save();
+  ctx.globalAlpha = fillAlpha;
+  ctx.fillStyle   = `rgb(${wr}, ${wg}, ${wb})`;
+  ctx.beginPath();
+  ctx.moveTo(leftPts[0][0], leftPts[0][1]);
+  for (let i = 1; i <= N_STEPS; i++) ctx.lineTo(leftPts[i][0], leftPts[i][1]);
+  for (let i = N_STEPS; i >= 0; i--) ctx.lineTo(rightPts[i][0], rightPts[i][1]);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // ---- Sun-glint highlight at the far (citadel) end ----
+  // Mimics light catching the river surface toward the horizon.
+  if (dc.sunUp) {
+    const glintH = (riverBotY - riverTopY) * 0.22;
+    if (glintH > 3) {
+      ctx.save();
+      // Clip to corridor polygon so the gradient stays inside the water channel.
+      ctx.beginPath();
+      ctx.moveTo(leftPts[0][0], leftPts[0][1]);
+      for (let i = 1; i <= N_STEPS; i++) ctx.lineTo(leftPts[i][0], leftPts[i][1]);
+      for (let i = N_STEPS; i >= 0; i--) ctx.lineTo(rightPts[i][0], rightPts[i][1]);
+      ctx.closePath();
+      ctx.clip();
+      const gA = (0.18 * b).toFixed(3);
+      const glintGrad = ctx.createLinearGradient(citSX, riverTopY, citSX, riverTopY + glintH);
+      glintGrad.addColorStop(0, `rgba(255, 255, 255, ${gA})`);
+      glintGrad.addColorStop(1, `rgba(255, 255, 255, 0)`);
+      ctx.fillStyle   = glintGrad;
+      ctx.globalAlpha = 1;
+      ctx.fillRect(citSX - hwBottomPx - 8, riverTopY, hwBottomPx * 2 + 16, glintH);
+      ctx.restore();
+    }
+  }
+
+  // ---- Earthy bank edges — thin warm stroke separating water from land ----
+  const bankR = Math.min(255, Math.round(sr * 0.70 + wr * 0.16 + 40));
+  const bankG = Math.min(255, Math.round(sg * 0.72 + wg * 0.16 + 30));
+  const bankB = Math.min(255, Math.round(sb * 0.68 + wb * 0.16 + 16));
+  const bankAlpha = Math.min(0.82, 0.44 * b + 0.22);
+  ctx.save();
+  ctx.globalAlpha = bankAlpha;
+  ctx.strokeStyle = `rgb(${bankR}, ${bankG}, ${bankB})`;
+  ctx.lineWidth   = Math.max(1, hwTopPx * 0.14);
+  ctx.beginPath();
+  ctx.moveTo(leftPts[0][0], leftPts[0][1]);
+  for (let i = 1; i <= N_STEPS; i++) ctx.lineTo(leftPts[i][0], leftPts[i][1]);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(rightPts[0][0], rightPts[0][1]);
+  for (let i = 1; i <= N_STEPS; i++) ctx.lineTo(rightPts[i][0], rightPts[i][1]);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -7845,6 +8126,19 @@ function drawScene(
     if (model.planetType === 'BARREN') {
       drawBarrenVacuum(ctx, w, h, t, model, cache, dc, horizonY, sunX);
     }
+
+    // 5a+) River corridor — TERRAN/JUNGLE with citadel (river mode).
+    //      Water channel from waterlineY up to the citadel anchor; the forest was
+    //      cleared from this corridor by pipeline.ts buildFeatures (riverMode path).
+    //      Drawn after all ground fills so the channel reads as a cut through the
+    //      land surface; flora scatter (§5f) draws over the near banks.
+    if (
+      cache.hasWater &&
+      (model.planetType === 'TERRAN' || model.planetType === 'JUNGLE') &&
+      cache.scatterScreens.some(g => g.kind === 'citadel')
+    ) {
+      drawRiverCorridor(ctx, w, h, t, model, cache, dc, horizonY, wTopY);
+    }
   }
 
   // 5b) Terrain landmarks — silhouettes from model.layers.terrain.landmarks.
@@ -7857,8 +8151,18 @@ function drawScene(
   //     Drawn after landmarks (scatters sit on the ground surface), before resource
   //     markers (which are more prominent signals on top of ambient scatter).
   //     Glitter-spark uses additive composite; reset to source-over afterward.
+  //     NOTE: the 'citadel' scatter kind is skipped inside drawScatterInstances and
+  //     drawn separately in step 5g so it always sits on top of the flora canopy.
   if (cache.scatterScreens.length > 0) {
     drawScatterInstances(ctx, t, cache, dc);
+  }
+
+  // 5g) Citadel structure — drawn AFTER flora scatter (step 5f) so the settlement
+  //     base is never occluded by the forest canopy.  NO-OP when the 'citadel'
+  //     scatter group is absent (site-gated in the pipeline: only emitted when
+  //     site.citadelCeiling > 0).
+  if (cache.scatterScreens.some(g => g.kind === 'citadel')) {
+    drawCitadelStructure(ctx, t, cache, dc);
   }
 
   // 5c) Deposit markers — ore-vein / gas-seep / thermal-vent / hydrocarbon-pool /
