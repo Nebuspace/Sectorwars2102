@@ -28,8 +28,7 @@
  */
 
 import { VistaInput, VistaModel, RGB } from '../contract';
-import { SeedBus } from './rng';
-import { SeededRng } from './rng';
+import { SeedBus, SeededRng, deriveChildSeed } from './rng';
 import { getProfile, isProfiledType, ArchetypeEntry, LandmarkKind, WaterType } from './profiles';
 import { derivePalette, hexToRgb } from './palette';
 import {
@@ -38,6 +37,7 @@ import {
   placeDepositMarkers,
   placeEnergyMarker,
   placeHazardOverlays,
+  poissonDiskScatter,
 } from './features';
 
 // TerrainMode: declared in contract.ts + profiles.ts by Lane 1
@@ -139,9 +139,15 @@ function deriveLighting(
   // bloom: rises with desirability (drives god-rays, saturation boost)
   const bloom = clamp01(desirability * 0.9 + 0.05);
 
-  // colorGradeWarmth: warm at high habitability/desirability; cool/blue at low
-  const hab01 = clamp01(input.planet.habitability / 100);
-  const colorGradeWarmth = clamp(lerp(-0.4, 0.6, desirability * 0.7 + hab01 * 0.3), -1, 1);
+  // colorGradeWarmth: temperature is the primary thermal signal (−1=frozen → +1=molten).
+  // Cold worlds grade blue/cool; hot worlds grade amber/warm.
+  // Desirability + habitability add a secondary warmth boost on beautiful worlds.
+  const hab01  = clamp01(input.planet.habitability / 100);
+  const temp01 = clamp01((input.planet.temperature + 1) / 2);   // −1..+1 → 0..1
+  const colorGradeWarmth = clamp(
+    lerp(-0.7, 0.9, temp01 * 0.65 + desirability * 0.25 + hab01 * 0.10),
+    -1, 1,
+  );
 
   // ambient: soft tint from sky horizon color (light bounces off atmosphere)
   const atmoFactor = input.planet.atmosphere.present ? 0.35 : 0.10;
@@ -207,14 +213,18 @@ function buildSky(
       scatterBands.push({
         y:     0.78 - rng.next01() * 0.15,  // just above horizon
         color: palette.scatterBand,
-        width: 0.04 + rng.next01() * 0.08,
+        // Width scales with density: sparse at low density, full band at high density.
+        // The rng draw is preserved (same sequence); only the output scaling changes.
+        width: (0.04 + rng.next01() * 0.08) * clamp01(0.3 + atmoDensity * 0.7),
       });
     }
   }
 
-  // Haze: density 0 in vacuum; proportional to atmoDensity otherwise
+  // Haze: quadratic density curve for dramatic aerial-perspective at high density
+  // and near-vacuum clarity approaching zero.  Vacuum → exactly 0 (no haze).
+  const hazeDensityRaw = atmoPresent ? atmoDensity : 0;
   const haze: { density: number; color: RGB } = {
-    density: atmoPresent ? clamp01(atmoDensity) : 0,
+    density: clamp01(hazeDensityRaw * (0.3 + hazeDensityRaw * 0.7)),
     color:   palette.scatterBand,
   };
 
@@ -688,13 +698,24 @@ function buildWater(
   profile: ReturnType<typeof getProfile>,
   palette: VistaModel['palette'],
   horizonY: number,
+  waterCoverage: number,
   rng: SeededRng,
 ): VistaModel['layers']['water'] | undefined {
   if (profile.water === 'none') return undefined;
   // Verify this type allows this water type (coherence guard)
   if (!profile.coherence.waterAllowList.includes(profile.water as WaterType)) return undefined;
 
-  const waterlineY = horizonY + sampleRange(rng, 0.06, 0.18);
+  // waterCoverage drives where the shoreline falls on the canvas (0=top, 1=bottom).
+  // HIGH coverage (e.g. OCEANIC ~0.85) → thin land strip → waterlineY close to horizonY.
+  // LOW  coverage (e.g. MOUNTAINOUS ~0.30) → wide land strip → waterlineY well below.
+  // One seeded jitter draw (±0.03) adds per-seed variation while preserving the signal.
+  const coverageBase = lerp(0.45, 0.05, clamp01(waterCoverage));
+  const jitter       = (rng.next01() - 0.5) * 0.06;  // same 1 rng draw consumed as before
+  const waterlineY   = clamp(
+    horizonY + coverageBase + jitter,
+    horizonY + 0.04,                          // minimum: always a visible land strip above water
+    Math.min(horizonY + 0.55, 0.97),          // maximum: enough water visible + canvas guard
+  );
   const waveAmp    = sampleRange(rng, 0.004, 0.018);
   const chop       = sampleRange(rng, 0.1, 0.75);
   const foamMul    = sampleRange(rng, 1.0, 2.4);
@@ -773,6 +794,34 @@ function buildFeatures(
   );
   const rockScatters  = placeRockScatters(rng, profile.rockKinds, palette, horizonY);
   const scatters      = [...floraScatters, ...rockScatters];
+
+  // Dense life scatter: nativeLife × hab01 drives count up to ~200 additional instances.
+  // Both must be high ("lush") for full density — the multiplicative interaction keeps
+  // barren worlds (nativeLife≈0 or hab≈0) near zero regardless of the other value.
+  //
+  // ISOLATION: drawn from an independent child seed ('dense-flora') so that changing
+  // nativeLife never shifts the deposit/energyMarker rng positions downstream.
+  const nativeLife     = clamp01(input.planet.nativeLife);
+  const lifeHab        = clamp01(nativeLife * hab01);
+  const lifeDenseCount = Math.round(lerp(0, 200, lifeHab * lifeHab));
+  if (lifeDenseCount > 0 && profile.floraKinds.length > 0) {
+    const denseRng  = new SeededRng(deriveChildSeed(input.seed, 'dense-flora'));
+    const denseKind = denseRng.pick(profile.floraKinds);
+    const groundY1  = horizonY + (1 - horizonY) * 0.90;
+    // Tighter minimum spacing at high density so instances pack without z-fighting.
+    const minDist   = lerp(0.035, 0.008, lifeHab);
+    const positions = poissonDiskScatter(denseRng, lifeDenseCount, 0.01, horizonY, 0.99, groundY1, minDist);
+    if (positions.length > 0) {
+      const white: RGB = [255, 255, 255];
+      const instances: VistaModel['layers']['features']['scatters'][number]['instances'] = [];
+      for (const pos of positions) {
+        const scale   = 0.010 + denseRng.next01() * 0.025;
+        const tintMix = denseRng.next01() * 0.25;
+        instances.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });
+      }
+      scatters.push({ kind: denseKind, instances });
+    }
+  }
 
   // Deposit markers and energy marker: site-gated (BRIEF §2.2 degradation).
   const depositMarkers = input.site
@@ -947,7 +996,7 @@ export function generateVista(input: VistaInput): VistaModel {
   };
 
   // ── Stage 8: water / lava (aquatic profiles only) ───────────────────────
-  const water = buildWater(profile, palette, terrain.horizonY, bus.water);
+  const water = buildWater(profile, palette, terrain.horizonY, input.planet.waterCoverage, bus.water);
 
   // ── Stage 9: features ────────────────────────────────────────────────────
   const features = buildFeatures(input, profile, palette, terrain.horizonY, desirability, bus.features);

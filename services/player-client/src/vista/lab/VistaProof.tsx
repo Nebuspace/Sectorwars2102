@@ -577,10 +577,72 @@ export default function VistaProof() {
   const phaseParam = params.get('phase') ?? 'day';
   const isNight    = phaseParam === 'night';
 
-  const activeInput: VistaInput = FIXED_INPUTS[typeParam] ?? PROOF_INPUT;
-  const activeLabel = typeParam && FIXED_INPUTS[typeParam]
-    ? `type: ${typeParam}`
-    : 'named-storm (default)';
+  // ---------------------------------------------------------------------------
+  // Slider override params — each 0..1, applied on top of the base type's
+  // FIXED_INPUT.  Intended for DRIVEN before/after proof captures (slider-pairs
+  // spec).  All fields are optional: absent params leave the base value intact.
+  //
+  //   ?waterCoverage=  0..1  → planet.waterCoverage (direct, 0–1 contract range)
+  //   ?temperature=    0..1  → planet.temperature mapped linearly to -1..+1
+  //                            (0 = frozen / -1, 1 = molten / +1)
+  //   ?nativeLife=     0..1  → planet.nativeLife (direct)
+  //   ?atmDensity=     0..1  → planet.atmosphere.density (direct); atmosphere.present
+  //                            is inherited from the base (not forced off at low density)
+  //   ?habitability=   0..1  → planet.habitability scaled to 0-100 (contract scale)
+  // ---------------------------------------------------------------------------
+  const parseSlider = (key: string): number | undefined => {
+    const v = params.get(key);
+    if (v === null) return undefined;
+    const n = parseFloat(v);
+    return isNaN(n) ? undefined : Math.max(0, Math.min(1, n));
+  };
+
+  const ovWaterCoverage = parseSlider('waterCoverage');
+  const ovTemperature   = parseSlider('temperature');
+  const ovNativeLife    = parseSlider('nativeLife');
+  const ovAtmDensity    = parseSlider('atmDensity');
+  const ovHabitability  = parseSlider('habitability');
+
+  const baseInput: VistaInput = FIXED_INPUTS[typeParam] ?? PROOF_INPUT;
+
+  // Merge overrides.  Only fields with an explicit URL param are touched; all
+  // other planet fields (type, atmosphere.kind, deposits, hazards, etc.) are
+  // inherited unchanged from the base input.
+  const hasOverrides =
+    ovWaterCoverage !== undefined || ovTemperature !== undefined ||
+    ovNativeLife    !== undefined || ovAtmDensity  !== undefined ||
+    ovHabitability  !== undefined;
+
+  const activeInput: VistaInput = hasOverrides ? {
+    ...baseInput,
+    planet: {
+      ...baseInput.planet,
+      ...(ovWaterCoverage !== undefined && { waterCoverage: ovWaterCoverage }),
+      ...(ovTemperature   !== undefined && { temperature:   ovTemperature * 2 - 1 }),
+      ...(ovNativeLife    !== undefined && { nativeLife:    ovNativeLife }),
+      ...(ovAtmDensity    !== undefined && {
+        atmosphere: { ...baseInput.planet.atmosphere, density: ovAtmDensity },
+      }),
+      ...(ovHabitability  !== undefined && { habitability:  Math.round(ovHabitability * 100) }),
+    },
+  } : baseInput;
+
+  // Build a label that lists active override keys for the harness footer.
+  const overrideKeys = (
+    [
+      ovWaterCoverage !== undefined && 'waterCoverage',
+      ovTemperature   !== undefined && 'temperature',
+      ovNativeLife    !== undefined && 'nativeLife',
+      ovAtmDensity    !== undefined && 'atmDensity',
+      ovHabitability  !== undefined && 'habitability',
+    ] as (string | false)[]
+  ).filter(Boolean) as string[];
+
+  const activeLabel = overrideKeys.length > 0
+    ? `type: ${typeParam || 'default'} [${overrideKeys.join(',')}]`
+    : (typeParam && FIXED_INPUTS[typeParam]
+        ? `type: ${typeParam}`
+        : 'named-storm (default)');
 
   // At day (default), t=0 freezes the scene at FROZEN_DAY_PHASE=0.40 (sun always up).
   // At night, we compute the seed-specific clock that places the scene at 3 am

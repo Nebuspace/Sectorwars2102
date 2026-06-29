@@ -302,6 +302,17 @@ type VistaCache = {
     instances: { sx: number; sy: number; sizePx: number; tint: RGB; glow: number }[];
   }[];
 
+  // Flora sprite cache — one entry per scatter group (baked once in buildVistaCache).
+  // Used by drawScatterInstances for MID-LOD sprite blits; avoids per-frame path draws.
+  floraGroupCaches: {
+    groupKind: string;           // matches scatterScreens[i].kind
+    midSprite: HTMLCanvasElement; // silhouette drawn at FLORA_SPRITE_D size, swayX=0
+  }[];
+
+  // Renderer quality level — propagated from view.quality each frame (does not bust cache).
+  // Governs LOD thresholds in drawScatterInstances: 'high' | 'med' | 'low'.
+  quality: string;
+
   // Hero stars — bright foreground stars with 4-point glint (WO-V3-CELESTIAL)
   heroStars: HeroStarSeed[];
 
@@ -1021,21 +1032,45 @@ function buildVistaCache(
   });
 
   // ---- Feature scatters — bake screen coords for flora / rock / glitter instances ----
-  // groundH is already computed above.  sizePx uses a small fraction of min(w,h) so
-  // scattered vegetation stays proportional at any canvas size.
+  // groundH is already computed above.
   // When water is present, cap scatter sy to the land strip (above waterlineY) so
   // flora/rocks don't appear in the water zone.
+  //
+  // sizePx uses a KIND-SPECIFIC scale factor so flora reads as visible silhouettes:
+  //   flora  — large factor (0.85) → primary trees ~14–44px, dense grass ~8–27px.
+  //   rocks  — compact factor (0.065) → pebble-scale, 2–11px.
+  //   glitter — same as rocks; glow multiplier at draw time gives visual presence.
+  // isRock() is a hoisted module-level function; safe to call here.
   const scatterMaxY = hasWater ? waterTopY - 4 : h;
-  const scatterScreens: VistaCache['scatterScreens'] = model.layers.features.scatters.map((group) => ({
-    kind: group.kind,
-    instances: group.instances.map((inst) => ({
-      sx:     inst.pos[0] * w,
-      sy:     Math.min(horizonY + inst.pos[1] * groundH * 0.80, scatterMaxY),
-      sizePx: Math.max(2, inst.scale * Math.min(w, h) * 0.012),
-      tint:   inst.tint,
-      glow:   inst.glow ?? 0,
-    })),
-  }));
+  const scatterScreens: VistaCache['scatterScreens'] = model.layers.features.scatters.map((group) => {
+    const scaleFactor = (group.kind === 'glitter-spark' || isRock(group.kind)) ? 0.065 : 0.85;
+    return {
+      kind: group.kind,
+      instances: group.instances.map((inst) => ({
+        sx:     inst.pos[0] * w,
+        sy:     Math.min(horizonY + inst.pos[1] * groundH * 0.80, scatterMaxY),
+        sizePx: Math.max(2, inst.scale * Math.min(w, h) * scaleFactor),
+        tint:   inst.tint,
+        glow:   inst.glow ?? 0,
+      })),
+    };
+  });
+
+  // ---- Flora sprite cache — MID-LOD baked silhouettes per scatter group ----
+  // One sprite canvas per flora group; rocks + glitter skip (no sprite needed).
+  // isRock/getFloraClass/buildFloraSprite are all function declarations — hoisted, safe.
+  const floraGroupCaches: VistaCache['floraGroupCaches'] = [];
+  for (const group of scatterScreens) {
+    if (group.kind === 'glitter-spark') continue;
+    if (group.instances.length === 0) continue;
+    if (isRock(group.kind)) continue;
+    // Median instance tint is the representative color for the cached sprite
+    const repInst = group.instances[Math.floor(group.instances.length * 0.5)];
+    const [rt, gt, bt] = repInst.tint;
+    const fc = getFloraClass(group.kind);
+    const midSprite = buildFloraSprite(fc, rt, gt, bt);
+    floraGroupCaches.push({ groupKind: group.kind, midSprite });
+  }
 
   // ---- Hero stars — bright foreground stars with 4-point glint cross (WO-V3-CELESTIAL) ----
   // 4–8 stars seeded from model.seed; positions stable per-seed; colors span the
@@ -1106,6 +1141,8 @@ function buildVistaCache(
     energyScreen,
     hazardScreens,
     scatterScreens,
+    floraGroupCaches,
+    quality: 'high',  // default; overwritten live each frame by getOrBuildCache
     heroStars,
     sunSpecial: (primarySun?.special as 'accretion' | 'pulsar' | undefined) ?? undefined,
   };
@@ -1589,6 +1626,11 @@ function drawLandedMoons(
 // ---------------------------------------------------------------------------
 const SPRITE_D = 24;
 
+// FLORA_SPRITE_D — canonical size for pre-baked flora MID-LOD sprites.
+// Flora is drawn at sizePx = FLORA_SPRITE_D/2 with base at (FLORA_SPRITE_D/2, FLORA_SPRITE_D).
+// Blit formula: drawImage(sprite, sx-sizePx+swayOffset, sy-sizePx*2, sizePx*2, sizePx*2).
+const FLORA_SPRITE_D = 64;
+
 function buildParticleSprite(
   kind: string,
   r: number, g: number, b: number
@@ -1651,6 +1693,60 @@ function buildParticleSprite(
     sc.fillStyle = fg;
     sc.fillRect(0, 0, d, d);
   }
+  return spr;
+}
+
+// ---------------------------------------------------------------------------
+// buildFloraSprite — pre-bake a flora kind's silhouette to an offscreen canvas ONCE
+// per scatter group in buildVistaCache.  Eliminates per-frame bezier/path builds
+// for the MID-LOD depth band; callers blit with drawImage (fast GPU texture copy).
+//
+// Sprite is FLORA_SPRITE_D × FLORA_SPRITE_D; flora drawn at:
+//   sx = FLORA_SPRITE_D/2 (horizontal centre), sy = FLORA_SPRITE_D (base at bottom),
+//   sizePx = FLORA_SPRITE_D/2, swayX = 0 (no gust — motion applied at blit time).
+//
+// Blit formula at draw time (for instance with actual sizePx):
+//   ctx.drawImage(sprite, sx - sizePx + swayOffset, sy - sizePx * 2, sizePx * 2, sizePx * 2)
+//
+// Note: called from buildVistaCache; draw-helper functions are hoisted (function
+// declarations) so forward-reference from this position is safe.
+// ---------------------------------------------------------------------------
+function buildFloraSprite(
+  fc: FloraClass,
+  tr: number, tg: number, tb: number,
+): HTMLCanvasElement {
+  const d   = FLORA_SPRITE_D;
+  const spr = document.createElement('canvas');
+  spr.width = d; spr.height = d;
+  const sc = spr.getContext('2d')!;
+  sc.clearRect(0, 0, d, d);
+
+  const cx = d * 0.5;   // horizontal centre
+  const by = d;         // base y — flora grows upward from here
+  const sz = d * 0.5;   // canonical sizePx
+
+  // globalAlpha stays at 1; caller's globalAlpha governs blit opacity
+  sc.globalAlpha = 1;
+
+  switch (fc) {
+    case 'canopy-tree': drawScatterTree(sc, cx, by, sz, tr, tg, tb, 0, true);   break;
+    case 'broad-tree':  drawScatterTree(sc, cx, by, sz, tr, tg, tb, 0, false);  break;
+    case 'conifer':     drawScatterConifer(sc, cx, by, sz, tr, tg, tb, 0);      break;
+    case 'palm':        drawScatterPalm(sc, cx, by, sz, tr, tg, tb, 0);         break;
+    case 'vine':        drawScatterVine(sc, cx, by, sz, tr, tg, tb, 0);         break;
+    case 'fern':        drawScatterFern(sc, cx, by, sz, tr, tg, tb, 0);         break;
+    case 'kelp':        drawScatterKelp(sc, cx, by, sz, tr, tg, tb, 0, false);  break;
+    case 'seagrass':    drawScatterKelp(sc, cx, by, sz, tr, tg, tb, 0, true);   break;
+    case 'coral':       drawScatterCoral(sc, cx, by, sz, tr, tg, tb, 0);        break;
+    case 'cactus':      drawScatterCactus(sc, cx, by, sz, tr, tg, tb);          break;
+    case 'shrub':       drawScatterShrub(sc, cx, by, sz, tr, tg, tb, 0);        break;
+    case 'moss':        drawScatterMoss(sc, cx, by, sz, tr, tg, tb);            break;
+    case 'flower':      drawScatterFlower(sc, cx, by, sz, tr, tg, tb, 0);       break;
+    case 'grass':
+    case 'generic':
+    default:            drawScatterGrass(sc, cx, by, sz, tr, tg, tb, 0);        break;
+  }
+
   return spr;
 }
 
@@ -3551,34 +3647,154 @@ function drawScatterFlower(
 }
 
 // ---------------------------------------------------------------------------
+// isRock — extended rock classifier (module-level so both buildVistaCache and
+// drawScatterInstances can share it without duplication).
+// Covers all profile rockKinds: obsidian, pumice, sandstone, scree, cliff, etc.
+// ---------------------------------------------------------------------------
+function isRock(kind: string): boolean {
+  const k = kind.toLowerCase();
+  return k.includes('rock')    || k.includes('boulder') || k.includes('stone') ||
+         k.includes('gravel')  || k.includes('pebble')  || k.includes('regolith') ||
+         k.includes('rubble')  || k.includes('shard')   || k.includes('obsidian') ||
+         k.includes('basalt')  || k.includes('pumice')  || k.includes('sandstone') ||
+         k.includes('scree')   || k.includes('cliff')   || k.includes('stack') ||
+         k.includes('strut')   || k.includes('plating') || k.includes('mound') ||
+         k.includes('drift')   || k.includes('ejecta')  || k.includes('tangle') ||
+         k.includes('outcrop') || k.includes('pillar');
+}
+
+// ---------------------------------------------------------------------------
+// drawGrassGroundCover — render a grass scatter group as dense turf, not N discrete tufts.
+//
+// Two sub-passes in one ctx.save/restore:
+//   1. Base fill — semi-transparent horizontal band covering the y-extent of the
+//      grass instances; gives a continuous carpet impression.
+//   2. Batched blades — all NEAR+MID instances' blades drawn into ONE beginPath/
+//      stroke() call per lineWidth bucket (two buckets: thick / thin).
+//      FAR instances (sizePx < farSzGate) are covered by the fill; no per-blade cost.
+//
+// Perf: N instances → 2 stroke() calls instead of N × (3–4 beginPath/stroke pairs).
+// Deterministic: motion from gustSway(sx, t, sizePx, 0.28); no Math.random/Date.now.
+// ---------------------------------------------------------------------------
+function drawGrassGroundCover(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  group: { kind: string; instances: { sx: number; sy: number; sizePx: number; tint: RGB; glow: number }[] },
+  brightK: number,
+  w: number,
+  farSzGate: number,
+): void {
+  const insts = group.instances;
+  if (insts.length === 0) return;
+
+  // Representative tint: median instance (stable across frame; no Math.random)
+  const [tr, tg, tb] = insts[Math.floor(insts.length * 0.5)].tint;
+
+  ctx.save();
+  ctx.globalAlpha = brightK * 0.78;
+
+  // 1. Base fill — covers the full y-span of the grass scatter band
+  let minSy = Infinity, maxSy = -Infinity, maxSzPx = 0;
+  for (const inst of insts) {
+    if (inst.sy   < minSy)   minSy   = inst.sy;
+    if (inst.sy   > maxSy)   maxSy   = inst.sy;
+    if (inst.sizePx > maxSzPx) maxSzPx = inst.sizePx;
+  }
+  const bandTop = minSy - maxSzPx;               // topmost blade tip across all instances
+  const bandH   = Math.max(4, maxSy - bandTop + maxSzPx * 0.25);
+  ctx.globalAlpha = brightK * 0.20;
+  ctx.fillStyle   = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.fillRect(0, bandTop, w, bandH);
+
+  // 2. Batched blades — two lineWidth buckets so stroke() is called at most twice
+  // Bucket split: instances with thick blades (sizePx * 0.22 ≥ 1.5) vs thin.
+  const thickInsts: typeof insts = [];
+  const thinInsts:  typeof insts = [];
+  for (const inst of insts) {
+    if (inst.sizePx < farSzGate) continue;  // FAR: base fill covers them, skip blades
+    if (inst.sizePx * 0.22 >= 1.5) {
+      thickInsts.push(inst);
+    } else {
+      thinInsts.push(inst);
+    }
+  }
+
+  ctx.strokeStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  ctx.lineCap     = 'round';
+
+  for (const bucket of [thickInsts, thinInsts] as const) {
+    if (bucket.length === 0) continue;
+    ctx.lineWidth   = Math.max(0.8, bucket[0].sizePx * 0.22);
+    ctx.globalAlpha = brightK * 0.78;
+    ctx.beginPath();
+    for (const inst of bucket) {
+      const { sx, sy, sizePx } = inst;
+      const swayX  = gustSway(sx, t, sizePx, 0.28);
+      const blades = 3 + (Math.round(sx + sy) & 1);
+      for (let bi = 0; bi < blades; bi++) {
+        const spread = (bi / (blades - 1) - 0.5) * sizePx * 1.6;
+        const lean   = spread * 0.28 + swayX;
+        ctx.moveTo(sx + spread * 0.3, sy);
+        ctx.quadraticCurveTo(
+          sx + spread * 0.5 + lean * 0.5, sy - sizePx * 0.6,
+          sx + spread + lean,              sy - sizePx,
+        );
+      }
+    }
+    ctx.stroke();  // one stroke call for all blades in this bucket
+  }
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // drawScatterInstances — renders model.layers.features.scatters.
 //
-// Two-pass design to avoid composite bleed:
-//   Pass 1 (source-over): per-kind flora silhouettes + rock blobs.
-//     Flora: dispatched by getFloraClass() to a dedicated draw helper.
-//     Sway:  gustSway(sx, t, sizePx, getSwayAmplitude(fc)) — coherent gust field.
-//     Rocks: flattened ellipse blob + directional cast shadow — no sway.
-//   Pass 2 (lighter): glitter-spark — additive halo + 4-point star.
-//     Twinkle: alpha oscillates using instPhase(sx, sy) + t (deterministic, no RNG).
-// After pass 2, ctx.restore() resets globalCompositeOperation to source-over.
+// Three-pass design:
+//   Pass 1 (source-over): depth-layered LOD for flora + flat blobs for rocks.
+//     GRASS kind → drawGrassGroundCover (batched, not per-tuft).
+//     Other flora → three LOD bands keyed on sy within the ground strip:
+//       FAR  (sy ≤ farThresh | sizePx < farSzGate) — tiny colored dot per instance,
+//              all batched in ONE beginPath/fill per group (no path builds).
+//       MID  (between thresholds)                  — pre-baked midSprite blitted via
+//              drawImage (no per-frame path; small sway offset applied to dest rect).
+//       NEAR (sy > nearThresh & sizePx ≥ nearSzGate) — full per-kind draw helper
+//              with exact per-instance tint + sway (existing detailed paths).
+//     Rocks — unchanged: flattened ellipse blob + directional cast shadow.
+//     DEV assert: fires once per group if getFloraClass returns 'generic' for an
+//       unknown kind, so invisible-kind bugs can't hide again.
+//   Pass 2 (lighter): glitter-spark — additive halo + 4-point star (unchanged).
 //
-// Flora class → draw function (getFloraClass dispatch):
+// Perf contract at 300+ instances:
+//   FAR (~33%): 1 fill call per group; no path per instance.
+//   MID (~30%): 1 drawImage per instance (GPU texture blit); no path builds.
+//   NEAR (~37%): full path draw, but only the closest tier — same cost as before
+//     for the set that actually matters visually.
+//   Grass: 2 stroke() calls total for all blades across all grass instances.
+//
+// Quality gate: cache.quality ('high'|'med'|'low') adjusts the LOD thresholds so
+//   lower-quality renders collapse more instances to cheaper LOD bands.
+//
+// Deterministic: seed/t only; no Math.random/Date.now.
+// ctx.save/restore balanced: one pair per pass.
+//
+// Flora class → NEAR draw function (getFloraClass dispatch):
 //   canopy-tree, broad-tree     → drawScatterTree   (lollipop + optional second tier)
 //   conifer                     → drawScatterConifer (stacked triangular tiers)
 //   palm                        → drawScatterPalm   (curved trunk + frond fan)
 //   vine                        → drawScatterVine   (wavy stalk + leaf stubs)
 //   fern, biolumin-plant        → drawScatterFern   (arching fronds + pinnules)
 //   kelp                        → drawScatterKelp   (wavy stalks + side blades)
-//   seagrass                    → drawScatterKelp   (isSeagrass=true — shorter, denser)
+//   seagrass                    → drawScatterKelp   (isSeagrass=true)
 //   coral                       → drawScatterCoral  (Y-branch + rounded tips)
 //   cactus / cactiform          → drawScatterCactus (trunk + two arms; rigid)
 //   shrub / scrub               → drawScatterShrub  (2–3 rounded humps)
 //   moss / lichen               → drawScatterMoss   (flat patch + bumps; rigid)
-//   grass / tuft                → drawScatterGrass  (blades lean with gust)
+//   grass / tuft                → drawGrassGroundCover (not the NEAR switch)
 //   flower                      → drawScatterFlower (petaled blooms on stems)
 //   rock / boulder / stone …    → rock blob (no sway)
 //   glitter-spark               → Pass 2 only (skipped in Pass 1)
-//   unknown                     → drawScatterGrass  (generic safe fallback)
+//   unknown → 'generic' class   → drawScatterGrass fallback + DEV warning
 // ---------------------------------------------------------------------------
 function drawScatterInstances(
   ctx: CanvasRenderingContext2D,
@@ -3591,39 +3807,46 @@ function drawScatterInstances(
   const brightK  = 0.55 + dc.bright * 0.45;
   const lighting = cache.model.lighting;
 
-  // Directional shadow offset: shadow falls opposite the key-light azimuth.
-  // keyDir[0] is the sun azimuth in screen degrees (0° = screen-right).
-  // cos(keyAzDeg) gives the horizontal component; negate to get shadow direction.
   const shadowAzRad = lighting.keyDir[0] * Math.PI / 180;
-  const shadowOffX  = -Math.cos(shadowAzRad);  // unit vector, scaled per instance below
+  const shadowOffX  = -Math.cos(shadowAzRad);
   const shadowKeyK  = Math.max(0.3, Math.min(1, lighting.keyIntensity));
 
-  // Extended rock classifier: covers all profile rockKinds not caught by the
-  // original 7-keyword set (obsidian, pumice, sandstone, scree, cliff, etc.).
-  const isRock = (kind: string): boolean => {
-    const k = kind.toLowerCase();
-    return k.includes('rock')    || k.includes('boulder') || k.includes('stone') ||
-           k.includes('gravel')  || k.includes('pebble')  || k.includes('regolith') ||
-           k.includes('rubble')  || k.includes('shard')   || k.includes('obsidian') ||
-           k.includes('basalt')  || k.includes('pumice')  || k.includes('sandstone') ||
-           k.includes('scree')   || k.includes('cliff')   || k.includes('stack') ||
-           k.includes('strut')   || k.includes('plating') || k.includes('mound') ||
-           k.includes('drift')   || k.includes('ejecta')  || k.includes('tangle') ||
-           k.includes('outcrop') || k.includes('pillar');
+  // ---- LOD thresholds ----
+  // Depth bands keyed on sy within the land strip (horizonY → bottom of land).
+  // FAR: close to the horizon (tiny, hazy silhouette mass).
+  // NEAR: close to the viewer (large, full-detail draw).
+  const landBtm    = cache.hasWater ? cache.waterTopY : cache.h;
+  const groundH    = Math.max(1, landBtm - cache.horizonY);
+  const farThresh  = cache.horizonY + groundH * 0.32;
+  const nearThresh = cache.horizonY + groundH * 0.62;
+
+  // Quality-adjusted minimum sizePx gates — calibrated to the new flora size range.
+  // Flora primary: scale 0.018–0.058 → sizePx 14–44px.
+  // Flora dense:   scale 0.010–0.035 → sizePx 8–27px.
+  // farSzGate:  instances smaller than this always go to FAR regardless of sy.
+  // nearSzGate: instances must exceed this AND have sy > nearThresh to get NEAR detail.
+  const q          = cache.quality;
+  const farSzGate  = q === 'low' ? 14 : q === 'med' ? 8 : 4;
+  const nearSzGate = q === 'low' ? 40 : q === 'med' ? 28 : 18;
+
+  // ---- Flora sprite lookup (O(k), k = small number of scatter groups) ----
+  const getSpriteFor = (kind: string): HTMLCanvasElement | undefined => {
+    for (const fg of cache.floraGroupCaches) {
+      if (fg.groupKind === kind) return fg.midSprite;
+    }
+    return undefined;
   };
 
-  // ---- Pass 1: source-over (per-kind flora silhouettes + rock blobs) ----
+  // ---- Pass 1: source-over (depth-layered flora LOD + rocks) ----
   ctx.save();
   ctx.globalCompositeOperation = 'source-over';
 
   for (const group of cache.scatterScreens) {
     if (group.kind === 'glitter-spark') continue;
 
-    const rock = isRock(group.kind);
-    ctx.globalAlpha = brightK * 0.75;
-
-    if (rock) {
-      // Rounded blob — flattened to sit on the ground + directional cast shadow
+    if (isRock(group.kind)) {
+      // ---- ROCKS: unchanged — flattened blob + directional cast shadow ----
+      ctx.globalAlpha = brightK * 0.75;
       for (const inst of group.instances) {
         const { sx, sy, sizePx, tint } = inst;
         const [tr, tg, tb] = tint;
@@ -3642,34 +3865,87 @@ function drawScatterInstances(
         ctx.fill();
         ctx.globalAlpha = brightK * 0.75;
       }
-    } else {
-      // Flora — resolve class once per group, compute sway per instance
-      const fc        = getFloraClass(group.kind);
-      const amplitude = getSwayAmplitude(fc);
+      continue;
+    }
 
+    // ---- FLORA ----
+    const fc = getFloraClass(group.kind);
+
+    // DEV assert — fires once per group for any unmapped kind hitting the fallback.
+    // Prevents invisible-kind bugs from hiding silently behind the grass default.
+    if (import.meta.env.DEV && fc === 'generic') {
+      console.warn(`[vista/FLORA] Unmapped scatter kind "${group.kind}" → grass fallback. Add to getFloraClass().`);
+    }
+
+    // GRASS → dedicated ground-cover renderer (batched blades, not per-tuft dispatch)
+    if (fc === 'grass') {
+      drawGrassGroundCover(ctx, t, group, brightK, cache.w, farSzGate);
+      continue;
+    }
+
+    const amplitude = getSwayAmplitude(fc);
+    const midSprite = getSpriteFor(group.kind);
+
+    // ---- FAR LOD: tiny colored dots, all in ONE beginPath/fill per group ----
+    // Uses the first instance's tint (representative; tint variance at FAR is
+    // imperceptible). moveTo(sx+r, sy) before each arc prevents connecting lines.
+    {
+      const [tr, tg, tb] = group.instances[0]?.tint ?? [160, 180, 130];
+      ctx.globalAlpha = brightK * 0.45;
+      ctx.fillStyle   = `rgb(${tr}, ${tg}, ${tb})`;
+      ctx.beginPath();
+      let anyFar = false;
       for (const inst of group.instances) {
-        const { sx, sy, sizePx, tint } = inst;
-        const [tr, tg, tb] = tint;
-        const swayX = gustSway(sx, t, sizePx, amplitude);
+        if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;  // skip non-FAR
+        const r = Math.max(1, inst.sizePx * 0.55);
+        ctx.moveTo(inst.sx + r, inst.sy);
+        ctx.arc(inst.sx, inst.sy, r, 0, Math.PI * 2);
+        anyFar = true;
+      }
+      if (anyFar) ctx.fill();
+    }
 
-        switch (fc) {
-          case 'canopy-tree': drawScatterTree(ctx, sx, sy, sizePx, tr, tg, tb, swayX, true);   break;
-          case 'broad-tree':  drawScatterTree(ctx, sx, sy, sizePx, tr, tg, tb, swayX, false);  break;
-          case 'conifer':     drawScatterConifer(ctx, sx, sy, sizePx, tr, tg, tb, swayX);      break;
-          case 'palm':        drawScatterPalm(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
-          case 'vine':        drawScatterVine(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
-          case 'fern':        drawScatterFern(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
-          case 'kelp':        drawScatterKelp(ctx, sx, sy, sizePx, tr, tg, tb, swayX, false);  break;
-          case 'seagrass':    drawScatterKelp(ctx, sx, sy, sizePx, tr, tg, tb, swayX, true);   break;
-          case 'coral':       drawScatterCoral(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
-          case 'cactus':      drawScatterCactus(ctx, sx, sy, sizePx, tr, tg, tb);              break;
-          case 'shrub':       drawScatterShrub(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
-          case 'moss':        drawScatterMoss(ctx, sx, sy, sizePx, tr, tg, tb);                break;
-          case 'flower':      drawScatterFlower(ctx, sx, sy, sizePx, tr, tg, tb, swayX);       break;
-          case 'grass':
-          case 'generic':
-          default:            drawScatterGrass(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
-        }
+    // ---- MID LOD: sprite blit (drawImage — no per-frame path build) ----
+    // Sway approximated by shifting the destination rect horizontally.
+    // Sprite is FLORA_SPRITE_D × FLORA_SPRITE_D; blit formula scales it to sizePx*2.
+    if (midSprite) {
+      ctx.globalAlpha = brightK * 0.72;
+      for (const inst of group.instances) {
+        // Skip FAR instances (already drawn above) and NEAR instances (drawn below)
+        if (inst.sy <= farThresh || inst.sizePx < farSzGate) continue;
+        if (inst.sy > nearThresh && inst.sizePx >= nearSzGate) continue;
+        const { sx, sy, sizePx } = inst;
+        const swayOffset = gustSway(sx, t, sizePx, amplitude) * 0.25;
+        const dw = sizePx * 2;
+        const dh = sizePx * 2;
+        ctx.drawImage(midSprite, sx - sizePx + swayOffset, sy - dh, dw, dh);
+      }
+    }
+
+    // ---- NEAR LOD: full per-kind draw with exact tint + full sway ----
+    ctx.globalAlpha = brightK * 0.82;
+    for (const inst of group.instances) {
+      if (inst.sy <= nearThresh || inst.sizePx < nearSzGate) continue;
+      const { sx, sy, sizePx, tint } = inst;
+      const [tr, tg, tb] = tint;
+      const swayX = gustSway(sx, t, sizePx, amplitude);
+
+      switch (fc) {
+        case 'canopy-tree': drawScatterTree(ctx, sx, sy, sizePx, tr, tg, tb, swayX, true);   break;
+        case 'broad-tree':  drawScatterTree(ctx, sx, sy, sizePx, tr, tg, tb, swayX, false);  break;
+        case 'conifer':     drawScatterConifer(ctx, sx, sy, sizePx, tr, tg, tb, swayX);      break;
+        case 'palm':        drawScatterPalm(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
+        case 'vine':        drawScatterVine(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
+        case 'fern':        drawScatterFern(ctx, sx, sy, sizePx, tr, tg, tb, swayX);         break;
+        case 'kelp':        drawScatterKelp(ctx, sx, sy, sizePx, tr, tg, tb, swayX, false);  break;
+        case 'seagrass':    drawScatterKelp(ctx, sx, sy, sizePx, tr, tg, tb, swayX, true);   break;
+        case 'coral':       drawScatterCoral(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
+        case 'cactus':      drawScatterCactus(ctx, sx, sy, sizePx, tr, tg, tb);              break;
+        case 'shrub':       drawScatterShrub(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
+        case 'moss':        drawScatterMoss(ctx, sx, sy, sizePx, tr, tg, tb);                break;
+        case 'flower':      drawScatterFlower(ctx, sx, sy, sizePx, tr, tg, tb, swayX);       break;
+        case 'generic':
+        default:            drawScatterGrass(ctx, sx, sy, sizePx, tr, tg, tb, swayX);        break;
       }
     }
   }
@@ -3677,7 +3953,8 @@ function drawScatterInstances(
   ctx.restore();
 
   // ---- Pass 2: additive composite for glitter-spark with per-instance twinkle ----
-  // Skip the save/restore overhead when no glitter group is present.
+  // Unchanged: glitter counts are low enough that the per-instance createRadialGradient
+  // cost is acceptable; LOD is not applied here.
   let hasGlitter = false;
   for (const group of cache.scatterScreens) {
     if (group.kind === 'glitter-spark') { hasGlitter = true; break; }
@@ -4821,6 +5098,9 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
       c.key = key;
       _cache = c;
     }
+    // Quality may change between frames without busting the cache key (no geometry rebuild).
+    // Update it live so drawScatterInstances reads the current LOD intent.
+    _cache.quality = currentInput?.view?.quality ?? 'high';
     return _cache;
   }
 
