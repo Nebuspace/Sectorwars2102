@@ -879,9 +879,9 @@ function buildFeatures(
           // River corridor: tapered channel from citadelAnchorY down to waterlineY.
           if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
             const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
-            const hw = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf
-                       + riverMaxMeander * Math.sin(Math.PI * tf);
-            if (Math.abs(px - citadelAnchorX) < hw) return false;
+            const hw          = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf;
+            const centerOff   = mAmpFrac * Math.sin(2 * Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX - centerOff) < hw) return false;
           }
           return true;
         }),
@@ -968,9 +968,9 @@ function buildFeatures(
           if (dx * dx + dy * dy < citadelClearR2) continue;
           if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
             const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
-            const hw = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf
-                       + riverMaxMeander * Math.sin(Math.PI * tf);
-            if (Math.abs(px - citadelAnchorX) < hw) continue;
+            const hw          = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf;
+            const centerOff   = mAmpFrac * Math.sin(2 * Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX - centerOff) < hw) continue;
           }
         }
         if (!kindMap.has(kind)) kindMap.set(kind, []);
@@ -1010,9 +1010,9 @@ function buildFeatures(
           if (dx * dx + dy * dy < citadelClearR2) continue;
           if (riverMode && py >= citadelAnchorY && py <= waterlineY!) {
             const tf = (py - citadelAnchorY) / Math.max(waterlineY! - citadelAnchorY, 1e-6);
-            const hw = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf
-                       + riverMaxMeander * Math.sin(Math.PI * tf);
-            if (Math.abs(px - citadelAnchorX) < hw) continue;
+            const hw          = corridorHalfTop + (corridorHalfBottom - corridorHalfTop) * tf;
+            const centerOff   = mAmpFrac * Math.sin(2 * Math.PI * tf);
+            if (Math.abs(px - citadelAnchorX - centerOff) < hw) continue;
           }
         }
         heroInstances.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });

@@ -5250,7 +5250,7 @@ function drawRiverCorridor(
   //   clearHW(tf) = lerp(top, bottom, tf) + riverMaxMeander × sin(π·tf)
   // where riverMaxMeander = 0.75 × hwTopFrac (>0.6875) — always covers the render.
   const mrng = splitmix32(deriveChildSeed(model.seed, 'river-meander'));
-  const mAmp = (mrng() - 0.5) * hwTopPx * 1.375;  // ±69% of top half-width → visible winding
+  const mAmp = (mrng() - 0.5) * hwTopPx * 1.6;   // max ±0.8 × hwTopPx center displacement
 
   // Build left/right edge arrays (N_STEPS) along the corridor.
   // tf=0 → citadel top (narrow/far), tf=1 → waterline bottom (wide/near).
@@ -5262,7 +5262,7 @@ function drawRiverCorridor(
   for (let i = 0; i <= N_STEPS; i++) {
     const tf  = i / N_STEPS;
     const py  = riverTopY + (riverBotY - riverTopY) * tf;
-    const cx  = citSX + mAmp * Math.sin(Math.PI * tf);    // gentle S-meander
+    const cx  = citSX + mAmp * Math.sin(2 * Math.PI * tf);  // S-curve: one full oscillation
     const hw  = hwTopPx + (hwBottomPx - hwTopPx) * tf;
     leftPts.push([cx - hw, py]);
     rightPts.push([cx + hw, py]);
