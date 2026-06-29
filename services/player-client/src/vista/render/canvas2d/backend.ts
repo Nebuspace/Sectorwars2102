@@ -795,7 +795,7 @@ function buildVistaCache(
         }
       }
     }
-    // 'banded' → GAS_GIANT uses drawCloudDeck; no sky clouds needed here.
+    // 'banded' → GAS_GIANT uses drawGasGiantBands (full-frame); no sky clouds needed here.
     // 'none'   → guarded above by cloudKind !== 'none'.
   }
 
@@ -2437,12 +2437,32 @@ function drawLandmarks(
 }
 
 // ---------------------------------------------------------------------------
-// drawCloudDeck — GAS_GIANT terrain mode.
-// Replaces terrain ridges + ground plane with a banded cloud-deck horizon.
-// Called only when model.layers.terrain.mode === 'cloud-deck'.
-// The platform silhouette in the foreground reads as "floating above cloud tops."
+// drawGasGiantBands — WO-V6-GAS_GIANT full-frame banded atmosphere.
+//
+// Gas giants have no solid surface: the entire canvas is atmosphere.  This
+// renderer fills the full frame (0..h) with horizontal cloud bands + a storm
+// oval (great-spot analogue) + limb darkening that gives the gas ball a
+// spherical feel.  Replaces drawCloudDeck in the §5 'cloud-deck' dispatch so
+// that the full canvas is atmosphere rather than just the below-horizon band.
+//
+// Design notes:
+//   • Full-canvas base gradient: deep-space dark (skyTop) at top/bottom →
+//     warm amber cloud-top (skyHorizon) mid — day-cycle modulated.
+//   • 8–12 horizontal bands distributed across the full height; widths seeded;
+//     equatorial bands slightly wider and faster; turbulent top/bottom edges
+//     from two summed sine waves for organic, non-repeating shape.
+//   • Band colors cycle through the ridge palette blended toward skyHorizon
+//     for tonal variety; alpha modulated by day-cycle brightness.
+//   • Storm oval: off-center seeded position; radial gradient from compressed
+//     dark core → accent lightning ring → fade out; slow westward drift via t.
+//   • Limb darkening: four directional linear-gradient overlays (top, bottom,
+//     left, right) give the frame the spherical gas-ball curvature feel.
+//   • Seeding: 'gas-giant-bands' stream for band layout; 'gas-giant-storm'
+//     stream for storm position/size — isolated so each is order-stable.
+//   • No Math.random / Date.now.  ctx.save / restore balanced throughout.
+//     Composite op + alpha reset to source-over / 1.0 on exit.
 // ---------------------------------------------------------------------------
-function drawCloudDeck(
+function drawGasGiantBands(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
@@ -2451,76 +2471,196 @@ function drawCloudDeck(
   cache: VistaCache,
   dc: DayCycle
 ): void {
-  const { horizonY } = cache;
-  const pal = model.palette;
-  const deckH = h - horizonY;
+  if (w <= 0 || h <= 0) return;
+  const pal      = model.palette;
+  const ridgeArr = pal.ridge;
+  const b        = dc.bright;
 
-  // Deep atmospheric base — gradient from the horizon tint down to a dark purple base
+  // Independent sub-streams — isolating band layout from storm so changes to
+  // band count don't perturb storm position and vice versa.
+  const rng      = splitmix32(deriveChildSeed(model.seed, 'gas-giant-bands'));
+  const stormRng = splitmix32(deriveChildSeed(model.seed, 'gas-giant-storm'));
+
+  // ---- 1. Full-canvas atmospheric base gradient ----
+  // Top/bottom: deep-space dark (skyTop); mid: warm amber cloud-top (skyHorizon);
+  // lower mid: compressed-gas dark (surface).  Brightness-modulated by day cycle.
   {
-    const [hr, hg, hb] = pal.skyHorizon;
     const [tr, tg, tb] = pal.skyTop;
-    const base = ctx.createLinearGradient(0, horizonY, 0, h);
-    base.addColorStop(0,   `rgb(${Math.round(hr * 0.82)}, ${Math.round(hg * 0.82)}, ${Math.round(hb * 0.82)})`);
-    base.addColorStop(0.4, `rgb(${Math.round(hr * 0.35 + tr * 0.12)}, ${Math.round(hg * 0.35 + tg * 0.12)}, ${Math.round(hb * 0.35 + tb * 0.15)})`);
-    base.addColorStop(1,   `rgb(${Math.round(tr * 0.18)}, ${Math.round(tg * 0.18)}, ${Math.round(tb * 0.25)})`);
+    const [hr, hg, hb] = pal.skyHorizon;
+    const [sr, sg, sb] = pal.surface;
+    const base = ctx.createLinearGradient(0, 0, 0, h);
+    base.addColorStop(0,    `rgb(${Math.round(tr * (0.15 + b * 0.25))}, ${Math.round(tg * (0.15 + b * 0.25))}, ${Math.round(tb * (0.18 + b * 0.28))})`);
+    base.addColorStop(0.25, `rgb(${Math.round(hr * (0.55 + b * 0.45))}, ${Math.round(hg * (0.55 + b * 0.45))}, ${Math.round(hb * (0.55 + b * 0.45))})`);
+    base.addColorStop(0.60, `rgb(${Math.round(hr * (0.48 + b * 0.52))}, ${Math.round(hg * (0.48 + b * 0.52))}, ${Math.round(hb * (0.48 + b * 0.52))})`);
+    base.addColorStop(1,    `rgb(${Math.round(sr * (0.40 + b * 0.30))}, ${Math.round(sg * (0.40 + b * 0.30))}, ${Math.round(sb * (0.40 + b * 0.30))})`);
     ctx.fillStyle = base;
-    ctx.fillRect(0, horizonY, w, deckH);
+    ctx.fillRect(0, 0, w, h);
   }
 
-  // Receding cloud bands — each baked in buildVistaCache with a parallax speed.
-  // Far bands (low yFrac) drift slowly; near bands drift fast — suggests depth.
-  for (const band of cache.cloudBands) {
-    const bandY   = horizonY + band.yFrac * deckH;
-    const thick   = band.thickFrac * deckH;
-    const drift   = t === 0 ? 0 : (t * band.speed * 10) % w;
-    const widthR  = 0.55 + band.yFrac * 0.55;  // wider near-camera, narrow at horizon
-    const [br, bg2, bb] = band.rgb;
-    const alpha   = band.alpha * (0.65 + dc.bright * 0.35);
+  // ---- 2. Horizontal cloud bands ----
+  // Distributed across the full canvas height (not clipped to horizonY).
+  // Equatorial bands (near y=0.5) are wider and drift faster — mirrors
+  // real-gas-giant differential rotation dynamics.
+  const BAND_COUNT = 8 + Math.round(rng() * 4);  // 8–12 bands seeded per world
+
+  ctx.save();
+  for (let bi = 0; bi < BAND_COUNT; bi++) {
+    // Band centre Y: evenly spaced baseline + seeded vertical jitter.
+    const baseYFrac    = (bi + 0.5) / BAND_COUNT;
+    const yJitter      = (rng() - 0.5) * 0.07;
+    const yFrac        = Math.max(0.02, Math.min(0.98, baseYFrac + yJitter));
+    const bandCY       = yFrac * h;
+
+    // Equatorial proximity (0 at pole, 1 at equator) — biases thickness + speed.
+    const equatorial   = 1 - Math.abs(yFrac - 0.5) * 2;
+    const thick        = h * (0.030 + rng() * 0.055 + equatorial * 0.020);
+
+    // Drift: equatorial bands drift faster; each band has a distinct seeded speed.
+    const driftSpeed   = (0.5 + rng() * 0.9) * (0.40 + equatorial * 0.60);
+    const drift        = t === 0 ? 0 : (t * driftSpeed * 9) % w;
+
+    // Color: ridge palette cycled by band index, blended toward skyHorizon for
+    // tonal variety across the frame.  Named bg2 (not bg) to avoid shadowing b.
+    const palRgb  = ridgeArr[bi % Math.max(1, ridgeArr.length)] ?? pal.skyHorizon;
+    const [hr2, hg2, hb2] = pal.skyHorizon;
+    const blend   = 0.28 + rng() * 0.48;
+    const br      = Math.round(palRgb[0] * blend + hr2 * (1 - blend));
+    const bg2     = Math.round(palRgb[1] * blend + hg2 * (1 - blend));
+    const bb      = Math.round(palRgb[2] * blend + hb2 * (1 - blend));
+    const alpha   = (0.40 + rng() * 0.35) * (0.62 + b * 0.38);
+
+    // Turbulence: two summed sine waves give organic, non-repeating band edges.
+    // Frequency A is the dominant wave; B is a higher harmonic.
+    const tFreqA  = 0.010 + rng() * 0.008;
+    const tFreqB  = tFreqA * (1.65 + rng() * 0.70);
+    const tAmp    = thick * (0.05 + rng() * 0.12);
+    const tPhaseA = rng() * Math.PI * 2;
+    const tPhaseB = rng() * Math.PI * 2;
 
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
-    const bgrad = ctx.createLinearGradient(0, bandY - thick, 0, bandY + thick);
+
+    // Trace turbulent top edge left→right, then turbulent bottom edge right→left;
+    // close the path to form a filled ribbon shape.
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 6) {
+      const dx  = x + drift;
+      const turb = Math.sin(dx * tFreqA + tPhaseA) * tAmp * 0.58
+                 + Math.sin(dx * tFreqB + tPhaseB) * tAmp * 0.42;
+      const ey  = bandCY - thick * 0.5 + turb;
+      if (x === 0) ctx.moveTo(x, ey); else ctx.lineTo(x, ey);
+    }
+    for (let x = w; x >= 0; x -= 6) {
+      const dx  = x + drift;
+      const turb = Math.sin(dx * tFreqA + tPhaseA + 0.9) * tAmp * 0.58
+                 + Math.sin(dx * tFreqB + tPhaseB + 1.4) * tAmp * 0.42;
+      const ey  = bandCY + thick * 0.5 + turb;
+      ctx.lineTo(x, ey);
+    }
+    ctx.closePath();
+
+    // Vertical gradient: feathered top/bottom edges, solid mid-band core.
+    const bgrad = ctx.createLinearGradient(0, bandCY - thick * 0.5, 0, bandCY + thick * 0.5);
     bgrad.addColorStop(0,    `rgba(${br}, ${bg2}, ${bb}, 0)`);
-    bgrad.addColorStop(0.30, `rgba(${br}, ${bg2}, ${bb}, ${(alpha * 0.85).toFixed(3)})`);
-    bgrad.addColorStop(0.70, `rgba(${br}, ${bg2}, ${bb}, ${alpha.toFixed(3)})`);
+    bgrad.addColorStop(0.22, `rgba(${br}, ${bg2}, ${bb}, ${(alpha * 0.80).toFixed(3)})`);
+    bgrad.addColorStop(0.50, `rgba(${br}, ${bg2}, ${bb}, ${alpha.toFixed(3)})`);
+    bgrad.addColorStop(0.78, `rgba(${br}, ${bg2}, ${bb}, ${(alpha * 0.80).toFixed(3)})`);
     bgrad.addColorStop(1,    `rgba(${br}, ${bg2}, ${bb}, 0)`);
     ctx.fillStyle = bgrad;
-    // Ellipse suggests a curved cloud-layer receding toward the horizon
-    ctx.beginPath();
-    ctx.ellipse(w * 0.5 + drift, bandY, w * widthR, thick, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
+  ctx.restore();
 
-  // Foreground platform / observation-deck silhouette — reads as "standing on a
-  // floating structure above the cloud tops."
+  // ---- 3. Storm oval (great-spot analogue) ----
+  // Placed off-center (seeded); very slow westward linear drift via t.
+  // Radial gradient: compressed dark core → accent lightning ring → fade out.
   {
-    const platW  = w * 0.30;
-    const railH  = Math.max(4, h * 0.028);
-    const pilH   = Math.min(h * 0.16, deckH * 0.55);
-    const pilW   = Math.max(4, w * 0.014);
-    const railY  = h - pilH - railH;
-    const [sr, sg, sb] = pal.surface;
-    const platCol = `rgba(${Math.round(sr * 0.35)}, ${Math.round(sg * 0.38)}, ${Math.round(sb * 0.45)}, 0.94)`;
+    const stormX  = w * (0.52 + stormRng() * 0.18);      // 52–70 % across
+    const stormY  = h * (0.33 + stormRng() * 0.34);      // 33–67 % down
+    const stormRx = w  * (0.065 + stormRng() * 0.055);   // rx: 6.5–12 % of w
+    const stormRy = stormRx * (0.36 + stormRng() * 0.24);  // oval height ratio
+    // Very slow drift — full canvas width in ~90+ min at 0.15–0.22 px/s.
+    const driftSpd   = 0.15 + stormRng() * 0.07;
+    const stormDrift = t === 0 ? 0 : (t * driftSpd) % w;
+    const sx         = stormX + stormDrift;
 
     ctx.save();
-    ctx.fillStyle = platCol;
-    ctx.fillRect(w * 0.5 - platW * 0.5, railY, platW, railH);
-    for (const pf of [0.15, 0.38, 0.62, 0.85]) {
-      ctx.fillRect(w * 0.5 - platW * 0.5 + platW * pf - pilW * 0.5, railY + railH, pilW, pilH);
-    }
-    // Rail accent edge — subtle energy/tint glow from palette.accent
+
+    // Outer storm body: dark compressed-gas core blending outward to accent ring.
+    const [ar, ag, ab] = pal.accent;
+    const nearRidge    = ridgeArr[ridgeArr.length - 1] ?? pal.surface;
+    const [nr, ng, nb] = nearRidge;
+    const outerAlpha   = 0.58 * (0.65 + b * 0.35);
+    const stormGrad    = ctx.createRadialGradient(sx, stormY, stormRx * 0.20, sx, stormY, stormRx);
+    stormGrad.addColorStop(0,    `rgba(${Math.round(nr * 0.55)}, ${Math.round(ng * 0.45)}, ${Math.round(nb * 0.40)}, ${outerAlpha.toFixed(3)})`);
+    stormGrad.addColorStop(0.38, `rgba(${ar}, ${ag}, ${ab}, ${(outerAlpha * 0.72).toFixed(3)})`);
+    stormGrad.addColorStop(0.72, `rgba(${Math.round(nr * 0.75)}, ${Math.round(ng * 0.55)}, ${Math.round(nb * 0.45)}, ${(outerAlpha * 0.40).toFixed(3)})`);
+    stormGrad.addColorStop(1,    `rgba(${ar}, ${ag}, ${ab}, 0)`);
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath();
+    ctx.ellipse(sx, stormY, stormRx, stormRy, 0, 0, Math.PI * 2);
+    ctx.fillStyle = stormGrad;
+    ctx.fill();
+
+    // Lightning eye glow — additive accent highlight at the storm centre.
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.18 * dc.bright;
-    const [ar, ag, ab] = pal.accent;
-    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, 0.9)`;
-    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.22 * b;
+    const eyeGrad = ctx.createRadialGradient(sx, stormY, 0, sx, stormY, stormRx * 0.30);
+    eyeGrad.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.60)`);
+    eyeGrad.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = eyeGrad;
     ctx.beginPath();
-    ctx.moveTo(w * 0.5 - platW * 0.5, railY);
-    ctx.lineTo(w * 0.5 + platW * 0.5, railY);
-    ctx.stroke();
+    ctx.ellipse(sx, stormY, stormRx * 0.30, stormRy * 0.30, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
+
+    ctx.restore();
+  }
+
+  // ---- 4. Limb darkening — spherical curvature effect ----
+  // Four directional linear-gradient overlays taper the edges to the skyTop dark,
+  // suggesting the curved silhouette of a gas body.  Corner overlap from two
+  // perpendicular gradients deepens the poles and flanks naturally.
+  {
+    const [tr, tg, tb] = pal.skyTop;
+    const limbR = Math.round(tr * 0.40);
+    const limbG = Math.round(tg * 0.40);
+    const limbB = Math.round(tb * 0.45);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Top edge
+    const topGrad = ctx.createLinearGradient(0, 0, 0, h * 0.28);
+    topGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.72)`);
+    topGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
+    ctx.fillStyle = topGrad;
+    ctx.fillRect(0, 0, w, h * 0.28);
+
+    // Bottom edge
+    const btmGrad = ctx.createLinearGradient(0, h, 0, h * 0.72);
+    btmGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.72)`);
+    btmGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
+    ctx.fillStyle = btmGrad;
+    ctx.fillRect(0, h * 0.72, w, h * 0.28);
+
+    // Left edge
+    const leftGrad = ctx.createLinearGradient(0, 0, w * 0.20, 0);
+    leftGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.55)`);
+    leftGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
+    ctx.fillStyle = leftGrad;
+    ctx.fillRect(0, 0, w * 0.20, h);
+
+    // Right edge
+    const rightGrad = ctx.createLinearGradient(w, 0, w * 0.80, 0);
+    rightGrad.addColorStop(0, `rgba(${limbR}, ${limbG}, ${limbB}, 0.55)`);
+    rightGrad.addColorStop(1, `rgba(${limbR}, ${limbG}, ${limbB}, 0)`);
+    ctx.fillStyle = rightGrad;
+    ctx.fillRect(w * 0.80, 0, w * 0.20, h);
+
     ctx.restore();
   }
 }
@@ -2653,6 +2793,281 @@ function drawPlating(
     ctx.fillStyle = warmBleed;
     ctx.fillRect(0, horizonY, w, bleedH);
 
+    ctx.restore();
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// drawArtificialSkyline — WO-V6-ARTIFICIAL megastructure skyline signature.
+//
+// Two-layer silhouetted megastructure skyline on the horizon: varied forms
+// (spires, habitat domes, gantry/truss frames) receding far→near.
+//   • Far layer:  lighter / hazier (aerial-perspective blend), 11–15 structures.
+//   • Near layer: crisper / darker (minimal haze),            7–10 structures.
+// Lit windows (small warm cells) glow faintly by day and brightly at night —
+// intensity driven from dc.bright via a nightFrac scale.
+//
+// Called from drawScene §5 — ARTIFICIAL (plating) branch, BEFORE drawPlating,
+// so the skyline roots at horizonY and projects upward into the sky while the
+// plating deck fills the foreground ground plane below.
+//
+// Seeding: 'artificial-skyline' splitmix32 stream — isolated label; never
+// aliases 'emissive' or 'dune-sea' streams.
+// No Math.random / Date.now.
+// ctx.save / restore balanced; 'lighter' composite reset to 'source-over'
+// before any ctx.restore so no composite state leaks on exit.
+// ---------------------------------------------------------------------------
+function drawArtificialSkyline(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+): void {
+  void t;     // static silhouette — seed-stable, not time-animated
+  void sunX;  // sun azimuth unused; windows are seed-placed, not sun-biased
+
+  if (w <= 0) return;
+
+  const { horizonY, hasAtmosphere } = cache;
+  const pal = model.palette;
+  const b   = dc.bright;
+
+  // Atmosphere haze — blended into far-layer fills for aerial perspective.
+  const horBase = pal.skyHorizon;
+  const hazeR = hasAtmosphere ? Math.min(255, Math.round(horBase[0] * (0.40 + b * 0.60))) : 18;
+  const hazeG = hasAtmosphere ? Math.min(255, Math.round(horBase[1] * (0.40 + b * 0.60))) : 22;
+  const hazeB = hasAtmosphere ? Math.min(255, Math.round(horBase[2] * (0.40 + b * 0.60))) : 40;
+
+  // Window glow: very faint at noon (dc.bright≈1), blazing at full night (≈0).
+  const nightFrac = Math.max(0, 1 - b * 1.15);
+  const windowA   = 0.08 + nightFrac * 0.88;
+
+  // Warm window color (sodium/amber) from accentWarm — fallback to golden white.
+  const winColor = pal.accentWarm ?? ([255, 210, 120] as RGB);
+  const [wr, wg, wb] = winColor;
+
+  // Isolated PRNG stream — 'artificial-skyline' never aliases other sub-streams.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'artificial-skyline'));
+
+  // Available sky band: structures root at horizonY, grow upward.
+  // Cap at 52% of horizonY so the tallest spire never reaches the star field.
+  const skyBand = Math.min(horizonY * 0.52, h * 0.26);
+  if (skyBand < 14) return;
+
+  // Runtime palette uses ridge[] array: index 0 = farthest, last = nearest.
+  // Fallback to surface so no crash on a zero-ridge edge case.
+  const ridgeArr = pal.ridge;
+  const [rfr, rfg, rfb] = ridgeArr[0] ?? pal.surface;
+  const midIdx   = Math.max(0, Math.floor(ridgeArr.length / 2));
+  const [rmr, rmg, rmb] = ridgeArr[midIdx] ?? pal.surface;
+
+  // Window rect accumulators — drawn in a single additive pass after silhouettes
+  // so windows always appear on top of the structure fills.
+  // Stored as [x, y, ww, wh] tuples; far windows are dimmer than near.
+  const farWins:  [number, number, number, number][] = [];
+  const nearWins: [number, number, number, number][] = [];
+
+  // Helper: fill a diagonal line segment as a thin 2-px rotated rect.
+  // Inherits current ctx.fillStyle; balanced save/restore.
+  const drawDiag = (x1: number, y1: number, x2: number, y2: number): void => {
+    const dx2 = x2 - x1, dy2 = y2 - y1;
+    const len = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+    if (len < 2) return;
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(Math.atan2(dy2, dx2));
+    ctx.fillRect(0, -1, len, 2);
+    ctx.restore();
+  };
+
+  // ============================================================
+  // LAYER 0 — far cityscape (lighter / hazier / shorter structures)
+  // ============================================================
+  {
+    const FAR_COUNT = 11 + Math.floor(rng() * 5);     // 11–15 structures
+    const hazeAmt   = 0.46;
+    const hazeAmtC  = 1 - hazeAmt;
+    const fr  = Math.round(rfr * hazeAmtC + hazeR * hazeAmt);
+    const fg  = Math.round(rfg * hazeAmtC + hazeG * hazeAmt);
+    const fbl = Math.round(rfb * hazeAmtC + hazeB * hazeAmt);
+
+    ctx.save();
+    ctx.fillStyle = `rgb(${fr}, ${fg}, ${fbl})`;
+
+    for (let si = 0; si < FAR_COUNT; si++) {
+      const cx   = rng() * w;
+      const typR = rng();
+      const kind = typR < 0.50 ? 'spire' : typR < 0.78 ? 'dome' : 'gantry';
+      const sh   = skyBand * (0.22 + rng() * 0.42);   // 22–64% of skyBand (far = shorter)
+
+      if (kind === 'spire') {
+        const sw   = 5 + Math.floor(rng() * 10);       // 5–14px wide
+        const sx   = Math.round(cx - sw * 0.5);
+        const topY = Math.round(horizonY - sh);
+        ctx.fillRect(sx, topY, sw, Math.round(sh));
+        // Observation band at ~70% height — wider than the shaft
+        if (sh > 22 && rng() < 0.65) {
+          ctx.fillRect(Math.round(cx - sw), Math.round(horizonY - sh * 0.70),
+            sw * 2, Math.max(2, Math.round(sh * 0.06)));
+        }
+        // A couple of far-layer window hints (only when night is prominent)
+        if (windowA > 0.14) {
+          const wCount = 1 + Math.floor(rng() * 2);
+          for (let wi = 0; wi < wCount; wi++) {
+            farWins.push([Math.round(cx - 1), Math.round(horizonY - sh * (0.22 + rng() * 0.45)), 2, 1]);
+          }
+        }
+      } else if (kind === 'dome') {
+        const dw  = 18 + Math.floor(rng() * 24);       // 18–41px wide
+        const dh  = sh * 0.52;                          // dome cap height
+        const bh  = sh - dh;                            // cylinder height
+        const dx  = Math.round(cx - dw * 0.5);
+        // Cylinder base
+        ctx.fillRect(dx, Math.round(horizonY - bh), dw, Math.round(bh));
+        // Dome cap — upper half-ellipse (clockwise π→2π traces the top arc)
+        ctx.beginPath();
+        ctx.ellipse(Math.round(cx), Math.round(horizonY - bh), dw * 0.5, dh,
+          0, Math.PI, Math.PI * 2, false);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        // Gantry: perimeter uprights + top beam + mid cross-bar
+        const gw  = 24 + Math.floor(rng() * 34);       // 24–57px wide
+        const gx  = Math.round(cx - gw * 0.5);
+        const lw  = Math.max(2, Math.round(gw * 0.055));
+        const topY = Math.round(horizonY - sh);
+        ctx.fillRect(gx, topY, lw, Math.round(sh));
+        ctx.fillRect(gx + gw - lw, topY, lw, Math.round(sh));
+        ctx.fillRect(gx, topY, gw, lw);
+        ctx.fillRect(gx, Math.round(horizonY - sh * 0.50), gw, lw);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ============================================================
+  // LAYER 1 — near megastructures (darker / crisper / taller)
+  // ============================================================
+  {
+    const NEAR_COUNT = 7 + Math.floor(rng() * 4);      // 7–10 structures
+    const hazeAmt   = 0.07;
+    const hazeAmtC  = 1 - hazeAmt;
+    const nr  = Math.round(rmr * hazeAmtC + hazeR * hazeAmt);
+    const ng  = Math.round(rmg * hazeAmtC + hazeG * hazeAmt);
+    const nbl = Math.round(rmb * hazeAmtC + hazeB * hazeAmt);
+
+    ctx.save();
+    ctx.fillStyle = `rgb(${nr}, ${ng}, ${nbl})`;
+
+    for (let si = 0; si < NEAR_COUNT; si++) {
+      const cx   = rng() * w;
+      const typR = rng();
+      const kind = typR < 0.42 ? 'spire' : typR < 0.72 ? 'dome' : 'gantry';
+      const sh   = skyBand * (0.45 + rng() * 0.55);    // 45–100% of skyBand (near = taller)
+
+      if (kind === 'spire') {
+        const sw   = 10 + Math.floor(rng() * 18);      // 10–27px wide
+        const sx   = Math.round(cx - sw * 0.5);
+        const topY = Math.round(horizonY - sh);
+        ctx.fillRect(sx, topY, sw, Math.round(sh));
+        // Observation platform at ~72% height
+        if (sh > 35) {
+          const obsW = Math.round(sw * 2.2);
+          ctx.fillRect(Math.round(cx - obsW * 0.5), Math.round(horizonY - sh * 0.72),
+            obsW, Math.max(2, Math.round(sh * 0.055)));
+        }
+        // Thin antenna tip above the main shaft
+        if (sh > 50 && rng() < 0.65) {
+          const anh = 12 + Math.floor(rng() * 14);
+          ctx.fillRect(Math.round(cx - 1), topY - anh, 3, anh);
+        }
+        // Windows: scattered cells on the shaft face
+        const winW  = Math.max(2, Math.round(sw * 0.28));
+        const winH  = Math.max(2, Math.round(sw * 0.16));
+        const wCnt  = 3 + Math.floor(rng() * 5);
+        for (let wi = 0; wi < wCnt; wi++) {
+          const wy = Math.round(horizonY - sh * (0.18 + rng() * 0.55));
+          const wx = Math.round(cx - winW * 0.5 + (rng() * 2 - 1) * sw * 0.15);
+          if (wy > topY) nearWins.push([wx, wy, winW, winH]);
+        }
+      } else if (kind === 'dome') {
+        const dw  = 40 + Math.floor(rng() * 55);       // 40–94px wide
+        const dh  = sh * 0.54;                          // dome cap height
+        const bh  = sh - dh;                            // cylinder height
+        const dx  = Math.round(cx - dw * 0.5);
+        // Cylinder base
+        ctx.fillRect(dx, Math.round(horizonY - bh), dw, Math.round(bh));
+        // Dome cap — upper half-ellipse
+        ctx.beginPath();
+        ctx.ellipse(Math.round(cx), Math.round(horizonY - bh), dw * 0.5, dh,
+          0, Math.PI, Math.PI * 2, false);
+        ctx.closePath();
+        ctx.fill();
+        // Windows: grid of small cells on the cylinder band
+        const wCols = 2 + Math.floor(rng() * 4);
+        const rowSp = Math.max(6, Math.round(bh / (2 + rng() * 2.5)));
+        for (let r = 0; r * rowSp < bh - 4; r++) {
+          for (let c = 0; c < wCols; c++) {
+            if (rng() < 0.52) {
+              const wx = Math.round(dx + 5 + (c / wCols) * (dw - 10) + rng() * 3);
+              const wy = Math.round(horizonY - bh + r * rowSp + 3);
+              nearWins.push([wx, wy, 3, 2]);
+            }
+          }
+        }
+      } else {
+        // Gantry / orbital dock frame: uprights + top beam + mid beam + X-brace
+        const gw  = 55 + Math.floor(rng() * 70);       // 55–124px wide
+        const gx  = Math.round(cx - gw * 0.5);
+        const topY = Math.round(horizonY - sh);
+        const lw  = Math.max(3, Math.round(gw * 0.05));
+        const midY = Math.round(horizonY - sh * 0.48);
+        // Structural perimeter
+        ctx.fillRect(gx, topY, lw, Math.round(sh));
+        ctx.fillRect(gx + gw - lw, topY, lw, Math.round(sh));
+        ctx.fillRect(gx, topY, gw, lw);
+        ctx.fillRect(gx, midY, gw, lw);
+        // X-brace diagonals between the top beam and the mid beam
+        drawDiag(gx + lw, topY + lw, gx + gw - lw, midY);
+        drawDiag(gx + gw - lw, topY + lw, gx + lw, midY);
+        // Windows along the lower frame bay
+        const wCnt = 3 + Math.floor(rng() * 5);
+        for (let wi = 0; wi < wCnt; wi++) {
+          if (rng() < 0.58) {
+            const wx = gx + Math.round(lw + (wi / wCnt) * (gw - 2 * lw) + rng() * 3);
+            const wy = Math.round(horizonY - sh * (0.22 + rng() * 0.28));
+            nearWins.push([wx, wy, 3, 2]);
+          }
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ============================================================
+  // Window glow — additive pass over both silhouette layers.
+  // Far windows: 32% of near intensity (distance attenuation).
+  // ============================================================
+  if ((farWins.length > 0 || nearWins.length > 0) && windowA > 0.04) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgb(${wr}, ${wg}, ${wb})`;
+    for (let i = 0; i < farWins.length; i++) {
+      ctx.globalAlpha = windowA * 0.32;
+      ctx.fillRect(farWins[i][0], farWins[i][1], farWins[i][2], farWins[i][3]);
+    }
+    for (let i = 0; i < nearWins.length; i++) {
+      ctx.globalAlpha = windowA;
+      ctx.fillRect(nearWins[i][0], nearWins[i][1], nearWins[i][2], nearWins[i][3]);
+    }
+    ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
   }
 }
@@ -6476,6 +6891,157 @@ function drawTropicalLagoon(
 }
 
 // ---------------------------------------------------------------------------
+// drawBarrenVacuum — WO-V6-BARREN
+//
+// Airless vacuum signature for BARREN worlds.  Renders three passes:
+//   1. Supplementary dense starfield (top 50 % of sky) — no atmosphere to
+//      scatter sunlight, so stars blaze through even at noon.
+//   2. Hard-edged crater field across the ground plane — lit rim arc on the
+//      sunward side, hard shadow arc on the far side, recessed floor ellipse.
+//      No soft blurring: airless worlds have no atmospheric haze to soften edges.
+//   3. Crisp terminator shadow when the sun is near the horizon — a hard
+//      multiply band across the ground from the anti-sun side, plus a thin
+//      accent-tint edge line at the terminator boundary.
+//
+// Called from drawScene §5a'' — BARREN planet type ONLY.
+// Seeded via splitmix32(deriveChildSeed(model.seed, 'barren-vacuum'));
+// no Math.random, no Date.now.  ctx.save/restore balanced; arc() radii ≥ 1.
+// ---------------------------------------------------------------------------
+function drawBarrenVacuum(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  _cache: VistaCache,
+  dc: DayCycle,
+  horizonY: number,
+  sunX: number,
+): void {
+  void t;  // structural param — crater positions + star positions are seed-stable
+
+  const pal      = model.palette;
+  const [sr, sg, sb] = pal.surface;
+  const [ar, ag, ab] = pal.accent;
+
+  // One seeded PRNG stream for this world's barren-vacuum signature.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'barren-vacuum'));
+
+  // ---- 1. Supplementary dense starfield (top 50 % of sky) --------------------
+  // Vacuum worlds carry no atmosphere to scatter sunlight, so distant stars are
+  // visible at any hour.  This additive pass layers extra tight stars onto the
+  // existing cache starfield for a truly airless black-sky read.  Drawn only in
+  // the top half of the sky to stay well clear of ridge silhouette intrusions.
+  const EXTRA_STARS = 80 + Math.floor(rng() * 41);  // 80–120
+  {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const skyLimit = horizonY * 0.50;
+    for (let i = 0; i < EXTRA_STARS; i++) {
+      const sx   = rng() * w;
+      const sy   = rng() * skyLimit;
+      const sSz  = Math.max(0.2, 0.20 + rng() * 0.70);   // 0.20–0.90 px
+      const warm = rng();                                  // cool→warm depth grade
+      const sR   = Math.round(192 + warm * 63);           // 192–255
+      const sG   = Math.round(212 + warm * 43);           // 212–255
+      const sB   = Math.round(255 - warm * 38);           // 217–255
+      const sA   = 0.22 + rng() * 0.50;                  // 0.22–0.72
+      ctx.globalAlpha = sA;
+      ctx.fillStyle   = `rgb(${sR}, ${sG}, ${sB})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sSz, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---- 2. Crater field (ground plane) ----------------------------------------
+  // Each crater: dark recessed floor + lit rim arc (toward sunX) + hard shadow
+  // arc (away from sunX).  No atmospheric blur — vacuum light is razor-sharp.
+  const groundH = h - horizonY;
+  if (groundH > 8) {
+    const CRATER_COUNT = 6 + Math.floor(rng() * 7);   // 6–12 craters
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineCap = 'round';
+    for (let ci = 0; ci < CRATER_COUNT; ci++) {
+      const cx = (0.04 + rng() * 0.92) * w;
+      const cy = horizonY + (0.08 + rng() * 0.80) * groundH;
+      // Clamp radius ≥ 1 (arc() guard).
+      const r  = Math.max(1, 8 + Math.floor(rng() * 47));  // 8–54 px
+      // Angle from crater center toward the sun (lit side of the rim).
+      const litAngle = Math.atan2(horizonY * 0.5 - cy, sunX - cx);
+      const rimSpan  = Math.PI * 0.60;   // 108° per arc (lit + shadow)
+
+      // 2a) Dark recessed floor — ellipse offset slightly downward (depth cue).
+      const floorR = Math.max(1, Math.round(r * 0.62));
+      ctx.fillStyle = `rgba(${Math.max(0, sr - 20)}, ${Math.max(0, sg - 20)}, ${Math.max(0, sb - 14)}, 0.82)`;
+      ctx.beginPath();
+      ctx.arc(cx, cy + r * 0.10, floorR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 2b) Lit rim — lighter-than-surface arc on the sunward side.
+      const hlR = Math.min(255, Math.round(ar * 0.50 + sr * 0.50 + 28));
+      const hlG = Math.min(255, Math.round(ag * 0.50 + sg * 0.50 + 20));
+      const hlB = Math.min(255, Math.round(ab * 0.50 + sb * 0.50 + 16));
+      ctx.strokeStyle = `rgba(${hlR}, ${hlG}, ${hlB}, 0.88)`;
+      ctx.lineWidth   = Math.max(1.0, r * 0.10);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, litAngle - rimSpan * 0.5, litAngle + rimSpan * 0.5);
+      ctx.stroke();
+
+      // 2c) Shadow rim — hard dark arc on the opposite side; no feathering.
+      const shdAngle = litAngle + Math.PI;
+      ctx.strokeStyle = `rgba(${Math.max(0, Math.round(sr * 0.32))}, ${Math.max(0, Math.round(sg * 0.32))}, ${Math.max(0, Math.round(sb * 0.38))}, 0.92)`;
+      ctx.lineWidth   = Math.max(1.0, r * 0.13);
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, shdAngle - rimSpan * 0.5, shdAngle + rimSpan * 0.5);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ---- 3. Terminator shadow — crisp day/night boundary at low sun angles ------
+  // No atmosphere = no twilight diffusion.  The boundary between lit and unlit
+  // ground is a hard line.  Only drawn when the sun is within ~16° of the horizon
+  // (sunAlt 0..0.28).
+  const sunAlt = dc.sunAlt;
+  if (dc.sunUp && sunAlt < 0.28 && groundH > 8) {
+    // shadowFrac: 1 when sun at horizon, fades to 0 when alt ≥ 0.28.
+    const shadowFrac = 1 - sunAlt / 0.28;
+    const shadowW    = shadowFrac * w * 0.52;   // width of shadowed ground from anti-sun edge
+    const sunOnRight = sunX > w * 0.5;
+    const termX      = sunOnRight ? shadowW : w - shadowW;
+
+    if (shadowW > 4) {
+      // Hard multiply shadow — the unlit half of the surface.
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = 'rgba(0, 0, 8, 0.70)';
+      if (sunOnRight) {
+        ctx.fillRect(0, horizonY, termX, h - horizonY);
+      } else {
+        ctx.fillRect(termX, horizonY, w - termX, h - horizonY);
+      }
+      ctx.restore();
+
+      // Thin accent-tint edge line — the last lit sliver before shadow.
+      const edgeA = (0.32 * (1 - shadowFrac * 0.45)).toFixed(3);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${edgeA})`;
+      ctx.lineWidth   = 1.5;
+      ctx.lineCap     = 'butt';
+      ctx.beginPath();
+      ctx.moveTo(termX, horizonY);
+      ctx.lineTo(termX, h);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // drawScene — the per-frame compositor
 //
 // Ported from drawLandedScene (SolarSystemViewscreen.tsx L3477), adapted to
@@ -6926,14 +7492,23 @@ function drawScene(
   }
 
   // 5) Terrain layer — mode-branched.
-  //    'cloud-deck'     → GAS_GIANT floating cloud horizon (no ridges, no ground plane)
+  //    'cloud-deck'     → GAS_GIANT full-frame banded atmosphere (no ridges, no ground plane,
+  //                       no waterline — the whole canvas is atmosphere; WO-V6-GAS_GIANT)
   //    'plating'        → ARTIFICIAL engineered flat surface (no ridges)
   //    DESERT           → sculpted dune sea — sinuous ridges + lit/shadow crests (WO-V4-DESERT)
   //    MOUNTAINOUS      → alpine ridgelines + snow caps + scree/treeline band (WO-V5-MOUNTAINOUS)
   //    'surface'/default → P0 parallax ridges + ground plane (unchanged)
   if (cache.terrainMode === 'cloud-deck') {
-    drawCloudDeck(ctx, w, h, t, model, cache, dc);
+    // GAS_GIANT: drawGasGiantBands fills the full canvas (0..h) with banded atmosphere,
+    // storm oval, and limb darkening — painting over the sky gradient from §1.
+    // Ground/ridge/water paths are already gated out by this else-if chain;
+    // §4b water is also skipped because GAS_GIANT has waterAllowList:[] → hasWater=false.
+    drawGasGiantBands(ctx, w, h, t, model, cache, dc);
   } else if (cache.terrainMode === 'plating') {
+    // ARTIFICIAL skyline: megastructure silhouettes root at horizonY and project
+    // upward into the sky band — drawn before plating so spires sit on the horizon
+    // while the plating deck fills the foreground ground plane below.
+    drawArtificialSkyline(ctx, w, h, t, model, cache, dc, sunX);
     drawPlating(ctx, w, h, t, model, cache, dc);
   } else if (model.planetType === 'DESERT') {
     // DESERT signature — replaces the generic ridge renderer with a sculpted dune sea.
@@ -7082,6 +7657,12 @@ function drawScene(
       if (arcticGBtm > horizonY) {
         drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'ground', arcticGBtm);
       }
+    }
+
+    // 5a'') BARREN vacuum overlay — dense starfield + crater field + terminator shadow.
+    // Drawn over ridge fills; existing basalt rock scatter (§5f) renders on top.
+    if (model.planetType === 'BARREN') {
+      drawBarrenVacuum(ctx, w, h, t, model, cache, dc, horizonY, sunX);
     }
   }
 

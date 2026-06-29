@@ -126,7 +126,7 @@ const PROOF_INPUT: VistaInput = {
 // NOT calls to randomVistaInput — so the same input runs on any branch and
 // a pixel diff between before/after reflects only engine changes, not entropy.
 //
-// Coverage: 11 of the 12 PlanetTypes (GAS_GIANT deferred).
+// Coverage: all 12 PlanetTypes.
 
 const FIXED_INPUTS: Record<string, VistaInput> = {
 
@@ -410,6 +410,38 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
       hazards: [
         { kind: 'radiation', severity: 0.60, named: false },
         { kind: 'impact',    severity: 0.40, named: false },
+      ],
+    },
+  },
+
+  GAS_GIANT: {
+    contractVersion: 1,
+    seed: 'type-proof-GAS_GIANT-001',
+    planet: {
+      type:         'GAS_GIANT',
+      habitability: 0,
+      atmosphere:   { present: true, kind: null, density: 1.0 },
+      nativeLife:   0.0,
+      temperature:  -0.35,
+      waterCoverage: 0.0,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             5.2,
+      phaseDeg:            60,
+      rotationPeriodHours: 10,
+      axialTiltDeg:        3,
+    },
+    site: {
+      shape: 'ENGINEERED', usableSlots: 6, citadelCeiling: 1,
+      energy: { source: 'SOLAR', tier: 3, magnitude: 0.70 },
+      deposits: [
+        { kind: 'gas',     richness: 0.95 },
+        { kind: 'mineral', richness: 0.30 },
+      ],
+      hazards: [
+        { kind: 'radiation', severity: 0.70, named: false },
+        { kind: 'impact',    severity: 0.35, named: false },
       ],
     },
   },
