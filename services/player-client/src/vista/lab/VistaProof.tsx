@@ -126,7 +126,7 @@ const PROOF_INPUT: VistaInput = {
 // NOT calls to randomVistaInput — so the same input runs on any branch and
 // a pixel diff between before/after reflects only engine changes, not entropy.
 //
-// Coverage: 10 of the 12 PlanetTypes (GAS_GIANT / ARCTIC deferred).
+// Coverage: 11 of the 12 PlanetTypes (GAS_GIANT deferred).
 
 const FIXED_INPUTS: Record<string, VistaInput> = {
 
@@ -283,6 +283,37 @@ const FIXED_INPUTS: Record<string, VistaInput> = {
       ],
       hazards: [
         { kind: 'snow', severity: 0.80, named: false },
+      ],
+    },
+  },
+
+  ARCTIC: {
+    contractVersion: 1,
+    seed: 'type-proof-ARCTIC-001',
+    planet: {
+      type:         'ARCTIC',
+      habitability: 22,
+      atmosphere:   { present: true, kind: null, density: 0.45 },
+      nativeLife:   0.12,
+      temperature:  -0.75,
+      waterCoverage: 0.30,
+    },
+    celestial: {
+      star:                { kind: 'K_ORANGE', color: '#ffd0a0' },
+      orbitAu:             1.6,
+      phaseDeg:            60,
+      rotationPeriodHours: 28,
+      axialTiltDeg:        45,
+    },
+    site: {
+      shape: 'COMPACT', usableSlots: 10, citadelCeiling: 2,
+      energy: { source: 'GEOTHERMAL', tier: 2, magnitude: 0.55 },
+      deposits: [
+        { kind: 'ice', richness: 0.80 },
+        { kind: 'ore', richness: 0.40 },
+      ],
+      hazards: [
+        { kind: 'snow', severity: 0.70, named: false },
       ],
     },
   },

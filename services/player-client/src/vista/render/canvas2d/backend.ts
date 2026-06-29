@@ -4966,6 +4966,224 @@ function drawFrozenSheet(
 }
 
 // ---------------------------------------------------------------------------
+// drawAuroraCurtains — WO-V5-ARCTIC
+// ARCTIC signature: auroral ribbon curtains in the sky (phase='sky') and a
+// frozen tundra ground overlay with sastrugi banding + ice hummocks (phase='ground').
+//
+//   phase='sky'    Called from drawScene §2g — after ring-arc, before god-rays.
+//                  Draws 2–3 vertical auroral ribbon curtains in the upper sky
+//                  with additive 'lighter' composite glow.
+//   phase='ground' Called from drawScene §5a' — after ridge fills and §5a base.
+//                  Overlays sastrugi wind-ridges + scattered low ice hummocks and,
+//                  at night, a faint auroral ambient wash on the tundra.
+//
+// Aurora intensity peaks at full night (dc.sunUp false / low sunAlt) and
+// fades to a faint wash by day — coherent at dawn/dusk, near-zero at noon.
+// No Math.random/Date.now; seeded from model.seed via deriveChildSeed + splitmix32.
+// ctx.save/restore balanced; 'lighter' composite reset to 'source-over' before return.
+// Caller is responsible for the model.planetType === 'ARCTIC' gate.
+// ---------------------------------------------------------------------------
+function drawAuroraCurtains(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  horizonY: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  phase: 'sky' | 'ground',
+  groundBtm?: number,  // pixel bottom of ground fill band; required for 'ground' phase
+): void {
+  const model = cache.model;
+  const pal   = model.palette;
+
+  // Shared night intensity — drives aurora brightness in both phases.
+  // Peaks at full night (sunAlt deeply negative), fades at dawn/dusk, near-zero midday.
+  const nightI = dc.sunUp
+    ? Math.max(0, 0.22 - dc.sunAlt * 1.80)              // sunrise→0.22, midday→0
+    : Math.min(1.0, 0.60 + Math.abs(dc.sunAlt) * 0.40); // 0.60–1.0 through the night
+
+  // ---- phase='sky' — auroral ribbon curtains --------------------------------
+  if (phase === 'sky') {
+    const rngAur        = splitmix32(deriveChildSeed(model.seed, 'aurora-curtains'));
+    const CURTAIN_COUNT = 2 + Math.floor(rngAur() * 2);   // 2 or 3
+
+    // Curtains span from near-zenith (4% of horizonY) down to ~68% of horizonY.
+    const curtainTop = horizonY * 0.04;
+    const curtainBtm = horizonY * 0.68;
+    const curtainH   = curtainBtm - curtainTop;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (let ci = 0; ci < CURTAIN_COUNT; ci++) {
+      // Consume all per-curtain RNG values before any alpha gate so the sequence
+      // is deterministic regardless of which curtains pass the alpha threshold.
+      const cxFrac     = 0.12 + rngAur() * 0.76;         // x-centre [0.12, 0.88] of w
+      const halfW      = 38   + rngAur() * 68;            // half-width 38–106 px
+      const swayAmp    = 7    + rngAur() * 24;            // horizontal sway amplitude px
+      const swayFreq   = 2.2  + rngAur() * 2.2;           // curtain fold spatial frequency
+      const swaySpeed  = 0.07 + rngAur() * 0.11;          // slow drift speed
+      const swayPhase  = rngAur() * Math.PI * 2;          // seed-stable initial phase
+      const alphaBase  = 0.52 + rngAur() * 0.38;          // per-curtain base brightness
+      const colorShift = rngAur();                         // 0=green-dominant, 1=teal-dominant
+
+      const alpha = nightI * alphaBase;
+      if (alpha < 0.018) continue;
+
+      const cx = w * cxFrac;
+
+      // Wavy curtain polygon — STEPS waypoints on each vertical edge, same sway offset.
+      const STEPS = 22;
+      const leftPts:  [number, number][] = [];
+      const rightPts: [number, number][] = [];
+      for (let si = 0; si <= STEPS; si++) {
+        const frac = si / STEPS;
+        const cy   = curtainTop + frac * curtainH;
+        const sway = Math.sin(frac * swayFreq * Math.PI + swayPhase
+                              + (t === 0 ? 0 : t * swaySpeed)) * swayAmp;
+        leftPts.push([cx - halfW + sway, cy]);
+        rightPts.push([cx + halfW + sway, cy]);
+      }
+
+      // Colour gradient: magenta-violet crown (top) → green body → teal base.
+      // colorShift blends between two aurora hue pairs for per-curtain variety.
+      //   shift≈0: green body (30, 220, 80) + violet crown (120, 40, 220)
+      //   shift≈1: teal body  ( 0, 160, 200) + magenta crown (200, 30, 180)
+      const bodyR = Math.round(30  * (1 - colorShift));
+      const bodyG = Math.round(220 - colorShift * 60);
+      const bodyB = Math.round(80  + colorShift * 120);
+      const crnR  = Math.round(120 + colorShift * 80);
+      const crnG  = Math.round(40  - colorShift * 10);
+      const crnB  = Math.round(220 - colorShift * 40);
+
+      const grad = ctx.createLinearGradient(cx, curtainTop, cx, curtainBtm);
+      grad.addColorStop(0,    `rgba(${crnR}, ${crnG}, ${crnB}, 0)`);
+      grad.addColorStop(0.10, `rgba(${crnR}, ${crnG}, ${crnB}, ${(alpha * 0.45).toFixed(3)})`);
+      grad.addColorStop(0.30, `rgba(${bodyR}, ${bodyG}, ${bodyB}, ${alpha.toFixed(3)})`);
+      grad.addColorStop(0.58, `rgba(${bodyR}, ${bodyG}, ${bodyB}, ${(alpha * 0.38).toFixed(3)})`);
+      grad.addColorStop(1,    `rgba(${bodyR}, ${bodyG}, ${bodyB}, 0)`);
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      // Left edge: top → bottom
+      for (let i = 0; i <= STEPS; i++) {
+        const [px, py] = leftPts[i];
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      // Right edge: bottom → top (closes the ribbon polygon)
+      for (let i = STEPS; i >= 0; i--) {
+        const [px, py] = rightPts[i];
+        ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // MUST reset composite + globalAlpha before restore — 'lighter' is a classic leak.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    return;
+  }
+
+  // ---- phase='ground' — frozen tundra overlay --------------------------------
+  // Overlay drawn over the already-filled ridge/land surface for all ARCTIC worlds.
+  const gTop = horizonY;
+  const gBtm = groundBtm ?? h;
+  const gH   = gBtm - gTop;
+  if (gH <= 0) return;
+
+  const [sr, sg, sb] = pal.surface;  // ARCTIC surface: tundra gray-green [68, 92, 82]
+
+  // 1) Sastrugi banding — wind-carved ridges running horizontally across the tundra.
+  //    Thin paired crest-highlight + shadow-trough bands at seeded y-positions.
+  {
+    const rngSas    = splitmix32(deriveChildSeed(model.seed, 'arctic-sastrugi'));
+    const SAS_COUNT = 6 + Math.floor(rngSas() * 6);  // 6–11 bands
+    const brightFac = Math.max(0.25, dc.bright);
+
+    ctx.save();
+    for (let si = 0; si < SAS_COUNT; si++) {
+      const yFrac = rngSas();
+      const thick = 1.5 + rngSas() * 4.0;   // band height 1.5–5.5 px
+      const dark  = 0.06 + rngSas() * 0.09;
+      const lit   = 0.07 + rngSas() * 0.10;
+      const py    = gTop + yFrac * gH;
+
+      // Shadow trough below the crest (darker tundra tone)
+      ctx.globalAlpha = dark * brightFac;
+      ctx.fillStyle   = `rgb(${Math.max(0, sr - 28)}, ${Math.max(0, sg - 22)}, ${Math.max(0, sb - 18)})`;
+      ctx.fillRect(0, py, w, thick);
+
+      // Lit snow crest just above the trough (lighter / icier tone)
+      ctx.globalAlpha = lit * brightFac;
+      ctx.fillStyle   = `rgb(${Math.min(255, sr + 38)}, ${Math.min(255, sg + 42)}, ${Math.min(255, sb + 52)})`;
+      ctx.fillRect(0, py - 1.5, w, 1.5);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  // 2) Ice hummocks — low rounded permafrost mounds scattered in the foreground zone.
+  //    Concentrated in the lower 50% of the ground band (nearer the camera).
+  {
+    const rngHum    = splitmix32(deriveChildSeed(model.seed, 'arctic-hummocks'));
+    const HUM_COUNT = 7 + Math.floor(rngHum() * 8);   // 7–14 hummocks
+    const fgBand    = gTop + gH * 0.50;                // foreground zone: lower half of ground
+    const brightFac = Math.max(0.30, dc.bright);
+
+    ctx.save();
+    for (let hi = 0; hi < HUM_COUNT; hi++) {
+      // Consume all per-hummock values before any gate.
+      const hx     = rngHum() * w;
+      const hyFrac = rngHum();
+      const hw     = 18 + rngHum() * 55;   // half-width 18–73 px
+      const hh     = 5  + rngHum() * 18;   // height 5–23 px (very low mounds)
+      const hAlp   = 0.50 + rngHum() * 0.38;
+      const hy     = fgBand + hyFrac * (gBtm - fgBand - 4);
+
+      // Hummock body: soft radial gradient ellipse, icier/lighter than the surface
+      const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, hw);
+      hg.addColorStop(0,    `rgba(${Math.min(255, sr + 48)}, ${Math.min(255, sg + 55)}, ${Math.min(255, sb + 72)}, ${(hAlp * brightFac).toFixed(3)})`);
+      hg.addColorStop(0.65, `rgba(${Math.min(255, sr + 18)}, ${Math.min(255, sg + 20)}, ${Math.min(255, sb + 28)}, ${(hAlp * brightFac * 0.35).toFixed(3)})`);
+      hg.addColorStop(1,    `rgba(${sr}, ${sg}, ${sb}, 0)`);
+      ctx.fillStyle = hg;
+      ctx.beginPath();
+      ctx.ellipse(hx, hy, hw, hh, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Bright snow cap on the upper arc — sun-lit highlight, fades below dc.bright threshold
+      if (dc.bright > 0.08) {
+        ctx.save();
+        ctx.globalAlpha = hAlp * dc.bright * 0.55;
+        ctx.fillStyle   = `rgba(${Math.min(255, sr + 85)}, ${Math.min(255, sg + 95)}, ${Math.min(255, sb + 105)}, 1)`;
+        ctx.beginPath();
+        ctx.ellipse(hx, hy - hh * 0.35, hw * 0.72, hh * 0.50, 0, Math.PI, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
+  // 3) Aurora ambient wash on the ground — at night the curtains cast a faint
+  //    green-teal ambient glow on the tundra surface.
+  if (nightI > 0.12) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const washA    = nightI * 0.055;
+    const washGrad = ctx.createLinearGradient(0, gTop, 0, gBtm);
+    washGrad.addColorStop(0, `rgba(20, 110, 55, ${washA.toFixed(3)})`);
+    washGrad.addColorStop(1, `rgba(20, 110, 55, 0)`);
+    ctx.fillStyle = washGrad;
+    ctx.fillRect(0, gTop, w, gH);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // drawWaterFX — WO-V3-WATER-FX
 // Specular glitter column, sky flip-reflection, and whitecap/storm foam FX.
 // Called from drawScene §4b — liquid water types only (ocean/coastal/tidal-flat).
@@ -5136,6 +5354,295 @@ function drawWaterFX(
     ctx.stroke();
     ctx.restore();
   }
+}
+
+// ---------------------------------------------------------------------------
+// drawAlpineRidges — WO-V5-MOUNTAINOUS  (revised: snow visibility + scree softness)
+//
+// Alpine terrain signature: 4 layered ridgelines receding far→near with
+// atmospheric-perspective haze; snow caps on upper ridge peaks; a scree +
+// treeline foreground band; and visible valley depth between consecutive ridges.
+//
+// Called from drawScene §5 — MOUNTAINOUS planet type only.
+// Replaces the generic ridge renderer + ground fill for this type.
+//
+// Seeding: 'alpine-ridges' splitmix32 stream for ridge profiles;
+//          'alpine-treeline' stream for the treeline silhouette — both isolated.
+// No Math.random / Date.now.
+// ctx.save / restore balanced throughout; no 'lighter' composite used outside
+// save/restore, so composite op + alpha remain at source-over/1 on exit.
+// ---------------------------------------------------------------------------
+function drawAlpineRidges(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  model: VistaModel,
+  cache: VistaCache,
+  dc: DayCycle,
+  horizonY: number,
+  sunX: number,
+): void {
+  if (w <= 0) return;   // FIX 3: period = w*(…) = 0 → x%0 = NaN; guard here
+  const pal = model.palette;
+  const { hasAtmosphere } = cache;
+  const b = dc.bright;
+  const terrainBtm = cache.hasWater ? cache.waterTopY : h;
+  const terrainH   = terrainBtm - horizonY;
+  if (terrainH <= 0) return;
+
+  // Config — these constants match the AlpineRidgesConfig profile entry
+  // returned as Deliverable 2; hard-coded here until profiles.ts integration.
+  const RIDGE_COUNT    = 4;      // layered ridgelines far→near
+  const SNOW_LINE_FRAC = 0.60;   // fraction of terrainH below which snow fades to zero.
+                                  // Near-ridge peaks reach ~0.34·H from horizonY; 0.60 ensures
+                                  // they are well inside the clip zone (was 0.30 → snow invisible).
+  const SCREE_FRAC     = 0.40;   // fraction of post-near-ridge gap for the scree band
+  const TREE_STEP_PX   = 14;     // pixel spacing between conifer spike tips
+
+  // Seeded PRNG — isolated label so this sub-stream never aliases other renderers.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'alpine-ridges'));
+
+  // Sun azimuth fraction (0=left edge, 1=right edge) — biases snow glint direction.
+  // Safe: w > 0 guarded above.
+  const sunFrac = sunX / w;
+
+  // Atmospheric haze color — identical derivation to the generic ridge renderer so
+  // far ridges desaturate/lift into the same sky atmosphere.
+  const horBase = pal.skyHorizon;
+  const hazeR = hasAtmosphere ? Math.min(255, Math.round(horBase[0] * (0.4 + b * 0.6))) : 8;
+  const hazeG = hasAtmosphere ? Math.min(255, Math.round(horBase[1] * (0.4 + b * 0.6))) : 8;
+  const hazeB = hasAtmosphere ? Math.min(255, Math.round(horBase[2] * (0.4 + b * 0.6))) : 20;
+
+  // Snow color: palette.foam is the canonical snowcap/mist color for MOUNTAINOUS.
+  const [foamR, foamG, foamB] = pal.foam ?? ([198, 210, 220] as RGB);
+
+  // Snow line Y (pixels): ridge peaks above this Y carry snow.
+  const snowLineY = horizonY + SNOW_LINE_FRAC * terrainH;
+
+  // ---- Ground plane — alpine surface fill (rock/loam from pal.surface) ----
+  {
+    const [sr, sg, sb] = pal.surface;
+    const fill = ctx.createLinearGradient(0, horizonY, 0, terrainBtm);
+    fill.addColorStop(0, `rgb(${Math.round(sr * 0.90)}, ${Math.round(sg * 0.90)}, ${Math.round(sb * 0.88)})`);
+    fill.addColorStop(1, `rgb(${Math.round(sr * 0.58)}, ${Math.round(sg * 0.60)}, ${Math.round(sb * 0.56)})`);
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, horizonY, w, terrainH);
+  }
+
+  // ---- Ridge layers: far (ri=0) → near (ri=RIDGE_COUNT-1) ----
+  ctx.save();
+  // Clip ridges to above the waterline when coastal water is present.
+  if (cache.hasWater) {
+    ctx.beginPath();
+    ctx.rect(0, 0, w, cache.waterTopY);
+    ctx.clip();
+  }
+
+  for (let ri = 0; ri < RIDGE_COUNT; ri++) {
+    const depthFrac = ri / Math.max(1, RIDGE_COUNT - 1);   // 0=far, 1=near
+
+    // Ridge base Y: exponential placement gives convincing perspective recession.
+    const tFrac      = Math.pow(depthFrac, 0.70);
+    const ridgeBaseY = horizonY + tFrac * terrainH * 0.85;
+
+    // Amplitude: near ridges tower higher over the camera.
+    const amplitude = terrainH * (0.12 + depthFrac * 0.20);
+
+    // Per-ridge seeded profile: two sinusoidal harmonics produce the macro alpine
+    // silhouette; a third high-frequency term adds rocky jaggedness.
+    const phaseA = rng() * Math.PI * 2;
+    const freqA  = 0.50 + rng() * 0.60;
+    const phaseB = rng() * Math.PI * 2;
+    const freqB  = freqA * 1.70 + rng() * 0.40;
+    const bRatio = 0.30 + rng() * 0.18;
+    const phaseC = rng() * Math.PI * 2;
+    const freqC  = freqA * 4.20 + rng() * 0.80;
+    const cRatio = 0.07 + rng() * 0.05;
+
+    // Very slow atmospheric drift — mountains don't move; drift just prevents
+    // the vista from feeling fully frozen.  Near layers drift slightly faster.
+    const driftSpeed = (0.006 + depthFrac * 0.010) * (w / 1440);
+    const scrollOff  = t * driftSpeed;
+    // FIX 3: Math.max(1, …) ensures period ≥ 1 even when w is near 0.
+    const period     = Math.max(1, w * (1.30 + rng() * 0.55));
+
+    const STEP   = 4;
+    const numPts = Math.ceil(w / STEP) + 2;
+
+    // Ridge Y sampler: abs-sin peaks point upward (toward horizon in canvas space),
+    // producing a multi-peak mountain silhouette from a single seeded formula.
+    const ridgeAt = (xNorm: number): number =>
+      ridgeBaseY
+      - Math.abs(Math.sin(xNorm * Math.PI * 2 * freqA + phaseA)) * amplitude
+      - Math.abs(Math.sin(xNorm * Math.PI * 2 * freqB + phaseB)) * amplitude * bRatio
+      - Math.abs(Math.sin(xNorm * Math.PI * 2 * freqC + phaseC)) * amplitude * cRatio;
+
+    // ---- Fill color: interpolate pal.ridge[] by depthFrac (far→near) ----
+    const ridge    = pal.ridge;
+    const ridgeLen = ridge.length;
+    const rawPos   = depthFrac * Math.max(1, ridgeLen - 1);
+    const lo       = Math.floor(rawPos);
+    const hi       = Math.min(lo + 1, ridgeLen - 1);
+    const ridgeMix = rawPos - lo;
+    const [loR, loG, loB] = ridge[lo]  ?? ([74, 78, 91] as RGB);
+    const [hiR, hiG, hiB] = ridge[hi]  ?? ([loR, loG, loB] as RGB);
+    const baseR = Math.round(loR * (1 - ridgeMix) + hiR * ridgeMix);
+    const baseG = Math.round(loG * (1 - ridgeMix) + hiG * ridgeMix);
+    const baseB = Math.round(loB * (1 - ridgeMix) + hiB * ridgeMix);
+
+    // Atmospheric haze: far ridges blend ~55% toward sky horizon color.
+    // Identical scalar to the generic ridge renderer for visual continuity.
+    const hazeAmt  = 0.55 * (1 - depthFrac) * (hasAtmosphere ? 1.0 : 0.12);
+    const hazeAmtC = 1 - hazeAmt;
+    const fillR    = Math.round(baseR * hazeAmtC + hazeR * hazeAmt);
+    const fillG    = Math.round(baseG * hazeAmtC + hazeG * hazeAmt);
+    const fillB    = Math.round(baseB * hazeAmtC + hazeB * hazeAmt);
+
+    // Night cool-shift: ridges darken and push slightly cooler (bluer) at night.
+    const nightMix = Math.max(0, 1 - b * 2.2);
+    const coolR = Math.round(fillR * (1 - nightMix * 0.44));
+    const coolG = Math.round(fillG * (1 - nightMix * 0.30));
+    const coolB = Math.min(255, Math.round(fillB + nightMix * 16));
+
+    // ---- Ridge body fill ----
+    ctx.beginPath();
+    ctx.moveTo(-STEP, terrainBtm);
+    for (let xi = 0; xi <= numPts; xi++) {
+      const x    = (xi - 1) * STEP;
+      const xScr = (((x + scrollOff) % period) + period) % period;
+      ctx.lineTo(x, ridgeAt(xScr / period));
+    }
+    ctx.lineTo(w + STEP, terrainBtm);
+    ctx.closePath();
+    ctx.fillStyle = `rgb(${coolR}, ${coolG}, ${coolB})`;
+    ctx.fill();
+
+    // ---- Interleaved haze veil between layers (depth reinforcement) ----
+    // A thin atmosphere-colored gradient after each stratum makes each successive
+    // range appear through progressively thicker air.
+    if (ri < RIDGE_COUNT - 1 && hasAtmosphere) {
+      const veilAlpha = 0.06 * (1 - depthFrac) * Math.max(0.12, b);
+      if (veilAlpha > 0.003) {
+        const veilGrad = ctx.createLinearGradient(0, 0, 0, horizonY);
+        veilGrad.addColorStop(0,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.20).toFixed(3)})`);
+        veilGrad.addColorStop(0.65, `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${veilAlpha.toFixed(3)})`);
+        veilGrad.addColorStop(1,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.35).toFixed(3)})`);
+        ctx.fillStyle = veilGrad;
+        ctx.fillRect(0, 0, w, horizonY);
+      }
+    }
+
+    // ---- Snow caps (FIX 1) ----
+    // Root cause of original invisibility: the old approach clipped a top-down
+    // gradient fill to the ridge polygon interior, covering y=[horizonY, 0.30·H].
+    // Near-ridge peaks sit at ~0.34·H from horizonY — entirely outside that zone —
+    // so the intersection was empty and no snow was painted.
+    //
+    // Fix: thick STROKE along ridgeAt, clipped to y < snowLineY (now 0.60·H).
+    // The stroke paints directly on the ridge crest regardless of polygon depth,
+    // guaranteeing visibility.  Thickness: 4px far (subtle) → 22px near (clearly reads).
+    // Alpha: 0.55 far → 0.95 near (day);  0.16 → 0.34 (night, faint moonlit luminosity).
+    {
+      const snowThick = Math.max(2, 4 + depthFrac * 18);
+      const snowAlpha = dc.sunUp
+        ? (0.55 + depthFrac * 0.40) * Math.max(0.35, b)   // 0.55 far → 0.95 near
+        : 0.16 + depthFrac * 0.18;                          // moonlit: 0.16 far → 0.34 near
+
+      // Warm bias toward the sun side; cooler at night (blue-white moonlit snow).
+      const warmBias  = dc.sunUp ? Math.round(dc.warm * 18) : 0;
+      const sideBoost = sunFrac < 0.5 ? 10 : 0;
+      const snowR = dc.sunUp ? Math.min(255, foamR + warmBias + sideBoost) : Math.round(foamR * 0.72);
+      const snowG = dc.sunUp ? Math.min(255, foamG + Math.round(warmBias * 0.40)) : Math.round(foamG * 0.80);
+      const snowB = dc.sunUp ? foamB : Math.min(255, Math.round(foamB * 0.90 + 12));
+
+      ctx.save();
+      // Clip to y < snowLineY — peaks below that line carry no snow.
+      ctx.beginPath();
+      ctx.rect(0, 0, w, snowLineY);
+      ctx.clip();
+
+      ctx.lineWidth   = snowThick;
+      ctx.lineJoin    = 'round';
+      ctx.lineCap     = 'round';
+      ctx.strokeStyle = `rgba(${snowR}, ${snowG}, ${snowB}, ${snowAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      for (let xi = 0; xi <= numPts; xi++) {
+        const x    = (xi - 1) * STEP;
+        const xScr = (((x + scrollOff) % period) + period) % period;
+        const y    = ridgeAt(xScr / period);
+        if (xi === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ---- Scree band + conifer treeline (nearest ridge foreground) ----
+  // The gap between the nearest ridge base and the ground/waterline carries:
+  //   • Scree: soft low-opacity gray-stone tint (FIX 2 — was hard opaque brown stripe).
+  //   • Treeline: jagged dark-green conifer spikes (structure confirmed by lead).
+  {
+    // Near-ridge base Y matches ridgeBaseY formula at depthFrac=1.
+    const nearBaseY = horizonY + terrainH * 0.85;
+    const gapH      = terrainBtm - nearBaseY;
+    if (gapH > 6) {
+      const screeBtmY = nearBaseY + gapH * SCREE_FRAC;
+
+      // FIX 2: alpha capped at 0.28 max — reads as a natural rock-debris tint over
+      // the ridge body, not a painted stripe.  Haze tint blended in to pull color
+      // toward cool neutral gray instead of warm brown.
+      const [sr, sg, sb] = pal.surface;
+      const scR = Math.round(sr * 0.72 + hazeR * 0.14);
+      const scG = Math.round(sg * 0.70 + hazeG * 0.14);
+      const scB = Math.round(sb * 0.74 + hazeB * 0.14);
+      const screeAlpha = 0.28 * Math.max(0.20, b + 0.20);
+
+      ctx.save();
+      const screeGrad = ctx.createLinearGradient(0, nearBaseY, 0, screeBtmY);
+      screeGrad.addColorStop(0, `rgba(${scR}, ${scG}, ${scB}, ${screeAlpha.toFixed(3)})`);
+      screeGrad.addColorStop(1, `rgba(${scR}, ${scG}, ${scB}, 0)`);
+      ctx.fillStyle = screeGrad;
+      ctx.fillRect(0, nearBaseY, w, screeBtmY - nearBaseY);
+      ctx.restore();
+
+      // Treeline: jagged conifer silhouette — dark triangular spikes seeded per-world.
+      const treeRng   = splitmix32(deriveChildSeed(model.seed, 'alpine-treeline'));
+      const treeBaseY = screeBtmY;
+      const treeHMax  = gapH * SCREE_FRAC * 0.90;
+
+      // Dark alpine green; fades at deep night but always maintains a minimum silhouette.
+      const treeR = dc.sunUp ? 22 : 12;
+      const treeG = dc.sunUp ? 36 : 20;
+      const treeB = dc.sunUp ? 22 : 14;
+      const treeA = Math.max(0.22, 0.55 * Math.max(0.40, b + 0.25));
+
+      ctx.save();
+      ctx.fillStyle = `rgba(${treeR}, ${treeG}, ${treeB}, ${treeA.toFixed(3)})`;
+      ctx.beginPath();
+      const numTrees = Math.ceil(w / TREE_STEP_PX);
+      ctx.moveTo(0, treeBaseY);
+      for (let ti = 0; ti <= numTrees; ti++) {
+        const tx    = ti * TREE_STEP_PX;
+        const peakH = treeHMax * (0.42 + treeRng() * 0.58);
+        const tw    = TREE_STEP_PX * (0.30 + treeRng() * 0.22);
+        // Triangle spike: step from baseline → apex → back to baseline.
+        ctx.lineTo(tx - tw * 0.5, treeBaseY);
+        ctx.lineTo(tx,            treeBaseY - peakH);
+        ctx.lineTo(tx + tw * 0.5, treeBaseY);
+      }
+      ctx.lineTo(w, treeBaseY);
+      ctx.lineTo(w, terrainBtm);
+      ctx.lineTo(0, terrainBtm);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
+  // FIX 4: no 'lighter' composite or alpha mutations outside save/restore blocks.
+  // Composite op and globalAlpha remain at source-over / 1 on exit — no reset needed.
 }
 
 // ---------------------------------------------------------------------------
@@ -5474,6 +5981,501 @@ function drawLavaSea(
 }
 
 // ---------------------------------------------------------------------------
+// drawOceanicSurface — WO-V5-OCEANIC
+//
+// Open-water signature for OCEANIC worlds: a layered parallax swell/crest
+// field, a perspective sun-glitter (or moon-glitter at night) specular track,
+// and 1–2 distant archipelago islets silhouetted near the horizon.
+//
+// Replaces the generic flat-water banding with a visibly distinctive open-ocean
+// read.  Called from drawScene §4b — OCEANIC planet type only.
+//
+// Seeding: child streams derived from model.seed — labels 'oceanic-surface',
+// 'oceanic-glitter', 'oceanic-islets' — each isolated from every other renderer.
+// No Math.random, no Date.now.  ctx.save/restore balanced throughout; all
+// 'lighter'/composite + globalAlpha values reset before return.
+// ---------------------------------------------------------------------------
+function drawOceanicSurface(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+  wt: number,   // waterTopY in pixels
+  wh: number,   // h - wt (water band height in pixels)
+): void {
+  const model = cache.model;
+  const { sc }  = cache;
+  const pal     = model.palette;
+
+  // FIX 2: guard against degenerate canvas (w<=0 → period=0 → x%0=NaN).
+  if (w <= 0 || wh <= 0) return;
+
+  // Palette channels — OCEANIC carries all three in its basePalette.
+  const [wr, wg, wb] = pal.water  as [number, number, number];
+  const [ar, ag, ab] = pal.accent as [number, number, number];
+  const [sr, sg, sb] = pal.surface;
+
+  // ---- 1. Layered parallax swell field (far → near) -------------------------
+  // Six swell layers distribute from just below the waterline to the near edge
+  // of the water band.  Each is a seeded two-frequency sinusoid drawn as a
+  // filled polygon (the swell body) topped with a lit crest highlight.
+  // depthFrac: 0 = farthest (near horizon), 1 = nearest (camera foreground).
+  const rngSw = splitmix32(deriveChildSeed(model.seed, 'oceanic-surface'));
+
+  const SWELL_COUNT = 6;
+  for (let si = 0; si < SWELL_COUNT; si++) {
+    const depthFrac = si / Math.max(1, SWELL_COUNT - 1);
+
+    // Exponential Y placement so swells bunch toward the horizon (perspective).
+    const tFrac = Math.pow(depthFrac, 0.65);
+    const baseY = wt + tFrac * wh * 0.88;
+
+    // Per-swell seeded shape — two frequencies + phases, harmonic ratio for
+    // an organic non-repeating open-ocean erg (mirrors the DuneSea idiom).
+    const phA  = rngSw() * Math.PI * 2;
+    const frqA = 0.40 + rngSw() * 0.60;
+    const phB  = rngSw() * Math.PI * 2;
+    const frqB = frqA * 1.55 + rngSw() * 0.30;
+    const bRat = 0.28 + rngSw() * 0.26;   // harmonic amplitude fraction
+
+    // Amplitude grows quadratically with depth: far swells are very subtle,
+    // near swells loom visibly over the camera (ocean-scale perspective).
+    const amp = wh * (0.006 + depthFrac * depthFrac * 0.058);
+
+    // Slow ocean drift — near swells scroll faster (parallax depth sensation).
+    const speed  = (0.038 + depthFrac * 0.22) * (w / 1440);
+    const scroll = t === 0 ? 0 : t * speed;
+    const period = w * (1.30 + rngSw() * 0.60);
+
+    // Inline crest sampler: pre-scrolled normalised position → canvas Y.
+    const crestAt = (x: number): number => {
+      const xn = (((x + scroll) % period) + period) % period / period;
+      return baseY
+        + Math.sin(xn * Math.PI * 2 * frqA + phA) * amp
+        + Math.sin(xn * Math.PI * 2 * frqB + phB) * amp * bRat;
+    };
+
+    // Swell body: filled slab from crest top to crest + slabH.
+    // Gradient: lighter at the crest tip, transparent at the slab bottom.
+    const slabH     = 3 + depthFrac * 20;
+    const fillAlpha = 0.05 + depthFrac * 0.13;
+    {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(0, crestAt(0));
+      for (let x = 0; x <= w; x += 8) ctx.lineTo(x, crestAt(x));
+      for (let x = w; x >= 0; x -= 8) ctx.lineTo(x, crestAt(x) + slabH);
+      ctx.closePath();
+      const bodyGrad = ctx.createLinearGradient(0, baseY - amp, 0, baseY + slabH);
+      bodyGrad.addColorStop(0, `rgba(${Math.min(255, wr + 32)}, ${Math.min(255, wg + 46)}, ${Math.min(255, wb + 52)}, ${(fillAlpha * 0.75).toFixed(3)})`);
+      bodyGrad.addColorStop(1, `rgba(${wr}, ${wg}, ${wb}, 0)`);
+      ctx.fillStyle = bodyGrad;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Crest highlight: lit edge, brighter + wider near camera; day/night aware.
+    const crestBright = dc.sunUp
+      ? Math.max(0.05, dc.bright * 0.50)
+      : 0.06;
+    const crestAlpha = crestBright * (0.16 + depthFrac * 0.56);
+    if (crestAlpha > 0.015) {
+      const crestRgb = dc.sunUp
+        ? `${Math.min(255, sc.r + 38)}, ${Math.min(255, sc.g + 56)}, ${Math.min(255, sc.b + 68)}`
+        : `${Math.min(255, ar + 30)}, ${Math.min(255, ag + 20)}, ${Math.min(255, ab + 12)}`;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = crestAlpha;
+      ctx.strokeStyle = `rgba(${crestRgb}, 1)`;
+      ctx.lineWidth   = 0.7 + depthFrac * 2.8;
+      ctx.lineCap     = 'round';
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 6) {
+        const y = crestAt(x);
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ---- 2. Specular glitter track (sun day / moon-glitter night) -------------
+  // A perspective-tapered column aligned to sunX (day) or a derived moonX
+  // (night).  Column fans out quadratically: narrow at the horizon, broad near
+  // the camera.  Each sparkle twinkles via t + a seeded phase offset.
+  // Mirror of the drawWaterFX approach but broader (open-ocean scale) and
+  // distinct in color: teal-accent tint at night vs sun-star color by day.
+  const rngGl = splitmix32(deriveChildSeed(model.seed, 'oceanic-glitter'));
+
+  let   glitterX: number;
+  let   glitterAlphaScale: number;
+  if (dc.sunUp) {
+    glitterX         = sunX;
+    glitterAlphaScale = Math.max(0.10, dc.bright * 0.85);
+  } else {
+    // Night: moon-glitter track.  The moon is ~opposite the sun in azimuth;
+    // derive a plausible screen X from the night phase (dayPhase offset by 0.5).
+    const nightPhase  = (dc.dayPhase + 0.50) % 1.0;
+    glitterX          = w * (0.12 + nightPhase * 0.76);
+    glitterAlphaScale = 0.14 * dc.bodyBright;
+  }
+
+  if (glitterAlphaScale > 0.015) {
+    const SPARKLE_N = 80;
+    const colMaxHW  = w * 0.12;   // half-width at camera (near) end
+    const colMinHW  = 5;           // half-width at horizon (far) end
+    const colDepth  = Math.min(wh * 0.86, h * 0.42);
+
+    // Day: sun color; night: cool bioluminescent teal (accent palette).
+    const glitColorR = dc.sunUp ? sc.r                    : Math.min(255, ar + 50);
+    const glitColorG = dc.sunUp ? sc.g                    : Math.min(255, ag + 22);
+    const glitColorB = dc.sunUp ? sc.b                    : Math.min(255, ab + 16);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(${glitColorR}, ${glitColorG}, ${glitColorB}, 1)`;
+
+    for (let i = 0; i < SPARKLE_N; i++) {
+      // Consume all per-sparkle values before any conditional skip so the
+      // RNG sequence stays deterministic regardless of which sparkles are clipped.
+      const f     = rngGl();                   // 0=horizon, 1=camera
+      const lx    = (rngGl() - 0.5) * 2;      // −1..1 relative to column centre
+      const phase = rngGl() * Math.PI * 2;
+      const size  = 0.5 + rngGl() * 1.9;      // disc radius in px
+
+      // Column fans quadratically — natural perspective taper.
+      const halfW = colMinHW + (colMaxHW - colMinHW) * (f * f);
+      const sx    = glitterX + lx * halfW;
+      const sy    = wt + f * colDepth;
+
+      if (sx < -4 || sx > w + 4) continue;
+
+      // Dim sparkles that stray sideways away from the glitter-track axis.
+      const dxN  = (sx - glitterX) / Math.max(1, w);
+      const dFac = Math.max(0, 1 - Math.abs(dxN) * 2.6);
+
+      const twinkle = t === 0 ? 0.72 : 0.36 + 0.64 * Math.sin(t * (0.70 + f * 1.9) + phase);
+      const alpha   = Math.min(0.82, twinkle * (0.14 + f * 0.86) * glitterAlphaScale * dFac);
+      if (alpha < 0.012) continue;
+
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(sx, sy, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---- 3. Distant archipelago islets (1–2) silhouetted near the horizon -----
+  // FIX 1: islets must be clearly legible as land masses, not water artifacts.
+  // Sized to 6–18% canvas width and 28–58% of the band height; silhouette uses
+  // darkened surface rock (not blended with water) at high alpha so the dome
+  // stands out unambiguously against the open ocean.
+  const rngIs      = splitmix32(deriveChildSeed(model.seed, 'oceanic-islets'));
+  const isletCount = 1 + (rngIs() < 0.55 ? 1 : 0);  // 1 or 2; RNG consumed first
+  const isletBandH = wh * 0.25;                        // upper 25% of water band
+
+  // Silhouette: darkened surface rock — stays well below the water hue so the
+  // dome reads unambiguously as solid land, not a water tint.
+  const isR = Math.max(4,  Math.round(sr * 0.55));
+  const isG = Math.max(6,  Math.round(sg * 0.55));
+  const isB = Math.max(10, Math.round(sb * 0.58));
+  // Strong alpha — islets must be unambiguously visible day AND night.
+  const isletAlpha = 0.72 + dc.bright * 0.18;
+
+  for (let ii = 0; ii < isletCount; ii++) {
+    // Consume all per-islet RNG values before any conditional — stable sequence.
+    const cx  = (0.16 + rngIs() * 0.68) * w;
+    const iW  = w * (0.060 + rngIs() * 0.120);         // 6–18% of canvas — clearly legible
+    const iH  = isletBandH * (0.28 + rngIs() * 0.30);  // 28–58% of band — visible dome
+    const iOY = rngIs() * isletBandH * 0.08;
+    const iY  = wt + wh * 0.03 + iOY;                  // just below the waterline
+
+    if (iY + iH > h || iY < 0) continue;
+
+    // Main dome silhouette — filled bezier arc.
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(${isR}, ${isG}, ${isB}, ${isletAlpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(cx - iW * 0.5, iY + iH);
+    ctx.bezierCurveTo(
+      cx - iW * 0.5, iY,
+      cx + iW * 0.5, iY,
+      cx + iW * 0.5, iY + iH,
+    );
+    ctx.closePath();
+    ctx.fill();
+
+    // Bioluminescent/lit rim along the top arc — day and night (night dimmer).
+    // Accent palette gives the characteristic teal glow of OCEANIC worlds.
+    const rimAlpha = dc.sunUp
+      ? Math.max(0.10, dc.bright * 0.30)
+      : 0.08 * dc.bodyBright;
+    if (rimAlpha > 0.04) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(${Math.min(255, ar + 22)}, ${Math.min(255, ag + 40)}, ${Math.min(255, ab + 34)}, ${rimAlpha.toFixed(3)})`;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - iW * 0.5, iY + iH);
+      ctx.bezierCurveTo(
+        cx - iW * 0.5, iY,
+        cx + iW * 0.5, iY,
+        cx + iW * 0.5, iY + iH,
+      );
+      ctx.stroke();
+    }
+
+    // Thin waterline base — separates the islet foot from the water surface.
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(${Math.min(255, ar + 40)}, ${Math.min(255, ag + 60)}, ${Math.min(255, ab + 52)}, ${(0.06 + dc.bright * 0.10).toFixed(3)})`;
+    ctx.lineWidth   = 1.0;
+    ctx.beginPath();
+    ctx.moveTo(cx - iW * 0.5, iY + iH);
+    ctx.lineTo(cx + iW * 0.5, iY + iH);
+    ctx.stroke();
+
+    // FIX 3: explicit composite reset before restore — consistency with all
+    // other draw fns in this file; prevents composite state leaking on refactor.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// drawTropicalLagoon — WO-V5-TROPICAL
+// Lagoon signature: turquoise shallows grading to deeper water, a seeded
+// coral reef ring enclosing the lagoon, a sandy palm-fringed shoreline, and
+// a moonlit-desaturated shallows + moon-glitter track at night.
+// Called from drawScene §5a — TROPICAL planet type only, in place of the
+// plain ground-strip fillRect.  Draws into the water body [wTopY..h] first
+// (screen / lighter composite overlaid on the already-rendered wave layer),
+// then fills the land strip [horizonY..wTopY] with beach sand + palm
+// silhouettes anchored at the waterline.
+// Seeding: splitmix32(deriveChildSeed(seed, 'tropical-lagoon')) — isolated
+// from every other draw path.  No Math.random, no Date.now.
+// ctx.save/restore balanced throughout; all composite + globalAlpha reset
+// before return.
+// ---------------------------------------------------------------------------
+function drawTropicalLagoon(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  t: number,
+  cache: VistaCache,
+  dc: DayCycle,
+  sunX: number,
+  horizonY: number,   // top of the land strip (sky–land boundary)
+  wTopY: number,      // waterline Y (bottom of land strip, top of water body)
+): void {
+  const model = cache.model;
+  const pal   = model.palette;
+  const b     = dc.bright;
+  const wh    = h - wTopY;       // water body height in pixels
+  const landH = wTopY - horizonY; // land strip height in pixels
+
+  const [wr, wg, wb] = pal.water   as [number, number, number];
+  const [sr, sg, sb] = pal.surface;
+  const [ar, ag, ab] = pal.accent  as [number, number, number];
+  const [pfr, pfg, pfb] = pal.flora;   // compiled palette: flora is the vivid canopy/leaf hue
+
+  // One seeded PRNG stream for this world's lagoon — stable per model.seed.
+  const rng = splitmix32(deriveChildSeed(model.seed, 'tropical-lagoon'));
+
+  // ---- 1. Turquoise shallows depth tint -----------------------------------------
+  // Screen composite over the already-rendered wave layer: lifts and saturates the
+  // near-waterline zone into vivid turquoise shallows, fading to nothing deeper.
+  // Day: warm cyan push keyed to palette.water; night: pale desaturated silver-blue.
+  if (wh > 0) {
+    const shallowH = Math.min(wh * 0.42, 120);
+    const shR = dc.sunUp ? Math.min(255, Math.round(wr * 0.52 + 52)) : Math.min(255, Math.round(wr * 0.28 + 82));
+    const shG = dc.sunUp ? Math.min(255, Math.round(wg * 0.72 + 42)) : Math.min(255, Math.round(wg * 0.38 + 88));
+    const shB = dc.sunUp ? Math.min(255, Math.round(wb * 0.82 + 28)) : Math.min(255, Math.round(wb * 0.72 + 38));
+    const shA = dc.sunUp ? 0.28 * b : 0.20;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    const shallowGrad = ctx.createLinearGradient(0, wTopY, 0, wTopY + shallowH);
+    shallowGrad.addColorStop(0,   `rgba(${shR}, ${shG}, ${shB}, ${shA.toFixed(3)})`);
+    shallowGrad.addColorStop(0.5, `rgba(${shR}, ${shG}, ${shB}, ${(shA * 0.38).toFixed(3)})`);
+    shallowGrad.addColorStop(1,   `rgba(${shR}, ${shG}, ${shB}, 0)`);
+    ctx.fillStyle = shallowGrad;
+    ctx.fillRect(0, wTopY, w, shallowH);
+    ctx.restore();
+  }
+
+  // ---- 2. Reef ring (seeded elliptical arc) ------------------------------------
+  // A coral-toned arc spanning the mid-water zone — the reef head where the
+  // lagoon floor rises to near-surface.  Position and extent are seeded per-world;
+  // colour is warm (accent-derived) to distinguish it from the turquoise open water.
+  if (wh > 0) {
+    const reefCX = w * (0.25 + rng() * 0.50);
+    const reefCY = wTopY + wh * (0.18 + rng() * 0.22);
+    const reefRX = w * (0.22 + rng() * 0.26);
+    const reefRY = Math.max(4, wh * (0.040 + rng() * 0.030));
+    const reefA  = dc.sunUp ? 0.16 + rng() * 0.10 : 0.09 + rng() * 0.06;
+    // Warm coral tone blended from accent palette + ambient warm offset.
+    const rfR = Math.min(255, Math.round(ar * 0.52 + 155));
+    const rfG = Math.min(255, Math.round(ag * 0.18 + 108));
+    const rfB = Math.min(255, Math.round(ab * 0.07 +  64));
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    // Outer diffuse reef band.
+    ctx.globalAlpha = reefA;
+    ctx.strokeStyle = `rgb(${rfR}, ${rfG}, ${rfB})`;
+    ctx.lineWidth   = Math.max(4, reefRY * 1.75);
+    ctx.beginPath();
+    ctx.ellipse(reefCX, reefCY, reefRX, reefRY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // Inner bright crest line — surf break on top of the reef head.
+    ctx.globalAlpha = reefA * 0.52;
+    ctx.strokeStyle = `rgb(${Math.min(255, rfR + 42)}, ${Math.min(255, rfG + 38)}, ${Math.min(255, rfB + 28)})`;
+    ctx.lineWidth   = Math.max(2, reefRY * 0.55);
+    ctx.beginPath();
+    ctx.ellipse(reefCX, reefCY, reefRX, reefRY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---- 3. Night: moon-glitter track -------------------------------------------
+  // When sun is down, a perspective-tapered column of pale silver-blue sparkles
+  // traces the moon's water reflection.  Mirrors the sun-glitter idiom in
+  // drawOceanicSurface: moonX derived from day-phase + 0.5 offset; column fans
+  // quadratically wide at the near-camera end.  Keyed to dc.bodyBright so the
+  // track fades smoothly at dawn/dusk.
+  if (!dc.sunUp && wh > 0) {
+    void sunX;  // sunX is unused at night (moon position derived from day-phase)
+    const nightPhase = (dc.dayPhase + 0.50) % 1.0;
+    const moonX      = w * (0.12 + nightPhase * 0.76);
+    const moonDepth  = Math.min(wh * 0.78, h * 0.35);
+    const moonColMax = w * 0.09;
+    const moonColMin = 3;
+    const rngMg = splitmix32(deriveChildSeed(model.seed, 'tropical-moonglitter'));
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(182, 208, 232, 1)';   // fixed cool silver-blue; no palette dependency
+
+    for (let i = 0; i < 46; i++) {
+      const f     = rngMg();
+      const lx    = (rngMg() - 0.5) * 2;
+      const phase = rngMg() * Math.PI * 2;
+      const sizeN = 0.5 + rngMg() * 1.35;
+      const halfW = moonColMin + (moonColMax - moonColMin) * (f * f);
+      const sx    = moonX + lx * halfW;
+      const sy    = wTopY + f * moonDepth;
+      if (sx < -4 || sx > w + 4) continue;
+      const twinkle = t === 0 ? 0.62 : 0.32 + 0.68 * Math.sin(t * (0.62 + f * 1.35) + phase);
+      const depth   = 0.12 + f * 0.74;
+      const alpha   = Math.min(0.62, twinkle * depth * 0.72 * dc.bodyBright);
+      if (alpha < 0.03) continue;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sizeN, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---- 4. Sandy beach ground strip [horizonY..wTopY] ---------------------------
+  // Replaces the plain fillRect in §5a: a warm gradient lifts near the waterline
+  // (wet sand slightly cooler/darker than the dry beach above it).
+  if (landH > 0) {
+    const sandDR = Math.round(sr * 0.84);
+    const sandDG = Math.round(sg * 0.84);
+    const sandDB = Math.round(sb * 0.84);
+    const sandWR = Math.min(255, Math.round(sr * 0.82 + wr * 0.10));
+    const sandWG = Math.min(255, Math.round(sg * 0.82 + wg * 0.10));
+    const sandWB = Math.min(255, Math.round(sb * 0.82 + wb * 0.10));
+
+    ctx.save();
+    const sandGrad = ctx.createLinearGradient(0, horizonY, 0, wTopY);
+    sandGrad.addColorStop(0,    `rgb(${sandDR}, ${sandDG}, ${sandDB})`);   // darker at horizon
+    sandGrad.addColorStop(0.70, `rgb(${sr}, ${sg}, ${sb})`);               // full surface colour
+    sandGrad.addColorStop(1,    `rgb(${sandWR}, ${sandWG}, ${sandWB})`);   // slightly wet at waterline
+    ctx.fillStyle = sandGrad;
+    ctx.fillRect(0, horizonY, w, landH);
+    ctx.restore();
+
+    // Shore-edge highlight (daytime only) — sun glancing off wet sand.
+    if (dc.sunUp) {
+      ctx.save();
+      ctx.globalAlpha = 0.18 * b;
+      ctx.strokeStyle = `rgb(${Math.min(255, sr + 28)}, ${Math.min(255, sg + 26)}, ${Math.min(255, sb + 18)})`;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(0, wTopY);
+      ctx.lineTo(w, wTopY);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ---- 5. Palm-fringe shoreline silhouettes ------------------------------------
+  // A minimal seeded scatter of palm silhouettes anchored near the waterline.
+  // Bases sit in the lower sand strip; fronds fan above the crown.
+  // Not connected to the flora-scatter system — purely shoreline decoration.
+  if (landH > 8 && cache.hasWater) {
+    const PALM_COUNT = 4 + Math.floor(rng() * 4);  // 4–7 palms
+
+    // Flora colour keyed to day (vivid green) vs night (near-black silhouette).
+    const pR = dc.sunUp ? Math.round(pfr * (0.50 + b * 0.50)) : Math.round(pfr * 0.12);
+    const pG = dc.sunUp ? Math.round(pfg * (0.50 + b * 0.50)) : Math.round(pfg * 0.14);
+    const pB = dc.sunUp ? Math.round(pfb * (0.50 + b * 0.50)) : Math.round(pfb * 0.12);
+
+    for (let pi = 0; pi < PALM_COUNT; pi++) {
+      const px     = w * (0.06 + rng() * 0.88);        // avoid extreme canvas edges
+      const trunkH = 24 + rng() * 44;                   // trunk height 24–68 px
+      const lean   = (rng() - 0.5) * 0.30;              // lean angle ±0.15 rad
+      // Base near the waterline in the lower sand strip.
+      const baseY  = wTopY - rng() * landH * 0.30;
+      const topY   = Math.max(horizonY + 2, baseY - trunkH);  // crown clamped to above horizon
+      const actualH = baseY - topY;                     // real trunk height after clamp
+      const topX   = px + Math.sin(lean) * actualH;
+
+      // Trunk — thin tapered stroke.
+      ctx.save();
+      ctx.strokeStyle = dc.sunUp
+        ? `rgba(${Math.round(sr * 0.50)}, ${Math.round(sg * 0.42)}, ${Math.round(sb * 0.28)}, 0.82)`
+        : 'rgba(14, 10, 6, 0.78)';
+      ctx.lineWidth = 1.4 + rng() * 1.0;
+      ctx.lineCap   = 'round';
+      ctx.beginPath();
+      ctx.moveTo(px, baseY);
+      ctx.lineTo(topX, topY);
+      ctx.stroke();
+      ctx.restore();
+
+      // Frond fan — 4–6 arced arms radiating from the crown.
+      // a=0 = straight up; a=±1.1 rad = lateral fan extremes.
+      // Gravity droop: cos component muted by |sin| so lateral fronds tip downward.
+      const nFronds = 4 + Math.floor(rng() * 3);
+      const frondL  = 12 + rng() * 18;
+      ctx.save();
+      ctx.strokeStyle = `rgba(${pR}, ${pG}, ${pB}, ${dc.sunUp ? (0.72 + b * 0.22).toFixed(3) : '0.52'})`;
+      ctx.lineWidth   = 1.1;
+      ctx.lineCap     = 'round';
+      for (let fi = 0; fi < nFronds; fi++) {
+        const a    = lean + (-1.10 + fi / Math.max(nFronds - 1, 1) * 2.20);
+        const tipX = topX + Math.sin(a) * frondL;
+        const tipY = topY - Math.cos(a) * frondL + Math.abs(Math.sin(a)) * frondL * 0.28;
+        const ctX  = topX + Math.sin(a) * frondL * 0.46;
+        const ctY  = topY - Math.cos(a) * frondL * 0.46 - frondL * 0.10;
+        ctx.beginPath();
+        ctx.moveTo(topX, topY);
+        ctx.quadraticCurveTo(ctX, ctY, tipX, tipY);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // drawScene — the per-frame compositor
 //
 // Ported from drawLandedScene (SolarSystemViewscreen.tsx L3477), adapted to
@@ -5669,6 +6671,13 @@ function drawScene(
     drawRingArc(ctx, w, horizonY, model, dc);
   }
 
+  // 2g) ARCTIC aurora curtains — sky phase (WO-V5-ARCTIC).
+  //     Drawn after stars + ring-arc, before god-rays and clouds.  Additive glow
+  //     so curtains bloom over the dark sky; intensity gated on nightI inside fn.
+  if (model.planetType === 'ARCTIC') {
+    drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'sky');
+  }
+
   // 2d) God-rays — wedge fan from the sun, drawn BEFORE clouds so cloud masses
   //     occlude them and the open gaps show through (WO-V2-CLOUDS-RAYS).
   //     Sun position duplicated here (same formula as step 3) so we can draw rays
@@ -5824,6 +6833,13 @@ function drawScene(
       drawFrozenSheet(ctx, w, h, t, cache, dc, sunX, wt, wh);
     }
 
+    // OCEANIC open-water signature: parallax swell field + sun/moon-glitter
+    // specular track + distant archipelago islets.  OCEANIC waterType is 'ocean';
+    // gate on planetType so coastal/tidal TERRAN variants are not affected.
+    if (cache.model.planetType === 'OCEANIC') {
+      drawOceanicSurface(ctx, w, h, t, cache, dc, sunX, wt, wh);
+    }
+
     const crestRGB = dc.sunUp
       ? `${Math.min(255, sc.r + 30)}, ${Math.min(255, sc.g + 50)}, ${Math.min(255, sc.b + 60)}`
       : '150, 185, 210';
@@ -5913,6 +6929,7 @@ function drawScene(
   //    'cloud-deck'     → GAS_GIANT floating cloud horizon (no ridges, no ground plane)
   //    'plating'        → ARTIFICIAL engineered flat surface (no ridges)
   //    DESERT           → sculpted dune sea — sinuous ridges + lit/shadow crests (WO-V4-DESERT)
+  //    MOUNTAINOUS      → alpine ridgelines + snow caps + scree/treeline band (WO-V5-MOUNTAINOUS)
   //    'surface'/default → P0 parallax ridges + ground plane (unchanged)
   if (cache.terrainMode === 'cloud-deck') {
     drawCloudDeck(ctx, w, h, t, model, cache, dc);
@@ -5922,6 +6939,11 @@ function drawScene(
     // DESERT signature — replaces the generic ridge renderer with a sculpted dune sea.
     // No water on DESERT worlds (waterAllowList: []), so no water-clip needed here.
     drawDuneSea(ctx, w, h, t, model, cache, dc, sunX);
+  } else if (model.planetType === 'MOUNTAINOUS') {
+    // MOUNTAINOUS alpine signature — layered snow-capped ridgelines receding into
+    // atmospheric haze + scree/treeline foreground band.  Handles coastal water clip
+    // internally so the pre-painted water band remains unobscured.
+    drawAlpineRidges(ctx, w, h, t, model, cache, dc, horizonY, sunX);
   } else {
     // Default surface path — ridges + ground plane draw regardless of water presence.
     // When water is present, ridge fills clip to [0, waterTopY] so they remain visible
@@ -6033,16 +7055,32 @@ function drawScene(
     // When ridges are present and no water: ridges provide all fill — no extra rect needed.
     // TERRAN/coastal branch: drawCoastalLand replaces the flat fillRect with an
     // organic meandering shoreline + river-delta inlet channels (WO-V4-TERRAN).
+    // TROPICAL branch: drawTropicalLagoon replaces the flat fillRect with a sandy
+    // beach gradient + palm-fringe silhouettes, and overlays depth-tint + reef ring
+    // onto the already-rendered water body (WO-V5-TROPICAL).
     if (cache.ridgePts.length === 0 || cache.hasWater) {
       const groundY   = horizonY;
       const groundBtm = cache.hasWater ? wTopY : h;
       if (groundBtm > groundY) {
         if (cache.waterType === 'coastal' && model.planetType === 'TERRAN') {
           drawCoastalLand(ctx, w, h, t, model, cache, dc, horizonY, wTopY);
+        } else if (model.planetType === 'TROPICAL') {
+          // TROPICAL lagoon signature: turquoise shallows overlay, seeded reef ring,
+          // sandy beach gradient, and palm-fringe silhouettes at the waterline.
+          drawTropicalLagoon(ctx, w, h, t, cache, dc, sunX, horizonY, wTopY);
         } else {
           ctx.fillStyle = rgba(model.palette.surface, 1);
           ctx.fillRect(0, groundY, w, groundBtm - groundY);
         }
+      }
+    }
+
+    // 5a') ARCTIC ground overlay — sastrugi banding + ice hummocks + aurora ground wash.
+    // Drawn over ridge fills and/or the §5a land-strip for all ARCTIC worlds.
+    if (model.planetType === 'ARCTIC') {
+      const arcticGBtm = cache.hasWater ? wTopY : h;
+      if (arcticGBtm > horizonY) {
+        drawAuroraCurtains(ctx, w, h, horizonY, t, cache, dc, 'ground', arcticGBtm);
       }
     }
   }
