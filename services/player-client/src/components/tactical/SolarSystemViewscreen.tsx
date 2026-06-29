@@ -9,14 +9,51 @@ import type { LandedVistaSource } from './landedVistaAdapter';
 import type { VistaInput } from '../../vista/contract';
 
 // ---------------------------------------------------------------------------
-// Vista engine feature flag (Lane A3 — W7 cockpit integration)
-// Default OFF: VITE_VISTA_ENGINE must be set to 'true' or '1' to enable.
-// When OFF the component is byte-identical to the pre-A3 behaviour for all
-// scenes (flight / docked / landed).
+// Vista engine feature flag (Lane A3 — Phase-2a go-live)
+// Default ON: the vista engine renders landed scenes by default.
+// To opt OUT and revert to the legacy drawLandedScene, set:
+//   VITE_VISTA_ENGINE=false   or   VITE_VISTA_ENGINE=0
+// Build-time constant — Vite replaces import.meta.env at bundle time.
+// Reversible without a code change: rebuild with the opt-out env var.
+// flight / docked paths are byte-unchanged regardless of this flag.
 // ---------------------------------------------------------------------------
 const VISTA_ENGINE_ON =
-  import.meta.env.VITE_VISTA_ENGINE === 'true' ||
-  import.meta.env.VITE_VISTA_ENGINE === '1';
+  import.meta.env.VITE_VISTA_ENGINE !== 'false' &&
+  import.meta.env.VITE_VISTA_ENGINE !== '0';
+
+// ---------------------------------------------------------------------------
+// DEV-ONLY: VistaForceThrowDev — drives the boundary→legacy fallback path.
+//
+// Vite replaces import.meta.env.DEV with `false` in production builds, making
+// the entire ternary's truthy branch dead code.  Rollup eliminates it
+// completely — the function body and the window / URLSearchParams reads are
+// fully absent from any production bundle.
+//
+// HOW TO TRIGGER (dev builds only):
+//   • URL param:   add  ?vistaThrow=1  to the cockpit URL, then (re-)land.
+//   • Console:     window.__vistaForceThrow = true  then navigate to a landed scene.
+//
+// The component renders as a sibling of VistaCanvas inside VistaErrorBoundary.
+// When the trigger is set it throws during React render → the boundary catches
+// the throw → handleVistaEngineError() fires → VistaCanvas unmounts and the
+// legacy drawLandedScene resumes.  Result: the windshield shows drawLandedScene,
+// not a blank — exercising the exact same path a real engine crash would take.
+// ---------------------------------------------------------------------------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const VistaForceThrowDev: React.FC | null = import.meta.env.DEV
+  ? function VistaForceThrowDev() {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const shouldThrow =
+        new URLSearchParams(window.location.search).get('vistaThrow') === '1' ||
+        (window as any).__vistaForceThrow === true;
+      if (shouldThrow) {
+        throw new Error(
+          '[DEV] vistaForceThrow: testing VistaErrorBoundary → drawLandedScene fallback'
+        );
+      }
+      return null;
+    }
+  : null;
 
 /**
  * SolarSystemViewscreen — the cockpit windshield spectacle.
@@ -8025,6 +8062,11 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
           drawLandedScene at ~7474 resumes — windshield never goes blank. */}
       {VISTA_ENGINE_ON && scene === 'landed' && vistaAdaptedInput !== null && !vistaEngineFailed && (
         <VistaErrorBoundary onError={handleVistaEngineError}>
+          {/* DEV-ONLY: when ?vistaThrow=1 or window.__vistaForceThrow=true is set,
+              VistaForceThrowDev throws during render → boundary catches it →
+              handleVistaEngineError → VistaCanvas unmounts → drawLandedScene resumes.
+              VistaForceThrowDev is null in prod builds (import.meta.env.DEV gate). */}
+          {import.meta.env.DEV && VistaForceThrowDev && <VistaForceThrowDev />}
           <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
             <VistaCanvas
               input={vistaAdaptedInput}
