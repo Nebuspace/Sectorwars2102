@@ -31,7 +31,7 @@ pydantic-settings = ">=2.0.3,<2.15.0"
 alembic = "^1.12.0"
 # Explicit pin: CVE needs >=48.0.1; cap at <49 to avoid taking an unreviewed
 # major (48→49) on a package that underpins JWT + argon2 auth paths.
-cryptography = ">=48.0.1,<49"
+cryptography = ">=48.0.1,<50"
 pyjwt = {extras = ["crypto"], version = "^2.10.0"}
 python-multipart = ">=0.0.18"
 passlib = {extras = ["argon2"], version = "^1.7.4"}
@@ -44,7 +44,7 @@ redis = {extras = ["hiredis"], version = ">=5.0.1,<9.0.0"}
 aioredis = "^2.0.1"
 scikit-learn = "^1.3.0"
 prophet = "^1.1.4"
-pandas = "^2.0.3"
+pandas = ">=2.0.3,<4.0.0"
 numpy = ">=1.24.3,<3.0.0"
 scipy = "^1.11.2"
 anthropic = ">=0.18.1,<0.113.0"
