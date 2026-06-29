@@ -34,6 +34,38 @@ export type LandmarkKind =
   | 'cone' | 'caldera' | 'arch' | 'mesa' | 'crater' | 'spire' | 'canyon' | 'glacier';
 
 // ---------------------------------------------------------------------------
+// TypeGrade — per-type "film stock" for the post-process compositor
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-type color-grade parameters applied by the post-process compositor.
+ * Each field is optional; absent values fall back to post.ts defaults.
+ * Think of each entry as the "film stock" that makes a TERRAN feel lush-golden,
+ * a BARREN feel harsh-silver, a VOLCANIC feel scorched-orange, etc.
+ */
+export interface TypeGrade {
+  /**
+   * Additive warmth bias stacked on top of model.lighting.colorGradeWarmth.
+   * -1 (push harder cold) … +1 (push harder warm).
+   */
+  warmthBias: number;
+
+  /**
+   * Vignette darkness at the frame edges (0 = none, 1 = full black ring).
+   * Absent → post.ts default of 0.55.
+   * Use higher values for dramatic/hostile types; lower for open/airy worlds.
+   */
+  vignetteStrength?: number;
+
+  /**
+   * Film-grain intensity multiplier (1 = default scaling; 0 = disable grain;
+   * 2 = double grain).  Absent → 1.  Base intensity is already inverse to
+   * desirability; this scales that computed value.
+   */
+  grainScale?: number;
+}
+
+// ---------------------------------------------------------------------------
 // TerrainRecipe
 // ---------------------------------------------------------------------------
 
@@ -201,6 +233,13 @@ export interface PlanetProfile {
    * color: sRGB of the window glow; density: fraction of cells lit (0–1).
    */
   emissive?: { color: RGB; density: number };
+
+  /**
+   * Per-type "film stock" for the post-process compositor.
+   * Absent → post.ts defaults (warmthBias=0, vignetteStrength=0.55, grainScale=1).
+   * Set these to give each planet type a distinct cinematic character.
+   */
+  grade?: TypeGrade;
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +364,9 @@ const TERRAN_PROFILE: PlanetProfile = {
     gas:      'gas-seep',
     water:    'hydrocarbon-pool',
   },
+
+  // Warm-golden film stock: lush highlights, gentle vignette, minimal grain.
+  grade: { warmthBias: 0.15, vignetteStrength: 0.45, grainScale: 0.7 },
 };
 
 // ---------------------------------------------------------------------------
@@ -438,6 +480,9 @@ const VOLCANIC_PROFILE: PlanetProfile = {
     geothermal: 'thermal-vent',
     gas:        'gas-seep',
   },
+
+  // Scorched film stock: pushed warm (embers/magma), deep vignette, heavy grain.
+  grade: { warmthBias: 0.30, vignetteStrength: 0.65, grainScale: 1.5 },
 };
 
 // ---------------------------------------------------------------------------
@@ -551,6 +596,9 @@ const OCEANIC_PROFILE: PlanetProfile = {
     gas:     'gas-seep',
     water:   'hydrocarbon-pool',
   },
+
+  // Cool-blue film stock: ocean worlds read marine + airy.
+  grade: { warmthBias: 0.02, vignetteStrength: 0.45, grainScale: 0.8 },
 };
 
 // ---------------------------------------------------------------------------
@@ -661,6 +709,9 @@ const DESERT_PROFILE: PlanetProfile = {
     gas:     'gas-seep',
     water:   'hydrocarbon-pool',
   },
+
+  // Sun-baked film stock: high-key amber, deep vignette, gritty grain.
+  grade: { warmthBias: 0.22, vignetteStrength: 0.58, grainScale: 1.3 },
 };
 
 // ---------------------------------------------------------------------------
@@ -774,6 +825,9 @@ const ICE_PROFILE: PlanetProfile = {
     gas:     'gas-seep',
     water:   'hydrocarbon-pool',
   },
+
+  // Glacial film stock: cool-blue cast, crisp vignette, fine grain.
+  grade: { warmthBias: -0.32, vignetteStrength: 0.58, grainScale: 0.9 },
 };
 
 // ---------------------------------------------------------------------------
@@ -886,6 +940,9 @@ const ARCTIC_PROFILE: PlanetProfile = {
     gas:     'gas-seep',
     water:   'hydrocarbon-pool',
   },
+
+  // Tundra film stock: cold steel-blue, heavier vignette for polar isolation.
+  grade: { warmthBias: -0.22, vignetteStrength: 0.60, grainScale: 1.0 },
 };
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1055,9 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
     geothermal: 'thermal-vent',
     gas:        'gas-seep',
   },
+
+  // Alpine film stock: muted neutral, deep vignette for dramatic peaks.
+  grade: { warmthBias: -0.05, vignetteStrength: 0.60, grainScale: 1.0 },
 };
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1167,9 @@ const BARREN_PROFILE: PlanetProfile = {
     crystal: 'crystal',
     gas:     'gas-seep',
   },
+
+  // Airless film stock: cold-silver, hard vignette, heavy grain — harsh and hostile.
+  grade: { warmthBias: -0.20, vignetteStrength: 0.68, grainScale: 1.8 },
 };
 
 // ---------------------------------------------------------------------------
@@ -1219,6 +1282,9 @@ const JUNGLE_PROFILE: PlanetProfile = {
     gas:     'gas-seep',
     water:   'hydrocarbon-pool',
   },
+
+  // Dense-canopy film stock: slight warm-green tint, heavy vignette for claustrophobia.
+  grade: { warmthBias: 0.08, vignetteStrength: 0.65, grainScale: 0.9 },
 };
 
 // ---------------------------------------------------------------------------
@@ -1331,6 +1397,9 @@ const TROPICAL_PROFILE: PlanetProfile = {
     gas:     'gas-seep',
     water:   'hydrocarbon-pool',
   },
+
+  // Paradise film stock: warm + bright, open airy vignette, near-zero grain.
+  grade: { warmthBias: 0.25, vignetteStrength: 0.35, grainScale: 0.4 },
 };
 
 // ---------------------------------------------------------------------------
@@ -1439,6 +1508,9 @@ const GAS_GIANT_PROFILE: PlanetProfile = {
     gas:     'gas-seep',
     crystal: 'crystal',
   },
+
+  // Jovian film stock: warm amber banding, strong vignette for drama, low grain.
+  grade: { warmthBias: 0.15, vignetteStrength: 0.70, grainScale: 0.5 },
 };
 
 // ---------------------------------------------------------------------------
@@ -1553,6 +1625,9 @@ const ARTIFICIAL_PROFILE: PlanetProfile = {
   // The renderer uses density to decide which plating-panel cells are lit and
   // draws warm-tinted rectangles at those positions, seeded from model.seed.
   emissive: { color: [255, 200, 100], density: 0.52 },
+
+  // Industrial film stock: cold-steel cast, strong vignette, low grain (clean metal).
+  grade: { warmthBias: -0.15, vignetteStrength: 0.60, grainScale: 0.6 },
 };
 
 // ---------------------------------------------------------------------------

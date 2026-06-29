@@ -71,8 +71,12 @@ export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasP
       handleRef.current = null;
     }
 
-    // Size the canvas to its CSS display size (DPR-aware)
-    const dpr = window.devicePixelRatio || 1;
+    // Size the canvas to its CSS display size (DPR-aware, quality-capped).
+    // 'low' caps at 1.5 — measurably reduces pixel fill cost on retina displays.
+    // 'med' and 'high' (or absent) cap at 2 — full retina, no 3× overdraw.
+    const quality = inputRef.current.view?.quality;
+    const dprCap  = quality === 'low' ? 1.5 : 2;
+    const dpr     = Math.min(window.devicePixelRatio || 1, dprCap);
     const rect = canvas.getBoundingClientRect();
     const w = Math.max(1, Math.round(rect.width * dpr));
     const h = Math.max(1, Math.round(rect.height * dpr));
@@ -144,11 +148,14 @@ export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasP
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const dpr = window.devicePixelRatio || 1;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry || !handleRef.current) return;
       const { width, height } = entry.contentRect;
+      // Re-read quality from inputRef so a quality change takes effect on next resize.
+      const resizeQuality = inputRef.current.view?.quality;
+      const resizeDprCap  = resizeQuality === 'low' ? 1.5 : 2;
+      const dpr = Math.min(window.devicePixelRatio || 1, resizeDprCap);
       const w = Math.max(1, Math.round(width * dpr));
       const h = Math.max(1, Math.round(height * dpr));
       canvas.style.width = `${width}px`;

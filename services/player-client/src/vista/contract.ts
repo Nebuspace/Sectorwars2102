@@ -291,6 +291,11 @@ export interface VistaModel {
   /**
    * Composite beauty budget 0–1.  Drives bloom, saturation, colorGradeWarmth,
    * life density, and sky depth.  Players should be able to glance and read quality.
+   *
+   * Wired: the post-process compositor (render/canvas2d/post.ts) consumes this
+   * field directly — vignette strength, split-tone grade intensity, and film-grain
+   * grit all scale from it.  Low desirability (hostile worlds) → heavier vignette,
+   * stronger grain; high desirability (lush worlds) → open grade, minimal grain.
    */
   desirability: number;
 

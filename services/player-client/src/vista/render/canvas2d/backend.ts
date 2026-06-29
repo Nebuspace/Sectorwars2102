@@ -26,6 +26,8 @@ import { VistaModel, VistaTarget, VistaHandle, VistaInput, RGB } from '../../con
 import { SeededRng, deriveChildSeed } from '../../core/rng';
 import { generateVista } from '../../core/pipeline';
 import { shadeFlank, rimLight, aoPool } from './lighting';
+import { postProcess, buildGrainPattern } from './post';
+import { getProfile } from '../../core/profiles';
 
 // ---------------------------------------------------------------------------
 // Day-cycle constants — verbatim from SolarSystemViewscreen.tsx L1952–1954
@@ -115,6 +117,11 @@ type CloudParam = {
   hFrac: number;
   yFrac: number;
   alpha: number;
+  // WO-V2-CLOUDS-RAYS: kind-distinct, multi-layer parallax rendering
+  kind: 'cumulus' | 'cirrus' | 'ash' | 'overcast';
+  layer: 0 | 1 | 2;       // parallax depth: 0=far/small/slow, 1=mid, 2=near/large/fast
+  lobeCount: number;       // cumulus only: number of billowy lobes; 0 for other kinds
+  lobeOffsets: number[];   // cumulus only: seeded x-offset per lobe (0..1 of cloud width)
 };
 
 type ParticleSeed = {
@@ -180,8 +187,17 @@ type VistaCache = {
   // Distant sky planets
   skyPlanets: SkyPlanetParam[];
 
-  // Terrain ridge data from model (direct view into model strata)
-  ridgePts: { pts: number[]; period: number; speed: number; base: number; amp: number; color: string }[];
+  // Terrain ridge data from model strata — V2-DEPTH: real polyline + aerial-tint fields
+  ridgePts: {
+    pts: number[];            // 48-pt micro-roughness noise tile (seeded per stratum)
+    poly: [number, number][]; // real strata polyline from model (17 pts, evenly-spaced X)
+    period: number;
+    speed: number;
+    microAmp: number;         // bilateral micro-jitter amplitude in normalized Y (far≈0.004, near≈0.022)
+    color: string;            // opaque base fill CSS (retained for logging; tint applied at draw)
+    fillRGB: RGB;             // raw fill RGB tuple for per-frame aerial-perspective blend
+    depthFrac: number;        // 0=far, 1=near
+  }[];
 
   // Water
   hasWater: boolean;
@@ -202,6 +218,12 @@ type VistaCache = {
   // Clouds
   clouds: CloudParam[];
   cloudTint: string;
+  cloudKind: string;   // model.layers.atmosphere.clouds.kind
+
+  // WO-V2-CLOUDS-RAYS: pre-baked night-sky + god-ray seeds
+  godRaySeeds: { angle: number; spread: number; lenFrac: number; alphaMul: number }[];
+  shootingStarSeeds: { x0: number; y0: number; x1: number; y1: number; phase: number; speed: number }[];
+  galacticBand: { angle: number; width: number; cx: number; cy: number } | null;
 
   // Particles
   particles: ParticleSeed[];
@@ -466,24 +488,31 @@ function buildVistaCache(
     skyPlanets.push({ r, arcRate, arcOffset, arcDir, hue, sat, baseColor, bandColor, rimColor, rings: !!d.radiusPx, alpha });
   }
 
-  // ---- Terrain ridges from model strata ----
-  // model.layers.terrain.strata gives us pre-computed polylines; we convert them
-  // to the noise-ridge format (random noise pts + scroll speed from parallax).
-  // polyline Y values are normalized 0..1 — base is the normalized average ridge Y.
+  // ---- Terrain ridges from model strata (V2-DEPTH) ----
+  // Consumes the REAL strata[].polyline for the macro ridge silhouette; the
+  // 48-pt pts array is kept only for per-pixel micro-roughness jitter layered on
+  // top.  depthFrac (0=far, 1=near) drives amplitude grading + aerial-tint blend.
   const ridgePts: VistaCache['ridgePts'] = model.layers.terrain.strata.map((s, i) => {
     const rng = splitmix32(deriveChildSeed(model.seed, `ridge${i}`));
     const pts: number[] = [];
     for (let p = 0; p < 48; p++) pts.push(rng());
-    const base = s.polyline.length > 0
-      ? s.polyline.reduce((a, pt) => a + pt[1], 0) / s.polyline.length  // normalized 0..1
-      : model.layers.terrain.horizonY + i * 0.06;                        // fallback near horizonY
+
+    const n = model.layers.terrain.strata.length;
+    const depthFrac = n > 1 ? i / (n - 1) : 0;  // 0=far, 1=near
+
+    // Micro-jitter amplitude: tiny bilateral noise on top of the real polyline shape.
+    // Far ridges are smoother (haze softens surface texture at distance); near rougher.
+    const microAmp = 0.004 + depthFrac * 0.018;
+
     return {
       pts,
+      poly: s.polyline,
       period: Math.max(w * 2, 1200),
-      speed: s.parallax * 3.0,     // parallax → scroll speed
-      base,
-      amp: 0.1 + (i / Math.max(1, model.layers.terrain.strata.length - 1)) * 0.06,
+      speed: s.parallax * 3.0,     // parallax → scroll speed; far=slow, near=fast
+      microAmp,
       color: rgba(s.fill, 1),
+      fillRGB: s.fill,
+      depthFrac,
     };
   });
 
@@ -619,25 +648,142 @@ function buildVistaCache(
     }
   }
 
-  // ---- Cloud strips ----
+  // ---- Cloud strips — multi-layer, kind-distinct (WO-V2-CLOUDS-RAYS) ----
   const clouds: CloudParam[] = [];
   const cloudLayer = model.layers.atmosphere.clouds;
+  const cloudKind = cloudLayer.kind;
   const cloudTint = cloudLayer.color
     ? `${cloudLayer.color[0]}, ${cloudLayer.color[1]}, ${cloudLayer.color[2]}`
     : '200, 210, 230';
-  if (hasAtmosphere && cloudLayer.kind !== 'none' && cloudLayer.coverage > 0.05) {
-    const cloudCount = Math.round(4 + cloudLayer.coverage * 8);
-    for (let i = 0; i < cloudCount; i++) {
-      clouds.push({
-        x: rngCloud() * w * 1.6,
-        speed: (0.6 + rngCloud() * 0.8) * (0.5 + cloudLayer.drift * 0.5),
-        w: w * (0.18 + rngCloud() * 0.28),
-        hFrac: 0.06 + rngCloud() * 0.10,
-        yFrac: 0.15 + rngCloud() * 0.55,
-        alpha: (0.04 + rngCloud() * 0.10) * cloudLayer.coverage,
+
+  if (hasAtmosphere && cloudKind !== 'none' && cloudLayer.coverage > 0.05) {
+    const coverage  = cloudLayer.coverage;
+    const driftMul  = 0.5 + cloudLayer.drift * 0.5;
+
+    if (cloudKind === 'cumulus') {
+      // Three parallax layers — far (0), mid (1), near (2) — visually distinct by
+      // size, speed, height, and opacity.  Far clouds are small/slow/high;
+      // near clouds are large/fast/low.
+      const layerCounts:  number[]            = [2, 3, 3];
+      const yRanges:      [number, number][]  = [[0.06, 0.20], [0.12, 0.36], [0.20, 0.52]];
+      const scales:       number[]            = [0.50, 0.78, 1.00];
+      const speedBase:    number[]            = [0.30, 0.55, 0.80];
+      const speedRange:   number[]            = [0.40, 0.65, 0.80];
+      const alphaFactor:  number[]            = [0.52, 0.70, 0.88];
+
+      for (let li = 0; li < 3; li++) {
+        for (let i = 0; i < layerCounts[li]; i++) {
+          const lobeCount = 3 + Math.floor(rngCloud() * 3);   // 3–5 lobes
+          const lobeOffsets: number[] = [];
+          for (let lb = 0; lb < lobeCount; lb++) lobeOffsets.push(rngCloud());
+          const [yMin, yMax] = yRanges[li];
+          clouds.push({
+            x:     rngCloud() * w * 1.6,
+            speed: (speedBase[li] + rngCloud() * speedRange[li]) * driftMul,
+            w:     w * (0.12 + rngCloud() * 0.20) * scales[li] * (0.55 + coverage * 0.45),
+            hFrac: (0.07 + rngCloud() * 0.07) * scales[li],
+            yFrac: yMin + rngCloud() * (yMax - yMin),
+            alpha: alphaFactor[li] * coverage * (0.50 + rngCloud() * 0.50),
+            kind:  'cumulus',
+            layer: li as 0 | 1 | 2,
+            lobeCount,
+            lobeOffsets,
+          });
+        }
+      }
+      // Overcast deck — wide low-alpha band added when coverage is high
+      if (coverage >= 0.75) {
+        clouds.push({
+          x:     0,
+          speed: 0.12 * driftMul,
+          w:     w * 1.1,
+          hFrac: 0.14,
+          yFrac: 0.06,
+          alpha: (coverage - 0.60) * 0.65,
+          kind: 'overcast', layer: 0, lobeCount: 0, lobeOffsets: [],
+        });
+      }
+    } else if (cloudKind === 'cirrus') {
+      // Single high-altitude layer — thin horizontal feathered streaks.
+      const count = 5 + Math.round(rngCloud() * 4);
+      for (let i = 0; i < count; i++) {
+        clouds.push({
+          x:     rngCloud() * w * 1.6,
+          speed: (0.35 + rngCloud() * 0.45) * driftMul,
+          w:     w * (0.22 + rngCloud() * 0.32),
+          hFrac: 0.015 + rngCloud() * 0.012,   // very thin
+          yFrac: 0.04  + rngCloud() * 0.28,    // high in sky
+          alpha: (0.22 + rngCloud() * 0.38) * coverage,
+          kind: 'cirrus', layer: 0, lobeCount: 0, lobeOffsets: [],
+        });
+      }
+    } else if (cloudKind === 'ash' || cloudKind === 'dust') {
+      // Two layers of turbulent irregular masses.
+      // Color tinting (grey-brown vs tan-dust) comes from cloudTint set by the pipeline.
+      const layerCounts2 = [3, 2];
+      for (let li = 0; li < 2; li++) {
+        for (let i = 0; i < layerCounts2[li]; i++) {
+          clouds.push({
+            x:     rngCloud() * w * 1.6,
+            speed: (0.40 + rngCloud() * 0.60) * driftMul,
+            w:     w * (0.16 + rngCloud() * 0.26),
+            hFrac: 0.08 + rngCloud() * 0.14,
+            yFrac: (li === 0 ? 0.08 : 0.22) + rngCloud() * 0.22,
+            alpha: (0.28 + rngCloud() * 0.44) * coverage,
+            kind: 'ash', layer: li as 0 | 1, lobeCount: 0, lobeOffsets: [],
+          });
+        }
+      }
+    }
+    // 'banded' → GAS_GIANT uses drawCloudDeck; no sky clouds needed here.
+    // 'none'   → guarded above by cloudKind !== 'none'.
+  }
+
+  // ---- God-ray seeds — seeded wedge fan from the sun (WO-V2-CLOUDS-RAYS) ----
+  const rngRay   = splitmix32(deriveChildSeed(model.seed, 'godrays'));
+  const rngShoot = splitmix32(deriveChildSeed(model.seed, 'shootstars'));
+  const rngGal   = splitmix32(deriveChildSeed(model.seed, 'galband'));
+
+  const godRaySeeds: VistaCache['godRaySeeds'] = [];
+  if (hasAtmosphere) {
+    const rayCount = 6 + Math.floor(rngRay() * 5);   // 6–10 rays
+    for (let i = 0; i < rayCount; i++) {
+      // Fan from ~60° left of straight-down to ~60° right (centred on π/2 = straight down)
+      godRaySeeds.push({
+        angle:    Math.PI / 2 - Math.PI / 3 + rngRay() * (Math.PI * 2 / 3),
+        spread:   0.022 + rngRay() * 0.038,    // angular half-width of each wedge (radians)
+        lenFrac:  0.80  + rngRay() * 0.55,     // fraction of (horizonY − sunY) to extend
+        alphaMul: 0.25  + rngRay() * 0.75,
       });
     }
   }
+
+  // ---- Shooting star seeds — brief streaks for the night sky ----
+  const shootingStarSeeds: VistaCache['shootingStarSeeds'] = [];
+  if (hasAtmosphere) {
+    const ssCount = 2 + Math.floor(rngShoot() * 2);
+    for (let i = 0; i < ssCount; i++) {
+      const x0    = rngShoot() * w;
+      const y0    = rngShoot() * horizonY * 0.55;
+      const angle = Math.PI * 0.25 + rngShoot() * Math.PI * 0.50;  // 45°–135° (downward)
+      const len   = 55 + rngShoot() * 110;
+      shootingStarSeeds.push({
+        x0, y0,
+        x1:    x0 + Math.cos(angle) * len,
+        y1:    y0 + Math.sin(angle) * len,
+        phase: rngShoot() * Math.PI * 2,
+        speed: 0.35 + rngShoot() * 0.70,
+      });
+    }
+  }
+
+  // ---- Galactic / milky-way band seed — diagonal strip of faint star density ----
+  const galacticBand: VistaCache['galacticBand'] = hasAtmosphere ? {
+    angle: (0.22 + rngGal() * 0.28) * Math.PI,
+    width: w * (0.11 + rngGal() * 0.10),
+    cx:    w * (0.22 + rngGal() * 0.56),
+    cy:    horizonY * (0.18 + rngGal() * 0.44),
+  } : null;
 
   // ---- Particles ----
   const particles: ParticleSeed[] = [];
@@ -834,6 +980,10 @@ function buildVistaCache(
     skyDarken,
     clouds,
     cloudTint,
+    cloudKind,
+    godRaySeeds,
+    shootingStarSeeds,
+    galacticBand,
     particles,
     particleKind,
     landmarks,
@@ -2517,6 +2667,256 @@ function drawScatterInstances(
 }
 
 // ---------------------------------------------------------------------------
+// WO-V2-CLOUDS-RAYS helpers
+// ---------------------------------------------------------------------------
+
+// drawCumulusCloud — billowy cloud with lit-top lobes and a dark-base underside.
+// Each lobe is a radial gradient centred slightly above the cloud-centre Y so the
+// top is bright (sky-lit) and the underside is shaded.
+function drawCumulusCloud(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  cloudW: number, cloudH: number,
+  alpha: number,
+  tr: number, tg: number, tb: number,
+  lobeCount: number,
+  lobeOffsets: number[],
+): void {
+  const lobeR = Math.max(8, cloudH * 0.82);
+  const litR = Math.min(255, tr + 58);
+  const litG = Math.min(255, tg + 58);
+  const litB = Math.min(255, tb + 52);
+  const shR  = Math.max(0, tr - 38);
+  const shG  = Math.max(0, tg - 38);
+  const shB  = Math.max(0, tb - 32);
+
+  // Dark base underside — a single wide linear gradient across the cloud belly
+  const baseTop = cy;
+  const baseBtm = cy + lobeR * 0.55;
+  const sg = ctx.createLinearGradient(cx, baseTop, cx, baseBtm);
+  sg.addColorStop(0, `rgba(${shR}, ${shG}, ${shB}, 0)`);
+  sg.addColorStop(1, `rgba(${shR}, ${shG}, ${shB}, ${(alpha * 0.48).toFixed(3)})`);
+  ctx.fillStyle = sg;
+  ctx.fillRect(cx - cloudW * 0.62, baseTop, cloudW * 1.24, lobeR * 0.55);
+
+  // Lit-top lobe per section — bright centre fading outward
+  for (let lb = 0; lb < lobeCount; lb++) {
+    const lx = cx - cloudW * 0.42 + (lobeOffsets[lb] ?? lb / lobeCount) * cloudW * 0.84;
+    const ly = cy - lobeR * 0.08;
+    const lg = ctx.createRadialGradient(lx, ly - lobeR * 0.20, 0, lx, ly, lobeR);
+    lg.addColorStop(0,    `rgba(${litR}, ${litG}, ${litB}, ${(alpha * 1.00).toFixed(3)})`);
+    lg.addColorStop(0.45, `rgba(${tr}, ${tg}, ${tb},  ${(alpha * 0.68).toFixed(3)})`);
+    lg.addColorStop(0.80, `rgba(${tr}, ${tg}, ${tb},  ${(alpha * 0.20).toFixed(3)})`);
+    lg.addColorStop(1,    `rgba(${tr}, ${tg}, ${tb},  0)`);
+    ctx.fillStyle = lg;
+    ctx.beginPath();
+    ctx.arc(lx, ly, lobeR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// drawCirrusCloud — thin, wispy horizontal streak with feathered ends.
+// Three sub-strokes at slightly offset Y positions give a layered wispy look.
+function drawCirrusCloud(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  cloudW: number, cloudH: number,
+  alpha: number,
+  tr: number, tg: number, tb: number,
+): void {
+  const halfH = Math.max(1.5, cloudH * 0.55);
+  const alphas   = [0.88, 1.00, 0.62];
+  const widthMul = [0.72, 1.00, 0.56];
+  const yOffsets = [-halfH * 0.55, 0, halfH * 0.50];
+
+  for (let si = 0; si < 3; si++) {
+    const sy  = cy + yOffsets[si];
+    const hw  = cloudW * 0.5 * widthMul[si];
+    const hh  = Math.max(1, halfH * (1.0 - si * 0.22));
+    const a   = alpha * alphas[si];
+    const hg  = ctx.createLinearGradient(cx - hw, sy, cx + hw, sy);
+    hg.addColorStop(0,    `rgba(${tr}, ${tg}, ${tb}, 0)`);
+    hg.addColorStop(0.12, `rgba(${tr}, ${tg}, ${tb}, ${a.toFixed(3)})`);
+    hg.addColorStop(0.88, `rgba(${tr}, ${tg}, ${tb}, ${a.toFixed(3)})`);
+    hg.addColorStop(1,    `rgba(${tr}, ${tg}, ${tb}, 0)`);
+    ctx.fillStyle = hg;
+    ctx.fillRect(cx - hw, sy - hh, hw * 2, hh * 2);
+  }
+}
+
+// drawAshCloud — turbulent irregular mass used for volcanic ash and desert dust.
+// Multiple overlapping blobs at deterministic offsets (no Math.random in draw path).
+// A subtle t-driven scale pulse gives a slow churning turbulence feel.
+function drawAshCloud(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  cloudW: number, cloudH: number,
+  alpha: number,
+  tr: number, tg: number, tb: number,
+  t: number,
+  layer: number,
+): void {
+  const blobCount = 3 + layer;
+  const baseR     = Math.max(6, cloudH * 0.68);
+  for (let bi = 0; bi < blobCount; bi++) {
+    // Deterministic offsets via cheap prime-step hash — stable across frames
+    const bx = cx + (((bi * 127 + 13) % 100) / 100 - 0.50) * cloudW * 0.80;
+    const by = cy + (((bi *  53 +  7) % 100) / 100 - 0.50) * cloudH * 0.60;
+    const br = baseR * (0.48 + ((bi * 31 + 11) % 100) / 100 * 0.72);
+    // Slow turbulent pulse — deterministic via bi phase offset, never Math.random
+    const pulse = t === 0 ? 1 : 1 + 0.07 * Math.sin(t * 0.38 + bi * 1.27);
+    const rg = ctx.createRadialGradient(bx, by, 0, bx, by, br * pulse);
+    rg.addColorStop(0,    `rgba(${tr}, ${tg}, ${tb}, ${(alpha * 0.82).toFixed(3)})`);
+    rg.addColorStop(0.55, `rgba(${tr}, ${tg}, ${tb}, ${(alpha * 0.44).toFixed(3)})`);
+    rg.addColorStop(1,    `rgba(${tr}, ${tg}, ${tb}, 0)`);
+    ctx.fillStyle = rg;
+    ctx.fillRect(bx - br * pulse, by - br * pulse, br * pulse * 2, br * pulse * 2);
+  }
+}
+
+// drawNightSky — nebula wash, galactic band, and shooting stars.
+// All effects are gated on starVisibility so they fade out cleanly by day.
+// Night/twilight check: caller passes starVisibility > 0 threshold.
+function drawNightSky(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  horizonY: number,
+  t: number,
+  cache: VistaCache,
+  starVisibility: number,
+): void {
+  const nebula = cache.model.layers.celestial.nebula;
+
+  // Nebula wash — two offset radial lobes for a diffuse tinted glow in the night sky.
+  // Uses 'screen' composite so it brightens rather than painting over stars.
+  if (nebula && starVisibility > 0.25) {
+    const hue = nebula.hue;
+    const den = nebula.density * starVisibility;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    // Primary lobe
+    const r1 = Math.max(w, horizonY) * 0.82;
+    const nx1 = w * 0.35;
+    const ny1 = horizonY * 0.28;
+    const nG1 = ctx.createRadialGradient(nx1, ny1, 0, nx1, ny1, r1);
+    nG1.addColorStop(0,   `hsla(${hue}, 62%, 24%, ${(den * 0.30).toFixed(3)})`);
+    nG1.addColorStop(0.5, `hsla(${hue}, 48%, 16%, ${(den * 0.14).toFixed(3)})`);
+    nG1.addColorStop(1,   `hsla(${hue}, 32%, 10%, 0)`);
+    ctx.fillStyle = nG1;
+    ctx.fillRect(0, 0, w, horizonY);
+    // Secondary lobe — shifted hue for depth
+    const r2  = r1 * 0.62;
+    const nx2 = w * 0.68;
+    const ny2 = horizonY * 0.44;
+    const nG2 = ctx.createRadialGradient(nx2, ny2, 0, nx2, ny2, r2);
+    nG2.addColorStop(0, `hsla(${(hue + 28) % 360}, 56%, 20%, ${(den * 0.20).toFixed(3)})`);
+    nG2.addColorStop(1, `hsla(${(hue + 28) % 360}, 40%, 10%, 0)`);
+    ctx.fillStyle = nG2;
+    ctx.fillRect(0, 0, w, horizonY);
+    ctx.restore();
+  }
+
+  // Galactic / milky-way band — seeded diagonal strip of concentrated star haze.
+  // The band origin and angle are baked in buildVistaCache so they're stable per seed.
+  if (cache.galacticBand && starVisibility > 0.40) {
+    const gb  = cache.galacticBand;
+    const gba = 0.10 * starVisibility;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.translate(gb.cx, gb.cy);
+    ctx.rotate(gb.angle);
+    const bGrad = ctx.createLinearGradient(-gb.width, 0, gb.width, 0);
+    bGrad.addColorStop(0,    `rgba(200, 205, 240, 0)`);
+    bGrad.addColorStop(0.28, `rgba(200, 205, 240, ${(gba * 0.80).toFixed(3)})`);
+    bGrad.addColorStop(0.50, `rgba(210, 215, 255, ${gba.toFixed(3)})`);
+    bGrad.addColorStop(0.72, `rgba(200, 205, 240, ${(gba * 0.80).toFixed(3)})`);
+    bGrad.addColorStop(1,    `rgba(200, 205, 240, 0)`);
+    ctx.fillStyle = bGrad;
+    // Extend the band far enough in the rotated direction to cross the full sky
+    ctx.fillRect(-gb.width, -horizonY * 2, gb.width * 2, horizonY * 4);
+    ctx.restore();
+  }
+
+  // Shooting stars — brief streaks cycling in and out; deeply gated on starVisibility.
+  // Guard t > 0: the proof harness captures at t=0 (daytime) so this never fires there.
+  if (starVisibility > 0.65 && t > 0 && cache.shootingStarSeeds.length > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const ss of cache.shootingStarSeeds) {
+      // Each star fires once per ~17–45 s cycle; brief bright peak near sin=1.
+      const cycleT    = (t * ss.speed * 0.35 + ss.phase) % (Math.PI * 2);
+      const peakAlpha = Math.max(0, Math.sin(cycleT) - 0.78) * (1 / 0.22);
+      if (peakAlpha < 0.01) continue;
+      const finalAlpha = peakAlpha * starVisibility;
+      const sg = ctx.createLinearGradient(ss.x0, ss.y0, ss.x1, ss.y1);
+      sg.addColorStop(0,    `rgba(255, 255, 255, ${(finalAlpha * 0.95).toFixed(3)})`);
+      sg.addColorStop(0.35, `rgba(220, 235, 255, ${(finalAlpha * 0.50).toFixed(3)})`);
+      sg.addColorStop(1,    `rgba(200, 220, 255, 0)`);
+      ctx.strokeStyle = sg;
+      ctx.lineWidth   = 1.8;
+      ctx.lineCap     = 'round';
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.moveTo(ss.x0, ss.y0);
+      ctx.lineTo(ss.x1, ss.y1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// drawGodRays — stylized wedge rays fanning from the sun through cloud gaps.
+// Rays are drawn BEFORE the cloud layer so clouds occlude them naturally — rays
+// appear in the gaps between cloud masses.  Uses 'lighter' composite for
+// additive glow.  Intensity peaks at low sun (golden hour).
+function drawGodRays(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  horizonY: number,
+  sunX: number,
+  sunY: number,
+  cache: VistaCache,
+  dc: DayCycle,
+): void {
+  // Only draw when atmosphere + clouds are present and sun is up
+  if (!dc.sunUp || !cache.hasAtmosphere || cache.cloudKind === 'none' || cache.clouds.length === 0) return;
+  // Rays are strongest near the horizon (sunAlt ≈ 0) and fade at zenith
+  const horizonPeak = Math.max(0, 1.0 - dc.sunAlt * 2.4);
+  const bloom       = cache.model.lighting.bloom;
+  const rayAlpha    = bloom * dc.bright * horizonPeak * 0.28;
+  if (rayAlpha < 0.005) return;
+
+  const { sc } = cache;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const ray of cache.godRaySeeds) {
+    const baseDist = (horizonY - sunY) * ray.lenFrac;
+    if (baseDist <= 0) continue;
+    const aL   = ray.angle - ray.spread;
+    const aR   = ray.angle + ray.spread;
+    const x1   = sunX + Math.cos(aL) * baseDist;
+    const y1   = sunY + Math.sin(aL) * baseDist;
+    const x2   = sunX + Math.cos(aR) * baseDist;
+    const y2   = sunY + Math.sin(aR) * baseDist;
+    const midX = (x1 + x2) * 0.5;
+    const midY = (y1 + y2) * 0.5;
+    const rg   = ctx.createLinearGradient(sunX, sunY, midX, midY);
+    const a0   = rayAlpha * ray.alphaMul;
+    rg.addColorStop(0,   `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${a0.toFixed(3)})`);
+    rg.addColorStop(0.6, `rgba(${sc.r}, ${sc.g}, ${sc.b}, ${(a0 * 0.28).toFixed(3)})`);
+    rg.addColorStop(1,   `rgba(${sc.r}, ${sc.g}, ${sc.b}, 0)`);
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.moveTo(sunX, sunY);
+    ctx.lineTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
 // drawScene — the per-frame compositor
 //
 // Ported from drawLandedScene (SolarSystemViewscreen.tsx L3477), adapted to
@@ -2542,36 +2942,75 @@ function drawScene(
   // --- LIVE DAY/NIGHT CYCLE ---
   const dc = dayCycleAt(t, cache.dayPhaseOffset);
 
-  // 1) Sky gradient — rebuilt per frame from palette + day cycle
+  // 1) Sky gradient — consume model.layers.sky.gradient stops + day-cycle brightness.
+  //    The pipeline emits 2–3 stops (zenith, optional scatter-band, horizon) already
+  //    colour-matched to the palette; we apply the same day-cycle brightness curve
+  //    (0.30 dim → 1.0 full) and warm sunrise/sunset tint per stop.
+  //    scatterBands: thin atmospheric colour strips just above the horizon (WO-V2-CLOUDS-RAYS).
   {
     let g: CanvasGradient;
     if (!hasAtmosphere) {
       // VACUUM: near-black sky regardless of sun position
       g = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
-      g.addColorStop(0, 'rgb(2, 2, 6)');
+      g.addColorStop(0,   'rgb(2, 2, 6)');
       g.addColorStop(0.6, 'rgb(4, 4, 12)');
-      g.addColorStop(1, 'rgb(8, 8, 20)');
+      g.addColorStop(1,   'rgb(8, 8, 20)');
     } else {
-      const b = dc.bright;
+      const b    = dc.bright;
       const warm = dc.warm;
-      const topBase = pal.skyTop;
-      const horBase = pal.skyHorizon;
-      const topR = Math.round(Math.min(255, topBase[0] * (0.3 + b * 0.7) + warm * 15));
-      const topG = Math.round(Math.min(255, topBase[1] * (0.3 + b * 0.7) + warm * 5));
-      const topB = Math.round(Math.min(255, topBase[2] * (0.3 + b * 0.7)));
-      const horR = Math.round(Math.min(255, horBase[0] * (0.4 + b * 0.6) + warm * 40));
-      const horG = Math.round(Math.min(255, horBase[1] * (0.4 + b * 0.6) + warm * 18));
-      const horB = Math.round(Math.min(255, horBase[2] * (0.4 + b * 0.6)));
-      const midR = Math.round((topR + horR) / 2);
-      const midG = Math.round((topG + horG) / 2);
-      const midB = Math.round((topB + horB) / 2);
+      const skyGrad = model.layers.sky.gradient;
       g = ctx.createLinearGradient(0, 0, 0, horizonY * 1.15);
-      g.addColorStop(0, `rgb(${topR}, ${topG}, ${topB})`);
-      g.addColorStop(0.6, `rgb(${midR}, ${midG}, ${midB})`);
-      g.addColorStop(1, `rgb(${horR}, ${horG}, ${horB})`);
+      if (skyGrad.length >= 2) {
+        // Drive each stop through the day-cycle brightness curve.
+        // Stops near 1.0 (horizon) get more warm sunrise/sunset tint than the zenith.
+        for (const stop of skyGrad) {
+          const [cr, cg, cb] = stop.color;
+          const wt  = stop.stop;   // warmth weight increases toward horizon
+          const r   = Math.round(Math.min(255, cr * (0.30 + b * 0.70) + warm * 42 * wt));
+          const cg2 = Math.round(Math.min(255, cg * (0.30 + b * 0.70) + warm * 16 * wt));
+          const cb2 = Math.round(Math.min(255, cb * (0.30 + b * 0.70)));
+          g.addColorStop(stop.stop, `rgb(${r}, ${cg2}, ${cb2})`);
+        }
+      } else {
+        // Fallback: manual two-stop from palette (should never reach here in practice)
+        const topBase = pal.skyTop;
+        const horBase = pal.skyHorizon;
+        const topR = Math.round(Math.min(255, topBase[0] * (0.30 + b * 0.70) + warm * 15));
+        const topG = Math.round(Math.min(255, topBase[1] * (0.30 + b * 0.70) + warm *  5));
+        const topB = Math.round(Math.min(255, topBase[2] * (0.30 + b * 0.70)));
+        const horR = Math.round(Math.min(255, horBase[0] * (0.40 + b * 0.60) + warm * 40));
+        const horG = Math.round(Math.min(255, horBase[1] * (0.40 + b * 0.60) + warm * 18));
+        const horB = Math.round(Math.min(255, horBase[2] * (0.40 + b * 0.60)));
+        g.addColorStop(0,   `rgb(${topR}, ${topG}, ${topB})`);
+        g.addColorStop(0.6, `rgb(${Math.round((topR+horR)/2)}, ${Math.round((topG+horG)/2)}, ${Math.round((topB+horB)/2)})`);
+        g.addColorStop(1,   `rgb(${horR}, ${horG}, ${horB})`);
+      }
     }
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
+
+    // Scatter bands — thin atmospheric colour strips above the horizon.
+    // Drawn with 'screen' composite so they glow without washing out the gradient.
+    if (hasAtmosphere && dc.bright > 0.08) {
+      const scatterBands = model.layers.sky.scatterBands;
+      if (scatterBands.length > 0) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const band of scatterBands) {
+          const bandCY = band.y * horizonY;
+          const bandHH = band.width * horizonY * 0.5;
+          const [br, bg2, bb] = band.color;
+          const bAlpha = dc.bright * 0.16;
+          const bGrad  = ctx.createLinearGradient(0, bandCY - bandHH, 0, bandCY + bandHH);
+          bGrad.addColorStop(0,   `rgba(${br}, ${bg2}, ${bb}, 0)`);
+          bGrad.addColorStop(0.5, `rgba(${br}, ${bg2}, ${bb}, ${bAlpha.toFixed(3)})`);
+          bGrad.addColorStop(1,   `rgba(${br}, ${bg2}, ${bb}, 0)`);
+          ctx.fillStyle = bGrad;
+          ctx.fillRect(0, bandCY - bandHH, w, bandHH * 2);
+        }
+        ctx.restore();
+      }
+    }
   }
 
   // 1a) Sunrise/sunset atmospheric band (atmospheric worlds only)
@@ -2617,23 +3056,53 @@ function drawScene(
     ctx.restore();
   }
 
-  // 2b) Drifting cloud bands (atmospheric worlds only)
+  // 2c) Night sky — nebula wash, galactic band, shooting stars (WO-V2-CLOUDS-RAYS).
+  //     Gated on starVisibility so effects fade out cleanly well before sunrise.
+  if (hasAtmosphere && starVisibility > 0.25) {
+    drawNightSky(ctx, w, horizonY, t, cache, starVisibility);
+  }
+
+  // 2d) God-rays — wedge fan from the sun, drawn BEFORE clouds so cloud masses
+  //     occlude them and the open gaps show through (WO-V2-CLOUDS-RAYS).
+  //     Sun position duplicated here (same formula as step 3) so we can draw rays
+  //     ahead of the sun disc.
+  if (dc.sunUp && hasAtmosphere && cache.godRaySeeds.length > 0) {
+    const rayPhase  = dc.dayPhase;
+    const rayXu     = cache.sunAzDir > 0 ? rayPhase : 1 - rayPhase;
+    const raySunX   = w * (0.06 + rayXu * 0.88);
+    const raySunY   = horizonY - Math.max(-0.05, dc.sunAlt) * horizonY * SKY_Y_SCALE;
+    drawGodRays(ctx, w, horizonY, raySunX, raySunY, cache, dc);
+  }
+
+  // 2b) Clouds — kind-distinct parallax layers (WO-V2-CLOUDS-RAYS).
+  //     Replaces the old single-style radial-gradient blob.
+  //     cumulus: lit-top / dark-base lobes  |  cirrus: thin feathered streaks
+  //     ash:     turbulent irregular masses  |  overcast: wide low-alpha deck
   if (hasAtmosphere && cache.clouds.length > 0) {
+    const [cloudTR, cloudTG, cloudTB] = cache.model.layers.atmosphere.clouds.color;
+    const span = w * 1.6;
     ctx.save();
-    for (let i = 0; i < cache.clouds.length; i++) {
-      const c = cache.clouds[i];
-      const span = w * 1.6;
+    ctx.globalCompositeOperation = 'source-over';
+    for (const c of cache.clouds) {
       const cx = (((c.x + t * c.speed) % span) + span) % span - w * 0.3;
-      const chh = h * c.hFrac;
-      const cy = Math.min(horizonY * c.yFrac * 2, horizonY - chh - 4);
-      ctx.globalCompositeOperation = 'lighter';
-      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, c.w);
-      g.addColorStop(0, `rgba(${cache.cloudTint}, ${c.alpha.toFixed(3)})`);
-      g.addColorStop(1, `rgba(${cache.cloudTint}, 0)`);
-      ctx.fillStyle = g;
-      ctx.save(); ctx.translate(cx, cy); ctx.scale(1, chh / c.w); ctx.translate(-cx, -cy);
-      ctx.fillRect(cx - c.w, cy - c.w, c.w * 2, c.w * 2);
-      ctx.restore();
+      const ch = h * c.hFrac;
+      const cy = Math.min(horizonY * c.yFrac * 2, horizonY - ch - 4);
+      if (c.kind === 'cumulus') {
+        drawCumulusCloud(ctx, cx, cy, c.w, ch, c.alpha,
+          cloudTR, cloudTG, cloudTB, c.lobeCount, c.lobeOffsets);
+      } else if (c.kind === 'cirrus') {
+        drawCirrusCloud(ctx, cx, cy, c.w, ch, c.alpha, cloudTR, cloudTG, cloudTB);
+      } else if (c.kind === 'ash') {
+        drawAshCloud(ctx, cx, cy, c.w, ch, c.alpha,
+          cloudTR, cloudTG, cloudTB, t, c.layer);
+      } else {
+        // Overcast deck — full-width band, linear gradient top→bottom
+        const og = ctx.createLinearGradient(0, cy, 0, cy + ch);
+        og.addColorStop(0, `rgba(${cloudTR}, ${cloudTG}, ${cloudTB}, ${(c.alpha * 0.82).toFixed(3)})`);
+        og.addColorStop(1, `rgba(${cloudTR}, ${cloudTG}, ${cloudTB}, ${(c.alpha * 0.28).toFixed(3)})`);
+        ctx.fillStyle = og;
+        ctx.fillRect(0, cy, w, ch);
+      }
     }
     ctx.restore();
   }
@@ -2815,6 +3284,17 @@ function drawScene(
     // The land strip [horizonY..waterTopY] is always filled when water is present.
     const wTopY = cache.waterTopY;  // waterlineY*h, or h if no water
     if (cache.ridgePts.length > 0) {
+      // Live sky horizon color for aerial-perspective tint — matches the sky gradient
+      // computed in step 1 so far ridges desaturate/lift into the same atmosphere.
+      const horBase = pal.skyHorizon;
+      const b = dc.bright;
+      const hazeR = hasAtmosphere ? Math.min(255, Math.round(horBase[0] * (0.4 + b * 0.6))) : 8;
+      const hazeG = hasAtmosphere ? Math.min(255, Math.round(horBase[1] * (0.4 + b * 0.6))) : 8;
+      const hazeB = hasAtmosphere ? Math.min(255, Math.round(horBase[2] * (0.4 + b * 0.6))) : 20;
+      // Normalized horizon Y bound (model space) — clamps ridge peaks inside sky dome.
+      const horizonNorm = model.layers.terrain.horizonY;
+      const layerCount = cache.ridgePts.length;
+
       ctx.save();
       if (cache.hasWater) {
         // Clip ridges to above the waterline — distant terrain visible on the horizon
@@ -2822,29 +3302,81 @@ function drawScene(
         ctx.rect(0, 0, w, wTopY);
         ctx.clip();
       }
-      for (let li = 0; li < cache.ridgePts.length; li++) {
+
+      for (let li = 0; li < layerCount; li++) {
         const layer = cache.ridgePts[li];
-        const isFront = li === cache.ridgePts.length - 1;
-        const off = isFront ? 0 : t * layer.speed;
+        const depthFrac = layer.depthFrac;  // 0=far, 1=near
+
+        // All layers scroll; near layers (large speed) scroll fastest → proper parallax depth.
+        const off = t * layer.speed;
         const period = layer.period;
-        const n = layer.pts.length;
+        const microN = layer.pts.length;
+        const poly = layer.poly;
+        const polyN = poly.length;
+
+        // Per-stratum aerial-perspective tint: blend fill toward live sky horizon color.
+        // Far ridges (depthFrac≈0) are 55% hazed; near ridges (≈1) are ~5% hazed.
+        // Vacuum worlds use a very faint tint (no atmosphere = no scattering).
+        const hazeAmt = 0.55 * (1 - depthFrac) * (hasAtmosphere ? 1.0 : 0.15);
+        const hazeAmtC = 1 - hazeAmt;
+        const fr = Math.round(layer.fillRGB[0] * hazeAmtC + hazeR * hazeAmt);
+        const fg = Math.round(layer.fillRGB[1] * hazeAmtC + hazeG * hazeAmt);
+        const fb = Math.round(layer.fillRGB[2] * hazeAmtC + hazeB * hazeAmt);
+
         ctx.beginPath();
         ctx.moveTo(0, h);
         for (let x = 0; x <= w; x += 8) {
-          const u = (((x + off) % period) + period) % period;
-          const fi = (u / period) * n;
-          const i0 = Math.floor(fi) % n;
-          const i1 = (i0 + 1) % n;
-          const frac = fi - Math.floor(fi);
-          const s = frac * frac * (3 - 2 * frac);
-          const v = layer.pts[i0] * (1 - s) + layer.pts[i1] * s;
-          const yTop = h * layer.base - v * h * layer.amp;
-          ctx.lineTo(x, yTop);
+          // Tiling parallax scroll — wraps across the wider-than-screen period
+          const xScroll = (((x + off) % period) + period) % period;
+          const xFrac = xScroll / period;
+
+          // Sample real polyline for macro ridge shape.
+          // Polyline X is evenly spaced at i/(polyN-1) so we interpolate directly.
+          let macroY: number;
+          if (polyN < 2) {
+            macroY = polyN === 1 ? poly[0][1] : horizonNorm;
+          } else {
+            const fi = xFrac * (polyN - 1);
+            const i0 = Math.floor(fi);
+            const i1 = Math.min(i0 + 1, polyN - 1);
+            const frac = fi - i0;
+            const sm = frac * frac * (3 - 2 * frac);  // smoothstep
+            macroY = poly[i0][1] * (1 - sm) + poly[i1][1] * sm;
+          }
+
+          // Micro-roughness noise — bilateral jitter on top of the macro polyline shape.
+          // microAmp is depth-graded (far=0.004, near=0.022) for smooth-far / rough-near.
+          const fi2 = xFrac * microN;
+          const mi0 = Math.floor(fi2) % microN;
+          const mi1 = (mi0 + 1) % microN;
+          const mf = fi2 - Math.floor(fi2);
+          const ms = mf * mf * (3 - 2 * mf);
+          const noise = layer.pts[mi0] * (1 - ms) + layer.pts[mi1] * ms;  // [0, 1]
+          const micro = (noise - 0.5) * 2 * layer.microAmp;               // ±microAmp
+
+          // Clamp to [0, horizonNorm] — peaks stay inside sky dome, above ground plane.
+          const yNorm = Math.max(0, Math.min(horizonNorm, macroY + micro));
+          ctx.lineTo(x, yNorm * h);
         }
         ctx.lineTo(w, h);
         ctx.closePath();
-        ctx.fillStyle = layer.color;
+        ctx.fillStyle = `rgb(${fr}, ${fg}, ${fb})`;
         ctx.fill();
+
+        // Interleaved haze veil between ridge layers (not after the near/front layer).
+        // A thin atmosphere-colored gradient after each stratum reinforces depth —
+        // each successive range appears through progressively thicker air.
+        if (li < layerCount - 1 && hasAtmosphere) {
+          const veilAlpha = 0.07 * (1 - depthFrac) * Math.max(0.2, dc.bright);
+          if (veilAlpha > 0.004) {
+            const veilGrad = ctx.createLinearGradient(0, 0, 0, horizonY);
+            veilGrad.addColorStop(0,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.25).toFixed(3)})`);
+            veilGrad.addColorStop(0.65, `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${veilAlpha.toFixed(3)})`);
+            veilGrad.addColorStop(1,    `rgba(${hazeR}, ${hazeG}, ${hazeB}, ${(veilAlpha * 0.4).toFixed(3)})`);
+            ctx.fillStyle = veilGrad;
+            ctx.fillRect(0, 0, w, horizonY);
+          }
+        }
       }
       ctx.restore();
     }
@@ -2942,6 +3474,25 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
   let currentInput: VistaInput | undefined;
   let rafId: number | null = null;
 
+  // Offscreen scene buffer — allocated once here, resized on resize().
+  // drawScene() renders into offscreen; postProcess() composites to the visible canvas.
+  // This is the single shared buffer mandated by WO-V2-POST (no per-frame allocation).
+  const offscreen = document.createElement('canvas');
+  offscreen.width  = w;
+  offscreen.height = h;
+  let offCtx = offscreen.getContext('2d') as CanvasRenderingContext2D;
+
+  // Bloom scratch buffer — quarter-res; allocated once here, resized on resize().
+  // postProcess() downscales the scene into this, blurs it, and composites back
+  // additively.  Keeping it at 1/4 res makes the CSS filter blur much cheaper.
+  const bloomScratch = document.createElement('canvas');
+  bloomScratch.width  = Math.max(1, Math.ceil(w / 4));
+  bloomScratch.height = Math.max(1, Math.ceil(h / 4));
+
+  // Deterministic grain tile — rebuilt when model.seed changes, not per-frame.
+  let grainSeedKey = model.seed;
+  let grainTile    = buildGrainPattern(model);
+
   // Cache key incorporating everything that invalidates the pre-baked geometry.
   // Day-bucket busts the cache daily (sea state, weather tier are daily-deterministic).
   function makeKey(m: VistaModel, cw: number, ch: number): string {
@@ -2954,9 +3505,9 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
 
   function getOrBuildCache(m: VistaModel, cw: number, ch: number): VistaCache {
     const key = makeKey(m, cw, ch);
-    // Rebuild when key changes or canvas context identity changes (remount)
-    if (!_cache || _cache.key !== key || _cache.ctx !== ctx) {
-      const c = buildVistaCache(ctx, m, cw, ch);
+    // Rebuild when key changes or offscreen context identity changes (remount/resize).
+    if (!_cache || _cache.key !== key || _cache.ctx !== offCtx) {
+      const c = buildVistaCache(offCtx, m, cw, ch);
       c.key = key;
       _cache = c;
     }
@@ -2966,8 +3517,20 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
   let currentT = 0;
 
   function render(): void {
+    // Rebuild grain tile when model.seed changes (new planet loaded via update()).
+    if (currentModel.seed !== grainSeedKey) {
+      grainSeedKey = currentModel.seed;
+      grainTile    = buildGrainPattern(currentModel);
+    }
     const cache = getOrBuildCache(currentModel, w, h);
-    drawScene(ctx, w, h, currentT, currentModel, cache);
+    // Draw scene into the offscreen scene buffer.
+    drawScene(offCtx, w, h, currentT, currentModel, cache);
+    // Post-process chain: blit → bloom → vignette → split-tone grade → film grain.
+    const profile = getProfile(currentModel.planetType);
+    postProcess(
+      ctx, offscreen, w, h, currentModel, grainTile, profile.grade,
+      bloomScratch, currentInput?.view?.quality,
+    );
   }
 
   // Initial render at t=0 (reduced-motion / frozen frame)
@@ -2982,12 +3545,20 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
     resize(newW: number, newH: number): void {
       canvas.width = newW;
       canvas.height = newH;
-      // Re-acquire context after resize (Chrome invalidates it on some resize paths)
+      // Re-acquire visible context after resize (Chrome invalidates it on some resize paths).
       const newCtx = canvas.getContext('2d');
       if (newCtx) ctx = newCtx;
+      // Resize offscreen scene buffer to match.
+      offscreen.width  = newW;
+      offscreen.height = newH;
+      const newOffCtx = offscreen.getContext('2d');
+      if (newOffCtx) offCtx = newOffCtx;
+      // Resize bloom scratch to stay at quarter-res.
+      bloomScratch.width  = Math.max(1, Math.ceil(newW / 4));
+      bloomScratch.height = Math.max(1, Math.ceil(newH / 4));
       w = newW;
       h = newH;
-      // Force cache rebuild by clearing the singleton (key includes dimensions)
+      // Force cache rebuild by clearing the singleton (key includes dimensions).
       _cache = null;
       render();
     },
@@ -3024,6 +3595,7 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
         rafId = null;
       }
       _cache = null;
+      offCtx.clearRect(0, 0, w, h);
       ctx.clearRect(0, 0, w, h);
     },
   };
