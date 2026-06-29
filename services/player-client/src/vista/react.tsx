@@ -82,8 +82,11 @@ export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasP
     const h = Math.max(1, Math.round(rect.height * dpr));
     canvas.width = w;
     canvas.height = h;
-    canvas.style.width = `${rect.width}px`;
-    canvas.style.height = `${rect.height}px`;
+    // Do NOT set canvas.style.width/height here.  The canvas CSS is already
+    // `width:100%;height:100%` (governed by the parent container).  Pinning
+    // the CSS size to the measured rect prevents the container from reflowing
+    // the canvas to fill future layout changes, and couples poorly with the
+    // ResizeObserver below.
 
     const engine = createVistaEngine();
     const model = engine.generate(inputRef.current);
@@ -142,11 +145,30 @@ export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasP
     }
   }, [clock]);
 
-  // ResizeObserver: resize the handle (and underlying canvas) when the
-  // element's layout dimensions change.
+  // ResizeObserver: resize the drawing buffer when the PARENT CONTAINER's
+  // layout dimensions change.
+  //
+  // We observe the parent element, not the canvas, to prevent a self-triggering
+  // feedback loop.  The old code set canvas.style.width/height inside the
+  // callback — mutating the CSS layout of the observed canvas element re-fires
+  // ResizeObserver each cycle; sub-pixel / DPR-rounding drift caused the canvas
+  // to shrink progressively with every structural input change.
+  //
+  // The canvas CSS is `width:100%;height:100%` (see JSX return below).  The
+  // container is the layout source of truth.  Setting only the drawing buffer
+  // attributes (`canvas.width/height`, via handle.resize) does NOT change CSS
+  // layout and therefore does NOT re-trigger the observer.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const container = canvas.parentElement;
+    if (!container) return;
+
+    // Guard: track last resolved buffer dimensions so spurious observer firings
+    // (DPR-rounding yielding the same logical size) don't call handle.resize()
+    // unnecessarily.
+    let lastBufW = 0;
+    let lastBufH = 0;
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -158,11 +180,12 @@ export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasP
       const dpr = Math.min(window.devicePixelRatio || 1, resizeDprCap);
       const w = Math.max(1, Math.round(width * dpr));
       const h = Math.max(1, Math.round(height * dpr));
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
+      if (w === lastBufW && h === lastBufH) return; // drawing buffer already correct
+      lastBufW = w;
+      lastBufH = h;
       handleRef.current.resize(w, h);
     });
-    observer.observe(canvas);
+    observer.observe(container);
     return () => observer.disconnect();
   }, []);
 

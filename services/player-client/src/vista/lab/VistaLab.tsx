@@ -395,6 +395,7 @@ export default function VistaLab() {
             {ALL_PLANET_TYPES.map(t => (
               <button
                 key={t}
+                data-testid={`vista-lab-type-${t}`}
                 onClick={() => handleTypeSelect(t)}
                 style={planetType === t ? styles.typeTileActive : styles.typeTile}
               >
@@ -408,6 +409,7 @@ export default function VistaLab() {
         <section style={styles.section}>
           <div style={styles.row}>
             <button
+              data-testid="vista-lab-reseed"
               onClick={handleRandomize}
               disabled={locked}
               style={locked ? styles.btnDisabled : styles.btnPrimary}
@@ -440,6 +442,7 @@ export default function VistaLab() {
         <section style={styles.section}>
           <label style={styles.label}>Habitability — {habitability}</label>
           <input
+            data-testid="vista-lab-habitability"
             type="range"
             min={0}
             max={100}
@@ -720,7 +723,7 @@ export default function VistaLab() {
 
       {/* ── Centre: 16:9 canvas ──────────────────────────────────────────── */}
       <main style={styles.canvasArea}>
-        <div style={styles.canvasBox}>
+        <div data-testid="vista-lab-canvas-box" style={styles.canvasBox}>
           <VistaCanvas input={vistaInput} clock={clock} />
         </div>
       </main>
