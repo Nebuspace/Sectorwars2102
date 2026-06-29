@@ -2358,41 +2358,85 @@ function drawLandmarks(
       ctx.fill();
 
     } else if (kind === 'canyon') {
-      // Dark downward V-notch — left wall faces inward (right, azimuth 0°),
-      // right wall faces inward (left, azimuth 180°).  Canyons are inherently dark
-      // so mults are scaled down to 0.82 to preserve that shadowed character.
-      const cd  = height * 0.55;
-      const cw2 = width * 0.75;
-      ctx.fillStyle = lm.fillColor;
+      // Carved gorge — reads as a dark recessed DEPRESSION, not a raised surface.
+      // Interior filled with cool near-black shadow; geology fill never touches it.
+      // Compact footprint; wall edges deformed per-landmark via seeded RNG so the
+      // incision reads as eroded rock rather than a regular clip-art zigzag.
+      const cd    = height * 0.40;   // gorge depth (compact — under original 0.55)
+      const rimW  = width  * 0.50;   // rim half-width (under original 0.75)
+      const floorW = width * 0.06;   // narrow floor slit
+      const floorY = baseY + cd;
 
-      // Left wall (inward normal = right-facing)
-      ctx.globalAlpha = brightK * rightShade.mult * 0.82;
+      // Per-canyon deterministic wall deformation (no Math.random / Date.now)
+      const rngC = splitmix32(deriveChildSeed(cache.model.seed, `canyon-${Math.round(cx)}`));
+      const nDef = 4;   // intermediate wall points
+      const offL: number[] = [];
+      const offR: number[] = [];
+      for (let pi = 0; pi < nDef; pi++) {
+        offL.push((rngC() - 0.5) * rimW * 0.16);  // ±8% horizontal jitter
+        offR.push((rngC() - 0.5) * rimW * 0.16);
+      }
+
+      // Build wall point sequences (top→floor for left; top→floor for right)
+      const lwX: number[] = [cx - rimW];
+      const lwY: number[] = [baseY];
+      const rwX: number[] = [cx + rimW];
+      const rwY: number[] = [baseY];
+      for (let pi = 0; pi < nDef; pi++) {
+        const frac = (pi + 1) / (nDef + 1);
+        const wX   = rimW * (1 - frac) + floorW * frac;
+        lwX.push(cx - wX + offL[pi]);  lwY.push(baseY + cd * frac);
+        rwX.push(cx + wX + offR[pi]);  rwY.push(baseY + cd * frac);
+      }
+      lwX.push(cx - floorW);  lwY.push(floorY);
+      rwX.push(cx + floorW);  rwY.push(floorY);
+
+      // ---- Interior shadow fill: cool near-black — canyon reads as a HOLE ----
+      ctx.save();
+      ctx.globalAlpha = 0.90 * brightK;
+      ctx.fillStyle   = 'rgba(10, 12, 18, 0.92)';  // dark cool shadow, no geology brown
       ctx.beginPath();
-      ctx.moveTo(cx - cw2, baseY);
-      ctx.lineTo(cx,       baseY + cd);
-      ctx.lineTo(cx,       baseY);
+      // Left wall, top→floor
+      ctx.moveTo(lwX[0], lwY[0]);
+      for (let pi = 1; pi < lwX.length; pi++) ctx.lineTo(lwX[pi], lwY[pi]);
+      // Right wall, floor→top (reverse)
+      for (let pi = rwX.length - 1; pi >= 0; pi--) ctx.lineTo(rwX[pi], rwY[pi]);
       ctx.closePath();
       ctx.fill();
+      ctx.restore();
 
-      // Right wall (inward normal = left-facing)
-      ctx.globalAlpha = brightK * leftShade.mult * 0.82;
-      ctx.beginPath();
-      ctx.moveTo(cx,       baseY);
-      ctx.lineTo(cx,       baseY + cd);
-      ctx.lineTo(cx + cw2, baseY);
-      ctx.closePath();
-      ctx.fill();
+      // ---- Strata bands: 2 subtle cool-grey lines (rock layer seams) ----
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = 'rgba(52, 62, 82, 1)';  // cool blue-grey, just lighter than floor
+      ctx.lineCap     = 'round';
+      for (let si = 1; si <= 2; si++) {
+        const frac = si * 0.30;
+        const sY   = baseY + cd * frac;
+        const sW   = (rimW * (1 - frac) + floorW * frac) * 0.76;
+        ctx.lineWidth   = Math.max(0.6, 1.0 - si * 0.22);
+        ctx.globalAlpha = (0.26 - si * 0.06) * brightK;
+        ctx.beginPath();
+        ctx.moveTo(cx - sW, sY); ctx.lineTo(cx + sW, sY); ctx.stroke();
+      }
+      ctx.restore();
 
-      // Pale rim highlight along the canyon edge
+      // ---- Rim catch-light: thin `lighter` stroke tracing the gorge mouth ----
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = dc.bright * 0.10;
-      ctx.strokeStyle = 'rgba(180, 170, 160, 0.6)';
-      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = 'rgba(195, 182, 158, 1)';
+      ctx.lineWidth   = 1.5;
+      ctx.lineCap     = 'round';
+      ctx.globalAlpha = dc.bright * 0.26 + 0.06;
+      // Left wall edge
       ctx.beginPath();
-      ctx.moveTo(cx - cw2, baseY);
-      ctx.lineTo(cx, baseY + cd);
-      ctx.lineTo(cx + cw2, baseY);
+      ctx.moveTo(lwX[0], lwY[0]);
+      for (let pi = 1; pi < lwX.length; pi++) ctx.lineTo(lwX[pi], lwY[pi]);
+      ctx.stroke();
+      // Right wall edge
+      ctx.beginPath();
+      ctx.moveTo(rwX[0], rwY[0]);
+      for (let pi = 1; pi < rwX.length; pi++) ctx.lineTo(rwX[pi], rwY[pi]);
       ctx.stroke();
       ctx.restore();
 
@@ -3306,17 +3350,45 @@ function drawDepositGlyph(
   ctx.save();
 
   if (visual === 'ore-vein') {
-    // Jagged zigzag vein exposed in the terrain surface, in accent color
-    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.55 + intensity * 0.35).toFixed(3)})`;
+    // Mineral vein raised above the terrain — rendered as three overlaid strokes
+    // (shadow beneath, body, highlight on top) to read as an embedded ridge rather
+    // than a flat drawn line.
+    const vw        = sz * 1.8;
+    const mainAlpha = 0.55 + intensity * 0.35;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Shadow stroke: thicker, darker, offset slightly below
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = `rgba(${Math.round(ar * 0.25)}, ${Math.round(ag * 0.22)}, ${Math.round(ab * 0.20)}, ${(mainAlpha * 0.55).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(3.0, sz * 0.22);
+    ctx.beginPath();
+    ctx.moveTo(sx - vw * 0.5, sy + 1.5);
+    for (let i = 1; i <= 5; i++) {
+      ctx.lineTo(sx - vw * 0.5 + (i / 5) * vw, sy - (i % 2 === 1 ? sz * 0.55 : sz * 0.18) + 1.5);
+    }
+    ctx.stroke();
+
+    // Main body stroke in accent color
+    ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${mainAlpha.toFixed(3)})`;
     ctx.lineWidth   = Math.max(1.5, sz * 0.14);
-    ctx.lineCap     = 'round';
-    const vw = sz * 1.8;
     ctx.beginPath();
     ctx.moveTo(sx - vw * 0.5, sy);
     for (let i = 1; i <= 5; i++) {
       ctx.lineTo(sx - vw * 0.5 + (i / 5) * vw, sy - (i % 2 === 1 ? sz * 0.55 : sz * 0.18));
     }
     ctx.stroke();
+
+    // Highlight streak: thin bright line along the top edge of the vein ridge
+    ctx.strokeStyle = `rgba(${Math.min(255, ar + 60)}, ${Math.min(255, ag + 55)}, ${Math.min(255, ab + 50)}, ${(mainAlpha * 0.50).toFixed(3)})`;
+    ctx.lineWidth   = Math.max(0.7, sz * 0.055);
+    ctx.beginPath();
+    ctx.moveTo(sx - vw * 0.5, sy - 1.0);
+    for (let i = 1; i <= 5; i++) {
+      ctx.lineTo(sx - vw * 0.5 + (i / 5) * vw, sy - (i % 2 === 1 ? sz * 0.55 : sz * 0.18) - 1.0);
+    }
+    ctx.stroke();
+
     // Glint glow around the vein apex
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.25 * intensity;
@@ -3390,7 +3462,8 @@ function drawDepositGlyph(
     ctx.stroke();
 
   } else if (visual === 'crystal') {
-    // Cluster of angular gem shapes glowing in accent color
+    // Cluster of angular gem shapes glowing in accent color.
+    // The primary (largest) gem gets an inner facet line for a cut-stone look.
     ctx.globalCompositeOperation = 'lighter';
     for (let ci = 0; ci < 4; ci++) {
       const cAngle = (ci / 4) * Math.PI * 2 + Math.PI * 0.15;
@@ -3408,13 +3481,27 @@ function drawDepositGlyph(
       ctx.lineTo(cx2 - cw2, cy2 - ch * 0.4);
       ctx.closePath();
       ctx.fill();
+
+      // Inner facet: bright highlight line on the right face of each gem
+      // (apex → right midpoint) — reads as the reflective polished surface
+      if (ci < 2) {
+        ctx.globalAlpha = (0.50 + intensity * 0.30) * (ci < 2 ? 0.85 : 0.55);
+        ctx.strokeStyle = `rgba(${Math.min(255, ar + 70)}, ${Math.min(255, ag + 65)}, ${Math.min(255, ab + 55)}, 1)`;
+        ctx.lineWidth   = Math.max(0.6, cw2 * 0.18);
+        ctx.lineCap     = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx2, cy2 - ch);
+        ctx.lineTo(cx2 + cw2 * 0.65, cy2 - ch * 0.45);
+        ctx.stroke();
+      }
     }
-    // Halo glow around cluster
+    // Diffuse halo glow around cluster — slightly wider than before for softness
     ctx.globalAlpha = 0.18 * intensity;
-    const glowR = sz * 1.1;
+    const glowR = sz * 1.25;
     const cg = ctx.createRadialGradient(sx, sy - sz * 0.3, 0, sx, sy - sz * 0.3, glowR);
-    cg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.8)`);
-    cg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    cg.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, 0.7)`);
+    cg.addColorStop(0.5, `rgba(${ar}, ${ag}, ${ab}, 0.25)`);
+    cg.addColorStop(1,   `rgba(${ar}, ${ag}, ${ab}, 0)`);
     ctx.fillStyle = cg;
     ctx.fillRect(sx - glowR, sy - glowR - sz * 0.3, glowR * 2, glowR * 2);
 
@@ -3500,25 +3587,45 @@ function drawEnergyGlyph(
     ctx.fillRect(sx - sz * 1.5, sy - sz * 1.5, sz * 3, sz * 3);
 
   } else if (source === 'TIDAL') {
-    // Three concentric wave arcs (semi-circles, open downward)
+    // Three concentric wave arcs — innermost thickest (shows wave height/energy),
+    // outermost thinnest (dissipating swell).  Semi-circles open downward.
     ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.65 * intensity).toFixed(3)})`;
-    ctx.lineWidth   = Math.max(1.5, sz * 0.10);
     ctx.lineCap     = 'round';
     for (let wi = 0; wi < 3; wi++) {
       const wr    = sz * (0.35 + wi * 0.45);
       const shift = t === 0 ? 0 : Math.sin(t * 1.5 + wi * 1.0) * 0.06;
+      // Inner arcs are thicker (more wave energy); outer arcs taper to thinner
+      ctx.lineWidth   = Math.max(1.0, sz * (0.13 - wi * 0.03));
       ctx.globalAlpha = (0.70 - wi * 0.18) * intensity;
       ctx.beginPath();
       ctx.arc(sx, sy, wr, Math.PI + shift, Math.PI * 2 - shift);
       ctx.stroke();
     }
+    // Soft radial glow at center to ground the marker
+    ctx.globalAlpha = 0.18 * intensity;
+    const tg = ctx.createRadialGradient(sx, sy, 0, sx, sy, sz * 0.55);
+    tg.addColorStop(0, `rgba(${ar}, ${ag}, ${ab}, 0.7)`);
+    tg.addColorStop(1, `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = tg;
+    ctx.fillRect(sx - sz * 0.55, sy - sz * 0.55, sz * 1.1, sz * 1.1);
 
   } else if (source === 'SOLAR') {
-    // Eight-ray sunburst + center disc, slowly rotating
+    // Eight-ray sunburst + center disc, slowly rotating.
+    // Outer corona: large dim radial disc behind the rays to read as radiated heat.
     const rayCount = 8;
     const innerR   = sz * 0.25;
     const outerR   = sz * 0.90;
     const rot      = t === 0 ? 0 : t * 0.12;
+
+    // Corona halo behind rays — soft diffuse disc
+    ctx.globalAlpha = 0.22 * intensity;
+    const corona = ctx.createRadialGradient(sx, sy, innerR * 0.5, sx, sy, sz * 1.55);
+    corona.addColorStop(0,   `rgba(${ar}, ${ag}, ${ab}, 0.65)`);
+    corona.addColorStop(0.5, `rgba(${ar}, ${ag}, ${ab}, 0.20)`);
+    corona.addColorStop(1,   `rgba(${ar}, ${ag}, ${ab}, 0)`);
+    ctx.fillStyle = corona;
+    ctx.fillRect(sx - sz * 1.55, sy - sz * 1.55, sz * 3.1, sz * 3.1);
+
     ctx.strokeStyle = `rgba(${ar}, ${ag}, ${ab}, ${(0.70 * intensity).toFixed(3)})`;
     ctx.lineWidth   = Math.max(1.5, sz * 0.08);
     ctx.lineCap     = 'round';
@@ -3623,23 +3730,56 @@ function drawHazardGlyph(
     ctx.restore();
 
   } else if (visual === 'fault-line') {
-    // Dark jagged crack across the region — always contrasts with the ground
-    const segs = 8;
-    ctx.globalAlpha = alphaFloor;
-    ctx.strokeStyle = `rgba(30, 18, 10, 1)`;
-    ctx.lineWidth   = Math.max(2, rW * 0.035);
-    ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
+    // Geological rift — three overlaid strokes (AO smear, dark crack body,
+    // hairline highlight) on an irregular accumulated-walk path.
+    // Determinism: seeded from stable integer pixel coords; no Math.random.
+    const segs  = 12;
+    const seed  = (Math.round(minX * 73856093) ^ Math.round(cy * 19349663) ^ segs) >>> 0;
+    const rng   = splitmix32(seed);
+    // Amplitude: crack threads the ground (≈rH*0.06–0.13); never a tall bolt.
+    const maxAmp = rH * Math.min(0.13, 0.06 + severity * 0.07);
+
+    // Pre-build Y offsets as an elastic random walk so the path wanders
+    // organically. Elastic pull (×0.68) prevents unlimited drift; slight
+    // downward bias (0.44 vs 0.5) gives the crack a natural sag.
+    const offsets: number[] = [0];
+    for (let si = 1; si <= segs; si++) {
+      const prev   = offsets[si - 1];
+      const step   = (rng() - 0.44) * maxAmp * 1.5;
+      const pulled = prev * 0.68 + step;
+      offsets.push(Math.max(-maxAmp, Math.min(maxAmp, pulled)));
+    }
+
+    ctx.lineCap  = 'round'; ctx.lineJoin = 'round';
+
+    // AO shadow smear: thick soft stroke grounding the crack to the terrain
+    ctx.globalAlpha = alphaFloor * 0.42;
+    ctx.strokeStyle = 'rgba(15, 10, 5, 0.70)';
+    ctx.lineWidth   = Math.max(5, rW * 0.072);
     ctx.beginPath(); ctx.moveTo(minX, cy);
     for (let si = 1; si <= segs; si++) {
-      ctx.lineTo(minX + (si / segs) * rW, cy + (si % 2 === 0 ? 1 : -1) * rH * (0.18 + severity * 0.15));
+      ctx.lineTo(minX + (si / segs) * rW, cy + offsets[si]);
     }
     ctx.stroke();
-    // Pale highlight on one edge for depth
-    ctx.strokeStyle = `rgba(180, 140, 80, ${(alphaFloor * 0.55).toFixed(3)})`;
+
+    // Dark crack body
+    ctx.globalAlpha = alphaFloor;
+    ctx.strokeStyle = 'rgba(30, 18, 10, 1)';
+    ctx.lineWidth   = Math.max(2, rW * 0.035);
+    ctx.beginPath(); ctx.moveTo(minX, cy);
+    for (let si = 1; si <= segs; si++) {
+      ctx.lineTo(minX + (si / segs) * rW, cy + offsets[si]);
+    }
+    ctx.stroke();
+
+    // Hairline highlight — cool desaturated grey, low alpha; suggests a
+    // catch-light on one rift rim, never reads as a drawn outline.
+    // Warm tan rgba(180,140,80) removed — it popped as clip-art.
+    ctx.strokeStyle = `rgba(150, 150, 160, ${(alphaFloor * 0.28).toFixed(3)})`;
     ctx.lineWidth   = Math.max(1, rW * 0.010);
     ctx.beginPath(); ctx.moveTo(minX, cy - 2);
     for (let si = 1; si <= segs; si++) {
-      ctx.lineTo(minX + (si / segs) * rW, cy + (si % 2 === 0 ? 1 : -1) * rH * (0.18 + severity * 0.15) - 2);
+      ctx.lineTo(minX + (si / segs) * rW, cy + offsets[si] - 2);
     }
     ctx.stroke();
 
@@ -3720,14 +3860,23 @@ function drawHazardGlyph(
     }
 
   } else if (visual === 'snow-band') {
-    // White horizontal stripes across the region
+    // Horizontal snow bands: bright crest stripes alternating with cool blue-shadow
+    // troughs — reads as snowfield depth rather than flat painted stripes.
     const stripeCount = Math.max(3, Math.round(rH / 12));
-    ctx.lineWidth = Math.max(1, rH / stripeCount * 0.35);
-    ctx.lineCap   = 'butt';
+    ctx.lineCap = 'butt';
     for (let si = 0; si < stripeCount; si++) {
       const sy2 = minY + (si + 0.5) / stripeCount * rH;
-      ctx.globalAlpha = alphaFloor * (si % 2 === 0 ? 0.80 : 0.40);
-      ctx.strokeStyle  = `rgba(230, 240, 255, ${alphaFloor.toFixed(3)})`;
+      if (si % 2 === 0) {
+        // Snow crest: bright cold-white
+        ctx.lineWidth   = Math.max(1.2, rH / stripeCount * 0.38);
+        ctx.globalAlpha = alphaFloor * 0.82;
+        ctx.strokeStyle = 'rgba(232, 242, 255, 1)';
+      } else {
+        // Snow trough: cool blue-grey shadow between ridges
+        ctx.lineWidth   = Math.max(0.8, rH / stripeCount * 0.28);
+        ctx.globalAlpha = alphaFloor * 0.48;
+        ctx.strokeStyle = 'rgba(140, 168, 210, 1)';
+      }
       ctx.beginPath(); ctx.moveTo(minX, sy2); ctx.lineTo(maxX, sy2); ctx.stroke();
     }
 
@@ -5412,16 +5561,22 @@ function drawAuroraCurtains(
   const model = cache.model;
   const pal   = model.palette;
 
+  // Profile-driven config — reads ARCTIC-specific aurora tuning if present.
+  const cfg             = getProfile(model.planetType).auroraCurtains;
+  const curtainCountMax = cfg?.curtainCountMax ?? 3;
+  const intensity       = cfg?.intensity       ?? 1.0;
+
   // Shared night intensity — drives aurora brightness in both phases.
   // Peaks at full night (sunAlt deeply negative), fades at dawn/dusk, near-zero midday.
-  const nightI = dc.sunUp
+  const rawNightI = dc.sunUp
     ? Math.max(0, 0.22 - dc.sunAlt * 1.80)              // sunrise→0.22, midday→0
     : Math.min(1.0, 0.60 + Math.abs(dc.sunAlt) * 0.40); // 0.60–1.0 through the night
+  const nightI = rawNightI * intensity;
 
   // ---- phase='sky' — auroral ribbon curtains --------------------------------
   if (phase === 'sky') {
     const rngAur        = splitmix32(deriveChildSeed(model.seed, 'aurora-curtains'));
-    const CURTAIN_COUNT = 2 + Math.floor(rngAur() * 2);   // 2 or 3
+    const CURTAIN_COUNT = Math.min(curtainCountMax, 2 + Math.floor(rngAur() * 2));  // 2 or 3
 
     // Curtains span from near-zenith (4% of horizonY) down to ~68% of horizonY.
     const curtainTop = horizonY * 0.04;
@@ -5806,14 +5961,14 @@ function drawAlpineRidges(
   const terrainH   = terrainBtm - horizonY;
   if (terrainH <= 0) return;
 
-  // Config — these constants match the AlpineRidgesConfig profile entry
-  // returned as Deliverable 2; hard-coded here until profiles.ts integration.
-  const RIDGE_COUNT    = 4;      // layered ridgelines far→near
-  const SNOW_LINE_FRAC = 0.60;   // fraction of terrainH below which snow fades to zero.
-                                  // Near-ridge peaks reach ~0.34·H from horizonY; 0.60 ensures
-                                  // they are well inside the clip zone (was 0.30 → snow invisible).
-  const SCREE_FRAC     = 0.40;   // fraction of post-near-ridge gap for the scree band
-  const TREE_STEP_PX   = 14;     // pixel spacing between conifer spike tips
+  // Profile-driven config — reads MOUNTAINOUS-specific terrain signature if present.
+  const cfg = getProfile(model.planetType).alpineRidges;
+  const RIDGE_COUNT    = cfg?.ridgeCount    ?? 4;    // layered ridgelines far→near
+  const SNOW_LINE_FRAC = cfg?.snowLineFrac  ?? 0.60; // fraction of terrainH below which snow fades to zero
+                                                       // Near-ridge peaks reach ~0.34·H; 0.60 keeps them
+                                                       // inside the clip zone (was 0.30 → snow invisible).
+  const SCREE_FRAC     = cfg?.screeFrac     ?? 0.40; // fraction of post-near-ridge gap for the scree band
+  const TREE_STEP_PX   = cfg?.treeStepPx   ?? 14;   // pixel spacing between conifer spike tips
 
   // Seeded PRNG — isolated label so this sub-stream never aliases other renderers.
   const rng = splitmix32(deriveChildSeed(model.seed, 'alpine-ridges'));
@@ -6433,14 +6588,18 @@ function drawOceanicSurface(
   const [ar, ag, ab] = pal.accent as [number, number, number];
   const [sr, sg, sb] = pal.surface;
 
+  // Profile-driven config — reads OCEANIC-specific surface tuning if present.
+  const cfg          = getProfile(model.planetType).oceanicSurface;
+  const SWELL_COUNT  = cfg?.swellCount         ?? 6;
+  const SPARKLE_N    = cfg?.glitterCount        ?? 80;
+  const colMaxHWFrac = cfg?.glitterColumnWidth  ?? 0.12;
+
   // ---- 1. Layered parallax swell field (far → near) -------------------------
   // Six swell layers distribute from just below the waterline to the near edge
   // of the water band.  Each is a seeded two-frequency sinusoid drawn as a
   // filled polygon (the swell body) topped with a lit crest highlight.
   // depthFrac: 0 = farthest (near horizon), 1 = nearest (camera foreground).
   const rngSw = splitmix32(deriveChildSeed(model.seed, 'oceanic-surface'));
-
-  const SWELL_COUNT = 6;
   for (let si = 0; si < SWELL_COUNT; si++) {
     const depthFrac = si / Math.max(1, SWELL_COUNT - 1);
 
@@ -6539,9 +6698,8 @@ function drawOceanicSurface(
   }
 
   if (glitterAlphaScale > 0.015) {
-    const SPARKLE_N = 80;
-    const colMaxHW  = w * 0.12;   // half-width at camera (near) end
-    const colMinHW  = 5;           // half-width at horizon (far) end
+    const colMaxHW  = w * colMaxHWFrac;  // half-width at camera (near) end (profile: glitterColumnWidth)
+    const colMinHW  = 5;                  // half-width at horizon (far) end
     const colDepth  = Math.min(wh * 0.86, h * 0.42);
 
     // Day: sun color; night: cool bioluminescent teal (accent palette).
@@ -6697,6 +6855,9 @@ function drawTropicalLagoon(
   const [ar, ag, ab] = pal.accent  as [number, number, number];
   const [pfr, pfg, pfb] = pal.flora;   // compiled palette: flora is the vivid canopy/leaf hue
 
+  // Profile-driven config — reads TROPICAL-specific lagoon tuning if present.
+  const cfg = getProfile(model.planetType).tropicalLagoon;
+
   // One seeded PRNG stream for this world's lagoon — stable per model.seed.
   const rng = splitmix32(deriveChildSeed(model.seed, 'tropical-lagoon'));
 
@@ -6705,7 +6866,7 @@ function drawTropicalLagoon(
   // near-waterline zone into vivid turquoise shallows, fading to nothing deeper.
   // Day: warm cyan push keyed to palette.water; night: pale desaturated silver-blue.
   if (wh > 0) {
-    const shallowH = Math.min(wh * 0.42, 120);
+    const shallowH = Math.min(wh * (cfg?.shallowFrac ?? 0.42), 120);
     const shR = dc.sunUp ? Math.min(255, Math.round(wr * 0.52 + 52)) : Math.min(255, Math.round(wr * 0.28 + 82));
     const shG = dc.sunUp ? Math.min(255, Math.round(wg * 0.72 + 42)) : Math.min(255, Math.round(wg * 0.38 + 88));
     const shB = dc.sunUp ? Math.min(255, Math.round(wb * 0.82 + 28)) : Math.min(255, Math.round(wb * 0.72 + 38));
@@ -6835,7 +6996,7 @@ function drawTropicalLagoon(
   // Bases sit in the lower sand strip; fronds fan above the crown.
   // Not connected to the flora-scatter system — purely shoreline decoration.
   if (landH > 8 && cache.hasWater) {
-    const PALM_COUNT = 4 + Math.floor(rng() * 4);  // 4–7 palms
+    const PALM_COUNT = (cfg?.palmCountBase ?? 4) + Math.floor(rng() * 4);  // 4–7 palms
 
     // Flora colour keyed to day (vivid green) vs night (near-black silhouette).
     const pR = dc.sunUp ? Math.round(pfr * (0.50 + b * 0.50)) : Math.round(pfr * 0.12);
@@ -6891,9 +7052,12 @@ function drawTropicalLagoon(
 }
 
 // ---------------------------------------------------------------------------
-// drawBarrenVacuum — WO-V6-BARREN
+// drawBarrenVacuum — WO-V6-BARREN  (updated: BARREN-LIFT)
 //
-// Airless vacuum signature for BARREN worlds.  Renders three passes:
+// Airless vacuum signature for BARREN worlds.  Renders four passes:
+//   0. Day-side regolith brightness lift — sunlit airless surfaces reflect as
+//      dim light-gray (lunar-maria albedo).  Scales with dc.bright so the lit
+//      ground reads gray at noon; the terminator §3 re-darkens the shadow half.
 //   1. Supplementary dense starfield (top 50 % of sky) — no atmosphere to
 //      scatter sunlight, so stars blaze through even at noon.
 //   2. Hard-edged crater field across the ground plane — lit rim arc on the
@@ -6955,10 +7119,27 @@ function drawBarrenVacuum(
     ctx.restore();
   }
 
+  // ---- 0. Day-side regolith brightness lift (BARREN-LIFT) ---------------------
+  // Airless surfaces in direct sunlight read as dim light-gray, not black — the
+  // Moon and Mercury under full sun sit at ~0.12 albedo but still register as
+  // clearly gray against black sky.  A flat semi-transparent gray overlay over
+  // the entire ground plane, scaled by dc.bright, lifts the surface so crater
+  // forms pop against a visible background.  The §3 terminator multiply
+  // re-darkens the shadow half, preserving the crisp lit→dark boundary.
+  // Night side (dc.sunUp false) is fully unaffected — no lift applied.
+  const groundH = h - horizonY;
+  if (dc.sunUp && dc.bright > 0.02 && groundH > 8) {
+    const liftA = dc.bright * 0.42;   // 0..0.42 — dim lunar-gray at noon, dark near horizon
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(105, 102, 96, ${liftA.toFixed(3)})`;
+    ctx.fillRect(0, horizonY, w, groundH);
+    ctx.restore();
+  }
+
   // ---- 2. Crater field (ground plane) ----------------------------------------
   // Each crater: dark recessed floor + lit rim arc (toward sunX) + hard shadow
   // arc (away from sunX).  No atmospheric blur — vacuum light is razor-sharp.
-  const groundH = h - horizonY;
   if (groundH > 8) {
     const CRATER_COUNT = 6 + Math.floor(rng() * 7);   // 6–12 craters
     ctx.save();

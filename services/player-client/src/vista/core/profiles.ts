@@ -118,6 +118,104 @@ export interface DuneSeaConfig {
 }
 
 // ---------------------------------------------------------------------------
+// AuroraCurtainsConfig — aurora-curtain params for the ARCTIC sky renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the ARCTIC aurora-curtains renderer (drawAuroraCurtains).
+ * Present only on ARCTIC_PROFILE; absent for all other planet types.
+ * Consumed by drawAuroraCurtains in backend.ts; ignored everywhere else.
+ */
+export interface AuroraCurtainsConfig {
+  /**
+   * Maximum number of distinct vertical ribbon curtains drawn in the sky phase.
+   * The seeded RNG chooses a count in [2, curtainCountMax]; raising this beyond
+   * 3 makes nights busier at the cost of fill-rate.  Default: 3.
+   */
+  curtainCountMax: number;
+  /**
+   * Multiplicative scale applied to the computed night-intensity (nightI) before
+   * it drives curtain alpha and aurora ground-wash.  1.0 = physical default;
+   * values < 1 dim the aurora, values > 1 intensify it.
+   */
+  intensity: number;
+}
+
+// ---------------------------------------------------------------------------
+// AlpineRidgesConfig — terrain-signature params for the MOUNTAINOUS renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the MOUNTAINOUS alpine-ridges renderer (drawAlpineRidges).
+ * Present only on MOUNTAINOUS_PROFILE; absent for all other planet types.
+ * Consumed by drawAlpineRidges in backend.ts; ignored everywhere else.
+ */
+export interface AlpineRidgesConfig {
+  /** Number of parallax ridge layers rendered far→near. */
+  ridgeCount: number;
+  /**
+   * Fraction of terrainH below which snow-cap fades to zero.
+   * 0.60 → snow persists on all peaks within the upper 60 % of the land band.
+   * Was 0.30 in the original WO, which caused snow invisibility; raised to 0.60.
+   */
+  snowLineFrac: number;
+  /**
+   * Fraction of the gap between the near-ridge base and the waterline / ground
+   * edge that is allocated to the scree (rock-debris) band.  Remainder goes to
+   * the conifer treeline silhouette.
+   */
+  screeFrac: number;
+  /** Pixel spacing between conifer spike tips in the treeline silhouette. */
+  treeStepPx: number;
+}
+
+// ---------------------------------------------------------------------------
+// OceanicSurfaceConfig — open-water params for the OCEANIC surface renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the OCEANIC open-water renderer (drawOceanicSurface).
+ * Present only on OCEANIC_PROFILE; absent for all other planet types.
+ * Consumed by drawOceanicSurface in backend.ts; ignored everywhere else.
+ */
+export interface OceanicSurfaceConfig {
+  /** Number of parallax swell layers distributed from near-horizon to foreground. */
+  swellCount: number;
+  /** Total number of sparkle discs in the perspective glitter / moon-glitter track. */
+  glitterCount: number;
+  /**
+   * Half-width of the glitter column at the near-camera (bottom) end, expressed
+   * as a fraction of canvas width.  The column tapers quadratically to colMinHW=5 px
+   * at the horizon end, producing natural perspective perspective.
+   */
+  glitterColumnWidth: number;
+}
+
+// ---------------------------------------------------------------------------
+// TropicalLagoonConfig — lagoon params for the TROPICAL ground renderer
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for the TROPICAL lagoon renderer (drawTropicalLagoon).
+ * Present only on TROPICAL_PROFILE; absent for all other planet types.
+ * Consumed by drawTropicalLagoon in backend.ts; ignored everywhere else.
+ */
+export interface TropicalLagoonConfig {
+  /**
+   * Base number of palm silhouettes placed in the shoreline fringe.
+   * Actual count is palmCountBase + floor(rng() * 4), so the RNG adds 0–3
+   * for world-to-world variety.
+   */
+  palmCountBase: number;
+  /**
+   * Shallows tint zone height as a fraction of the water body height.
+   * Result is additionally capped at 120 px to avoid overwhelming the ocean view.
+   * 0.42 → shallows reach ~42 % of the water band (roughly the first island band).
+   */
+  shallowFrac: number;
+}
+
+// ---------------------------------------------------------------------------
 // TypeGrade — per-type "film stock" for the post-process compositor
 // ---------------------------------------------------------------------------
 
@@ -338,6 +436,34 @@ export interface PlanetProfile {
    * Consumed by drawDuneSea in backend.ts; ignored everywhere else.
    */
   duneSeaConfig?: DuneSeaConfig;
+
+  /**
+   * Aurora-curtains renderer configuration.
+   * Present only on ARCTIC; absent for all other types.
+   * Consumed by drawAuroraCurtains in backend.ts; ignored everywhere else.
+   */
+  auroraCurtains?: AuroraCurtainsConfig;
+
+  /**
+   * Alpine-ridges terrain-signature configuration.
+   * Present only on MOUNTAINOUS; absent for all other types.
+   * Consumed by drawAlpineRidges in backend.ts; ignored everywhere else.
+   */
+  alpineRidges?: AlpineRidgesConfig;
+
+  /**
+   * Oceanic open-water surface configuration.
+   * Present only on OCEANIC; absent for all other types.
+   * Consumed by drawOceanicSurface in backend.ts; ignored everywhere else.
+   */
+  oceanicSurface?: OceanicSurfaceConfig;
+
+  /**
+   * Tropical lagoon renderer configuration.
+   * Present only on TROPICAL; absent for all other types.
+   * Consumed by drawTropicalLagoon in backend.ts; ignored everywhere else.
+   */
+  tropicalLagoon?: TropicalLagoonConfig;
 
   /**
    * Per-type "film stock" for the post-process compositor.
@@ -758,6 +884,11 @@ const OCEANIC_PROFILE: PlanetProfile = {
   // Cool-blue film stock: ocean worlds read marine + airy.
   grade: { warmthBias: 0.02, vignetteStrength: 0.45, grainScale: 0.8 },
 
+  // Oceanic open-water signature (WO-V5-OCEANIC): 6 parallax swell layers, 80-sparkle
+  // glitter track, column half-width 12 % of canvas.  Values match the hardcoded
+  // constants in drawOceanicSurface — profile integration only, no visual change.
+  oceanicSurface: { swellCount: 6, glitterCount: 80, glitterColumnWidth: 0.12 },
+
   // Rich tidal-shelf life; full understory density appropriate.
   denseFloraFactor: 1.0,
 };
@@ -1120,6 +1251,11 @@ const ARCTIC_PROFILE: PlanetProfile = {
   // Tundra film stock: cold steel-blue, heavier vignette for polar isolation.
   grade: { warmthBias: -0.22, vignetteStrength: 0.60, grainScale: 1.0 },
 
+  // Aurora-curtain signature (WO-V5-ARCTIC): up to 3 ribbon curtains; default
+  // physical intensity (1.0 scale).  Values match the hardcoded constants in
+  // drawAuroraCurtains — profile integration only, no visual change.
+  auroraCurtains: { curtainCountMax: 3, intensity: 1.0 },
+
   // Tundra ground cover — moderate density, capped below lush.
   denseFloraFactor: 0.35,
 };
@@ -1237,6 +1373,12 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
 
   // Alpine film stock: muted neutral, deep vignette for dramatic peaks.
   grade: { warmthBias: -0.05, vignetteStrength: 0.60, grainScale: 1.0 },
+
+  // Alpine-ridges terrain signature (WO-V5-MOUNTAINOUS): 4 ridge layers, snow line
+  // at 60 % of terrainH (raised from 0.30 to keep peaks inside the visible snow zone),
+  // 40 % scree band, 14 px conifer spacing.  Values match the hardcoded constants in
+  // drawAlpineRidges — profile integration only, no visual change.
+  alpineRidges: { ridgeCount: 4, snowLineFrac: 0.60, screeFrac: 0.40, treeStepPx: 14 },
 
   // Alpine meadows in lowlands; half density — not a jungle.
   denseFloraFactor: 0.5,
@@ -1594,6 +1736,11 @@ const TROPICAL_PROFILE: PlanetProfile = {
 
   // Paradise film stock: warm + bright, open airy vignette, near-zero grain.
   grade: { warmthBias: 0.25, vignetteStrength: 0.35, grainScale: 0.4 },
+
+  // Tropical lagoon signature (WO-V5-TROPICAL): 4-base palms, shallows zone at
+  // 42 % of the water band height.  Values match the hardcoded constants in
+  // drawTropicalLagoon — profile integration only, no visual change.
+  tropicalLagoon: { palmCountBase: 4, shallowFrac: 0.42 },
 
   // Tropical lushness at full density.
   denseFloraFactor: 1.0,
