@@ -2,6 +2,20 @@ import React, { useEffect, useRef, useState } from 'react';
 import apiClient from '../../services/apiClient';
 import SectorViewport from './SectorViewport';
 import './solar-system-viewscreen.css';
+import VistaCanvas from '../../vista/react';
+import { adaptLandedSceneToVistaInput } from './landedVistaAdapter';
+import type { LandedVistaSource } from './landedVistaAdapter';
+import type { VistaInput } from '../../vista/contract';
+
+// ---------------------------------------------------------------------------
+// Vista engine feature flag (Lane A3 — W7 cockpit integration)
+// Default OFF: VITE_VISTA_ENGINE must be set to 'true' or '1' to enable.
+// When OFF the component is byte-identical to the pre-A3 behaviour for all
+// scenes (flight / docked / landed).
+// ---------------------------------------------------------------------------
+const VISTA_ENGINE_ON =
+  import.meta.env.VITE_VISTA_ENGINE === 'true' ||
+  import.meta.env.VITE_VISTA_ENGINE === '1';
 
 /**
  * SolarSystemViewscreen — the cockpit windshield spectacle.
@@ -1791,7 +1805,7 @@ function drawScene(
 // LANDED scene — planet-surface vista (horizon gradient, haze, parallax ridges)
 // ---------------------------------------------------------------------------
 
-interface LandedPalette {
+export interface LandedPalette {
   skyTop: string;
   skyMid: string;
   horizon: string;
@@ -1808,7 +1822,7 @@ interface LandedPalette {
 }
 
 /** Sky/ridge palette per planet type — reuses the treatment mapping above. */
-function landedPalette(planetType?: string): LandedPalette {
+export function landedPalette(planetType?: string): LandedPalette {
   // treatmentFor() buckets every UNKNOWN kind into BARREN (gray). But the
   // cockpit tint class (getPlanetTintClass → base [class*='planet-tint-'])
   // paints unknown types violet-dusk. Align the two: only paint the barren
@@ -3474,7 +3488,7 @@ function buildLandedCache(
   };
 }
 
-function drawLandedScene(
+export function drawLandedScene(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
@@ -7319,6 +7333,61 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   const sceneRef = useRef({ scene, isSpaceDock, palette: landedPalette(planetType), landedCtx });
   sceneRef.current = { scene, isSpaceDock, palette: landedPalette(planetType), landedCtx };
 
+  // ---------------------------------------------------------------------------
+  // Vista engine wiring (Lane A3 — flag OFF by default; zero effect when off)
+  // ---------------------------------------------------------------------------
+
+  // Ref-mirrored adapter output so the draw-loop guard can read it without a
+  // stale-closure (the closure captures the ref, not the per-render value).
+  const vistaAdaptedInputRef = useRef<VistaInput | null>(null);
+  // Elapsed-seconds clock driving VistaCanvas animation (mirrors the lab pattern).
+  const vistaStartRef = useRef<number | null>(null);
+  const [vistaClock, setVistaClock] = useState(0);
+
+  // Build the adapter input from current props + landedCtx.
+  // Returns null when the planet type is unmappable → legacy renderer stays active.
+  const vistaAdaptedInput: VistaInput | null = VISTA_ENGINE_ON && scene === 'landed'
+    ? adaptLandedSceneToVistaInput({
+        planetType,
+        habitability,
+        citadelLevel,
+        orbitAu: landedCtx.orbitAu,
+        star: (landedCtx.starKind != null && landedCtx.starColor != null)
+          ? { kind: landedCtx.starKind, color: landedCtx.starColor }
+          : null,
+        moons: landedCtx.moons,
+        siblingCount: landedCtx.siblings?.length,
+        // seedKey must be stable: prefer the planet's own id, fall back to sector
+        seedKey: landedPlanetId != null ? landedPlanetId : String(sectorId),
+      } as LandedVistaSource)
+    : null;
+  // Mirror into ref so the draw-loop guard always reads the current frame's value.
+  vistaAdaptedInputRef.current = vistaAdaptedInput;
+
+  // Vista clock: simple rAF ticker that only drives setVistaClock when the adapter
+  // has produced a valid input (avoids 60fps re-renders while adapter is null).
+  useEffect(() => {
+    if (!VISTA_ENGINE_ON || scene !== 'landed' || reducedMotion) return;
+    let rafId: number;
+    function tick(now: number) {
+      // Only update state (and therefore re-render) when VistaCanvas is actually
+      // mounted — the ref check is a cheap guard, no closure staleness since
+      // refs are always current.
+      if (vistaAdaptedInputRef.current !== null) {
+        if (vistaStartRef.current === null) vistaStartRef.current = now;
+        setVistaClock((now - vistaStartRef.current) / 1000);
+      }
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+      vistaStartRef.current = null;
+    };
+  }, [scene, reducedMotion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---------------------------------------------------------------------------
+
   // Sector ships, ref-mirrored so the draw loop reads the latest poll without
   // restarting the animation effect every 5s.
   const shipsRef = useRef<ShipPresence[]>(ships as ShipPresence[]);
@@ -7399,6 +7468,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     }
     if (mode === 'landed') {
       hitTargetsRef.current.length = 0;
+      // Vista engine: when flag ON and the adapter produced a valid input, VistaCanvas
+      // handles rendering via its own rAF — skip the legacy draw path entirely.
+      // Flag OFF or null adapter → drawLandedScene runs exactly as before.
+      if (VISTA_ENGINE_ON && vistaAdaptedInputRef.current !== null) return;
       drawLandedScene(ctx, w, h, sectorId, t, sceneRef.current.palette, sceneRef.current.landedCtx);
       return;
     }
@@ -7924,6 +7997,18 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
         onMouseDown={handleMouseDown}
         onClick={handleClick}
       />
+      {/* Vista engine overlay — landed scene, flag ON, adapter returned non-null.
+          Sits above the legacy canvas in absolute fill within the existing
+          solar-viewscreen-container; the draw loop skips drawLandedScene
+          while this overlay is mounted.  Glass-law geometry unchanged. */}
+      {VISTA_ENGINE_ON && scene === 'landed' && vistaAdaptedInput !== null && (
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+          <VistaCanvas
+            input={vistaAdaptedInput}
+            clock={reducedMotion ? 0 : vistaClock}
+          />
+        </div>
+      )}
       {popup && scene === 'flight' && (
         <div
           className="ssv-popup"

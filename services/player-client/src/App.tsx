@@ -36,8 +36,9 @@ import PlayerInfo from './components/player/PlayerInfo'
 // Dev-only lab routes — dead-code-eliminated from prod builds by Vite
 // Both imports are gated on import.meta.env.DEV so Vite dead-code-eliminates
 // the VistaLab and VistaProof chunks from prod builds entirely.
-const VistaLab   = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaLab'))   : null;
-const VistaProof = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaProof')) : null;
+const VistaLab    = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaLab'))    : null;
+const VistaProof  = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaProof'))  : null;
+const VistaParity = import.meta.env.DEV ? lazy(() => import('./vista/lab/VistaParity')) : null;
 
 interface ApiResponse {
   message?: string;
@@ -686,6 +687,9 @@ function App() {
               )}
               {import.meta.env.DEV && VistaProof && (
                 <Route path="/lab/vista-proof" element={<Suspense fallback={<div>Loading…</div>}><VistaProof /></Suspense>} />
+              )}
+              {import.meta.env.DEV && VistaParity && (
+                <Route path="/lab/vista-parity" element={<Suspense fallback={<div>Loading…</div>}><VistaParity /></Suspense>} />
               )}
               <Route path="*" element={<MainApp />} />
                 </Routes>
