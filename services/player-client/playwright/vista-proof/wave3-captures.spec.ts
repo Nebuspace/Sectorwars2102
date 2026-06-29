@@ -96,6 +96,10 @@ const DAY_TYPES = [
   'VOLCANIC',
   'ICE',
   'DESERT',
+  // Sun-special bodies render only while the star is up (if (dc.sunUp)) —
+  // captured at DAY so the dramatic accretion disc / pulsar is visible.
+  'BLACK_HOLE',
+  'NEUTRON',
 ] as const;
 
 for (const type of DAY_TYPES) {
@@ -149,11 +153,6 @@ const NIGHT_CASES = [
     key:         'OCEANIC',
     label:       'oceanic',
     description: 'moon glitter on dark water surface',
-  },
-  {
-    key:         'BLACK_HOLE',
-    label:       'black-hole',
-    description: 'starfield and dark accretion context at night',
   },
   {
     key:         'RING_ARC',
