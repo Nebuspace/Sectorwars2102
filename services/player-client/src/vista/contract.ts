@@ -376,6 +376,9 @@ export interface VistaModel {
 
       /** Stable key into the starfield noise — varies by seed, cached per model. */
       starfieldSeedKey: string;
+
+      /** Sector-level nebula wash; absent when no nebula in the input celestial data. */
+      nebula?: { hue: number; density: number };
     };
 
     atmosphere: {

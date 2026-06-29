@@ -24,6 +24,8 @@
 
 import { VistaModel, VistaTarget, VistaHandle, VistaInput, RGB } from '../../contract';
 import { SeededRng, deriveChildSeed } from '../../core/rng';
+import { generateVista } from '../../core/pipeline';
+import { shadeFlank, rimLight, aoPool } from './lighting';
 
 // ---------------------------------------------------------------------------
 // Day-cycle constants — verbatim from SolarSystemViewscreen.tsx L1952–1954
@@ -183,11 +185,14 @@ type VistaCache = {
 
   // Water
   hasWater: boolean;
-  waterTopY: number;
+  waterTopY: number;        // pixel Y of the waterline (waterlineY*h); h when no water
   waves: WaveLine[];
   waterBand: CanvasGradient | null;
   foamMul: number;
   reflTint: string;
+  waterType: string;        // 'ocean' | 'coastal' | 'tidal-flat' | 'frozen' | 'lava' | ''
+  waterColor: string;       // 'r, g, b' CSS channel string from model.layers.water.color
+  foamColor: string;        // 'r, g, b' CSS channel string from model.layers.water.foam
 
   // Atmosphere
   hazeColor: string;
@@ -464,13 +469,14 @@ function buildVistaCache(
   // ---- Terrain ridges from model strata ----
   // model.layers.terrain.strata gives us pre-computed polylines; we convert them
   // to the noise-ridge format (random noise pts + scroll speed from parallax).
+  // polyline Y values are normalized 0..1 — base is the normalized average ridge Y.
   const ridgePts: VistaCache['ridgePts'] = model.layers.terrain.strata.map((s, i) => {
     const rng = splitmix32(deriveChildSeed(model.seed, `ridge${i}`));
     const pts: number[] = [];
     for (let p = 0; p < 48; p++) pts.push(rng());
     const base = s.polyline.length > 0
-      ? (s.polyline.reduce((a, pt) => a + pt[1], 0) / s.polyline.length) / h
-      : (0.6 + i * 0.12);
+      ? s.polyline.reduce((a, pt) => a + pt[1], 0) / s.polyline.length  // normalized 0..1
+      : model.layers.terrain.horizonY + i * 0.06;                        // fallback near horizonY
     return {
       pts,
       period: Math.max(w * 2, 1200),
@@ -482,26 +488,51 @@ function buildVistaCache(
   });
 
   // ---- Water ----
+  // waterTopY = model's waterlineY in pixels: the WATER SURFACE, not the horizon.
+  // Terrain (ridges + land strip) renders above this; water band fills below it.
   const waterLayer = model.layers.water;
   const hasWater = !!waterLayer;
-  const waterTopY = hasWater ? horizonY : h;
+  const waterTopY = hasWater && waterLayer ? Math.round(waterLayer.waterlineY * h) : h;
+  const waterType  = waterLayer ? waterLayer.type : '';
+  // Water and foam color strings from model palette (palette.water / palette.foam).
+  const wc = waterLayer
+    ? { r: waterLayer.color[0], g: waterLayer.color[1], b: waterLayer.color[2] }
+    : { r: 28, g: 88, b: 128 };
+  const fc = waterLayer
+    ? { r: waterLayer.foam[0], g: waterLayer.foam[1], b: waterLayer.foam[2] }
+    : { r: 175, g: 218, b: 210 };
+  const waterColor = `${wc.r}, ${wc.g}, ${wc.b}`;
+  const foamColor  = `${fc.r}, ${fc.g}, ${fc.b}`;
   const waves: WaveLine[] = [];
   let waterBand: CanvasGradient | null = null;
   const foamMul = waterLayer ? Math.max(1, waterLayer.foamMul) : 1;
   let reflTint = `${sc.r}, ${sc.g}, ${sc.b}`;
 
   if (hasWater && waterLayer) {
-    const surf = {
-      r: Math.round(40 + sc.r * 0.18),
-      g: Math.round(120 + sc.g * 0.18),
-      b: Math.round(150 + sc.b * 0.15),
-    };
+    // Type-branched gradient — each water type uses palette.water/foam, NOT hardcoded blue.
     waterBand = ctx.createLinearGradient(0, waterTopY, 0, h);
-    waterBand.addColorStop(0, `rgba(${surf.r}, ${surf.g}, ${surf.b}, 0.92)`);
-    waterBand.addColorStop(0.4, 'rgba(18, 78, 116, 0.95)');
-    waterBand.addColorStop(0.8, 'rgba(10, 46, 78, 0.97)');
-    waterBand.addColorStop(1, 'rgba(5, 24, 46, 0.98)');
+    if (waterType === 'lava') {
+      // Lava sea: fiery orange-red glow; no rolling-sea animation below.
+      waterBand.addColorStop(0,    `rgba(${wc.r}, ${wc.g}, ${wc.b}, 0.92)`);
+      waterBand.addColorStop(0.35, `rgba(${Math.round(wc.r * 0.72)}, ${Math.round(wc.g * 0.38)}, ${Math.round(Math.max(2, wc.b * 0.18))}, 0.96)`);
+      waterBand.addColorStop(0.75, `rgba(${Math.round(wc.r * 0.42)}, ${Math.round(wc.g * 0.18)}, ${Math.round(Math.max(2, wc.b * 0.08))}, 0.98)`);
+      waterBand.addColorStop(1,    `rgba(${Math.max(6, Math.round(wc.r * 0.18))}, 4, 2, 0.99)`);
+    } else if (waterType === 'frozen') {
+      // Frozen sea: pale ice sheet from palette.water; no rolling-sea animation.
+      waterBand.addColorStop(0,    `rgba(${wc.r}, ${wc.g}, ${wc.b}, 0.84)`);
+      waterBand.addColorStop(0.5,  `rgba(${Math.round(wc.r * 0.88)}, ${Math.round(wc.g * 0.90)}, ${Math.round(wc.b * 0.93)}, 0.92)`);
+      waterBand.addColorStop(1,    `rgba(${Math.round(wc.r * 0.72)}, ${Math.round(wc.g * 0.76)}, ${Math.round(wc.b * 0.82)}, 0.96)`);
+    } else {
+      // ocean / coastal / tidal-flat: depth-graduated from palette.water surface to deep.
+      waterBand.addColorStop(0,    `rgba(${wc.r}, ${wc.g}, ${wc.b}, 0.90)`);
+      waterBand.addColorStop(0.45, `rgba(${Math.round(wc.r * 0.48)}, ${Math.round(wc.g * 0.52)}, ${Math.round(wc.b * 0.60)}, 0.96)`);
+      waterBand.addColorStop(0.85, `rgba(${Math.round(wc.r * 0.22)}, ${Math.round(wc.g * 0.24)}, ${Math.round(wc.b * 0.30)}, 0.98)`);
+      waterBand.addColorStop(1,    `rgba(${Math.round(wc.r * 0.10)}, ${Math.round(wc.g * 0.11)}, ${Math.round(wc.b * 0.14)}, 0.99)`);
+    }
 
+    // Wave generation: ocean / coastal / tidal-flat only.
+    // frozen = static ice sheet; lava = static emissive surface — no rolling-sea animation.
+    if (waterType !== 'frozen' && waterType !== 'lava') {
     const wh = h - waterTopY;
     const baseSwells = 11;
     const choppiness = Math.max(0, waterLayer.chop);
@@ -558,6 +589,7 @@ function buildVistaCache(
         tilt: 0,
       });
     }
+    } // end if (waterType !== 'frozen' && waterType !== 'lava')
 
     // Reflection tint tracks the moon if present, else the sun
     if (moons.length > 0) {
@@ -759,11 +791,14 @@ function buildVistaCache(
   // ---- Feature scatters — bake screen coords for flora / rock / glitter instances ----
   // groundH is already computed above.  sizePx uses a small fraction of min(w,h) so
   // scattered vegetation stays proportional at any canvas size.
+  // When water is present, cap scatter sy to the land strip (above waterlineY) so
+  // flora/rocks don't appear in the water zone.
+  const scatterMaxY = hasWater ? waterTopY - 4 : h;
   const scatterScreens: VistaCache['scatterScreens'] = model.layers.features.scatters.map((group) => ({
     kind: group.kind,
     instances: group.instances.map((inst) => ({
       sx:     inst.pos[0] * w,
-      sy:     horizonY + inst.pos[1] * groundH * 0.80,
+      sy:     Math.min(horizonY + inst.pos[1] * groundH * 0.80, scatterMaxY),
       sizePx: Math.max(2, inst.scale * Math.min(w, h) * 0.012),
       tint:   inst.tint,
       glow:   inst.glow ?? 0,
@@ -791,6 +826,9 @@ function buildVistaCache(
     waterBand,
     foamMul,
     reflTint,
+    waterType,
+    waterColor,
+    foamColor,
     hazeColor,
     hazeStrength,
     skyDarken,
@@ -1128,24 +1166,100 @@ function drawLandmarks(
   // Modulate silhouette darkness with the day cycle: slightly brighter at noon
   // (backlit edge), darkest at night (pure silhouette).
   const brightK = 0.7 + dc.bright * 0.3;
+  // Directional shading source — consumed per-face inside the loop below.
+  const lighting = cache.model.lighting;
   ctx.save();
 
   for (const lm of cache.landmarks) {
     const { kind, cx, baseY, height, width } = lm;
 
-    // Apply day-cycle modulation to fill opacity
+    // Per-landmark directional shading: right-facing surface (azimuth 0° = screen-right)
+    // vs left-facing (180°).  shadeFlank applies ambient+fill floor so shadow faces
+    // are never crushed black.
+    const rightShade = shadeFlank(lighting, 0);
+    const leftShade  = shadeFlank(lighting, 180);
+    const litIsRight = rightShade.mult > leftShade.mult;
+
+    // Fake AO contact shadow — drawn before the fill so it sits under the geometry.
+    // Width × 0.6 approximates the visible ground-contact footprint.
+    aoPool(ctx, cx, baseY, width * 0.6, lighting);
+
+    // Apply day-cycle modulation to fill opacity (directional mults applied per-face below)
     ctx.globalAlpha = brightK;
 
     if (kind === 'cone') {
-      // Triangle: base width, angled flanks, pointed apex.
-      // Reads unmistakably as a volcano when used with a VOLCANIC archetype.
+      // Triangle split into left/right halves so each flank gets its own directional
+      // brightness.  Reads unmistakably as a volcano with a hard lit/shadow terminator.
       ctx.fillStyle = lm.fillColor;
+
+      // Shadow-side flank (whichever faces away from the key light)
+      ctx.globalAlpha = brightK * (litIsRight ? leftShade.mult : rightShade.mult);
       ctx.beginPath();
-      ctx.moveTo(cx - width, baseY);
-      ctx.lineTo(cx, baseY - height);
-      ctx.lineTo(cx + width, baseY);
+      if (litIsRight) {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx,         baseY);
+        ctx.lineTo(cx,         baseY - height);
+      } else {
+        ctx.moveTo(cx,         baseY - height);
+        ctx.lineTo(cx + width, baseY);
+        ctx.lineTo(cx,         baseY);
+      }
       ctx.closePath();
       ctx.fill();
+
+      // Lit flank (sun-facing side)
+      ctx.globalAlpha = brightK * (litIsRight ? rightShade.mult : leftShade.mult);
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx,         baseY - height);
+        ctx.lineTo(cx + width, baseY);
+        ctx.lineTo(cx,         baseY);
+      } else {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx,         baseY);
+        ctx.lineTo(cx,         baseY - height);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Key-colour tint on the lit face — shifts the warm flank toward the sun's hue.
+      const coneLitTint = litIsRight ? rightShade.tint : leftShade.tint;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = brightK * 0.10;
+      ctx.fillStyle = coneLitTint;
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx, baseY - height); ctx.lineTo(cx + width, baseY); ctx.lineTo(cx, baseY);
+      } else {
+        ctx.moveTo(cx - width, baseY); ctx.lineTo(cx, baseY); ctx.lineTo(cx, baseY - height);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      // Sun-relative rim light on the outer edge of the lit flank.
+      const coneRim = rimLight(lighting, litIsRight ? 0 : 180, 'sun');
+      if (coneRim.mult > 0.005) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = brightK * coneRim.mult * 1.2;
+        ctx.strokeStyle = coneRim.tint;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if (litIsRight) {
+          ctx.moveTo(cx, baseY - height); ctx.lineTo(cx + width, baseY);
+        } else {
+          ctx.moveTo(cx - width, baseY); ctx.lineTo(cx, baseY - height);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Restore brightK before the accent pass (accent uses its own save/restore
+      // so its alpha is independent, but reset here for clarity)
+      ctx.globalAlpha = brightK;
+
       // Optional accent: warm glow rim just below the apex and a hot crater dot.
       if (lm.useAccent) {
         ctx.save();
@@ -1169,22 +1283,56 @@ function drawLandmarks(
       }
 
     } else if (kind === 'caldera') {
-      // Broad flat-topped trapezoid with a central V-notch at the summit,
-      // suggesting a blow-out crater.  Wider base, flatter than a cone.
-      const topW = width * 0.55;       // flat top is narrower than base
-      const notchW = width * 0.14;     // notch mouth width at the top
-      const notchD = height * 0.16;    // depth of the central depression
+      // Broad flat-topped trapezoid with a central V-notch — split at the centre
+      // so each outer flank gets its own directional brightness.
+      const topW   = width * 0.55;   // flat top narrower than base
+      const notchW = width * 0.14;   // notch mouth width
+      const notchD = height * 0.16;  // notch depth
+      const notchY = baseY - height + notchD;
+
       ctx.fillStyle = lm.fillColor;
+
+      // Shadow half
+      ctx.globalAlpha = brightK * (litIsRight ? leftShade.mult : rightShade.mult);
       ctx.beginPath();
-      ctx.moveTo(cx - width, baseY);              // bottom-left
-      ctx.lineTo(cx - topW, baseY - height);      // top-left
-      ctx.lineTo(cx - notchW, baseY - height);    // notch-left shoulder
-      ctx.lineTo(cx, baseY - height + notchD);    // notch bottom
-      ctx.lineTo(cx + notchW, baseY - height);    // notch-right shoulder
-      ctx.lineTo(cx + topW, baseY - height);      // top-right
-      ctx.lineTo(cx + width, baseY);              // bottom-right
+      if (litIsRight) {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx - topW,   baseY - height);
+        ctx.lineTo(cx - notchW, baseY - height);
+        ctx.lineTo(cx,          notchY);
+        ctx.lineTo(cx,          baseY);
+      } else {
+        ctx.moveTo(cx,          baseY);
+        ctx.lineTo(cx,          notchY);
+        ctx.lineTo(cx + notchW, baseY - height);
+        ctx.lineTo(cx + topW,   baseY - height);
+        ctx.lineTo(cx + width,  baseY);
+      }
       ctx.closePath();
       ctx.fill();
+
+      // Lit half
+      ctx.globalAlpha = brightK * (litIsRight ? rightShade.mult : leftShade.mult);
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx,          baseY);
+        ctx.lineTo(cx,          notchY);
+        ctx.lineTo(cx + notchW, baseY - height);
+        ctx.lineTo(cx + topW,   baseY - height);
+        ctx.lineTo(cx + width,  baseY);
+      } else {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx - topW,   baseY - height);
+        ctx.lineTo(cx - notchW, baseY - height);
+        ctx.lineTo(cx,          notchY);
+        ctx.lineTo(cx,          baseY);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Restore for accent pass
+      ctx.globalAlpha = brightK;
+
       // Accent: warm glow in the caldera bowl
       if (lm.useAccent) {
         ctx.save();
@@ -1199,22 +1347,52 @@ function drawLandmarks(
       }
 
     } else if (kind === 'mesa') {
-      // Wide flat-topped butte: nearly as wide at the top as the base, low
-      // aspect ratio so it reads as a plateau rather than a peak.
-      const topW = width * 0.80;   // wide flat top
-      const h2 = height * 0.65;   // lower than a mountain (mesa is flat, not peaked)
+      // Wide flat-topped butte — sloping side faces split left/right; top face
+      // shaded by the sky-facing (azimuth 270°) component.
+      const topW      = width * 0.80;
+      const h2        = height * 0.65;
+      const topShadeM = shadeFlank(lighting, 270);  // sky-facing top surface
+
       ctx.fillStyle = lm.fillColor;
+
+      // Shadow sloping face
+      ctx.globalAlpha = brightK * (litIsRight ? leftShade.mult : rightShade.mult);
       ctx.beginPath();
-      ctx.moveTo(cx - width, baseY);
-      ctx.lineTo(cx - topW, baseY - h2);
-      ctx.lineTo(cx + topW, baseY - h2);
-      ctx.lineTo(cx + width, baseY);
+      if (litIsRight) {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx - topW,  baseY - h2);
+        ctx.lineTo(cx,         baseY - h2);
+        ctx.lineTo(cx,         baseY);
+      } else {
+        ctx.moveTo(cx,         baseY);
+        ctx.lineTo(cx,         baseY - h2);
+        ctx.lineTo(cx + topW,  baseY - h2);
+        ctx.lineTo(cx + width, baseY);
+      }
       ctx.closePath();
       ctx.fill();
-      // Pale top-face edge highlight
+
+      // Lit sloping face
+      ctx.globalAlpha = brightK * (litIsRight ? rightShade.mult : leftShade.mult);
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx,         baseY);
+        ctx.lineTo(cx,         baseY - h2);
+        ctx.lineTo(cx + topW,  baseY - h2);
+        ctx.lineTo(cx + width, baseY);
+      } else {
+        ctx.moveTo(cx - width, baseY);
+        ctx.lineTo(cx - topW,  baseY - h2);
+        ctx.lineTo(cx,         baseY - h2);
+        ctx.lineTo(cx,         baseY);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Pale top-face edge highlight — brightness modulated by how much sky the top sees
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = dc.bright * 0.12;
+      ctx.globalAlpha = dc.bright * topShadeM.mult * 0.15;
       ctx.strokeStyle = 'rgba(220, 210, 190, 0.7)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -1224,18 +1402,57 @@ function drawLandmarks(
       ctx.restore();
 
     } else if (kind === 'spire') {
-      // Tall thin triangle — reads as an isolated rock needle or alien spire.
-      const sw = width * 0.22;  // very narrow base
-      const sh = height * 1.3;  // very tall (can exceed the "standard" height cap)
+      // Tall thin triangle split into left/right halves for directional shading.
+      // Reads as a rock needle or alien antenna mast with a crisp lit/shadow divide.
+      const sw = width * 0.22;
+      const sh = height * 1.3;
       const spireH  = Math.min(sh, cache.horizonY * 1.1);
       const spireTY = baseY - spireH;
       ctx.fillStyle = lm.fillColor;
+
+      // Shadow half
+      ctx.globalAlpha = brightK * (litIsRight ? leftShade.mult : rightShade.mult);
       ctx.beginPath();
-      ctx.moveTo(cx - sw, baseY);
-      ctx.lineTo(cx, spireTY);
-      ctx.lineTo(cx + sw, baseY);
+      if (litIsRight) {
+        ctx.moveTo(cx - sw, baseY); ctx.lineTo(cx, baseY); ctx.lineTo(cx, spireTY);
+      } else {
+        ctx.moveTo(cx, spireTY); ctx.lineTo(cx + sw, baseY); ctx.lineTo(cx, baseY);
+      }
       ctx.closePath();
       ctx.fill();
+
+      // Lit half
+      ctx.globalAlpha = brightK * (litIsRight ? rightShade.mult : leftShade.mult);
+      ctx.beginPath();
+      if (litIsRight) {
+        ctx.moveTo(cx, spireTY); ctx.lineTo(cx + sw, baseY); ctx.lineTo(cx, baseY);
+      } else {
+        ctx.moveTo(cx - sw, baseY); ctx.lineTo(cx, baseY); ctx.lineTo(cx, spireTY);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      // Sun-side rim on the lit-flank outer edge — spires have a pronounced rim
+      // because they're very thin and the silhouette edge is always visible.
+      const spireRim = rimLight(lighting, litIsRight ? 0 : 180, 'sun');
+      if (spireRim.mult > 0.005) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = brightK * spireRim.mult * 1.4;
+        ctx.strokeStyle = spireRim.tint;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        if (litIsRight) {
+          ctx.moveTo(cx, spireTY); ctx.lineTo(cx + sw, baseY);
+        } else {
+          ctx.moveTo(cx - sw, baseY); ctx.lineTo(cx, spireTY);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Restore brightK before the ARTIFICIAL emissive pass
+      ctx.globalAlpha = brightK;
 
       // ARTIFICIAL emissive pass — warm window bands + cold conduit edge traces.
       // Guard: accentWarm is only set on ARTIFICIAL so this is a zero-cost no-op
@@ -1316,17 +1533,21 @@ function drawLandmarks(
       ctx.restore();
 
     } else if (kind === 'arch') {
-      // Two pillars with a quadratic arc connecting their tops.
-      // Reads as a natural rock arch or alien bridging structure.
-      const ow = width * 0.22;  // outer pillar half-width
-      const iw = width * 0.48;  // inner edge (gap between the pillars)
-      const ah = height * 0.85; // arch height at the keystone
+      // Two pillars shaded by their dominant outer face; arch span by the sky-facing top.
+      const ow        = width * 0.22;
+      const iw        = width * 0.48;
+      const ah        = height * 0.85;
+      const topShadeA = shadeFlank(lighting, 270);  // arch keystone faces upward
+
       ctx.fillStyle = lm.fillColor;
-      // Left pillar
+      // Left pillar: dominant outer face is LEFT (azimuth 180°)
+      ctx.globalAlpha = brightK * leftShade.mult;
       ctx.fillRect(cx - iw - ow, baseY - ah, ow, ah);
-      // Right pillar
+      // Right pillar: dominant outer face is RIGHT (azimuth 0°)
+      ctx.globalAlpha = brightK * rightShade.mult;
       ctx.fillRect(cx + iw, baseY - ah, ow, ah);
-      // Arch span (filled path from the two pillar tops, arcing upward)
+      // Arch span — sky-facing keystone
+      ctx.globalAlpha = brightK * topShadeA.mult;
       ctx.beginPath();
       ctx.moveTo(cx - iw - ow, baseY - ah);
       ctx.lineTo(cx - iw, baseY - ah);
@@ -1337,17 +1558,31 @@ function drawLandmarks(
       ctx.fill();
 
     } else if (kind === 'canyon') {
-      // Dark downward V-notch into the foreground terrain.
-      // Represents a deep crack or ravine; sits ON the ground line, opens downward.
-      const cd = height * 0.55;   // depth of the notch below the ground line
-      const cw2 = width * 0.75;   // mouth width at the surface
+      // Dark downward V-notch — left wall faces inward (right, azimuth 0°),
+      // right wall faces inward (left, azimuth 180°).  Canyons are inherently dark
+      // so mults are scaled down to 0.82 to preserve that shadowed character.
+      const cd  = height * 0.55;
+      const cw2 = width * 0.75;
       ctx.fillStyle = lm.fillColor;
+
+      // Left wall (inward normal = right-facing)
+      ctx.globalAlpha = brightK * rightShade.mult * 0.82;
       ctx.beginPath();
       ctx.moveTo(cx - cw2, baseY);
-      ctx.lineTo(cx, baseY + cd);
+      ctx.lineTo(cx,       baseY + cd);
+      ctx.lineTo(cx,       baseY);
+      ctx.closePath();
+      ctx.fill();
+
+      // Right wall (inward normal = left-facing)
+      ctx.globalAlpha = brightK * leftShade.mult * 0.82;
+      ctx.beginPath();
+      ctx.moveTo(cx,       baseY);
+      ctx.lineTo(cx,       baseY + cd);
       ctx.lineTo(cx + cw2, baseY);
       ctx.closePath();
       ctx.fill();
+
       // Pale rim highlight along the canyon edge
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
@@ -1362,18 +1597,25 @@ function drawLandmarks(
       ctx.restore();
 
     } else if (kind === 'glacier') {
-      // Pale blue-white wedge: a wide angled mass reminiscent of a glacier
-      // flowing from one side.  Wider at the top-left, tapering to the right.
-      const gw = width * 1.1;
-      const gh = height * 0.55;
+      // Pale blue-white wedge — primarily sky-facing so the top surface (azimuth 270°)
+      // drives the shading.  A higher sun hits the glacier more directly.
+      const gw        = width * 1.1;
+      const gh        = height * 0.55;
+      const topShadeG = shadeFlank(lighting, 270);
+
+      ctx.globalAlpha = brightK * topShadeG.mult;
       ctx.fillStyle = lm.fillColor;
       ctx.beginPath();
-      ctx.moveTo(cx - gw, baseY);
-      ctx.lineTo(cx - gw * 0.4, baseY - gh);
+      ctx.moveTo(cx - gw,        baseY);
+      ctx.lineTo(cx - gw * 0.4,  baseY - gh);
       ctx.lineTo(cx + gw * 0.55, baseY - gh * 0.3);
-      ctx.lineTo(cx + gw, baseY);
+      ctx.lineTo(cx + gw,        baseY);
       ctx.closePath();
       ctx.fill();
+
+      // Restore before the accent/ice-sheen pass
+      ctx.globalAlpha = brightK;
+
       // Ice sheen: a soft lighter edge along the top
       if (lm.useAccent) {
         ctx.save();
@@ -2146,7 +2388,15 @@ function drawScatterInstances(
 ): void {
   if (cache.scatterScreens.length === 0) return;
 
-  const brightK = 0.55 + dc.bright * 0.45;
+  const brightK  = 0.55 + dc.bright * 0.45;
+  const lighting = cache.model.lighting;
+
+  // Directional shadow offset: shadow falls opposite the key-light azimuth.
+  // keyDir[0] is the sun azimuth in screen degrees (0° = screen-right).
+  // cos(keyAzDeg) gives the horizontal component; negate to get shadow direction.
+  const shadowAzRad = lighting.keyDir[0] * Math.PI / 180;
+  const shadowOffX  = -Math.cos(shadowAzRad);  // unit vector, scaled per instance below
+  const shadowKeyK  = Math.max(0.3, Math.min(1, lighting.keyIntensity));
 
   const isRock = (kind: string): boolean => {
     const k = kind.toLowerCase();
@@ -2175,11 +2425,14 @@ function drawScatterInstances(
         ctx.beginPath();
         ctx.ellipse(sx, sy, sizePx, sizePx * 0.60, 0, 0, Math.PI * 2);
         ctx.fill();
-        // Subtle cast shadow below
-        ctx.globalAlpha = brightK * 0.22;
+        // Directional cast shadow: offset opposite the key-light azimuth.
+        // shadowOffX is the unit horizontal direction; scale by sizePx × 0.40.
+        const castX = sx + shadowOffX * sizePx * 0.40;
+        const castY = sy + sizePx * 0.28;
+        ctx.globalAlpha = brightK * shadowKeyK * 0.22;
         ctx.fillStyle   = 'rgba(0, 0, 0, 0.5)';
         ctx.beginPath();
-        ctx.ellipse(sx, sy + sizePx * 0.28, sizePx * 0.85, sizePx * 0.22, 0, 0, Math.PI * 2);
+        ctx.ellipse(castX, castY, sizePx * 0.85, sizePx * 0.22, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = brightK * 0.75;
 
@@ -2530,10 +2783,10 @@ function drawScene(
       ctx.restore();
     }
 
-    // Water surface waterline foam
+    // Water surface waterline foam — color from model palette.foam
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(220, 240, 250, 1)';
+    ctx.strokeStyle = `rgba(${cache.foamColor}, 1)`;
     ctx.lineWidth = 1.4 * Math.min(2.5, cache.foamMul);
     ctx.beginPath();
     for (let x = 0; x <= w; x += 8) {
@@ -2556,8 +2809,19 @@ function drawScene(
   } else if (cache.terrainMode === 'plating') {
     drawPlating(ctx, w, h, t, model, cache, dc);
   } else {
-    // Default surface path — EXACTLY as P0 (no changes to this branch)
-    if (!cache.hasWater && cache.ridgePts.length > 0) {
+    // Default surface path — ridges + ground plane draw regardless of water presence.
+    // When water is present, ridge fills clip to [0, waterTopY] so they remain visible
+    // as distant terrain features but don't obscure the water band below.
+    // The land strip [horizonY..waterTopY] is always filled when water is present.
+    const wTopY = cache.waterTopY;  // waterlineY*h, or h if no water
+    if (cache.ridgePts.length > 0) {
+      ctx.save();
+      if (cache.hasWater) {
+        // Clip ridges to above the waterline — distant terrain visible on the horizon
+        ctx.beginPath();
+        ctx.rect(0, 0, w, wTopY);
+        ctx.clip();
+      }
       for (let li = 0; li < cache.ridgePts.length; li++) {
         const layer = cache.ridgePts[li];
         const isFront = li === cache.ridgePts.length - 1;
@@ -2582,14 +2846,21 @@ function drawScene(
         ctx.fillStyle = layer.color;
         ctx.fill();
       }
+      ctx.restore();
     }
 
-    // 5a) Ground plane (fallback if no ridges or water)
-    if (cache.ridgePts.length === 0 && !cache.hasWater) {
-      const groundY = horizonY;
-      const gfill = rgba(model.palette.surface, 1);
-      ctx.fillStyle = gfill;
-      ctx.fillRect(0, groundY, w, h - groundY);
+    // 5a) Ground / land-strip fill.
+    // Without water: fills from horizonY to h (full ground band when no ridges present).
+    // With water: always fills the land strip [horizonY..waterTopY] (the foreshore
+    // between the terrain horizon and the waterline, even when ridges are also present).
+    // When ridges are present and no water: ridges provide all fill — no extra rect needed.
+    if (cache.ridgePts.length === 0 || cache.hasWater) {
+      const groundY    = horizonY;
+      const groundBtm  = cache.hasWater ? wTopY : h;
+      if (groundBtm > groundY) {
+        ctx.fillStyle = rgba(model.palette.surface, 1);
+        ctx.fillRect(0, groundY, w, groundBtm - groundY);
+      }
     }
   }
 
@@ -2665,6 +2936,10 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
   let w = canvas.width;
   let h = canvas.height;
   let currentModel = model;
+  // Tracks the last VistaInput so update(partial) can merge and regenerate.
+  // Undefined until the first update() call; react.tsx always passes the full
+  // VistaInput so the merge never loses unset fields.
+  let currentInput: VistaInput | undefined;
   let rafId: number | null = null;
 
   // Cache key incorporating everything that invalidates the pre-baked geometry.
@@ -2718,9 +2993,27 @@ export function mount(model: VistaModel, target: VistaTarget): VistaHandle {
     },
 
     update(partial: Partial<VistaInput>): void {
-      // Hot-patch: merge partial into a new model via the generate pipeline.
-      // For now, force a cache bust and re-render with the existing model.
-      // A full update requires calling generate() (Lane B) externally.
+      // Hot-patch: merge partial into the tracked input, regenerate the model
+      // via the pipeline, swap it into the live mount, and re-render — all on
+      // the EXISTING canvas.  No dispose, no clearRect, no flash.
+      //
+      // Merge strategy: one level deep on the nested objects so that a partial
+      // { planet: { habitability: 0.8 } } only overrides the changed field
+      // rather than replacing the whole planet object.  react.tsx passes the
+      // full VistaInput, so either path produces a complete input.
+      const base: VistaInput = currentInput ?? (partial as VistaInput);
+      const merged: VistaInput = {
+        ...base,
+        ...partial,
+        planet: partial.planet
+          ? { ...base.planet, ...partial.planet }
+          : base.planet,
+        celestial: partial.celestial
+          ? { ...base.celestial, ...partial.celestial }
+          : base.celestial,
+      } as VistaInput;
+      currentInput = merged;
+      currentModel  = generateVista(merged);
       _cache = null;
       render();
     },

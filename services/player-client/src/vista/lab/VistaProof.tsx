@@ -2,10 +2,17 @@
  * Vista Proof Harness — DEV-only, dead-code-eliminated from prod builds.
  *
  * Renders a fixed VistaInput at clock=0 (frozen frame) for deterministic
- * Playwright screenshot comparison.  Input is hardcoded here — no UI toggles,
- * no URL params — so every run is byte-identical.
+ * Playwright screenshot comparison.  All inputs are hardcoded literals —
+ * randomVistaInput is never called here so before/after captures are
+ * always comparable against the same pixel budget.
  *
- * Route: /lab/vista-proof  (App.tsx registers it inside import.meta.env.DEV)
+ * Route: /lab/vista-proof              → default named-storm TERRAN scene
+ * Route: /lab/vista-proof?type=JUNGLE  → FIXED_INPUTS['JUNGLE']
+ *
+ * Supported ?type= values (9):
+ *   TERRAN · JUNGLE · TROPICAL · MOUNTAINOUS · ICE · VOLCANIC · OCEANIC · BARREN · DESERT
+ * Unknown or absent ?type → falls back to the original named-storm PROOF_INPUT
+ * so the existing vista-named-storm-proof.spec.ts continues to pass unchanged.
  *
  * Readiness protocol:
  *   A polling rAF loop reads the canvas pixel buffer (getImageData) and marks
@@ -27,7 +34,7 @@ import type { VistaInput } from '../contract';
 import VistaCanvas from '../react';
 
 // ---------------------------------------------------------------------------
-// Fixed proof input
+// Default proof input (named-storm regression anchor)
 // ---------------------------------------------------------------------------
 //
 // TERRAN, hab=92 (lush — desirability will exceed 0.7).
@@ -80,6 +87,303 @@ const PROOF_INPUT: VistaInput = {
 };
 
 // ---------------------------------------------------------------------------
+// Multi-type fixed inputs
+// ---------------------------------------------------------------------------
+//
+// One COMPLETE VistaInput literal per planet type.  These are fixed literals —
+// NOT calls to randomVistaInput — so the same input runs on any branch and
+// a pixel diff between before/after reflects only engine changes, not entropy.
+//
+// Coverage: 9 of the 12 PlanetTypes (GAS_GIANT / ARCTIC / ARTIFICIAL deferred).
+
+const FIXED_INPUTS: Record<string, VistaInput> = {
+
+  TERRAN: {
+    contractVersion: 1,
+    seed: 'type-proof-TERRAN-001',
+    planet: {
+      type:         'TERRAN',
+      habitability: 85,
+      atmosphere:   { present: true, kind: null, density: 0.70 },
+      nativeLife:   0.55,
+      temperature:  0.10,
+      waterCoverage: 0.55,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             1.0,
+      phaseDeg:            45,
+      rotationPeriodHours: 24,
+      axialTiltDeg:        23,
+    },
+    site: {
+      shape: 'SPRAWLING', usableSlots: 18, citadelCeiling: 3,
+      energy: { source: 'SOLAR', tier: 2, magnitude: 0.65 },
+      deposits: [
+        { kind: 'ore',  richness: 0.70 },
+        { kind: 'food', richness: 0.80 },
+      ],
+      hazards: [
+        { kind: 'storm', severity: 0.60, named: false },
+      ],
+    },
+  },
+
+  JUNGLE: {
+    contractVersion: 1,
+    seed: 'type-proof-JUNGLE-001',
+    planet: {
+      type:         'JUNGLE',
+      habitability: 78,
+      atmosphere:   { present: true, kind: null, density: 0.80 },
+      nativeLife:   0.88,
+      temperature:  0.40,
+      waterCoverage: 0.45,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             0.9,
+      phaseDeg:            90,
+      rotationPeriodHours: 28,
+      axialTiltDeg:        15,
+    },
+    site: {
+      shape: 'IRREGULAR', usableSlots: 14, citadelCeiling: 2,
+      energy: { source: 'WIND', tier: 1, magnitude: 0.55 },
+      deposits: [
+        { kind: 'organic', richness: 0.82 },
+        { kind: 'gas',     richness: 0.40 },
+      ],
+      hazards: [
+        { kind: 'megafauna', severity: 0.70, named: false },
+        { kind: 'flood',     severity: 0.45, named: false },
+      ],
+    },
+  },
+
+  TROPICAL: {
+    contractVersion: 1,
+    seed: 'type-proof-TROPICAL-001',
+    planet: {
+      type:         'TROPICAL',
+      habitability: 74,
+      atmosphere:   { present: true, kind: null, density: 0.75 },
+      nativeLife:   0.60,
+      temperature:  0.48,
+      waterCoverage: 0.68,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             0.95,
+      phaseDeg:            120,
+      rotationPeriodHours: 22,
+      axialTiltDeg:        8,
+    },
+    site: {
+      shape: 'LINEAR', usableSlots: 16, citadelCeiling: 3,
+      energy: { source: 'TIDAL', tier: 2, magnitude: 0.70 },
+      deposits: [
+        { kind: 'food',    richness: 0.76 },
+        { kind: 'crystal', richness: 0.38 },
+      ],
+      hazards: [
+        { kind: 'storm', severity: 0.75, named: true },
+      ],
+    },
+  },
+
+  MOUNTAINOUS: {
+    contractVersion: 1,
+    seed: 'type-proof-MOUNTAINOUS-001',
+    planet: {
+      type:         'MOUNTAINOUS',
+      habitability: 52,
+      atmosphere:   { present: true, kind: null, density: 0.55 },
+      nativeLife:   0.30,
+      temperature:  -0.10,
+      waterCoverage: 0.18,
+    },
+    celestial: {
+      star:                { kind: 'K_ORANGE', color: '#ffd090' },
+      orbitAu:             1.1,
+      phaseDeg:            200,
+      rotationPeriodHours: 30,
+      axialTiltDeg:        30,
+    },
+    site: {
+      shape: 'TERRACED', usableSlots: 12, citadelCeiling: 4,
+      energy: { source: 'GEOTHERMAL', tier: 2, magnitude: 0.60 },
+      deposits: [
+        { kind: 'ore',     richness: 0.85 },
+        { kind: 'crystal', richness: 0.62 },
+      ],
+      hazards: [
+        { kind: 'seismic', severity: 0.65, named: false },
+        { kind: 'snow',    severity: 0.40, named: false },
+      ],
+    },
+  },
+
+  ICE: {
+    contractVersion: 1,
+    seed: 'type-proof-ICE-001',
+    planet: {
+      type:         'ICE',
+      habitability: 18,
+      atmosphere:   { present: true, kind: null, density: 0.40 },
+      nativeLife:   0.08,
+      temperature:  -0.85,
+      waterCoverage: 0.72,
+    },
+    celestial: {
+      star:                { kind: 'K_ORANGE', color: '#ffcc80' },
+      orbitAu:             2.2,
+      phaseDeg:            310,
+      rotationPeriodHours: 48,
+      axialTiltDeg:        5,
+    },
+    site: {
+      shape: 'COMPACT', usableSlots: 10, citadelCeiling: 2,
+      energy: { source: 'GEOTHERMAL', tier: 1, magnitude: 0.45 },
+      deposits: [
+        { kind: 'ice', richness: 0.90 },
+        { kind: 'ore', richness: 0.35 },
+      ],
+      hazards: [
+        { kind: 'snow', severity: 0.80, named: false },
+      ],
+    },
+  },
+
+  VOLCANIC: {
+    contractVersion: 1,
+    seed: 'type-proof-VOLCANIC-001',
+    planet: {
+      type:         'VOLCANIC',
+      habitability: 12,
+      atmosphere:   { present: true, kind: 'sulfurous', density: 0.90 },
+      nativeLife:   0.10,
+      temperature:  0.88,
+      waterCoverage: 0.05,
+    },
+    celestial: {
+      star:                { kind: 'M_DWARF', color: '#ff8060' },
+      orbitAu:             0.3,
+      phaseDeg:            60,
+      rotationPeriodHours: 200,
+      axialTiltDeg:        2,
+    },
+    site: {
+      shape: 'COMPACT', usableSlots: 8, citadelCeiling: 1,
+      energy: { source: 'GEOTHERMAL', tier: 4, magnitude: 0.95 },
+      deposits: [
+        { kind: 'mineral', richness: 0.78 },
+        { kind: 'gas',     richness: 0.60 },
+      ],
+      hazards: [
+        { kind: 'lava',    severity: 0.90, named: true  },
+        { kind: 'seismic', severity: 0.75, named: false },
+      ],
+    },
+  },
+
+  OCEANIC: {
+    contractVersion: 1,
+    seed: 'type-proof-OCEANIC-001',
+    planet: {
+      type:         'OCEANIC',
+      habitability: 70,
+      atmosphere:   { present: true, kind: null, density: 0.78 },
+      nativeLife:   0.65,
+      temperature:  0.20,
+      waterCoverage: 0.90,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             1.05,
+      phaseDeg:            180,
+      rotationPeriodHours: 26,
+      axialTiltDeg:        12,
+    },
+    site: {
+      shape: 'ENGINEERED', usableSlots: 14, citadelCeiling: 3,
+      energy: { source: 'TIDAL', tier: 3, magnitude: 0.80 },
+      deposits: [
+        { kind: 'gas',     richness: 0.55 },
+        { kind: 'organic', richness: 0.72 },
+      ],
+      hazards: [
+        { kind: 'flood', severity: 0.70, named: false },
+        { kind: 'storm', severity: 0.55, named: false },
+      ],
+    },
+  },
+
+  BARREN: {
+    contractVersion: 1,
+    seed: 'type-proof-BARREN-001',
+    planet: {
+      type:         'BARREN',
+      habitability: 5,
+      atmosphere:   { present: false, kind: null, density: 0.0 },
+      nativeLife:   0.0,
+      temperature:  0.05,
+      waterCoverage: 0.0,
+    },
+    celestial: {
+      star:                { kind: 'G_YELLOW', color: '#fff4d0' },
+      orbitAu:             1.8,
+      phaseDeg:            270,
+      rotationPeriodHours: 60,
+      axialTiltDeg:        1,
+    },
+    site: {
+      shape: 'COMPACT', usableSlots: 8, citadelCeiling: 2,
+      energy: { source: 'SOLAR', tier: 1, magnitude: 0.35 },
+      deposits: [
+        { kind: 'ore',     richness: 0.65 },
+        { kind: 'mineral', richness: 0.50 },
+      ],
+      hazards: [
+        { kind: 'radiation', severity: 0.60, named: false },
+        { kind: 'impact',    severity: 0.40, named: false },
+      ],
+    },
+  },
+
+  DESERT: {
+    contractVersion: 1,
+    seed: 'type-proof-DESERT-001',
+    planet: {
+      type:         'DESERT',
+      habitability: 22,
+      atmosphere:   { present: true, kind: null, density: 0.45 },
+      nativeLife:   0.15,
+      temperature:  0.70,
+      waterCoverage: 0.02,
+    },
+    celestial: {
+      star:                { kind: 'A_BLUE', color: '#e0eeff' },
+      orbitAu:             1.4,
+      phaseDeg:            140,
+      rotationPeriodHours: 36,
+      axialTiltDeg:        20,
+    },
+    site: {
+      shape: 'SPRAWLING', usableSlots: 16, citadelCeiling: 2,
+      energy: { source: 'SOLAR', tier: 3, magnitude: 0.88 },
+      deposits: [
+        { kind: 'mineral', richness: 0.72 },
+        { kind: 'ore',     richness: 0.45 },
+      ],
+      hazards: [
+        { kind: 'dust', severity: 0.75, named: false },
+      ],
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -88,6 +392,13 @@ const PROOF_INPUT: VistaInput = {
 const MAX_SETTLE_FRAMES = 60;
 
 export default function VistaProof() {
+  // Select input: ?type=<PLANET_TYPE> → FIXED_INPUTS lookup; absent/unknown → PROOF_INPUT.
+  const typeParam  = new URLSearchParams(window.location.search).get('type') ?? '';
+  const activeInput: VistaInput = FIXED_INPUTS[typeParam] ?? PROOF_INPUT;
+  const activeLabel = typeParam && FIXED_INPUTS[typeParam]
+    ? `type: ${typeParam}`
+    : 'named-storm (default)';
+
   // Readiness gate for Playwright.
   //
   // WHY POLL INSTEAD OF A SINGLE RAF:
@@ -153,17 +464,17 @@ export default function VistaProof() {
 
   return (
     <div style={{ background: '#000', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-      {/* Fixed-size container — 900×560 gives the canvas a definite layout
+      {/* Fixed-size container — 1440×900 gives the canvas a definite layout
           size for getBoundingClientRect() in headless Chromium (DPR=1). */}
       <div
         data-testid="vista-proof-container"
-        style={{ width: 900, height: 560, position: 'relative', marginTop: 20 }}
+        style={{ width: 1440, height: 900, position: 'relative', marginTop: 20 }}
       >
-        <VistaCanvas input={PROOF_INPUT} clock={0} />
+        <VistaCanvas input={activeInput} clock={0} />
       </div>
 
       <div style={{ color: '#666', fontSize: 11, fontFamily: 'monospace', marginTop: 8 }}>
-        Vista Proof &nbsp;|&nbsp; seed: {PROOF_INPUT.seed} &nbsp;|&nbsp; t=0 (frozen) &nbsp;|&nbsp; DEV-only
+        Vista Proof &nbsp;|&nbsp; {activeLabel} &nbsp;|&nbsp; seed: {activeInput.seed} &nbsp;|&nbsp; t=0 (frozen) &nbsp;|&nbsp; DEV-only
       </div>
 
       {/* Playwright readiness gate: appears only after the canvas pixel poll

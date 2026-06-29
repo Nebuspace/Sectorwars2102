@@ -347,7 +347,156 @@ function buildCelestial(
   // Stable starfield key: deterministic from seed, cached by renderer
   const starfieldSeedKey = `${input.seed}:starfield`;
 
-  return { suns, moons, distant, starfieldSeedKey, ...(ringArc ? { ringArc } : {}) };
+  return {
+    suns,
+    moons,
+    distant,
+    starfieldSeedKey,
+    ...(ringArc                  ? { ringArc }                           : {}),
+    ...(input.celestial.nebula   ? { nebula: input.celestial.nebula }    : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 6 helpers — deriveParticles / deriveEvents
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive atmosphere particle emitters from the planet's physical attributes.
+ *
+ * Priority order (first match wins):
+ *   no atmosphere   → []  (BARREN / vacuum)
+ *   plating mode    → spark  (ARTIFICIAL tech signature)
+ *   cloud-deck mode → dust   (GAS_GIANT band turbulence)
+ *   temp ≥ 0.65     → ember + ash  (VOLCANIC)
+ *   temp ≤ −0.25    → snow   (ICE, ARCTIC)
+ *   wet + temperate → rain [+ spore at nativeLife ≥ 0.4]  (TERRAN, OCEANIC, JUNGLE, TROPICAL…)
+ *   dry + warm      → dust   (DESERT)
+ *   nativeLife ≥ 0.5 → spore  (exotic life-heavy mild worlds)
+ *   default         → faint dust
+ *
+ * Fully deterministic: rates are derived from stable planet attributes
+ * (temperature, waterCoverage, nativeLife), not from rng draws.
+ * Colors are taken from the already-derived palette.
+ */
+function deriveParticles(
+  input: VistaInput,
+  profile: ReturnType<typeof getProfile>,
+  palette: VistaModel['palette'],
+): VistaModel['layers']['atmosphere']['particles'] {
+  if (!input.planet.atmosphere.present) return [];
+
+  const temp     = input.planet.temperature;    // −1..+1
+  const water    = input.planet.waterCoverage;  //  0..1
+  const life     = input.planet.nativeLife;     //  0..1
+  const atmoKind = (input.planet.atmosphere.kind ?? '').toLowerCase();
+
+  type P = VistaModel['layers']['atmosphere']['particles'][number];
+  const out: P[] = [];
+
+  // ARTIFICIAL — engineered substrate; sparks from active circuitry
+  if (profile.terrainMode === 'plating') {
+    out.push({ kind: 'spark', rate: clamp01(0.25 + life * 0.10), color: palette.accent });
+    return out;
+  }
+
+  // GAS_GIANT cloud-deck — band-turbulence dust; not rain/snow (no surface)
+  if (profile.terrainMode === 'cloud-deck') {
+    out.push({ kind: 'dust', rate: clamp01(0.20 + Math.abs(temp) * 0.15), color: palette.skyHorizon });
+    return out;
+  }
+
+  // Very hot / volcanic atmosphere — ember (primary) + ash (secondary)
+  if (temp >= 0.65 || atmoKind.includes('volcanic') || atmoKind.includes('sulfur')) {
+    out.push({ kind: 'ember', rate: clamp01(0.45 + temp * 0.30), color: palette.accent });
+    out.push({ kind: 'ash',   rate: 0.40,                         color: [120, 110, 100] as RGB });
+    return out;
+  }
+
+  // Cold / frozen atmosphere — snow
+  if (temp <= -0.25 || atmoKind.includes('frozen') || atmoKind.includes('cryo')) {
+    const snowRate = clamp01(0.40 + Math.max(0, -temp - 0.25) * 0.55);
+    out.push({ kind: 'snow', rate: snowRate, color: [235, 246, 255] as RGB });
+    return out;
+  }
+
+  // Wet + temperate — rain (primary); spore secondary at high nativeLife
+  if (water >= 0.25 && temp > -0.25 && temp < 0.65) {
+    out.push({ kind: 'rain',  rate: clamp01(0.30 + water * 0.50), color: [200, 220, 240] as RGB });
+    if (life >= 0.40) {
+      out.push({ kind: 'spore', rate: clamp01(life * 0.50), color: palette.flora });
+    }
+    return out;
+  }
+
+  // Dry + warm — dust (DESERT and similar arid worlds)
+  if (water < 0.25 && temp > -0.15) {
+    out.push({ kind: 'dust', rate: clamp01(0.30 + (1 - water) * 0.25), color: palette.scatterBand });
+    return out;
+  }
+
+  // High nativeLife in mild dry conditions — spore dominates
+  if (life >= 0.50) {
+    out.push({ kind: 'spore', rate: clamp01(life * 0.55), color: palette.flora });
+    return out;
+  }
+
+  // Default — faint ambient dust for any remaining atmospheric world
+  out.push({ kind: 'dust', rate: clamp01(0.15 + water * 0.10), color: palette.scatterBand });
+  return out;
+}
+
+/**
+ * Derive weather/storm events from site hazards and atmosphere state.
+ *
+ * Matches the kind strings the renderer's skyDarken path consumes:
+ *   'storm' | 'overcast' | 'ash-storm' → heavy darken (×0.6)
+ *   'rain'  | 'snow'                   → light darken (×0.3)
+ *
+ * §3.3 cap: at most one primary + one ambient event active at once.
+ * Volcanic atmosphere type always contributes an ambient 'ash-storm' event.
+ */
+function deriveEvents(
+  input: VistaInput,
+): VistaModel['layers']['atmosphere']['events'] {
+  if (!input.planet.atmosphere.present) return [];
+
+  const temp     = input.planet.temperature;
+  const atmoKind = (input.planet.atmosphere.kind ?? '').toLowerCase();
+
+  type E = VistaModel['layers']['atmosphere']['events'][number];
+  const out: E[] = [];
+
+  // Volcanic ambient: permanently active ash-storm event
+  if (temp >= 0.65 || atmoKind.includes('volcanic') || atmoKind.includes('sulfur')) {
+    out.push({
+      kind:      'ash-storm',
+      intensity: clamp01(0.30 + temp * 0.35),
+      tint:      [180, 120, 80] as RGB,
+    });
+  }
+
+  // Hazard-driven events; respect the §3.3 two-event cap
+  if (input.site) {
+    for (const h of input.site.hazards) {
+      if (out.length >= 2) break;
+      const k = h.kind.toLowerCase();
+      if (k.includes('storm') || k.includes('lightning') || k.includes('hurricane') || k.includes('flood')) {
+        out.push({ kind: 'storm',    intensity: h.severity,       tint: [140, 150, 170] as RGB });
+      } else if ((k.includes('ash') || k.includes('erupt') || k.includes('smoke')) &&
+                 !out.some(e => e.kind === 'ash-storm')) {
+        out.push({ kind: 'ash-storm', intensity: h.severity,      tint: [160, 140, 120] as RGB });
+      } else if (k.includes('blizzard') || k.includes('snowsquall')) {
+        out.push({ kind: 'snow',     intensity: h.severity,       tint: [220, 235, 250] as RGB });
+      } else if (k.includes('rain') || k.includes('precipit') || k.includes('monsoon')) {
+        out.push({ kind: 'rain',     intensity: h.severity,       tint: [180, 200, 230] as RGB });
+      } else if (k.includes('dust') || k.includes('sandstorm')) {
+        out.push({ kind: 'overcast', intensity: h.severity * 0.6, tint: [190, 170, 130] as RGB });
+      }
+    }
+  }
+
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -385,8 +534,8 @@ function buildAtmosphere(
       color:    cloudColor,
       drift:    cloudDrift,
     },
-    events:    [],  // P2: weather-clock event table
-    particles: [],  // P2: per-event particle emitters
+    events:    deriveEvents(input),
+    particles: deriveParticles(input, profile, palette),
   };
 }
 

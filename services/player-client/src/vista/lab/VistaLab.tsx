@@ -77,6 +77,24 @@ const ALL_GRID_SHAPES: GridShape[] = [
 const ALL_ENERGY_SOURCES: EnergySource[] = ['GEOTHERMAL', 'TIDAL', 'SOLAR', 'WIND'];
 
 /**
+ * Weather override options for the lab dropdown.
+ * Values match view.weatherOverride in the contract (string | null).
+ * null = let the pipeline/renderer pick based on atmosphere/type.
+ * These cover all 7 particle kinds so every draw path is reachable in the lab.
+ */
+const WEATHER_OVERRIDE_OPTIONS: Array<{ value: string | null; label: string }> = [
+  { value: null,    label: 'Auto' },
+  { value: 'clear', label: 'Clear' },
+  { value: 'rain',  label: 'Rain' },
+  { value: 'storm', label: 'Storm' },
+  { value: 'snow',  label: 'Snow' },
+  { value: 'ash',   label: 'Ash' },
+  { value: 'dust',  label: 'Dust' },
+  { value: 'spore', label: 'Spore' },
+  { value: 'ember', label: 'Ember' },
+];
+
+/**
  * Canonical hex colors per StarKind.
  * Mirrors the private STAR_COLORS constant in core/validate.ts (which uses
  * this mapping for randomVistaInput).  Duplicated here so the Environment
@@ -147,6 +165,7 @@ export default function VistaLab() {
   const [nativeLife, setNativeLife] = useState<number>(0.1);        // 0..1
   const [atmosphereDensity, setAtmosphereDensity] = useState<number>(0.7); // 0..1
   const [starKind, setStarKind] = useState<StarKind>('G_YELLOW');
+  const [weatherOverride, setWeatherOverride] = useState<string | null>(null);
 
   // ── Site controls (absent = P0 behavior) ────────────────────────────────
   const [siteOpen, setSiteOpen] = useState<boolean>(false);
@@ -252,6 +271,8 @@ export default function VistaLab() {
           color: STAR_COLORS[starKind],
         },
       },
+      // view is renderer-only — excluded from generate() determinism
+      view: { weatherOverride },
     };
   }, [
     baseInput, habitability, atmospherePresent, atmosphereDensity,
@@ -259,6 +280,7 @@ export default function VistaLab() {
     siteEnabled, siteShape, siteUsableSlots, siteCitadelCeiling,
     siteEnergySource, siteEnergyTier, siteEnergyMagnitude,
     siteDefensibility, depositRichness, hazardSeverity, hazardNamed,
+    weatherOverride,
   ]);
 
   // Inspector model — pure derivation, memoised so it doesn't rerun on clock ticks
@@ -320,6 +342,11 @@ export default function VistaLab() {
   );
   const handleStarKindChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => setStarKind(e.target.value as StarKind),
+    [],
+  );
+  const handleWeatherOverrideChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) =>
+      setWeatherOverride(e.target.value === '' ? null : e.target.value),
     [],
   );
 
@@ -515,6 +542,17 @@ export default function VistaLab() {
                   ))}
                 </select>
               </div>
+
+              <label style={styles.subLabel}>Weather</label>
+              <select
+                value={weatherOverride ?? ''}
+                onChange={handleWeatherOverrideChange}
+                style={styles.select}
+              >
+                {WEATHER_OVERRIDE_OPTIONS.map(({ value, label }) => (
+                  <option key={value ?? '__null'} value={value ?? ''}>{label}</option>
+                ))}
+              </select>
 
             </div>
           )}
