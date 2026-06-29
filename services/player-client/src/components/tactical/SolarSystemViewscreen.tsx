@@ -3,6 +3,7 @@ import apiClient from '../../services/apiClient';
 import SectorViewport from './SectorViewport';
 import './solar-system-viewscreen.css';
 import VistaCanvas from '../../vista/react';
+import { VistaErrorBoundary } from './VistaErrorBoundary';
 import { adaptLandedSceneToVistaInput } from './landedVistaAdapter';
 import type { LandedVistaSource } from './landedVistaAdapter';
 import type { VistaInput } from '../../vista/contract';
@@ -7344,6 +7345,23 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
   const vistaStartRef = useRef<number | null>(null);
   const [vistaClock, setVistaClock] = useState(0);
 
+  // Engine failure flag: set once when VistaCanvas throws (render phase via
+  // VistaErrorBoundary, or draw phase via the onError prop).  Once set, the
+  // draw-loop guard below drops the early-return so drawLandedScene resumes,
+  // and the JSX gate removes <VistaCanvas> from the tree entirely.
+  // Ref-mirrored so the rAF draw loop reads the current value without a
+  // stale-closure (the draw closure captures the ref, not the per-render state).
+  const [vistaEngineFailed, setVistaEngineFailed] = useState(false);
+  const vistaEngineFailedRef = useRef(false);
+  vistaEngineFailedRef.current = vistaEngineFailed;
+
+  // Stable callback (setter identity is stable): called by both the
+  // VistaErrorBoundary (render-phase throw) and VistaCanvas's onError prop
+  // (draw-phase throw) — both paths converge here.
+  function handleVistaEngineError() {
+    setVistaEngineFailed(true);
+  }
+
   // Build the adapter input from current props + landedCtx.
   // Returns null when the planet type is unmappable → legacy renderer stays active.
   const vistaAdaptedInput: VistaInput | null = VISTA_ENGINE_ON && scene === 'landed'
@@ -7468,10 +7486,10 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
     }
     if (mode === 'landed') {
       hitTargetsRef.current.length = 0;
-      // Vista engine: when flag ON and the adapter produced a valid input, VistaCanvas
-      // handles rendering via its own rAF — skip the legacy draw path entirely.
-      // Flag OFF or null adapter → drawLandedScene runs exactly as before.
-      if (VISTA_ENGINE_ON && vistaAdaptedInputRef.current !== null) return;
+      // Vista engine: when flag ON, the adapter produced a valid input, AND the
+      // engine has not thrown, VistaCanvas handles rendering — skip legacy path.
+      // Flag OFF, null adapter, OR engine failure → drawLandedScene runs as before.
+      if (VISTA_ENGINE_ON && vistaAdaptedInputRef.current !== null && !vistaEngineFailedRef.current) return;
       drawLandedScene(ctx, w, h, sectorId, t, sceneRef.current.palette, sceneRef.current.landedCtx);
       return;
     }
@@ -7997,17 +8015,24 @@ const SolarSystemViewscreen: React.FC<SolarSystemViewscreenProps> = ({
         onMouseDown={handleMouseDown}
         onClick={handleClick}
       />
-      {/* Vista engine overlay — landed scene, flag ON, adapter returned non-null.
-          Sits above the legacy canvas in absolute fill within the existing
-          solar-viewscreen-container; the draw loop skips drawLandedScene
-          while this overlay is mounted.  Glass-law geometry unchanged. */}
-      {VISTA_ENGINE_ON && scene === 'landed' && vistaAdaptedInput !== null && (
-        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-          <VistaCanvas
-            input={vistaAdaptedInput}
-            clock={reducedMotion ? 0 : vistaClock}
-          />
-        </div>
+      {/* Vista engine overlay — landed scene, flag ON, adapter returned non-null,
+          engine has not thrown.  Sits above the legacy canvas in absolute fill;
+          the draw loop skips drawLandedScene while this overlay is mounted.
+          Glass-law geometry unchanged.
+          Safety: VistaErrorBoundary catches render-phase throws; VistaCanvas's
+          onError prop catches draw-phase (setTime) throws.  Either path sets
+          vistaEngineFailed → this block is removed from the tree and the legacy
+          drawLandedScene at ~7474 resumes — windshield never goes blank. */}
+      {VISTA_ENGINE_ON && scene === 'landed' && vistaAdaptedInput !== null && !vistaEngineFailed && (
+        <VistaErrorBoundary onError={handleVistaEngineError}>
+          <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+            <VistaCanvas
+              input={vistaAdaptedInput}
+              clock={reducedMotion ? 0 : vistaClock}
+              onError={handleVistaEngineError}
+            />
+          </div>
+        </VistaErrorBoundary>
       )}
       {popup && scene === 'flight' && (
         <div

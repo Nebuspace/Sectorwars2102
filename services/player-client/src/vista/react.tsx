@@ -39,6 +39,13 @@ export interface VistaCanvasProps {
   /** CSS class applied to the <canvas> element. */
   className?: string;
   style?: React.CSSProperties;
+  /**
+   * Called when the engine throws during generate/mount or the draw phase
+   * (setTime / update).  Optional — defaults to no-op so lab, proof, and parity
+   * consumers need no changes.  The caller is responsible for unmounting
+   * VistaCanvas after this fires to prevent a retry loop.
+   */
+  onError?: (e: unknown) => void;
 }
 
 /**
@@ -47,12 +54,16 @@ export interface VistaCanvasProps {
  * The component manages the full engine lifecycle internally.  Consumers
  * only supply VistaInput + an optional animation clock.
  */
-export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasProps): React.ReactElement {
+export function VistaCanvas({ input, clock = 0, className, style, onError }: VistaCanvasProps): React.ReactElement {
   // Named export is canonical; default export provided for VistaLab compatibility.
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const handleRef = useRef<VistaHandle | null>(null);
   // Track the last input by reference for the update hot-path
   const inputRef = useRef<VistaInput>(input);
+  // Stable ref for onError: lets effects/callbacks call the current handler
+  // without including it in dependency arrays (safe — it's always current).
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
 
   // Sentinel values ensure the very first render always triggers a full mount.
   // After mount they track the last-mounted seed/type for structural change detection.
@@ -88,11 +99,17 @@ export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasP
     // the canvas to fill future layout changes, and couples poorly with the
     // ResizeObserver below.
 
-    const engine = createVistaEngine();
-    const model = engine.generate(inputRef.current);
-    const handle = engine.mount(model, { canvas, backend: 'canvas2d' });
-    handle.setTime(clock);
-    handleRef.current = handle;
+    // Guard: if the engine throws during generate, mount, or initial setTime,
+    // notify the caller so it can fall back to legacy rather than going blank.
+    try {
+      const engine = createVistaEngine();
+      const model = engine.generate(inputRef.current);
+      const handle = engine.mount(model, { canvas, backend: 'canvas2d' });
+      handle.setTime(clock);
+      handleRef.current = handle;
+    } catch (e) {
+      onErrorRef.current?.(e);
+    }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Input change effect: routes structural changes to full remount and all other
@@ -124,7 +141,11 @@ export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasP
     } else if (handleRef.current) {
       // Hot-patch: let the backend re-render with the updated partial state.
       // No canvas clear → no flash even on rapid slider drag.
-      handleRef.current.update(input);
+      try {
+        handleRef.current.update(input);
+      } catch (e) {
+        onErrorRef.current?.(e);
+      }
     }
   }, [input, mountEngine]);
 
@@ -138,10 +159,17 @@ export function VistaCanvas({ input, clock = 0, className, style }: VistaCanvasP
     };
   }, []);
 
-  // Drive setTime on every clock tick without a full remount
+  // Drive setTime on every clock tick without a full remount.
+  // Wrapped in try/catch: setTime triggers the canvas2d draw pass, which is
+  // where runtime bugs surface (e.g. ReferenceError in a renderer function).
+  // A throw here calls onError so the caller can fall back to legacy.
   useEffect(() => {
     if (handleRef.current) {
-      handleRef.current.setTime(clock);
+      try {
+        handleRef.current.setTime(clock);
+      } catch (e) {
+        onErrorRef.current?.(e);
+      }
     }
   }, [clock]);
 
