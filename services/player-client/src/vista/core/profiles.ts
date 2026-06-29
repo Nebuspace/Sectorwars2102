@@ -357,6 +357,24 @@ export interface PlanetProfile {
    * guard in buildFeatures (floraKinds already [] for the generic path).
    */
   denseFloraFactor: number;
+
+  /**
+   * Relative pick weights for the dense-flora batch and for placeFloraScatters
+   * primary/secondary kind selection, parallel to floraKinds.
+   * Absent → equal-weight random pick (each kind equally likely).
+   * Use to make tree-dominant types read as forests: e.g. TERRAN [1,3,8,2]
+   * puts broad-tree at 57%, correcting the default equal-weight 8:1 grass:tree.
+   * Must be the same length as floraKinds; mismatches fall back to equal weights.
+   */
+  floraKindWeights?: readonly number[];
+
+  /**
+   * The flora kind to use for hero foreground trees — extra-large (scale 0.16–0.22)
+   * instances seeded near the bottom of the land band to give a towering-canopy
+   * ceiling effect.  Absent → no hero trees placed (all non-forested types).
+   * Set to 'broad-tree' (TERRAN) or 'canopy-tree' (JUNGLE).
+   */
+  heroFloraKind?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +477,12 @@ const TERRAN_PROFILE: PlanetProfile = {
 
   water:        'coastal',
   floraKinds:   ['grass-tuft', 'fern-cluster', 'broad-tree', 'shrub-patch'],
+  // Dense-batch weighting: broad-tree at 57% (8/14), fern/shrub understory,
+  // minimal grass — corrects the default equal-weight 8:1 grass:tree ratio.
+  // Also applied to placeFloraScatters primary/secondary kind picks.
+  floraKindWeights: [1, 3, 8, 2],
+  // Hero foreground trees: large broad-trees anchored near the bottom of the frame.
+  heroFloraKind: 'broad-tree',
   rockKinds:    ['boulder', 'stone-scatter'],
   defaultCloud: 'cumulus',
 
@@ -1421,6 +1445,12 @@ const JUNGLE_PROFILE: PlanetProfile = {
 
   water:        'coastal',
   floraKinds:   ['canopy-tree', 'fern-layer', 'vine-cluster', 'biolumin-plant'],
+  // Dense-batch weighting: canopy-tree at 67% (8/12) — deep-canopy ceiling,
+  // with minor fern/vine/biolumin understory.
+  // Also applied to placeFloraScatters primary/secondary kind picks.
+  floraKindWeights: [8, 2, 1, 1],
+  // Hero foreground trees: towering canopy-trees for the ceiling effect.
+  heroFloraKind: 'canopy-tree',
   rockKinds:    ['mossy-stone', 'root-tangle'],
   defaultCloud: 'cumulus',
 

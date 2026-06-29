@@ -793,6 +793,7 @@ function buildFeatures(
   // Pass waterlineY so the regular scatter is also bounded to the visible land band.
   const floraScatters = placeFloraScatters(
     rng, profile.floraKinds, palette, horizonY, hab01, desirability, waterlineY,
+    profile.floraKindWeights,
   );
   const rockScatters  = placeRockScatters(rng, profile.rockKinds, palette, horizonY);
   const scatters      = [...floraScatters, ...rockScatters];
@@ -812,33 +813,84 @@ function buildFeatures(
   //
   // ISOLATION: drawn from an independent child seed ('dense-flora') so that changing
   // nativeLife never shifts the deposit/energyMarker rng positions downstream.
-  const nativeLife        = clamp01(input.planet.nativeLife);
-  const lifeHab           = clamp01(nativeLife * hab01);
-  const rawDenseCount     = Math.round(lerp(0, 200, lifeHab * lifeHab));
-  const lifeDenseCount    = Math.round(rawDenseCount * profile.denseFloraFactor);
+  //
+  // KIND MIX: instances are distributed across floraKinds using per-type weights
+  // (profile.floraKindWeights) rather than a single uniformly-picked kind for the
+  // whole batch.  This corrects the TERRAN 8:1 grass:tree ratio and makes JUNGLE
+  // canopy-tree dominant.  Each instance draws 3 floats: scale + tintMix + kind.
+  //
+  // DEPTH GRADIENT: scale rises with pos[1] — FAR instances (near horizonY) are
+  // small (~0.03–0.07); NEAR instances (near floraBandY1) are larger (~0.12–0.16).
+  const nativeLife     = clamp01(input.planet.nativeLife);
+  const lifeHab        = clamp01(nativeLife * hab01);
+  const rawDenseCount  = Math.round(lerp(0, 200, lifeHab * lifeHab));
+  const lifeDenseCount = Math.round(rawDenseCount * profile.denseFloraFactor);
+  // Constrain Y to the visible land band: stop at waterlineY so the full
+  // scatter budget fills [horizonY..waterlineY] rather than wasting most
+  // of it below the shoreline.  Clamp against the 90%-limit so we never
+  // scatter into the very last sliver of the canvas on dry worlds.
+  const groundY1    = horizonY + (1 - horizonY) * 0.90;
+  const floraBandY1 = waterlineY !== undefined
+    ? Math.min(waterlineY, groundY1)
+    : groundY1;
   if (lifeDenseCount > 0 && profile.floraKinds.length > 0) {
     const denseRng  = new SeededRng(deriveChildSeed(input.seed, 'dense-flora'));
-    const denseKind = denseRng.pick(profile.floraKinds);
-    // Constrain Y to the visible land band: stop at waterlineY so the full
-    // scatter budget fills [horizonY..waterlineY] rather than wasting most
-    // of it below the shoreline.  Clamp against the 90%-limit so we never
-    // scatter into the very last sliver of the canvas on dry worlds.
-    const groundY1    = horizonY + (1 - horizonY) * 0.90;
-    const floraBandY1 = waterlineY !== undefined
-      ? Math.min(waterlineY, groundY1)
-      : groundY1;
     // Tighter minimum spacing at high density so instances pack without z-fighting.
     const minDist   = lerp(0.035, 0.008, lifeHab);
     const positions = poissonDiskScatter(denseRng, lifeDenseCount, 0.01, horizonY, 0.99, floraBandY1, minDist);
     if (positions.length > 0) {
       const white: RGB = [255, 255, 255];
-      const instances: VistaModel['layers']['features']['scatters'][number]['instances'] = [];
+      const floraKindArr = profile.floraKinds as readonly string[];
+      // Kind weights: per-type bias (e.g. tree-heavy for forest archetypes) or
+      // equal-weight fallback when floraKindWeights is absent / length-mismatched.
+      const kindWeights = (
+        profile.floraKindWeights &&
+        profile.floraKindWeights.length === floraKindArr.length
+      ) ? [...profile.floraKindWeights]
+        : floraKindArr.map(() => 1);
+
+      // Accumulate instances per kind → separate scatter groups so the renderer
+      // can treat each kind independently (LOD, sprite set, etc.).
+      const kindMap = new Map<string, VistaModel['layers']['features']['scatters'][number]['instances']>();
+      const bandHeight = Math.max(floraBandY1 - horizonY, 1e-6);
       for (const pos of positions) {
-        const scale   = 0.010 + denseRng.next01() * 0.025;
-        const tintMix = denseRng.next01() * 0.25;
-        instances.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });
+        // Depth-aware scale: 0=far (at horizonY), 1=near (at floraBandY1).
+        const depthFrac = clamp01((pos[1] - horizonY) / bandHeight);
+        // FAR: base≈0.030  NEAR: base≈0.120 — jitter is 1 rng draw.
+        const baseScale = lerp(0.030, 0.120, depthFrac);
+        const scale     = baseScale + denseRng.next01() * 0.040;
+        const tintMix   = denseRng.next01() * 0.25;
+        const kind      = denseRng.pickWeighted(floraKindArr, kindWeights);
+        if (!kindMap.has(kind)) kindMap.set(kind, []);
+        kindMap.get(kind)!.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });
       }
-      scatters.push({ kind: denseKind, instances });
+      for (const [kind, instances] of kindMap) {
+        scatters.push({ kind, instances });
+      }
+    }
+  }
+
+  // Hero foreground trees: 2–5 extra-large instances anchored near the bottom of
+  // the visible land band to give a towering-canopy ceiling for forested worlds.
+  // Gated on profile.heroFloraKind (only TERRAN + JUNGLE) and lifeDenseCount > 0
+  // (minimum lushness required for the forest to have a ceiling at all).
+  // Uses its own isolated child seed ('hero-flora') — never shifts dense-flora
+  // or features streams.
+  if (profile.heroFloraKind && lifeDenseCount > 0) {
+    const heroRng   = new SeededRng(deriveChildSeed(input.seed, 'hero-flora'));
+    const heroCount = heroRng.int(2, 5);
+    // Near band: bottom 20% of the visible ground — unambiguously foreground.
+    const heroY0  = floraBandY1 - (floraBandY1 - horizonY) * 0.20;
+    const heroPos = poissonDiskScatter(heroRng, heroCount, 0.05, heroY0, 0.95, floraBandY1, 0.12);
+    if (heroPos.length > 0) {
+      const white: RGB = [255, 255, 255];
+      const heroInstances: VistaModel['layers']['features']['scatters'][number]['instances'] = [];
+      for (const pos of heroPos) {
+        const scale   = 0.160 + heroRng.next01() * 0.060;  // 0.16..0.22
+        const tintMix = heroRng.next01() * 0.15;
+        heroInstances.push({ pos, scale, tint: lerpRgb(palette.flora, white, tintMix) });
+      }
+      scatters.push({ kind: profile.heroFloraKind, instances: heroInstances });
     }
   }
 
