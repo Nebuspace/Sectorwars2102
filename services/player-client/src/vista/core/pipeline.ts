@@ -989,6 +989,26 @@ function buildGrid(
 // Stage 12 — validate + assemble invariants
 // ---------------------------------------------------------------------------
 
+/**
+ * Checks a named set of critical numeric model scalars for non-finite values
+ * (NaN / Infinity / -Infinity).  Any offending field name is appended to `notes`
+ * so that `assembleInvariants` will flip `ok` to false.
+ *
+ * Exported for direct unit-testing.  Callers pass a flat Record<name, value>
+ * where the key is the dotted model path (e.g. 'lighting.bloom') so that the
+ * note is readable without inspecting the pipeline internals.
+ */
+export function checkFiniteFields(
+  notes: string[],
+  fields: Record<string, number>,
+): void {
+  for (const [name, value] of Object.entries(fields)) {
+    if (!Number.isFinite(value)) {
+      notes.push(`non-finite field: ${name}`);
+    }
+  }
+}
+
 function assembleInvariants(notes: string[]): VistaModel['invariants'] {
   return { ok: notes.length === 0, notes };
 }
@@ -1095,6 +1115,17 @@ export function generateVista(input: VistaInput): VistaModel {
   const grid = buildGrid(input, bus.grid);
 
   // ── Stage 12: assemble + validate ───────────────────────────────────────
+  // Guard: any non-finite value in a critical numeric model field silently
+  // corrupts the renderer.  Check the known scalar outputs here where all
+  // pipeline stages have run; a single bad value flips ok=false.
+  checkFiniteFields(notes, {
+    desirability,
+    'lighting.keyIntensity':     lighting.keyIntensity,
+    'lighting.bloom':            lighting.bloom,
+    'lighting.colorGradeWarmth': lighting.colorGradeWarmth,
+    'layers.sky.starCount':      sky.starCount,
+    'layers.sky.haze.density':   sky.haze.density,
+  });
   const invariants = assembleInvariants(notes);
 
   // Animation: dayCycleSeconds fixed at 360s for P0 (P1 wires rotationPeriodHours)
