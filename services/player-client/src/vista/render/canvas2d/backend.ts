@@ -1048,7 +1048,10 @@ function buildVistaCache(
       kind: group.kind,
       instances: group.instances.map((inst) => ({
         sx:     inst.pos[0] * w,
-        sy:     Math.min(horizonY + inst.pos[1] * groundH * 0.80, scatterMaxY),
+        // inst.pos[1] is a model-Y screen fraction (placed across [horizonY..waterlineY]);
+        // use it directly so flora fills the whole land band instead of compressing to
+        // the lower band (the old horizonY + pos[1]*groundH*0.80 double-transformed it).
+        sy:     Math.min(inst.pos[1] * h, scatterMaxY),
         sizePx: Math.max(2, inst.scale * Math.min(w, h) * scaleFactor),
         tint:   inst.tint,
         glow:   inst.glow ?? 0,
@@ -1193,36 +1196,48 @@ function drawAccretionDisc(
   dc: DayCycle,
   t: number,
 ): void {
-  const { sunR } = cache;
-  const discR = Math.max(14, sunR * 2.2);
+  const { sunR, w, h } = cache;
+  // Heroic scale: disc dominates the sky regardless of sunR; floor at 18% of min(w,h)
+  const discR = Math.max(Math.min(w, h) * 0.18, sunR * 4.0);
   const rot   = t === 0 ? 0 : (t * 0.10) % (Math.PI * 2);
-  // Self-emissive: dim modulation keeps disc visible at night, brighter at day-transition
-  const emK   = 0.60 + dc.bright * 0.40;
+  // Self-emissive: black holes always blaze; night barely dims the accretion disc
+  const emK   = 0.80 + dc.bright * 0.20;
 
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
 
-  // 1) Wide outer corona glow — warm orange haze around the disc
-  const outerR = discR * 4.0;
-  const og = ctx.createRadialGradient(sunX, sunY, discR * 0.28, sunX, sunY, outerR);
-  og.addColorStop(0,    `rgba(255, 140, 30, ${(0.30 * emK).toFixed(3)})`);
-  og.addColorStop(0.38, `rgba(255, 80, 15, ${(0.12 * emK).toFixed(3)})`);
-  og.addColorStop(1,    'rgba(200, 40, 5, 0)');
+  // 1) Wide outer corona glow — broad warm-orange haze, very luminous
+  const outerR = discR * 5.5;
+  const og = ctx.createRadialGradient(sunX, sunY, discR * 0.22, sunX, sunY, outerR);
+  og.addColorStop(0,    `rgba(255, 140, 30, ${(0.55 * emK).toFixed(3)})`);
+  og.addColorStop(0.22, `rgba(255, 95, 18, ${(0.32 * emK).toFixed(3)})`);
+  og.addColorStop(0.50, `rgba(210, 55, 8,  ${(0.15 * emK).toFixed(3)})`);
+  og.addColorStop(1,    'rgba(120, 20, 3, 0)');
   ctx.globalAlpha = 1;
   ctx.fillStyle   = og;
   ctx.fillRect(sunX - outerR, sunY - outerR, outerR * 2, outerR * 2);
 
-  // 2) Tilted disc ellipses — outer→inner color gradient, slowly rotating
+  // 2) Gravitational lensing ring — soft bright aureole just outside the disc edge
+  const lensR = discR * 1.30;
+  const lg = ctx.createRadialGradient(sunX, sunY, discR * 0.88, sunX, sunY, lensR);
+  lg.addColorStop(0,   `rgba(255, 210, 110, ${(0.48 * emK).toFixed(3)})`);
+  lg.addColorStop(0.5, `rgba(255, 160,  55, ${(0.22 * emK).toFixed(3)})`);
+  lg.addColorStop(1,   'rgba(200, 80, 10, 0)');
+  ctx.fillStyle = lg;
+  ctx.fillRect(sunX - lensR, sunY - lensR, lensR * 2, lensR * 2);
+
+  // 3) Tilted disc ellipses — outer→inner color gradient, slowly rotating
   ctx.save();
   ctx.translate(sunX, sunY);
   ctx.rotate(rot);
   // [rXMul, rYMul, r, g, b, alpha, lineW]
   const discBands: [number, number, number, number, number, number, number][] = [
-    [1.00, 0.38, 185,  75, 18, 0.55, 4.0],
-    [0.78, 0.30, 238, 128, 32, 0.72, 4.5],
-    [0.58, 0.23, 255, 188, 60, 0.88, 3.8],
-    [0.38, 0.16, 255, 238, 145, 0.95, 3.0],
-    [0.20, 0.09, 255, 255, 210, 0.98, 2.0],
+    [1.00, 0.38, 185,  75,  18, 0.80, 7.0],
+    [0.84, 0.32, 222, 112,  28, 0.88, 7.5],
+    [0.66, 0.26, 252, 162,  48, 0.93, 6.5],
+    [0.48, 0.20, 255, 205,  85, 0.97, 5.5],
+    [0.30, 0.13, 255, 242, 158, 0.99, 4.5],
+    [0.16, 0.07, 255, 255, 218, 0.99, 3.0],
   ];
   for (const [rX, rY, r, g, b, alpha, lw] of discBands) {
     ctx.globalAlpha = alpha * emK;
@@ -1232,34 +1247,34 @@ function drawAccretionDisc(
     ctx.ellipse(0, 0, discR * rX, discR * rY, 0, 0, Math.PI * 2);
     ctx.stroke();
   }
-  // Doppler brightening: near-side glows hotter (relativistic beaming)
+  // Doppler brightening: approaching side blazes white-hot; receding side red-dimmed
   const doppGrad = ctx.createLinearGradient(-discR, 0, discR, 0);
-  doppGrad.addColorStop(0,    `rgba(255, 245, 195, ${(0.65 * emK).toFixed(3)})`);
-  doppGrad.addColorStop(0.45, 'rgba(255, 180, 60, 0)');
-  doppGrad.addColorStop(1,    `rgba(80, 35, 8, ${(0.28 * emK).toFixed(3)})`);
+  doppGrad.addColorStop(0,    `rgba(255, 248, 200, ${(0.82 * emK).toFixed(3)})`);
+  doppGrad.addColorStop(0.40, 'rgba(255, 200, 80, 0)');
+  doppGrad.addColorStop(1,    `rgba(60,  25,   5, ${(0.35 * emK).toFixed(3)})`);
   ctx.globalAlpha = 1;
   ctx.strokeStyle = doppGrad;
-  ctx.lineWidth   = discR * 0.22;
+  ctx.lineWidth   = discR * 0.28;
   ctx.beginPath();
-  ctx.ellipse(0, 0, discR * 0.67, discR * 0.27, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, 0, discR * 0.72, discR * 0.29, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();   // undo translate+rotate; composite stays 'lighter' from outer save
 
-  // 3) Event horizon — dark void punched through the 'lighter' layers
+  // 4) Event horizon — absolute dark void punched through the 'lighter' layers
   ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 0.97;
-  ctx.fillStyle   = 'rgb(1, 1, 4)';
+  ctx.globalAlpha = 0.99;
+  ctx.fillStyle   = 'rgb(0, 0, 2)';
   ctx.beginPath();
-  ctx.ellipse(sunX, sunY, sunR * 0.70, sunR * 0.55, 0, 0, Math.PI * 2);
+  ctx.ellipse(sunX, sunY, discR * 0.22, discR * 0.17, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // 4) Photon ring — razor-thin bright ring at the shadow edge (gravitational lensing)
+  // 5) Photon ring — bright razor-thin ring at the shadow edge (gravitational lensing)
   ctx.globalCompositeOperation = 'lighter';
-  ctx.globalAlpha = 0.80 * emK;
-  ctx.strokeStyle = 'rgba(195, 170, 125, 0.95)';
-  ctx.lineWidth   = 1.4;
+  ctx.globalAlpha = 0.95 * emK;
+  ctx.strokeStyle = 'rgba(215, 190, 140, 0.98)';
+  ctx.lineWidth   = 2.8;
   ctx.beginPath();
-  ctx.ellipse(sunX, sunY, sunR * 0.78, sunR * 0.60, 0, 0, Math.PI * 2);
+  ctx.ellipse(sunX, sunY, discR * 0.245, discR * 0.192, 0, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.restore();   // resets composite + globalAlpha to source-over
@@ -1281,26 +1296,38 @@ function drawPulsar(
   dc: DayCycle,
   t: number,
 ): void {
-  const { sunR, horizonY } = cache;
+  const { sunR, horizonY, w, h } = cache;
   const spin   = t === 0 ? 0.4 : (t * 1.4) % (Math.PI * 2);
   const pulse  = t === 0 ? 1   : 0.60 + 0.40 * Math.sin(t * 7.5);
-  const beamL  = Math.max(horizonY, sunR * 12) * 0.88;
-  const beamHW = 0.06;   // half-angle of beam spread in radians
+  const beamL  = Math.max(horizonY, sunR * 18) * 0.95;
+  const beamHW = 0.09;   // half-angle of beam spread — wider lighthouse sweep
 
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
 
-  // 1) Background magnetic nebula — faint blue-white haze
-  const haloR = sunR * 6;
+  // 1) Outer magnetic nebula — wide blue-white haze, always visible (self-luminous)
+  const haloR = Math.max(Math.min(w, h) * 0.32, sunR * 10);
   const halo  = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, haloR);
-  halo.addColorStop(0,   `rgba(140, 195, 255, ${(0.32 * dc.bright).toFixed(3)})`);
-  halo.addColorStop(0.5, `rgba(90, 155, 255, ${(0.12 * dc.bright).toFixed(3)})`);
-  halo.addColorStop(1,   'rgba(50, 110, 210, 0)');
+  // Self-emissive: barely modulated by dc.bright so it reads at night too
+  const haloK = 0.55 + dc.bright * 0.45;
+  halo.addColorStop(0,    `rgba(140, 195, 255, ${(0.45 * haloK).toFixed(3)})`);
+  halo.addColorStop(0.35, `rgba(90,  155, 255, ${(0.22 * haloK).toFixed(3)})`);
+  halo.addColorStop(0.65, `rgba(60,  120, 230, ${(0.10 * haloK).toFixed(3)})`);
+  halo.addColorStop(1,    'rgba(40, 90, 200, 0)');
   ctx.globalAlpha = 1;
   ctx.fillStyle   = halo;
   ctx.fillRect(sunX - haloR, sunY - haloR, haloR * 2, haloR * 2);
 
-  // 2) Two sweeping beams (opposed; 180° apart)
+  // 2) Inner magnetic corona — tighter, brighter ring around the neutron star
+  const coronaR = Math.max(Math.min(w, h) * 0.08, sunR * 3.5);
+  const corona  = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, coronaR);
+  corona.addColorStop(0,   `rgba(200, 230, 255, ${(0.65 * haloK).toFixed(3)})`);
+  corona.addColorStop(0.5, `rgba(120, 185, 255, ${(0.30 * haloK).toFixed(3)})`);
+  corona.addColorStop(1,   'rgba(70, 140, 255, 0)');
+  ctx.fillStyle = corona;
+  ctx.fillRect(sunX - coronaR, sunY - coronaR, coronaR * 2, coronaR * 2);
+
+  // 3) Two sweeping beams (opposed; 180° apart) — obvious lighthouse sweep
   for (let beam = 0; beam < 2; beam++) {
     const angle = spin + beam * Math.PI;
     const ax = Math.cos(angle), ay = Math.sin(angle);
@@ -1309,14 +1336,16 @@ function drawPulsar(
     const y1 = sunY + Math.sin(a1) * beamL;
     const x2 = sunX + Math.cos(a2) * beamL;
     const y2 = sunY + Math.sin(a2) * beamL;
-    const mx = sunX + ax * beamL * 0.55;
-    const my = sunY + ay * beamL * 0.55;
+    const mx = sunX + ax * beamL * 0.60;
+    const my = sunY + ay * beamL * 0.60;
     const bg = ctx.createLinearGradient(sunX, sunY, mx, my);
-    const ba = (0.82 * dc.bright + 0.18) * pulse;
-    bg.addColorStop(0,   `rgba(215, 238, 255, ${ba.toFixed(3)})`);
-    bg.addColorStop(0.4, `rgba(155, 205, 255, ${(ba * 0.50).toFixed(3)})`);
-    bg.addColorStop(1,   'rgba(80, 150, 255, 0)');
-    ctx.globalAlpha = 0.88 * pulse;
+    // Beams are always bright — self-luminous, pulse modulates intensity
+    const ba = (0.70 + 0.30 * dc.bright) * pulse;
+    bg.addColorStop(0,   `rgba(225, 242, 255, ${Math.min(1, ba * 1.10).toFixed(3)})`);
+    bg.addColorStop(0.3, `rgba(165, 215, 255, ${(ba * 0.65).toFixed(3)})`);
+    bg.addColorStop(0.6, `rgba(100, 175, 255, ${(ba * 0.30).toFixed(3)})`);
+    bg.addColorStop(1,   'rgba(60, 140, 255, 0)');
+    ctx.globalAlpha = Math.min(1, 0.92 * pulse);
     ctx.fillStyle   = bg;
     ctx.beginPath();
     ctx.moveTo(sunX, sunY);
@@ -1326,16 +1355,17 @@ function drawPulsar(
     ctx.fill();
   }
 
-  // 3) Central neutron star — tiny, intense blue-white disc
-  const nsr = Math.max(3, sunR * 0.55);
+  // 4) Central neutron star — intense blue-white pinpoint with strong close glow
+  const nsr = Math.max(5, sunR * 0.65);
   ctx.globalAlpha = Math.min(1, pulse * 1.1);
-  const nd = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, nsr * 2.5);
-  nd.addColorStop(0,    'rgba(242, 252, 255, 0.98)');
-  nd.addColorStop(0.35, 'rgba(180, 222, 255, 0.72)');
-  nd.addColorStop(1,    'rgba(100, 172, 255, 0)');
+  const nd = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, nsr * 3.5);
+  nd.addColorStop(0,    'rgba(245, 255, 255, 0.98)');
+  nd.addColorStop(0.25, 'rgba(195, 230, 255, 0.85)');
+  nd.addColorStop(0.60, 'rgba(130, 185, 255, 0.40)');
+  nd.addColorStop(1,    'rgba(80,  150, 255, 0)');
   ctx.fillStyle = nd;
-  ctx.fillRect(sunX - nsr * 2.5, sunY - nsr * 2.5, nsr * 5, nsr * 5);
-  ctx.fillStyle = 'rgba(245, 255, 255, 0.98)';
+  ctx.fillRect(sunX - nsr * 3.5, sunY - nsr * 3.5, nsr * 7, nsr * 7);
+  ctx.fillStyle = 'rgba(250, 255, 255, 0.99)';
   ctx.beginPath();
   ctx.arc(sunX, sunY, nsr, 0, Math.PI * 2);
   ctx.fill();
@@ -1370,31 +1400,53 @@ function drawRingArc(
   const tiltRad = Math.max(8, tiltDeg) * Math.PI / 180;
   const yScale  = Math.sin(tiltRad);   // ~0.14–0.64 for tiltDeg 8–40
 
-  // Horizontal span just over canvas width so the arc fills edge-to-edge.
-  const baseRX = w * 0.88;
-  const baseRY = baseRX * yScale * 0.28;
+  // The ring arc is a huge ellipse centred well below the horizon so only
+  // the TOP arc spans the sky.  Key invariant: arc top MUST be above horizonY.
+  //
+  // arcTopFrac: fractional Y of the arc's topmost strand in [0=canvas-top,
+  // 1=horizon].  More inclined ring → arc appears higher → larger fraction.
+  const arcTopFrac = 0.10 + yScale * 0.55;   // 0.18–0.46 for typical tilts
+  const arcTopY   = horizonY * arcTopFrac;   // canvas Y for arc top edge
+  const cx        = w * 0.50;
+  const cy        = horizonY * 1.80;         // centre pushed well below horizon
+  const baseRX    = w * 0.92;
+  // Derive baseRY so the ellipse top lands at arcTopY (above the horizon).
+  // Invariant: cy - baseRY = arcTopY  →  top arc is always in-sky.
+  const baseRY    = cy - arcTopY;
 
-  // Push the ellipse centre below the horizon so only the top arc is in-frame.
-  const cx = w * 0.50;
-  const cy = horizonY + baseRY * 2.6;
-
-  // Band width proportional to outerR / innerR ring-gap ratio
-  const bandW    = baseRX * (outerR - innerR) / innerR * 0.28;
-  const numBands = 5;
-  const baseAlpha = 0.22 + dc.bright * 0.14;
+  // Ring band width: proportional to ring gap; floor at 12% of horizonY.
+  const bandW    = Math.max(horizonY * 0.12, baseRX * (outerR - innerR) / innerR * 0.45);
+  const numBands = 7;
+  // Self-luminous: always visible; brightens at midday.
+  const baseAlpha = 0.52 + dc.bright * 0.22;
 
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
 
+  // Background glow — wide soft haze that makes the band unmistakable
+  const glowW = bandW * 2.5;
+  for (let gi = 0; gi < 3; gi++) {
+    const gf  = gi / 2;
+    const grx = Math.max(1, (baseRX - glowW * 0.5) + glowW * gf);
+    const gry = Math.max(1, (baseRY - glowW * 0.5 * yScale) + (glowW * yScale) * gf);
+    ctx.globalAlpha = baseAlpha * 0.16;
+    ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, 0.8)`;
+    ctx.lineWidth   = Math.max(6, glowW * 0.50);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, grx, gry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Detail band structure — 7 strands with mid-band brightness peak
   for (let bi = 0; bi < numBands; bi++) {
-    const f   = bi / (numBands - 1);          // 0 = inner edge, 1 = outer
-    const rx  = Math.max(1, (baseRX - bandW * 0.5) + bandW * f);
-    const ry  = Math.max(1, (baseRY - bandW * 0.5 * yScale * 0.28) + (bandW * yScale * 0.28) * f);
+    const f  = bi / (numBands - 1);          // 0 = inner edge, 1 = outer
+    const rx = Math.max(1, (baseRX - bandW * 0.5) + bandW * f);
+    const ry = Math.max(1, (baseRY - bandW * 0.5 * yScale) + (bandW * yScale) * f);
     // Mid-band is brightest; edges taper off
-    const br  = Math.sin((f + 0.5 / numBands) * Math.PI);
-    ctx.globalAlpha = Math.max(0.005, baseAlpha * (0.35 + br * 0.65));
+    const br = Math.sin((f + 0.5 / numBands) * Math.PI);
+    ctx.globalAlpha = Math.max(0.02, baseAlpha * (0.45 + br * 0.55));
     ctx.strokeStyle = `rgb(${rr}, ${rg}, ${rb})`;
-    ctx.lineWidth   = Math.max(1, bandW / numBands * 1.8);
+    ctx.lineWidth   = Math.max(2, bandW / numBands * 2.6);
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     ctx.stroke();
@@ -3181,42 +3233,74 @@ function getSwayAmplitude(fc: FloraClass): number {
 // Helpers touch only fillStyle / strokeStyle / lineWidth / lineCap / lineJoin.
 // swayX = gustSway(sx, t, sizePx, getSwayAmplitude(fc)) — tip lateral offset.
 
-/** Broadleaf or jungle-canopy tree: vertical trunk + lollipop canopy.
- *  isCanopy adds a shadowed second tier for depth (canopy-tree profile). */
+/** Broadleaf or jungle-canopy tree: trunk + multi-lobe scalloped crown.
+ *  isCanopy (canopy-tree) → wide flat crown, 5 lobes, shadow tier;
+ *  !isCanopy (broad-tree) → oval upright crown, 4 lobes, no shadow tier.
+ *  Per-instance lobe rotation derived from screen pos hash (matches existing idiom). */
 function drawScatterTree(
   ctx: CanvasRenderingContext2D,
   sx: number, sy: number, sizePx: number,
   tr: number, tg: number, tb: number,
   swayX: number, isCanopy: boolean,
 ): void {
-  const trunkH   = sizePx * 0.42;
-  const trunkW   = Math.max(1.2, sizePx * 0.13);
+  const trunkH   = sizePx * 0.48;
+  const trunkW   = Math.max(1.5, sizePx * 0.14);
   const canopyR  = sizePx * (isCanopy ? 0.62 : 0.54);
   const canopyCx = sx + swayX * 0.45;
-  const canopyCy = sy - trunkH - canopyR * 0.55;
+  const canopyCy = sy - trunkH - canopyR * 0.52;
 
-  // Bark trunk
-  ctx.fillStyle = `rgb(${Math.round(tr * 0.50)}, ${Math.round(tg * 0.48)}, ${Math.round(tb * 0.40)})`;
+  // --- Bark trunk: dark body + key-lit left strip ---
+  const barkR = Math.round(tr * 0.45), barkG = Math.round(tg * 0.42), barkB = Math.round(tb * 0.35);
+  ctx.fillStyle = `rgb(${barkR}, ${barkG}, ${barkB})`;
   ctx.fillRect(sx - trunkW * 0.5, sy - trunkH, trunkW, trunkH);
+  ctx.fillStyle = `rgb(${Math.min(255, barkR + 22)}, ${Math.min(255, barkG + 18)}, ${Math.min(255, barkB + 14)})`;
+  ctx.fillRect(sx - trunkW * 0.5, sy - trunkH, trunkW * 0.40, trunkH);
 
+  // --- Canopy shadow tier (canopy-tree only: flat wide underside reads as tropical spread) ---
   if (isCanopy) {
-    // Second canopy tier — broader, lower, darker (shaded underside)
-    ctx.fillStyle = `rgb(${Math.round(tr * 0.68)}, ${Math.round(tg * 0.68)}, ${Math.round(tb * 0.65)})`;
+    ctx.fillStyle = `rgb(${Math.round(tr * 0.60)}, ${Math.round(tg * 0.60)}, ${Math.round(tb * 0.56)})`;
     ctx.beginPath();
-    ctx.ellipse(sx + swayX * 0.25, canopyCy + canopyR * 0.52, canopyR * 1.22, canopyR * 0.72, 0, 0, Math.PI * 2);
+    ctx.ellipse(canopyCx, canopyCy + canopyR * 0.46, canopyR * 1.18, canopyR * 0.65, 0, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Main canopy
-  ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+  // --- Multi-lobe crown ---
+  // Per-instance lobe rotation — same hash idiom as drawScatterCactus/Shrub (deterministic, no Math.random).
+  const instSeed  = (Math.round(sx * 7 + sy * 3)) & 0xff;
+  const lobeRot   = (instSeed / 255) * Math.PI * 2;
+  const lobeCount = isCanopy ? 5 : 4;
+  const lobeR     = canopyR * 0.66;
+  const lobeSpread = canopyR * (isCanopy ? 0.44 : 0.38);
+  const lobeYSc   = isCanopy ? 0.68 : 0.82;   // canopy-tree flat crown; broad-tree oval
+
+  // Shadow lobes (darker, slightly rotated — simulate depth inside the crown)
+  ctx.fillStyle = `rgb(${Math.round(tr * 0.80)}, ${Math.round(tg * 0.82)}, ${Math.round(tb * 0.78)})`;
   ctx.beginPath();
-  ctx.arc(canopyCx, canopyCy, canopyR, 0, Math.PI * 2);
+  for (let li = 0; li < lobeCount; li++) {
+    const ang = lobeRot + (li / lobeCount) * Math.PI * 2 + Math.PI * 0.20;
+    const lx  = canopyCx + Math.cos(ang) * lobeSpread;
+    const ly  = canopyCy + Math.sin(ang) * lobeSpread * lobeYSc;
+    ctx.moveTo(lx + lobeR, ly);
+    ctx.arc(lx, ly, lobeR, 0, Math.PI * 2);
+  }
   ctx.fill();
 
-  // Sky-facing lit highlight (upper-left arc)
-  ctx.fillStyle = `rgb(${Math.min(255, tr + 42)}, ${Math.min(255, tg + 38)}, ${Math.min(255, tb + 28)})`;
+  // Primary lobes (full-brightness, slightly inward — overlap with shadow lobes makes scalloped edge)
+  ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
   ctx.beginPath();
-  ctx.arc(canopyCx - canopyR * 0.18, canopyCy - canopyR * 0.22, canopyR * 0.42, 0, Math.PI * 2);
+  for (let li = 0; li < lobeCount; li++) {
+    const ang = lobeRot + (li / lobeCount) * Math.PI * 2;
+    const lx  = canopyCx + Math.cos(ang) * lobeSpread * 0.76;
+    const ly  = canopyCy + Math.sin(ang) * lobeSpread * 0.76 * lobeYSc;
+    ctx.moveTo(lx + lobeR * 0.82, ly);
+    ctx.arc(lx, ly, lobeR * 0.82, 0, Math.PI * 2);
+  }
+  ctx.fill();
+
+  // Sky-lit highlight cap (upper-left of crown)
+  ctx.fillStyle = `rgb(${Math.min(255, tr + 40)}, ${Math.min(255, tg + 36)}, ${Math.min(255, tb + 26)})`;
+  ctx.beginPath();
+  ctx.arc(canopyCx - canopyR * 0.18, canopyCy - canopyR * 0.26, canopyR * 0.36, 0, Math.PI * 2);
   ctx.fill();
 }
 
@@ -3754,8 +3838,9 @@ function drawGrassGroundCover(
 //   Pass 1 (source-over): depth-layered LOD for flora + flat blobs for rocks.
 //     GRASS kind → drawGrassGroundCover (batched, not per-tuft).
 //     Other flora → three LOD bands keyed on sy within the ground strip:
-//       FAR  (sy ≤ farThresh | sizePx < farSzGate) — tiny colored dot per instance,
-//              all batched in ONE beginPath/fill per group (no path builds).
+//       FAR  (sy ≤ farThresh | sizePx < farSzGate) — silhouette-keyed shape per
+//              instance (lollipop for broad/canopy-tree, triangle for conifer, dot
+//              otherwise); max 2 fill() calls per group, all batched.
 //       MID  (between thresholds)                  — pre-baked midSprite blitted via
 //              drawImage (no per-frame path; small sway offset applied to dest rect).
 //       NEAR (sy > nearThresh & sizePx ≥ nearSzGate) — full per-kind draw helper
@@ -3779,7 +3864,7 @@ function drawGrassGroundCover(
 // ctx.save/restore balanced: one pair per pass.
 //
 // Flora class → NEAR draw function (getFloraClass dispatch):
-//   canopy-tree, broad-tree     → drawScatterTree   (lollipop + optional second tier)
+//   canopy-tree, broad-tree     → drawScatterTree   (multi-lobe scalloped crown + trunk)
 //   conifer                     → drawScatterConifer (stacked triangular tiers)
 //   palm                        → drawScatterPalm   (curved trunk + frond fan)
 //   vine                        → drawScatterVine   (wavy stalk + leaf stubs)
@@ -3817,17 +3902,21 @@ function drawScatterInstances(
   // NEAR: close to the viewer (large, full-detail draw).
   const landBtm    = cache.hasWater ? cache.waterTopY : cache.h;
   const groundH    = Math.max(1, landBtm - cache.horizonY);
-  const farThresh  = cache.horizonY + groundH * 0.32;
-  const nearThresh = cache.horizonY + groundH * 0.62;
+  // farThresh  — 22% from horizon (narrower FAR band → more instances eligible for MID/NEAR).
+  // nearThresh — 48% from horizon (NEAR starts mid-ground so ~52% of depth gets full detail).
+  const farThresh  = cache.horizonY + groundH * 0.22;
+  const nearThresh = cache.horizonY + groundH * 0.48;
 
   // Quality-adjusted minimum sizePx gates — calibrated to the new flora size range.
   // Flora primary: scale 0.018–0.058 → sizePx 14–44px.
   // Flora dense:   scale 0.010–0.035 → sizePx 8–27px.
   // farSzGate:  instances smaller than this always go to FAR regardless of sy.
   // nearSzGate: instances must exceed this AND have sy > nearThresh to get NEAR detail.
+  //   Lowered vs previous (40/28/18) so more of the primary-flora range gets the
+  //   multi-lobe drawScatterTree path rather than collapsing to the sprite blit.
   const q          = cache.quality;
   const farSzGate  = q === 'low' ? 14 : q === 'med' ? 8 : 4;
-  const nearSzGate = q === 'low' ? 40 : q === 'med' ? 28 : 18;
+  const nearSzGate = q === 'low' ? 34 : q === 'med' ? 22 : 14;
 
   // ---- Flora sprite lookup (O(k), k = small number of scatter groups) ----
   const getSpriteFor = (kind: string): HTMLCanvasElement | undefined => {
@@ -3886,23 +3975,77 @@ function drawScatterInstances(
     const amplitude = getSwayAmplitude(fc);
     const midSprite = getSpriteFor(group.kind);
 
-    // ---- FAR LOD: tiny colored dots, all in ONE beginPath/fill per group ----
-    // Uses the first instance's tint (representative; tint variance at FAR is
-    // imperceptible). moveTo(sx+r, sy) before each arc prevents connecting lines.
+    // ---- FAR LOD: silhouette-keyed shapes (max 2 fill() calls per group, still batched).
+    //   canopy-tree / broad-tree → lollipop (dark trunk stub + lifted canopy dot).
+    //   conifer                  → tiny upward triangle (reads as pine even at 4–8 px).
+    //   everything else          → round dot (original behaviour).
+    // Tint taken from first instance (imperceptible at FAR depth).
     {
       const [tr, tg, tb] = group.instances[0]?.tint ?? [160, 180, 130];
-      ctx.globalAlpha = brightK * 0.45;
-      ctx.fillStyle   = `rgb(${tr}, ${tg}, ${tb})`;
-      ctx.beginPath();
-      let anyFar = false;
-      for (const inst of group.instances) {
-        if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;  // skip non-FAR
-        const r = Math.max(1, inst.sizePx * 0.55);
-        ctx.moveTo(inst.sx + r, inst.sy);
-        ctx.arc(inst.sx, inst.sy, r, 0, Math.PI * 2);
-        anyFar = true;
+
+      if (fc === 'canopy-tree' || fc === 'broad-tree') {
+        // Pass A — dark trunk stubs (batched rect paths)
+        const bR = Math.round(tr * 0.45), bG = Math.round(tg * 0.42), bB = Math.round(tb * 0.35);
+        ctx.fillStyle = `rgb(${bR}, ${bG}, ${bB})`;
+        ctx.beginPath();
+        let anyTrunk = false;
+        for (const inst of group.instances) {
+          if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;
+          const r  = Math.max(1.5, inst.sizePx * 0.50);
+          const tW = Math.max(0.5, r * 0.28);
+          const tH = r * 0.95;
+          ctx.rect(inst.sx - tW * 0.5, inst.sy - tH, tW, tH);
+          anyTrunk = true;
+        }
+        if (anyTrunk) { ctx.globalAlpha = brightK * 0.45; ctx.fill(); }
+
+        // Pass B — canopy dots lifted above the trunk base
+        ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+        ctx.beginPath();
+        let anyCanopy = false;
+        for (const inst of group.instances) {
+          if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;
+          const r  = Math.max(1.5, inst.sizePx * 0.50);
+          const cY = inst.sy - r * 0.78;
+          ctx.moveTo(inst.sx + r, cY);
+          ctx.arc(inst.sx, cY, r, 0, Math.PI * 2);
+          anyCanopy = true;
+        }
+        if (anyCanopy) { ctx.globalAlpha = brightK * 0.55; ctx.fill(); }
+
+      } else if (fc === 'conifer') {
+        // Tiny upward triangle — reads as a pine silhouette even at small scale
+        ctx.fillStyle = `rgb(${tr}, ${tg}, ${tb})`;
+        ctx.beginPath();
+        let anyFir = false;
+        for (const inst of group.instances) {
+          if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;
+          const r  = Math.max(1.5, inst.sizePx * 0.50);
+          const hw = r * 0.72;
+          const ht = r * 1.60;
+          ctx.moveTo(inst.sx,        inst.sy - ht);   // apex
+          ctx.lineTo(inst.sx - hw,   inst.sy);         // bottom-left
+          ctx.lineTo(inst.sx + hw,   inst.sy);         // bottom-right
+          ctx.closePath();
+          anyFir = true;
+        }
+        if (anyFir) { ctx.globalAlpha = brightK * 0.52; ctx.fill(); }
+
+      } else {
+        // Default: round dot (fern, shrub, palm, vine, etc.)
+        ctx.globalAlpha = brightK * 0.45;
+        ctx.fillStyle   = `rgb(${tr}, ${tg}, ${tb})`;
+        ctx.beginPath();
+        let anyFar = false;
+        for (const inst of group.instances) {
+          if (inst.sy > farThresh && inst.sizePx >= farSzGate) continue;  // skip non-FAR
+          const r = Math.max(1, inst.sizePx * 0.55);
+          ctx.moveTo(inst.sx + r, inst.sy);
+          ctx.arc(inst.sx, inst.sy, r, 0, Math.PI * 2);
+          anyFar = true;
+        }
+        if (anyFar) ctx.fill();
       }
-      if (anyFar) ctx.fill();
     }
 
     // ---- MID LOD: sprite blit (drawImage — no per-frame path build) ----

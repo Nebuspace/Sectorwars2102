@@ -240,6 +240,18 @@ export interface PlanetProfile {
    * Set these to give each planet type a distinct cinematic character.
    */
   grade?: TypeGrade;
+
+  /**
+   * Scalar (0–1) multiplied into the dense-flora lifeDenseCount before placement.
+   * Controls whether nativeLife × habitability can drive a thick understory:
+   *   0.0 → zero dense flora regardless of nativeLife (ARTIFICIAL, BARREN, GAS_GIANT,
+   *          VOLCANIC — engineered / airless / gassy / fire-scoured worlds stay bare)
+   *   0.15–0.5 → moderate cap for cold/dry types (ICE, ARCTIC, DESERT, MOUNTAINOUS)
+   *   1.0 → full natural density (TERRAN, JUNGLE, TROPICAL, OCEANIC)
+   * Intentionally absent from the GENERIC fallback profile; reads as 0 via the
+   * guard in buildFeatures (floraKinds already [] for the generic path).
+   */
+  denseFloraFactor: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +379,9 @@ const TERRAN_PROFILE: PlanetProfile = {
 
   // Warm-golden film stock: lush highlights, gentle vignette, minimal grain.
   grade: { warmthBias: 0.15, vignetteStrength: 0.45, grainScale: 0.7 },
+
+  // Full natural lushness — meadows and forests carpet the land band.
+  denseFloraFactor: 1.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -483,6 +498,9 @@ const VOLCANIC_PROFILE: PlanetProfile = {
 
   // Scorched film stock: pushed warm (embers/magma), deep vignette, heavy grain.
   grade: { warmthBias: 0.30, vignetteStrength: 0.65, grainScale: 1.5 },
+
+  // floraKinds: [] already blocks flora; 0.0 makes the intent explicit.
+  denseFloraFactor: 0.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -599,6 +617,9 @@ const OCEANIC_PROFILE: PlanetProfile = {
 
   // Cool-blue film stock: ocean worlds read marine + airy.
   grade: { warmthBias: 0.02, vignetteStrength: 0.45, grainScale: 0.8 },
+
+  // Rich tidal-shelf life; full understory density appropriate.
+  denseFloraFactor: 1.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -712,6 +733,9 @@ const DESERT_PROFILE: PlanetProfile = {
 
   // Sun-baked film stock: high-key amber, deep vignette, gritty grain.
   grade: { warmthBias: 0.22, vignetteStrength: 0.58, grainScale: 1.3 },
+
+  // Sparse xerophyte scrub only; half density relative to lush types.
+  denseFloraFactor: 0.3,
 };
 
 // ---------------------------------------------------------------------------
@@ -828,6 +852,9 @@ const ICE_PROFILE: PlanetProfile = {
 
   // Glacial film stock: cool-blue cast, crisp vignette, fine grain.
   grade: { warmthBias: -0.32, vignetteStrength: 0.58, grainScale: 0.9 },
+
+  // Extremophile lichen/moss only; quarter density.
+  denseFloraFactor: 0.15,
 };
 
 // ---------------------------------------------------------------------------
@@ -943,6 +970,9 @@ const ARCTIC_PROFILE: PlanetProfile = {
 
   // Tundra film stock: cold steel-blue, heavier vignette for polar isolation.
   grade: { warmthBias: -0.22, vignetteStrength: 0.60, grainScale: 1.0 },
+
+  // Tundra ground cover — moderate density, capped below lush.
+  denseFloraFactor: 0.35,
 };
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1088,9 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
 
   // Alpine film stock: muted neutral, deep vignette for dramatic peaks.
   grade: { warmthBias: -0.05, vignetteStrength: 0.60, grainScale: 1.0 },
+
+  // Alpine meadows in lowlands; half density — not a jungle.
+  denseFloraFactor: 0.5,
 };
 
 // ---------------------------------------------------------------------------
@@ -1170,6 +1203,9 @@ const BARREN_PROFILE: PlanetProfile = {
 
   // Airless film stock: cold-silver, hard vignette, heavy grain — harsh and hostile.
   grade: { warmthBias: -0.20, vignetteStrength: 0.68, grainScale: 1.8 },
+
+  // Airless — nothing grows; floraKinds: [] also blocks the scatter path.
+  denseFloraFactor: 0.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -1285,6 +1321,9 @@ const JUNGLE_PROFILE: PlanetProfile = {
 
   // Dense-canopy film stock: slight warm-green tint, heavy vignette for claustrophobia.
   grade: { warmthBias: 0.08, vignetteStrength: 0.65, grainScale: 0.9 },
+
+  // Maximum dense-canopy life; full understory.
+  denseFloraFactor: 1.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -1400,6 +1439,9 @@ const TROPICAL_PROFILE: PlanetProfile = {
 
   // Paradise film stock: warm + bright, open airy vignette, near-zero grain.
   grade: { warmthBias: 0.25, vignetteStrength: 0.35, grainScale: 0.4 },
+
+  // Tropical lushness at full density.
+  denseFloraFactor: 1.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -1511,6 +1553,9 @@ const GAS_GIANT_PROFILE: PlanetProfile = {
 
   // Jovian film stock: warm amber banding, strong vignette for drama, low grain.
   grade: { warmthBias: 0.15, vignetteStrength: 0.70, grainScale: 0.5 },
+
+  // No surface, no flora; floraKinds: [] also blocks the scatter path.
+  denseFloraFactor: 0.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -1628,6 +1673,9 @@ const ARTIFICIAL_PROFILE: PlanetProfile = {
 
   // Industrial film stock: cold-steel cast, strong vignette, low grain (clean metal).
   grade: { warmthBias: -0.15, vignetteStrength: 0.60, grainScale: 0.6 },
+
+  // Engineered station — no natural dense growth regardless of nativeLife.
+  denseFloraFactor: 0.0,
 };
 
 // ---------------------------------------------------------------------------
@@ -1694,6 +1742,9 @@ const GENERIC_PROFILE: PlanetProfile = {
     crystal: 'crystal',
     gas:     'gas-seep',
   },
+
+  // Unknown type — conservative zero; floraKinds: [] blocks the scatter path anyway.
+  denseFloraFactor: 0.0,
 };
 
 // ---------------------------------------------------------------------------

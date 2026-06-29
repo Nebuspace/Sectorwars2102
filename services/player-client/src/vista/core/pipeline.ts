@@ -783,14 +783,16 @@ function buildFeatures(
   horizonY: number,
   desirability: number,
   rng: SeededRng,
+  waterlineY?: number,
 ): VistaModel['layers']['features'] {
   const hab01 = clamp01(input.planet.habitability / 100);
 
   // Flora + rock: Poisson-disk placement via features.ts helpers.
   // Flora density scales with both habitability and desirability (beauty budget)
   // so the lab's habitability slider alone produces visibly different scenes.
+  // Pass waterlineY so the regular scatter is also bounded to the visible land band.
   const floraScatters = placeFloraScatters(
-    rng, profile.floraKinds, palette, horizonY, hab01, desirability,
+    rng, profile.floraKinds, palette, horizonY, hab01, desirability, waterlineY,
   );
   const rockScatters  = placeRockScatters(rng, profile.rockKinds, palette, horizonY);
   const scatters      = [...floraScatters, ...rockScatters];
@@ -799,18 +801,35 @@ function buildFeatures(
   // Both must be high ("lush") for full density — the multiplicative interaction keeps
   // barren worlds (nativeLife≈0 or hab≈0) near zero regardless of the other value.
   //
+  // denseFloraFactor gates the maximum per planet type: 0.0 for engineered / airless /
+  // gassy worlds (ARTIFICIAL, BARREN, GAS_GIANT, VOLCANIC) so nativeLife can never
+  // grow a forest on a station hull or an airless rock.  Lush natural types stay at 1.0.
+  //
+  // Y-band: scatter is bounded to [horizonY .. floraBandY1] where floraBandY1 is
+  // waterlineY when water is present — so every point in the budget lands in the
+  // VISIBLE land band, not under water.  Dry worlds fall back to 90% of the ground
+  // height (the previous behaviour).
+  //
   // ISOLATION: drawn from an independent child seed ('dense-flora') so that changing
   // nativeLife never shifts the deposit/energyMarker rng positions downstream.
-  const nativeLife     = clamp01(input.planet.nativeLife);
-  const lifeHab        = clamp01(nativeLife * hab01);
-  const lifeDenseCount = Math.round(lerp(0, 200, lifeHab * lifeHab));
+  const nativeLife        = clamp01(input.planet.nativeLife);
+  const lifeHab           = clamp01(nativeLife * hab01);
+  const rawDenseCount     = Math.round(lerp(0, 200, lifeHab * lifeHab));
+  const lifeDenseCount    = Math.round(rawDenseCount * profile.denseFloraFactor);
   if (lifeDenseCount > 0 && profile.floraKinds.length > 0) {
     const denseRng  = new SeededRng(deriveChildSeed(input.seed, 'dense-flora'));
     const denseKind = denseRng.pick(profile.floraKinds);
-    const groundY1  = horizonY + (1 - horizonY) * 0.90;
+    // Constrain Y to the visible land band: stop at waterlineY so the full
+    // scatter budget fills [horizonY..waterlineY] rather than wasting most
+    // of it below the shoreline.  Clamp against the 90%-limit so we never
+    // scatter into the very last sliver of the canvas on dry worlds.
+    const groundY1    = horizonY + (1 - horizonY) * 0.90;
+    const floraBandY1 = waterlineY !== undefined
+      ? Math.min(waterlineY, groundY1)
+      : groundY1;
     // Tighter minimum spacing at high density so instances pack without z-fighting.
     const minDist   = lerp(0.035, 0.008, lifeHab);
-    const positions = poissonDiskScatter(denseRng, lifeDenseCount, 0.01, horizonY, 0.99, groundY1, minDist);
+    const positions = poissonDiskScatter(denseRng, lifeDenseCount, 0.01, horizonY, 0.99, floraBandY1, minDist);
     if (positions.length > 0) {
       const white: RGB = [255, 255, 255];
       const instances: VistaModel['layers']['features']['scatters'][number]['instances'] = [];
@@ -999,7 +1018,10 @@ export function generateVista(input: VistaInput): VistaModel {
   const water = buildWater(profile, palette, terrain.horizonY, input.planet.waterCoverage, bus.water);
 
   // ── Stage 9: features ────────────────────────────────────────────────────
-  const features = buildFeatures(input, profile, palette, terrain.horizonY, desirability, bus.features);
+  // Pass waterlineY so dense-flora scatter fills the visible land band only.
+  const features = buildFeatures(
+    input, profile, palette, terrain.horizonY, desirability, bus.features, water?.waterlineY,
+  );
 
   // ── Stage 10: hazards (site-gated) ──────────────────────────────────────
   const hazards = buildHazards(input, profile, terrain.horizonY, bus.hazard);

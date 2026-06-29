@@ -164,6 +164,13 @@ function buildScatterKind(
  *
  * Glitter uses the 'glitter-spark' scatter kind with additive glow set to
  * palette.accent, so each planet type's energy signature shows through.
+ *
+ * waterlineY (optional): when the planet has a water body, pass the computed
+ * waterlineY so every scatter is bounded to [horizonY..waterlineY].  Without
+ * this, the Y1 extends past the shoreline and the scatter budget is wasted on
+ * under-water positions that the renderer never shows, which starves the visible
+ * land band — especially the upper/distant strip near horizonY.  Dry worlds
+ * (no water layer) leave waterlineY undefined and use the previous fixed limits.
  */
 export function placeFloraScatters(
   rng: SeededRng,
@@ -172,12 +179,23 @@ export function placeFloraScatters(
   horizonY: number,
   hab01: number,
   desirability: number,
+  waterlineY?: number,
 ): VistaModel['layers']['features']['scatters'] {
   const scatters: VistaModel['layers']['features']['scatters'] = [];
   if (floraKinds.length === 0) return scatters;
 
-  const white: RGB    = [255, 255, 255];
-  const groundY1      = horizonY + (1 - horizonY) * 0.85;
+  const white: RGB = [255, 255, 255];
+
+  // Derive the upper Y bound for each scatter pass.  When water is present,
+  // stop at waterlineY so all placed points land in the visible land band.
+  // Clamp against the type-specific percentage limits so nothing invades the
+  // very bottom sliver of the canvas on dry worlds.
+  const rawY1      = horizonY + (1 - horizonY) * 0.85;
+  const groundY1   = waterlineY !== undefined ? Math.min(waterlineY, rawY1)   : rawY1;
+  const rawY1b     = horizonY + (1 - horizonY) * 0.80;
+  const groundY1b  = waterlineY !== undefined ? Math.min(waterlineY, rawY1b)  : rawY1b;
+  const rawGlitterY1  = horizonY + (1 - horizonY) * 0.60;
+  const glitterY1  = waterlineY !== undefined ? Math.min(waterlineY, rawGlitterY1) : rawGlitterY1;
 
   // Primary flora: count cap scales with desirability (more lush at high beauty).
   const maxPrimary   = Math.round(lerp(8, 22, desirability));
@@ -196,7 +214,6 @@ export function placeFloraScatters(
     const maxSecond   = Math.round(lerp(3, 10, desirability));
     const secondCount = Math.round(lerp(0, maxSecond, (hab01 - 0.55) / 0.45));
     if (secondCount > 0) {
-      const groundY1b = horizonY + (1 - horizonY) * 0.80;
       const pos = poissonDiskScatter(rng, secondCount, 0.05, horizonY, 0.95, groundY1b, 0.06);
       scatters.push(buildScatterKind(rng, secondKind, pos, palette.flora, white));
     }
@@ -208,9 +225,8 @@ export function placeFloraScatters(
   if (desirability > 0.55) {
     const glitterCount = Math.round(lerp(0, 8, (desirability - 0.55) / 0.45));
     if (glitterCount > 0) {
-      const glitterY1 = horizonY + (1 - horizonY) * 0.60;
-      const pos       = poissonDiskScatter(rng, glitterCount, 0.03, horizonY, 0.97, glitterY1, 0.08);
-      const glowBase  = clamp01(desirability * 0.9);
+      const pos      = poissonDiskScatter(rng, glitterCount, 0.03, horizonY, 0.97, glitterY1, 0.08);
+      const glowBase = clamp01(desirability * 0.9);
       const accentHi: RGB = [255, 255, 200];
       scatters.push(buildScatterKind(rng, 'glitter-spark', pos, palette.accent, accentHi, glowBase));
     }
