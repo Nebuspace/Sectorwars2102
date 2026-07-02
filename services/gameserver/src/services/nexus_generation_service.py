@@ -607,28 +607,23 @@ class NexusGenerationService:
             "gourmet_food": {"base_price": commodity_base_price("gourmet_food"), "quantity": 150, "capacity": 600},
             "exotic_technology": {"base_price": commodity_base_price("exotic_technology"), "quantity": 50, "capacity": 200},
             "colonists": {"base_price": commodity_base_price("colonists"), "quantity": 100, "capacity": 500},
+            # PENDING-RULING(precious_metals): not added here; see mailbox
+            # ruling (b), 2026-07-02T01:54:42Z.
         }
 
-        # Trading patterns by station class
-        trading_patterns = {
-            StationClass.CLASS_0: {"buys": ["special_goods"], "sells": ["special_goods", "colonists"]},
-            StationClass.CLASS_1: {"buys": ["ore"], "sells": ["organics", "equipment"]},
-            StationClass.CLASS_2: {"buys": ["organics"], "sells": ["ore", "equipment"]},
-            StationClass.CLASS_3: {"buys": ["equipment"], "sells": ["ore", "organics"]},
-            StationClass.CLASS_4: {"buys": [], "sells": ["ore", "organics", "equipment", "fuel"]},
-            StationClass.CLASS_5: {"buys": ["ore", "organics", "equipment", "fuel"], "sells": []},
-            StationClass.CLASS_6: {"buys": ["ore", "organics"], "sells": ["equipment", "fuel"]},
-            StationClass.CLASS_7: {"buys": ["equipment", "fuel"], "sells": ["ore", "organics"]},
-            StationClass.CLASS_8: {"buys": ["ore", "organics", "equipment", "fuel"], "sells": []},
-            StationClass.CLASS_9: {"buys": [], "sells": ["ore", "organics", "equipment", "fuel"]},
-            StationClass.CLASS_10: {"buys": ["gourmet_food"], "sells": ["luxury_goods", "exotic_technology"]},
-            StationClass.CLASS_11: {"buys": ["exotic_technology"], "sells": ["equipment", "fuel"]},
-        }
+        # Trading patterns by station class now read from the declared SoT
+        # (src.core.station_class_map) instead of a private shadow copy —
+        # collapses the WO-ARCH-RES-2E divergence. Behavior change: CLASS_4
+        # gains buys=['exotic_technology'] (station_class_map.py:45), CLASS_5
+        # gains sells=['luxury_goods'] (:46), CLASS_11 becomes
+        # buys=sells=['exotic_technology','luxury_goods'] (:52-55, per
+        # FEATURES/economy/trading.md#class-11).
+        from src.core.station_class_map import get_class_pattern
 
         prices_created = 0
 
         for station in stations:
-            pattern = trading_patterns.get(station.station_class, {"buys": [], "sells": []})
+            pattern = get_class_pattern(station.station_class)
             buys_list = pattern.get("buys", [])
             sells_list = pattern.get("sells", [])
 

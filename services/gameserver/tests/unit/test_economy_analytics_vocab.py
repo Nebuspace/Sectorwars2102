@@ -20,6 +20,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.core.commodity_economy import COMMODITY_BASE_PRICES
@@ -64,6 +65,11 @@ class TestResetMarketPrices:
     def test_ore_resets_to_canonical_base(
         self, db: Session, station: Station, service: EconomyAnalyticsService
     ):
+        """affected_ports is a global UPDATE count (no station scoping in
+        the SUT) — assert on the pre-existing count + our fixture row's
+        delta, never a bare literal, so this passes against a blank DB AND
+        a seeded live one carrying thousands of pre-existing "ore" rows."""
+        pre_count = db.query(MarketPrice).filter(MarketPrice.commodity == "ore").count()
         row = MarketPrice(station_id=station.id, commodity="ore", buy_price=999, sell_price=999, quantity=100)
         db.add(row)
         db.commit()
@@ -71,7 +77,7 @@ class TestResetMarketPrices:
         result = service._reset_market_prices({"resource_type": "ore"})
 
         assert result["baseline_price"] == COMMODITY_BASE_PRICES["ore"]["base"] == 15
-        assert result["affected_ports"] == 1
+        assert result["affected_ports"] == pre_count + 1
         db.refresh(row)
         assert row.buy_price == int(15 * 0.9)
         assert row.sell_price == int(15 * 1.1)
@@ -81,7 +87,9 @@ class TestResetMarketPrices:
     ):
         """The citadel/planet domain spells this commodity "fuel_ore"; every
         MarketPrice writer still stores rows under "ore" — the reset must
-        filter on the canonical slug, not the alias, to find them."""
+        filter on the canonical slug, not the alias, to find them. Same
+        pre_count + delta scoping as test_ore_resets_to_canonical_base."""
+        pre_count = db.query(MarketPrice).filter(MarketPrice.commodity == "ore").count()
         row = MarketPrice(station_id=station.id, commodity="ore", buy_price=1, sell_price=1, quantity=1)
         db.add(row)
         db.commit()
@@ -89,7 +97,7 @@ class TestResetMarketPrices:
         result = service._reset_market_prices({"resource_type": "fuel_ore"})
 
         assert result["baseline_price"] == 15
-        assert result["affected_ports"] == 1
+        assert result["affected_ports"] == pre_count + 1
 
     def test_unknown_commodity_is_rejected_zero_rows_written(
         self, db: Session, station: Station, service: EconomyAnalyticsService
@@ -138,24 +146,48 @@ class TestFourAggregatesUseLowercaseCanonSlugs:
     def test_liquidity_spreads_present_for_lowercase_ore(
         self, db: Session, station: Station, service: EconomyAnalyticsService
     ):
+        """average_spreads is averaged over EVERY "ore" MarketPrice row (no
+        station scoping in the SUT), so a literal 50.0 only holds against a
+        blank DB. Derive the expected spread from the actual post-insert row
+        set instead — passes empty or seeded, and still fails if the SUT's
+        averaging logic regresses."""
         db.add(MarketPrice(station_id=station.id, commodity="ore", buy_price=10, sell_price=20, quantity=10))
         db.commit()
+
+        all_ore_prices = (
+            db.query(MarketPrice.buy_price, MarketPrice.sell_price)
+            .filter(MarketPrice.commodity == "ore")
+            .all()
+        )
+        valid_spreads = [
+            (p.sell_price - p.buy_price) / p.sell_price * 100
+            for p in all_ore_prices if p.sell_price > 0
+        ]
+        expected_spread = round(sum(valid_spreads) / len(valid_spreads), 2)
 
         liquidity = service._calculate_market_liquidity()
 
         assert "ore" in liquidity["average_spreads"]
         assert "ORE" not in liquidity["average_spreads"]
-        assert liquidity["average_spreads"]["ore"] == 50.0  # (20-10)/20*100
+        assert liquidity["average_spreads"]["ore"] == expected_spread
 
     def test_average_prices_present_and_nonzero_for_lowercase_ore(
         self, db: Session, station: Station, service: EconomyAnalyticsService
     ):
+        """average buy price is over EVERY "ore" MarketPrice row (no station
+        scoping in the SUT) — derive the expected average from the actual
+        post-insert row set rather than a literal 20.0, so this passes
+        empty or seeded."""
         db.add(MarketPrice(station_id=station.id, commodity="ore", buy_price=20, sell_price=25, quantity=10))
         db.commit()
 
+        expected_avg = db.query(func.avg(MarketPrice.buy_price)).filter(
+            MarketPrice.commodity == "ore"
+        ).scalar()
+
         prices = service._get_average_prices()
 
-        assert prices.get("ore") == 20.0
+        assert prices.get("ore") == float(expected_avg)
         assert "ORE" not in prices
 
     def test_volatility_present_and_nonzero_for_lowercase_ore(
