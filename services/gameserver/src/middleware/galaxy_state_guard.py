@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 # Paths that always pass through, regardless of galaxy state.
 # `/api/v1/admin/` covers all admin endpoints (auth, galaxy ops, etc.).
 # `/api/v1/auth/` is whitelisted so admins can still log in during a job.
+# NOTE: root "/" is intentionally NOT a prefix here — every path starts with
+# "/", so a prefix-matched "/" would allowlist literally everything and make
+# this guard a no-op (WO-LIVE-SUITE-TRIAGE 2026-07-02 caught this live: the
+# guard never once returned 503). The bare landing route is handled by
+# _EXACT_ALLOWLIST below instead.
 _ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "/api/v1/admin/",
     "/api/v1/admin",
@@ -38,8 +43,11 @@ _ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "/docs",
     "/redoc",
     "/openapi.json",
-    "/",
 )
+
+# Paths that must match EXACTLY (not as a prefix) to avoid catch-all drift
+# like the "/" bug above. Currently just the root landing route.
+_EXACT_ALLOWLIST: frozenset[str] = frozenset({"/"})
 
 # State value (string form of Galaxy.import_state enum) that permits traffic.
 _READY_STATE = "READY"
@@ -69,6 +77,8 @@ class GalaxyStateGuardMiddleware(BaseHTTPMiddleware):
         self._session_factory = session_factory
 
     def _is_allowlisted(self, path: str) -> bool:
+        if path in _EXACT_ALLOWLIST:
+            return True
         return any(path.startswith(prefix) for prefix in _ALLOWLIST_PREFIXES)
 
     async def _resolve_state(self) -> Optional[str]:
