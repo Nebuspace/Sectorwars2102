@@ -8,9 +8,13 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, desc
 
+from src.core.commodity_economy import (
+    COMMODITY_BASE_PRICES,
+    base_price as commodity_base_price,
+    canonical_commodity,
+)
 from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory, EconomicMetrics
 from src.models.station import Station
-from src.models.resource import ResourceType
 from src.models.player import Player
 from src.services.audit_service import AuditService, AuditAction
 
@@ -334,9 +338,7 @@ class EconomyAnalyticsService:
             now = datetime.utcnow()
             day_ago = now - timedelta(days=1)
 
-            for resource in ResourceType:
-                resource_name = resource.value
-
+            for resource_name in COMMODITY_BASE_PRICES:
                 # Get current average buy price
                 current_avg = (
                     self.db.query(func.avg(MarketPrice.buy_price))
@@ -379,8 +381,7 @@ class EconomyAnalyticsService:
 
             # Get bid-ask spreads
             spreads = {}
-            for resource in ResourceType:
-                resource_name = resource.value
+            for resource_name in COMMODITY_BASE_PRICES:
                 prices = (
                     self.db.query(MarketPrice.buy_price, MarketPrice.sell_price)
                     .filter(MarketPrice.commodity == resource_name)
@@ -489,13 +490,13 @@ class EconomyAnalyticsService:
         prices = {}
 
         try:
-            for resource in ResourceType:
+            for resource_name in COMMODITY_BASE_PRICES:
                 avg_price = (
                     self.db.query(func.avg(MarketPrice.buy_price))
-                    .filter(MarketPrice.commodity == resource.value)
+                    .filter(MarketPrice.commodity == resource_name)
                     .scalar()
                 )
-                prices[resource.value] = float(avg_price) if avg_price else 0
+                prices[resource_name] = float(avg_price) if avg_price else 0
         except Exception:
             pass
 
@@ -506,12 +507,12 @@ class EconomyAnalyticsService:
         volatility = {}
 
         try:
-            for resource in ResourceType:
+            for resource_name in COMMODITY_BASE_PRICES:
                 # Get price history for last 24h
                 prices = (
                     self.db.query(PriceHistory.buy_price)
                     .filter(
-                        PriceHistory.commodity == resource.value,
+                        PriceHistory.commodity == resource_name,
                         PriceHistory.snapshot_date >= datetime.utcnow() - timedelta(days=1)
                     )
                     .all()
@@ -522,9 +523,9 @@ class EconomyAnalyticsService:
                     avg = sum(price_values) / len(price_values)
                     variance = sum((p - avg) ** 2 for p in price_values) / len(price_values)
                     std_dev = variance ** 0.5
-                    volatility[resource.value] = round((std_dev / avg * 100) if avg > 0 else 0, 2)
+                    volatility[resource_name] = round((std_dev / avg * 100) if avg > 0 else 0, 2)
                 else:
-                    volatility[resource.value] = 0
+                    volatility[resource_name] = 0
         except Exception:
             pass
 
@@ -686,29 +687,33 @@ class EconomyAnalyticsService:
         }
 
     def _reset_market_prices(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Reset market prices to baseline values"""
+        """Reset market prices to their canonical baseline.
+
+        Baseline now comes from commodity_economy.base_price() — the single
+        source of truth every other economy consumer already derives from —
+        instead of a hand-maintained dict that wrote non-canon values (e.g.
+        fuel 100 vs canon base 12) and carried six slugs no MarketPrice
+        writer has ever stored a row under. An unknown/non-canon
+        resource_type is now rejected rather than silently defaulted to 100
+        (WO-ARCH-RES-2H-RUNTIME-VOCAB — DATA bugfix only; this does not touch
+        the admin route's auth/gating)."""
         resource_type = parameters.get('resource_type')
+        canonical = canonical_commodity(resource_type) if resource_type else None
 
-        # Get baseline prices
-        baseline_prices = {
-            "fuel": 100,
-            "organics": 150,
-            "equipment": 200,
-            "technology": 500,
-            "luxury_items": 1000,
-            "precious_metals": 750,
-            "raw_materials": 50,
-            "plasma": 2000,
-            "bio_samples": 1500,
-            "dark_matter": 5000,
-            "quantum_crystals": 10000
-        }
+        if canonical not in COMMODITY_BASE_PRICES:
+            return {
+                "resource_type": resource_type,
+                "error": f"Unknown commodity '{resource_type}' — no canonical base price",
+                "affected_ports": 0,
+            }
 
-        baseline = baseline_prices.get(resource_type, 100)
+        baseline = commodity_base_price(canonical)
 
-        # Update all prices
+        # Update all prices (filter on the canonical slug — the wire vocab
+        # every MarketPrice writer actually stores, e.g. "fuel_ore" resolves
+        # to "ore").
         affected = self.db.query(MarketPrice).filter(
-            MarketPrice.commodity == resource_type
+            MarketPrice.commodity == canonical
         ).update({
             "buy_price": int(baseline * 0.9),
             "sell_price": int(baseline * 1.1),
