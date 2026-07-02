@@ -51,6 +51,7 @@ from requests.exceptions import ReadTimeout
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.commodity_economy import base_price as _commodity_base_price
 from src.core.market_bootstrap import build_market_prices
 from src.core.station_class_map import apply_class_pattern
 from src.models.bang_generation_job import (
@@ -105,17 +106,20 @@ COMMODITY_WIRE_ORDER: Tuple[str, ...] = (
 
 #: Per-commodity baseline used when bang's payload omits a key. The numbers
 #: mirror :class:`Station.commodities` default so a freshly-imported station
-#: has the same shape as one created by direct ORM construction.
+#: has the same shape as one created by direct ORM construction. base_price
+#: derives from the WO-Y / ADR-0082 single source of truth (src.core.
+#: commodity_economy) — WO-ARCH-RES-2 dedup; capacity/production_rate/
+#: price_variance remain local bootstrap shape, not price econ.
 _COMMODITY_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "ore": {"base_price": 15, "capacity": 5000, "production_rate": 100, "price_variance": 20},
-    "organics": {"base_price": 18, "capacity": 3000, "production_rate": 80, "price_variance": 25},
-    "equipment": {"base_price": 35, "capacity": 2000, "production_rate": 50, "price_variance": 30},
-    "fuel": {"base_price": 12, "capacity": 4000, "production_rate": 120, "price_variance": 15},
-    "luxury_goods": {"base_price": 100, "capacity": 800, "production_rate": 20, "price_variance": 40},
-    "gourmet_food": {"base_price": 80, "capacity": 600, "production_rate": 15, "price_variance": 35},
-    "exotic_technology": {"base_price": 250, "capacity": 200, "production_rate": 5, "price_variance": 50},
-    "colonists": {"base_price": 50, "capacity": 500, "production_rate": 10, "price_variance": 10},
-    "precious_metals": {"base_price": 130, "capacity": 400, "production_rate": 8, "price_variance": 30},
+    "ore": {"base_price": _commodity_base_price("ore"), "capacity": 5000, "production_rate": 100, "price_variance": 20},
+    "organics": {"base_price": _commodity_base_price("organics"), "capacity": 3000, "production_rate": 80, "price_variance": 25},
+    "equipment": {"base_price": _commodity_base_price("equipment"), "capacity": 2000, "production_rate": 50, "price_variance": 30},
+    "fuel": {"base_price": _commodity_base_price("fuel"), "capacity": 4000, "production_rate": 120, "price_variance": 15},
+    "luxury_goods": {"base_price": _commodity_base_price("luxury_goods"), "capacity": 800, "production_rate": 20, "price_variance": 40},
+    "gourmet_food": {"base_price": _commodity_base_price("gourmet_food"), "capacity": 600, "production_rate": 15, "price_variance": 35},
+    "exotic_technology": {"base_price": _commodity_base_price("exotic_technology"), "capacity": 200, "production_rate": 5, "price_variance": 50},
+    "colonists": {"base_price": _commodity_base_price("colonists"), "capacity": 500, "production_rate": 10, "price_variance": 10},
+    "precious_metals": {"base_price": _commodity_base_price("precious_metals"), "capacity": 400, "production_rate": 8, "price_variance": 30},
 }
 
 #: Lossy bang→gameserver planet-type mapping (per schema map §2.6).

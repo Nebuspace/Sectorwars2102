@@ -193,14 +193,29 @@ async def test_list_resources_excludes_inactive_rows(db: Session):
 async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
     """The Accept criterion: inserting a new row surfaces via the API with
     zero code change. Proven here by bypassing the seeder entirely — insert
-    a single hand-built row and confirm the route reflects exactly that row,
-    which only holds if list_resources queries the table rather than
-    re-deriving from RESOURCE_REGISTRY or any other hardcoded list."""
+    a marker row and confirm it appears in the route output via marker
+    presence + an exact count delta (never an absolute count), so this
+    passes whether the table starts empty (throwaway test DB) or already
+    carries the seeder's 13 canonical rows (a pre-seeded / live dev DB).
+    Only holds if list_resources queries the table rather than re-deriving
+    from RESOURCE_REGISTRY or any other hardcoded list.
+
+    Clears any pre-existing row of the marker's ResourceType first (safe:
+    this test's db session is a per-test transaction rolled back at
+    teardown, per conftest.py's `db` fixture) so the insert can never
+    collide on `type` — robust whether or not the resources.type unique
+    constraint (alembic 5a30b799bb25, WO-ARCH-RES-2 follow-up — authored,
+    not yet applied) is live in the target schema."""
+    pre_count = len(await list_resources(player=None, db=db))
+
+    marker_type = ResourceType.ORE
+    marker_name = "__test_marker_pure_route_read__"
+    displaced = db.query(Resource).filter(Resource.type == marker_type).delete()
     db.add(
         Resource(
-            type=ResourceType.ORE,
-            name="ore",
-            label="Ore",
+            type=marker_type,
+            name=marker_name,
+            label="Test Marker Pure Route Read",
             category=CATEGORY_CORE,
             base_value=15,
             icon="ore",
@@ -215,6 +230,7 @@ async def test_route_is_a_pure_table_read_not_a_hardcoded_list(db: Session):
 
     result = await list_resources(player=None, db=db)
 
-    assert len(result) == 1
-    assert result[0].name == "ore"
-    assert result[0].base_price == 15
+    marker = next((r for r in result if r.name == marker_name), None)
+    assert marker is not None, "hand-inserted marker row did not surface via the route"
+    assert marker.base_price == 15
+    assert len(result) == pre_count - displaced + 1

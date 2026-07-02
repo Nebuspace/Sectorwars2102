@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
+from src.core.commodity_economy import base_price as _commodity_base_price
 
 if TYPE_CHECKING:
     from src.models.player import Player
@@ -122,44 +123,59 @@ class Station(Base):
     trade_volume = Column(Integer, nullable=False, default=100)  # Daily trade credits
     market_volatility = Column(Integer, nullable=False, default=50)  # 0-100, price fluctuation factor
     
-    # Commodities - comprehensive trading data matching DATA_DEFS
+    # Commodities - comprehensive trading data matching DATA_DEFS.
+    # base_price/current_price derive from the WO-Y / ADR-0082 single source of
+    # truth (src.core.commodity_economy), the same table bang_import_service,
+    # nexus_generation_service and repair_tradedocks.py now read (WO-ARCH-RES-2
+    # dedup) — so a freshly-ORM-constructed station can no longer drift from
+    # the live economy. quantity/capacity/production_rate/price_variance/
+    # buys/sells are local station-seed shape, not price econ — left as-is.
     commodities = Column(JSONB, nullable=False, default={
         "ore": {
-            "quantity": 1000, "capacity": 5000, "base_price": 15, "current_price": 15,
+            "quantity": 1000, "capacity": 5000,
+            "base_price": _commodity_base_price("ore"), "current_price": _commodity_base_price("ore"),
             "production_rate": 100, "price_variance": 20, "buys": False, "sells": True
         },
         "organics": {
-            "quantity": 800, "capacity": 3000, "base_price": 18, "current_price": 18,
+            "quantity": 800, "capacity": 3000,
+            "base_price": _commodity_base_price("organics"), "current_price": _commodity_base_price("organics"),
             "production_rate": 80, "price_variance": 25, "buys": True, "sells": False
         },
         "equipment": {
-            "quantity": 500, "capacity": 2000, "base_price": 35, "current_price": 35,
+            "quantity": 500, "capacity": 2000,
+            "base_price": _commodity_base_price("equipment"), "current_price": _commodity_base_price("equipment"),
             "production_rate": 50, "price_variance": 30, "buys": True, "sells": True
         },
         "fuel": {
-            "quantity": 1500, "capacity": 4000, "base_price": 12, "current_price": 12,
+            "quantity": 1500, "capacity": 4000,
+            "base_price": _commodity_base_price("fuel"), "current_price": _commodity_base_price("fuel"),
             "production_rate": 120, "price_variance": 15, "buys": False, "sells": True
         },
         "luxury_goods": {
-            "quantity": 200, "capacity": 800, "base_price": 100, "current_price": 100,
+            "quantity": 200, "capacity": 800,
+            "base_price": _commodity_base_price("luxury_goods"), "current_price": _commodity_base_price("luxury_goods"),
             "production_rate": 20, "price_variance": 40, "buys": False, "sells": False
         },
         "gourmet_food": {
-            "quantity": 150, "capacity": 600, "base_price": 80, "current_price": 80,
+            "quantity": 150, "capacity": 600,
+            "base_price": _commodity_base_price("gourmet_food"), "current_price": _commodity_base_price("gourmet_food"),
             "production_rate": 15, "price_variance": 35, "buys": False, "sells": False
         },
         "exotic_technology": {
-            "quantity": 50, "capacity": 200, "base_price": 250, "current_price": 250,
+            "quantity": 50, "capacity": 200,
+            "base_price": _commodity_base_price("exotic_technology"), "current_price": _commodity_base_price("exotic_technology"),
             "production_rate": 5, "price_variance": 50, "buys": False, "sells": False
         },
         "colonists": {
-            "quantity": 100, "capacity": 500, "base_price": 50, "current_price": 50,
+            "quantity": 100, "capacity": 500,
+            "base_price": _commodity_base_price("colonists"), "current_price": _commodity_base_price("colonists"),
             "production_rate": 10, "price_variance": 10, "buys": False, "sells": False
         },
         # 9th commodity per ADR-0062 E-D1 (band 80-180 cr/unit; 130 is midpoint).
         # Bang's content.ts emits 9-commodity wire including precious_metals.
         "precious_metals": {
-            "quantity": 80, "capacity": 400, "base_price": 130, "current_price": 130,
+            "quantity": 80, "capacity": 400,
+            "base_price": _commodity_base_price("precious_metals"), "current_price": _commodity_base_price("precious_metals"),
             "production_rate": 8, "price_variance": 30, "buys": False, "sells": False
         }
     })

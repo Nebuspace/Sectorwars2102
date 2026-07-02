@@ -79,13 +79,17 @@ class Resource(Base):
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
     # Identification
-    # NOTE (WO-ARCH-RES-1-KERNEL): the registry seeder (resource_registry_
-    # seeder.py) upserts one row per ResourceType via query-then-upsert,
-    # same idempotency pattern as ship_specifications_seeder — no DB-level
-    # uniqueness needed for a single-threaded startup seed. Deliberately NOT
-    # adding unique=True here (would need a migration-level constraint add,
-    # outside the additive-only nullable-columns/new-tables allowance).
-    type = Column(Enum(ResourceType, name="resource_type"), nullable=False)
+    # NOTE (WO-ARCH-RES-1-KERNEL / WO-ARCH-RES-2 follow-up): the registry
+    # seeder (resource_registry_seeder.py) upserts one row per ResourceType
+    # via query-then-upsert, same idempotency pattern as
+    # ship_specifications_seeder — application-level uniqueness was
+    # sufficient for a single-threaded startup seed at kernel time.
+    # unique=True added here (Orchestrator-approved additive follow-up) is
+    # now backed by a real DB constraint — see alembic revision
+    # 5a30b799bb25 (authored, NOT applied; the migration itself is additive
+    # but requires no pre-existing duplicate `type` rows to apply — see that
+    # revision's docstring).
+    type = Column(Enum(ResourceType, name="resource_type"), nullable=False, unique=True)
     name = Column(String(100), nullable=False)
     description = Column(String, nullable=True)
     
