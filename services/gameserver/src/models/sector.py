@@ -99,10 +99,10 @@ class Sector(Base):
     # Resources - aligned with data definition
     resources = Column(JSONB, nullable=False, default={
         "has_asteroids": False,
-        "asteroid_yield": {
+        "asteroid_yield": {  # keys match the frozen mining harvest contract exactly
             "ore": 0,
             "precious_metals": 0,
-            "radioactives": 0
+            "quantum_shards": 0
         },
         "gas_clouds": [],
         "has_scanned": False

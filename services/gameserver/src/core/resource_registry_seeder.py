@@ -151,15 +151,23 @@ RESOURCE_REGISTRY: Dict[ResourceType, Dict[str, Any]] = {
 def seed_resource_registry(db: Session) -> int:
     """Idempotently upsert :data:`RESOURCE_REGISTRY` into the `resources` table.
 
-    Query-then-upsert keyed on `type`, mirroring
-    ship_specifications_seeder.seed_ship_specifications (single-threaded
-    startup seed — no DB-level uniqueness needed, see models/resource.py).
-    Icon defaults to the canonical slug (`name`) — see module docstring.
-    Returns the number of catalog entries processed (created + updated).
+    Query-then-upsert keyed on the canon `name` slug (WO-ARCH-RES-2I-E /
+    ARCH-res-8 ungated kernel) — NOT the `type` enum. Re-keying on `name`
+    decouples idempotency from ResourceType, which is a forward-compatible
+    step ahead of the (separate, PROPOSE-AND-HOLD) enum->varchar retire
+    migration: this seeder behaves identically whether or not that migration
+    ever lands. `type` is still written on every row (the column is
+    untouched, models/resource.py:92) so nothing downstream that still reads
+    `type` regresses.
+    Mirrors ship_specifications_seeder.seed_ship_specifications (single-
+    threaded startup seed — no DB-level uniqueness needed, see
+    models/resource.py). Icon defaults to the canonical slug (`name`) — see
+    module docstring. Returns the number of catalog entries processed
+    (created + updated).
     """
     processed = 0
     for resource_type, entry in RESOURCE_REGISTRY.items():
-        existing = db.query(Resource).filter(Resource.type == resource_type).first()
+        existing = db.query(Resource).filter(Resource.name == entry["name"]).first()
         icon = entry.get("icon", entry["name"])
 
         if existing is None:
@@ -180,7 +188,7 @@ def seed_resource_registry(db: Session) -> int:
             )
             logger.info("Created resource registry entry for %s", entry["name"])
         else:
-            existing.name = entry["name"]
+            existing.type = resource_type
             existing.label = entry["label"]
             existing.icon = icon
             existing.category = entry["category"]

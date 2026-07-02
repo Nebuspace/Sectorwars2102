@@ -14,7 +14,11 @@ from typing import Dict, Any, List, Optional
 
 from sqlalchemy.orm import Session
 
-from src.core.commodity_economy import get_commodity_credit_values
+from src.core.commodity_economy import (
+    COMMODITY_BASE_PRICES,
+    canonical_commodity,
+    get_commodity_credit_values,
+)
 from src.models.player import Player
 from src.models.planet import Planet
 
@@ -263,6 +267,24 @@ CITADEL_LEVELS = {
         "resource_cost": {"fuel_ore": 15000, "organics": 8000, "equipment": 10000},
     },
 }
+
+
+def _validate_citadel_resource_cost_vocab() -> None:
+    """Import-time guard (WO-ARCH-RES-2I-D): every CITADEL_LEVELS
+    resource_cost key must resolve to a known commodity-economy slug (via
+    canonical_commodity — e.g. fuel_ore -> ore) rather than silently drifting
+    off the SoT vocabulary. VALIDATION ONLY: raises at import on a bad slug;
+    zero numeric change to CITADEL_LEVELS itself."""
+    for level, spec in CITADEL_LEVELS.items():
+        for slug in spec["resource_cost"]:
+            assert canonical_commodity(slug) in COMMODITY_BASE_PRICES, (
+                f"citadel_service: CITADEL_LEVELS[{level}] resource_cost key "
+                f"{slug!r} does not resolve to a known commodity-economy slug "
+                "— vocabulary drift"
+            )
+
+
+_validate_citadel_resource_cost_vocab()
 
 # --- T1.5-2 NO-FREE-PROMOTION GATE (CRT-4 / CRT-T15-MASTER §3.4) -------------
 # The honest one-time GATE at the early tiers (NOT the recurring floor — that is

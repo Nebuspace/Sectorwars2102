@@ -53,13 +53,13 @@ class Cluster(Base):
     economic_focus = Column(ARRAY(String), nullable=False, default=[])  # Primary economic activities
     resources = Column(JSONB, nullable=False, default={
         "primary_resources": [],
-        "resource_distribution": {
-            "ore": 20,
-            "organics": 15,
-            "equipment": 10,
-            "luxury_goods": 5,
-            "medical_supplies": 10,
-            "technology": 10
+        "resource_distribution": {  # canon slugs only — ghost slugs medical_supplies/
+            # technology removed WO-ARCH-RES-2I-A; freed 20 points redistributed
+            # proportionally over the surviving 4, sum stays 70 (this file's convention)
+            "ore": 28,
+            "organics": 21,
+            "equipment": 14,
+            "luxury_goods": 7
         },
         "special_resources": []
     })
