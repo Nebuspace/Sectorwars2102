@@ -929,11 +929,18 @@ function buildFeatures(
   const shoreH          = floraBandY1 - horizonY;
   const referenceShoreH = 0.20;
   const shoreFrac       = clamp(shoreH / referenceShoreH, 0.25, 1.0);
-  const lifeDenseCount  = Math.round(rawDenseCount * profile.denseFloraFactor * shoreFrac);
+  // Canopy ease (WO-VISTA-CANOPY-POLISH): on the river-primary layout the full-density
+  // dense-flora band read as wall-to-wall canopy off to the flanks of the corridor,
+  // crowding the breathing room the citadel + river are meant to open up.  Ease the
+  // count and open the spacing a touch — gated strictly on riverMode (forest world +
+  // citadel + water) so citadelLevel=0 and non-river worlds stay byte-identical.
+  const canopyEaseCount  = riverMode ? 0.80 : 1.0;
+  const canopyEaseSpread = riverMode ? 1.15 : 1.0;
+  const lifeDenseCount   = Math.round(rawDenseCount * profile.denseFloraFactor * shoreFrac * canopyEaseCount);
   if (lifeDenseCount > 0 && profile.floraKinds.length > 0) {
     const denseRng  = new SeededRng(deriveChildSeed(input.seed, 'dense-flora'));
     // Tighter minimum spacing at high density so instances pack without z-fighting.
-    const minDist   = lerp(0.035, 0.008, lifeHab);
+    const minDist   = lerp(0.035, 0.008, lifeHab) * canopyEaseSpread;
     const positions = poissonDiskScatter(denseRng, lifeDenseCount, 0.01, horizonY, 0.99, floraBandY1, minDist);
     if (positions.length > 0) {
       const white: RGB = [255, 255, 255];
