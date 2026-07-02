@@ -68,6 +68,29 @@ describe('resourceLabel / resourceIcon / resourceColor — fallback chain', () =
   it('resourceIcon returns the hand-picked default for a known key', () => {
     expect(resourceIcon('organics')).toBe('🌿');
   });
+
+  it('resourceIcon/resourceColor return the exact retired trio-surface hardcodes for fuel/organics/equipment/colonists', () => {
+    // Visual no-change assertion (WO-ARCH-RES-3A accept 4) — these must match
+    // the ProductionDashboard hardcodes byte-for-byte.
+    expect(resourceIcon('fuel')).toBe('⛽');
+    expect(resourceIcon('organics')).toBe('🌿');
+    expect(resourceIcon('equipment')).toBe('⚙️');
+    expect(resourceIcon('colonists')).toBe('👥');
+    expect(resourceColor('fuel')).toBe('#ff6b6b');
+    expect(resourceColor('organics')).toBe('#51cf66');
+    expect(resourceColor('equipment')).toBe('#339af0');
+    expect(resourceColor('colonists')).toBe('#f59f00');
+  });
+
+  it('EXTENSIBILITY: a brand-new registry row resolves through resourceLabel with zero code change', () => {
+    // WO-ARCH-RES-3A accept 2 — the epic's whole point. A row the module has
+    // never seen (no DEFAULT_LABELS entry, no hand-picked icon/colour) still
+    // resolves correctly through the catalog alone.
+    const catalog: ResourceCatalogEntry[] = [
+      { name: 'unobtainium', label: 'Unobtainium', icon: 'unobtainium', category: 'rare', base_price: 999, price_range_min: 900, price_range_max: 1100, is_storable: true, is_producible: false },
+    ];
+    expect(resourceLabel('unobtainium', catalog)).toBe('Unobtainium');
+  });
 });
 
 describe('getResourceCatalog — fetch-once cache', () => {
