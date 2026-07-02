@@ -31,6 +31,7 @@ export interface ProductionRates {
   organics: number;
   equipment: number;
   colonists: number;
+  research: number;
 }
 
 export interface ResourceAllocations {

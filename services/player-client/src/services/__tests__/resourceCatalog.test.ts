@@ -82,6 +82,11 @@ describe('resourceLabel / resourceIcon / resourceColor — fallback chain', () =
     expect(resourceColor('colonists')).toBe('#f59f00');
   });
 
+  it('resourceIcon/resourceColor cover precious_metals (WO-ARCH-RES-3B B4 key-domain audit: the 9th market commodity — models/station.py DEFAULT_COMMODITIES, bang_import _COMMODITY_DEFAULTS, trading_service — was silently falling to the generic 📦)', () => {
+    expect(resourceIcon('precious_metals')).toBe('🪙');
+    expect(resourceColor('precious_metals')).toBe('#d4af37');
+  });
+
   it('EXTENSIBILITY: a brand-new registry row resolves through resourceLabel with zero code change', () => {
     // WO-ARCH-RES-3A accept 2 — the epic's whole point. A row the module has
     // never seen (no DEFAULT_LABELS entry, no hand-picked icon/colour) still

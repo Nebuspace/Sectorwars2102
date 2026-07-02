@@ -6,6 +6,7 @@ import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
 import { formatCredits } from '../../utils/formatters';
+import { resourceIcon } from '../../services/resourceCatalog';
 import HaggleDesk from './HaggleDesk';
 import './trading-interface.css';
 
@@ -544,20 +545,6 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
       ? getTradeSubtotal() + getTradeTaxAmount()
       : getTradeSubtotal() - getTradeTaxAmount();
 
-  const getResourceIcon = (resourceType: string): string => {
-    const icons: Record<string, string> = {
-      'Food': '🌾',
-      'Fuel': '⚡',
-      'Ore': '🪨', 
-      'Tech': '🔧',
-      'Organics': '🧬',
-      'Equipment': '⚙️',
-      'Luxuries': '💎',
-      'Colonists': '👥'
-    };
-    return icons[resourceType] || '📦';
-  };
-
   if (!playerState?.is_docked) {
     return (
       <Wrapper>
@@ -863,7 +850,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                       }
                     }}
                   >
-                    <div className="resource-icon">{getResourceIcon(resourceType)}</div>
+                    <div className="resource-icon">{resourceIcon(resourceType)}</div>
                     <div className="resource-name">{formatName(resourceType)}</div>
                     <div className="resource-direction-badges">
                       {resource.station_sells && <span className="direction-badge sells">Station Sells</span>}
@@ -907,7 +894,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
         {selectedResource && marketInfo && (
           <div className="trade-action-bar">
             <div className="selected-resource-info">
-              <span className="resource-icon-large">{getResourceIcon(selectedResource)}</span>
+              <span className="resource-icon-large">{resourceIcon(selectedResource)}</span>
               <div className="resource-details">
                 <span className="resource-name-large">{formatName(selectedResource)}</span>
                 <span className="resource-price">
@@ -934,7 +921,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
           <div className="trade-modal" onClick={(e) => e.stopPropagation()}>
             <div className="trade-modal-header">
               <div className="modal-resource-info">
-                <span className="modal-resource-icon">{getResourceIcon(selectedResource)}</span>
+                <span className="modal-resource-icon">{resourceIcon(selectedResource)}</span>
                 <h3>
                   <span className={`modal-trade-mode ${tradeMode}`}>{tradeMode === 'buy' ? 'BUY' : 'SELL'}</span>
                   {formatName(selectedResource)}

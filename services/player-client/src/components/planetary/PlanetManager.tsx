@@ -7,6 +7,7 @@ import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { useEmbedded } from '../cockpit/EmbeddedContext';
 import EmptyState from '../common/EmptyState';
+import { resourceIcon } from '../../services/resourceCatalog';
 import './planet-manager.css';
 
 /* COLONIAL REGISTRY console shell (Law 3) — module-level so the monitor
@@ -112,9 +113,9 @@ const COLUMNS: { key: SortKey; label: string; align?: 'left' | 'right' }[] = [
   { key: 'sector', label: 'Sector', align: 'left' },
   { key: 'citadel', label: 'Citadel', align: 'right' },
   { key: 'population', label: 'Population / Cap', align: 'right' },
-  { key: 'fuel', label: '⛽ Fuel', align: 'right' },
-  { key: 'organics', label: '🌿 Org', align: 'right' },
-  { key: 'equipment', label: '⚙️ Equip', align: 'right' },
+  { key: 'fuel', label: `${resourceIcon('fuel')} Fuel`, align: 'right' },
+  { key: 'organics', label: `${resourceIcon('organics')} Org`, align: 'right' },
+  { key: 'equipment', label: `${resourceIcon('equipment')} Equip`, align: 'right' },
   { key: 'habitability', label: 'Hab', align: 'right' },
   { key: 'efficiency', label: 'Eff', align: 'right' },
 ];

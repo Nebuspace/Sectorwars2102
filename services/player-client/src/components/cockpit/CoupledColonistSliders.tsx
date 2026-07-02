@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { resourceIcon, resourceColor } from '../../services/resourceCatalog';
 
 export type ProdRole = 'fuel' | 'organics' | 'equipment';
 
@@ -49,9 +50,9 @@ export interface CoupledColonistSlidersProps {
 }
 
 const ROLES: { key: ProdRole; icon: string; label: string; color: string }[] = [
-  { key: 'fuel', icon: '⛽', label: 'Fuel', color: '#ff6b6b' },
-  { key: 'organics', icon: '🌿', label: 'Organics', color: '#51cf66' },
-  { key: 'equipment', icon: '⚙️', label: 'Equipment', color: '#339af0' },
+  { key: 'fuel', icon: resourceIcon('fuel'), label: 'Fuel', color: resourceColor('fuel') },
+  { key: 'organics', icon: resourceIcon('organics'), label: 'Organics', color: resourceColor('organics') },
+  { key: 'equipment', icon: resourceIcon('equipment'), label: 'Equipment', color: resourceColor('equipment') },
 ];
 
 const sumAlloc = (a: RoleAllocation): number => a.fuel + a.organics + a.equipment;

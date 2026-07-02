@@ -53,6 +53,12 @@ const DEFAULT_ICONS: Record<string, string> = {
   quantum_crystals: '🔷',
   prismatic_ore: '🪨',
   lumen_crystals: '✨',
+  // 9th market commodity (models/station.py DEFAULT_COMMODITIES, bang_import
+  // _COMMODITY_DEFAULTS, trading_service — a real MarketPrice.commodity value,
+  // absent only from the registry seed per admin resourceCatalog.ts's own
+  // documented gap note). Was silently falling to the generic 📦 (WO-ARCH-
+  // RES-3B B4 key-domain audit).
+  precious_metals: '🪙',
 };
 
 const DEFAULT_COLORS: Record<string, string> = {
@@ -70,6 +76,7 @@ const DEFAULT_COLORS: Record<string, string> = {
   quantum_crystals: '#66d9e8',
   prismatic_ore: '#da77f2',
   lumen_crystals: '#ffd43b',
+  precious_metals: '#d4af37',
 };
 
 // Label text for keys the catalog itself can never resolve (mismatched

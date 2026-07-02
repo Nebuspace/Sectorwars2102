@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
 import UserProfile from '../auth/UserProfile';
+import { resourceIcon } from '../../services/resourceCatalog';
 import './pages.css';
 
 interface DashboardProps {
@@ -76,11 +77,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         {cargoResources.length > 0 ? (
           cargoResources.map((resource, index) => (
             <div key={index} className={`resource-item ${resource.type.toLowerCase()}`}>
-              <span className="resource-icon">
-                {resource.type === 'food' || resource.type === 'organics' ? '🌾' :
-                 resource.type === 'fuel' ? '⚡' :
-                 resource.type === 'ore' ? '🪨' : '🔧'}
-              </span>
+              <span className="resource-icon">{resourceIcon(resource.type)}</span>
               <div className="resource-details">
                 <span className="resource-label">{resource.type.charAt(0).toUpperCase() + resource.type.slice(1)}</span>
                 <span className="resource-value">{resource.amount}</span>
