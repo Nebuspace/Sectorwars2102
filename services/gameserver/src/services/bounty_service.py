@@ -146,6 +146,45 @@ class BountyService:
         player.settings[SYSTEM_BOUNTY_POT_KEY] = max(0, int(value))
         flag_modified(player, "settings")
 
+    def _restore_target_rep_after_system_payout(self, target: Player) -> None:
+        """Rehabilitate a criminal's reputation the moment their SYSTEM bounty
+        pot actually pays out (WO-INTEGRITY-PAIR NH2 — bounty-collusion faucet).
+
+        Before this fix, killing a target never touched the TARGET's own
+        reputation — only the collector's. A criminal pinned at a deep negative
+        score (e.g. two colluding players, one always the "wanted" accomplice)
+        would sit at ``is_criminal() == True`` forever, so the accrual sweep
+        kept re-filling their pot on the same schedule after every collection —
+        a slow-but-*permanent* faucet requiring zero further "crime" after the
+        initial rep tank. Approach (a) from the WO: restore the target's rep on
+        collection so the SAME target can't keep generating bounties.
+
+        Raises ``personal_reputation`` to exactly one point above the criminal
+        threshold (``SYSTEM_BOUNTY_CRIMINAL_THRESHOLD + 1``, i.e. -499) — the
+        MINIMAL restore that flips ``is_criminal()`` False and stops further
+        accrual, "debt paid" rather than a full wipe to neutral. Monotonic: only
+        ever RAISES reputation (never lowers it) and no-ops if the target is
+        already clear, so this can never be abused to lower anyone's score or
+        double-apply across the two call sites (collect_bounty /
+        collect_bounty_share) — a target already restored simply reads > the
+        threshold and the guard below skips.
+
+        NO-CANON: bounties.md is silent on any reputation effect of being
+        bounty-killed; the exact floor (threshold + 1, not a full reset to 0)
+        is a conservative design choice — flagged for DECISIONS.md. Applies
+        uniformly to legitimate bounty hunting too (a criminal genuinely brought
+        to justice also has their case "closed"), which is intentional and not
+        considered a legit-path regression.
+        """
+        current = target.personal_reputation or 0
+        if current > SYSTEM_BOUNTY_CRIMINAL_THRESHOLD:
+            return  # already clear — nothing to restore
+        from src.services.personal_reputation_service import PersonalReputationService
+        delta = (SYSTEM_BOUNTY_CRIMINAL_THRESHOLD + 1) - current
+        PersonalReputationService(self.db).adjust_reputation(
+            target.id, delta, "bounty_collected_rehabilitation"
+        )
+
     @staticmethod
     def is_criminal(player: Player) -> bool:
         """True if this player is wanted by the Federation — i.e. deep enough in
@@ -478,6 +517,11 @@ class BountyService:
         if total_system > 0:
             # Empty the pot under the target lock — the reset is the dedup.
             self._set_system_bounty_pot(target, 0)
+            # Close the collusion faucet (WO-INTEGRITY-PAIR NH2): a paid-out
+            # system bounty also rehabilitates the target's reputation, so the
+            # same criminal cannot sit at a deeply-negative score and keep
+            # regenerating a pot for a colluding "hunter" to farm forever.
+            self._restore_target_rep_after_system_payout(target)
 
         total = total_player + total_system
 
@@ -647,6 +691,11 @@ class BountyService:
         # its own share above — the reset is the anti-double-collect.
         if claim_player_pot and system_bounties:
             self._set_system_bounty_pot(target, 0)
+            # Close the collusion faucet (WO-INTEGRITY-PAIR NH2), mirrored from
+            # the solo collect_bounty path — see _restore_target_rep_after_
+            # system_payout for the rationale. Fires once per pot-zero event
+            # (the designated member's turn), exactly like the reset itself.
+            self._restore_target_rep_after_system_payout(target)
 
         # --- PLAYER-placed pot: claimed once by the designated member only ------
         player_paid = 0
