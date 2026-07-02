@@ -79,6 +79,12 @@ class Resource(Base):
     last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
     # Identification
+    # NOTE (WO-ARCH-RES-1-KERNEL): the registry seeder (resource_registry_
+    # seeder.py) upserts one row per ResourceType via query-then-upsert,
+    # same idempotency pattern as ship_specifications_seeder — no DB-level
+    # uniqueness needed for a single-threaded startup seed. Deliberately NOT
+    # adding unique=True here (would need a migration-level constraint add,
+    # outside the additive-only nullable-columns/new-tables allowance).
     type = Column(Enum(ResourceType, name="resource_type"), nullable=False)
     name = Column(String(100), nullable=False)
     description = Column(String, nullable=True)
@@ -103,7 +109,25 @@ class Resource(Base):
     
     # Game balance
     is_active = Column(Boolean, nullable=False, default=True)
-    
+
+    # ------------------------------------------------------------------
+    # Registry catalog fields (WO-ARCH-RES-1-KERNEL). Additive to the
+    # market-simulation columns above (base_value/quality/trade_volume/etc.,
+    # unused pending a full simulation build-out) — these back the seeded
+    # canon registry exposed by GET /api/resources. `name` above already
+    # carries the canonical lowercase_underscore slug (e.g. "ore",
+    # "gourmet_food") per the commodity-name convention documented on
+    # ResourceType; `label` is the human-readable display form.
+    # ------------------------------------------------------------------
+    label = Column(String(100), nullable=True)  # display name, e.g. "Gourmet Food"
+    icon = Column(String(50), nullable=True)  # frontend icon key (slug; no glyph mapping decided yet)
+    category = Column(String(50), nullable=True, index=True)  # core_commodity | strategic_resource | rare_material
+    base_price = Column(Integer, nullable=True)  # credits/unit catalog base price; null where canon gives none
+    price_range_min = Column(Integer, nullable=True)  # dynamic-pricing clamp floor; null where canon gives none
+    price_range_max = Column(Integer, nullable=True)  # dynamic-pricing clamp ceiling; null where canon gives none
+    is_storable = Column(Boolean, nullable=False, default=False)  # citadel-safe eligible (commodity_economy.SAFE_STORABLE_COMMODITIES)
+    is_producible = Column(Boolean, nullable=False, default=False)  # station production_rate regen mechanic applies
+
     def __repr__(self):
         return f"<Resource {self.name} ({self.type.name}) - {self.quality.name} quality>"
 

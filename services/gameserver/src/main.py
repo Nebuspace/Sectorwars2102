@@ -161,6 +161,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning(f"Medal catalog seed skipped: {e}")
 
+    # Resource registry seed (WO-ARCH-RES-1-KERNEL). The `resources` table was
+    # vestigial (no seeder ever populated it); GET /api/resources now serves
+    # this catalog. Idempotent upsert, same pattern as ships/medals.
+    try:
+        from src.core.database import SessionLocal
+        from src.core.resource_registry_seeder import seed_resource_registry
+
+        db = SessionLocal()
+        try:
+            seed_resource_registry(db)
+            logger.info("Resource registry seed completed")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Resource registry seed skipped: {e}")
+
     # Start WebSocket heartbeat cleanup background task
     import asyncio
     async def _heartbeat_cleanup_loop():
