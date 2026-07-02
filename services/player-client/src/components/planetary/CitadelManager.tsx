@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { citadelAPI } from '../../services/api';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import CitadelStructure from './CitadelStructure';
 import './citadel.css';
 
@@ -72,12 +73,6 @@ const CITADEL_PREREQS: Record<number, string> = {
   5: 'Requires planetary defense level 8+',
 };
 
-const RESOURCE_LABELS: Record<string, string> = {
-  fuel_ore: '⛽ Fuel Ore',
-  organics: '🌿 Organics',
-  equipment: '⚙️ Equipment',
-};
-
 const compact = (n: number): string => {
   if (n >= 1_000_000) return `${n % 1_000_000 === 0 ? n / 1_000_000 : (n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${n % 1_000 === 0 ? n / 1_000 : (n / 1_000).toFixed(1)}k`;
@@ -113,6 +108,7 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
   const [actionLoading, setActionLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const { getIcon, getLabel } = useResourceCatalog();
 
   const fetchCitadel = useCallback(async () => {
     try {
@@ -407,7 +403,7 @@ const CitadelManager: React.FC<CitadelManagerProps> = ({
             {next.resource_cost && Object.keys(next.resource_cost).length > 0 && (
               <span className="upgrade-resources">
                 {Object.entries(next.resource_cost)
-                  .map(([res, amt]) => `${RESOURCE_LABELS[res] || res} ${amt.toLocaleString()}`)
+                  .map(([res, amt]) => `${getIcon(res)} ${getLabel(res)} ${amt.toLocaleString()}`)
                   .join(' · ')}
               </span>
             )}

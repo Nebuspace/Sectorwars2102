@@ -691,6 +691,13 @@ export const registryAPI = {
     })
 };
 
+// Resource Registry — read-only catalog of the 13 canon resources
+// (WO-ARCH-RES-1-KERNEL / WO-ARCH-RES-3-FE-CATALOG). Consumed through
+// services/resourceCatalog.ts, which fetches + caches this once per session.
+export const resourceAPI = {
+  list: () => apiRequest('/api/v1/resources'),
+};
+
 // Export all APIs
 // Regional governance APIs (member-facing). The owner-scoped /my-region/*
 // endpoints live in the admin surface; these are the player-facing reads/writes.
@@ -803,4 +810,5 @@ export const gameAPI = {
   governance: governanceAPI,
   regionOwner: regionOwnerAPI,
   haggle: haggleAPI,
+  resource: resourceAPI,
 };

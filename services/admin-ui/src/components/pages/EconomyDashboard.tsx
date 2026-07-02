@@ -3,6 +3,7 @@ import * as d3 from 'd3';
 import PageHeader from '../ui/PageHeader';
 import { api } from '../../utils/auth';
 import { useEconomyUpdates } from '../../contexts/WebSocketContext';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './economy-dashboard.css';
 
 interface MarketData {
@@ -285,7 +286,17 @@ const EconomyDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
-  const commodities = ['Food', 'Tech', 'Ore', 'Fuel', 'Minerals', 'Electronics', 'Weapons', 'Medical'];
+  // Sourced from the resource registry catalog (WO-ARCH-RES-3-FE-CATALOG)
+  // instead of the old stale mock list — every value the old list carried
+  // (Food/Tech/Minerals/Electronics/Weapons/Medical) never matched a real
+  // MarketPrice.commodity value, so this filter was never actually
+  // functional. `name` is the wire value market-data's commodity_filter
+  // expects (matches models/station.py's DEFAULT_COMMODITIES keys); `label`
+  // is the display text. See services/resourceCatalog.ts for the known gap
+  // (admin sessions may not be able to reach this endpoint; the filter just
+  // degrades to "All Commodities" only, never crashes).
+  const { catalog: resourceCatalog, getLabel: getResourceLabel } = useResourceCatalog();
+  const commodities = resourceCatalog.map((r) => r.name);
 
   // WebSocket handlers
   const handleMarketUpdate = useCallback((data: any) => {
@@ -565,7 +576,7 @@ const EconomyDashboard: React.FC = () => {
               >
                 <option value="all">All Commodities</option>
                 {commodities.map(commodity => (
-                  <option key={commodity} value={commodity}>{commodity}</option>
+                  <option key={commodity} value={commodity}>{getResourceLabel(commodity)}</option>
                 ))}
               </select>
             </div>

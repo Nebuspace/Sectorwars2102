@@ -25,6 +25,7 @@ import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSlide
 import SafeVaultPanel from '../cockpit/SafeVaultPanel';
 import { regionOwnerAPI } from '../../services/api';
 import apiClient from '../../services/apiClient';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import { TurnsIcon } from '../icons/TurnsIcon';
 import './game-dashboard.css';
 import './cockpit.css';
@@ -567,7 +568,8 @@ const GameDashboard: React.FC = () => {
     refineQuantumCharge,
     error
   } = useGame();
-  
+  const { getIcon: getResourceIcon, getLabel: getResourceLabel } = useResourceCatalog();
+
   const autopilot = useAutopilot();
 
   const { requiresFirstLogin } = useFirstLogin();
@@ -1299,10 +1301,14 @@ const GameDashboard: React.FC = () => {
     }
   };
   // Planet stockpile keys (fuel/organics/equipment) -> safe commodity keys.
+  // The SET stays a literal array — it's ADR-0082's fixed 3-commodity
+  // safe-storable list, not the open resource catalog — but icon/name for
+  // each key now come from the shared catalog (WO-ARCH-RES-3-FE-CATALOG)
+  // instead of a locally-duplicated dict.
   const SAFE_COMMODITIES: { stock: 'fuel' | 'organics' | 'equipment'; safe: string; icon: string; name: string }[] = [
-    { stock: 'fuel', safe: 'fuel_ore', icon: '⛽', name: 'Fuel Ore' },
-    { stock: 'organics', safe: 'organics', icon: '🌿', name: 'Organics' },
-    { stock: 'equipment', safe: 'equipment', icon: '⚙️', name: 'Equipment' },
+    { stock: 'fuel', safe: 'fuel_ore', icon: getResourceIcon('fuel_ore'), name: getResourceLabel('fuel_ore') },
+    { stock: 'organics', safe: 'organics', icon: getResourceIcon('organics'), name: getResourceLabel('organics') },
+    { stock: 'equipment', safe: 'equipment', icon: getResourceIcon('equipment'), name: getResourceLabel('equipment') },
   ];
 
   const moveCommoditySafe = async (dir: 'store' | 'take', safeKey: string, amount: number) => {
@@ -2747,10 +2753,13 @@ const GameDashboard: React.FC = () => {
                               poll (landedPlanetDetail) via the projected lines — no
                               extra fetch. */}
                           {isLandedPlanetMine && currentPlanet && (() => {
+                            // SET stays fixed (the production stockpile is the same
+                            // 3-column planet contract as SAFE_COMMODITIES above);
+                            // icon/name now come from the shared resource catalog.
                             const prodLines: ProductionLine[] = ([
-                              { key: 'fuel' as const, icon: '⛽', name: 'Fuel' },
-                              { key: 'organics' as const, icon: '🌿', name: 'Organics' },
-                              { key: 'equipment' as const, icon: '⚙️', name: 'Equipment' },
+                              { key: 'fuel' as const, icon: getResourceIcon('fuel'), name: getResourceLabel('fuel') },
+                              { key: 'organics' as const, icon: getResourceIcon('organics'), name: getResourceLabel('organics') },
+                              { key: 'equipment' as const, icon: getResourceIcon('equipment'), name: getResourceLabel('equipment') },
                             ]).map(({ key, icon, name }) => {
                               const ss = storageStatus(key);
                               // Store-to-safe affordance: same computation the Safe

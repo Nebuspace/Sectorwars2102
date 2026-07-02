@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { gridAPI } from '../../services/api';
+import { resourceIcon } from '../../services/resourceCatalog';
 import './grid-manager.css';
 
 /**
@@ -139,14 +140,11 @@ const level1Materials = (entry: CatalogEntry): Array<[string, number]> => {
   return Object.entries(lvl1).filter(([k]) => k !== 'credits') as Array<[string, number]>;
 };
 
-const MATERIAL_ICON: Record<string, string> = {
-  fuel_ore: '⛽',
-  organics: '🌿',
-  equipment: '⚙️',
-};
-
+// Icon sourced from the shared resource-catalog defaults (WO-ARCH-RES-3-FE-CATALOG)
+// so a new material key in a building's cost dict still renders (generic
+// fallback icon) instead of the blank glyph a local Record<> would give it.
 const matLabel = (k: string): string =>
-  `${MATERIAL_ICON[k] || ''} ${k.replace(/_/g, ' ')}`.trim();
+  `${resourceIcon(k)} ${k.replace(/_/g, ' ')}`.trim();
 
 const techGateOf = (entry: CatalogEntry): string | null =>
   entry.tech_gate ?? entry.techGate ?? null;

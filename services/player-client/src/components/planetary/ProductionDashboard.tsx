@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { Planet, ProductionRates } from '../../types/planetary';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './production-dashboard.css';
 
 interface ProductionDashboardProps {
@@ -28,6 +29,7 @@ export const ProductionDashboard: React.FC<ProductionDashboardProps> = ({
   const [selectedResource, setSelectedResource] = useState<keyof ProductionRates>('fuel');
   const [sortBy, setSortBy] = useState<'name' | 'production' | 'efficiency'>('production');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const { getIcon, getColor } = useResourceCatalog();
 
   // Calculate production metrics
   const metrics = useMemo<ProductionMetrics>(() => {
@@ -124,25 +126,11 @@ export const ProductionDashboard: React.FC<ProductionDashboardProps> = ({
     }
   };
 
-  const getResourceIcon = (resource: keyof ProductionRates) => {
-    const icons = {
-      fuel: '⛽',
-      organics: '🌿',
-      equipment: '⚙️',
-      colonists: '👥'
-    };
-    return icons[resource];
-  };
+  // Sourced from the resource registry catalog (WO-ARCH-RES-3-FE-CATALOG) via
+  // useResourceCatalog — see hooks/useResourceCatalog.ts for the fallback chain.
+  const getResourceIcon = (resource: keyof ProductionRates) => getIcon(resource);
 
-  const getResourceColor = (resource: keyof ProductionRates) => {
-    const colors = {
-      fuel: '#ff6b6b',
-      organics: '#51cf66',
-      equipment: '#339af0',
-      colonists: '#f59f00'
-    };
-    return colors[resource];
-  };
+  const getResourceColor = (resource: keyof ProductionRates) => getColor(resource);
 
   const formatNumber = (num: number) => {
     if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;

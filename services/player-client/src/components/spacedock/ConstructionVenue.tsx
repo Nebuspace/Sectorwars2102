@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
+import { resourceIcon } from '../../services/resourceCatalog';
 import './construction-venue.css';
 
 // Use same API URL logic as GameContext for Codespaces compatibility
@@ -123,20 +125,20 @@ const PHASE_LABELS: Record<BuildPhase, string> = {
   final: 'Final Assembly'
 };
 
+// Ship construction's resource_cost is a fixed 3-key contract (ResourceBundle),
+// not an open catalog — so the SET stays a literal array. Icon/label for each
+// key now come from the shared resource catalog (WO-ARCH-RES-3-FE-CATALOG,
+// see resourceIcon() below + useResourceCatalog().getLabel in the component)
+// instead of a locally-duplicated dict.
 const RESOURCES = ['ore', 'equipment', 'organics'] as const;
 type ConstructionResource = typeof RESOURCES[number];
 
-const RESOURCE_ICONS: Record<ConstructionResource, string> = {
-  ore: '⛏️',
-  equipment: '🔩',
-  organics: '🌿'
-};
-
-const RESOURCE_LABELS: Record<ConstructionResource, string> = {
-  ore: 'Ore',
-  equipment: 'Equipment',
-  organics: 'Organics'
-};
+// Construction/shipyard context uses a bolt glyph for equipment (vs. the gear
+// glyph the catalog default gives planetary equipment production elsewhere)
+// — preserved as a local override so this UI's look doesn't shift under the
+// catalog swap; every other key defers to the shared default.
+const iconFor = (resource: ConstructionResource): string =>
+  resource === 'equipment' ? '🔩' : resourceIcon(resource);
 
 // Reservation state buckets (server is the source of truth; we just classify).
 // The build-phase states ARE the phases: frame_assembly → systems_integration
@@ -448,6 +450,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
   onBack
 }) => {
   const { currentShip, refreshPlayerState, loadShips } = useGame();
+  const { getLabel } = useResourceCatalog();
 
   const getToken = () => localStorage.getItem('accessToken');
 
@@ -802,8 +805,8 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
         const amount = Number(bundle?.[resource] ?? 0);
         if (amount <= 0) return null;
         return (
-          <span key={resource} className="cq-resource-chip" title={RESOURCE_LABELS[resource]}>
-            {RESOURCE_ICONS[resource]} {amount.toLocaleString()}
+          <span key={resource} className="cq-resource-chip" title={getLabel(resource)}>
+            {iconFor(resource)} {amount.toLocaleString()}
           </span>
         );
       })}
@@ -908,7 +911,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
           return (
             <div key={resource} className="cr-deliver-row">
               <span className="cr-deliver-resource">
-                {RESOURCE_ICONS[resource]} {RESOURCE_LABELS[resource]}
+                {iconFor(resource)} {getLabel(resource)}
               </span>
               <span className="cr-deliver-meta">
                 need {need.toLocaleString()} · aboard {aboard.toLocaleString()}
@@ -923,7 +926,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
                   setDeliverAmounts(prev => ({ ...prev, [resource]: next }));
                 }}
                 disabled={max === 0 || Boolean(busyAction)}
-                aria-label={`${RESOURCE_LABELS[resource]} to deliver`}
+                aria-label={`${getLabel(resource)} to deliver`}
               />
               <button
                 className="cr-max-btn"
@@ -1182,7 +1185,7 @@ const ConstructionVenue: React.FC<ConstructionVenueProps> = ({
               return (
                 <div key={resource} className="cr-resource-bar">
                   <span className="cr-resource-bar-label">
-                    {RESOURCE_ICONS[resource]} {RESOURCE_LABELS[resource]}
+                    {iconFor(resource)} {getLabel(resource)}
                   </span>
                   <div className="cr-resource-bar-track">
                     <div className="cr-resource-bar-fill" style={{ width: `${pct}%` }} />
