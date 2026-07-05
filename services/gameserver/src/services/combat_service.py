@@ -639,9 +639,31 @@ class CombatService:
 
         # Handle cargo theft BEFORE destruction — destroy_ship swaps the
         # loser into an escape pod, so transferring afterwards would loot the
-        # pod's emergency cargo instead of the defeated ship's hold
+        # pod's emergency cargo instead of the defeated ship's hold. Snapshot
+        # the attacker's hold before/after transfer (same idiom as the NPC
+        # leg in attack_npc_ship) so the persisted history row can carry the
+        # capped-actual haul, not the pre-cap request that may exceed
+        # remaining hold capacity.
+        actual_cargo_looted: Dict[str, int] = {}
         if combat_result["cargo_stolen"]:
+            _hold_before = dict(
+                (attacker_ship.cargo or {}).get("contents") or {}
+            )
             self._transfer_cargo(defender_ship, attacker_ship, combat_result["cargo_stolen"])
+            _hold_after = (attacker_ship.cargo or {}).get("contents") or {}
+            actual_cargo_looted = {
+                resource: int(_hold_after.get(resource, 0)) - int(_hold_before.get(resource, 0))
+                for resource in _hold_after
+                if int(_hold_after.get(resource, 0)) - int(_hold_before.get(resource, 0)) > 0
+            }
+
+        # Write the capped-actual haul back onto the history row (WO-NEON-
+        # RES-NH3B) — combat_log is session-pending (added above, not yet
+        # committed), so a plain attribute assignment on the ORM instance is
+        # enough; no flush is needed since combat_log.id is client-generated
+        # (models/combat_log.py default uuid4), and the single commit below
+        # persists both the log and this assignment together.
+        combat_log.cargo_looted = actual_cargo_looted or None
 
         # Snapshot the defender's PRE-destruction ship type. _handle_ship_destruction
         # swaps the destroyed defender into an escape pod, so reading
@@ -1171,6 +1193,14 @@ class CombatService:
                 for resource in _hold_after
                 if int(_hold_after.get(resource, 0)) - int(_hold_before.get(resource, 0)) > 0
             }
+
+        # Write the capped-actual haul back onto the history row (WO-NEON-
+        # RES-NH3B) — combat_log is session-pending (added above, not yet
+        # committed), so a plain attribute assignment on the ORM instance is
+        # enough; no flush is needed since combat_log.id is client-generated
+        # (models/combat_log.py default uuid4), and the single commit below
+        # persists both the log and this assignment together.
+        combat_log.cargo_looted = actual_cargo_looted or None
 
         # Apply combat effects
         if combat_result["defender_ship_destroyed"]:
