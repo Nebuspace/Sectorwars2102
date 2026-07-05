@@ -5,7 +5,11 @@ Player-facing endpoints for purchasing combat consumables (attack drones,
 defense drones, and mines) at stations offering drone shop or mine dealer
 services. Drones and mines live on the Player row (player.attack_drones,
 player.defense_drones, player.mines) and are read by combat and the
-SpaceDock loadout display.
+SpaceDock loadout display. Carried-scalar caps are the ship spec's
+max_drones plus the installed Drone Bay upgrade's +2/level bonus
+(DroneService._drone_bay_bonus) — the same bonus the drone-ROWS economy
+applies (drone_service.py _get_max_drones), so a Drone-Bay-upgraded ship's
+armory purchase cap agrees with its deployable-drone cap.
 """
 
 import logging
@@ -20,6 +24,7 @@ from src.auth.dependencies import get_current_player
 from src.models.player import Player
 from src.models.ship import Ship, ShipSpecification
 from src.models.station import Station
+from src.services.drone_service import DroneService
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +125,10 @@ async def purchase_armory_item(
 
     Requires the station to offer the item's service (drone_shop or
     mine_dealer; SpaceDocks offer both). Attack and defense drones are each
-    capped at the current ship specification's max_drones; mines are capped
-    at MINES_CAP. Credits and loadout mutate on the locked player row in a
-    single transaction.
+    capped at the current ship specification's max_drones plus the ship's
+    Drone Bay upgrade bonus (+2/level, DroneService._drone_bay_bonus); mines
+    are capped at MINES_CAP. Credits and loadout mutate on the locked player
+    row in a single transaction.
     """
     entry = ARMORY_CATALOG[request.item]
 
@@ -178,9 +184,13 @@ async def purchase_armory_item(
             detail="No specification available for your current ship",
         )
 
+    # Carried-scalar caps agree with the drone-ROWS economy's cap
+    # (drone_service.py _get_max_drones): spec.max_drones + the installed
+    # Drone Bay upgrade's +2/level bonus.
+    drone_bay_bonus = DroneService._drone_bay_bonus(ship)
     caps = {
-        "attack_drones": spec.max_drones,
-        "defense_drones": spec.max_drones,
+        "attack_drones": spec.max_drones + drone_bay_bonus,
+        "defense_drones": spec.max_drones + drone_bay_bonus,
         "mines": MINES_CAP,
     }
     current = {

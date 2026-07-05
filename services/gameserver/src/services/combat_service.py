@@ -611,7 +611,7 @@ class CombatService:
             defender_ship_name=defender_ship.name if defender_ship else None,
             defender_ship_type=defender_ship.type.value if defender_ship else None,
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             defender_drones=defender.defense_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
@@ -658,7 +658,7 @@ class CombatService:
 
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
+            attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
 
         if combat_result["defender_drones_lost"] > 0:
             defender.defense_drones = max(0, defender.defense_drones - combat_result["defender_drones_lost"])
@@ -1130,7 +1130,7 @@ class CombatService:
             defender_ship_name=npc_ship.name,
             defender_ship_type=npc_ship.type.value,
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             defender_drones=0,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
@@ -1302,7 +1302,7 @@ class CombatService:
 
         # Update attacker drone count
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
+            attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
 
         # Update last_combat timestamp for sector
         sector.last_combat = datetime.now()
@@ -1465,7 +1465,7 @@ class CombatService:
             attacker_ship_type=attacker_ship.type.value if attacker_ship else None,
             defender_id=None,  # No single owning player for sector drones
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             defender_drones=starting_drone_count,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
@@ -1483,8 +1483,8 @@ class CombatService:
 
         # Update attacker's carried drone count if any were lost
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(
-                0, attacker.defense_drones - combat_result["attacker_drones_lost"]
+            attacker.attack_drones = max(
+                0, attacker.attack_drones - combat_result["attacker_drones_lost"]
             )
 
         # Deactivate the matching deployment records for fully-destroyed drones
@@ -1603,7 +1603,7 @@ class CombatService:
             defender_id=planet_owner.id if planet_owner else None,
             planet_id=planet.id,
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
             combat_log=json.dumps(combat_result["combat_details"]),
@@ -1618,8 +1618,8 @@ class CombatService:
         
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
-        
+            attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
+
         # Update planet defenses
         planet.defense_level = max(0, planet.defense_level - combat_result["planet_damage"])
         
@@ -1753,7 +1753,7 @@ class CombatService:
             defender_id=port_owner.id if port_owner else None,
             port_id=station.id,
             rounds=combat_result["rounds"],
-            attacker_drones=attacker.defense_drones,
+            attacker_drones=attacker.attack_drones,
             attacker_drones_lost=combat_result["attacker_drones_lost"],
             defender_drones_lost=combat_result["defender_drones_lost"],
             combat_log=json.dumps(combat_result["combat_details"]),
@@ -1768,8 +1768,8 @@ class CombatService:
         
         # Update drone counts
         if combat_result["attacker_drones_lost"] > 0:
-            attacker.defense_drones = max(0, attacker.defense_drones - combat_result["attacker_drones_lost"])
-        
+            attacker.attack_drones = max(0, attacker.attack_drones - combat_result["attacker_drones_lost"])
+
         # Update port defenses
         station.defense_level = max(0, station.defense_level - combat_result["port_damage"])
 
@@ -2331,7 +2331,7 @@ class CombatService:
         )
 
         # Combat parameters
-        attacker_drones = attacker.defense_drones
+        attacker_drones = attacker.attack_drones
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         defender_defense = self._calculate_defense_power(defender_ship, defender_drones)
 
@@ -2757,7 +2757,7 @@ class CombatService:
         ship-vs-ship resolver uses.
         """
         attacker_ship = attacker.current_ship
-        attacker_carried_drones = attacker.defense_drones
+        attacker_carried_drones = attacker.attack_drones
 
         # Attacker firepower per round (shared helper — ship type + bonuses +
         # carried drones + maintenance multiplier)
@@ -2937,7 +2937,7 @@ class CombatService:
         """Resolve combat between a ship and a planet."""
         # Get attacker ship and equipment
         attacker_ship = attacker.current_ship
-        attacker_drones = attacker.defense_drones
+        attacker_drones = attacker.attack_drones
 
         # Planet defenses
         planet_defense_level = planet.defense_level or 0
@@ -3219,7 +3219,7 @@ class CombatService:
         """
         # --- Attacker ---
         attacker_ship = attacker.current_ship
-        attacker_drones = attacker.defense_drones or 0
+        attacker_drones = attacker.attack_drones or 0
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
 
         # --- Station defenses (from the existing `defenses` JSONB) ---
@@ -3322,7 +3322,7 @@ class CombatService:
             # hull. Per-round damage is hard-capped (per_round_damage_ceiling)
             # AND scales with the swarm the station hasn't shredded yet, so the
             # attacker's output decays fast as drones are lost. ---
-            drone_factor = attacker_drones / max(1, (attacker.defense_drones or 1))
+            drone_factor = attacker_drones / max(1, (attacker.attack_drones or 1))
             raw = int(attacker_attack * (0.3 + 0.7 * drone_factor))
             incoming = max(0, min(per_round_damage_ceiling, raw))
 
