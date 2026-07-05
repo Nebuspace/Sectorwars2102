@@ -9,7 +9,7 @@ from src.core.database import get_db
 from src.auth.dependencies import get_current_player, get_current_admin_user
 from src.models.player import Player
 from src.models.user import User
-from src.models.first_login import ShipChoice
+from src.models.first_login import ShipChoice, FirstLoginSession
 from src.services.first_login_service import FirstLoginService
 from src.services.ai_dialogue_service import get_ai_dialogue_service, AIDialogueService
 from src.services.ai_security_service import get_security_service, AISecurityService
@@ -28,6 +28,13 @@ class FirstLoginStatusResponse(BaseModel):
     requires_first_login: bool
     session_id: Optional[str] = None
     state: Dict[str, Any] = None
+    # Persisted guard identity (WO-PUX-FLOGIN-RESUME) — lets a cold app-open
+    # render the Guard Profile panel before POST /session even runs.
+    guard_name: Optional[str] = None
+    guard_title: Optional[str] = None
+    guard_trait: Optional[str] = None
+    guard_base_suspicion: Optional[float] = None
+    guard_description: Optional[str] = None
 
 class ShipClaimRequest(BaseModel):
     ship_type: str
@@ -45,7 +52,17 @@ class FirstLoginSessionResponse(BaseModel):
     exchange_id: Optional[str] = None
     sequence_number: Optional[int] = None
     ship_claimed: Optional[str] = None
-    outcome: Optional[Dict[str, Any]] = None  # Only present for instant-approval ships (e.g., Escape Pod)
+    outcome: Optional[Dict[str, Any]] = None  # Only present for instant-approval ships (e.g., Escape Pod) or a resumed completion step
+    # WO-PUX-FLOGIN-RESUME: resumed:false + a single initial-exchange entry
+    # for a brand-new session; resumed:true + the full ordered persisted
+    # DialogueExchange history when an in-progress session is returned AS-IS.
+    resumed: bool = False
+    dialogue_history: list[Dict[str, Any]] = []
+    guard_name: Optional[str] = None
+    guard_title: Optional[str] = None
+    guard_trait: Optional[str] = None
+    guard_base_suspicion: Optional[float] = None
+    guard_description: Optional[str] = None
 
 class DialogueAnalysisResponse(BaseModel):
     exchange_id: str
@@ -84,7 +101,18 @@ async def get_first_login_status(
         
         if state.current_session_id:
             response["session_id"] = str(state.current_session_id)
-        
+
+            # Guard identity for a cold app-open (WO-PUX-FLOGIN-RESUME) —
+            # the row is read directly since should_show_first_login already
+            # confirmed the flow isn't complete.
+            session = db.query(FirstLoginSession).filter_by(id=state.current_session_id).first()
+            if session:
+                response["guard_name"] = session.guard_name
+                response["guard_title"] = session.guard_title
+                response["guard_trait"] = session.guard_trait
+                response["guard_base_suspicion"] = session.guard_base_suspicion
+                response["guard_description"] = session.guard_description
+
         response["state"] = {
             "claimed_ship": state.claimed_ship,
             "answered_questions": state.answered_questions,
@@ -104,15 +132,43 @@ async def start_first_login_session(
 ):
     """Start or resume a first login session"""
     service = FirstLoginService(db, ai_service)
-    
+
     # Ensure ship configurations are initialized
     service.initialize_ship_configs()
-    
-    # Get or create a session
+
+    # Resume: an in-progress session is returned AS-IS — no regeneration,
+    # no reset (canon: first-login.md:135-139, "reload mid-flow returns the
+    # full history" / "Re-opening the app at any state replays from the
+    # last persisted state"). This is a pure read of already-persisted data.
+    resumable = service.get_session_with_history(player.id)
+    if resumable:
+        session = resumable["session"]
+        return {
+            "session_id": str(session.id),
+            "player_id": str(player.id),
+            "available_ships": resumable["available_ships"],
+            "current_step": resumable["current_step"],
+            "npc_prompt": resumable["npc_prompt"],
+            "exchange_id": resumable["exchange_id"],
+            "sequence_number": resumable["sequence_number"],
+            "ship_claimed": session.ship_claimed.name if session.ship_claimed else None,
+            "outcome": resumable["outcome"],
+            "resumed": True,
+            "dialogue_history": resumable["dialogue_history"],
+            "guard_name": session.guard_name,
+            "guard_title": session.guard_title,
+            "guard_trait": session.guard_trait,
+            "guard_base_suspicion": session.guard_base_suspicion,
+            "guard_description": session.guard_description,
+        }
+
+    # No session to resume — provision a fresh one.
     session = service.get_or_create_session(player.id)
 
     # Generate AI-enhanced initial prompt (or use fallback template)
-    # This populates the initial dialogue exchange with guard personality
+    # This populates the initial dialogue exchange with guard personality.
+    # Only reachable for a genuinely new session — never re-runs against an
+    # existing one, so a resumed session's intro text can't drift on reload.
     await service.generate_initial_prompt(session.id)
 
     # Refresh session to get updated exchange
@@ -128,12 +184,12 @@ async def start_first_login_session(
     # Get ship options (explicit query to ensure it's loaded)
     ship_options = db.query(ShipPresentationOptions).filter_by(session_id=session.id).first()
     available_ships = ship_options.available_ships if ship_options else ["ESCAPE_POD"]
-    
+
     # Determine the current step
     current_step = "ship_selection"
     if session.ship_claimed:
         current_step = "dialogue" if not session.outcome else "completion"
-    
+
     return {
         "session_id": str(session.id),
         "player_id": str(player.id),
@@ -142,7 +198,21 @@ async def start_first_login_session(
         "npc_prompt": exchange.npc_prompt if exchange else "ERROR: Missing initial prompt",
         "exchange_id": str(exchange.id) if exchange else None,
         "sequence_number": exchange.sequence_number if exchange else None,
-        "ship_claimed": session.ship_claimed.name if session.ship_claimed else None
+        "ship_claimed": session.ship_claimed.name if session.ship_claimed else None,
+        "resumed": False,
+        "dialogue_history": [{
+            "npc_prompt": exchange.npc_prompt,
+            "player_response": exchange.player_response,
+            "sequence_number": exchange.sequence_number,
+            "persuasiveness": exchange.persuasiveness,
+            "confidence": exchange.confidence,
+            "consistency": exchange.consistency,
+        }] if exchange else [],
+        "guard_name": session.guard_name,
+        "guard_title": session.guard_title,
+        "guard_trait": session.guard_trait,
+        "guard_base_suspicion": session.guard_base_suspicion,
+        "guard_description": session.guard_description,
     }
 
 

@@ -326,6 +326,90 @@ class FirstLoginService:
         self.db.refresh(session)
         return session
 
+    def get_session_with_history(self, player_id: uuid.UUID) -> Optional[Dict[str, Any]]:
+        """
+        Read-only assembly of a player's in-progress first-login session for
+        resume: the session row plus its ordered, already-persisted
+        DialogueExchange history (canon: first-login.md:135-139 persistence/
+        resume — "reload mid-flow returns the full history"). Returns None
+        when there is nothing to resume, in which case the caller falls back
+        to get_or_create_session for a fresh one.
+
+        A session counts as resumable for as long as the player hasn't
+        finished the whole flow (state.has_completed_first_login) — not
+        merely reached a dialogue outcome. completed_at is set as soon as
+        the outcome is scored (_evaluate_dialogue_outcome), before /complete
+        grants resources, so the outcome/completion screen must stay
+        resumable too or a reload there would silently spin up a duplicate
+        session with a new guard and new ships.
+        """
+        state = self.get_player_first_login_state(player_id)
+        if not state.current_session_id or state.has_completed_first_login:
+            return None
+
+        session = self.db.query(FirstLoginSession).filter_by(id=state.current_session_id).first()
+        if not session:
+            return None
+
+        exchanges = self.db.query(DialogueExchange).filter_by(
+            session_id=session.id
+        ).order_by(DialogueExchange.sequence_number).all()
+
+        ship_options = self.db.query(ShipPresentationOptions).filter_by(session_id=session.id).first()
+        available_ships = ship_options.available_ships if ship_options else [ShipChoice.ESCAPE_POD.name]
+
+        current_step = "ship_selection"
+        if session.ship_claimed:
+            current_step = "dialogue" if not session.outcome else "completion"
+
+        last_exchange = exchanges[-1] if exchanges else None
+        # The exchange still awaiting a reply — None once the dialogue has
+        # been fully answered and scored (no further question is created).
+        pending_exchange = (
+            last_exchange if (last_exchange and not last_exchange.player_response) else None
+        )
+
+        outcome = None
+        if session.outcome:
+            outcome = {
+                "outcome": session.outcome.name,
+                "awarded_ship": session.awarded_ship.name if session.awarded_ship else None,
+                "starting_credits": session.starting_credits,
+                "negotiation_skill": session.negotiation_skill.name if session.negotiation_skill else None,
+                "final_persuasion_score": session.final_persuasion_score,
+                "negotiation_bonus": bool(session.negotiation_bonus_flag),
+                "notoriety_penalty": bool(session.notoriety_penalty),
+                # The AI-narrated closing line is generated at outcome time,
+                # not persisted anywhere — resume never re-invokes the AI
+                # provider (no cost, no non-determinism, ARIA-LLM untouched).
+                # The client falls back to its own canonical outcome message.
+                "guard_response": None,
+            }
+
+        return {
+            "session": session,
+            "available_ships": available_ships,
+            "current_step": current_step,
+            "npc_prompt": last_exchange.npc_prompt if last_exchange else "ERROR: Missing initial prompt",
+            "exchange_id": str(pending_exchange.id) if pending_exchange else None,
+            "sequence_number": (
+                pending_exchange.sequence_number if pending_exchange
+                else (last_exchange.sequence_number if last_exchange else None)
+            ),
+            "outcome": outcome,
+            "dialogue_history": [
+                {
+                    "npc_prompt": ex.npc_prompt,
+                    "player_response": ex.player_response,
+                    "sequence_number": ex.sequence_number,
+                    "persuasiveness": ex.persuasiveness,
+                    "confidence": ex.confidence,
+                    "consistency": ex.consistency,
+                }
+                for ex in exchanges
+            ],
+        }
+
     async def generate_initial_prompt(self, session_id: uuid.UUID) -> str:
         """
         Generate AI-enhanced or fallback initial prompt for a session.

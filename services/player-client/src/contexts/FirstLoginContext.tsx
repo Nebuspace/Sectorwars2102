@@ -19,6 +19,13 @@ export interface FirstLoginSession {
   exchange_id?: string;
   sequence_number?: number;
   ship_claimed?: string;
+  // WO-PUX-FLOGIN-RESUME: persisted guard identity, sourced from the server
+  // (src/utils/guard_personalities.py) instead of a client-side hash mirror.
+  guard_name?: string;
+  guard_title?: string;
+  guard_trait?: string;
+  guard_base_suspicion?: number;
+  guard_description?: string;
 }
 
 export interface DialogueAnalysis {
@@ -172,28 +179,34 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
 
     try {
       const response = await api.post('/api/v1/first-login/session');
+      const data = response.data as any;
 
-      // Auto-reset any existing session on page load/reload
-      // This ensures players always start from ship selection when refreshing
-      if ((response.data as any).current_step !== 'ship_selection') {
-        await api.delete('/api/v1/first-login/session');
-        // Retry with a fresh session
-        const retryResponse = await api.post('/api/v1/first-login/session');
-        setSession(retryResponse.data as FirstLoginSession);
-        setCurrentPrompt((retryResponse.data as any).npc_prompt);
-        setExchangeId((retryResponse.data as any).exchange_id || null);
-        setDialogueHistory([{ npc: (retryResponse.data as any).npc_prompt, player: '' }]);
-        return;
+      setSession(data as FirstLoginSession);
+      setCurrentPrompt(data.npc_prompt);
+      setExchangeId(data.exchange_id || null);
+
+      if (data.resumed) {
+        // Replay the full persisted history instead of starting fresh — the
+        // only DELETE this context ever issues is the user-invoked explicit
+        // reset (resetSession), never an automatic one on reload.
+        const history = (data.dialogue_history || []).map((exchange: any) => ({
+          npc: exchange.npc_prompt,
+          player: exchange.player_response,
+          consistency: clampScore(exchange.consistency),
+          confidence: clampScore(exchange.confidence),
+          persuasiveness: clampScore(exchange.persuasiveness),
+        }));
+        setDialogueHistory(history);
+
+        // Resuming into the completion step: hydrate the outcome too, or
+        // OutcomeDisplay has nothing to render and the screen goes blank.
+        if (data.current_step === 'completion' && data.outcome) {
+          setDialogueOutcome(data.outcome);
+        }
+      } else {
+        // Fresh session — initialize dialogue history with the first NPC prompt.
+        setDialogueHistory([{ npc: data.npc_prompt, player: '' }]);
       }
-
-      setSession(response.data as FirstLoginSession);
-
-      // Set initial prompt and exchange ID
-      setCurrentPrompt((response.data as any).npc_prompt);
-      setExchangeId((response.data as any).exchange_id || null);
-
-      // Initialize dialogue history with the first NPC prompt
-      setDialogueHistory([{ npc: (response.data as any).npc_prompt, player: '' }]);
     } catch (error: any) {
       console.error('Error starting first login session:', error);
       
