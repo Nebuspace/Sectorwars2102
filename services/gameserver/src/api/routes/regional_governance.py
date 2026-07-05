@@ -818,31 +818,13 @@ async def get_regional_members(
 ):
     """Get members of the user's region"""
     region = await verify_region_owner(db, current_user)
-    
-    result = await db.execute(
-        select(RegionalMembership, Player.username)
-        .join(Player, RegionalMembership.player_id == Player.id)
-        .where(RegionalMembership.region_id == region.id)
-        .order_by(RegionalMembership.joined_at.desc())
-        .limit(limit)
-        .offset(offset)
+
+    # Delegate to the service (single source of truth for the
+    # Player.username-is-a-property fallback query) rather than duplicating
+    # the same query inline here.
+    return await RegionalGovernanceService.get_regional_members(
+        db, region.id, limit=limit, offset=offset
     )
-    members = result.all()
-    
-    return [
-        {
-            "player_id": str(membership.player_id),
-            "username": username,
-            "membership_type": membership.membership_type,
-            "reputation_score": membership.reputation_score,
-            "local_rank": membership.local_rank,
-            "voting_power": float(membership.voting_power),
-            "joined_at": membership.joined_at.isoformat(),
-            "last_visit": membership.last_visit.isoformat(),
-            "total_visits": membership.total_visits
-        }
-        for membership, username in members
-    ]
 
 
 # =====================================================================

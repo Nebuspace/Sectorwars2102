@@ -902,9 +902,20 @@ class RegionalGovernanceService:
         offset: int = 0
     ) -> List[Dict[str, Any]]:
         """Get members of a region"""
+        # Player.username is a Python @property (nickname, else user.username,
+        # else "Unknown Player") — not a mapped column, so it can't appear in
+        # a select() clause. Reproduce the same fallback in SQL: nickname
+        # (treating '' as unset, matching the property's truthiness check),
+        # else the linked User's username, else the literal fallback.
         result = await db.execute(
-            select(RegionalMembership, Player.username)
+            select(
+                RegionalMembership,
+                func.coalesce(
+                    func.nullif(Player.nickname, ''), User.username, 'Unknown Player'
+                ).label('username')
+            )
             .join(Player, RegionalMembership.player_id == Player.id)
+            .join(User, Player.user_id == User.id)
             .where(RegionalMembership.region_id == region_id)
             .order_by(RegionalMembership.joined_at.desc())
             .limit(limit)
