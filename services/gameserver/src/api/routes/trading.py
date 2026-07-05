@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from typing import List, Dict, Any
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from pydantic import BaseModel, Field
 
 from src.core.database import get_db
@@ -15,7 +15,7 @@ from src.models.station import Station
 from src.models.sector import Sector
 from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
 from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
-from src.models.market_transaction import MarketTransaction, MarketPrice, TransactionType
+from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory, TransactionType
 from src.services.trading_service import (
     TradingService,
     clamp_to_commodity_band,
@@ -1069,7 +1069,15 @@ async def get_market_info(
             # PLAYER demand signal only — NPC trader activity (the
             # npc_restock_demand key) is never surfaced here.
             "player_demand_score": float(cfg.get("player_demand_score", 1.0)),
-            "last_updated": price.updated_at.isoformat() if price.updated_at else None
+            "last_updated": price.updated_at.isoformat() if price.updated_at else None,
+            # WO-ECON-MKT-TIMESERIES: already computed on every reprice
+            # (TradingService.update_market_prices) but never surfaced —
+            # positive = rising, negative = falling, fed straight through
+            # (raw fraction, not rank-adjusted; the trend direction is the
+            # same regardless of this player's rank discount).
+            "price_trend": float(price.price_trend),
+            "previous_buy_price": price.previous_buy_price,
+            "previous_sell_price": price.previous_sell_price,
         }
     
     return MarketInfoResponse(
@@ -1088,6 +1096,53 @@ async def get_market_info(
             "trader_personality_type": (station.trader_personality or {}).get("type")
         }
     )
+
+
+@router.get("/market/{station_id}/history")
+async def get_market_history(
+    station_id: str,
+    commodity: str,
+    hours: int = Query(24, ge=1, le=24 * 90, description="Lookback window in hours (max 90 days)"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_player: Player = Depends(get_current_player)
+):
+    """Get PriceHistory snapshots for one commodity at a station — feeds the
+    trading UI's sparkline (WO-ECON-MKT-TIMESERIES). Written by the hourly
+    npc_scheduler_service.sweep_price_history sweep; returns an empty list
+    (never 404/500) before the first sweep tick or for a commodity the
+    station has never carried, so the client can render a graceful
+    'no history yet' state.
+    """
+    station = _get_station_or_404(db, station_id)
+
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    rows = (
+        db.query(PriceHistory)
+        .filter(
+            PriceHistory.station_id == station.id,
+            PriceHistory.commodity == commodity,
+            PriceHistory.snapshot_date >= since,
+        )
+        .order_by(PriceHistory.snapshot_date.asc())
+        .all()
+    )
+
+    return {
+        "station_id": str(station.id),
+        "commodity": commodity,
+        "hours": hours,
+        "history": [
+            {
+                "snapshot_date": row.snapshot_date.isoformat(),
+                "snapshot_type": row.snapshot_type,
+                "buy_price": row.buy_price,
+                "sell_price": row.sell_price,
+                "quantity": row.quantity,
+            }
+            for row in rows
+        ],
+    }
 
 
 @router.post("/dock")

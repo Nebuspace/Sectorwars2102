@@ -7,6 +7,7 @@ import CockpitInstrument from '../cockpit/CockpitInstrument';
 import { StationClassBadge, getTraderPersonality } from '../common/stationIdentity';
 import { formatCredits } from '../../utils/formatters';
 import { resourceIcon } from '../../services/resourceCatalog';
+import apiClient from '../../services/apiClient';
 import HaggleDesk from './HaggleDesk';
 import RoutePlannerPanel from './RoutePlannerPanel';
 import './trading-interface.css';
@@ -34,6 +35,21 @@ interface Resource {
    *  feeds a separate field and never skews this indicator. */
   player_demand_score?: number;
   last_updated?: string;
+  /** WO-ECON-MKT-TIMESERIES: computed server-side on every reprice
+   *  (TradingService.update_market_prices) — positive = rising, negative =
+   *  falling, raw fraction (0.01 = 1%), not rank-adjusted. */
+  price_trend?: number;
+  previous_buy_price?: number | null;
+  previous_sell_price?: number | null;
+}
+
+/** One PriceHistory snapshot, as served by GET /trading/market/{id}/history. */
+interface PriceHistoryPoint {
+  snapshot_date: string;
+  snapshot_type: string;
+  buy_price: number;
+  sell_price: number;
+  quantity: number;
 }
 
 interface TradeCalculation {
@@ -64,6 +80,57 @@ interface DockFullInfo {
 }
 
 const formatName = (name: string) => name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+// Mirrors PRICE_TREND_EPSILON in npc_scheduler_service.py (WO-ECON-MKT-
+// TIMESERIES, NO-CANON — proposed to DECISIONS alongside the retention
+// window): a move within +/-0.5% reads as flat rather than noise-flickering
+// an arrow every reprice.
+const TREND_EPSILON = 0.005;
+
+const trendGlyph = (trend?: number | null): { glyph: string; label: string; cls: string } => {
+  if (trend === undefined || trend === null) {
+    return { glyph: '–', label: 'No trend data yet', cls: 'flat' };
+  }
+  if (trend > TREND_EPSILON) {
+    return { glyph: '▲', label: `Price rising ${(trend * 100).toFixed(1)}%`, cls: 'up' };
+  }
+  if (trend < -TREND_EPSILON) {
+    return { glyph: '▼', label: `Price falling ${(Math.abs(trend) * 100).toFixed(1)}%`, cls: 'down' };
+  }
+  return { glyph: '–', label: 'Price steady', cls: 'flat' };
+};
+
+/** Inline SVG sparkline from a commodity's PriceHistory series — midpoint of
+ *  buy/sell per snapshot, normalized to the series' own min/max so a flat
+ *  market still draws a visible (if straight) line. */
+const PriceSparkline: React.FC<{ points: PriceHistoryPoint[] }> = ({ points }) => {
+  const width = 100;
+  const height = 28;
+  const mids = points.map(p => (p.buy_price + p.sell_price) / 2);
+  const min = Math.min(...mids);
+  const max = Math.max(...mids);
+  const range = max - min || 1;
+  const coords = mids
+    .map((v, i) => {
+      const x = mids.length > 1 ? (i / (mids.length - 1)) * width : width / 2;
+      const y = height - ((v - min) / range) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  const rising = mids.length > 1 && mids[mids.length - 1] >= mids[0];
+
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="price-sparkline-svg"
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={`Price history sparkline, ${points.length} snapshot${points.length === 1 ? '' : 's'}, trending ${rising ? 'up' : 'down'}`}
+    >
+      <polyline points={coords} className={`sparkline-line ${rising ? 'up' : 'down'}`} fill="none" />
+    </svg>
+  );
+};
 
 interface TradingInterfaceProps {
   onClose?: () => void;
@@ -122,6 +189,12 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   const [bumping, setBumping] = useState(false);
   const [bumpError, setBumpError] = useState<string | null>(null);
 
+  // WO-ECON-MKT-TIMESERIES: which commodity's sparkline is expanded (one at a
+  // time), and the fetched history per "station:commodity" key so switching
+  // stations never shows a stale series under the same commodity name.
+  const [expandedSparkline, setExpandedSparkline] = useState<string | null>(null);
+  const [historyByKey, setHistoryByKey] = useState<Record<string, PriceHistoryPoint[] | 'loading' | 'error'>>({});
+
   // Track which port we've already fetched market info for
   const lastFetchedPortId = useRef<string | null>(null);
 
@@ -165,6 +238,37 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPort]); // Only trigger when selectedPort changes
+
+  // Fetch price history for the expanded sparkline — keyed by
+  // "station:commodity" so a cached series never bleeds across stations, and
+  // never refetched once cached (the sweep is hourly; a mid-session refetch
+  // buys nothing). GET returns [] rather than 404/500 pre-sweep, so an empty
+  // array is a legitimate cached result, not a retry trigger.
+  useEffect(() => {
+    if (!expandedSparkline || !selectedPort) return;
+    const key = `${selectedPort}:${expandedSparkline}`;
+    if (historyByKey[key] !== undefined) return;
+
+    setHistoryByKey(prev => ({ ...prev, [key]: 'loading' }));
+    apiClient
+      .get(`/api/v1/trading/market/${selectedPort}/history`, {
+        params: { commodity: expandedSparkline, hours: 24 * 7 }
+      })
+      .then(response => {
+        setHistoryByKey(prev => ({ ...prev, [key]: response.data?.history ?? [] }));
+      })
+      .catch(() => {
+        setHistoryByKey(prev => ({ ...prev, [key]: 'error' }));
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedSparkline, selectedPort]);
+
+  const toggleSparkline = (resourceType: string, e: React.MouseEvent) => {
+    // Sparkline toggle sits inside the (sometimes-clickable) resource card —
+    // never let it also fire the card's own select/open-modal handler.
+    e.stopPropagation();
+    setExpandedSparkline(prev => (prev === resourceType ? null : resourceType));
+  };
 
   // Helper to safely get cargo used space
   const getCargoUsed = (): number => {
@@ -386,6 +490,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     setSelectedPort(stationId);
     setSelectedResource('');
     setTradeQuantity(1);
+    setExpandedSparkline(null);
   };
 
   const handleResourceChange = (resourceType: string) => {
@@ -839,6 +944,9 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                 const canTrade = tradeMode === 'buy'
                   ? resource.station_sells && resource.quantity > 0
                   : resource.station_buys && playerAmount > 0;
+                const trend = trendGlyph(resource.price_trend);
+                const isSparklineOpen = expandedSparkline === resourceType;
+                const sparklineData = historyByKey[`${selectedPort}:${resourceType}`];
 
                 return (
                   <div
@@ -865,6 +973,46 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                       {resource.station_sells && <div className="buy-price">You pay: {formatCredits(resource.sell_price)}</div>}
                       {resource.station_buys && <div className="sell-price">You get: {formatCredits(resource.buy_price)}</div>}
                     </div>
+                    <div className="resource-trend-row">
+                      <span
+                        className={`trend-glyph ${trend.cls}`}
+                        aria-label={trend.label}
+                        title={trend.label}
+                      >
+                        {trend.glyph}
+                      </span>
+                      <button
+                        type="button"
+                        className="sparkline-toggle"
+                        onClick={(e) => toggleSparkline(resourceType, e)}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        aria-expanded={isSparklineOpen}
+                        aria-label={`${isSparklineOpen ? 'Hide' : 'Show'} price history for ${formatName(resourceType)}`}
+                        title="Price history"
+                      >
+                        📊
+                      </button>
+                    </div>
+                    {isSparklineOpen && (
+                      <div className="price-sparkline-panel" onClick={(e) => e.stopPropagation()}>
+                        {/* undefined covers the one-render gap before the
+                            fetch effect commits its first 'loading' state
+                            (and the no-selected-port edge case) — never
+                            render a blank panel. */}
+                        {(sparklineData === 'loading' || sparklineData === undefined) && (
+                          <span className="sparkline-status">Loading history…</span>
+                        )}
+                        {sparklineData === 'error' && (
+                          <span className="sparkline-status error">Couldn't load price history.</span>
+                        )}
+                        {Array.isArray(sparklineData) && sparklineData.length === 0 && (
+                          <span className="sparkline-status">No history yet — check back after the next market snapshot.</span>
+                        )}
+                        {Array.isArray(sparklineData) && sparklineData.length > 0 && (
+                          <PriceSparkline points={sparklineData} />
+                        )}
+                      </div>
+                    )}
                     <div className="resource-quantity">
                       {tradeMode === 'buy'
                         ? `Available: ${resource.quantity}`

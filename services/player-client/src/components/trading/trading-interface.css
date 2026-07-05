@@ -624,6 +624,96 @@
   letter-spacing: 0.04em;
 }
 
+/* WO-ECON-MKT-TIMESERIES — trend glyph + sparkline toggle */
+.resource-trend-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs, 4px);
+  margin-bottom: var(--space-sm);
+}
+
+.trend-glyph {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.trend-glyph.up {
+  color: #22c55e;
+}
+
+.trend-glyph.down {
+  color: #ef4444;
+}
+
+.trend-glyph.flat {
+  color: var(--text-color);
+  opacity: 0.5;
+}
+
+.sparkline-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0.7;
+  transition: opacity var(--transition-normal), background var(--transition-normal);
+}
+
+.sparkline-toggle:hover,
+.sparkline-toggle:focus-visible {
+  opacity: 1;
+  background: var(--bg-color);
+}
+
+.price-sparkline-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  margin-bottom: var(--space-sm);
+  padding: var(--space-xs, 4px) 0;
+  border-top: 1px dashed var(--border-color);
+  border-bottom: 1px dashed var(--border-color);
+  /* Keep the toggle/panel from also opening the trade modal via the card's
+     own onClick — the panel is informational, not a trade trigger. */
+  cursor: default;
+}
+
+.price-sparkline-svg {
+  width: 100%;
+  height: 28px;
+}
+
+.sparkline-line {
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.sparkline-line.up {
+  stroke: #22c55e;
+}
+
+.sparkline-line.down {
+  stroke: #ef4444;
+}
+
+.sparkline-status {
+  font-size: var(--text-xs, 0.75rem);
+  opacity: 0.7;
+  text-align: center;
+}
+
+.sparkline-status.error {
+  color: #ef4444;
+  opacity: 1;
+}
+
 .resource-trade-hint {
   text-align: center;
   font-size: var(--text-xs, 0.75rem);

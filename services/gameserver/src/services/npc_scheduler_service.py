@@ -486,6 +486,34 @@ PRICE_ALERT_SWEEP_SECONDS = int(
     os.environ.get("PRICE_ALERT_SWEEP_SECONDS", str(60))
 )
 
+# Price-history snapshot sweep cadence (WO-ECON-MKT-TIMESERIES). The
+# price_history table had readers (market_prediction_engine's preferred
+# series, economy_analytics' _get_price_trends) but ZERO writers — every
+# prediction/chart ran on an empty table. This sweep writes one hourly
+# PriceHistory row per (station, commodity) from the current MarketPrice
+# row, rolling hourly rows into daily and daily rows into weekly snapshots
+# on their respective calendar boundaries. Hourly cadence matches the
+# canon snapshot granularity directly (DATA_MODELS/economy.md:122-130), so
+# no coarse pre-filter is needed the way the daily/weekly sweeps use one.
+PRICE_HISTORY_SWEEP_SECONDS = int(
+    os.environ.get("PRICE_HISTORY_SWEEP_SECONDS", str(60 * 60))
+)
+# Retention/pruning window (NO-CANON — canon names the hourly/daily/weekly
+# snapshot cadences but is silent on how long each is kept; proposed to
+# DECISIONS: 7 days of hourly rows, 90 days of daily rows, weekly rows kept
+# indefinitely as the long-horizon trend series).
+PRICE_HISTORY_HOURLY_RETENTION_DAYS = int(
+    os.environ.get("PRICE_HISTORY_HOURLY_RETENTION_DAYS", "7")
+)
+PRICE_HISTORY_DAILY_RETENTION_DAYS = int(
+    os.environ.get("PRICE_HISTORY_DAILY_RETENTION_DAYS", "90")
+)
+# Trend-glyph epsilon used by the trading UI to decide up/down/flat
+# (NO-CANON — proposed alongside the retention window). Exposed here so the
+# one magic number lives next to its sibling economy constants rather than
+# being re-declared in the frontend with no cross-reference.
+PRICE_TREND_EPSILON = float(os.environ.get("PRICE_TREND_EPSILON", "0.005"))
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -3816,6 +3844,229 @@ def _run_price_alert_sweep_sync() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Price-history time-series sweep (WO-ECON-MKT-TIMESERIES) — hourly
+# PriceHistory snapshots + daily/weekly rollups + retention pruning
+# ---------------------------------------------------------------------------
+
+def _price_history_rollup(
+    db: Session, snapshot_type: str, source_type: str,
+    window_start: datetime, window_end: datetime, target_date: datetime,
+) -> int:
+    """Aggregate every ``source_type`` PriceHistory row in
+    [window_start, window_end) into one ``snapshot_type`` row per (station,
+    commodity), dated ``target_date``. Shared by the daily (hourly->daily) and
+    weekly (daily->weekly) rollups — same shape, different source/target
+    granularity. Idempotent: skips any (station, commodity) that already has
+    a ``snapshot_type`` row dated ``target_date`` (restart-safe — a missed or
+    duplicate wake is a clean no-op, mirroring the daily EconomicMetrics
+    anchor)."""
+    from src.models.market_transaction import PriceHistory
+
+    already = set(
+        db.query(PriceHistory.station_id, PriceHistory.commodity)
+        .filter(
+            PriceHistory.snapshot_type == snapshot_type,
+            PriceHistory.snapshot_date == target_date,
+        )
+        .all()
+    )
+
+    source_rows = (
+        db.query(PriceHistory)
+        .filter(
+            PriceHistory.snapshot_type == source_type,
+            PriceHistory.snapshot_date >= window_start,
+            PriceHistory.snapshot_date < window_end,
+        )
+        .all()
+    )
+    by_key: Dict[Tuple[Any, str], List[Any]] = {}
+    for row in source_rows:
+        by_key.setdefault((row.station_id, row.commodity), []).append(row)
+
+    written = 0
+    for (station_id, commodity), rows in by_key.items():
+        if (station_id, commodity) in already:
+            continue
+        n = len(rows)
+        total_volume = sum(r.daily_volume for r in rows)
+        total_txns = sum(r.transactions_count for r in rows)
+        db.add(PriceHistory(
+            station_id=station_id,
+            commodity=commodity,
+            buy_price=round(sum(r.buy_price for r in rows) / n),
+            sell_price=round(sum(r.sell_price for r in rows) / n),
+            quantity=round(sum(r.quantity for r in rows) / n),
+            daily_volume=total_volume,
+            transactions_count=total_txns,
+            average_transaction_size=(
+                float(total_volume) / total_txns if total_txns else 0.0
+            ),
+            demand_level=sum(r.demand_level for r in rows) / n,
+            supply_level=sum(r.supply_level for r in rows) / n,
+            snapshot_date=target_date,
+            snapshot_type=snapshot_type,
+        ))
+        written += 1
+    db.flush()
+    return written
+
+
+def sweep_price_history(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
+    """Core PriceHistory sweep logic — hourly snapshot of every current
+    MarketPrice row, plus daily/weekly rollups on their calendar boundaries.
+
+    Deliberately takes an injected ``db`` and does no session lifecycle,
+    advisory-lock, or commit/rollback of its own (mirrors
+    TradingService.flush_pending_recomputes / price_alert_service.
+    sweep_price_alerts) — that discipline lives in the
+    ``_run_price_history_sweep_sync`` wrapper below. This split is what makes
+    the sweep unit-testable directly against the ``db`` fixture rather than
+    only provable live.
+
+    HOURLY — one row per (station, commodity) with a MarketPrice row,
+    snapshotting price/quantity/demand/supply as of ``now`` (hour-truncated)
+    plus interval volume (sum of MarketTransaction.quantity / count over the
+    trailing hour, one aggregate GROUP BY query — no per-station loop).
+    Idempotent within the hour: a (station, commodity) that already has an
+    hourly row dated this hour is skipped, so a second tick inside the same
+    hour never duplicates.
+
+    DAILY / WEEKLY — rolled up via the shared ``_price_history_rollup``
+    helper only on the relevant calendar boundary (daily: the first tick of
+    a new UTC day, rolling up yesterday's hourly rows; weekly: the first
+    tick of a new ISO week — Monday — rolling up the last 7 days' daily
+    rows), so the aggregation query only ever runs once per period.
+
+    PRUNING — deletes hourly rows older than PRICE_HISTORY_HOURLY_RETENTION_
+    DAYS and daily rows older than PRICE_HISTORY_DAILY_RETENTION_DAYS every
+    tick (cheap — indexed on snapshot_date); weekly rows are never pruned
+    (NO-CANON retention policy, see the constants above).
+
+    Returns {"hourly": int, "daily": int, "weekly": int, "pruned": int} —
+    counts of rows written/deleted this call.
+    """
+    from src.models.market_transaction import MarketPrice, MarketTransaction, PriceHistory
+    from sqlalchemy import func as sa_func
+
+    now = now or datetime.utcnow()
+    hour_start = now.replace(minute=0, second=0, microsecond=0)
+    day_start = hour_start.replace(hour=0)
+
+    # --- Hourly snapshot -----------------------------------------------
+    already_hourly = set(
+        db.query(PriceHistory.station_id, PriceHistory.commodity)
+        .filter(
+            PriceHistory.snapshot_type == "hourly",
+            PriceHistory.snapshot_date == hour_start,
+        )
+        .all()
+    )
+
+    vol_rows = (
+        db.query(
+            MarketTransaction.station_id,
+            MarketTransaction.commodity,
+            sa_func.coalesce(sa_func.sum(MarketTransaction.quantity), 0),
+            sa_func.count(MarketTransaction.id),
+        )
+        .filter(MarketTransaction.timestamp >= hour_start)
+        .group_by(MarketTransaction.station_id, MarketTransaction.commodity)
+        .all()
+    )
+    volume_by_key = {(r[0], r[1]): (int(r[2] or 0), int(r[3] or 0)) for r in vol_rows}
+
+    hourly_written = 0
+    for mp in db.query(MarketPrice).all():
+        key = (mp.station_id, mp.commodity)
+        if key in already_hourly:
+            continue
+        volume, txn_count = volume_by_key.get(key, (0, 0))
+        db.add(PriceHistory(
+            station_id=mp.station_id,
+            commodity=mp.commodity,
+            buy_price=mp.buy_price,
+            sell_price=mp.sell_price,
+            quantity=mp.quantity,
+            daily_volume=volume,
+            transactions_count=txn_count,
+            average_transaction_size=(float(volume) / txn_count if txn_count else 0.0),
+            demand_level=mp.demand_level,
+            supply_level=mp.supply_level,
+            snapshot_date=hour_start,
+            snapshot_type="hourly",
+        ))
+        hourly_written += 1
+    db.flush()
+
+    # --- Daily / weekly rollups, only on their calendar boundary --------
+    daily_written = 0
+    if hour_start == day_start:  # first tick of a new UTC day
+        daily_written = _price_history_rollup(
+            db, "daily", "hourly",
+            window_start=day_start - timedelta(days=1), window_end=day_start,
+            target_date=day_start - timedelta(days=1),
+        )
+
+    weekly_written = 0
+    if hour_start == day_start and day_start.weekday() == 0:  # Monday
+        weekly_written = _price_history_rollup(
+            db, "weekly", "daily",
+            window_start=day_start - timedelta(days=7), window_end=day_start,
+            target_date=day_start - timedelta(days=7),
+        )
+
+    # --- Retention pruning -----------------------------------------------
+    hourly_cutoff = now - timedelta(days=PRICE_HISTORY_HOURLY_RETENTION_DAYS)
+    daily_cutoff = now - timedelta(days=PRICE_HISTORY_DAILY_RETENTION_DAYS)
+    pruned = (
+        db.query(PriceHistory)
+        .filter(PriceHistory.snapshot_type == "hourly", PriceHistory.snapshot_date < hourly_cutoff)
+        .delete(synchronize_session=False)
+    )
+    pruned += (
+        db.query(PriceHistory)
+        .filter(PriceHistory.snapshot_type == "daily", PriceHistory.snapshot_date < daily_cutoff)
+        .delete(synchronize_session=False)
+    )
+
+    return {
+        "hourly": hourly_written, "daily": daily_written,
+        "weekly": weekly_written, "pruned": pruned,
+    }
+
+
+def _run_price_history_sweep_sync() -> Dict[str, int]:
+    """Own-session wrapper around ``sweep_price_history`` — SessionLocal +
+    advisory lock + commit/rollback, same discipline as every other sweep in
+    this module. A second gameserver instance racing the same tick skips
+    (pg_try_advisory_xact_lock) rather than double-writing; a mid-sweep
+    failure rolls back the whole tick (nothing partially written — the next
+    hourly wake retries cleanly, same as the EconomicMetrics snapshot)."""
+    from src.core.database import SessionLocal
+
+    not_written = {"hourly": 0, "daily": 0, "weekly": 0, "pruned": 0}
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return not_written
+
+        result = sweep_price_history(db)
+        db.commit()  # releases the xact lock
+        return result
+    except Exception:
+        logger.exception("Price-history sweep failed")
+        db.rollback()
+        return not_written
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
 
@@ -5226,6 +5477,29 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: price-alert sweep crashed (loop continues)")
+
+        # Price-history snapshot sweep (WO-ECON-MKT-TIMESERIES) — write one
+        # hourly PriceHistory row per (station, commodity) from the current
+        # MarketPrice row, so market_prediction_engine's PriceHistory-preferred
+        # series and economy_analytics' price-trend charts finally have real
+        # data (the table had readers but zero writers). Rolls hourly rows
+        # into daily and daily into weekly on their calendar boundary, and
+        # prunes past the retention window. Own session, own advisory lock,
+        # failure isolated — same discipline as the other sweeps.
+        if elapsed % PRICE_HISTORY_SWEEP_SECONDS == 0:
+            try:
+                history = await asyncio.to_thread(_run_price_history_sweep_sync)
+                if any(history.values()):
+                    logger.info(
+                        "NPC scheduler: price-history sweep — %d hourly, "
+                        "%d daily, %d weekly row(s) written, %d pruned",
+                        history.get("hourly", 0), history.get("daily", 0),
+                        history.get("weekly", 0), history.get("pruned", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: price-history sweep crashed (loop continues)")
 
         # ARIA storage-prune pass (WO-F16) — evict each player's oldest ARIA
         # memory/market-intelligence rows until their combined payload is back

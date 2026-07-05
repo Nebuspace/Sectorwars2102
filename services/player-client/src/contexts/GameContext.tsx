@@ -136,6 +136,13 @@ export interface MarketInfo {
     station_buys: boolean;
     station_sells: boolean;
     last_updated?: string;
+    /** Player-trade demand signal (ADR-0062 E-V4). */
+    player_demand_score?: number;
+    /** WO-ECON-MKT-TIMESERIES: computed on every reprice
+     *  (TradingService.update_market_prices) — positive = rising fraction. */
+    price_trend?: number;
+    previous_buy_price?: number | null;
+    previous_sell_price?: number | null;
   }>;
   port: {
     id: string;
