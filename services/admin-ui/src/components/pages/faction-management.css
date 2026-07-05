@@ -142,6 +142,47 @@
   background: var(--color-gray-700);
 }
 
+.faction-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.faction-btn-primary {
+  border-color: var(--interactive-primary);
+  background: var(--interactive-primary);
+  color: var(--text-on-primary);
+}
+
+.faction-btn-primary:hover:not(:disabled) {
+  background: var(--interactive-primary-hover);
+  border-color: var(--interactive-primary-hover);
+}
+
+.faction-btn-small {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+/* Actions cell (per-row Edit / Territory / Reputation) */
+.faction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* Primary/secondary color pickers in the create/edit modal */
+.faction-color-row {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.faction-color-input {
+  padding: 0.25rem;
+  width: 4rem;
+  height: 2.5rem;
+}
+
 /* Table sections */
 .faction-table-section {
   margin-bottom: 2rem;

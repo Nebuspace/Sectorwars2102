@@ -265,6 +265,35 @@
   border: 1px solid var(--border-medium, rgba(100, 116, 139, 0.3));
 }
 
+/* Per-namespace key browser (expandable row under the namespace table) */
+.tm-namespace-keys-row td {
+  padding: 0;
+  border-bottom: 1px solid var(--border-light, var(--border-color, #2a3142));
+}
+
+.tm-namespace-keys {
+  padding: 1rem 1.25rem;
+  background: var(--surface-primary, var(--bg-color, #11151f));
+}
+
+.tm-namespace-keys-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary, #94a3b8);
+}
+
+.tm-keys-table .tm-key-value {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Empty / loading states */
 .tm-empty {
   display: flex;
