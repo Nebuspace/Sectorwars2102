@@ -124,7 +124,10 @@ async def websocket_endpoint(
         except Exception as e:
             logger.error(f"WebSocket error for user {user.id}: {e}")
         finally:
-            await connection_manager.disconnect(str(user.id))
+            # Pass our own socket: if we were the one evicted (superseded by
+            # a newer connection for this user), disconnect() no-ops instead
+            # of scrubbing the successor's registration (WO-RT-EVICTION-SUPERSEDE).
+            await connection_manager.disconnect(str(user.id), websocket)
     
     except Exception as e:
         logger.error(f"WebSocket connection error: {e}")

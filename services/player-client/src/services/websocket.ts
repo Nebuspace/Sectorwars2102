@@ -100,7 +100,10 @@ class WebSocketService {
   private shouldReconnect = true;
   // Whether the CURRENT socket attempt ever reached onopen. A close without an
   // open is a handshake/auth rejection (an expired token is rejected pre-accept
-  // and surfaces to the browser as code 1006, NOT the server's 4001).
+  // and surfaces to the browser as code 1006, NOT the server's 4001). A
+  // post-accept 4001 is always this socket's own connection having reached
+  // onopen first — including the eviction case (reason 'superseded'), which
+  // is handled separately from auth failure in the onclose handler below.
   private hadOpen = false;
   // Guards against stacking multiple refresh-then-reconnect cycles at once.
   private refreshingAuth = false;
@@ -247,9 +250,24 @@ class WebSocketService {
       if (!this.shouldReconnect) return;
       // 4002 = player profile not found — not retryable.
       if (event.code === 4002) return;
+      // 4001/'superseded' = a newer tab/device connected as this same user
+      // and evicted this socket (WO-RT-EVICTION-SUPERSEDE). This is NOT an
+      // auth failure — reconnecting here would just evict the new tab in
+      // turn, ping-ponging the eviction forever. Stop the retry loop and
+      // surface a "connected elsewhere" state instead.
+      if (event.code === 4001 && event.reason === 'superseded') {
+        this.shouldReconnect = false;
+        this.notifyHandlers({
+          type: 'connection_superseded',
+          message: 'Connected in another tab or device',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
       // Auth failure surfaces two ways: the server's explicit 4001 (post-accept
-      // close) OR, when an expired token is rejected before accept, a handshake
-      // that never opened (browser code 1006). In both cases the token is the
+      // close, reason !== 'superseded' — see the eviction branch above) OR,
+      // when an expired token is rejected before accept, a handshake that
+      // never opened (browser code 1006). In both cases the token is the
       // suspect, so refresh it before retrying instead of looping on a dead
       // token ("WebSocket: Connection error" every interval). A clean drop
       // AFTER a successful open (network blip) just reconnects.

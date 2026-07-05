@@ -44,10 +44,17 @@ class ConnectionManager:
         """Accept a new WebSocket connection"""
         await websocket.accept()
         
-        # If user already connected, disconnect old connection
+        # If user already connected, evict the old connection. Close with
+        # 4001/reason="superseded" (canon reuses 4001 for both auth failure
+        # and eviction — realtime-bus.md:70 — the reason string is the
+        # discriminator) so the client can tell this apart from an auth
+        # rejection and skip its reconnect-with-refresh path
+        # (WO-RT-EVICTION-SUPERSEDE). The route's finally block passes its
+        # own socket to disconnect(), so the evicted handler can't turn
+        # around and scrub this new connection's registration.
         if user_id in self.active_connections:
             try:
-                await self.active_connections[user_id].close()
+                await self.active_connections[user_id].close(code=4001, reason="superseded")
             except Exception as e:
                 logger.warning(f"Error closing existing connection for user {user_id}: {e}")
         
@@ -100,11 +107,22 @@ class ConnectionManager:
                 "timestamp": datetime.now(UTC).isoformat()
             }, exclude_user=user_id)
     
-    async def disconnect(self, user_id: str):
-        """Remove a WebSocket connection"""
+    async def disconnect(self, user_id: str, websocket: Optional[WebSocket] = None):
+        """Remove a WebSocket connection.
+
+        `websocket`, when passed, must be the exact socket the caller owns
+        (the route's finally block passes its own connection object). If a
+        newer socket has since replaced it in active_connections, this is a
+        no-op — an evicted handler's finally must never scrub the socket
+        that superseded it (WO-RT-EVICTION-SUPERSEDE). Internal prune paths
+        that only know the user_id (e.g. send-failure cleanup) call this
+        with websocket=None and keep the prior unconditional behavior.
+        """
         if user_id not in self.active_connections:
             return
-        
+        if websocket is not None and self.active_connections[user_id] is not websocket:
+            return
+
         metadata = self.connection_metadata.get(user_id, {})
         current_sector = metadata.get("current_sector")
         team_id = metadata.get("team_id")
