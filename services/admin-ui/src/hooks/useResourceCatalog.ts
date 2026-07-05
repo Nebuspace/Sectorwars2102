@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   getCachedResourceCatalog,
   getResourceCatalog,
+  resourceIcon,
   resourceLabel,
   subscribeResourceCatalog,
   type ResourceCatalogEntry,
@@ -25,6 +26,8 @@ export interface UseResourceCatalogResult {
   loading: boolean;
   /** Registry label -> prettified key. */
   getLabel: (name: string) => string;
+  /** Local glyph table -> generic 📦 fallback (never reads the catalog — see resourceCatalog.ts). */
+  getIcon: (name: string) => string;
 }
 
 export function useResourceCatalog(): UseResourceCatalogResult {
@@ -61,6 +64,7 @@ export function useResourceCatalog(): UseResourceCatalogResult {
   }, []);
 
   const getLabel = useCallback((name: string) => resourceLabel(name, catalog), [catalog]);
+  const getIcon = useCallback((name: string) => resourceIcon(name), []);
 
-  return { catalog: catalog || [], loading, getLabel };
+  return { catalog: catalog || [], loading, getLabel, getIcon };
 }

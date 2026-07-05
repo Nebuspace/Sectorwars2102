@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './colony-overview.css';
 
 interface Colony {
@@ -78,6 +79,7 @@ interface ColonyStats {
 
 export const ColonyOverview: React.FC = () => {
   const { user, token } = useAuth();
+  const { getIcon, getLabel } = useResourceCatalog();
   const [colonies, setColonies] = useState<Colony[]>([]);
   const [stats, setStats] = useState<ColonyStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -392,28 +394,28 @@ export const ColonyOverview: React.FC = () => {
             </div>
             <div className="colony-resources">
               <div className="resource">
-                <span className="resource-icon">⚡</span>
+                <span className="resource-icon">{getIcon('fuel_ore')}</span>
                 <span className="resource-value">
                   {formatNumber(colony.resources.energy)}
                   <span className="resource-unit"> units</span>
                 </span>
-                <span className="resource-name">Fuel Ore</span>
+                <span className="resource-name">{getLabel('fuel_ore')}</span>
               </div>
               <div className="resource">
-                <span className="resource-icon">💎</span>
+                <span className="resource-icon">{getIcon('equipment')}</span>
                 <span className="resource-value">
                   {formatNumber(colony.resources.minerals)}
                   <span className="resource-unit"> units</span>
                 </span>
-                <span className="resource-name">Equipment</span>
+                <span className="resource-name">{getLabel('equipment')}</span>
               </div>
               <div className="resource">
-                <span className="resource-icon">🌾</span>
+                <span className="resource-icon">{getIcon('organics')}</span>
                 <span className="resource-value">
                   {formatNumber(colony.resources.food)}
                   <span className="resource-unit"> units</span>
                 </span>
-                <span className="resource-name">Organics</span>
+                <span className="resource-name">{getLabel('organics')}</span>
               </div>
               <div className="resource">
                 <span className="resource-icon">💧</span>

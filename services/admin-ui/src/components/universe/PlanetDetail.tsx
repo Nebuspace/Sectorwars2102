@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useResourceCatalog } from '../../hooks/useResourceCatalog';
 import './universe-detail.css';
 
 interface PlanetDetailProps {
@@ -8,6 +9,7 @@ interface PlanetDetailProps {
 }
 
 const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate }) => {
+  const { getIcon, getLabel } = useResourceCatalog();
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [isLoading, setIsLoading] = useState(false);
@@ -272,7 +274,7 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
           <h3>Colonist Distribution</h3>
           <div className="colonist-grid">
             <div className="colonist-card fuel">
-              <h4>⚡ Fuel Colonists</h4>
+              <h4>{getIcon('fuel')} {getLabel('fuel')} Colonists</h4>
               <div className="colonist-info">
                 <div className="count">
                   <EditableField field="colonists.fuel" value={colonists.fuel} type="number" />
@@ -284,7 +286,7 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
               </div>
             </div>
             <div className="colonist-card organics">
-              <h4>🌿 Organics Colonists</h4>
+              <h4>{getIcon('organics')} {getLabel('organics')} Colonists</h4>
               <div className="colonist-info">
                 <div className="count">
                   <EditableField field="colonists.organics" value={colonists.organics} type="number" />
@@ -296,7 +298,7 @@ const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate })
               </div>
             </div>
             <div className="colonist-card equipment">
-              <h4>⚙️ Equipment Colonists</h4>
+              <h4>{getIcon('equipment')} {getLabel('equipment')} Colonists</h4>
               <div className="colonist-info">
                 <div className="count">
                   <EditableField field="colonists.equipment" value={colonists.equipment} type="number" />

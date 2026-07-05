@@ -37,6 +37,32 @@ export interface ResourceCatalogEntry {
   is_producible: boolean;
 }
 
+// Mirrors services/player-client/src/services/resourceCatalog.ts's DEFAULT_ICONS
+// verbatim (WO-ARCH-RES-3C) so the two frontends cannot re-diverge on glyphs —
+// the ruling (ore ⛏️, fuel_ore/fuel ⛽, generic 📦) is flagged to DECISIONS as
+// part of the 3A entry. Since admin-only sessions 404 on the catalog fetch
+// (see module docstring above), icon is ALWAYS local — the registry's `icon`
+// column is a documented placeholder, same reasoning as player-client.
+const DEFAULT_ICONS: Record<string, string> = {
+  fuel: '⛽',
+  fuel_ore: '⛽',
+  organics: '🌿',
+  gourmet_food: '🍽️',
+  equipment: '⚙️',
+  exotic_technology: '🔬',
+  luxury_goods: '💎',
+  ore: '⛏️',
+  colonists: '👥',
+  combat_drones: '🛰️',
+  quantum_shards: '💠',
+  quantum_crystals: '🔷',
+  prismatic_ore: '🪨',
+  lumen_crystals: '✨',
+  precious_metals: '🪙',
+};
+
+const GENERIC_ICON = '📦';
+
 let cachedCatalog: ResourceCatalogEntry[] | null = null;
 let inFlight: Promise<ResourceCatalogEntry[]> | null = null;
 const listeners = new Set<() => void>();
@@ -89,4 +115,9 @@ export function resourceLabel(
   catalog: ResourceCatalogEntry[] | null = cachedCatalog
 ): string {
   return catalog?.find((r) => r.name === name)?.label || prettify(name);
+}
+
+/** Display glyph for a resource key — always local; see DEFAULT_ICONS note above. */
+export function resourceIcon(name: string): string {
+  return DEFAULT_ICONS[name] || GENERIC_ICON;
 }
