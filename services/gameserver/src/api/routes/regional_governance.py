@@ -25,6 +25,7 @@ from src.models.station import Station
 from src.models.ship import Ship
 from src.models.region_invite import RegionInvite
 from src.services.regional_governance_service import RegionalGovernanceService
+from src.services.policy_proposal_rules import validate_proposed_changes
 from src.services import trading_service
 from src.services.region_invite_service import (
     RegionInviteService,
@@ -467,7 +468,7 @@ async def create_policy(
 ):
     """Create a new policy proposal for the user's region"""
     region = await verify_region_owner(db, current_user)
-    
+
     # Get current user's player record
     player_result = await db.execute(
         select(Player).where(Player.user_id == current_user.id)
@@ -475,7 +476,17 @@ async def create_policy(
     player = player_result.scalar_one_or_none()
     if not player:
         raise HTTPException(status_code=404, detail="Player record not found")
-    
+
+    # Validate proposed_changes AT PROPOSAL TIME (canon "Validator catches at
+    # proposal time (400)") — mirrors the member POST below, so an owner and a
+    # citizen proposal are held to the identical known-keys/bounds contract.
+    errors = validate_proposed_changes(policy_data.proposed_changes)
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ERR_INVALID_PROPOSED_CHANGES", "errors": errors},
+        )
+
     # Create policy
     voting_closes_at = datetime.utcnow() + timedelta(days=policy_data.voting_duration_days)
     
@@ -1000,6 +1011,176 @@ async def get_election_results(
         "voting_opens_at": election.voting_opens_at.isoformat(),
         "voting_closes_at": election.voting_closes_at.isoformat(),
         "results": election.results,
+    }
+
+
+# =====================================================================
+# Member-facing governance discovery + policy proposal (WO-REGOV-CITIZEN-API).
+#
+# Before this slice the /my-region/* reads above served the REGION OWNER
+# only; a member (citizen/resident/visitor) had no route to discover any
+# policy/election/treaty id at all — only per-id vote/candidate actions
+# existed (:838 vote, :867 candidates, :903 policy-vote, :981 results). These
+# four routes close that gap: membership-verified reads (mirrors the :932
+# get_my_membership pattern — 403 for a non-member, 404 for a missing region)
+# that CALL the already-existing (previously uncalled) service read methods,
+# plus a member policy PROPOSAL route.
+#
+# NO-CANON: FEATURES …/regional-governance.md:159-168 targets a proposal gate
+# of "regional reputation >= 100" — no regional-reputation field exists on
+# RegionalMembership today (only the per-region reputation_score used for
+# candidacy, which is a DIFFERENT canon number). Gating instead on citizen/
+# resident membership with can_vote (region.py:260-263), same as the vote-
+# casting routes. Flagged to DECISIONS for the real threshold.
+# =====================================================================
+
+def _serialize_policy(policy: RegionalPolicy) -> Dict[str, Any]:
+    """Shape a RegionalPolicy for the member-facing API (mirrors the owner
+    /my-region/policies serialization above)."""
+    return {
+        "id": str(policy.id),
+        "policy_type": policy.policy_type,
+        "title": policy.title,
+        "description": policy.description,
+        "proposed_changes": policy.proposed_changes,
+        "proposed_by": str(policy.proposed_by),
+        "proposed_at": policy.proposed_at.isoformat(),
+        "voting_closes_at": policy.voting_closes_at.isoformat(),
+        "votes_for": policy.votes_for,
+        "votes_against": policy.votes_against,
+        "status": policy.status,
+        "approval_percentage": policy.approval_percentage,
+    }
+
+
+def _serialize_election_for_member(election: RegionalElection) -> Dict[str, Any]:
+    """Shape a RegionalElection for the member-facing API (mirrors the owner
+    /my-region/elections serialization above)."""
+    return {
+        "id": str(election.id),
+        "position": election.position,
+        "candidates": election.candidates,
+        "voting_opens_at": election.voting_opens_at.isoformat(),
+        "voting_closes_at": election.voting_closes_at.isoformat(),
+        "results": election.results,
+        "status": election.status,
+    }
+
+
+async def _require_member(
+    db: AsyncSession, region: Region, player: Player
+) -> Dict[str, Any]:
+    """403 ERR_NOT_A_MEMBER if the caller is not a member of `region` (any
+    tier, or an in-region colony owner, counts — mirrors the :932
+    get_my_membership read). Returns the membership-status dict so callers
+    needing can_vote don't have to re-fetch it."""
+    status = await RegionalGovernanceService.get_membership_status(
+        db, region.id, player.id
+    )
+    if not status.get("is_member"):
+        raise HTTPException(status_code=403, detail="ERR_NOT_A_MEMBER")
+    return status
+
+
+@router.get("/{region_id}/policies")
+async def list_region_policies_for_member(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Member-scoped policy discovery — any region member (not just the
+    owner) can list policy ids. 404 if the region does not exist; 403 if the
+    caller is not a member. Calls the pre-existing (previously uncalled)
+    RegionalGovernanceService.get_regional_policies."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    await _require_member(db, region, player)
+
+    policies = await RegionalGovernanceService.get_regional_policies(db, region.id)
+    return [_serialize_policy(p) for p in policies]
+
+
+@router.get("/{region_id}/elections")
+async def list_region_elections_for_member(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Member-scoped election discovery — any region member can list election
+    ids. 404 if the region does not exist; 403 if the caller is not a member.
+    Calls the pre-existing (previously uncalled)
+    RegionalGovernanceService.get_regional_elections."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    await _require_member(db, region, player)
+
+    elections = await RegionalGovernanceService.get_regional_elections(db, region.id)
+    return [_serialize_election_for_member(e) for e in elections]
+
+
+@router.get("/{region_id}/treaties")
+async def list_region_treaties_for_member(
+    region_id: uuid.UUID,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Member-scoped treaty discovery — any region member can list treaty
+    ids. 404 if the region does not exist; 403 if the caller is not a member.
+    Calls the pre-existing (previously uncalled)
+    RegionalGovernanceService.get_regional_treaties.
+
+    NO-CANON: the full `terms` payload is REDACTED for this member-facing
+    view (citizens see type/partner/status/expiry, not the negotiated terms
+    — the owner-scoped /my-region/treaties read is unaffected and still
+    returns terms in full). Flagged to DECISIONS."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    await _require_member(db, region, player)
+
+    treaties = await RegionalGovernanceService.get_regional_treaties(db, region.id)
+    return [{k: v for k, v in treaty.items() if k != "terms"} for treaty in treaties]
+
+
+@router.post("/{region_id}/policies")
+async def create_policy_proposal_for_member(
+    region_id: uuid.UUID,
+    policy_data: PolicyCreate,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Member-scoped policy proposal — any eligible citizen/resident (not
+    just the owner) may propose. 404 if the region does not exist; 403 if the
+    caller is not a member or is not vote-eligible (ERR_NOT_ELIGIBLE — see the
+    NO-CANON note on this section re: the reputation>=100 target). 400 if
+    proposed_changes fails policy_proposal_rules.validate_proposed_changes
+    (an unknown key or an out-of-band value) — no row is written on a 400.
+    Calls the pre-existing (previously uncalled)
+    RegionalGovernanceService.create_policy_proposal."""
+    region = await _get_region_by_id(db, region_id)
+    player = await _get_current_player(db, current_user)
+    status = await _require_member(db, region, player)
+    if not status.get("can_vote"):
+        raise HTTPException(status_code=403, detail="ERR_NOT_ELIGIBLE")
+
+    errors = validate_proposed_changes(policy_data.proposed_changes)
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ERR_INVALID_PROPOSED_CHANGES", "errors": errors},
+        )
+
+    new_policy = await RegionalGovernanceService.create_policy_proposal(
+        db,
+        region_id=region.id,
+        proposer_id=player.id,
+        policy_data=policy_data.model_dump(),
+    )
+    if new_policy is None:
+        raise HTTPException(status_code=500, detail="ERR_POLICY_CREATE_FAILED")
+
+    return {
+        "message": "Policy proposal created successfully",
+        "policy_id": str(new_policy.id),
     }
 
 
