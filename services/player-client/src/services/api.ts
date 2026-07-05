@@ -593,6 +593,11 @@ export const terraformAPI = {
 //     gate + cr sink via the existing start_contract). { offerId?, kind?, planetId }.
 //   cancelContract → cancel an active/accepted contract (existing cancel_contract;
 //     0% cr on active, 0% RP — the anti-arbitrage refund rule). { contractId }.
+//   unlockNode → spend banked RP on a tech_tree node (WO-PLN-UNLOCK-1). Response
+//     is minimal ({ success, nodeId, bankedRp, unlockedNodes, message }); the
+//     caller re-fetches getCockpit() for the refreshed per-node techTree state
+//     (an additive field on the cockpit payload above), same as the existing
+//     post-startContract refresh pattern.
 export const researchCockpitAPI = {
   getCockpit: () =>
     apiRequest('/api/v1/research/cockpit'),
@@ -611,6 +616,11 @@ export const researchCockpitAPI = {
     apiRequest('/api/v1/research/contracts/cancel', {
       method: 'POST',
       body: JSON.stringify({ contractId }),
+    }),
+
+  unlockNode: (nodeId: string) =>
+    apiRequest(`/api/v1/research/tech/${nodeId}/unlock`, {
+      method: 'POST',
     }),
 };
 

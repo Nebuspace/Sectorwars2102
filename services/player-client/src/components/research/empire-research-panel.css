@@ -177,6 +177,140 @@
   font-weight: 400;
 }
 
+/* Tech Tree — spend banked RP on permanent nodes (WO-PLN-UNLOCK-1). Same shell
+   language as .er-offers; per-node state color mirrors the headroom accents. */
+.er-tech {
+  border: 1px solid rgba(74, 158, 255, 0.15);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.er-tech-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: rgba(74, 158, 255, 0.06);
+  border-bottom: 1px solid rgba(74, 158, 255, 0.12);
+}
+
+.er-tech-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #cde;
+}
+
+.er-tech-count {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: rgba(0, 255, 204, 0.15);
+  color: #00ffcc;
+  border: 1px solid rgba(0, 255, 204, 0.4);
+  min-width: 20px;
+  text-align: center;
+}
+
+.er-tech-empty {
+  padding: 14px 12px;
+  text-align: center;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: #889;
+}
+
+.er-tech-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.er-tech-node {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 6px;
+  background: rgba(16, 20, 42, 0.5);
+}
+
+.er-tech-node-unlocked {
+  border-color: rgba(0, 255, 204, 0.3);
+  opacity: 0.75;
+}
+
+.er-tech-node-affordable {
+  border-color: rgba(0, 255, 204, 0.35);
+}
+
+.er-tech-node-locked {
+  opacity: 0.55;
+}
+
+.er-tech-node-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.er-tech-node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.er-tech-node-name {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #eef;
+}
+
+.er-tech-node-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #00ffcc;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(0, 255, 204, 0.12);
+  border: 1px solid rgba(0, 255, 204, 0.3);
+}
+
+.er-tech-node-cost {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.74rem;
+}
+
+.er-tech-node-reason {
+  color: #99aabb;
+  font-style: italic;
+}
+
+.unlock-btn {
+  border-color: #00ffcc;
+  color: #00ffcc;
+  font-weight: 600;
+}
+
+.unlock-btn:hover:not(:disabled) {
+  background: rgba(0, 255, 204, 0.12);
+  border-color: #00ffcc;
+  color: #aef;
+}
+
 /* §5.7 Offer surface — generated, perishable directives. */
 .er-offers {
   border: 1px solid rgba(74, 158, 255, 0.15);
