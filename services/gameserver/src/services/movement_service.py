@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, select
 
 from src.models.player import Player
-from src.models.ship import Ship, ShipStatus, ShipType
+from src.models.ship import Ship, ShipStatus
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.planet import Planet
 from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
@@ -1282,7 +1282,14 @@ class MovementService:
             return 1.0
 
     def _calculate_warp_cost(self, from_sector: Sector, to_sector: Sector, ship: Optional[Ship]) -> int:
-        """Calculate turn cost for a direct warp between sectors."""
+        """Calculate turn cost for a direct warp between sectors.
+
+        Uniform per-warp cost (movement.md:13, movement.md:24): 'Ship.current_speed
+        does not change the turn cost of any traversal' and 'A Scout (speed 2.5)
+        and a Cargo Hauler (speed 0.5) both pay the same'. Every hull type pays
+        warp.turn_cost, adjusted only by the ship's maintenance-band speed
+        factor (ships.md:89) — never by ship type or current_speed.
+        """
         # Find the warp connection details. Try the forward direction first;
         # if missing, try the reverse direction with is_bidirectional=true
         # (the bang translator stores A↔B as ONE row per the schema map,
@@ -1304,31 +1311,13 @@ class MovementService:
         
         # Get base turn cost from the warp
         base_cost = warp.turn_cost if warp.turn_cost else 1
-        
-        # Adjust based on ship type and capabilities
-        if ship:
-            # Fast ships have reduced movement costs
-            if ship.type == ShipType.FAST_COURIER:
-                base_cost = max(1, int(base_cost * 0.7))  # 30% reduction
-            elif ship.type == ShipType.SCOUT_SHIP:
-                base_cost = max(1, int(base_cost * 0.8))  # 20% reduction
-            
-            # Slower ships have increased movement costs
-            elif ship.type == ShipType.CARGO_HAULER:
-                base_cost = int(base_cost * 1.2)
-            elif ship.type == ShipType.COLONY_SHIP:
-                base_cost = int(base_cost * 1.3)
-            
-            # Apply ship's current speed adjustment
-            if ship.current_speed < ship.base_speed:
-                speed_ratio = ship.current_speed / ship.base_speed
-                base_cost = int(base_cost * (2 - speed_ratio))  # 1.0-2.0x multiplier based on speed
 
         # Maintenance performance-band SPEED modifier (ships.md:68-75). A worn
         # ship moves slower (costs more turns); a pristine ship moves faster
         # (costs fewer). The neutral "Good" band leaves this exactly 1.0, so a
-        # ship in good condition is unchanged. Applied AFTER the ship-type and
-        # current_speed adjustments, before the floor, as the final cost factor.
+        # ship in good condition is unchanged. This is the ONLY per-ship
+        # adjustment to the uniform warp.turn_cost (movement.md:13/:24) —
+        # never ship type or current_speed.
         base_cost = int(base_cost * self._maintenance_speed_multiplier(ship))
 
         # No turn cost can be less than 1
