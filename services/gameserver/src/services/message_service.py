@@ -3,7 +3,7 @@ Message Service for handling player communication
 """
 
 from collections import defaultdict, deque
-from typing import Optional, List, Dict, Any, Deque
+from typing import Optional, Dict, Any, Deque
 from datetime import datetime
 from time import monotonic
 from uuid import UUID, uuid4
@@ -16,11 +16,8 @@ from sqlalchemy import and_, or_, desc
 from src.models.message import Message
 from src.models.player import Player
 from src.models.team import Team
-from src.services.websocket_service import ConnectionManager
+from src.services.websocket_service import connection_manager as manager
 from src.services.notification_service import NotificationService
-
-# Global manager instance
-manager = ConnectionManager()
 
 logger = logging.getLogger(__name__)
 
@@ -415,32 +412,26 @@ class MessageService:
 
         # Notify all admin users about the flagged message
         try:
-            from src.models.user import User
-            admin_users = db.query(User).filter(
-                User.is_admin == True,
-                User.is_active == True
-            ).all()
-
             flagging_player = db.query(Player).filter(Player.id == flagged_by).first()
             flagged_by_name = flagging_player.username if flagging_player else str(flagged_by)
 
-            for admin_user in admin_users:
-                # Send WebSocket notification to admin connections
-                admin_notification = {
-                    "type": "flagged_message_alert",
-                    "message_id": str(message_id),
-                    "flagged_by": str(flagged_by),
-                    "flagged_by_name": flagged_by_name,
-                    "reason": reason,
-                    "message_preview": message.content[:200] if message.content else "",
-                    "sender_id": str(message.sender_id),
-                    "flagged_at": datetime.utcnow().isoformat()
-                }
-                await manager.send_personal_message(str(admin_user.id), admin_notification)
+            # Broadcast to every connected admin (admins register in
+            # admin_connections via connect_admin, not active_connections —
+            # a per-admin send_personal_message loop would never reach them).
+            admin_notification = {
+                "type": "flagged_message_alert",
+                "message_id": str(message_id),
+                "flagged_by": str(flagged_by),
+                "flagged_by_name": flagged_by_name,
+                "reason": reason,
+                "message_preview": message.content[:200] if message.content else "",
+                "sender_id": str(message.sender_id),
+                "flagged_at": datetime.utcnow().isoformat()
+            }
+            await manager.broadcast_to_admins(admin_notification)
 
             logger.warning(
-                f"Message {message_id} flagged by {flagged_by} for: {reason}. "
-                f"Notified {len(admin_users)} admin(s)."
+                f"Message {message_id} flagged by {flagged_by} for: {reason}."
             )
         except Exception as e:
             logger.error(f"Failed to notify admins about flagged message {message_id}: {e}")

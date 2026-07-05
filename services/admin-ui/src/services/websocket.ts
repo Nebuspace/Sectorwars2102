@@ -29,7 +29,10 @@ export interface WebSocketEvents {
   'player:status-change': (data: any) => void;
   'player:alert': (data: any) => void;
   'player:achievement': (data: any) => void;
-  
+
+  // Moderation events
+  'flagged:message:alert': (data: any) => void;
+
   // Universe events
   'universe:sector-update': (data: any) => void;
   'universe:port-update': (data: any) => void;
