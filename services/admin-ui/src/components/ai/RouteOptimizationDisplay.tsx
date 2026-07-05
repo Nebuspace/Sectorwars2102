@@ -134,12 +134,12 @@ export const RouteOptimizationDisplay: React.FC = () => {
                 <span className="stat-label">Active Optimizations</span>
               </div>
               <div className="stat-item">
-                <span className="stat-value">+{routeStats.avg_efficiency_improvement.toFixed(1)}%</span>
-                <span className="stat-label">Avg Efficiency Gain</span>
+                <span className="stat-value">{routeStats.avg_efficiency_improvement.toFixed(1)}%</span>
+                <span className="stat-label">Avg Cargo Efficiency</span>
               </div>
               <div className="stat-item">
-                <span className="stat-value">+{routeStats.avg_profit_increase.toFixed(1)}%</span>
-                <span className="stat-label">Avg Profit Increase</span>
+                <span className="stat-value">{routeStats.avg_profit_increase.toLocaleString()} ₵</span>
+                <span className="stat-label">Avg Route Profit</span>
               </div>
             </>
           )}

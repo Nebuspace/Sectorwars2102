@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from src.core.database import get_async_db
 from src.auth.dependencies import get_current_player
 from src.models.player import Player
+from src.models.route_optimization_run import RouteOptimizationRun
 from src.services.route_optimizer import (
     RouteOptimizer,
     RouteObjective,
@@ -105,6 +106,47 @@ class RouteOptimizeResponse(BaseModel):
     opportunities: List[OpportunityResponse]
 
 
+async def _record_optimization_run(
+    db: AsyncSession,
+    *,
+    player_id,
+    objective: str,
+    start_sector: str,
+    end_sector: Optional[str],
+    sectors: List[str],
+    total_profit: float,
+    total_distance: int,
+    total_time_hours: float,
+    cargo_efficiency: float,
+    route_confidence: float,
+) -> None:
+    """
+    Best-effort telemetry write for the NH18 admin feed. Never raises into
+    the caller — a logging failure must not fail the player's request.
+    """
+    try:
+        db.add(
+            RouteOptimizationRun(
+                player_id=player_id,
+                objective=objective,
+                start_sector=start_sector,
+                end_sector=end_sector,
+                sectors=sectors,
+                total_profit=total_profit,
+                total_distance=total_distance,
+                total_time_hours=total_time_hours,
+                cargo_efficiency=cargo_efficiency,
+                route_confidence=route_confidence,
+            )
+        )
+        await db.commit()
+    except Exception as exc:
+        logger.error(
+            f"Failed to record route optimization run for player {player_id}: {exc}"
+        )
+        await db.rollback()
+
+
 # ------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------
@@ -160,6 +202,19 @@ async def optimize_route(
                 )
 
             sectors = [str(sid) for sid in path]
+            await _record_optimization_run(
+                db,
+                player_id=current_player.id,
+                objective=objective,
+                start_sector=request.start_sector_id,
+                end_sector=request.end_sector_id,
+                sectors=sectors,
+                total_profit=0.0,
+                total_distance=max(0, len(sectors) - 1),
+                total_time_hours=0.0,
+                cargo_efficiency=0.0,
+                route_confidence=1.0,
+            )
             return RouteOptimizeResponse(
                 objective=objective,
                 route_type="direct" if len(sectors) < 3 else "linear",
@@ -194,6 +249,19 @@ async def optimize_route(
                 ),
             )
 
+        await _record_optimization_run(
+            db,
+            player_id=current_player.id,
+            objective=objective,
+            start_sector=request.start_sector_id,
+            end_sector=request.end_sector_id,
+            sectors=route.sectors,
+            total_profit=route.total_profit,
+            total_distance=route.total_distance,
+            total_time_hours=route.total_time_hours,
+            cargo_efficiency=route.cargo_efficiency,
+            route_confidence=route.route_confidence,
+        )
         return RouteOptimizeResponse(
             objective=objective,
             route_type=route.route_type,

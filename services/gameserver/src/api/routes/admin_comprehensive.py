@@ -26,6 +26,7 @@ from src.models.region import Region
 from src.models.zone import Zone
 from src.models.warp_tunnel import WarpTunnel
 from src.models.team import Team
+from src.models.route_optimization_run import RouteOptimizationRun
 from src.services.analytics_service import AnalyticsService
 from src.services.ai_security_service import get_security_service
 
@@ -2832,15 +2833,73 @@ async def get_ai_route_optimization_data(
     current_admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
-    """Get AI route optimization data for admin dashboard"""
+    """Get AI route optimization data for admin dashboard, sourced from the
+    route_optimization_runs telemetry table (WO-SB-RO2) — one row per
+    successful call to POST /routes/optimize or POST /ai/optimize-route.
+    """
     try:
-        # No route optimization engine exists; nothing in the system computes,
-        # tracks, or stores optimized routes or their outcomes. Return an
-        # empty structure (with null stats — zeros would themselves be
-        # fabricated metrics) rather than invented routes.
+        total_routes_optimized = db.query(func.count(RouteOptimizationRun.id)).scalar() or 0
+
+        if not total_routes_optimized:
+            # No runs recorded yet — an empty structure (with null stats;
+            # zeros would themselves be fabricated metrics), not invented
+            # routes.
+            data = {
+                "active_optimizations": [],
+                "optimization_stats": None
+            }
+            logger.info(f"Admin {current_admin.username} requested AI route optimization data")
+            return data
+
+        runs = (
+            db.query(RouteOptimizationRun)
+            .order_by(desc(RouteOptimizationRun.created_at))
+            .limit(50)
+            .all()
+        )
+
+        # Batch-resolve player display names (nickname -> username fallback,
+        # Player.username property) instead of one query per row.
+        player_ids = {run.player_id for run in runs}
+        players = db.query(Player).filter(Player.id.in_(player_ids)).all() if player_ids else []
+        name_by_player_id = {str(p.id): p.username for p in players}
+
+        active_optimizations = [
+            {
+                "id": str(run.id),
+                "playerId": str(run.player_id),
+                "playerName": name_by_player_id.get(str(run.player_id), "Unknown"),
+                "startSector": run.start_sector,
+                "route": run.sectors,
+                "estimatedProfit": run.total_profit,
+                "estimatedTime": run.total_time_hours,
+                "efficiency": max(0, min(100, round(run.cargo_efficiency * 100))),
+                "status": run.status,
+            }
+            for run in runs
+        ]
+
+        avg_efficiency, avg_profit = db.query(
+            func.avg(RouteOptimizationRun.cargo_efficiency),
+            func.avg(RouteOptimizationRun.total_profit),
+        ).one()
+
+        active_window_cutoff = datetime.now(timezone.utc) - timedelta(minutes=60)
+        active_count = (
+            db.query(func.count(RouteOptimizationRun.id))
+            .filter(RouteOptimizationRun.created_at > active_window_cutoff)
+            .scalar()
+            or 0
+        )
+
         data = {
-            "active_optimizations": [],
-            "optimization_stats": None
+            "active_optimizations": active_optimizations,
+            "optimization_stats": {
+                "total_routes_optimized": total_routes_optimized,
+                "avg_efficiency_improvement": round((avg_efficiency or 0.0) * 100, 1),
+                "avg_profit_increase": round(avg_profit or 0.0, 1),
+                "active_optimizations": active_count,
+            },
         }
 
         logger.info(f"Admin {current_admin.username} requested AI route optimization data")

@@ -1,0 +1,172 @@
+/* =============================================================================
+   ROUTE PLANNER PANEL — collapsible Route Planner section inside the
+   Trading Interface (WO-SB-RO2 Lane C). Collapsed by default so it never
+   pushes the primary buy/sell grid below the fold (Scroll Law).
+============================================================================= */
+
+.route-planner-panel {
+  background: var(--container-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  margin-bottom: var(--space-lg);
+  overflow: hidden;
+}
+
+.route-planner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.route-planner-header h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--primary-color);
+}
+
+.route-planner-toggle {
+  font-size: var(--text-sm);
+  color: var(--text-color);
+  opacity: 0.7;
+}
+
+.route-planner-body {
+  padding: var(--space-md);
+  border-top: 1px solid var(--border-color);
+}
+
+.route-planner-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.route-planner-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.route-planner-field label {
+  font-size: var(--text-sm);
+  color: var(--text-color);
+  opacity: 0.85;
+}
+
+.route-planner-field select,
+.route-planner-field input[type="text"] {
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--input-bg, rgba(255, 255, 255, 0.05));
+  color: var(--text-color);
+}
+
+.route-planner-field-row {
+  display: flex;
+  gap: var(--space-md);
+}
+
+.route-planner-field-row .route-planner-field {
+  flex: 1;
+}
+
+.route-planner-submit {
+  padding: var(--space-sm) var(--space-lg);
+  border-radius: 6px;
+  border: none;
+  background: var(--primary-color);
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.route-planner-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.route-planner-error {
+  margin-top: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  color: #ef4444;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.route-planner-result {
+  margin-top: var(--space-lg);
+}
+
+.route-planner-hops {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-md);
+}
+
+.route-planner-hop {
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-color);
+  font-weight: 600;
+}
+
+.route-planner-hop-arrow {
+  opacity: 0.6;
+}
+
+.route-planner-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.route-planner-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-sm);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.route-planner-stat .stat-label {
+  font-size: var(--text-sm);
+  opacity: 0.7;
+}
+
+.route-planner-stat .stat-value {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--primary-color);
+}
+
+.route-planner-opportunities table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.route-planner-opportunities th,
+.route-planner-opportunities td {
+  padding: var(--space-xs) var(--space-sm);
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.route-planner-opportunities th {
+  opacity: 0.7;
+  font-weight: 600;
+}

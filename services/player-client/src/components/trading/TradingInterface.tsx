@@ -8,6 +8,7 @@ import { StationClassBadge, getTraderPersonality } from '../common/stationIdenti
 import { formatCredits } from '../../utils/formatters';
 import { resourceIcon } from '../../services/resourceCatalog';
 import HaggleDesk from './HaggleDesk';
+import RoutePlannerPanel from './RoutePlannerPanel';
 import './trading-interface.css';
 
 /* TRADE LEDGER shell (Law 3) — module-level so the frame keeps its
@@ -553,6 +554,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
           <h2>Trading Interface</h2>
           <div className="status-indicator disconnected">Not Docked</div>
         </div>
+        <RoutePlannerPanel />
         <div className="not-docked-message">
           <div className="message-icon">🚀</div>
           <h3>Dock at a Station to Trade</h3>
@@ -684,6 +686,8 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
           {error}
         </div>
       )}
+
+      <RoutePlannerPanel />
 
       <div className="trading-content">
         {/* Station Selection — only when there's an actual choice (multiple
