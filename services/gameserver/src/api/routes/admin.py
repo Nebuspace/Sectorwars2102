@@ -584,6 +584,7 @@ async def get_all_colonies(
             "max_population": planet.max_population,
             "habitability_score": planet.habitability_score,
             "resource_richness": planet.resource_richness,
+            "morale": planet.morale,
             "defense_level": planet.defense_level,
             "colonized_at": planet.colonized_at.isoformat() if planet.colonized_at else None,
             "fuel_ore": getattr(planet, 'fuel_ore', 0),
