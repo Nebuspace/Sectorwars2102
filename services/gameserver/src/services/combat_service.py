@@ -399,6 +399,23 @@ class CombatService:
     # attacker's ship), not drone.defense_power — filed to DECISIONS.
     SECTOR_DEFENSE_BONUS_MULT = 1.05
 
+    # --- Siege vulnerability penalty (WO-PLN-SIEGE-VULN-1, defense.md:282) --
+    # "the besieged planet's effective defenses are multiplied down for as
+    # long as a qualifying besieger holds the sector... expires the moment
+    # the siege is lifted." Applied in _resolve_planet_combat when the
+    # target planet is under_siege AND morale <= 0 AND the assaulting player
+    # is the recorded besieger (planetary_service.siege_attacker_id — one
+    # besieger tracked per siege). Presence-gated at assault time from live
+    # siege state; no expiry machinery needed, since lifting the siege
+    # already clears under_siege/siege_attacker_id.
+    #
+    # NO-CANON (flag for Max): defense.md gives the mechanic but no
+    # magnitude. 0.5 is a deliberately simple binary penalty (matches
+    # planetary_service's own binary isVulnerable flag at morale<=0) — the
+    # morale-graduated-scaling alternative was considered and rejected for
+    # this kernel; noted in DECISIONS, not built.
+    VULNERABLE_DEFENSE_MULT = 0.5
+
     # Weapon type effectiveness against different defenses
     WEAPON_TYPES = {
         "laser": {"base_damage": 1.0, "shield_effectiveness": 0.8, "hull_effectiveness": 1.0, "description": "Standard energy weapon"},
@@ -3078,10 +3095,25 @@ class CombatService:
         # planets / no grid -> no behaviour change).
         drone_damage_bonus = planetary_def.get("drone_damage_bonus", 0.0)
 
+        # WO-PLN-SIEGE-VULN-1 (see VULNERABLE_DEFENSE_MULT above): qualifying
+        # besieger == the assaulting player being the recorded siege
+        # besieger. combat_defense_level == planet_defense_level (same int,
+        # unchanged) whenever siege_vulnerable is False, so the no-siege
+        # math below is untouched — regression-identical to today.
+        siege_vulnerable = (
+            planet.under_siege
+            and (planet.morale or 0) <= 0
+            and planet.siege_attacker_id == attacker.id
+        )
+        combat_defense_level = (
+            planet_defense_level * self.VULNERABLE_DEFENSE_MULT if siege_vulnerable
+            else planet_defense_level
+        )
+
         # Combat parameters
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         planet_attack = planet_weapons * 2 + planet_defense_level * 3
-        planet_defense = planet_shields * 3 + planet_defense_level * 5
+        planet_defense = planet_shields * 3 + combat_defense_level * 5
 
         # Track combat details
         round_number = 0
@@ -3099,6 +3131,20 @@ class CombatService:
                 "message": f"Planetary defenses active: {planetary_def['description']}",
                 "damage_reduction": damage_reduction,
                 "shield_hp": remaining_shield_hp
+            })
+
+        # Siege-vulnerability applied (WO-PLN-SIEGE-VULN-1) — auditable in
+        # the combat log payload per the WO's acceptance criteria.
+        if siege_vulnerable:
+            combat_details.append({
+                "round": 0,
+                "action": "siege_vulnerability",
+                "message": (
+                    f"{planet.name}'s morale has collapsed under siege — its "
+                    f"defenses are critically weakened "
+                    f"(x{self.VULNERABLE_DEFENSE_MULT} effective defense)"
+                ),
+                "vulnerable_defense_mult": self.VULNERABLE_DEFENSE_MULT
             })
 
         # Combat continues until one side is defeated or retreats
@@ -3162,7 +3208,7 @@ class CombatService:
                     planet_damage += damage
 
                     # Update planet defense parameters for subsequent rounds
-                    effective_defense_left = max(0, planet_defense_level - planet_damage)
+                    effective_defense_left = max(0, combat_defense_level - planet_damage)
                     planet_defense = effective_defense_left * 5 + planet_shields * 3
 
                     if damage > 0:
@@ -3178,7 +3224,7 @@ class CombatService:
                         })
                     
                     # Check if planet captured
-                    if planet_damage >= planet_defense_level:
+                    if planet_damage >= combat_defense_level:
                         planet_captured = True
                         combat_details.append({
                             "round": round_number,
