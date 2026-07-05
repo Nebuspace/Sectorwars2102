@@ -123,6 +123,16 @@ _HARVEST_YIELD_BANDS: Dict[str, Tuple[int, int]] = {
     "obsidian": (0, 1),   # field 0-20   | shard yield 0-1 (rare x5 crit ~2%)
 }
 
+# § Lumen Crystal sourcing (quantum-resources.md:226-232, WO-GWQ-LUMEN-FAUCET):
+# "Emerald nebulae: 1% per harvest. ... Crimson nebulae: 0.2% per harvest. ...
+# Azure and Violet nebulae do not drop Lumen Crystals." Amber/Obsidian carry no
+# documented rate (📐 Design-only harvest properties in the canon color table)
+# so they fall through .get()'s 0.0 default alongside azure/violet.
+LUMEN_DROP_RATES: Dict[str, float] = {
+    "emerald": 0.01,
+    "crimson": 0.002,
+}
+
 # § Faction reputation hooks: "Harvest Quantum Shards in any nebula | +1 Nova
 # Scientific Institute rep per 3 Shards harvested." Nova = FactionType.EXPLORERS
 # (emergent_reputation_service FACTION code map). One emergent-action dispatch
@@ -138,6 +148,18 @@ HARVEST_NS_EMERGENT_ACTION = "HARVEST_NEBULA_SHARDS_NS"
 # secure RNG"). Module-level SystemRandom per the stdlib guidance, mirroring
 # mining_service / contraband_service.
 _RNG = random.SystemRandom()
+
+
+def _roll_lumen_drop(nebula_type: str) -> bool:
+    """True if this harvest's nebula color rolls a Lumen Crystal drop, per
+    quantum-resources.md:226-232 (Emerald 1% / Crimson 0.2% / all other
+    colors never). Short-circuits `_RNG.random()` entirely for a 0%-rate
+    color rather than relying on `random() < 0.0` always being false, so an
+    un-rollable color can never drop regardless of what the RNG returns.
+    Split out of harvest_nebula to keep that function's own branch count
+    under the project's C901 complexity gate."""
+    lumen_rate = LUMEN_DROP_RATES.get(nebula_type, 0.0)
+    return lumen_rate > 0 and _RNG.random() < lumen_rate
 
 # Range bands in inter-sector spacings: (min, max). Projection uses the
 # band midpoint; the committed range (misfire ceiling) is the band max.
@@ -814,10 +836,12 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     then spends ``HARVEST_NEBULA_TURN_COST`` turns (rejecting with
     ``insufficient_turns`` before any shards are granted), rolls the shard yield
     from the canon band for the cluster's nebula type (secrets RNG) with the 2%
-    crit (×2, or ×5 for Obsidian), credits ``player.quantum_shards``, awards
-    Nova Scientific Institute rep (+1 per 3 shards), and arms the 2h cooldown
-    (canonical, scaled via scaled_deadline the same way scan/jump compute
-    theirs).
+    crit (×2, or ×5 for Obsidian), rolls a Lumen Crystal drop off the SAME RNG
+    (Emerald 1% / Crimson 0.2%, all other colors never — quantum-resources.md
+    :226-232), credits ``player.quantum_shards`` (and ``player.lumen_crystals``
+    on a Lumen hit), awards Nova Scientific Institute rep (+1 per 3 shards),
+    and arms the 2h cooldown (canonical, scaled via scaled_deadline the same
+    way scan/jump compute theirs).
 
     KERNEL SCOPE: the per-sector soft-cap depletion (Max-gated) is deferred —
     not implemented here. FLUSH-ONLY: the route owns db.commit().
@@ -911,6 +935,12 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     if crit:
         shard_yield *= crit_multiplier
 
+    # LUMEN ROLL (§ Resolution step 5, quantum-resources.md:226-232): Emerald
+    # 1%, Crimson 0.2%, all other colors never — see _roll_lumen_drop.
+    lumen_dropped = _roll_lumen_drop(nebula_type)
+    if lumen_dropped:
+        player.lumen_crystals = (player.lumen_crystals or 0) + 1
+
     # CREDIT — player's quantum-shard ledger (§ Storage: dedicated player
     # quantum-shard count; quantum_service reads player.quantum_shards).
     player.quantum_shards = (player.quantum_shards or 0) + shard_yield
@@ -934,8 +964,9 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     db.flush()  # route owns the commit
 
     logger.info(
-        "Player %s harvested nebula sector %s (%s): %d shards (crit=%s, ns_blocks=%d)",
-        player.id, sector.sector_id, nebula_type, shard_yield, crit, ns_blocks,
+        "Player %s harvested nebula sector %s (%s): %d shards (crit=%s, ns_blocks=%d, "
+        "lumen_dropped=%s)",
+        player.id, sector.sector_id, nebula_type, shard_yield, crit, ns_blocks, lumen_dropped,
     )
 
     return {
@@ -943,6 +974,8 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
         "crit": crit,
         "nebula_type": nebula_type,
         "quantum_shards": player.quantum_shards,
+        "lumen_dropped": lumen_dropped,
+        "lumen_crystals": player.lumen_crystals or 0,
         "turns_spent": HARVEST_NEBULA_TURN_COST,
         "remaining_turns": player.turns or 0,
         "harvest_cooldown_until": _iso_or_none(ship.quantum_harvest_cooldown_until),

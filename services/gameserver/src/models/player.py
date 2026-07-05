@@ -74,6 +74,24 @@ class Player(Base):
     # Warp Jumper itself (ships.quantum_charges), not here.
     quantum_shards = Column(Integer, nullable=False, default=0, server_default=text("0"))
     quantum_crystals = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    # Lumen Crystal ledger (WO-GWQ-LUMEN-FAUCET, ADR-0037). Two faucets credit
+    # it: quantum_service.harvest_nebula's Emerald/Crimson drop roll, and the
+    # Class-5+ refining_service.collect_lumen_refine conversion below.
+    # NOTE: quantum-resources.md:235 names this field `lumen_crystal_inventory`
+    # in prose; the master-queue WO chain (this WO + WO-GWQ-GATE-STAGING, which
+    # reads Phase-3 lumen from "Player.lumen_crystals") specs the column as
+    # `lumen_crystals` to mirror the quantum_crystals naming above. Built to
+    # the WO spec for cross-WO consistency; flagged as a canon/WO naming
+    # divergence for the doc to reconcile.
+    lumen_crystals = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    # Single in-flight Class-5+ Shard-to-Crystal (Lumen) refine job slot.
+    # NULL == no job pending. refining_service.start_lumen_refine sets this to
+    # scaled_deadline(12h) after debiting 100 Shards + 10,000 cr;
+    # collect_lumen_refine credits +1 lumen_crystals once now() >= this and
+    # clears it back to NULL. Only one job may be in flight at a time — start
+    # is rejected while this is set (collect first). Non-exclusive of the
+    # ship/station slot during the wait (NO-CANON, flagged to DECISIONS).
+    lumen_refine_ready_at = Column(DateTime(timezone=True), nullable=True)
     genesis_devices = Column(Integer, nullable=False, default=0)
     insurance = Column(JSONB, nullable=True)
     last_game_login = Column(DateTime(timezone=True), nullable=True)  # Renamed from last_login to avoid confusion
