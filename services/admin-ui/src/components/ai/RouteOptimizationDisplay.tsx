@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAIUpdates } from '../../contexts/WebSocketContext';
 import { api } from '../../utils/auth';
 import './route-optimization-display.css';
@@ -29,7 +29,6 @@ export const RouteOptimizationDisplay: React.FC = () => {
   const [filterPurpose, setFilterPurpose] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const mapRef = useRef<HTMLDivElement>(null);
 
   const handleRouteUpdate = useCallback((data: any) => {
     console.log('Route optimization update received:', data);

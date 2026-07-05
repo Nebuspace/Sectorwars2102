@@ -90,6 +90,18 @@ export const AdvancedAnalytics: React.FC = () => {
     }
   };
 
+  const handleDownloadReport = useCallback((report: ReportResult) => {
+    const blob = new Blob([JSON.stringify(report.data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${report.name.replace(/\s+/g, '-').toLowerCase()}-${report.id}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
   const exportOptions = [
     { id: 'players', name: 'Player Data', description: 'Export all player information including stats and activity' },
     { id: 'economy', name: 'Economy Data', description: 'Export transaction history and market data' },
@@ -177,11 +189,15 @@ export const AdvancedAnalytics: React.FC = () => {
                         </span>
                       </div>
                       <div className="report-actions">
-                        <button className="btn-icon" title="Download">
+                        <button
+                          className="btn-icon"
+                          title="Download"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDownloadReport(report);
+                          }}
+                        >
                           <i className="fas fa-download"></i>
-                        </button>
-                        <button className="btn-icon" title="Share">
-                          <i className="fas fa-share"></i>
                         </button>
                       </div>
                     </div>

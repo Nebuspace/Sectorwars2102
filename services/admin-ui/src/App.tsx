@@ -74,7 +74,7 @@ function App() {
       <AdminProvider>
         <WebSocketProvider>
           <ToastProvider>
-          <Router>
+          <Router basename={import.meta.env.BASE_URL.replace(/\/$/, '') || '/'}>
             <Routes>
               <Route path="/" element={<AppLayout />}>
                 {/* Public routes */}
