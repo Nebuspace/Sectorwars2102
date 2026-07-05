@@ -115,7 +115,6 @@ class Sector(Base):
     
     # Defenses - aligned with data definition
     defenses = Column(JSONB, nullable=False, default={
-        "defense_drones": 0,
         "owner_id": None,
         "owner_name": None,
         "team_id": None,

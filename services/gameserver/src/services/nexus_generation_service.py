@@ -381,7 +381,6 @@ class NexusGenerationService:
                 # admin.py:1495, admin_comprehensive.py:970); a list detonates
                 # combat + admin in every military sector.
                 sector_data["defenses"] = {
-                    "defense_drones": 0,
                     "owner_id": None,
                     "owner_name": None,
                     "team_id": None,

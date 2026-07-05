@@ -19,6 +19,7 @@ from src.models.player_warp_knowledge import (
 )
 from src.models.combat import CombatResult
 from src.models.combat_log import CombatLog
+from src.models.drone import Drone, DroneStatus
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.services import warp_gate_service
@@ -1719,13 +1720,21 @@ class MovementService:
                 "threat_level": "medium" if sector.hazard_level < 7 else "high"
             })
         
-        # Check for sector drones
-        defense_drones = sector.defenses.get('defense_drones', 0) if sector.defenses else 0
-        if defense_drones > 0:
+        # Check for sector drones — live hostile deployed Drone rows, mirroring
+        # the attackable set defined in attack_sector_drones
+        # (combat_service.py:1426-1431): same sector, not the moving player's
+        # own drones, still standing (DEPLOYED/DAMAGED, health > 0).
+        hostile_drone_count = self.db.query(Drone).filter(
+            Drone.sector_id == sector.id,
+            Drone.player_id != player.id,
+            Drone.status.in_([DroneStatus.DEPLOYED.value, DroneStatus.DAMAGED.value]),
+            Drone.health > 0,
+        ).count()
+        if hostile_drone_count > 0:
             encounters.append({
                 "type": "drones",
-                "count": defense_drones,
-                "threat_level": "low" if defense_drones < 10 else "medium"
+                "count": hostile_drone_count,
+                "threat_level": "low" if hostile_drone_count < 10 else "medium"
             })
         
         return encounters

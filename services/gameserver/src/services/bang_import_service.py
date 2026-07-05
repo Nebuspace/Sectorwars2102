@@ -289,7 +289,6 @@ def _gx1_sector_bias(
             _GX1_MILITARY_PATROL_MIN, _GX1_MILITARY_PATROL_MAX
         )
         defenses = {
-            "defense_drones": 0,
             "owner_id": None,
             "owner_name": None,
             "team_id": None,
