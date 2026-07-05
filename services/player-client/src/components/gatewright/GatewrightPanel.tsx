@@ -565,6 +565,51 @@ const GatewrightPanel: React.FC<GatewrightPanelProps> = ({ onClose }) => {
           </p>
         )}
 
+        {project.phase === 'BEACON_DEPLOYED' && (
+          <div className="gw-abandon-block">
+            {!cancelArmed ? (
+              <button
+                type="button"
+                className="gw-btn ghost"
+                disabled={busy}
+                data-testid="abandon-beacon"
+                onClick={() => {
+                  setArmedCancelId(project.beacon_id);
+                  setArmedAnchorId(null);
+                }}
+              >
+                ABANDON BEACON
+              </button>
+            ) : (
+              <div className="gw-confirm-block">
+                <p className="gw-cancel-note">
+                  Abandoning sinks the Phase 1 materials already spent on this beacon —
+                  including the Quantum Crystal fused into it. Nothing refunds.
+                </p>
+                <div className="gw-confirm-row">
+                  <button
+                    type="button"
+                    className="gw-btn danger"
+                    disabled={busy}
+                    data-testid="confirm-abandon-beacon"
+                    onClick={() => handleCancel(project)}
+                  >
+                    {cancelBusyId === project.beacon_id ? 'ABANDONING…' : 'CONFIRM — MATERIALS SUNK'}
+                  </button>
+                  <button
+                    type="button"
+                    className="gw-btn ghost"
+                    disabled={busy}
+                    onClick={() => setArmedCancelId(null)}
+                  >
+                    KEEP BEACON
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {anchorReady && (
           <div className="gw-anchor-block">
             <div className="gw-anchor-title">PHASE 3 — ANCHOR FOCUS</div>

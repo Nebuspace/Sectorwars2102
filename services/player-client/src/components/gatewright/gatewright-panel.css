@@ -654,6 +654,14 @@
   font-style: italic;
 }
 
+/* ---- Abandon block (BEACON_DEPLOYED) ---- */
+
+.gw-abandon-block {
+  margin-top: 0.5rem;
+  border-top: 1px dashed var(--gw-violet-dim);
+  padding-top: 0.5rem;
+}
+
 /* ---- Anchor block (D3) ---- */
 
 .gw-anchor-block {
