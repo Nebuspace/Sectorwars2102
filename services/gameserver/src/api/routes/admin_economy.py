@@ -17,7 +17,7 @@ from src.models.market_transaction import MarketPrice, MarketTransaction, Econom
 from src.models.station import Station
 from src.models.sector import Sector
 from src.models.player import Player
-from src.services.economy_analytics_service import EconomyAnalyticsService
+from src.services.economy_analytics_service import EconomyAnalyticsService, InterventionError
 
 
 router = APIRouter(prefix="/admin/economy", tags=["admin-economy"])
@@ -25,7 +25,13 @@ router = APIRouter(prefix="/admin/economy", tags=["admin-economy"])
 
 # Request/Response models
 class MarketInterventionRequest(BaseModel):
-    intervention_type: str = Field(..., description="Type of intervention: price_adjustment, inject_liquidity, freeze_trading, reset_market")
+    intervention_type: str = Field(
+        ...,
+        description=(
+            "Type of intervention: price_adjustment, inject_liquidity, "
+            "reset_market (freeze_trading is off-canon; returns 501)"
+        ),
+    )
     parameters: dict = Field(..., description="Intervention-specific parameters")
 
 
@@ -289,16 +295,23 @@ async def perform_market_intervention(
     1. **price_adjustment**: Adjust prices by percentage
        - Parameters: resource_type, adjustment_percent, port_ids (optional)
 
-    2. **inject_liquidity**: Add resources to specific ports
+    2. **inject_liquidity**: Persist real stock into a station's market —
+       writes station.commodities[commodity]["quantity"] (clamped to the
+       commodity's capacity) plus the mirrored MarketPrice row, then
+       reprices off the new stock. An unknown resource_type or a commodity
+       the station doesn't stock is skipped, not silently accepted.
        - Parameters: station_id, resources (dict of resource_type: amount)
 
-    3. **freeze_trading**: Temporarily halt trading
-       - Parameters: duration_minutes, resources (list), port_ids (list)
-
-    4. **reset_market**: Reset prices to baseline values
+    3. **reset_market**: Reset prices to baseline values
        - Parameters: resource_type
 
-    All interventions are logged in the audit trail.
+    **freeze_trading** is NOT a supported intervention — it is off-canon
+    (no trade path anywhere checks a freeze flag) and now returns
+    **501 Not Implemented** rather than a canned success response.
+
+    Every intervention that actually commits a state change is logged in
+    the audit trail; a rejected or failed call (400/501/500) writes no
+    audit row.
 
     **Required permissions**: Admin access
     """
@@ -315,6 +328,8 @@ async def perform_market_intervention(
         )
 
         return InterventionResponse(**result)
+    except InterventionError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
