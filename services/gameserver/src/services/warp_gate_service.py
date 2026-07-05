@@ -1,23 +1,53 @@
 """
-Warp-gate construction service (ADR-0029 + FEATURES/galaxy/warp-gates.md).
+Warp-gate construction service (ADR-0029 + ADR-0078 + FEATURES/galaxy/
+warp-gates.md).
 
 Three-phase ritual, all lazily settled — there is no background worker:
 
   deploy_beacon  — Phase 1: validations (free), then 50 turns + 10,000 cr +
-                   1,000 ore + 500 equipment + 1 Quantum Crystal. Beacon enters
-                   the 48h invulnerability/expiry window (ADR-0011).
-  anchor_focus   — Phase 3 Step A: 100 turns + 10,000 cr + 1,000 ore +
-                   500 equipment + 30 lumen crystals. Warp Jumper enters
-                   HARMONIZING for one canonical hour; the WarpGate row and the
-                   FORMING WarpTunnel row are created NOW.
+                   1 Quantum Crystal. Beacon enters the 48h invulnerability/
+                   expiry window (ADR-0011); a GateConstructionSite (phase 1)
+                   opens alongside it to accumulate the 1,000 ore + 500
+                   equipment structure draw over multiple stage-materials runs
+                   (ADR-0078 — a Warp Jumper's 200-unit hold can't fit either
+                   phase's total in one trip).
+  stage_materials — deposit ore/equipment (from the depositing ship's cargo)
+                   or Lumen Crystals (from the depositing PLAYER's
+                   Player.lumen_crystals wallet) into a site. Any ship present
+                   in the beacon's sector may deposit, not only the beacon's
+                   owner — team hauling is the point.
+  advance_construction — once a site's totals are fully staged, spends
+                   CONSTRUCTION_TURN_COST (5) turns to start its
+                   PHASE_CURE_HOURS (24) cure. Lazily flips CURING -> READY
+                   on any subsequent touch of the site (mirrors advance_gate's
+                   lazy-on-read model) — reaching READY on the Phase-1 site
+                   auto-opens the Phase-3 site for the same beacon.
+  anchor_focus   — Phase 3 Step A: 100 turns + 10,000 cr, drawn against the
+                   Phase-3 site's staged + cured 1,000 ore + 500 equipment +
+                   30 Lumen Crystals (never the Warp Jumper's hold). Warp
+                   Jumper enters HARMONIZING for one canonical hour; the
+                   WarpGate row and the FORMING WarpTunnel row are created NOW.
   advance_gate   — Phase 3 Step B (lazy, called from every read/list/traversal
                    path): past the timer the Warp Jumper hull is consumed
                    (no insurance, no Cargo Wreck, full cargo to the escape pod
                    at the DESTINATION), tunnel + gate flip ACTIVE, beacon
                    MATCHED with invulnerability cleared.
-  cancel         — beacon: Phase 1 materials are sunk (canon). Harmonizing
-                   gate: full Phase 3 refund, ship exits HARMONIZING intact,
-                   tunnel row deleted. The Phase 1 Crystal never refunds.
+  cancel         — beacon: Phase 1 materials sunk (canon), INCLUDING whatever
+                   is staged in the Phase-1 site. A staged-but-unconsumed
+                   Phase-3 site (opened once Phase 1 cured) is NOT covered by
+                   that rule — ADR-0029 is silent on it under the new staging
+                   model — so ore/equipment return to the cancelling player's
+                   ship hold up to its remaining capacity (excess forfeited;
+                   no warp-gate salvage-wreck mechanic exists to spawn
+                   instead) and staged Lumen Crystals always refund in full to
+                   Player.lumen_crystals (a wallet ledger, no capacity
+                   concept) — builder-proposed disposition, flagged to
+                   DECISIONS. Harmonizing gate: full Phase 3 refund (turns/
+                   credits to the player; ore/equipment/Lumen back into the
+                   Phase-3 site per warp-gates.md's own Phase 3 failure-mode
+                   wording, ready to redraw without re-ferrying or re-curing),
+                   ship exits HARMONIZING intact, tunnel row deleted. The
+                   Phase 1 Crystal never refunds.
 
 All canonical durations go through src/core/game_time.scaled_deadline so
 GAME_TIME_SCALE compresses them uniformly on dev.
@@ -56,6 +86,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.core.game_time import scaled_deadline
+from src.models.gate_construction_site import GateConstructionSite, GateConstructionSiteStatus
 from src.models.player import Player
 from src.models.region import Region, RegionType
 from src.models.sector import Sector, sector_warps
@@ -96,6 +127,22 @@ BEACON_WINDOW_HOURS = 48      # ADR-0011 invulnerability == expiry window
 HARMONIZATION_HOURS = 1       # ADR-0029 Phase 3 wait
 MIN_GATE_LENGTH = 50          # sectors
 MAX_INCOMING_ACTIVE_GATES = 5  # destination anti-spam cap
+
+# --- ADR-0078 staged construction (warp-gates.md "Material staging") -------
+# A phase's bulk ORE/EQUIPMENT/LUMEN_CRYSTALS accumulate in a
+# GateConstructionSite across partial deposits (<=200/run for a Warp Jumper,
+# more for teammates' bigger haulers) instead of being demanded in the
+# Warp Jumper's hold in one payload. Once a site holds a full phase's
+# materials, advance_construction spends CONSTRUCTION_TURN_COST turns to
+# start the site's PHASE_CURE_HOURS cure; the phase can only be drawn once
+# both the totals and the cure are satisfied.
+CONSTRUCTION_TURN_COST = 5    # advance-construction, per call (ADR-0078)
+PHASE_CURE_HOURS = 24         # canonical hours per phase (ADR-0078)
+# NO-CANON (flagged to DECISIONS): canon prices advance-construction's 5
+# turns but is silent on a turn cost for the stage-materials deposit call
+# itself -- proposing 0 (ferrying materials is the trip-time cost; the
+# construction turns are spent only at advance-construction).
+STAGE_MATERIALS_TURN_COST = 0
 
 NO_WARP_FEATURE = "no_warp"
 NEXUS_PROTECTED_FEATURE = "nexus_protected"
@@ -202,19 +249,6 @@ def _cargo_contents(ship: Ship) -> Dict[str, Any]:
     return cargo
 
 
-def _require_cargo(ship: Ship, requirements: Dict[str, int]) -> None:
-    contents = _cargo_contents(ship).get("contents", {})
-    for key, qty in requirements.items():
-        have = int(contents.get(key, 0) or 0)
-        if have < qty:
-            label = key.replace("_", " ")
-            raise WarpGateError(
-                400,
-                f"Your ship's cargo holds only {have:,} {label}; "
-                f"this phase requires {qty:,}",
-            )
-
-
 def _charge_cargo(ship: Ship, requirements: Dict[str, int]) -> None:
     """Deduct already-validated quantities from the active ship's cargo."""
     cargo = _cargo_contents(ship)
@@ -245,6 +279,30 @@ def _refund_cargo(ship: Ship, amounts: Dict[str, int]) -> None:
     )
     ship.cargo = cargo
     flag_modified(ship, "cargo")
+
+
+def _refund_cargo_up_to_capacity(ship: Ship, amounts: Dict[str, int]) -> Dict[str, int]:
+    """Return as much of `amounts` to the ship's cargo as fits under its
+    remaining capacity (unlike _refund_cargo, which assumes the space is
+    already free). Used for the ADR-0078 beacon-cancel staged-material
+    disposition, where the depositing ship never had this cargo deducted in
+    the first place — capacity is NOT guaranteed to be free. Returns the
+    subset actually applied; any remainder is the caller's to account for
+    (forfeited, per the beacon-cancel disposition)."""
+    cargo = _cargo_contents(ship)
+    capacity = int(cargo.get("capacity", 0) or 0)
+    used = int(cargo.get("used", 0) or 0)
+    room = max(0, capacity - used)
+    applied: Dict[str, int] = {}
+    for key, qty in amounts.items():
+        if qty <= 0 or room <= 0:
+            continue
+        take = min(qty, room)
+        applied[key] = take
+        room -= take
+    if applied:
+        _refund_cargo(ship, applied)
+    return applied
 
 
 # --- Placement validation (free — runs before any charge) -------------------
@@ -404,7 +462,10 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
     beacon with its 48h invulnerability/expiry window."""
     now = datetime.now(UTC)
     player = _lock_player(db, player.id)
-    ship = _require_warp_jumper(db, player, "deploy a warp gate beacon")
+    # Materials no longer come out of this hull's cargo (ADR-0078 staging
+    # below) — the call is still required for its Warp-Jumper-in-open-space
+    # validation, the return value just isn't needed anymore.
+    _require_warp_jumper(db, player, "deploy a warp gate beacon")
 
     source = _sector_by_number(db, player.current_sector_id)
     if source is None:
@@ -459,7 +520,6 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
             f"Deploying a beacon costs {PHASE1_CREDITS:,} credits; "
             f"you have {player.credits:,}",
         )
-    _require_cargo(ship, {"ore": PHASE1_ORE, "equipment": PHASE1_EQUIPMENT})
     crystals = getattr(player, "quantum_crystals", 0) or 0
     if crystals < PHASE1_QUANTUM_CRYSTALS:
         raise WarpGateError(
@@ -467,12 +527,15 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
             "Deploying a beacon consumes 1 Quantum Crystal — assemble one "
             "from 5 Quantum Shards at a Class 3+ station or SpaceDock",
         )
+    # ADR-0078: the 1,000 ore + 500 equipment structure draw is NOT demanded
+    # from the ship's hold here — it stages into the construction site opened
+    # below, across as many stage-materials runs as it takes (a Warp Jumper's
+    # 200-unit hold can't fit it in one trip).
 
     # All checks passed — charge atomically.
     spend_turns(player, PHASE1_TURNS)
     player.credits -= PHASE1_CREDITS
     player.quantum_crystals = crystals - PHASE1_QUANTUM_CRYSTALS
-    _charge_cargo(ship, {"ore": PHASE1_ORE, "equipment": PHASE1_EQUIPMENT})
 
     beacon = WarpGateBeacon(
         player_id=player.id,
@@ -484,19 +547,286 @@ def deploy_beacon(db: Session, player: Player, destination_sector_number: int) -
     db.add(beacon)
     db.flush()
 
+    site = GateConstructionSite(
+        beacon_id=beacon.id,
+        phase=1,
+        required_ore=PHASE1_ORE,
+        required_equipment=PHASE1_EQUIPMENT,
+        required_lumen=0,
+        status=GateConstructionSiteStatus.STAGING,
+    )
+    db.add(site)
+    db.flush()
+
     logger.info(
-        "Player %s deployed warp gate beacon %s (%s -> %s)",
-        player.id, beacon.id, source.sector_id, destination.sector_id,
+        "Player %s deployed warp gate beacon %s (%s -> %s); construction site "
+        "%s opened for Phase 1 staging",
+        player.id, beacon.id, source.sector_id, destination.sector_id, site.id,
     )
     return {
         "beacon": beacon,
+        "site_id": str(site.id),
         "costs_charged": {
             "turns": PHASE1_TURNS,
             "credits": PHASE1_CREDITS,
-            "ore": PHASE1_ORE,
-            "equipment": PHASE1_EQUIPMENT,
             "quantum_crystals": PHASE1_QUANTUM_CRYSTALS,
         },
+    }
+
+
+# --- ADR-0078 staged construction: stage-materials / advance-construction ---
+
+def _lazy_advance_site_cure(
+    db: Session, site: GateConstructionSite, now: Optional[datetime] = None
+) -> None:
+    """Lazy, read-time cure completion (ADR-0078 — "lazy advance-on-read,
+    mirroring terraforming's tick model", no background worker). Flips a
+    CURING site whose PHASE_CURE_HOURS scaled cure has elapsed to READY.
+    Reaching READY on a Phase-1 site auto-opens the Phase-3 site for the same
+    beacon (canon: "before the next phase opens") — idempotent, guarded
+    against a duplicate under concurrent lazy-advance calls."""
+    if site.status != GateConstructionSiteStatus.CURING:
+        return
+    now = now or datetime.now(UTC)
+    if site.cure_completes_at is None or _aware(now) < _aware(site.cure_completes_at):
+        return
+    site.status = GateConstructionSiteStatus.READY
+    db.flush()
+    if site.phase != 1:
+        return
+    existing = (
+        db.query(GateConstructionSite)
+        .filter(
+            GateConstructionSite.beacon_id == site.beacon_id,
+            GateConstructionSite.phase == 3,
+        )
+        .first()
+    )
+    if existing is not None:
+        return
+    phase3_site = GateConstructionSite(
+        beacon_id=site.beacon_id,
+        phase=3,
+        required_ore=PHASE3_ORE,
+        required_equipment=PHASE3_EQUIPMENT,
+        required_lumen=PHASE3_LUMEN_CRYSTALS,
+        status=GateConstructionSiteStatus.STAGING,
+    )
+    db.add(phase3_site)
+    db.flush()
+    logger.info(
+        "Phase 1 construction site %s cured — Phase 3 site %s opened for beacon %s",
+        site.id, phase3_site.id, site.beacon_id,
+    )
+
+
+def _resolve_site(db: Session, site_id: str, *, lock: bool) -> GateConstructionSite:
+    try:
+        site_uuid = uuid.UUID(str(site_id))
+    except (ValueError, AttributeError, TypeError):
+        raise WarpGateError(404, "Construction site not found")
+    query = db.query(GateConstructionSite).filter(GateConstructionSite.id == site_uuid)
+    if lock:
+        query = query.with_for_update()
+    site = query.first()
+    if site is None:
+        raise WarpGateError(404, "Construction site not found")
+    return site
+
+
+def stage_materials(
+    db: Session, player: Player, site_id: str, amounts: Dict[str, Optional[int]]
+) -> Dict[str, Any]:
+    """ADR-0078 — deposit ore / equipment / Lumen Crystals into a
+    gate_construction_site. Any ship present in the site's sector may deposit
+    (warp-gates.md "Any ship may deposit" — team hauling is the point); ore
+    and equipment draw from the depositing ship's cargo, Lumen Crystals draw
+    from the depositing PLAYER's own Player.lumen_crystals wallet (not cargo
+    — it's a ledger resource, unlike ore/equipment). Amounts are rejected past
+    the ship's hold contents or the phase's remaining requirement — no single
+    call, and no sum of calls, can exceed the per-phase total (warp-gates.md
+    "Material staging")."""
+    site = _resolve_site(db, site_id, lock=True)
+    if site.status != GateConstructionSiteStatus.STAGING:
+        raise WarpGateError(
+            400,
+            f"This site is {site.status.value.lower()} — materials can no "
+            "longer be staged into it",
+        )
+    beacon = db.query(WarpGateBeacon).filter(WarpGateBeacon.id == site.beacon_id).first()
+    if beacon is None:
+        raise WarpGateError(404, "This site's beacon no longer exists")
+
+    player = _lock_player(db, player.id)
+    if player.is_docked or player.is_landed:
+        raise WarpGateError(
+            400, "You must be in open space to stage materials into a construction site"
+        )
+    if player.current_sector_id != beacon.source_sector_id:
+        raise WarpGateError(
+            400,
+            f"You must be in sector {beacon.source_sector_id} — the "
+            "construction site's sector — to stage materials",
+        )
+    if not player.current_ship_id:
+        raise WarpGateError(400, "No active ship selected")
+    ship = db.query(Ship).filter(
+        Ship.id == player.current_ship_id, Ship.owner_id == player.id
+    ).first()
+    if ship is None:
+        raise WarpGateError(404, "No active ship found")
+
+    ore = int(amounts.get("ore") or 0)
+    equipment = int(amounts.get("equipment") or 0)
+    lumen = int(amounts.get("lumen_crystals") or 0)
+    if ore < 0 or equipment < 0 or lumen < 0:
+        raise WarpGateError(400, "Staged amounts cannot be negative")
+    if ore == 0 and equipment == 0 and lumen == 0:
+        raise WarpGateError(400, "Specify at least one commodity amount to stage")
+
+    remaining_ore = site.required_ore - site.staged_ore
+    remaining_equipment = site.required_equipment - site.staged_equipment
+    remaining_lumen = site.required_lumen - site.staged_lumen
+    if ore > remaining_ore:
+        raise WarpGateError(400, f"Only {remaining_ore:,} more ore is needed for this phase")
+    if equipment > remaining_equipment:
+        raise WarpGateError(
+            400, f"Only {remaining_equipment:,} more equipment is needed for this phase"
+        )
+    if lumen > remaining_lumen:
+        raise WarpGateError(
+            400, f"Only {remaining_lumen:,} more Lumen Crystals are needed for this phase"
+        )
+
+    # Ship-hold / wallet affordability — bespoke messages, since `ore` /
+    # `equipment` here are this CALL's amount, not the phase's full total
+    # (a "this phase requires X" message would mislead).
+    contents = _cargo_contents(ship).get("contents", {})
+    if ore:
+        have_ore = int(contents.get("ore", 0) or 0)
+        if have_ore < ore:
+            raise WarpGateError(
+                400, f"Your ship's cargo holds only {have_ore:,} ore; you tried to stage {ore:,}"
+            )
+    if equipment:
+        have_equipment = int(contents.get("equipment", 0) or 0)
+        if have_equipment < equipment:
+            raise WarpGateError(
+                400,
+                f"Your ship's cargo holds only {have_equipment:,} equipment; "
+                f"you tried to stage {equipment:,}",
+            )
+    if lumen:
+        have_lumen = int(getattr(player, "lumen_crystals", 0) or 0)
+        if have_lumen < lumen:
+            raise WarpGateError(
+                400, f"You have {have_lumen:,} Lumen Crystals; this deposit needs {lumen:,}"
+            )
+
+    # All checks passed — commit atomically.
+    cargo_needs = {k: v for k, v in {"ore": ore, "equipment": equipment}.items() if v}
+    if cargo_needs:
+        _charge_cargo(ship, cargo_needs)
+    if lumen:
+        player.lumen_crystals = int(getattr(player, "lumen_crystals", 0) or 0) - lumen
+
+    site.staged_ore += ore
+    site.staged_equipment += equipment
+    site.staged_lumen += lumen
+    db.flush()
+
+    logger.info(
+        "Player %s staged %d ore / %d equipment / %d Lumen into construction "
+        "site %s (beacon %s, phase %d)",
+        player.id, ore, equipment, lumen, site.id, site.beacon_id, site.phase,
+    )
+    return {
+        "site_id": str(site.id),
+        "phase": site.phase,
+        "status": site.status.value,
+        "required": {
+            "ore": site.required_ore,
+            "equipment": site.required_equipment,
+            "lumen_crystals": site.required_lumen,
+        },
+        "staged": {
+            "ore": site.staged_ore,
+            "equipment": site.staged_equipment,
+            "lumen_crystals": site.staged_lumen,
+        },
+    }
+
+
+def advance_construction(db: Session, player: Player, site_id: str) -> Dict[str, Any]:
+    """ADR-0078 — commit a fully-staged phase: CONSTRUCTION_TURN_COST (5)
+    turns, starts the phase's PHASE_CURE_HOURS (24 canonical hours, via
+    scaled_deadline — mirrors BEACON_WINDOW_HOURS above) cure. Owner-only:
+    staging materials is a team effort (stage_materials), but committing the
+    builder's own turns is the beacon owner's call. A site already CURING or
+    READY rejects (no additional turn charge) — the lazy cure-advance below is
+    what surfaces a finished cure, not a repeat call here."""
+    now = datetime.now(UTC)
+    site = _resolve_site(db, site_id, lock=True)
+    beacon = db.query(WarpGateBeacon).filter(WarpGateBeacon.id == site.beacon_id).first()
+    if beacon is None or beacon.player_id != player.id:
+        raise WarpGateError(404, "Construction site not found")
+
+    player = _lock_player(db, player.id)
+    _lazy_advance_site_cure(db, site, now)
+
+    if site.status == GateConstructionSiteStatus.CONSUMED:
+        raise WarpGateError(400, "This phase's materials have already been committed")
+    if site.status == GateConstructionSiteStatus.CANCELLED:
+        raise WarpGateError(400, "This construction site was cancelled")
+    if site.status == GateConstructionSiteStatus.READY:
+        raise WarpGateError(
+            400, "This phase already finished curing — proceed to the next step"
+        )
+    if site.status == GateConstructionSiteStatus.CURING:
+        raise WarpGateError(
+            400,
+            "Still curing — this phase's materials are already committed and "
+            "waiting out the cure",
+        )
+
+    # STAGING — require the full material set before spending turns.
+    if (
+        site.staged_ore < site.required_ore
+        or site.staged_equipment < site.required_equipment
+        or site.staged_lumen < site.required_lumen
+    ):
+        raise WarpGateError(
+            400,
+            "Materials are not fully staged yet — "
+            f"{site.staged_ore:,}/{site.required_ore:,} ore, "
+            f"{site.staged_equipment:,}/{site.required_equipment:,} equipment, "
+            f"{site.staged_lumen:,}/{site.required_lumen:,} Lumen Crystals",
+        )
+    if player.turns < CONSTRUCTION_TURN_COST:
+        raise WarpGateError(
+            400,
+            f"Advancing construction costs {CONSTRUCTION_TURN_COST} turns; "
+            f"you have {player.turns}",
+        )
+
+    spend_turns(player, CONSTRUCTION_TURN_COST)
+    site.turns_applied += CONSTRUCTION_TURN_COST
+    site.cure_completes_at = scaled_deadline(PHASE_CURE_HOURS, now)
+    site.status = GateConstructionSiteStatus.CURING
+    db.flush()
+
+    logger.info(
+        "Player %s advanced construction site %s (beacon %s, phase %d) — "
+        "curing until %s",
+        player.id, site.id, site.beacon_id, site.phase,
+        site.cure_completes_at.isoformat(),
+    )
+    return {
+        "site_id": str(site.id),
+        "phase": site.phase,
+        "status": site.status.value,
+        "turns_applied": site.turns_applied,
+        "cure_completes_at": site.cure_completes_at.isoformat(),
     }
 
 
@@ -535,8 +865,9 @@ def _warp_jumper_construction_cost(db: Session) -> int:
 
 
 def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
-    """Phase 3 Step A — charge materials, freeze the Warp Jumper in
-    HARMONIZING, create the gate + FORMING tunnel rows."""
+    """Phase 3 Step A — draw the fully-staged, cured Phase-3 construction site
+    (ADR-0078), charge turns/credits, freeze the Warp Jumper in HARMONIZING,
+    create the gate + FORMING tunnel rows."""
     now = datetime.now(UTC)
     try:
         beacon_uuid = uuid.UUID(str(beacon_id))
@@ -627,20 +958,49 @@ def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
             f"Anchoring the focus costs {PHASE3_CREDITS:,} credits; "
             f"you have {player.credits:,}",
         )
-    _require_cargo(ship, {
-        "ore": PHASE3_ORE,
-        "equipment": PHASE3_EQUIPMENT,
-        "lumen_crystals": PHASE3_LUMEN_CRYSTALS,
-    })
+    # ADR-0078 — the 1,000 ore + 500 equipment + 30 Lumen Crystal draw comes
+    # from the Phase-3 construction site (staged + cured over multiple
+    # stage-materials / advance-construction cycles), never the Warp Jumper's
+    # hold. The site only exists once the Phase-1 site has cured (canon
+    # "before the next phase opens" — _lazy_advance_site_cure opens it).
+    phase3_site = (
+        db.query(GateConstructionSite)
+        .filter(GateConstructionSite.beacon_id == beacon.id, GateConstructionSite.phase == 3)
+        .with_for_update()
+        .first()
+    )
+    if phase3_site is None:
+        raise WarpGateError(
+            400,
+            "The origin structure hasn't finished curing yet — Phase 1's "
+            "construction site must reach its 24h cure before Phase 3 "
+            "materials can stage",
+        )
+    _lazy_advance_site_cure(db, phase3_site, now)
+    if phase3_site.status == GateConstructionSiteStatus.CURING:
+        raise WarpGateError(
+            400,
+            "The destination materials are still curing — wait out the 24h "
+            "cure before anchoring the focus",
+        )
+    if phase3_site.status != GateConstructionSiteStatus.READY:
+        raise WarpGateError(
+            400,
+            "The destination materials are not fully staged yet — "
+            f"{phase3_site.staged_ore:,}/{phase3_site.required_ore:,} ore, "
+            f"{phase3_site.staged_equipment:,}/{phase3_site.required_equipment:,} equipment, "
+            f"{phase3_site.staged_lumen:,}/{phase3_site.required_lumen:,} Lumen Crystals",
+        )
 
-    # Charge Phase 3 (refundable on cancel — ADR-0029).
+    # Charge Phase 3 (refundable on cancel — ADR-0029). Turns/credits are
+    # UNCHANGED; ore/equipment/Lumen draw from the already-staged, already-
+    # cured site instead of the Warp Jumper's hold (ADR-0078).
     spend_turns(player, PHASE3_TURNS)
     player.credits -= PHASE3_CREDITS
-    _charge_cargo(ship, {
-        "ore": PHASE3_ORE,
-        "equipment": PHASE3_EQUIPMENT,
-        "lumen_crystals": PHASE3_LUMEN_CRYSTALS,
-    })
+    phase3_site.staged_ore = 0
+    phase3_site.staged_equipment = 0
+    phase3_site.staged_lumen = 0
+    phase3_site.status = GateConstructionSiteStatus.CONSUMED
 
     completes_at = scaled_deadline(HARMONIZATION_HOURS, now)
     ship.status = ShipStatus.HARMONIZING
@@ -655,6 +1015,8 @@ def anchor_focus(db: Session, player: Player, beacon_id: str) -> Dict[str, Any]:
         construction_cost=_warp_jumper_construction_cost(db),
     )
     db.add(gate)
+    db.flush()
+    phase3_site.gate_id = gate.id
     db.flush()
 
     # The tunnel row exists NOW in FORMING (canon names the pre-active state
@@ -714,8 +1076,15 @@ def _refund_phase3_and_cancel(
     """ADR-0029 canonical Phase-3 refund path, shared by cancel and the
     completion-time re-validation failure (FIX 2a).
 
-    Returns Phase-3 turns/credits/cargo to the player and the anchor hull,
-    exits the ship HARMONIZING -> IN_SPACE (harmonization_completes_at
+    Turns/credits return to the PLAYER. Per ADR-0078, ore/equipment/Lumen
+    return to the Phase-3 CONSTRUCTION SITE, not the ship's hold — the ship
+    never had this cargo deducted under the staging model (it left the site,
+    not the hold), and warp-gates.md's own Phase 3 failure-mode wording is
+    explicit: "All Phase 3 materials ... refund to the construction site /
+    player". Refilling the site to its full, already-cured totals means the
+    beacon owner can retry anchor-focus without re-ferrying or re-curing.
+
+    Exits the ship HARMONIZING -> IN_SPACE (harmonization_completes_at
     cleared), deletes the FORMING tunnel, marks the gate CANCELLED. The
     BEACON is left DEPLOYED so the player can re-attempt within its window.
     Caller owns locking and the commit. Returns the refund summary."""
@@ -729,12 +1098,26 @@ def _refund_phase3_and_cancel(
     if player is not None:
         refund_turns(player, PHASE3_TURNS)
         player.credits += PHASE3_CREDITS
+
+    site = (
+        db.query(GateConstructionSite)
+        .filter(GateConstructionSite.beacon_id == gate.beacon_id, GateConstructionSite.phase == 3)
+        .with_for_update()
+        .first()
+    )
+    if site is not None:
+        site.staged_ore = site.required_ore
+        site.staged_equipment = site.required_equipment
+        site.staged_lumen = site.required_lumen
+        site.status = GateConstructionSiteStatus.READY
+        site.gate_id = None
+        db.flush()
+    else:
+        logger.warning(
+            "Phase-3 construction site missing for gate %s during refund", gate.id
+        )
+
     if ship is not None and not ship.is_destroyed:
-        _refund_cargo(ship, {
-            "ore": PHASE3_ORE,
-            "equipment": PHASE3_EQUIPMENT,
-            "lumen_crystals": PHASE3_LUMEN_CRYSTALS,
-        })
         ship.status = ShipStatus.IN_SPACE
         ship.harmonization_completes_at = None
 
@@ -982,12 +1365,75 @@ def advance_gates_touching_sector(db: Session, sector_number: int, now: Optional
 
 # --- Cancel -------------------------------------------------------------------
 
+def _dispose_beacon_construction_sites(
+    db: Session, player: Player, beacon: WarpGateBeacon
+) -> Dict[str, int]:
+    """ADR-0078 staged-material disposition on a beacon cancel (NO-CANON —
+    ADR-0029 only settles the ORIGINAL Phase-1-sunk rule; it is silent on
+    staged-but-undrawn materials sitting in this beacon's construction
+    site(s) under the new staging model). Builder-proposed disposition,
+    flagged to DECISIONS:
+      - Phase-1 site: whatever is staged is SUNK along with the rest of
+        Phase 1 (ADR-0029's existing rule, verbatim — the site is simply
+        where those materials now sit; nothing returns).
+      - Phase-3 site (only exists once the Phase-1 site has cured): staged
+        ore/equipment return to the CANCELLING PLAYER's active ship hold up
+        to its remaining capacity; any excess is forfeited — no warp-gate
+        salvage-wreck mechanic exists in this codebase to spawn instead.
+        Staged Lumen Crystals always refund in full to Player.lumen_crystals
+        (a wallet ledger, no capacity concept).
+    Returns the amounts actually returned to the player, for the cancel
+    response's `refunded` field."""
+    returned = {"ore": 0, "equipment": 0, "lumen_crystals": 0}
+    sites = (
+        db.query(GateConstructionSite)
+        .filter(GateConstructionSite.beacon_id == beacon.id)
+        .with_for_update()
+        .all()
+    )
+    ship = None
+    if player.current_ship_id:
+        ship = db.query(Ship).filter(
+            Ship.id == player.current_ship_id, Ship.owner_id == player.id
+        ).first()
+
+    for site in sites:
+        if site.status in (GateConstructionSiteStatus.CONSUMED, GateConstructionSiteStatus.CANCELLED):
+            continue
+        if site.phase == 3:
+            if site.staged_lumen:
+                player.lumen_crystals = int(getattr(player, "lumen_crystals", 0) or 0) + site.staged_lumen
+                returned["lumen_crystals"] += site.staged_lumen
+                site.staged_lumen = 0
+            if ship is not None and not ship.is_destroyed and (site.staged_ore or site.staged_equipment):
+                applied = _refund_cargo_up_to_capacity(
+                    ship, {"ore": site.staged_ore, "equipment": site.staged_equipment}
+                )
+                for key in ("ore", "equipment"):
+                    took = applied.get(key, 0)
+                    if took:
+                        returned[key] += took
+                        setattr(site, f"staged_{key}", getattr(site, f"staged_{key}") - took)
+            if site.staged_ore or site.staged_equipment:
+                logger.info(
+                    "Beacon %s cancel: %d ore / %d equipment staged in Phase-3 "
+                    "site %s forfeited (no salvage mechanic — NO-CANON)",
+                    beacon.id, site.staged_ore, site.staged_equipment, site.id,
+                )
+        site.status = GateConstructionSiteStatus.CANCELLED
+    db.flush()
+    return returned
+
+
 def cancel(db: Session, player: Player, gate_or_beacon_id: str) -> Dict[str, Any]:
     """ADR-0029 refund semantics:
-    - DEPLOYED beacon -> CANCELLED, Phase 1 materials (incl. the Crystal) sunk.
-    - HARMONIZING gate -> full Phase 3 refund (turns, credits, ore, equipment,
-      lumen), ship exits HARMONIZING intact, tunnel row deleted. The Phase 1
-      Crystal never refunds."""
+    - DEPLOYED beacon -> CANCELLED, Phase 1 materials (incl. the Crystal) sunk
+      (see _dispose_beacon_construction_sites for the ADR-0078 staged-site
+      disposition this now also covers).
+    - HARMONIZING gate -> full Phase 3 refund (turns, credits to the player;
+      ore/equipment/Lumen back into the Phase-3 construction site per
+      _refund_phase3_and_cancel), ship exits HARMONIZING intact, tunnel row
+      deleted. The Phase 1 Crystal never refunds."""
     now = datetime.now(UTC)
     try:
         target_uuid = uuid.UUID(str(gate_or_beacon_id))
@@ -1057,14 +1503,26 @@ def cancel(db: Session, player: Player, gate_or_beacon_id: str) -> Dict[str, Any
                  "an anchor in progress",
         )
 
+    returned = _dispose_beacon_construction_sites(db, player, beacon)
     beacon.status = WarpGateBeaconStatus.CANCELLED
     db.flush()
-    logger.info("Player %s cancelled beacon %s (Phase 1 materials sunk)", player.id, beacon.id)
+    logger.info(
+        "Player %s cancelled beacon %s (Phase 1 materials sunk; staged "
+        "Phase-3 materials returned: %s)", player.id, beacon.id, returned,
+    )
+    message = (
+        "Beacon cancelled — Phase 1 materials (including the Quantum "
+        "Crystal) are sunk per canon"
+    )
+    if any(returned.values()):
+        message += (
+            "; staged Phase-3 materials returned to your ship's hold / "
+            "Lumen wallet where capacity allowed (any excess forfeited)"
+        )
     return {
         "cancelled": "beacon",
-        "refunded": {},
-        "message": "Beacon cancelled — Phase 1 materials (including the "
-                   "Quantum Crystal) are sunk per canon",
+        "refunded": returned,
+        "message": message,
     }
 
 
@@ -1083,6 +1541,49 @@ def _phase_for(beacon: WarpGateBeacon, gate: Optional[WarpGate]) -> str:
     if beacon.status == WarpGateBeaconStatus.EXPIRED:
         return "EXPIRED"
     return "CANCELLED"
+
+
+def _active_construction_site(
+    db: Session, beacon_id, now: datetime
+) -> Optional[GateConstructionSite]:
+    """The construction site currently relevant to staging/advancing this
+    beacon's build — the Phase-3 site once it exists (opened once Phase 1
+    cures), else the Phase-1 site. Lazily advances every site's cure first
+    (a Phase-1 site reaching READY here may open the Phase-3 site as a side
+    effect, so sites are re-fetched afterward to pick that up on the same
+    read). None once the relevant site is CONSUMED or CANCELLED — nothing
+    left to stage."""
+    sites = db.query(GateConstructionSite).filter(GateConstructionSite.beacon_id == beacon_id).all()
+    for site in sites:
+        _lazy_advance_site_cure(db, site, now)
+    sites = db.query(GateConstructionSite).filter(GateConstructionSite.beacon_id == beacon_id).all()
+    live = {
+        s.phase: s for s in sites
+        if s.status not in (GateConstructionSiteStatus.CONSUMED, GateConstructionSiteStatus.CANCELLED)
+    }
+    return live.get(3) or live.get(1)
+
+
+def _construction_site_payload(site: Optional[GateConstructionSite]) -> Optional[Dict[str, Any]]:
+    if site is None:
+        return None
+    return {
+        "site_id": str(site.id),
+        "phase": site.phase,
+        "status": site.status.value,
+        "required": {
+            "ore": site.required_ore,
+            "equipment": site.required_equipment,
+            "lumen_crystals": site.required_lumen,
+        },
+        "staged": {
+            "ore": site.staged_ore,
+            "equipment": site.staged_equipment,
+            "lumen_crystals": site.staged_lumen,
+        },
+        "turns_applied": site.turns_applied,
+        "cure_completes_at": site.cure_completes_at.isoformat() if site.cure_completes_at else None,
+    }
 
 
 def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
@@ -1121,6 +1622,7 @@ def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
         _lazy_expire_beacon(db, beacon, now)
         # The newest non-cancelled gate represents the project's Phase 3 state.
         gate = next((g for g in gates if g.status != WarpGateStatus.CANCELLED), None)
+        active_site = _active_construction_site(db, beacon.id, now)
         projects.append({
             "beacon_id": str(beacon.id),
             "gate_id": str(gate.id) if gate else None,
@@ -1135,6 +1637,7 @@ def list_player_projects(db: Session, player: Player) -> List[Dict[str, Any]]:
                 if gate and gate.harmonization_completes_at else None
             ),
             "created_at": beacon.created_at.isoformat() if beacon.created_at else None,
+            "construction_site": _construction_site_payload(active_site),
         })
     return projects
 
