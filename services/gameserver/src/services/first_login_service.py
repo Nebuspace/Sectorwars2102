@@ -16,7 +16,7 @@ from src.models.first_login import (
     NegotiationSkillLevel,
     DialogueOutcome
 )
-from src.models.ship import Ship, ShipType
+from src.models.ship import Ship, ShipType, ShipSpecification
 from src.services.ai_dialogue_service import (
     AIDialogueService,
     DialogueContext,
@@ -1638,7 +1638,20 @@ Description: {ship_specs.get('description', 'N/A')}
         # Create the player's starter ship
         ship_type = SHIP_CHOICE_TO_TYPE.get(session.awarded_ship, ShipType.LIGHT_FREIGHTER)
         ship_name = f"{player.nickname or player.username}'s {ship_type.name.replace('_', ' ').title()}"
-        
+
+        # B3: copy the per-hull shield/armor mitigation fractions from the
+        # ShipSpecification onto the Ship row — combat_service reads these off
+        # the Ship, not the spec (matches ship_service.py:105-106). A missing
+        # spec row degrades to 0.0/0.0 rather than blocking first-login.
+        spec = self.db.query(ShipSpecification).filter(
+            ShipSpecification.type == ship_type
+        ).first()
+        if not spec:
+            logger.warning(
+                f"No ShipSpecification found for starter ship type {ship_type}; "
+                "defaulting shield_resistance/armor_rating to 0.0"
+            )
+
         new_ship = Ship(
             name=ship_name,
             type=ship_type,
@@ -1652,6 +1665,8 @@ Description: {ship_specs.get('description', 'N/A')}
             maintenance={"status": "good", "next_service": None},
             cargo={"capacity": 50, "used": 0, "contents": {}},
             combat={"shields": 10, "weapons": 5},
+            shield_resistance=(getattr(spec, 'shield_resistance', None) or 0.0),
+            armor_rating=(getattr(spec, 'armor_rating', None) or 0.0),
             is_flagship=True,
             purchase_value=session.starting_credits // 2,
             current_value=session.starting_credits // 2
