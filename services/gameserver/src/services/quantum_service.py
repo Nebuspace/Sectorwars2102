@@ -875,9 +875,12 @@ def harvest_nebula(db: Session, player_id: uuid.UUID) -> Dict[str, Any]:
     band = _HARVEST_YIELD_BANDS.get(nebula_type)
     if band is None:
         # The sector is NEBULA but its cluster carries no recognised nebula
-        # type (un-persisted nebula_type — quantum-resources.md flags this as a
-        # 🚧 Partial: "per-cluster nebula_type ... not yet persisted"). Reject
-        # cleanly rather than guessing a band.
+        # type. persistence itself is shipped (fd1e9b8); this now fires only
+        # for real uncharted clusters: imported before fd1e9b8 (nebula_type
+        # NULL), or imported before WO-SB-QH2 (bang_import_service persisted
+        # bang's raw 'normal'/'magnetic' type, which this six-color band map
+        # doesn't key on — WO-SB-QH2 derives the canon color at import time
+        # instead). Reject cleanly rather than guessing a band.
         raise QuantumError(
             "not_a_nebula: this nebula's field type is uncharted — no harvest band"
         )

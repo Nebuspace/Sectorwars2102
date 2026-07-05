@@ -40,7 +40,6 @@ import logging
 import random
 import time
 import uuid
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -313,6 +312,87 @@ def _gx1_sector_bias(
 
     return resources, defenses, controlling_faction, force_nebula
 
+
+#: Canonical nebula-color → galaxy-map render hex, from sw2102-docs
+#: quantum-resources.md § "Nebula types and field strengths". These hexes ARE
+#: canon (quantum-resources.md:44); only the density boundary cutpoints below
+#: are a builder proposal.
+_NEBULA_COLOR_HEX: Dict[str, str] = {
+    "crimson": "#DC143C",
+    "azure": "#1E90FF",
+    "emerald": "#00FF7F",
+    "violet": "#9370DB",
+    "amber": "#FF8C00",
+    "obsidian": "#2F4F4F",
+}
+
+#: WO-SB-QH2 [NO-CANON, flag to DECISIONS]: canon's per-color field-strength
+#: ranges OVERLAP (e.g. azure 60-80 vs emerald 50-70 — quantum-resources.md
+#: nebula table), so no single mean-density value maps unambiguously under
+#: canon as written. These are disjoint cutpoints a builder proposes so
+#: harvest can key on exactly one color per cluster: ≥80 crimson, 60-79
+#: azure, 50-59 emerald, 40-49 violet, 20-39 amber, <20 obsidian.
+_NEBULA_COLOR_BOUNDARY_CRIMSON: int = 80
+_NEBULA_COLOR_BOUNDARY_AZURE: int = 60
+_NEBULA_COLOR_BOUNDARY_EMERALD: int = 50
+_NEBULA_COLOR_BOUNDARY_VIOLET: int = 40
+_NEBULA_COLOR_BOUNDARY_AMBER: int = 20
+
+
+def _derive_nebula_color(mean_density: float) -> str:
+    """Map a cluster's mean per-sector nebula density to a canon color key.
+
+    bang emits per-sector nebula as ``{type: 'normal'|'magnetic', density:
+    1-100}`` (content.ts:404-408) with no color concept of its own; this
+    derives the six-color canon taxonomy that
+    ``quantum_service._HARVEST_YIELD_BANDS`` is keyed by, so a bang-imported
+    nebula cluster can actually be harvested instead of rejected as
+    'uncharted'. See the [NO-CANON] boundary comment above.
+    """
+    if mean_density >= _NEBULA_COLOR_BOUNDARY_CRIMSON:
+        return "crimson"
+    if mean_density >= _NEBULA_COLOR_BOUNDARY_AZURE:
+        return "azure"
+    if mean_density >= _NEBULA_COLOR_BOUNDARY_EMERALD:
+        return "emerald"
+    if mean_density >= _NEBULA_COLOR_BOUNDARY_VIOLET:
+        return "violet"
+    if mean_density >= _NEBULA_COLOR_BOUNDARY_AMBER:
+        return "amber"
+    return "obsidian"
+
+
+def _finalize_cluster_nebula_fields(
+    cluster_specs: List["ClusterSpec"],
+    cluster_nebula_samples: Dict[int, Dict[str, List[Any]]],
+) -> None:
+    """Mutating finalization pass (WO-DBB-QR4 + WO-SB-QH2) over one region's
+    ``cluster_specs``, called once ``_translate_region`` has finished
+    sampling every sector.
+
+    For each cluster with sampled nebula sectors: ``quantum_field_strength``
+    = the mean of the cluster's per-sector densities (the only quantitative
+    nebula attribute the bang payload carries); ``nebula_type``/
+    ``color_hex`` = the canon color (and its hex) derived from that mean via
+    :func:`_derive_nebula_color` / ``_NEBULA_COLOR_HEX`` — NOT bang's raw
+    'normal'/'magnetic' type. nebula_type therefore depends ONLY on density:
+    a tie (or any split) among a cluster's raw-type sample counts has no
+    effect on the outcome. A cluster with no nebula samples leaves all three
+    fields at their ``None`` default.
+    """
+    for cs in cluster_specs:
+        samples = cluster_nebula_samples.get(cs.cluster_int_id)
+        if not samples or not samples["types"]:
+            continue
+        densities = samples["densities"]
+        if not densities:
+            continue
+        mean_density = sum(densities) / len(densities)
+        cs.quantum_field_strength = mean_density
+        cs.nebula_type = _derive_nebula_color(mean_density)
+        cs.color_hex = _NEBULA_COLOR_HEX[cs.nebula_type]
+
+
 #: Bang region-type → expected sector count (sanity check only).
 _EXPECTED_SECTOR_COUNT: Dict[RegionType, Optional[int]] = {
     "player_owned": None,
@@ -518,11 +598,13 @@ class ClusterSpec:
     is_discovered: bool
     is_hidden: bool
     special_features: List[str]
-    # Structured nebula fields (WO-DBB-QR4). The bang payload has nebula data
-    # PER-SECTOR only; these capture the cluster's dominant/representative
-    # nebula, derived from its member sectors during _translate_region. They
-    # default unset (cluster has no nebula sectors) → all three stay None.
-    # color_hex has no payload source and is always None for now.
+    # Structured nebula fields (WO-DBB-QR4, color-derived per WO-SB-QH2). The
+    # bang payload has nebula data PER-SECTOR only; these capture the
+    # cluster's dominant/representative nebula, derived from its member
+    # sectors during _translate_region: nebula_type is the canon color
+    # derived from mean density (_derive_nebula_color), color_hex is its
+    # canonical hex (_NEBULA_COLOR_HEX). They default unset (cluster has no
+    # nebula sectors) → all three stay None.
     nebula_type: Optional[str] = None
     quantum_field_strength: Optional[float] = None
     color_hex: Optional[str] = None
@@ -1503,8 +1585,9 @@ class BangImportService:
                 is_hidden=cs.is_hidden,
                 special_features=cs.special_features,
                 # WO-DBB-QR4: structured cluster nebula (dominant/representative,
-                # derived from member sectors in _translate_region). color_hex
-                # has no payload source → None.
+                # derived from member sectors in _translate_region). Per
+                # WO-SB-QH2, nebula_type/color_hex are density-derived canon
+                # colors, not bang's raw type — see _derive_nebula_color.
                 nebula_type=cs.nebula_type,
                 quantum_field_strength=cs.quantum_field_strength,
                 color_hex=cs.color_hex,
@@ -2305,21 +2388,10 @@ class BangImportService:
             for planet_payload in sector_payload.get("planets") or []:
                 planet_specs.append(self._build_planet_spec(sid, planet_payload))
 
-        # WO-DBB-QR4: finalize each cluster's dominant/representative nebula
-        # from the per-sector samples gathered above. nebula_type = the most
-        # frequent type among the cluster's nebula sectors (ties broken by
-        # first-seen via Counter.most_common); quantum_field_strength = the mean
-        # density of those sectors (the only quantitative nebula attribute the
-        # bang payload carries). color_hex has no payload source → stays None.
-        # A cluster with no nebula sectors leaves all three fields None.
-        for cs in cluster_specs:
-            samples = cluster_nebula_samples.get(cs.cluster_int_id)
-            if not samples or not samples["types"]:
-                continue
-            cs.nebula_type = Counter(samples["types"]).most_common(1)[0][0]
-            densities = samples["densities"]
-            if densities:
-                cs.quantum_field_strength = sum(densities) / len(densities)
+        # WO-DBB-QR4 + WO-SB-QH2: finalize each cluster's dominant/representative
+        # nebula from the per-sector samples gathered above. See
+        # _finalize_cluster_nebula_fields.
+        _finalize_cluster_nebula_fields(cluster_specs, cluster_nebula_samples)
 
         # Warps. Defensively dedupe on the (from, to) pair: sector_warps has
         # composite pkey (source_sector_id, destination_sector_id) and bang
