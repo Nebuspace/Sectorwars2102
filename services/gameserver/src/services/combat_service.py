@@ -15,7 +15,7 @@ from src.models.sector import Sector, SectorType
 from src.models.cargo_wreck import CargoWreck, WreckCause
 from src.models.combat import CombatType, CombatResult
 from src.models.combat_log import CombatLog, CombatOutcome
-from src.models.drone import Drone, DroneDeployment, DroneStatus
+from src.models.drone import Drone, DroneCombat, DroneDeployment, DroneStatus
 from src.models.planet import Planet
 from src.models.region import RegionType
 from src.models.station import Station
@@ -382,6 +382,19 @@ class CombatService:
         # All other sector types: explicit no-op (documents intent; the
         # .get() default already yields 1.0 for anything absent here).
     }
+
+    # --- Sector-defence bonus for deployed drones (WO-DRN-COMBAT-RECORD) ----
+    # combat.md#sector-drones: "Defender drones get a +5% bonus over
+    # ship-deployed drones (SECTOR_DEFENSE)." Applied in
+    # _resolve_sector_drone_combat, tagged in combat_details via
+    # CombatType.SECTOR_DEFENSE.value — making that enum member live rather
+    # than a dead tag.
+    #
+    # NO-CANON (flag for Max): canon gives the magnitude but not the exact
+    # term it modifies. Recommended application point: each defending
+    # drone's per-round return-fire hit (the value that actually reaches the
+    # attacker's ship), not drone.defense_power — filed to DECISIONS.
+    SECTOR_DEFENSE_BONUS_MULT = 1.05
 
     # Weapon type effectiveness against different defenses
     WEAPON_TYPES = {
@@ -1447,6 +1460,7 @@ class CombatService:
         starting_drone_count = len(target_drones)
 
         # Resolve combat against the real drone rows
+        combat_started_at = datetime.now()
         combat_result = self._resolve_sector_drone_combat(attacker, sector, target_drones)
 
         # Consume turns
@@ -1476,6 +1490,29 @@ class CombatService:
         )
 
         self.db.add(combat_log)
+
+        # Wire the drone combat record (WO-DRN-COMBAT-RECORD, drones.md#combat-
+        # record): one DroneCombat row per participating hostile drone — the
+        # attacker here is a ship, not a drone, so attacker_drone_id stays
+        # NULL (nullable by design); defender_drone_id is what makes
+        # admin_drones.py's per-drone recent-combats lookup (:209-218) return
+        # real rows instead of forever-empty (NO-CANON: row granularity filed
+        # to DECISIONS — one row per drone vs one per encounter).
+        drone_combat_log = self._drone_combat_log_summary(combat_result["combat_details"])
+        winner_drone_id = combat_result["winner_drone_id"]
+        for drone in target_drones:
+            self.db.add(DroneCombat(
+                attacker_drone_id=None,
+                defender_drone_id=drone.id,
+                sector_id=sector.id,
+                started_at=combat_started_at,
+                ended_at=combat_log.ended_at,
+                rounds=combat_result["rounds"],
+                winner_drone_id=winner_drone_id,
+                attacker_damage_dealt=combat_result["attacker_damage_dealt"],
+                defender_damage_dealt=combat_result["defender_damage_dealt"],
+                combat_log=drone_combat_log,
+            ))
 
         # Apply combat effects to the attacker's ship
         if combat_result["attacker_ship_destroyed"]:
@@ -2742,7 +2779,21 @@ class CombatService:
                 "max_hull": defender_combat.get("max_hull")
             }
         }
-    
+
+    @staticmethod
+    def _drone_combat_log_summary(combat_details: List[Dict[str, Any]], max_len: int = 2000) -> str:
+        """Serialize combat_details for DroneCombat.combat_log.
+
+        Unlike CombatLog.combat_log (Text, unbounded), DroneCombat.combat_log
+        is String(2000) — an 8-round multi-drone engagement's full
+        combat_details JSON can overflow that. Truncate to fit rather than
+        let the insert raise a DataError.
+        """
+        serialized = json.dumps(combat_details)
+        if len(serialized) <= max_len:
+            return serialized
+        return serialized[: max_len - 3] + "..."
+
     def _resolve_sector_drone_combat(
         self, attacker: Player, sector: Sector, target_drones: List[Drone]
     ) -> Dict[str, Any]:
@@ -2789,6 +2840,12 @@ class CombatService:
 
         # Live working set of drones still fighting
         live_drones = list(target_drones)
+
+        # Combat-record wiring (WO-DRN-COMBAT-RECORD, drones.md#combat-record):
+        # every participating hostile drone counts this engagement toward its
+        # battles_fought tally regardless of how the fight ends.
+        for drone in target_drones:
+            drone.battles_fought += 1
 
         combat_details.append({
             "round": 0,
@@ -2850,11 +2907,24 @@ class CombatService:
             # attack_power, lightly randomised — no invented base numbers),
             # then route it through the canonical shields-first damage stack so
             # a shielded ship is protected exactly as in ship-vs-ship combat.
+            # SECTOR_DEFENSE (combat.md#sector-drones): deployed defender
+            # drones get a +5% bonus, applied per-drone to the return-fire hit
+            # before the round total is aggregated (see SECTOR_DEFENSE_BONUS_MULT).
             round_drone_damage = 0
             for drone in live_drones:
                 base = max(1, drone.attack_power or 0)
                 hit = random.randint(max(1, base // 2), base)
+                hit = int(round(hit * self.SECTOR_DEFENSE_BONUS_MULT))
+                drone.damage_dealt += hit
                 round_drone_damage += hit
+
+            combat_details.append({
+                "round": round_number,
+                "actor": "defender",
+                "action": "sector_defense_bonus",
+                "tag": CombatType.SECTOR_DEFENSE.value,
+                "message": "Deployed defender drones apply the SECTOR_DEFENSE bonus to this round's return fire",
+            })
 
             defender_damage_dealt += round_drone_damage
             hit_result = self._apply_weapon_damage(
@@ -2912,6 +2982,18 @@ class CombatService:
             result = CombatResult.DRAW
             message = "Combat ended in a stalemate — surviving drones remain"
 
+        # Kills semantics for ship-vs-drones (drones don't kill drones here,
+        # NO-CANON recommendation filed to DECISIONS): a surviving drone is
+        # only credited a kill when it actually took down the attacker's
+        # ship. winner_drone_id mirrors the same asymmetry — no single drone
+        # "wins" a cleared-sector or stalemate outcome, only a ship-destroyed
+        # one (first survivor, ties broken by fight order).
+        winner_drone_id: Optional[uuid.UUID] = None
+        if attacker_ship_destroyed:
+            winner_drone_id = live_drones[0].id
+            for drone in live_drones:
+                drone.kills += 1
+
         combat_details.append({
             "round": round_number,
             "action": "combat_end",
@@ -2929,6 +3011,7 @@ class CombatService:
             "defender_damage_dealt": defender_damage_dealt,
             "attacker_ship_destroyed": attacker_ship_destroyed,
             "destroyed_drone_ids": destroyed_drone_ids,
+            "winner_drone_id": winner_drone_id,
             "combat_details": combat_details,
         }
 
