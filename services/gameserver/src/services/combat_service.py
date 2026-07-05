@@ -355,6 +355,9 @@ class CombatService:
         (ShipType.SCOUT_SHIP, ShipType.CARRIER): 0.5,         # Scout vs capital
         (ShipType.CARRIER, ShipType.SCOUT_SHIP): 1.8,         # Capital vs scout
         (ShipType.CARRIER, ShipType.FAST_COURIER): 1.5,       # Capital vs light
+        # FC mirror per ship-roster.md Citizen Clipper — P2W firewall: no edge, no deficit.
+        (ShipType.CITIZEN_CLIPPER, ShipType.CARRIER): 0.7,
+        (ShipType.CARRIER, ShipType.CITIZEN_CLIPPER): 1.5,
         (ShipType.COLONY_SHIP, ShipType.DEFENDER): 0.5,       # Colony ship weak in combat
     }
 
@@ -422,8 +425,9 @@ class CombatService:
         ShipType.NPC_SENTINEL_INTERDICTOR: "plasma",
     }
 
-    # Ship types that get a bonus to escape chance due to speed/agility
-    FAST_ESCAPE_SHIP_TYPES = {ShipType.FAST_COURIER, ShipType.SCOUT_SHIP}
+    # Ship types that get a bonus to escape chance due to speed/agility.
+    # CITIZEN_CLIPPER: FC mirror per ship-roster.md Citizen Clipper.
+    FAST_ESCAPE_SHIP_TYPES = {ShipType.FAST_COURIER, ShipType.SCOUT_SHIP, ShipType.CITIZEN_CLIPPER}
 
     # --- Escape-chance formula (WO-CR2, combat-resolver.md) ----------------
     # escape = BASE + FAST_BONUS·[fast] + (1−hull/maxhull)·HULL_W + edge·EDGE_W − pursuer_class·PURSUER_W
@@ -445,6 +449,8 @@ class CombatService:
         ShipType.WARP_JUMPER: 0.5,
         ShipType.SCOUT_SHIP: 0.5,                # fast, but not a warship
         ShipType.FAST_COURIER: 0.4,
+        # FC mirror per ship-roster.md Citizen Clipper — P2W firewall: no edge, no deficit.
+        ShipType.CITIZEN_CLIPPER: 0.4,
         ShipType.LIGHT_FREIGHTER: 0.3,
         ShipType.CARGO_HAULER: 0.2,
         ShipType.COLONY_SHIP: 0.1,
