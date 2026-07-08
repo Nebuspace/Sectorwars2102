@@ -71,11 +71,11 @@ class AdminWebSocketService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
-  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private eventHandlers: Map<string, Set<EventHandler>> = new Map();
   private connected = false;
   private shouldReconnect = true;
-  private reconnectTimeoutId: NodeJS.Timeout | null = null;
+  private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private _gaveUp = false;
   private onGaveUpCallbacks: Set<() => void> = new Set();
 
