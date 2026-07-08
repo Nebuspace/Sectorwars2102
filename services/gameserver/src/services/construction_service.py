@@ -254,8 +254,21 @@ def milestone_amounts(total_cost: int) -> Dict[str, int]:
 
 
 def phase_hours(ship_type: str, phase: str) -> float:
-    """Canonical hours a phase runs (build_days x 24 x phase split)."""
-    return SHIP_BUILD_SPECS[ship_type]["build_days"] * 24.0 * PHASE_SPLITS[phase]
+    """Canonical hours a phase runs (build_days x 24 x phase split).
+
+    TRADEDOCK_CONSTRUCTION is a synthetic ship_type (region-funded TradeDock
+    builds, not a ShipType enum member) deliberately excluded from
+    SHIP_BUILD_SPECS — adding it there would let create_reservation() build
+    one through the ordinary player-credits path, bypassing the region
+    treasury gate entirely. Its build_days is read from
+    REGION_TRADEDOCK_BUILD_DAYS instead so the same phase-progression engine
+    still drives it without that hole.
+    """
+    build_days = (
+        REGION_TRADEDOCK_BUILD_DAYS if ship_type == "TRADEDOCK_CONSTRUCTION"
+        else SHIP_BUILD_SPECS[ship_type]["build_days"]
+    )
+    return build_days * 24.0 * PHASE_SPLITS[phase]
 
 
 def daily_rent(total_cost: int) -> int:
@@ -1357,6 +1370,12 @@ def claim(
             400, f"Pay the 'final' milestone ({amount:,} credits) before claiming"
         )
 
+    # KNOWN GAP (out of WO-TD-RGF-1 scope): a region-funded reservation
+    # (ship_type "TRADEDOCK_CONSTRUCTION") reaching 'complete' and hitting
+    # this route will KeyError here — it is not a ShipType enum member and
+    # claiming it should not spawn a Ship at all (it should finalize the
+    # target Station as the new TradeDock). No completion route exists yet
+    # for the region-funded path; needs its own WO/design decision.
     from src.services.ship_service import ShipService
 
     name = reservation.ship_name or None
@@ -1428,15 +1447,6 @@ def cancel(
 # in their region for 50,000,000 cr over 90 real-time days. The payment is
 # pulled from the REGION TREASURY, not from the player's personal credits.
 #
-# FIELD_NEEDED (other lane — READ ONLY): Region model currently has no
-# treasury_balance column (it has total_trade_volume, which is a running
-# tally of trade volume, not a credit balance). The region-funded construction
-# branch requires:
-#   Region.treasury_balance  Integer  nullable=False  default=0
-# Until that column exists, create_region_funded_construction() raises
-# ConstructionError(501, ...) with a clear message rather than silently
-# reading the wrong field.
-#
 # The 90-day construction project is modelled as a ConstructionReservation
 # with a synthetic ship_type TRADEDOCK_CONSTRUCTION (which is NOT a ShipType
 # enum member) so the standard state machine drives it through the same lazy
@@ -1444,7 +1454,14 @@ def cancel(
 # ---------------------------------------------------------------------------
 
 # Canonical cost and resource bundle for region-funded TradeDock construction.
-# Canon: 50M cr, 90 real-time days, 500,000 ore + 300,000 tech + 200,000 equip
+# Canon (tradedock-shipyard.md §Region-funded construction): 50M cr, 90
+# real-time days, 500,000 ore + 300,000 TECHNOLOGY + 200,000 equipment.
+# DIVERGENCE: this dict spends "organics": 200,000 in place of canon's
+# "technology" and assigns 300,000 (not canon's 200,000) to equipment —
+# "technology" is not a resource type this codebase's economy recognizes (see
+# Station.commodities: ore / organics / equipment / fuel). Left byte-identical
+# pending a ruling on introducing a technology resource vs. remapping the
+# canon bundle onto the existing four. PENDING-RULING(region-bundle).
 REGION_TRADEDOCK_COST = 50_000_000
 REGION_TRADEDOCK_BUILD_DAYS = 90
 REGION_TRADEDOCK_RESOURCES = {"ore": 500_000, "equipment": 300_000, "organics": 200_000}
@@ -1467,20 +1484,36 @@ def create_region_funded_construction(
     The initiating_player must be the region owner. Returns a status dict;
     raises ConstructionError on any validation failure.
 
-    FIELD_NEEDED: Region.treasury_balance (Integer) must exist on the Region
-    model before this function can execute. If the field is absent, raises
-    ConstructionError(501) so the route can surface a clear 501 to the caller
-    rather than a raw AttributeError.
-
     Does NOT commit; the calling route owns the transaction.
     """
     now = now or datetime.now(UTC)
 
-    from src.models.region import Region
+    from src.models.region import Region, RegionalTreasuryEntry
 
     # Lock station (slot/treasury serialization point per module contract).
     station = _lock_station(db, station.id)
     _require_tradedock(station)
+
+    # Double-POST guard: the station lock above makes this race-free — a
+    # second concurrent request blocks in _lock_station until the first
+    # commits, then re-reads and finds this reservation. Reject before
+    # touching the treasury so a resubmitted/doubled request never produces a
+    # second 50,000,000cr deduction.
+    existing = (
+        db.query(ConstructionReservation)
+        .filter(
+            ConstructionReservation.station_id == station.id,
+            ConstructionReservation.ship_type == "TRADEDOCK_CONSTRUCTION",
+            ConstructionReservation.state.notin_(list(TERMINAL_STATES)),
+        )
+        .first()
+    )
+    if existing is not None:
+        raise ConstructionError(
+            409,
+            "A region-funded TradeDock construction is already in progress at "
+            "this station.",
+        )
 
     # Region must be associated with this station.
     if station.region_id is None or str(station.region_id) != str(region_id):
@@ -1513,15 +1546,7 @@ def create_region_funded_construction(
             f"this region has {total_sectors}.",
         )
 
-    # FIELD_NEEDED guard: raise 501 if treasury_balance does not yet exist.
-    if not hasattr(region, "treasury_balance"):
-        raise ConstructionError(
-            501,
-            "Region treasury not yet available: Region.treasury_balance column "
-            "has not been added by the model lane. Initiate the migration first.",
-        )
-
-    region_treasury = getattr(region, "treasury_balance", 0) or 0
+    region_treasury = region.treasury_balance or 0
     if region_treasury < REGION_TRADEDOCK_COST:
         raise ConstructionError(
             400,
@@ -1532,6 +1557,10 @@ def create_region_funded_construction(
     # Deduct from region treasury; deposit into station treasury as escrow.
     region.treasury_balance = region_treasury - REGION_TRADEDOCK_COST
     station.treasury_balance = (station.treasury_balance or 0) + REGION_TRADEDOCK_COST
+    # flag_modified is a no-op here (treasury_balance is a scalar Integer
+    # column, not JSONB — SQLAlchemy already tracks the reassignment above
+    # without help), but is harmless; left in place per WO-TD-RGF-1 scope
+    # rather than pulled out as an unrelated cleanup.
     flag_modified(region, "treasury_balance")
 
     # Use the synthetic 'TRADEDOCK_CONSTRUCTION' as the ship_type string.
@@ -1555,6 +1584,20 @@ def create_region_funded_construction(
     )
     db.add(reservation)
     db.flush()
+
+    # ADR-0059 N-I4 treasury reconciliation: this deduct must not leave the
+    # daily SUM(treasury_entries.delta) == Region.treasury_balance sweep
+    # broken. Write the ledger row in THIS SAME transaction, referencing the
+    # just-flushed reservation as the cause.
+    db.add(RegionalTreasuryEntry(
+        region_id=region.id,
+        before_balance=region_treasury,
+        after_balance=region.treasury_balance,
+        delta=-REGION_TRADEDOCK_COST,
+        cause_type=RegionalTreasuryEntry.CAUSE_EXPENDITURE,
+        cause_id=reservation.id,
+        reason=f"Region-funded TradeDock construction at station {station.name}",
+    ))
 
     # ADR-0053 WR14: a region-funded TradeDock is a runtime-created tradeable
     # station — seed its MarketPrice book in THIS transaction so the first

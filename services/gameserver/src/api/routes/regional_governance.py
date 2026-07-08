@@ -27,6 +27,8 @@ from src.models.region_invite import RegionInvite
 from src.services.regional_governance_service import RegionalGovernanceService
 from src.services.policy_proposal_rules import validate_proposed_changes
 from src.services import trading_service
+from src.services import construction_service
+from src.services.construction_service import ConstructionError
 from src.services.region_invite_service import (
     RegionInviteService,
     DEFAULT_MAX_USES,
@@ -183,6 +185,18 @@ class TariffSet(BaseModel):
     rate: float = Field(..., description="Requested tariff rate (clamped to the E-F2 cap on write)")
 
 
+class TradedockConstructionRequest(BaseModel):
+    """Owner request to fund construction of a new TradeDock (WO-TD-RGF-1).
+
+    ``station_id`` is the existing station the project is initiated against
+    (see construction_service.create_region_funded_construction for the full
+    precondition contract — the station must already carry a tradedock_tier
+    and sit inside the caller's region). Cost, region-ownership, and
+    ≥ 500-sector eligibility are re-derived and re-checked server-side; none
+    of that is trusted from the request body."""
+    station_id: uuid.UUID
+
+
 class TreatyPropose(BaseModel):
     """Owner request to PROPOSE a treaty to another region (WO-TREATY).
 
@@ -263,6 +277,11 @@ async def get_my_region(
         "total_sectors": region.total_sectors,
         "active_players_30d": region.active_players_30d,
         "total_trade_volume": float(region.total_trade_volume),
+        # WO-TD-RGF-1: the owner panel needs this to show treasury vs. the
+        # 50,000,000cr region-funded TradeDock cost. Safe to return as-is —
+        # verify_region_owner() above already 404s a non-owner before this
+        # dict is ever built, so this route is owner-gated by construction.
+        "treasury_balance": region.treasury_balance,
         "created_at": region.created_at.isoformat(),
         "updated_at": region.updated_at.isoformat()
     }
@@ -1328,4 +1347,73 @@ def set_region_tariff_endpoint(
     return {
         "message": "Region tariff updated successfully",
         "tariff_rate": clamped,
+    }
+
+
+# =====================================================================
+# Region-funded TradeDock construction (WO-TD-RGF-1).
+#
+# construction_service.create_region_funded_construction carries the full
+# precondition/state-machine contract (owner check, ≥ 500-sector gate,
+# treasury deduct + escrow, ledger write, market-book seed) and previously
+# had zero callers. This wires it up, running on the sync Session
+# construction_service expects (mirrors set_region_tariff_endpoint above).
+# =====================================================================
+
+def _region_construction_status(error: ConstructionError) -> int:
+    """Remap select construction_service statuses to more precise REST
+    semantics for this route: the service's generic 400 for the < 500-sector
+    precondition becomes 409 (a region-state conflict, consistent with the
+    409 this route also returns for a double-POST); its generic 400 for
+    insufficient region treasury becomes 402, mirroring the established
+    insufficient-funds -> 402 convention elsewhere in this codebase
+    (research_cockpit.py, black_market.py, planet_grid.py, first_login.py).
+    Every other code (403 non-owner, 404 region, 409 double-post) is already
+    precise and passes through unchanged."""
+    if error.status_code == 400:
+        detail_lower = error.detail.lower()
+        if "sectors" in detail_lower:
+            return 409
+        if "treasury" in detail_lower:
+            return 402
+    return error.status_code
+
+
+@router.post("/my-region/tradedock-construction")
+def create_region_funded_tradedock(
+    body: TradedockConstructionRequest,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Fund construction of a new TradeDock at ``station_id`` (region OWNER
+    only). Pulls 50,000,000 cr from the REGION treasury, not the caller's
+    personal credits.
+
+    404 if the caller has no Player record, or ``station_id`` doesn't
+    resolve to a station linked to any region; otherwise every further
+    validation (ownership, sector count, treasury, in-progress guard) is
+    delegated to construction_service.create_region_funded_construction and
+    remapped to REST-precise codes by ``_region_construction_status``: 403
+    non-owner, 409 < 500 sectors or a build already in progress at this
+    station, 402 insufficient region treasury."""
+    player = db.query(Player).filter(Player.user_id == current_user.id).first()
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player record not found")
+
+    station = db.query(Station).filter(Station.id == body.station_id).first()
+    if station is None or station.region_id is None:
+        raise HTTPException(status_code=404, detail="Station not found in any region")
+
+    try:
+        result = construction_service.create_region_funded_construction(
+            db, station, player, station.region_id
+        )
+        db.commit()
+    except ConstructionError as e:
+        db.rollback()
+        raise HTTPException(status_code=_region_construction_status(e), detail=e.detail)
+
+    return {
+        "message": "Region-funded TradeDock construction initiated",
+        **result,
     }

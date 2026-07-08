@@ -759,6 +759,32 @@ export const regionOwnerAPI = {
     apiRequest(`/api/v1/regions/${regionId}/invites/${inviteId}/revoke`, {
       method: 'POST',
     }),
+
+  // Region-funded TradeDock construction (WO-TD-RGF-1). "my-region" scoped
+  // like getMyRegion above — the server derives the region from the
+  // authenticated owner, no regionId param. stationId must be an EXISTING
+  // TradeDock-tier station inside the caller's region (construction_service
+  // ._require_tradedock precondition) — pulls 50,000,000 cr from the region
+  // treasury over a 90-day build. There is no dedicated status GET for this
+  // route; poll construction_service reservations instead (constructionAPI
+  // below) filtering ship_type === 'TRADEDOCK_CONSTRUCTION'.
+  initiateTradeDockConstruction: (stationId: string) =>
+    apiRequest('/api/v1/regions/my-region/tradedock-construction', {
+      method: 'POST',
+      body: JSON.stringify({ station_id: stationId }),
+    }),
+};
+
+// Ship-construction reservation reads (routes/construction.py — the live
+// slip-rental pipeline). Ownership-gated server-side to the caller's own
+// Player row; a region-funded TradeDock reservation (ship_type
+// 'TRADEDOCK_CONSTRUCTION') is owned by the initiating region owner and
+// shows up here exactly like a player ship-build reservation does.
+export const constructionAPI = {
+  getMyReservations: () => apiRequest('/api/v1/construction/reservations/mine'),
+
+  getReservation: (reservationId: string) =>
+    apiRequest(`/api/v1/construction/reservations/${reservationId}`),
 };
 
 // Haggle APIs (ADR-0079 — numerical price negotiation)
@@ -819,6 +845,7 @@ export const gameAPI = {
   shipUpgrade: shipUpgradeAPI,
   governance: governanceAPI,
   regionOwner: regionOwnerAPI,
+  construction: constructionAPI,
   haggle: haggleAPI,
   resource: resourceAPI,
 };

@@ -19,6 +19,7 @@ import GatewrightPanel from '../gatewright/GatewrightPanel';
 import CommsMailbox from '../comms/CommsMailbox';
 import CitizenshipBadge from '../governance/CitizenshipBadge';
 import RegionInvitePanel from '../governance/RegionInvitePanel';
+import RegionTradeDockPanel from '../governance/RegionTradeDockPanel';
 import CockpitColonyManagement from '../cockpit/CockpitColonyManagement';
 import type { ProductionLine } from '../cockpit/ProductionPanel';
 import type { PerColonistRates, ProdRole } from '../cockpit/CoupledColonistSliders';
@@ -698,6 +699,9 @@ const GameDashboard: React.FC = () => {
   const [ownedRegionId, setOwnedRegionId] = useState<string | null>(null);
   const [ownedRegionName, setOwnedRegionName] = useState<string | null>(null);
   const [showRegionInvites, setShowRegionInvites] = useState(false);
+  // Region-funded TradeDock construction (WO-TD-RGF-1). Reuses the ownership
+  // probe/state above rather than re-probing — same owner, same region.
+  const [showRegionTradeDock, setShowRegionTradeDock] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -2388,6 +2392,16 @@ const GameDashboard: React.FC = () => {
                     ◆ INVITE CONTROL
                   </button>
                 )}
+                {isRegionOwner && (
+                  <button
+                    type="button"
+                    className="hud-region-tradedock-btn"
+                    onClick={() => setShowRegionTradeDock(true)}
+                    title="Fund region TradeDock construction"
+                  >
+                    ◆ TRADEDOCK CONSTRUCTION
+                  </button>
+                )}
                 <div className="hud-value-secondary">
                   {currentSector.type ? currentSector.type.replace(/_/g, ' ').toUpperCase() : 'STANDARD'}
                 </div>
@@ -3491,6 +3505,25 @@ const GameDashboard: React.FC = () => {
                 regionId={ownedRegionId}
                 regionName={ownedRegionName}
                 onClose={() => setShowRegionInvites(false)}
+              />
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Region-funded TradeDock construction — same portal shell pattern,
+            same ownership gate/state as the invite control above. */}
+        {showRegionTradeDock && isRegionOwner && ownedRegionId && createPortal(
+          <div
+            className="region-tradedock-overlay"
+            onClick={() => setShowRegionTradeDock(false)}
+          >
+            <div className="region-tradedock-shell" onClick={(e) => e.stopPropagation()}>
+              <RegionTradeDockPanel
+                regionId={ownedRegionId}
+                regionName={ownedRegionName}
+                isOwner={isRegionOwner}
+                onClose={() => setShowRegionTradeDock(false)}
               />
             </div>
           </div>,
