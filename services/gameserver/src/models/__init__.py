@@ -34,7 +34,10 @@ from src.models.combat_log import CombatLog, CombatStats
 from src.models.game_event import GameEvent, EventTemplate, EventEffect, EventParticipation
 from src.models.market_transaction import MarketTransaction as EnhancedMarketTransaction, MarketPrice, PriceHistory, EconomicMetrics, PriceAlert
 from src.models.genesis_device import GenesisDevice, GenesisType, GenesisStatus, PlanetFormation
-from src.models.special_formation import SpecialFormation, SpecialFormationType
+from src.models.special_formation import (
+    SpecialFormation, SpecialFormationType,
+    PlayerFormationKnowledge, FormationRevealedVia,
+)
 from src.models.first_login import FirstLoginSession, DialogueExchange, PlayerFirstLoginState, ShipChoice, NegotiationSkillLevel, DialogueOutcome
 from src.models.ai_trading import AIMarketPrediction, PlayerTradingProfile, AIRecommendation, AIModelPerformance, AITrainingData
 from src.models.audit_log import AuditLog

@@ -191,8 +191,10 @@ class MoveOption(BaseModel):
     # read-only: viewing the move list does NOT discover anything (discovery is
     # the act of *visiting* a sector — flip_formation_discovery), so an
     # undiscovered formation here is withheld to a generic, identity-less anomaly
-    # exactly as on the current sector (WO-CA). is_discovered is a global row
-    # flag, so this leaks nothing a current-sector view wouldn't already.
+    # exactly as on the current sector (WO-CA). Disclosure is per-player
+    # (ADR-0045, is_formation_known_to_player), so this leaks nothing a
+    # current-sector view wouldn't already — and never a formation another
+    # player has discovered but this one hasn't.
     special_formations: List[FormationResponse] = []
 
 class AvailableMovesResponse(BaseModel):
@@ -503,23 +505,29 @@ async def get_current_sector(
             enriched.append(e)
         present = enriched
 
-    # Special-formation discovery + disclosure (WO-CA). Viewing the current
-    # sector scans it: any formation anchored here or whose interior includes
-    # this sector is first-observed (is_discovered False→True, name back-filled),
-    # mirroring how GET /sectors/{id}/system discovers planets on view. Then
-    # serialize — identity (name+type) is disclosed ONLY for discovered
-    # formations; undiscovered ones surface as a generic, identity-less anomaly.
+    # Special-formation discovery + disclosure (WO-CA; per-player since
+    # ADR-0045). Viewing the current sector scans it: any formation anchored
+    # here or whose interior includes this sector is first-observed BY THIS
+    # PLAYER (a PlayerFormationKnowledge row is recorded; the global
+    # is_discovered aggregate flips False→True on the first-ever discoverer
+    # and the name is back-filled), mirroring how GET /sectors/{id}/system
+    # discovers planets on view. Then serialize — identity (name+type) is
+    # disclosed ONLY for formations THIS player has discovered; undiscovered
+    # ones surface as a generic, identity-less anomaly.
     from src.services.special_formation_service import (
         flip_formation_discovery,
         find_formations_for_sector,
         is_formation_investigated,
+        is_formation_known_to_player,
     )
     flip_formation_discovery(db, player, sector)
     db.commit()  # persist the discovery flip (mirrors /system)
 
     formation_responses = []
     for f in find_formations_for_sector(db, sector):
-        discovered = bool(f.is_discovered)
+        # ADR-0045: disclosure is per-player, not the formation's global
+        # is_discovered aggregate — see is_formation_known_to_player.
+        discovered = is_formation_known_to_player(db, player.id, f.id)
         formation_responses.append(FormationResponse(
             id=str(f.id),
             is_discovered=discovered,
@@ -638,6 +646,7 @@ async def get_available_moves(
     from src.services.special_formation_service import (
         find_formations_for_sector,
         is_formation_investigated,
+        is_formation_known_to_player,
     )
 
     def _serialize_neighbour_formations(neighbour_sector) -> List[FormationResponse]:
@@ -645,7 +654,9 @@ async def get_available_moves(
             return []
         out = []
         for f in find_formations_for_sector(db, neighbour_sector):
-            discovered = bool(f.is_discovered)
+            # ADR-0045: disclosure is per-player, not the formation's global
+            # is_discovered aggregate — see is_formation_known_to_player.
+            discovered = is_formation_known_to_player(db, player.id, f.id)
             out.append(FormationResponse(
                 id=str(f.id),
                 is_discovered=discovered,

@@ -163,6 +163,10 @@ class Player(Base):
     warp_knowledge = relationship(
         "PlayerWarpKnowledge", back_populates="player", cascade="all, delete-orphan"
     )
+    # ADR-0045: per-player special-formation knowledge (WO-GWQ-FORMATION-KNOWLEDGE).
+    formation_knowledge = relationship(
+        "PlayerFormationKnowledge", back_populates="player", cascade="all, delete-orphan"
+    )
     # WO-TF added a 2nd FK to players (port_owner_id) on MarketTransaction, so this
     # reverse relationship must declare foreign_keys to disambiguate the join (else
     # AmbiguousForeignKeysError). It pairs with MarketTransaction.player (player_id).
