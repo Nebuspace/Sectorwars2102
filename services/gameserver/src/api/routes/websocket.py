@@ -196,7 +196,10 @@ async def admin_websocket_endpoint(
         except Exception as e:
             logger.error(f"Admin WebSocket error for {user.id}: {e}")
         finally:
-            await connection_manager.disconnect_admin(str(user.id))
+            # Pass our own socket: if we were the one evicted (superseded by
+            # a newer connection for this admin), disconnect_admin() no-ops
+            # instead of scrubbing the successor's registration (WO-RT-ADMIN-EVICTION).
+            await connection_manager.disconnect_admin(str(user.id), websocket)
                 
     except Exception as e:
         logger.error(f"Admin WebSocket connection error: {str(e)}")

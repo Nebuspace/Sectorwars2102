@@ -500,10 +500,16 @@ class ConnectionManager:
         """Accept a new admin WebSocket connection"""
         await websocket.accept()
         
-        # If admin already connected, disconnect old connection
+        # If admin already connected, evict the old connection. Close with
+        # 4001/reason="superseded" (mirrors connect()'s player-side fix,
+        # WO-RT-EVICTION-SUPERSEDE) so the client can tell this apart from an
+        # auth rejection and skip its reconnect-with-refresh path
+        # (WO-RT-ADMIN-EVICTION). The route's finally block passes its own
+        # socket to disconnect_admin(), so the evicted handler can't turn
+        # around and scrub this new connection's registration.
         if admin_id in self.admin_connections:
             try:
-                await self.admin_connections[admin_id].close()
+                await self.admin_connections[admin_id].close(code=4001, reason="superseded")
             except Exception as e:
                 logger.warning(f"Error closing existing admin connection for {admin_id}: {e}")
         
@@ -525,15 +531,28 @@ class ConnectionManager:
             "timestamp": datetime.now(UTC).isoformat()
         })
     
-    async def disconnect_admin(self, admin_id: str):
-        """Remove an admin WebSocket connection"""
+    async def disconnect_admin(self, admin_id: str, websocket: Optional[WebSocket] = None):
+        """Remove an admin WebSocket connection.
+
+        `websocket`, when passed, must be the exact socket the caller owns
+        (the route's finally block passes its own connection object). If a
+        newer socket has since replaced it in admin_connections, this is a
+        no-op — an evicted handler's finally must never scrub the socket
+        that superseded it (WO-RT-ADMIN-EVICTION, mirrors disconnect()'s
+        player-side fix in WO-RT-EVICTION-SUPERSEDE). Internal prune paths
+        that only know the admin_id (e.g. send-failure cleanup, stale-heartbeat
+        sweep) call this with websocket=None and keep the prior unconditional
+        behavior.
+        """
         if admin_id not in self.admin_connections:
             return
-        
+        if websocket is not None and self.admin_connections[admin_id] is not websocket:
+            return
+
         # Remove from active connections
         del self.admin_connections[admin_id]
         del self.admin_metadata[admin_id]
-        
+
         logger.info(f"Admin {admin_id} disconnected from WebSocket")
     
     async def send_admin_message(self, admin_id: str, message: Dict[str, Any]):
