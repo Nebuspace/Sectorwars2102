@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useGame } from '../../contexts/GameContext';
 import { formatCredits } from '../../utils/formatters';
 import { resourceLabel } from '../../services/resourceCatalog';
-import { routeOptimizerService, RouteOptimizeResponse } from '../../services/routeOptimizerService';
+import { routeOptimizerService, RouteOptimizeResponse, RouteHistoryEntry } from '../../services/routeOptimizerService';
 import './route-planner.css';
 
 type Objective = 'shortest' | 'profit' | 'risk' | 'balanced';
@@ -13,6 +13,22 @@ const OBJECTIVE_LABELS: Record<Objective, string> = {
   risk: 'Min Risk',
   balanced: 'Balanced'
 };
+
+/** route_optimization_runs is shared with the ARIA /ai/optimize-route
+ * endpoint (objective='ai_trading'), so a player's history can include
+ * runs this panel didn't itself produce -- fall back to the raw value
+ * rather than fabricate a label for an objective we don't recognize. */
+const objectiveLabel = (objective: string): string =>
+  OBJECTIVE_LABELS[objective as Objective] || objective;
+
+const formatHistoryTimestamp = (iso: string): string => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+};
+
+type DisplayedRoute =
+  | { kind: 'live'; data: RouteOptimizeResponse }
+  | { kind: 'history'; data: RouteHistoryEntry };
 
 /** Ship cargo capacity, mirroring TradingInterface's getCargoCapacity(). */
 const getShipCargoCapacity = (currentShip: any): number => {
@@ -45,7 +61,16 @@ const RoutePlannerPanel: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<RouteOptimizeResponse | null>(null);
+  const [displayed, setDisplayed] = useState<DisplayedRoute | null>(null);
+
+  // "Recent plans" strip -- collapsed by default (Scroll Law: opening the
+  // outer panel must not itself push the Plot Route controls down), and
+  // fetched lazily on its own first expand rather than whenever the panel
+  // opens, so it costs nothing when the player never looks at it.
+  const [historyCollapsed, setHistoryCollapsed] = useState(true);
+  const [history, setHistory] = useState<RouteHistoryEntry[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,7 +88,7 @@ const RoutePlannerPanel: React.FC = () => {
 
     setLoading(true);
     setError(null);
-    setResult(null);
+    setDisplayed(null);
 
     try {
       const response = await routeOptimizerService.optimizeRoute({
@@ -74,13 +99,35 @@ const RoutePlannerPanel: React.FC = () => {
         maxRouteTime: 24.0,
         riskTolerance
       });
-      setResult(response);
+      setDisplayed({ kind: 'live', data: response });
     } catch (err: any) {
       // API error -> visible error state, never a fabricated route.
       setError(err?.message || 'Failed to optimize route.');
     } finally {
       setLoading(false);
     }
+  };
+
+  const toggleHistory = async () => {
+    const expanding = historyCollapsed;
+    setHistoryCollapsed(!historyCollapsed);
+    if (!expanding || history !== null || historyLoading) return;
+
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const rows = await routeOptimizerService.getHistory();
+      setHistory(rows);
+    } catch (err: any) {
+      setHistoryError(err?.message || 'Failed to load recent plans.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const viewHistoryEntry = (entry: RouteHistoryEntry) => {
+    setError(null);
+    setDisplayed({ kind: 'history', data: entry });
   };
 
   return (
@@ -103,6 +150,67 @@ const RoutePlannerPanel: React.FC = () => {
 
       {!collapsed && (
         <div className="route-planner-body">
+          <div className="route-planner-history">
+            <div
+              className="route-planner-history-header"
+              onClick={toggleHistory}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggleHistory();
+                }
+              }}
+            >
+              <span>Recent Plans{history && history.length > 0 ? ` (${history.length})` : ''}</span>
+              <span className="route-planner-toggle">{historyCollapsed ? '▶' : '▼'}</span>
+            </div>
+
+            {!historyCollapsed && (
+              <div className="route-planner-history-body">
+                {historyLoading && (
+                  <div className="route-planner-history-status">Loading recent plans...</div>
+                )}
+                {historyError && (
+                  <div className="route-planner-error" role="alert">
+                    <span className="error-icon">⚠️</span> {historyError}
+                  </div>
+                )}
+                {!historyLoading && !historyError && history && history.length === 0 && (
+                  <div className="route-planner-history-status">No route plans recorded yet.</div>
+                )}
+                {!historyLoading && history && history.length > 0 && (
+                  <ul className="route-planner-history-list">
+                    {history.map((entry) => (
+                      <li key={entry.id}>
+                        <button
+                          type="button"
+                          className="route-planner-history-entry"
+                          onClick={() => viewHistoryEntry(entry)}
+                        >
+                          <span className="route-planner-history-objective">
+                            {objectiveLabel(entry.objective)}
+                          </span>
+                          <span className="route-planner-history-route">
+                            {entry.start_sector}
+                            {entry.end_sector ? ` → ${entry.end_sector}` : ` (${entry.sectors.length} hops)`}
+                          </span>
+                          <span className="route-planner-history-profit">
+                            {formatCredits(entry.total_profit)}
+                          </span>
+                          <span className="route-planner-history-time">
+                            {formatHistoryTimestamp(entry.created_at)}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+
           <form className="route-planner-form" onSubmit={handleSubmit}>
             <div className="route-planner-field">
               <label htmlFor="rp-objective">Objective</label>
@@ -185,13 +293,19 @@ const RoutePlannerPanel: React.FC = () => {
             </div>
           )}
 
-          {result && (
+          {displayed && (
             <div className="route-planner-result">
+              {displayed.kind === 'history' && (
+                <div className="route-planner-history-badge">
+                  📋 Past result — plotted {formatHistoryTimestamp(displayed.data.created_at)}
+                </div>
+              )}
+
               <div className="route-planner-hops">
-                {result.sectors.map((sector, index) => (
+                {displayed.data.sectors.map((sector, index) => (
                   <React.Fragment key={`${sector}-${index}`}>
                     <span className="route-planner-hop">{sector}</span>
-                    {index < result.sectors.length - 1 && (
+                    {index < displayed.data.sectors.length - 1 && (
                       <span className="route-planner-hop-arrow">→</span>
                     )}
                   </React.Fragment>
@@ -201,23 +315,25 @@ const RoutePlannerPanel: React.FC = () => {
               <div className="route-planner-stats">
                 <div className="route-planner-stat">
                   <span className="stat-label">Profit</span>
-                  <span className="stat-value">{formatCredits(result.total_profit)}</span>
+                  <span className="stat-value">{formatCredits(displayed.data.total_profit)}</span>
                 </div>
                 <div className="route-planner-stat">
                   <span className="stat-label">Time</span>
-                  <span className="stat-value">{result.total_time_hours.toFixed(1)}h</span>
+                  <span className="stat-value">{displayed.data.total_time_hours.toFixed(1)}h</span>
                 </div>
-                <div className="route-planner-stat">
-                  <span className="stat-label">Risk</span>
-                  <span className="stat-value">{(result.total_risk * 100).toFixed(0)}%</span>
-                </div>
+                {displayed.kind === 'live' && (
+                  <div className="route-planner-stat">
+                    <span className="stat-label">Risk</span>
+                    <span className="stat-value">{(displayed.data.total_risk * 100).toFixed(0)}%</span>
+                  </div>
+                )}
                 <div className="route-planner-stat">
                   <span className="stat-label">Confidence</span>
-                  <span className="stat-value">{(result.route_confidence * 100).toFixed(0)}%</span>
+                  <span className="stat-value">{(displayed.data.route_confidence * 100).toFixed(0)}%</span>
                 </div>
               </div>
 
-              {result.opportunities.length > 0 && (
+              {displayed.kind === 'live' && displayed.data.opportunities.length > 0 && (
                 <div className="route-planner-opportunities">
                   <table>
                     <thead>
@@ -232,7 +348,7 @@ const RoutePlannerPanel: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {result.opportunities.map((opp, index) => (
+                      {displayed.data.opportunities.map((opp, index) => (
                         <tr key={`${opp.from_sector}-${opp.to_sector}-${index}`}>
                           <td>{opp.from_sector}</td>
                           <td>{opp.to_sector}</td>

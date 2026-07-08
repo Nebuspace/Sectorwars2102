@@ -170,3 +170,106 @@
   opacity: 0.7;
   font-weight: 600;
 }
+
+/* -----------------------------------------------------------------------
+   Recent Plans strip -- collapsed by default (WO-ECON-ROUTE-HISTORY), so
+   opening the Route Planner panel never displaces the Plot Route form.
+   Its own list is bounded with a max-height + scroll: the one place the
+   Scroll Law explicitly allows scrolling (a secondary, unbounded list),
+   never the primary controls above it.
+----------------------------------------------------------------------- */
+
+.route-planner-history {
+  margin-bottom: var(--space-md);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.route-planner-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-xs) var(--space-sm);
+  cursor: pointer;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: var(--text-sm);
+}
+
+.route-planner-history-body {
+  padding: var(--space-sm);
+  border-top: 1px solid var(--border-color);
+}
+
+.route-planner-history-status {
+  font-size: var(--text-sm);
+  opacity: 0.7;
+  padding: var(--space-xs) 0;
+}
+
+.route-planner-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.route-planner-history-entry {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-color);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.route-planner-history-entry:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.route-planner-history-objective {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.route-planner-history-route {
+  flex: 1;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-planner-history-profit {
+  color: var(--primary-color);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.route-planner-history-time {
+  opacity: 0.6;
+  font-size: 0.85em;
+  flex-shrink: 0;
+}
+
+.route-planner-history-badge {
+  margin-bottom: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  font-size: var(--text-sm);
+  opacity: 0.85;
+  display: inline-block;
+}

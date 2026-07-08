@@ -41,6 +41,25 @@ export interface RouteOptimizeResponse {
   opportunities: RouteOpportunity[];
 }
 
+// One row from GET /api/v1/routes/history -- a past recorded run, mapped
+// 1:1 from route_optimization_runs. Deliberately NOT shaped like
+// RouteOptimizeResponse: total_risk/profit_per_hour/opportunities are never
+// persisted for a run, so there is nothing honest to backfill them with.
+export interface RouteHistoryEntry {
+  id: string;
+  objective: string;
+  start_sector: string;
+  end_sector: string | null;
+  sectors: string[];
+  total_profit: number;
+  total_distance: number;
+  total_time_hours: number;
+  cargo_efficiency: number;
+  route_confidence: number;
+  status: string;
+  created_at: string;
+}
+
 class RouteOptimizerService {
   private baseUrl = '/api/v1/routes';
 
@@ -69,6 +88,21 @@ class RouteOptimizerService {
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       throw new Error(body?.detail || `Failed to optimize route: ${response.statusText}`);
+    }
+
+    return response.json();
+  }
+
+  /** The caller's own recorded route-optimization runs, newest first. */
+  async getHistory(limit: number = 10): Promise<RouteHistoryEntry[]> {
+    const response = await fetch(`${this.baseUrl}/history?limit=${limit}`, {
+      method: 'GET',
+      headers: this.getAuthHeaders()
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.detail || `Failed to load route history: ${response.statusText}`);
     }
 
     return response.json();
