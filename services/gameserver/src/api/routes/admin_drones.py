@@ -4,6 +4,7 @@ Admin drone management endpoints.
 Provides administrative control over all drones in the game.
 """
 
+import json
 from uuid import UUID
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -181,6 +182,20 @@ async def get_drone_statistics(
     )
 
 
+def _parse_combat_log(raw: Optional[str]) -> Optional[list]:
+    """Parse DroneCombat.combat_log (String(2000), can be hard-truncated by
+    the writer) into a JSON list for the admin UI. Returns None on any
+    parse failure so a truncated/malformed string degrades to "no round
+    detail" rather than surfacing a raw, possibly-invalid JSON string."""
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
 @router.get("/{drone_id}")
 async def get_drone_details(
     drone_id: UUID,
@@ -265,7 +280,8 @@ async def get_drone_details(
                 "was_attacker": c.attacker_drone_id == drone_id,
                 "won": c.winner_drone_id == drone_id,
                 "damage_dealt": c.attacker_damage_dealt if c.attacker_drone_id == drone_id else c.defender_damage_dealt,
-                "damage_taken": c.defender_damage_dealt if c.attacker_drone_id == drone_id else c.attacker_damage_dealt
+                "damage_taken": c.defender_damage_dealt if c.attacker_drone_id == drone_id else c.attacker_damage_dealt,
+                "combat_log": _parse_combat_log(c.combat_log)
             }
             for c in combats
         ]

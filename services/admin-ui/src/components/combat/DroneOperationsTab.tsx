@@ -47,6 +47,68 @@ interface DroneStatistics {
   total_battles: number;
 }
 
+// One entry of the combat_details list CombatService._resolve_sector_drone_combat
+// builds and json.dumps's into DroneCombat.combat_log (a String(2000) column — long
+// engagements get hard-truncated server-side, which can leave the JSON malformed).
+// This row shape is builder-defined and not yet ratified, so every field is optional.
+interface DroneCombatLogEntry {
+  round?: number | string;
+  actor?: string;
+  action?: string;
+  tag?: string;
+  message?: string;
+}
+
+// Matches one entry of `recent_combats` in the GET /admin/drones/{id} response
+// (admin_drones.py:259-271). NOTE: that route does not currently serialize
+// combat_log/combat_details at all — they're typed here as optional so this panel
+// starts rendering them the moment a future backend change adds either key, with no
+// further FE change required.
+interface DroneRecentCombat {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+  rounds: number;
+  was_attacker: boolean;
+  won: boolean;
+  damage_dealt: number;
+  damage_taken: number;
+  combat_log?: string | DroneCombatLogEntry[] | null;
+  combat_details?: DroneCombatLogEntry[] | null;
+}
+
+// The slice of GET /admin/drones/{drone_id}'s response this panel consumes —
+// `drone` / `recent_deployments` are also in that envelope but unused here.
+interface DroneDetailResponse {
+  recent_combats?: DroneRecentCombat[];
+}
+
+// Best-effort normalizer for DroneRecentCombat.combat_log / combat_details: tolerates
+// a raw JSON string (possibly truncated mid-object by the server's column cap), an
+// already-parsed array, or the field being absent — never throws.
+function parseCombatLogEntries(combat: DroneRecentCombat): DroneCombatLogEntry[] {
+  const raw = combat.combat_log ?? combat.combat_details;
+  if (raw == null) return [];
+
+  const isEntry = (e: unknown): e is DroneCombatLogEntry =>
+    typeof e === 'object' && e !== null;
+
+  if (Array.isArray(raw)) {
+    return raw.filter(isEntry);
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(isEntry);
+      }
+    } catch {
+      // Truncated/malformed JSON — degrade to "no round detail" rather than crash.
+    }
+  }
+  return [];
+}
+
 const DroneOperationsTab: React.FC = () => {
   const toast = useToast();
   const confirm = useConfirm();
@@ -56,6 +118,14 @@ const DroneOperationsTab: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
+
+  // Combat-history row expansion. Fetched lazily per drone on first expand
+  // (no polling); 'loading' / 'error' are sentinel states distinct from "not
+  // yet requested" (key absent) and "loaded, zero combats" (empty array).
+  const [expandedDroneId, setExpandedDroneId] = useState<string | null>(null);
+  const [combatHistory, setCombatHistory] = useState<
+    Record<string, DroneRecentCombat[] | 'loading' | 'error'>
+  >({});
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -146,6 +216,143 @@ const DroneOperationsTab: React.FC = () => {
     },
     [confirm, toast, loadData]
   );
+
+  const fetchCombatHistory = useCallback(async (droneId: string) => {
+    setCombatHistory((prev) => ({ ...prev, [droneId]: 'loading' }));
+    try {
+      const res = await api.get<DroneDetailResponse>(
+        `/api/v1/admin/drones/${droneId}`
+      );
+      const combats = Array.isArray(res.data?.recent_combats)
+        ? res.data.recent_combats
+        : [];
+      setCombatHistory((prev) => ({ ...prev, [droneId]: combats }));
+    } catch {
+      setCombatHistory((prev) => ({ ...prev, [droneId]: 'error' }));
+    }
+  }, []);
+
+  const toggleCombatHistory = useCallback(
+    (droneId: string) => {
+      if (expandedDroneId === droneId) {
+        setExpandedDroneId(null);
+        return;
+      }
+      setExpandedDroneId(droneId);
+      if (combatHistory[droneId] === undefined) {
+        fetchCombatHistory(droneId);
+      }
+    },
+    [expandedDroneId, combatHistory, fetchCombatHistory]
+  );
+
+  const renderCombatHistoryPanel = (droneId: string) => {
+    const entry = combatHistory[droneId];
+
+    if (entry === undefined || entry === 'loading') {
+      return (
+        <div className="drone-ops-combat-history drone-ops-combat-history-status">
+          <div className="loading-spinner"></div>
+          <span>Loading combat history…</span>
+        </div>
+      );
+    }
+
+    if (entry === 'error') {
+      return (
+        <div className="drone-ops-combat-history drone-ops-combat-history-status">
+          <span>⚠️ Failed to load combat history.</span>
+          <button
+            className="drone-ops-action-btn history"
+            onClick={() => fetchCombatHistory(droneId)}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+
+    if (entry.length === 0) {
+      return (
+        <div className="drone-ops-combat-history drone-ops-combat-history-status">
+          No recorded combats.
+        </div>
+      );
+    }
+
+    return (
+      <div className="drone-ops-combat-history">
+        <table className="drone-ops-combat-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Role</th>
+              <th>Rounds</th>
+              <th>Outcome</th>
+              <th>Damage Dealt</th>
+              <th>Damage Taken</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entry.map((combat) => {
+              const logEntries = parseCombatLogEntries(combat);
+              return (
+                <React.Fragment key={combat.id}>
+                  <tr>
+                    <td className="mono">
+                      {combat.started_at
+                        ? new Date(combat.started_at).toLocaleString()
+                        : '—'}
+                    </td>
+                    <td>{combat.was_attacker ? 'Attacker' : 'Defender'}</td>
+                    <td className="mono">{combat.rounds ?? '—'}</td>
+                    <td>
+                      <span
+                        className={`drone-ops-badge${
+                          combat.won ? ' active' : ' battle'
+                        }`}
+                      >
+                        {combat.won ? 'Won' : 'Lost'}
+                      </span>
+                    </td>
+                    <td className="mono">{combat.damage_dealt ?? '—'}</td>
+                    <td className="mono">{combat.damage_taken ?? '—'}</td>
+                  </tr>
+                  {logEntries.length > 0 && (
+                    <tr className="drone-ops-combat-log-row">
+                      <td colSpan={6}>
+                        <ul className="drone-ops-combat-log-list">
+                          {logEntries.map((detail, idx) => (
+                            <li key={idx}>
+                              {detail.round !== undefined && (
+                                <span className="mono">
+                                  R{String(detail.round)}
+                                </span>
+                              )}
+                              {detail.tag === 'SECTOR_DEFENSE' && (
+                                <span className="drone-ops-badge deployed">
+                                  sector defense
+                                </span>
+                              )}
+                              <span>
+                                {typeof detail.message === 'string'
+                                  ? detail.message
+                                  : detail.action ?? 'Unrecognized combat event'}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   const activeDrones = drones.filter((d) => d.status !== 'destroyed');
   const byTypeEntries = stats
@@ -290,6 +497,7 @@ const DroneOperationsTab: React.FC = () => {
                   <th>Kills</th>
                   <th>Battles</th>
                   <th>Sector</th>
+                  <th>History</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -298,44 +506,63 @@ const DroneOperationsTab: React.FC = () => {
                   const isDeployedOrCombat =
                     drone.status === 'deployed' || drone.status === 'combat';
                   const isActioning = actioningId === drone.id;
+                  const isExpanded = expandedDroneId === drone.id;
                   return (
-                    <tr key={drone.id}>
-                      <td>{drone.name}</td>
-                      <td>{drone.drone_type.replace(/_/g, ' ')}</td>
-                      <td className="mono">{drone.level}</td>
-                      <td>
-                        <span
-                          className={`drone-ops-badge${
-                            drone.status === 'combat'
-                              ? ' battle'
-                              : drone.status === 'deployed'
-                              ? ' deployed'
-                              : ' active'
-                          }`}
-                        >
-                          {drone.status.replace(/_/g, ' ')}
-                        </span>
-                      </td>
-                      <td className="mono">
-                        {drone.health}/{drone.max_health}
-                      </td>
-                      <td className="mono">{drone.kills}</td>
-                      <td className="mono">{drone.battles_fought}</td>
-                      <td>{drone.sector_id ?? '—'}</td>
-                      <td>
-                        {isDeployedOrCombat ? (
-                          <button
-                            className="drone-ops-action-btn recall"
-                            onClick={() => handleForceRecall(drone)}
-                            disabled={isActioning}
+                    <React.Fragment key={drone.id}>
+                      <tr>
+                        <td>{drone.name}</td>
+                        <td>{drone.drone_type.replace(/_/g, ' ')}</td>
+                        <td className="mono">{drone.level}</td>
+                        <td>
+                          <span
+                            className={`drone-ops-badge${
+                              drone.status === 'combat'
+                                ? ' battle'
+                                : drone.status === 'deployed'
+                                ? ' deployed'
+                                : ' active'
+                            }`}
                           >
-                            {isActioning ? 'Working…' : 'Force Recall'}
+                            {drone.status.replace(/_/g, ' ')}
+                          </span>
+                        </td>
+                        <td className="mono">
+                          {drone.health}/{drone.max_health}
+                        </td>
+                        <td className="mono">{drone.kills}</td>
+                        <td className="mono">{drone.battles_fought}</td>
+                        <td>{drone.sector_id ?? '—'}</td>
+                        <td>
+                          <button
+                            className="drone-ops-action-btn history"
+                            onClick={() => toggleCombatHistory(drone.id)}
+                            aria-expanded={isExpanded}
+                          >
+                            {isExpanded ? 'Hide' : 'Combat History'}
                           </button>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                    </tr>
+                        </td>
+                        <td>
+                          {isDeployedOrCombat ? (
+                            <button
+                              className="drone-ops-action-btn recall"
+                              onClick={() => handleForceRecall(drone)}
+                              disabled={isActioning}
+                            >
+                              {isActioning ? 'Working…' : 'Force Recall'}
+                            </button>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="drone-ops-combat-expand-row">
+                          <td colSpan={10}>
+                            {renderCombatHistoryPanel(drone.id)}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -366,33 +593,53 @@ const DroneOperationsTab: React.FC = () => {
                       <th>Level</th>
                       <th>Kills</th>
                       <th>Destroyed</th>
+                      <th>History</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {destroyed.map((drone) => {
                       const isActioning = actioningId === drone.id;
+                      const isExpanded = expandedDroneId === drone.id;
                       return (
-                        <tr key={drone.id}>
-                          <td>{drone.name}</td>
-                          <td>{drone.drone_type.replace(/_/g, ' ')}</td>
-                          <td className="mono">{drone.level}</td>
-                          <td className="mono">{drone.kills}</td>
-                          <td className="mono">
-                            {drone.destroyed_at
-                              ? new Date(drone.destroyed_at).toLocaleString()
-                              : '—'}
-                          </td>
-                          <td>
-                            <button
-                              className="drone-ops-action-btn restore"
-                              onClick={() => handleRestore(drone)}
-                              disabled={isActioning}
-                            >
-                              {isActioning ? 'Working…' : 'Restore'}
-                            </button>
-                          </td>
-                        </tr>
+                        <React.Fragment key={drone.id}>
+                          <tr>
+                            <td>{drone.name}</td>
+                            <td>{drone.drone_type.replace(/_/g, ' ')}</td>
+                            <td className="mono">{drone.level}</td>
+                            <td className="mono">{drone.kills}</td>
+                            <td className="mono">
+                              {drone.destroyed_at
+                                ? new Date(drone.destroyed_at).toLocaleString()
+                                : '—'}
+                            </td>
+                            <td>
+                              <button
+                                className="drone-ops-action-btn history"
+                                onClick={() => toggleCombatHistory(drone.id)}
+                                aria-expanded={isExpanded}
+                              >
+                                {isExpanded ? 'Hide' : 'Combat History'}
+                              </button>
+                            </td>
+                            <td>
+                              <button
+                                className="drone-ops-action-btn restore"
+                                onClick={() => handleRestore(drone)}
+                                disabled={isActioning}
+                              >
+                                {isActioning ? 'Working…' : 'Restore'}
+                              </button>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="drone-ops-combat-expand-row">
+                              <td colSpan={7}>
+                                {renderCombatHistoryPanel(drone.id)}
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
