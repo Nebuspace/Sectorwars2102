@@ -514,6 +514,28 @@ PRICE_HISTORY_DAILY_RETENTION_DAYS = int(
 # being re-declared in the frontend with no cross-reference.
 PRICE_TREND_EPSILON = float(os.environ.get("PRICE_TREND_EPSILON", "0.005"))
 
+# Route-optimization-run retention sweep (WO-OPS-ROUTE-RUNS-RETENTION).
+# route_optimization_runs (written by route_optimizer.py / ai.py's
+# _record_optimization_run on every successful player optimize call) is
+# append-only telemetry for the NH18 admin feed with no cap and no prune
+# job — the authoring spec (WO-SB-RO2) deliberately deferred this: "a prune
+# job is out of scope — flag retention policy to DECISIONS". NO-CANON: canon
+# is silent on both numbers below; proposed to DECISIONS — keep 30 days of
+# history, and never more than 200 rows per player regardless of age (so a
+# low-volume player's full history survives, a high-volume/spammy player's
+# ancient runs don't pile up unbounded).
+ROUTE_RUNS_RETENTION_DAYS = int(
+    os.environ.get("ROUTE_RUNS_RETENTION_DAYS", "30")
+)
+ROUTE_RUNS_RETENTION_MAX_PER_PLAYER = int(
+    os.environ.get("ROUTE_RUNS_RETENTION_MAX_PER_PLAYER", "200")
+)
+# Sweep cadence — daily is enough for a telemetry-retention job (it is not a
+# player-facing signal); env-overridable like every other sweep cadence.
+ROUTE_RUNS_RETENTION_SWEEP_SECONDS = int(
+    os.environ.get("ROUTE_RUNS_RETENTION_SWEEP_SECONDS", str(24 * 60 * 60))
+)
+
 # Session-level advisory lock key (pg_try_advisory_xact_lock argument).
 _ADVISORY_LOCK_KEY = 0x53573231  # 'SW21'
 
@@ -4066,6 +4088,116 @@ def _run_price_history_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+def prune_route_optimization_runs(
+    db: Session,
+    *,
+    now: Optional[datetime] = None,
+    batch_size: int = 500,
+) -> int:
+    """Core RouteOptimizationRun retention logic (WO-OPS-ROUTE-RUNS-RETENTION).
+
+    The table is written on every successful player route-optimize call
+    (route_optimizer.py / ai.py, ``_record_optimization_run``) with no cap
+    and no prune job — a spammy player can grow it unboundedly. This prunes
+    a row only when BOTH of the following hold:
+
+      * it is older than ``ROUTE_RUNS_RETENTION_DAYS``, AND
+      * it is not among that player's ``ROUTE_RUNS_RETENTION_MAX_PER_PLAYER``
+        most-recent rows (ranked by ``created_at`` desc).
+
+    A player's newest K rows always survive regardless of age (a low-volume
+    player's whole history is kept even once stale); any row inside the age
+    window always survives regardless of rank (a high-volume player's recent
+    activity is never pruned early just for exceeding K). Only a row that is
+    BOTH stale AND beyond the per-player cap is eligible.
+
+    Deliberately takes an injected ``db`` and does no session lifecycle,
+    advisory-lock, or commit/rollback of its own (mirrors
+    ``sweep_price_history``) — that discipline lives in the
+    ``_run_route_runs_retention_sync`` wrapper below, which is also what
+    makes this directly unit-testable against a session double.
+
+    Ranking is done per-player, and only for players who have at least one
+    row older than the cutoff (an indexed ``created_at`` filter, not a
+    full-table scan) — a quiet table with no stale rows costs one cheap
+    DISTINCT query and touches nothing else. Deletes are collected and
+    applied in chunks of ``batch_size`` (default 500) rather than one
+    unbounded statement. Idempotent: a second call after a full prune finds
+    no stale rows left and deletes nothing.
+
+    Returns the number of rows deleted.
+    """
+    from src.models.route_optimization_run import RouteOptimizationRun
+
+    now = now or datetime.utcnow()
+    cutoff = now - timedelta(days=ROUTE_RUNS_RETENTION_DAYS)
+
+    stale_player_ids = [
+        row[0]
+        for row in (
+            db.query(RouteOptimizationRun.player_id)
+            .filter(RouteOptimizationRun.created_at < cutoff)
+            .distinct()
+            .all()
+        )
+    ]
+    if not stale_player_ids:
+        return 0
+
+    to_delete: List[Any] = []
+    for player_id in stale_player_ids:
+        rows = (
+            db.query(RouteOptimizationRun.id, RouteOptimizationRun.created_at)
+            .filter(RouteOptimizationRun.player_id == player_id)
+            .order_by(RouteOptimizationRun.created_at.desc())
+            .all()
+        )
+        for rank, (run_id, created_at) in enumerate(rows, start=1):
+            if rank > ROUTE_RUNS_RETENTION_MAX_PER_PLAYER and created_at < cutoff:
+                to_delete.append(run_id)
+
+    deleted = 0
+    for start in range(0, len(to_delete), batch_size):
+        batch = to_delete[start:start + batch_size]
+        deleted += (
+            db.query(RouteOptimizationRun)
+            .filter(RouteOptimizationRun.id.in_(batch))
+            .delete(synchronize_session=False)
+        )
+
+    return deleted
+
+
+def _run_route_runs_retention_sync() -> Dict[str, int]:
+    """Own-session wrapper around ``prune_route_optimization_runs`` —
+    SessionLocal + advisory lock + commit/rollback, same discipline as
+    ``_run_price_history_sweep_sync``. A second gameserver instance racing
+    the same tick skips (pg_try_advisory_xact_lock) rather than
+    double-pruning; a mid-pass failure rolls back the whole batch (nothing
+    partially deleted — the next daily wake retries cleanly)."""
+    from src.core.database import SessionLocal
+
+    not_pruned = {"deleted": 0}
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return not_pruned
+
+        deleted = prune_route_optimization_runs(db)
+        db.commit()  # releases the xact lock
+        return {"deleted": deleted}
+    except Exception:
+        logger.exception("Route-optimization-run retention sweep failed")
+        db.rollback()
+        return not_pruned
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Host task — async wrapper + sync tick bodies
 # ---------------------------------------------------------------------------
@@ -5500,6 +5632,28 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: price-history sweep crashed (loop continues)")
+
+        # Route-optimization-run retention sweep (WO-OPS-ROUTE-RUNS-RETENTION)
+        # — route_optimization_runs is written on every successful player
+        # optimize call with no cap; prunes rows that are BOTH older than
+        # ROUTE_RUNS_RETENTION_DAYS AND beyond each player's newest
+        # ROUTE_RUNS_RETENTION_MAX_PER_PLAYER rows (a low-volume player's
+        # stale history and a high-volume player's recent runs both
+        # survive). Own session, own advisory lock, failure isolated — same
+        # discipline as the other sweeps.
+        if elapsed % ROUTE_RUNS_RETENTION_SWEEP_SECONDS == 0:
+            try:
+                pruned = await asyncio.to_thread(_run_route_runs_retention_sync)
+                if pruned.get("deleted"):
+                    logger.info(
+                        "NPC scheduler: route-run retention sweep — pruned "
+                        "%d row(s)",
+                        pruned.get("deleted", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: route-run retention sweep crashed (loop continues)")
 
         # ARIA storage-prune pass (WO-F16) — evict each player's oldest ARIA
         # memory/market-intelligence rows until their combined payload is back
