@@ -81,11 +81,31 @@ export interface CompleteFirstLoginResult {
   nickname_rejected_reason?: 'length' | 'charset' | 'profanity' | 'taken' | null;
 }
 
+// WO-PUX-FLOGIN-IDEMPOTENT: thrown by completeFirstLogin instead of the raw
+// axios error when the server's idempotency guard reports HTTP 400 "First
+// login already completed". That happens when an earlier /complete call
+// already succeeded server-side but its response never reached this client
+// (timeout, dropped connection, a manual retry) -- it is not a real
+// failure. Callers should recover by re-checking status via
+// checkFirstLoginStatus() and proceeding if it confirms completion, never
+// by surfacing this as a dead-end error.
+export class FirstLoginAlreadyCompletedError extends Error {
+  constructor() {
+    super('First login already completed');
+    this.name = 'FirstLoginAlreadyCompletedError';
+  }
+}
+
 interface FirstLoginContextType {
   requiresFirstLogin: boolean;
   isLoading: boolean;
   error: string | null;
-  
+  // Re-checks first-login status against the server and returns the fresh
+  // requires_first_login value directly (undefined if the check itself
+  // failed) -- callers recovering from a lost response need the value
+  // synchronously rather than waiting on a later re-render.
+  checkFirstLoginStatus: () => Promise<boolean | undefined>;
+
   // Session data
   session: FirstLoginSession | null;
   startSession: () => Promise<void>;
@@ -162,22 +182,29 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
     }
   }, [isAuthenticated, user, lastCheckTime]);
   
-  // Check if the player needs to go through first login
-  const checkFirstLoginStatus = async () => {
+  // Check if the player needs to go through first login. Returns the fresh
+  // requires_first_login value directly (undefined on failure) so callers
+  // that need it synchronously -- e.g. idempotent-completion recovery --
+  // don't have to wait on a later re-render of the reactive state.
+  const checkFirstLoginStatus = async (): Promise<boolean | undefined> => {
     setIsLoading(true);
     setError(null);
-    
+
     try {
       const response = await api.get('/api/v1/first-login/status');
-      setRequiresFirstLogin((response.data as any).requires_first_login);
-      
+      const requiresFirst = (response.data as any).requires_first_login;
+      setRequiresFirstLogin(requiresFirst);
+
       // If first login is required and there's an active session, load it
-      if ((response.data as any).requires_first_login && (response.data as any).session_id) {
+      if (requiresFirst && (response.data as any).session_id) {
         await startSession();
       }
+
+      return requiresFirst;
     } catch (error) {
       console.error('Error checking first login status:', error);
       setError('Failed to check first login status.');
+      return undefined;
     } finally {
       setIsLoading(false);
     }
@@ -401,7 +428,20 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
       setRequiresFirstLogin(false);
 
       return result.data;
-    } catch (error) {
+    } catch (error: any) {
+      // WO-PUX-FLOGIN-IDEMPOTENT: the server's idempotency guard returns
+      // HTTP 400 "First login already completed" when an earlier /complete
+      // call already succeeded but its response was lost before reaching
+      // this client. That's not a real failure -- throw a distinguishable
+      // error so the caller can recover (re-check status, proceed) instead
+      // of dead-ending the player. Leave `error` state untouched here so a
+      // recoverable condition never renders as a failure.
+      const detail = error?.response?.data?.detail;
+      if (error?.response?.status === 400 && typeof detail === 'string' && /already completed/i.test(detail)) {
+        console.warn('[FirstLogin] /complete reported already-completed; caller should recover via status re-check.');
+        throw new FirstLoginAlreadyCompletedError();
+      }
+
       console.error('[FirstLogin:Error] Completion failed:', error);
       setError('Failed to complete first login process.');
       throw error;
@@ -436,7 +476,8 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
     requiresFirstLogin,
     isLoading,
     error,
-    
+    checkFirstLoginStatus,
+
     session,
     startSession,
     

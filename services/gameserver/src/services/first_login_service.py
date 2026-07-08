@@ -30,6 +30,18 @@ from src.core.ship_specifications_seeder import SHIP_SPECIFICATIONS
 
 logger = logging.getLogger(__name__)
 
+
+class FirstLoginCompletionError(Exception):
+    """Raised by complete_first_login when the flow's side effects have
+    already run for this player; carries an HTTP status hint (matches the
+    ConstructionError convention in construction_service.py)."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
 def get_ship_specifications(ship_choice: ShipChoice) -> Optional[Dict[str, Any]]:
     """
     Get ship specifications for a given ship choice.
@@ -1720,6 +1732,21 @@ Description: {ship_specs.get('description', 'N/A')}
 
         if not player:
             raise ValueError(f"Player not found: {session.player_id}")
+
+        # Idempotency guard (WO-PUX-FLOGIN-IDEMPOTENT): has_completed_first_login
+        # is the only reliable marker here -- it is set exactly once, at the
+        # very end of this method, after every side effect below has already
+        # run. session.completed_at is NOT usable for this: it is already
+        # stamped by _evaluate_dialogue_outcome as soon as the dialogue
+        # outcome is scored, before /complete is ever called (see
+        # get_session_with_history's docstring above), which made the old
+        # `if not session.completed_at:` check below permanently dead. A
+        # repeat call (double-click, client retry, reload race) must be a
+        # true no-op: no ship delete/create, no credit re-grant, no ARIA
+        # reset, no nickname write.
+        state = self.get_player_first_login_state(player.id)
+        if state.has_completed_first_login:
+            raise FirstLoginCompletionError(400, "First login already completed")
 
         # SELF-HEALING: First Login should always give a clean slate
         # If there's stale data from previous testing/sessions, clean it up

@@ -10,7 +10,7 @@ from src.auth.dependencies import get_current_player, get_current_admin_user
 from src.models.player import Player
 from src.models.user import User
 from src.models.first_login import ShipChoice, FirstLoginSession
-from src.services.first_login_service import FirstLoginService
+from src.services.first_login_service import FirstLoginService, FirstLoginCompletionError
 from src.services.ai_dialogue_service import get_ai_dialogue_service, AIDialogueService
 from src.services.ai_security_service import get_security_service, AISecurityService
 
@@ -504,11 +504,16 @@ async def complete_first_login(
     # Complete the first login process. A body-less call (request=None,
     # e.g. a pre-existing client) behaves exactly like the retired
     # unconditional write's safe default: nickname stays null.
-    result = service.complete_first_login(
-        state.current_session_id,
-        nickname_confirmed=request.nickname_confirmed if request else False,
-        nickname_override=request.nickname_override if request else None,
-    )
+    try:
+        result = service.complete_first_login(
+            state.current_session_id,
+            nickname_confirmed=request.nickname_confirmed if request else False,
+            nickname_override=request.nickname_override if request else None,
+        )
+    except FirstLoginCompletionError as e:
+        # Guard fires before any mutation (WO-PUX-FLOGIN-IDEMPOTENT) -- no
+        # rollback needed, nothing was written this call.
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
 
     return result
 

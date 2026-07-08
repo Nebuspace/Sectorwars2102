@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useFirstLogin, NicknameVerdict } from '../../contexts/FirstLoginContext';
+import { useFirstLogin, NicknameVerdict, FirstLoginAlreadyCompletedError } from '../../contexts/FirstLoginContext';
 import { useGame } from '../../contexts/GameContext';
 import { useNavigate } from 'react-router-dom';
 import NicknameConfirm from './NicknameConfirm';
@@ -34,6 +34,7 @@ const OutcomeDisplay: React.FC = () => {
   const {
     dialogueOutcome,
     completeFirstLogin,
+    checkFirstLoginStatus,
     isLoading
   } = useFirstLogin();
 
@@ -42,6 +43,9 @@ const OutcomeDisplay: React.FC = () => {
   const [isCompleting, setIsCompleting] = useState(false);
   const [completionResult, setCompletionResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  // WO-PUX-FLOGIN-IDEMPOTENT: informational, not an error -- shown when a
+  // lost prior /complete response is recovered via a status re-check.
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   // AC1: the extracted-name confirm step must resolve (or never have been
   // needed) before handleStartGame -- and therefore the navigate timer --
   // can ever run. null = "not decided yet" when a name was extracted.
@@ -83,7 +87,33 @@ const OutcomeDisplay: React.FC = () => {
         navigate('/game');
       }, result.nickname_rejected_reason ? 3000 : 1500);
     } catch (err) {
-      console.error('Failed to complete first login:', err);
+      // WO-PUX-FLOGIN-IDEMPOTENT: an earlier /complete call already landed
+      // server-side but its response never reached us (timeout/dropped
+      // connection, manual retry). Confirm with the server -- exactly one
+      // re-check, never a retry loop -- then resume the normal
+      // post-completion flow instead of dead-ending the player.
+      if (err instanceof FirstLoginAlreadyCompletedError) {
+        const stillRequiresFirstLogin = await checkFirstLoginStatus();
+
+        if (stillRequiresFirstLogin === false) {
+          setRecoveryNotice('Registration already completed -- resuming.');
+          await onFirstLoginComplete();
+          setTimeout(() => {
+            navigate('/game');
+          }, 1500);
+          return;
+        }
+
+        // Recheck disagreed (still required) or failed outright (undefined)
+        // -- can't confirm completion, so fall back to the normal error path.
+        console.error(
+          'First login reported already-completed, but the status re-check disagreed:',
+          stillRequiresFirstLogin
+        );
+      } else {
+        console.error('Failed to complete first login:', err);
+      }
+
       setError('Failed to complete registration. Please try again.');
       setIsCompleting(false);
     }
@@ -225,6 +255,7 @@ const OutcomeDisplay: React.FC = () => {
       <div className="outcome-action-bar">
         {error && <div className="error-message">{error}</div>}
         {nicknameNotice && <div className="nickname-notice">{nicknameNotice}</div>}
+        {recoveryNotice && <div className="nickname-notice">{recoveryNotice}</div>}
 
         {needsNicknameDecision ? (
           <NicknameConfirm

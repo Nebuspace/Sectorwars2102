@@ -27,7 +27,7 @@ vi.mock('../AuthContext', () => ({
   useAuth: () => ({ user: { id: 'player-1' }, isAuthenticated: true }),
 }));
 
-import { FirstLoginProvider, useFirstLogin } from '../FirstLoginContext';
+import { FirstLoginProvider, useFirstLogin, FirstLoginAlreadyCompletedError } from '../FirstLoginContext';
 
 let captured: ReturnType<typeof useFirstLogin> | null = null;
 
@@ -149,5 +149,136 @@ describe('FirstLoginContext completeFirstLogin', () => {
     });
 
     expect(result.nickname_rejected_reason).toBe('taken');
+  });
+});
+
+/**
+ * WO-PUX-FLOGIN-IDEMPOTENT: recovery from a lost /complete response.
+ *
+ * The server's idempotency guard returns HTTP 400 "First login already
+ * completed" on a repeat call -- e.g. a first /complete succeeded but its
+ * response was dropped, and the user's manual retry hits the guard.
+ * completeFirstLogin must surface this as a distinguishable
+ * FirstLoginAlreadyCompletedError (not the raw axios error, and without
+ * setting the generic failure message) so the caller can recover via a
+ * single checkFirstLoginStatus() re-check instead of dead-ending.
+ */
+describe('FirstLoginContext completeFirstLogin -- already-completed recovery', () => {
+  let container: HTMLElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    captured = null;
+    mockGet.mockReset();
+    mockPost.mockReset();
+    mockDelete.mockReset();
+    mockGet.mockResolvedValue({ data: { requires_first_login: false } });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  const mount = async () => {
+    await act(async () => {
+      root.render(
+        <FirstLoginProvider>
+          <Consumer />
+        </FirstLoginProvider>
+      );
+    });
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+  };
+
+  it('throws FirstLoginAlreadyCompletedError on HTTP 400 "First login already completed", leaving `error` state untouched', async () => {
+    await mount();
+    mockPost.mockRejectedValueOnce({
+      response: { status: 400, data: { detail: 'First login already completed' } },
+    });
+
+    let thrown: any = null;
+    await act(async () => {
+      try {
+        await captured!.completeFirstLogin();
+      } catch (e) {
+        thrown = e;
+      }
+    });
+
+    expect(thrown).toBeInstanceOf(FirstLoginAlreadyCompletedError);
+    // Recoverable, not a real failure -- the generic completion-failure
+    // message must never be set for this specific signal.
+    expect(captured?.error).toBeNull();
+  });
+
+  it('does not treat an unrelated 400 as already-completed -- unchanged error path', async () => {
+    await mount();
+    mockPost.mockRejectedValueOnce({
+      response: { status: 400, data: { detail: 'Invalid nickname override' } },
+    });
+
+    let thrown: any = null;
+    await act(async () => {
+      try {
+        await captured!.completeFirstLogin();
+      } catch (e) {
+        thrown = e;
+      }
+    });
+
+    expect(thrown).not.toBeInstanceOf(FirstLoginAlreadyCompletedError);
+    expect(captured?.error).toBe('Failed to complete first login process.');
+  });
+
+  it('does not treat a 500 as already-completed -- unchanged error path', async () => {
+    await mount();
+    mockPost.mockRejectedValueOnce({
+      response: { status: 500, data: { detail: 'First login already completed' } },
+    });
+
+    let thrown: any = null;
+    await act(async () => {
+      try {
+        await captured!.completeFirstLogin();
+      } catch (e) {
+        thrown = e;
+      }
+    });
+
+    expect(thrown).not.toBeInstanceOf(FirstLoginAlreadyCompletedError);
+    expect(captured?.error).toBe('Failed to complete first login process.');
+  });
+
+  it('checkFirstLoginStatus returns the fresh requires_first_login value directly, for callers that cannot wait on a re-render', async () => {
+    await mount();
+    mockGet.mockResolvedValueOnce({ data: { requires_first_login: false } });
+
+    let result: boolean | undefined;
+    await act(async () => {
+      result = await captured!.checkFirstLoginStatus();
+    });
+
+    expect(result).toBe(false);
+    expect(captured?.requiresFirstLogin).toBe(false);
+  });
+
+  it('checkFirstLoginStatus returns undefined and surfaces an error when the check itself fails', async () => {
+    await mount();
+    mockGet.mockRejectedValueOnce(new Error('network down'));
+
+    let result: boolean | undefined;
+    await act(async () => {
+      result = await captured!.checkFirstLoginStatus();
+    });
+
+    expect(result).toBeUndefined();
+    expect(captured?.error).toBe('Failed to check first login status.');
   });
 });

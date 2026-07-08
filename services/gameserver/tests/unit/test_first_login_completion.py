@@ -22,7 +22,11 @@ import operator
 import types
 import uuid
 
-from src.services.first_login_service import FirstLoginService
+import pytest
+from fastapi import HTTPException
+
+from src.api.routes.first_login import complete_first_login as complete_first_login_route
+from src.services.first_login_service import FirstLoginService, FirstLoginCompletionError
 from src.models.first_login import ShipChoice, FirstLoginSession, PlayerFirstLoginState
 from src.models.ship import Ship, ShipType, ShipSpecification
 from src.models.player import Player
@@ -367,3 +371,99 @@ def test_escape_pod_hard_fail_session_never_gets_a_nickname():
     assert result["nickname"] is None
     new_ships = [o for o in db.added if isinstance(o, Ship)]
     assert "tester's" in new_ships[0].name
+
+
+# --- idempotency: a second /complete for an already-completed flow ---------
+# WO-PUX-FLOGIN-IDEMPOTENT. has_completed_first_login is the only reliable
+# marker (see complete_first_login's guard comment): it is set exactly once,
+# at the very end of a successful call, after every side effect has already
+# run -- unlike session.completed_at, which _evaluate_dialogue_outcome stamps
+# before /complete is ever reached, making that column unusable as a guard.
+
+def test_second_complete_call_raises_and_causes_zero_side_effects():
+    """A repeat complete_first_login call for a player whose flow already
+    finished must raise FirstLoginCompletionError and mutate NOTHING: no new
+    ship, no deletion of the already-granted ship, no credit re-grant, no
+    ARIA reset, no nickname change."""
+    player_id = uuid.uuid4()
+    session = _session(player_id, extracted_player_name="Voidrunner")
+    player = _player(player_id)
+    svc, db = _make_service(session, player)
+
+    svc.complete_first_login(session.id, nickname_confirmed=True)
+    first_ships = [o for o in db.added if isinstance(o, Ship)]
+    assert len(first_ships) == 1
+
+    # Snapshot everything a second call must leave untouched.
+    credits_after_first = player.credits
+    ship_id_after_first = player.current_ship_id
+    nickname_after_first = player.nickname
+    aria_score_after_first = player.aria_relationship_score
+    aria_interactions_after_first = player.aria_total_interactions
+
+    # A re-query after the first call's commit would now surface the
+    # just-created ship as an "existing" row -- register it so a guard
+    # failure would be caught red-handed trying to delete it.
+    db._mapping[Ship] = first_ships
+
+    with pytest.raises(FirstLoginCompletionError) as exc_info:
+        svc.complete_first_login(session.id, nickname_confirmed=True)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "First login already completed"
+
+    assert [o for o in db.added if isinstance(o, Ship)] == first_ships, "no new ship created"
+    assert db.deleted == [], "the already-granted ship must never be queued for deletion"
+    assert player.credits == credits_after_first
+    assert player.current_ship_id == ship_id_after_first
+    assert player.nickname == nickname_after_first
+    assert player.aria_relationship_score == aria_score_after_first
+    assert player.aria_total_interactions == aria_interactions_after_first
+
+
+def test_first_call_still_succeeds_when_state_starts_uncompleted():
+    """Regression guard: the new early check must not fire on a legitimate
+    first call (has_completed_first_login starts False)."""
+    player_id = uuid.uuid4()
+    session = _session(player_id, extracted_player_name="Voidrunner")
+    player = _player(player_id)
+    svc, db = _make_service(session, player)
+
+    result = svc.complete_first_login(session.id, nickname_confirmed=True)
+
+    assert result["nickname"] == "Voidrunner"
+    assert db.committed is True
+    assert len([o for o in db.added if isinstance(o, Ship)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_route_translates_completion_error_to_http_400():
+    """The /complete route (Admin-list-route direct-call pattern) must
+    surface FirstLoginCompletionError as a clean HTTP 400 with zero writes,
+    not an unhandled 500."""
+    player_id = uuid.uuid4()
+    session = _session(player_id, extracted_player_name="Voidrunner")
+    player = _player(player_id)
+    state = types.SimpleNamespace(
+        player_id=player_id,
+        current_session_id=session.id,
+        answered_questions=True,
+        has_completed_first_login=True,  # flow already finished
+        received_resources=True,
+        attempts=1,
+    )
+    db = _FakeDB({
+        FirstLoginSession: session,
+        Player: player,
+        Ship: [],
+        ShipSpecification: _spec(),
+        PlayerFirstLoginState: state,
+    })
+
+    with pytest.raises(HTTPException) as exc_info:
+        await complete_first_login_route(request=None, player=player, db=db, ai_service=object())
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "First login already completed"
+    assert db.added == []
+    assert db.deleted == []
