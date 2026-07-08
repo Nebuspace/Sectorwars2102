@@ -68,6 +68,8 @@ test-results/
 **/playwright-report/
 */test-results/
 **/test-results/
+e2e_tests/test-results.json
+e2e_tests/screenshots/
 
 # Prevent accidental screenshots in root directory
 /*.png
