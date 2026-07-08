@@ -2303,10 +2303,13 @@ async def create_warp_tunnel(
         # Import WarpTunnelType and WarpTunnelStatus enums
         from src.models.warp_tunnel import WarpTunnelType, WarpTunnelStatus
 
-        # Validate and convert type
+        # Validate and convert type. sectors.md:42-48 -- WarpTunnel.type has exactly
+        # two canon values; admin creation is restricted to them (WO-GWQ-TUNNELTYPE).
         try:
             tunnel_type = WarpTunnelType[tunnel_data.type.upper()]
         except KeyError:
+            tunnel_type = None
+        if tunnel_type not in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL):
             raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {tunnel_data.type}")
 
         # Create the tunnel
@@ -2377,10 +2380,21 @@ async def update_warp_tunnel(
 
         for field, value in update_data.items():
             if field == "type" and value:
+                # sectors.md:42-48 -- restrict updates to the two canon values
+                # (WO-GWQ-TUNNELTYPE). A same-value passthrough on a legacy row
+                # (e.g. the admin form resubmitting an existing QUANTUM tunnel's
+                # type unchanged while editing another field) is not a mint and
+                # is allowed; only an actual transition to a non-canon value
+                # is rejected. Legacy rows otherwise keep loading via the enum.
                 try:
-                    tunnel.type = WarpTunnelType[value.upper()]
+                    candidate_type = WarpTunnelType[value.upper()]
                 except KeyError:
+                    candidate_type = None
+                is_canon = candidate_type in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL)
+                is_unchanged = candidate_type is not None and candidate_type == tunnel.type
+                if not (is_canon or is_unchanged):
                     raise HTTPException(status_code=400, detail=f"Invalid tunnel type: {value}")
+                tunnel.type = candidate_type
             elif field == "status" and value:
                 try:
                     tunnel.status = WarpTunnelStatus[value.upper()]

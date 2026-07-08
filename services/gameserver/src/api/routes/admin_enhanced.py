@@ -266,12 +266,19 @@ async def create_enhanced_warp_tunnel(
     if existing:
         raise HTTPException(status_code=400, detail="Warp tunnel already exists between these sectors")
 
-    # Map the request's tunnel_type ("natural"/"artificial") to the model enum;
-    # unknown values fall back to STANDARD (matches admin_comprehensive's pattern).
+    # Map the request's tunnel_type ("natural"/"artificial") to the model enum.
+    # sectors.md:42-48 -- WarpTunnel.type has exactly two canon values; admin
+    # creation is restricted to them (WO-GWQ-TUNNELTYPE). The prior silent
+    # fallback to STANDARD on an unknown string minted a non-canon type.
     try:
         tunnel_type = WarpTunnelType[request.tunnel_type.upper()]
     except KeyError:
-        tunnel_type = WarpTunnelType.STANDARD
+        tunnel_type = None
+    if tunnel_type not in (WarpTunnelType.NATURAL, WarpTunnelType.ARTIFICIAL):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid tunnel_type: {request.tunnel_type!r} (must be 'natural' or 'artificial')"
+        )
 
     # Access control / toll do not have dedicated WarpTunnel columns; persist them
     # in the access_requirements JSONB so the intent isn't lost.

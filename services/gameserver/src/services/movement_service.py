@@ -1221,10 +1221,16 @@ class MovementService:
         # Get base turn cost
         turn_cost = tunnel.turn_cost
 
-        # Non-warp-capable ships pay a higher cost for advanced tunnel types
-        if tunnel.type.name in ["QUANTUM", "UNSTABLE"] and ship and not getattr(ship, 'warp_capable', False):
-            turn_cost = max(1, int(turn_cost * 1.5))  # 50% surcharge for non-warp-capable ships
-        elif ship and getattr(ship, 'warp_capable', False):
+        # WO-GWQ-TUNNELTYPE: the QUANTUM/UNSTABLE 50% non-warp-capable
+        # surcharge above this comment minted a type-based cost split that
+        # sectors.md:47 does not document (NATURAL/ARTIFICIAL are
+        # "indistinguishable in routing cost and stability") and has been
+        # removed.
+        # NO-CANON: warp-capable ships still get a 20% turn-cost reduction on
+        # any tunnel type. This is ship-based, not tunnel-type-based, so it
+        # survives the type-vocab convergence, but it is undocumented in
+        # sectors.md — flagged for a canon decision, not removed.
+        if ship and getattr(ship, 'warp_capable', False):
             turn_cost = max(1, int(turn_cost * 0.8))  # 20% reduction for warp-capable ships
 
         # Maintenance performance-band SPEED modifier (ships.md:68-75), applied
@@ -1758,9 +1764,14 @@ class MovementService:
                     "severity": "high" if tunnel.stability < 0.3 else "medium",
                     "effect": "ship_damage"
                 })
-            
-            # For quantum or unstable tunnels, chance of time/space anomalies
-            if tunnel.type.name in ["QUANTUM", "UNSTABLE"]:
+
+                # WO-GWQ-TUNNELTYPE: re-keyed off stability alone. The prior
+                # gate was `tunnel.type.name in ["QUANTUM", "UNSTABLE"]`, a
+                # non-canon type dependency. sector-presence.md:122-123
+                # documents spacetime_anomaly as nested under this same
+                # stability<0.5 branch alongside radiation_exposure, with no
+                # type condition, so any sufficiently unstable tunnel now
+                # qualifies regardless of type.
                 events.append({
                     "type": "spacetime_anomaly",
                     "severity": "medium",

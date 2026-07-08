@@ -832,20 +832,13 @@ class NexusGenerationService:
                 (sector1.z_coord - sector2.z_coord) ** 2) ** 0.5
 
     def _choose_warp_tunnel_type(self) -> WarpTunnelType:
-        """Choose a warp tunnel type randomly."""
-        weights = {
-            WarpTunnelType.STANDARD: 60,
-            WarpTunnelType.QUANTUM: 15,
-            WarpTunnelType.ANCIENT: 10,
-            WarpTunnelType.ARTIFICIAL: 8,
-            WarpTunnelType.UNSTABLE: 7
-        }
-
-        choices = []
-        for tunnel_type, weight in weights.items():
-            choices.extend([tunnel_type] * weight)
-
-        return random.choice(choices)
+        """All Nexus-generated tunnels are NATURAL (sectors.md:42-48 — the
+        enum has exactly two canon values; ARTIFICIAL is reserved for the
+        fedspace starter binding, which this generator does not stamp, and
+        for player-built warp gates via warp_gate_service.py). The prior
+        STANDARD/QUANTUM/ANCIENT/UNSTABLE weighted roll minted non-canon
+        types and is removed (WO-GWQ-TUNNELTYPE)."""
+        return WarpTunnelType.NATURAL
 
     def _get_stability_for_tunnel_type(self, tunnel_type: WarpTunnelType) -> float:
         """Get stability value for a warp tunnel type."""
@@ -860,22 +853,17 @@ class NexusGenerationService:
         return stability_map.get(tunnel_type, 0.8)
 
     def _get_turn_cost_for_tunnel_type(self, tunnel_type: WarpTunnelType, distance: float) -> int:
-        """Calculate turn cost for a warp tunnel."""
-        # Base cost based on standard distance
-        base_cost = max(1, int(distance / 10))
+        """Calculate turn cost for a warp tunnel.
 
-        # Adjust based on tunnel type
-        multiplier_map = {
-            WarpTunnelType.NATURAL: 1.0,
-            WarpTunnelType.ARTIFICIAL: 0.7,
-            WarpTunnelType.STANDARD: 1.0,
-            WarpTunnelType.QUANTUM: 0.5,  # Faster
-            WarpTunnelType.ANCIENT: 0.8,
-            WarpTunnelType.UNSTABLE: 1.5  # Slower, riskier
-        }
-
-        adjusted_cost = int(base_cost * multiplier_map.get(tunnel_type, 1.0))
-        return max(1, adjusted_cost)  # Ensure at least 1 turn
+        NO-CANON: routing cost is type-independent (sectors.md:47 — NATURAL
+        and generator-placed ARTIFICIAL tunnels are "indistinguishable in
+        routing cost and stability"). The prior per-type multiplier map
+        (NATURAL/STANDARD 1.0, ARTIFICIAL 0.7, QUANTUM 0.5, ANCIENT 0.8,
+        UNSTABLE 1.5) is removed; every tunnel this generator mints uses the
+        same distance-scaled base cost. tunnel_type is kept in the signature
+        for interface stability (WO-GWQ-TUNNELTYPE).
+        """
+        return max(1, int(distance / 10))  # Ensure at least 1 turn
 
 
 # Singleton instance
