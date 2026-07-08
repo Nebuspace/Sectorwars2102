@@ -64,6 +64,10 @@ class SetPermissionsRequest(BaseModel):
     # accepted on every call and persisted, but only consulted by their mode.
     whitelist: Optional[List[str]] = None
     allies: Optional[List[str]] = None
+    # WO-GWQ-GATE-TOLL: 0-10,000 credits per non-owner traversal. Unlike
+    # mode/whitelist/allies, omitting this preserves whatever toll is
+    # already configured — it is never silently reset to 0.
+    toll: Optional[int] = None
 
 
 class SetPermissionsResponse(BaseModel):
@@ -72,6 +76,7 @@ class SetPermissionsResponse(BaseModel):
     whitelist: List[str]
     allies: List[str]
     is_public: bool
+    toll_amount: int
 
 
 class TransferRequest(BaseModel):
@@ -283,13 +288,15 @@ async def set_permissions(
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
 ):
-    """WO-DBB-WG1 — set an active gate's access mode, whitelist and allied
-    teams atomically (owner-only; a gate that isn't yours 404s). The mode is
-    enforced at traversal by warp_gate_service.check_traversal_access."""
+    """WO-DBB-WG1 + WO-GWQ-GATE-TOLL — set an active gate's access mode,
+    whitelist, allied teams, AND toll fee atomically (owner-only; a gate
+    that isn't yours 404s). The mode (plus any faction-rep layers) is
+    enforced at traversal by warp_gate_service.check_traversal_access; the
+    toll is collected by warp_gate_service.collect_toll."""
     try:
         result = warp_gate_service.set_gate_permissions(
             db, player, gate_id,
-            request.mode, request.whitelist, request.allies,
+            request.mode, request.whitelist, request.allies, request.toll,
         )
         db.commit()
     except WarpGateError as e:

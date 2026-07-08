@@ -630,12 +630,32 @@ class MovementService:
         # turns; if a direct warp ALSO connects origin -> destination, charging
         # the direct-warp cost here would contradict the advertised 0. Take the
         # gate first so the charged cost matches what the player was shown.
-        if self._has_player_gate(current_sector_id, destination_sector_id):
+        player_gate_tunnel = self._has_player_gate(current_sector_id, destination_sector_id)
+        if player_gate_tunnel is not None:
             # Gate is 0 turns normally; while towing it is +2 turns FLAT
             # (ships.md:357 — flat, not the size surcharge).
             gate_cost = 0 + (self.GATE_TOW_SURCHARGE_FLAT if tow_size_surcharge else 0)
             if player.turns < gate_cost:
                 return {"success": False, "message": "Not enough turns for this gate transit while towing", "turn_cost": gate_cost}
+
+            # WG1 access-mode enforcement + WO-GWQ-GATE-TOLL layered gates
+            # (faction-rep min/max) — this is the REAL move-validation path a
+            # player-built gate traversal takes (this branch matches BEFORE
+            # _check_warp_tunnel is ever called below, so its own dead
+            # player-gate branch never fires from here — see its comment).
+            # Must run, and reject if it's going to, BEFORE any toll credit
+            # moves and AFTER the turns check above already passed (so a
+            # blocked player is never charged turns for a move that never
+            # happens, and a turns-short player is never billed a toll for a
+            # move that was already going to fail). warp_gate_service is
+            # already imported module-wide above (see advance_gates_touching_
+            # sector's use elsewhere in this file) -- no fresh import needed.
+            try:
+                warp_gate_service.check_traversal_access(self.db, player, player_gate_tunnel)
+                warp_gate_service.collect_toll(self.db, player, player_gate_tunnel)
+            except warp_gate_service.WarpGateError as e:
+                return {"success": False, "message": e.detail, "turn_cost": 0}
+
             result = self._execute_movement(player, destination_sector_id, gate_cost)
             tunnel_events = self._check_for_tunnel_events(
                 player, current_sector_id, destination_sector_id
@@ -1107,11 +1127,14 @@ class MovementService:
 
         return True, turn_cost, "Direct warp available"
     
-    def _has_player_gate(self, current_sector_id: int, destination_sector_id: int) -> bool:
-        """True if an ACTIVE player-built warp gate connects origin ->
-        destination (FIX 7). Player gates are one-way ARTIFICIAL tunnels with
-        created_by_player_id set and a flat 0-turn cost; they outrank a
-        parallel direct warp so the charged cost matches the advertised 0."""
+    def _has_player_gate(self, current_sector_id: int, destination_sector_id: int) -> Optional[WarpTunnel]:
+        """The ACTIVE player-built warp gate connecting origin ->
+        destination (FIX 7), or None. Player gates are one-way ARTIFICIAL
+        tunnels with created_by_player_id set and a flat 0-turn cost; they
+        outrank a parallel direct warp so the charged cost matches the
+        advertised 0. Returns the tunnel row itself (not just a bool) so the
+        caller can run access-control + toll collection (WO-GWQ-GATE-TOLL)
+        against the SAME row without a second query."""
         current_sector = self.db.query(Sector).filter(
             Sector.sector_id == current_sector_id
         ).first()
@@ -1119,14 +1142,14 @@ class MovementService:
             Sector.sector_id == destination_sector_id
         ).first()
         if not current_sector or not destination_sector:
-            return False
+            return None
 
         tunnel = self.db.query(WarpTunnel).filter(
             WarpTunnel.origin_sector_id == current_sector.id,
             WarpTunnel.destination_sector_id == destination_sector.id,
             WarpTunnel.status == WarpTunnelStatus.ACTIVE,
         ).first()
-        return tunnel is not None and _is_player_gate(tunnel)
+        return tunnel if tunnel is not None and _is_player_gate(tunnel) else None
 
     def _check_warp_tunnel(self, current_sector_id: int, destination_sector_id: int, ship: Ship) -> Tuple[bool, int, str]:
         """Check if a warp tunnel is available and calculate turn cost."""
@@ -1204,9 +1227,15 @@ class MovementService:
         if _is_player_gate(tunnel):
             # WG1 access-mode enforcement (warp-gates.md "Access control"): a player-built gate
             # honors its access_requirements mode (PUBLIC/TEAM_ONLY/PRIVATE/WHITELIST/ALLIANCE).
-            # check_traversal_access was dead-stored before this wiring — defined but uncalled, so
-            # any player could traverse a restricted gate. Enforce here, the single move-validation
-            # path. The traverser is the owner of the ship being moved (owner_id == the player).
+            # NOTE (WO-GWQ-GATE-TOLL audit finding): this branch is UNREACHABLE from
+            # move_player_to_sector for a real player-gate move — MovementService._has_player_gate
+            # already matches any ACTIVE player-built gate connecting these two sectors and takes
+            # move_player_to_sector's OWN player-gate branch first (FIX 7's "prefer the 0-turn
+            # gate" precedence), returning before _check_warp_tunnel is ever called. The real
+            # enforcement point (access mode + faction-rep layers + toll) now lives in that
+            # branch. This copy is kept as a harmless defensive backstop (and this function is
+            # still reachable from other callers that don't go through _has_player_gate first),
+            # but do not rely on it as THE enforcement point.
             traverser_id = getattr(ship, "owner_id", None) if ship else None
             if traverser_id is not None:
                 from src.services.warp_gate_service import check_traversal_access, WarpGateError

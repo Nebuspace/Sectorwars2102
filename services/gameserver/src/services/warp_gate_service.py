@@ -78,17 +78,19 @@ import logging
 import math
 import uuid
 from collections import defaultdict, deque
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.core.game_time import scaled_deadline
+from src.core.game_time import scaled_deadline, scaled_elapsed
+from src.models.faction import Faction, FactionType
 from src.models.gate_construction_site import GateConstructionSite, GateConstructionSiteStatus
 from src.models.player import Player
 from src.models.region import Region, RegionType
+from src.models.reputation import Reputation
 from src.models.sector import Sector, sector_warps
 from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.team_member import TeamMember
@@ -176,6 +178,20 @@ _PUBLIC_MODES = frozenset({ACCESS_MODE_PUBLIC})
 # lists in a single permissions call — a conservative DoS guard so a malicious
 # owner cannot bloat the JSONB. NOT a documented game number.
 MAX_ACCESS_LIST_ENTRIES = 200  # NO-CANON
+
+# --- Toll system (WO-GWQ-GATE-TOLL, warp-gates.md "Toll system" + ADR-0049) -
+# toll_fee lives in WarpTunnel.access_requirements["toll_amount"] — the SAME
+# key admin_enhanced.py's create-enhanced-warp-tunnel route already writes
+# (converged on one spelling repo-wide; see set_gate_permissions/collect_toll
+# below and the grep-proof in tests/unit/test_warp_gate_toll.py).
+TOLL_FEE_MIN = 0
+TOLL_FEE_MAX = 10_000
+# ADR-0049 batch2 exploit closeout: toll exemption for the owner's team-mates
+# requires >= 24 CANONICAL hours of continuous membership (scaled via
+# src.core.game_time.scaled_elapsed, mirroring every other duration in this
+# module). Closes the alt-account toll-bypass loophole (join -> traverse free
+# -> leave -> repeat).
+TOLL_TEAM_TENURE_HOURS = 24
 
 
 class WarpGateError(Exception):
@@ -1697,9 +1713,8 @@ def list_sector_structures(db: Session, sector_number: int) -> Dict[str, Any]:
             "owner_name": owner.username if owner else None,
             "is_public": tunnel.is_public if tunnel is not None else True,
             "access_mode": _access_mode_of(tunnel) if tunnel is not None else ACCESS_MODE_PUBLIC,
-            # Toll system is design-only (warp-gates.md) — all gates are
-            # toll-free until it ships; the field is part of the contract.
-            "toll": 0,
+            # WO-GWQ-GATE-TOLL: real toll_amount, no longer hardcoded 0.
+            "toll": _toll_fee_of(tunnel) if tunnel is not None else 0,
         })
 
     return {"beacons": beacons, "gates": gates}
@@ -1742,14 +1757,76 @@ def _player_team_ids(db: Session, player: Player) -> set:
     return ids
 
 
+def _faction_rep_value(db: Session, player_id, faction_type_raw: Any) -> int:
+    """A player's reputation with the named faction (FactionType value/name,
+    case-insensitive per FactionType._missing_). No Faction row seeded, or no
+    Reputation row yet for this player, resolves to 0 (NEUTRAL) — mirrors
+    apply_faction_rep_delta's own default-creation value, never an error."""
+    try:
+        faction_type = FactionType(faction_type_raw)
+    except (ValueError, KeyError, TypeError):
+        return 0
+    faction = db.query(Faction).filter(Faction.faction_type == faction_type).first()
+    if faction is None:
+        return 0
+    rep = (
+        db.query(Reputation)
+        .filter(Reputation.player_id == player_id, Reputation.faction_id == faction.id)
+        .first()
+    )
+    return int(rep.current_value) if rep is not None else 0
+
+
+def _check_faction_rep_layers(db: Session, player: Player, reqs: Dict[str, Any]) -> None:
+    """Optional layered access gates applied ON TOP of whichever mode just
+    passed (warp-gates.md "Access control" — "Owners pick an access mode and
+    optionally layer additional gates on top" / "Faction reputation minimum"
+    / "...maximum" — e.g. a PUBLIC gate can still turn away low- or
+    too-high-reputation travelers). Never applies to the owner — the caller
+    (check_traversal_access) already returns before this runs for them.
+
+    NO-CANON JSONB shape (canon names the layers, not their storage —
+    flagged to DECISIONS):
+        access_requirements.faction_rep_min = {"faction_type": <FactionType value>, "value": <int>}
+        access_requirements.faction_rep_max = {"faction_type": <FactionType value>, "value": <int>}
+    """
+    rep_min = reqs.get("faction_rep_min")
+    if isinstance(rep_min, dict) and rep_min.get("faction_type") is not None:
+        threshold = int(rep_min.get("value", 0) or 0)
+        value = _faction_rep_value(db, player.id, rep_min["faction_type"])
+        if value < threshold:
+            raise WarpGateError(
+                403,
+                f"ERR_GATE_REP_TOO_LOW: this warp gate requires at least "
+                f"{threshold} reputation with {rep_min['faction_type']} "
+                f"(you have {value})",
+            )
+
+    rep_max = reqs.get("faction_rep_max")
+    if isinstance(rep_max, dict) and rep_max.get("faction_type") is not None:
+        threshold = int(rep_max.get("value", 0) or 0)
+        value = _faction_rep_value(db, player.id, rep_max["faction_type"])
+        if value > threshold:
+            raise WarpGateError(
+                403,
+                f"ERR_GATE_REP_TOO_HIGH: this warp gate blocks players above "
+                f"{threshold} reputation with {rep_max['faction_type']} "
+                f"(you have {value})",
+            )
+
+
 def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> None:
-    """Enforce the gate's access mode for a player attempting traversal.
+    """Enforce the gate's access mode — plus any optional layered gates
+    (WO-GWQ-GATE-TOLL: faction-rep min/max) — for a player attempting
+    traversal.
 
     Raises WarpGateError(403, ...) when the player is not allowed. Returns
     None (allowed) for: any non-player gate, the owner, or a player who
-    satisfies the configured mode. This is the single enforcement point the
-    movement layer calls before letting a player traverse a player-built gate
-    (warp-gates.md "Access control"). No locking, no mutation — a pure check.
+    satisfies the configured mode AND every layered gate on top of it. This
+    is the single enforcement point the movement layer calls before letting a
+    player traverse a player-built gate (warp-gates.md "Access control"). No
+    locking, no mutation — a pure check, and it must run (and reject, if it's
+    going to) BEFORE any toll credit ever moves (see collect_toll below).
 
     The owner is identified by WarpTunnel.created_by_player_id (the gate's
     owner FK on the traversable row, kept in sync with WarpGate.player_id on
@@ -1762,7 +1839,7 @@ def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> N
 
     owner_id = tunnel.created_by_player_id
     if owner_id == player.id:
-        return  # the owner always passes
+        return  # the owner always passes — layers never apply to the owner
 
     mode = _access_mode_of(tunnel)
     reqs = tunnel.access_requirements or {}
@@ -1770,56 +1847,268 @@ def check_traversal_access(db: Session, player: Player, tunnel: WarpTunnel) -> N
         reqs = {}
 
     if mode == ACCESS_MODE_PUBLIC:
-        return
+        pass
 
-    if mode == ACCESS_MODE_PRIVATE:
+    elif mode == ACCESS_MODE_PRIVATE:
         raise WarpGateError(
             403,
             "ERR_GATE_PRIVATE: this warp gate is private — only its owner may "
             "traverse it",
         )
 
-    if mode == ACCESS_MODE_WHITELIST:
+    elif mode == ACCESS_MODE_WHITELIST:
         whitelist = {str(x) for x in (reqs.get("whitelist") or [])}
-        if str(player.id) in whitelist:
-            return
-        raise WarpGateError(
-            403,
-            "ERR_GATE_NOT_WHITELISTED: this warp gate is restricted to a "
-            "whitelist you are not on",
-        )
+        if str(player.id) not in whitelist:
+            raise WarpGateError(
+                403,
+                "ERR_GATE_NOT_WHITELISTED: this warp gate is restricted to a "
+                "whitelist you are not on",
+            )
 
-    if mode == ACCESS_MODE_TEAM_ONLY:
+    elif mode == ACCESS_MODE_TEAM_ONLY:
         owner = db.query(Player).filter(Player.id == owner_id).first()
         owner_teams = _player_team_ids(db, owner) if owner is not None else set()
-        if owner_teams & _player_team_ids(db, player):
-            return
-        raise WarpGateError(
-            403,
-            "ERR_GATE_TEAM_ONLY: this warp gate is restricted to the owner's "
-            "team",
-        )
+        if not (owner_teams & _player_team_ids(db, player)):
+            raise WarpGateError(
+                403,
+                "ERR_GATE_TEAM_ONLY: this warp gate is restricted to the "
+                "owner's team",
+            )
 
-    if mode == ACCESS_MODE_ALLIANCE:
+    elif mode == ACCESS_MODE_ALLIANCE:
         owner = db.query(Player).filter(Player.id == owner_id).first()
         owner_teams = _player_team_ids(db, owner) if owner is not None else set()
         player_teams = _player_team_ids(db, player)
-        if owner_teams & player_teams:
-            return  # same team always passes under ALLIANCE too
         # Allied teams are stored as team UUIDs in access_requirements.allies
         # (no diplomacy/alliance table exists yet — this is the documented
         # JSONB interpretation, flagged NO-CANON for structural allies).
         allies = {str(x) for x in (reqs.get("allies") or [])}
-        if allies & {str(t) for t in player_teams}:
-            return
-        raise WarpGateError(
-            403,
-            "ERR_GATE_ALLIANCE_ONLY: this warp gate is restricted to the "
-            "owner's team and its allies",
-        )
+        if not (owner_teams & player_teams) and not (allies & {str(t) for t in player_teams}):
+            raise WarpGateError(
+                403,
+                "ERR_GATE_ALLIANCE_ONLY: this warp gate is restricted to the "
+                "owner's team and its allies",
+            )
 
-    # Unknown mode (should be impossible — validated on set) — fail closed.
-    raise WarpGateError(403, "ERR_GATE_ACCESS_DENIED: gate access denied")
+    else:
+        # Unknown mode (should be impossible — validated on set) — fail closed.
+        raise WarpGateError(403, "ERR_GATE_ACCESS_DENIED: gate access denied")
+
+    # Optional layered gates (warp-gates.md "Access control" — apply ON TOP
+    # of whichever mode just passed; e.g. a PUBLIC gate can still block by
+    # reputation). Reached only when the mode check above did not raise.
+    _check_faction_rep_layers(db, player, reqs)
+
+
+def _toll_fee_of(tunnel: WarpTunnel) -> int:
+    """Read-only: the gate's configured toll. Lives in
+    access_requirements["toll_amount"] — the SAME JSONB key
+    admin_enhanced.py's create-enhanced-warp-tunnel route already writes for
+    admin-created tunnels; converged on that one spelling repo-wide rather
+    than minting a second. Absent/invalid/negative -> 0 (free), always
+    clamped to [TOLL_FEE_MIN, TOLL_FEE_MAX]."""
+    reqs = tunnel.access_requirements if isinstance(tunnel.access_requirements, dict) else {}
+    try:
+        raw = int(reqs.get("toll_amount", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(TOLL_FEE_MIN, min(TOLL_FEE_MAX, raw))
+
+
+def _lock_player_if_exists(db: Session, player_id) -> Optional[Player]:
+    """Like _lock_player, but returns None instead of raising when the row
+    is gone. Used where a missing gate owner must degrade to a defined
+    fallback (toll collection's orphaned-owner free-passage rule) rather than
+    404ing an unrelated player's move."""
+    return (
+        db.query(Player)
+        .filter(Player.id == player_id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+
+
+def _has_24h_team_tenure(db: Session, traverser_id, owner: Optional[Player], now: datetime) -> bool:
+    """ADR-0049 batch2 exploit closeout — toll exemption for the gate
+    owner's team-mates requires >= TOLL_TEAM_TENURE_HOURS (24) CANONICAL
+    hours of continuous team membership, scaled via
+    src.core.game_time.scaled_elapsed (mirrors every other duration in this
+    module).
+
+    Canon's own text names a `TeamMembership` row with `left_at IS NULL`;
+    the model actually shipped is `TeamMember`, and it carries no `left_at`
+    column at all — team_service.py's leave_team/kick_member hard-DELETE the
+    row instead of soft-closing it. That means "continuous" falls out of the
+    schema for free: a membership row's mere existence already implies
+    unbroken tenure since `joined_at`, and a leave+rejoin cycle always
+    produces a brand-new row with a fresh `joined_at` — exactly the
+    alt-cycle rule canon asks for, with no extra bookkeeping needed."""
+    if owner is None or owner.team_id is None:
+        return False
+    membership = (
+        db.query(TeamMember)
+        .filter(TeamMember.team_id == owner.team_id, TeamMember.player_id == traverser_id)
+        .first()
+    )
+    if membership is None or membership.joined_at is None:
+        return False
+    return scaled_elapsed(membership.joined_at, now) >= timedelta(hours=TOLL_TEAM_TENURE_HOURS)
+
+
+def collect_toll(
+    db: Session, traverser: Player, tunnel: WarpTunnel, now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """warp-gates.md "Toll system" + ADR-0049 — atomic per-traversal toll on
+    a player-built gate. `now` is optional (defaults to datetime.now(UTC)),
+    mirroring advance_gate/_lazy_expire_beacon's testability convention
+    elsewhere in this module — pin it in tests for a deterministic ADR-0049
+    tenure boundary instead of racing the wall clock.
+
+    Placement (SPEC-DEFECT CORRECTION from the original work order, which
+    would have collected inside the PURE _check_warp_tunnel validator and
+    billed players whose move then failed the turns check): this is called
+    from MovementService's player-gate branch in movement_service.py, AFTER
+    check_traversal_access has already cleared the traverser (the access
+    mode + faction-rep layers are gate DECISIONS, never toll math — rep-min/
+    max reject before any toll logic ever runs) and AFTER that branch's own
+    turns-affordability check has passed, in the SAME transaction as
+    _execute_movement. Flush-only — the calling route/service owns the
+    commit, so a later failure in that same transaction reverts this too.
+
+    Exemption precedence (first match wins — NO toll charged; a 0-fee gate
+    and the owner's own traversal skip all of this and go straight to
+    "free" without even querying for it):
+      1. owner              — tunnel.created_by_player_id == traverser.id
+      2. toll-bypass list   — access_requirements.toll_bypass (NO-CANON key
+                               — canon names the layer, not its storage)
+      3. access whitelist   — access_requirements.whitelist (WG1's existing
+                               key, reused: being whitelisted for ACCESS also
+                               exempts the toll on ANY mode, not only
+                               WHITELIST mode)
+      4. team tenure         — ADR-0049: traverser has belonged to the
+                               OWNER's team for >= 24 canonical hours
+      5. orphaned owner      — the owner Player row no longer exists (or
+                               vanishes between the plain lookup and the
+                               row-lock below — a race); the traversal is
+                               FREE and a warning is logged. Never a 500.
+    Anyone reaching none of the above pays the gate's toll_amount (a whole
+    number of credits, TOLL_FEE_MIN..TOLL_FEE_MAX).
+
+    Raises WarpGateError(402, "ERR_INSUFFICIENT_CREDITS_FOR_TOLL: ...") when
+    a non-exempt traverser cannot afford the fee — checked BEFORE either
+    balance is touched, so a rejected toll leaves BOTH players' credits
+    untouched (the caller's move rejection additionally leaves turns and
+    position untouched — see movement_service.py's player-gate branch, which
+    calls this only after its own turns check already passed).
+
+    Bookkeeping (warp-gates.md "Reporting: total_revenue, usage_count,
+    last_used updated per use"):
+      - WarpTunnel.total_traversals +1 and tunnel_status.last_traversal /
+        .traffic_level update on EVERY call, owner's own traversal included
+        — mirrors the existing current_uses counter movement_service already
+        keeps for max_uses collapse tracking (both are "a traversal just
+        happened" bookkeeping, orthogonal to who pays).
+      - artificial_data.toll_stats {usage_count, total_revenue, last_used}
+        updates for NON-OWNER traversals only — canon's own toll "Reporting"
+        table sits entirely under "Owners may charge a per-traversal toll on
+        NON-OWNERS".
+      - NO-CANON: a paid traversal that also happens to be the tunnel's LAST
+        allowed use (current_uses hits max_uses) still collects — this
+        function runs, and only AFTER it returns does
+        MovementService._check_for_tunnel_events flip the tunnel COLLAPSED
+        (collect-then-collapse, flagged to DECISIONS since no player gate
+        currently ships with a max_uses set).
+    """
+    now = now or datetime.now(UTC)
+    owner_id = tunnel.created_by_player_id
+    is_owner = owner_id is not None and owner_id == traverser.id
+    fee = _toll_fee_of(tunnel)
+
+    exempt_reason: Optional[str] = None
+    charged = 0
+
+    if is_owner:
+        exempt_reason = "owner"
+    elif fee == 0:
+        exempt_reason = "free"
+    elif owner_id is None:
+        exempt_reason = "no_owner"
+    else:
+        reqs = tunnel.access_requirements if isinstance(tunnel.access_requirements, dict) else {}
+        bypass = {str(x) for x in (reqs.get("toll_bypass") or [])}
+        whitelist = {str(x) for x in (reqs.get("whitelist") or [])}
+        if str(traverser.id) in bypass:
+            exempt_reason = "toll_bypass"
+        elif str(traverser.id) in whitelist:
+            exempt_reason = "whitelist"
+        else:
+            owner_peek = db.query(Player).filter(Player.id == owner_id).first()
+            if owner_peek is None:
+                exempt_reason = "owner_orphaned"
+                logger.warning(
+                    "Warp gate tunnel %s toll collection: owner %s no longer "
+                    "exists — traversal is FREE, no credits move",
+                    tunnel.id, owner_id,
+                )
+            elif _has_24h_team_tenure(db, traverser.id, owner_peek, now):
+                exempt_reason = "team_tenure"
+
+        if exempt_reason is None:
+            # Toll read ONCE, right here at collection — no second read after
+            # this point, so nothing downstream can TOCTOU the fee.
+            owner_locked = _lock_player_if_exists(db, owner_id)
+            if owner_locked is None:
+                exempt_reason = "owner_orphaned"
+                logger.warning(
+                    "Warp gate tunnel %s toll collection: owner %s vanished "
+                    "under lock — traversal is FREE, no credits move",
+                    tunnel.id, owner_id,
+                )
+            elif traverser.credits < fee:
+                raise WarpGateError(
+                    402,
+                    f"ERR_INSUFFICIENT_CREDITS_FOR_TOLL: this gate charges a "
+                    f"{fee:,}-credit toll; you have {traverser.credits:,}",
+                )
+            else:
+                # Nothing between these two lines can raise — both sides of
+                # the transfer move together or (on any earlier raise above)
+                # neither does.
+                traverser.credits -= fee
+                owner_locked.credits += fee
+                charged = fee
+                db.flush()
+
+    # --- bookkeeping: total_traversals/tunnel_status on every call ---------
+    tunnel.total_traversals = (tunnel.total_traversals or 0) + 1
+    status = dict(tunnel.tunnel_status) if isinstance(tunnel.tunnel_status, dict) else {}
+    status["last_traversal"] = now.isoformat()
+    # NO-CANON traffic_level formula: a simple saturating traversal count,
+    # no decay/time-window — this system has no background worker (module
+    # docstring), so a decaying figure would need its own lazy-on-read
+    # recompute this WO does not build. Flagged to DECISIONS for refinement.
+    status["traffic_level"] = min(100, tunnel.total_traversals)
+    tunnel.tunnel_status = status
+    flag_modified(tunnel, "tunnel_status")
+
+    # --- bookkeeping: toll_stats for non-owner traversals only -------------
+    if not is_owner:
+        data = dict(tunnel.artificial_data) if isinstance(tunnel.artificial_data, dict) else {}
+        stats = dict(data.get("toll_stats") or {})
+        stats["usage_count"] = int(stats.get("usage_count", 0) or 0) + 1
+        stats["total_revenue"] = int(stats.get("total_revenue", 0) or 0) + charged
+        stats["last_used"] = now.isoformat()
+        data["toll_stats"] = stats
+        tunnel.artificial_data = data
+        flag_modified(tunnel, "artificial_data")
+
+    db.flush()
+    return {
+        "charged": charged,
+        "exempt_reason": exempt_reason,
+        "toll_fee": fee,
+    }
 
 
 def _resolve_owned_active_gate(db: Session, player: Player, gate_id: str, *, lock: bool):
@@ -1880,10 +2169,19 @@ def set_gate_permissions(
     mode: str,
     whitelist=None,
     allies=None,
+    toll: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """WO-DBB-WG1 — atomically set a gate's access mode, whitelist and allied
-    teams (owner-only). Persists onto the gate's WarpTunnel.access_requirements
-    JSONB and keeps the coarse is_public flag in sync. Caller owns the commit.
+    """WO-DBB-WG1 + WO-GWQ-GATE-TOLL — atomically set a gate's access mode,
+    whitelist, allied teams, AND toll fee (owner-only). Persists onto the
+    gate's WarpTunnel.access_requirements JSONB and keeps the coarse
+    is_public flag in sync. Caller owns the commit.
+
+    `toll` is OPTIONAL and, unlike mode/whitelist/allies (which this call
+    always overwrites, even to empty), is preserved unchanged when omitted —
+    an owner adjusting just the access mode should never silently zero out
+    their configured toll. Validated to TOLL_FEE_MIN..TOLL_FEE_MAX
+    (0-10,000) BEFORE anything is locked or mutated, so a rejected toll
+    leaves the gate's JSONB completely unchanged.
 
     Lock order: gate row first (then the tunnel is fetched under the same txn).
     No credit movement, so no player lock is needed."""
@@ -1894,6 +2192,14 @@ def set_gate_permissions(
             f"Unknown access mode {mode!r}; valid modes: "
             + ", ".join(sorted(ACCESS_MODES)),
         )
+    if toll is not None:
+        if not isinstance(toll, int) or isinstance(toll, bool):
+            raise WarpGateError(400, "toll must be a whole number of credits")
+        if toll < TOLL_FEE_MIN or toll > TOLL_FEE_MAX:
+            raise WarpGateError(
+                400,
+                f"toll must be between {TOLL_FEE_MIN} and {TOLL_FEE_MAX:,} credits",
+            )
 
     gate = _resolve_owned_active_gate(db, player, gate_id, lock=True)
     if not gate.warp_tunnel_id:
@@ -1914,14 +2220,18 @@ def set_gate_permissions(
     reqs["mode"] = mode
     reqs["whitelist"] = whitelist_ids
     reqs["allies"] = allies_ids
+    if toll is not None:
+        reqs["toll_amount"] = toll
     tunnel.access_requirements = reqs
     flag_modified(tunnel, "access_requirements")
     tunnel.is_public = mode in _PUBLIC_MODES
     db.flush()
 
     logger.info(
-        "Player %s set warp gate %s access mode to %s (whitelist=%d allies=%d)",
+        "Player %s set warp gate %s access mode to %s (whitelist=%d allies=%d "
+        "toll=%s)",
         player.id, gate.id, mode, len(whitelist_ids), len(allies_ids),
+        reqs.get("toll_amount", 0),
     )
     return {
         "gate_id": str(gate.id),
@@ -1929,6 +2239,7 @@ def set_gate_permissions(
         "whitelist": whitelist_ids,
         "allies": allies_ids,
         "is_public": tunnel.is_public,
+        "toll_amount": int(reqs.get("toll_amount", 0) or 0),
     }
 
 
