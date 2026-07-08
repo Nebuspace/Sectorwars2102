@@ -312,8 +312,13 @@ def test_sweep_is_idempotent_no_double_refund():
     assert p.credits == credits_after_first
 
 
-def test_sweep_steady_state_drains_rp_not_credits():
-    # A player who has already been swept (swept_at present) gets RP, not credits.
+def test_sweep_steady_state_drains_rp_pays_faucet_copay():
+    # A player who has already been swept (swept_at present) gets RP credited,
+    # not a *refund* — but the T1.5-1 faucet copay (Max-RULED, WO-COPAY/#9)
+    # DOES debit credits on every governed-RP crediting, steady state included
+    # (research_service.py:889 calls _apply_faucet_copay unconditionally).
+    # Derive the expected debit from the module constants (never a hardcoded
+    # literal) so a future re-ruling of FAUCET_CREDIT_COPAY can't re-stale this.
     p = make_player(player_id="p1", credits=5000,
                     ledger={"rp": 10, "insight": 0, "doctrine": 0,
                             "unlocked": [tech_tree.FREE_ROOT_ID],
@@ -325,7 +330,8 @@ def test_sweep_steady_state_drains_rp_not_credits():
 
     assert changed is True
     assert p.research_ledger["rp"] == 130  # 10 + 120, becomes spendable
-    assert p.credits == 5000  # no refund in steady state
+    # 120 banked RP is far under the empire soft cap, so governed == raw == 120.
+    assert p.credits == 5000 - rs.faucet_copay(120)  # copay debited, no windfall refund
     assert planet.active_events["research_points"] == 0
 
 
