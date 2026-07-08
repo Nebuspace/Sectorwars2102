@@ -43,6 +43,14 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
   const [availableRegions, setAvailableRegions] = useState<any[]>([]);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
 
+  // Emergency operations are disabled: the backend route
+  // POST /api/v1/admin/players/{id}/emergency does not exist (the only
+  // emergency route is ship-scoped, admin_ships.py:205). The four buttons
+  // below are hard-disabled so this can't fire from the UI. Re-enable by
+  // removing the guard in handleEmergencyAction and the `disabled`/`title`
+  // props on the buttons once WO-ADM-EMERG-BACKEND ships (Max-gated).
+  const EMERGENCY_ENDPOINT = 'POST /api/v1/admin/players/{id}/emergency';
+
   useEffect(() => {
     loadAvailableTeams();
     loadAvailableRegions();
@@ -156,6 +164,13 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
   };
 
   const handleEmergencyAction = async (action: string) => {
+    // Guard: see the EMERGENCY_ENDPOINT comment above. Deleting this block
+    // is the one-line re-enable once the backend route ships.
+    if (EMERGENCY_ENDPOINT) {
+      toast.error(`Emergency operations are unavailable: ${EMERGENCY_ENDPOINT} is not implemented.`);
+      return;
+    }
+
     if (!(await confirm({
       title: 'Emergency Action',
       message: `Are you sure you want to ${action} this player?`,
@@ -344,31 +359,35 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
         <div className="editor-section">
           <h4>Emergency Operations</h4>
           <div className="emergency-controls">
-            <button 
+            <button
               onClick={() => handleEmergencyAction('teleport_home')}
               className="emergency-btn teleport"
-              disabled={loading}
+              disabled
+              title={`Disabled — missing backend endpoint ${EMERGENCY_ENDPOINT}`}
             >
               🏠 Teleport to Home
             </button>
-            <button 
+            <button
               onClick={() => handleEmergencyAction('reset_turns')}
               className="emergency-btn turns"
-              disabled={loading}
+              disabled
+              title={`Disabled — missing backend endpoint ${EMERGENCY_ENDPOINT}`}
             >
               🔄 Reset Turns
             </button>
-            <button 
+            <button
               onClick={() => handleEmergencyAction('rescue_ship')}
               className="emergency-btn rescue"
-              disabled={loading}
+              disabled
+              title={`Disabled — missing backend endpoint ${EMERGENCY_ENDPOINT}`}
             >
               🚁 Rescue Ship
             </button>
-            <button 
+            <button
               onClick={() => handleEmergencyAction('clear_debt')}
               className="emergency-btn debt"
-              disabled={loading}
+              disabled
+              title={`Disabled — missing backend endpoint ${EMERGENCY_ENDPOINT}`}
             >
               💳 Clear Debt
             </button>
