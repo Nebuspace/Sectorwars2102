@@ -72,6 +72,14 @@ class DialogueAnalysisResponse(BaseModel):
     next_question: Optional[str] = None
     next_exchange_id: Optional[str] = None
 
+class CompleteFirstLoginRequest(BaseModel):
+    """WO-PUX-FLOGIN-NICKNAME: the callsign-confirmation verdict. Both
+    fields default false/None so an old client (or one that never showed
+    the confirm prompt because no name was extracted) completes exactly as
+    before — nickname stays null."""
+    nickname_confirmed: bool = False
+    nickname_override: Optional[str] = Field(default=None, max_length=20)
+
 class CompleteFirstLoginResponse(BaseModel):
     player_id: str
     nickname: Optional[str]
@@ -79,6 +87,10 @@ class CompleteFirstLoginResponse(BaseModel):
     ship: Dict[str, Any]
     negotiation_bonus: bool
     notoriety_penalty: bool
+    # Set only when nickname_confirmed was true and validation rejected the
+    # candidate (first-login.md:255) — completion still succeeds; the client
+    # surfaces the reason and offers a bounded free-text retry.
+    nickname_rejected_reason: Optional[str] = None
 
 
 @router.get("/status", response_model=FirstLoginStatusResponse)
@@ -446,6 +458,12 @@ async def answer_dialogue(
         "negotiation_bonus": bool(raw_outcome.get("negotiation_bonus")),
         "notoriety_penalty": bool(raw_outcome.get("notoriety_penalty")),
         "guard_response": _safe_str(raw_outcome.get("guard_response"), limit=2048),
+        # WO-PUX-FLOGIN-NICKNAME: present only on outcomes eligible for the
+        # nickname-confirmation prompt — the escape-pod auto-approval outcome
+        # (a hard-fail path, first-login.md:255) never populates this key, so
+        # the client's "no extracted name -> skip the step" branch holds
+        # without any extra hard-fail detection on either side.
+        "extracted_player_name": _safe_str(raw_outcome.get("extracted_player_name"), limit=20),
     } if raw_outcome else None
 
     return {
@@ -460,13 +478,14 @@ async def answer_dialogue(
 
 @router.post("/complete", response_model=CompleteFirstLoginResponse)
 async def complete_first_login(
+    request: Optional[CompleteFirstLoginRequest] = None,
     player: Player = Depends(get_current_player),
     db: Session = Depends(get_db),
     ai_service: AIDialogueService = Depends(get_ai_dialogue_service)
 ):
     """Complete the first login process and grant the player their ship and credits"""
     service = FirstLoginService(db, ai_service)
-    
+
     # Get the current session
     state = service.get_player_first_login_state(player.id)
     if not state.current_session_id:
@@ -474,17 +493,23 @@ async def complete_first_login(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No active first login session"
         )
-    
+
     # Check if dialogue is complete
     if not state.answered_questions:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Dialogue must be completed before finishing first login"
         )
-    
-    # Complete the first login process
-    result = service.complete_first_login(state.current_session_id)
-    
+
+    # Complete the first login process. A body-less call (request=None,
+    # e.g. a pre-existing client) behaves exactly like the retired
+    # unconditional write's safe default: nickname stays null.
+    result = service.complete_first_login(
+        state.current_session_id,
+        nickname_confirmed=request.nickname_confirmed if request else False,
+        nickname_override=request.nickname_override if request else None,
+    )
+
     return result
 
 

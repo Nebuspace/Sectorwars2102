@@ -58,6 +58,9 @@ def _guard_session(session_id, player_id, **overrides):
         starting_credits=None,
         negotiation_bonus_flag=False,
         notoriety_penalty=False,
+        # WO-PUX-FLOGIN-NICKNAME: carried through the resume outcome dict so
+        # a reload doesn't lose a pending nickname-confirmation prompt.
+        extracted_player_name=None,
     )
     base.update(overrides)
     return types.SimpleNamespace(**base)
@@ -204,6 +207,7 @@ def test_resume_at_completion_step_before_complete_endpoint_called():
         starting_credits=2000,
         negotiation_bonus_flag=True,
         notoriety_penalty=False,
+        extracted_player_name="Voidrunner",
     )
     exchanges = [
         _exchange(session_id, i, f"Question {i}", f"Answer {i}",
@@ -232,6 +236,9 @@ def test_resume_at_completion_step_before_complete_endpoint_called():
     assert result["outcome"]["negotiation_skill"] == "STRONG"
     assert result["outcome"]["negotiation_bonus"] is True
     assert result["outcome"]["notoriety_penalty"] is False
+    # WO-PUX-FLOGIN-NICKNAME: a reload at this step must not lose the
+    # pending nickname-confirmation prompt.
+    assert result["outcome"]["extracted_player_name"] == "Voidrunner"
     # Never re-invokes the AI provider on resume (no cost, no
     # non-determinism); the client falls back to its own canonical message.
     assert result["outcome"]["guard_response"] is None

@@ -45,14 +45,27 @@ export interface DialogueAnalysis {
     negotiation_bonus: boolean;
     notoriety_penalty: boolean;
     guard_response: string;
+    // WO-PUX-FLOGIN-NICKNAME: present only on outcomes eligible for the
+    // nickname-confirmation prompt (absent on the escape-pod hard-fail
+    // path) -- carried through both the live dialogue response and the
+    // session-resume payload so a reload doesn't lose the pending prompt.
+    extracted_player_name?: string | null;
   };
   next_question?: string;
   next_exchange_id?: string;
 }
 
+// The confirm/decline verdict collected by NicknameConfirm.tsx before the
+// single POST /first-login/complete call (see nicknameConfirmLogic.ts for
+// why this is never round-tripped more than once).
+export interface NicknameVerdict {
+  confirmed: boolean;
+  override: string | null;
+}
+
 export interface CompleteFirstLoginResult {
   player_id: string;
-  nickname?: string;
+  nickname?: string | null;
   credits: number;
   ship: {
     id: string;
@@ -61,6 +74,11 @@ export interface CompleteFirstLoginResult {
   };
   negotiation_bonus: boolean;
   notoriety_penalty: boolean;
+  // Set only when nickname_confirmed was sent true and server-side
+  // validation rejected the candidate (length/charset/profanity/taken).
+  // Completion still succeeds -- the client surfaces this as an
+  // informational notice, never a blocker.
+  nickname_rejected_reason?: 'length' | 'charset' | 'profanity' | 'taken' | null;
 }
 
 interface FirstLoginContextType {
@@ -93,7 +111,7 @@ interface FirstLoginContextType {
   
   // Dialogue outcome
   dialogueOutcome: DialogueAnalysis['outcome'] | null;
-  completeFirstLogin: () => Promise<CompleteFirstLoginResult>;
+  completeFirstLogin: (verdict?: NicknameVerdict) => Promise<CompleteFirstLoginResult>;
   
   // UI state helpers
   resetError: () => void;
@@ -364,13 +382,20 @@ export const FirstLoginProvider: React.FC<{ children: ReactNode }> = ({ children
     }
   };
   
-  // Complete the first login process
-  const completeFirstLogin = async (): Promise<CompleteFirstLoginResult> => {
+  // Complete the first login process. `verdict` carries the player's
+  // nickname-confirmation decision (WO-PUX-FLOGIN-NICKNAME); omitting it
+  // (a body-less call) is a decline, matching the server's pre-existing
+  // default -- the nickname stays null exactly as it did before this
+  // feature shipped.
+  const completeFirstLogin = async (verdict?: NicknameVerdict): Promise<CompleteFirstLoginResult> => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const result = await api.post('/api/v1/first-login/complete');
+      const body = verdict
+        ? { nickname_confirmed: verdict.confirmed, nickname_override: verdict.override }
+        : undefined;
+      const result = await api.post('/api/v1/first-login/complete', body);
 
       // First login is now complete
       setRequiresFirstLogin(false);

@@ -1,8 +1,20 @@
 import React, { useState } from 'react';
-import { useFirstLogin } from '../../contexts/FirstLoginContext';
+import { useFirstLogin, NicknameVerdict } from '../../contexts/FirstLoginContext';
 import { useGame } from '../../contexts/GameContext';
 import { useNavigate } from 'react-router-dom';
+import NicknameConfirm from './NicknameConfirm';
 import './first-login.css';
+
+// Human-readable text for a nickname rejected by the ONE real /complete
+// call (profanity/taken can only be discovered server-side -- length/
+// charset are pre-validated client-side by NicknameConfirm and shouldn't
+// reach here). Completion has already succeeded; this is informational.
+const REJECTION_NOTICE: Record<string, string> = {
+  length: 'must be between 3 and 20 characters',
+  charset: 'can only contain letters, numbers, underscores, hyphens, and a single internal space',
+  profanity: "isn't allowed",
+  taken: 'is already claimed by another pilot',
+};
 
 // Ship display names
 const SHIP_NAMES: Record<string, string> = {
@@ -30,26 +42,46 @@ const OutcomeDisplay: React.FC = () => {
   const [isCompleting, setIsCompleting] = useState(false);
   const [completionResult, setCompletionResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  // AC1: the extracted-name confirm step must resolve (or never have been
+  // needed) before handleStartGame -- and therefore the navigate timer --
+  // can ever run. null = "not decided yet" when a name was extracted.
+  const [nicknameVerdict, setNicknameVerdict] = useState<NicknameVerdict | null>(null);
+  const [nicknameNotice, setNicknameNotice] = useState<string | null>(null);
 
   if (!dialogueOutcome) {
     return null;
   }
+
+  const extractedName = dialogueOutcome.extracted_player_name?.trim() || null;
+  const needsNicknameDecision = !!extractedName && nicknameVerdict === null;
 
   const handleStartGame = async () => {
     setIsCompleting(true);
     setError(null);
 
     try {
-      const result = await completeFirstLogin();
+      // No extracted name (incl. the escape-pod hard-fail path) -> AC2:
+      // skip the step entirely, a body-less call behaves exactly as before
+      // this feature shipped. Otherwise send the resolved verdict.
+      const result = await completeFirstLogin(extractedName ? nicknameVerdict ?? undefined : undefined);
       setCompletionResult(result);
+
+      if (result.nickname_rejected_reason) {
+        const attempted = nicknameVerdict?.override || extractedName;
+        const reasonText = REJECTION_NOTICE[result.nickname_rejected_reason] || "couldn't be registered";
+        setNicknameNotice(
+          `Callsign "${attempted}" ${reasonText} -- you'll continue without one for now.`
+        );
+      }
 
       // Refresh all game data in GameContext
       await onFirstLoginComplete();
 
-      // Redirect to the game dashboard after a short delay
+      // Redirect to the game dashboard after a short delay. Give the
+      // player a moment longer to read a rejection notice if one landed.
       setTimeout(() => {
         navigate('/game');
-      }, 1500);
+      }, result.nickname_rejected_reason ? 3000 : 1500);
     } catch (err) {
       console.error('Failed to complete first login:', err);
       setError('Failed to complete registration. Please try again.');
@@ -192,14 +224,23 @@ const OutcomeDisplay: React.FC = () => {
       {/* Fixed bottom action area - always visible */}
       <div className="outcome-action-bar">
         {error && <div className="error-message">{error}</div>}
+        {nicknameNotice && <div className="nickname-notice">{nicknameNotice}</div>}
 
-        <button
-          className="outcome-start-button"
-          onClick={handleStartGame}
-          disabled={isLoading || isCompleting}
-        >
-          {isCompleting ? 'Initializing...' : 'Begin Your Journey'}
-        </button>
+        {needsNicknameDecision ? (
+          <NicknameConfirm
+            extractedName={extractedName}
+            disabled={isLoading || isCompleting}
+            onResolved={setNicknameVerdict}
+          />
+        ) : (
+          <button
+            className="outcome-start-button"
+            onClick={handleStartGame}
+            disabled={isLoading || isCompleting}
+          >
+            {isCompleting ? 'Initializing...' : 'Begin Your Journey'}
+          </button>
+        )}
       </div>
     </div>
   );
