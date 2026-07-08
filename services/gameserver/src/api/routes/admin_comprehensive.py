@@ -2858,8 +2858,10 @@ async def get_ai_route_optimization_data(
             .all()
         )
 
-        # Batch-resolve player display names (nickname -> username fallback,
-        # Player.username property) instead of one query per row.
+        # Batch-resolve player display names via the Player.username property
+        # (nickname -> username fallback) instead of one query per row. Its
+        # SQL twin is Player.display_name_expr, for call sites that need a
+        # labeled column inline in a select() rather than a batch fetch.
         player_ids = {run.player_id for run in runs}
         players = db.query(Player).filter(Player.id.in_(player_ids)).all() if player_ids else []
         name_by_player_id = {str(p.id): p.username for p in players}

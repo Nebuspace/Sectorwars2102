@@ -139,13 +139,16 @@ async def get_message_statistics(
                          .scalar()
         
         # Most active senders — LEFT-joined to Player/User so a nickname
-        # (nickname-or-username fallback, same rule as Player.username) rides
-        # along in one hop instead of the admin-ui resolving 10 UUIDs via the
-        # heavyweight players list. Outer joins keep the row (player_id only,
-        # nickname None) if a sender's players/users row is ever missing.
+        # (the canonical Player.display_name_expr fallback) rides along in
+        # one hop instead of the admin-ui resolving 10 UUIDs via the
+        # heavyweight players list. fallback=None preserves this route's
+        # existing behavior of surfacing `nickname: null` (not a fabricated
+        # "Unknown Player" literal) when a sender's players/users row is
+        # missing entirely — the ONLY value change here is the '' nickname
+        # now correctly falling through to username instead of leaking as ''.
         active_senders = db.query(
             Message.sender_id,
-            func.coalesce(Player.nickname, User.username).label('nickname'),
+            Player.display_name_expr(label='nickname', fallback=None),
             func.count(Message.id).label('message_count')
         ).outerjoin(Player, Player.id == Message.sender_id)\
          .outerjoin(User, User.id == Player.user_id)\

@@ -218,7 +218,43 @@ class Player(Base):
         if self.user:
             return self.user.username
         return "Unknown Player"
-    
+
+    @classmethod
+    def display_name_expr(cls, user_username_col=None, *, label: str = "username",
+                           fallback: Optional[str] = "Unknown Player"):
+        """SQL-expression twin of the `username` property above.
+
+        `username` is a plain Python @property — it can't appear in a
+        select()/query() column list, because "the linked User's username"
+        isn't reachable without a join the caller controls. This reproduces
+        the same fallback chain (nickname if truthy — '' counts as unset,
+        matching the property's truthiness check — else the linked User's
+        username) as a labeled SQLAlchemy expression, so every admin/
+        governance read-path resolves display names identically instead of
+        re-deriving the rule.
+
+        Join recipe: the caller must already join `User` on
+        `Player.user_id == User.id` (or an aliased equivalent) for the
+        fallback to see it — pass that join's username column via
+        `user_username_col` (defaults to `User.username` if omitted).
+
+        `fallback` is the terminal literal for when BOTH nickname and the
+        joined username are NULL (e.g. an outer join with no matching
+        Player/User row at all) — defaults to "Unknown Player" to match the
+        property exactly. Pass `fallback=None` to omit that terminal literal
+        and let the expression resolve to SQL NULL instead, for call sites
+        that were already relying on NULL-on-no-match (e.g. LEFT OUTER JOINs
+        that intentionally return an unresolved sender as `null`, not a
+        literal string) and must not add fabricated coalesce values.
+        """
+        if user_username_col is None:
+            from src.models.user import User
+            user_username_col = User.username
+        args = [func.nullif(cls.nickname, ''), user_username_col]
+        if fallback is not None:
+            args.append(fallback)
+        return func.coalesce(*args).label(label)
+
     # Multi-regional methods
     @property
     def can_travel_between_regions(self) -> bool:
