@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from src.models.player import Player
 from src.models.ship import Ship, ShipStatus
@@ -17,6 +18,7 @@ from src.models.player_warp_knowledge import (
     WarpVisibilityState,
     WarpRevealedVia,
 )
+from src.models.team_member import TeamMember
 from src.models.combat import CombatResult
 from src.models.combat_log import CombatLog
 from src.models.drone import Drone, DroneStatus
@@ -118,7 +120,13 @@ def _reveal_warp_to_player(
     """Idempotent upsert of a per-player warp-knowledge row at ``revealed``
     state (ADR-0045 / aria-companion.md § Warp discovery). Re-revealing an
     already-known warp is a no-op that never downgrades a ``traversed`` row.
-    Does NOT commit — the caller owns the transaction."""
+    Does NOT commit — the caller owns the transaction.
+
+    Also fans the reveal out to the discoverer's CURRENT team/corp (WO-GWQ-
+    WARPSHARE): every teammate who doesn't already hold a knowledge row for
+    this tunnel gets one at ``revealed_via=CORP_SHARE``, plus a realtime WS
+    push. See ``_propagate_warp_reveal_to_team``.
+    """
     row = db.query(PlayerWarpKnowledge).filter(
         PlayerWarpKnowledge.player_id == player_id,
         PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
@@ -137,7 +145,133 @@ def _reveal_warp_to_player(
         # Promote hidden -> revealed; never downgrade traversed.
         row.visibility_state = WarpVisibilityState.REVEALED
         row.revealed_via = revealed_via
+    elif (
+        row.revealed_via == WarpRevealedVia.CORP_SHARE
+        and revealed_via != WarpRevealedVia.CORP_SHARE
+    ):
+        # ADR-0064 R-V3: the Nexus-warp marker requires PERSONAL discovery
+        # "regardless of corp share" — a row whose only provenance was a
+        # teammate's share must upgrade to personal the moment this player
+        # genuinely discovers the same tunnel themselves (scan/traversal),
+        # so a personal-discovery check never stays permanently masked by
+        # an earlier share. Visibility state is already revealed; only the
+        # provenance changes.
+        row.revealed_via = revealed_via
+
+    _propagate_warp_reveal_to_team(db, player_id, tunnel)
     return row
+
+
+def _propagate_warp_reveal_to_team(
+    db: Session, discoverer_id: uuid.UUID, tunnel: WarpTunnel
+) -> None:
+    """Corp-share fan-out (WO-GWQ-WARPSHARE / ADR-0045): every CURRENT
+    teammate of the discoverer who doesn't already hold a PlayerWarpKnowledge
+    row for ``tunnel`` gets one at ``revealed_via=CORP_SHARE``, so their own
+    available-moves / nexus-marker views reflect a teammate's discovery
+    without a scan of their own. A solo player (no team) propagates to no
+    one. Does NOT commit — caller owns the transaction.
+
+    Idempotency mirrors special_formation_service.flip_formation_discovery /
+    medal_service.award_medal: a pre-check SELECT, then an INSERT wrapped in
+    its own SAVEPOINT (``db.begin_nested()``) so a concurrent teammate-reveal
+    racing on the same UNIQUE(player_id, warp_layer, warp_id) constraint
+    rolls back only the losing INSERT, never the caller's open transaction.
+    """
+    team_id = db.query(Player.team_id).filter(Player.id == discoverer_id).scalar()
+    if team_id is None:
+        return
+
+    teammates = (
+        db.query(Player.id, Player.user_id)
+        .join(TeamMember, TeamMember.player_id == Player.id)
+        .filter(TeamMember.team_id == team_id, Player.id != discoverer_id)
+        .all()
+    )
+    if not teammates:
+        return
+
+    newly_notified: List[Tuple[uuid.UUID, uuid.UUID]] = []
+    for teammate_player_id, teammate_user_id in teammates:
+        existing = db.query(PlayerWarpKnowledge).filter(
+            PlayerWarpKnowledge.player_id == teammate_player_id,
+            PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
+            PlayerWarpKnowledge.warp_id == tunnel.id,
+        ).first()
+        if existing is not None:
+            continue
+
+        knowledge = PlayerWarpKnowledge(
+            player_id=teammate_player_id,
+            warp_layer=WarpLayer.WARP_TUNNELS,
+            warp_id=tunnel.id,
+            visibility_state=WarpVisibilityState.REVEALED,
+            revealed_via=WarpRevealedVia.CORP_SHARE,
+        )
+        try:
+            with db.begin_nested():
+                db.add(knowledge)
+                db.flush()
+        except IntegrityError:
+            # Lost the race to a concurrent share/scan for the same
+            # (player, tunnel) — already known now, not a new share for
+            # this call. begin_nested already rolled back to the savepoint;
+            # nothing else lost.
+            logger.info(
+                "corp-share warp reveal: teammate %s already knows tunnel %s "
+                "(race resolved by UNIQUE)", teammate_player_id, tunnel.id,
+            )
+            continue
+
+        newly_notified.append((teammate_player_id, teammate_user_id))
+
+    if newly_notified:
+        _dispatch_warp_corp_share(db, discoverer_id, newly_notified, tunnel)
+
+
+def _dispatch_warp_corp_share(
+    db: Session,
+    discoverer_id: uuid.UUID,
+    newly_notified: List[Tuple[uuid.UUID, uuid.UUID]],
+    tunnel: WarpTunnel,
+) -> None:
+    """Push the corp-share warp-discovery event to each newly-notified
+    teammate's socket (WO-GWQ-WARPSHARE; special-formations.md § Discovery:
+    "Corp-mates can share discoveries via the existing realtime-bus event").
+
+    Mirrors ``_dispatch_hostile_detected`` / ``_broadcast_sector_presence``:
+    import inside the function, grab the running loop, schedule with
+    ``loop.create_task`` (so it runs after the caller's commit and never
+    blocks the sync reveal), and swallow any failure so a quiet socket can
+    never break a scan. Delivered via ``send_personal_message`` (keyed on
+    ``str(user_id)``, movement_service.py:484-505 precedent) to exactly the
+    newly-notified subset — a teammate who already knew gets no redundant
+    push."""
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        ts = datetime.now(UTC).isoformat()
+        origin_sector = db.query(Sector).filter(Sector.id == tunnel.origin_sector_id).first()
+        destination_sector = db.query(Sector).filter(Sector.id == tunnel.destination_sector_id).first()
+        payload = {
+            "type": "warp_corp_share",
+            "discoverer_id": str(discoverer_id),
+            "origin_sector_id": origin_sector.sector_id if origin_sector else None,
+            "destination_sector_id": destination_sector.sector_id if destination_sector else None,
+            "revealed_via": WarpRevealedVia.CORP_SHARE.value,
+            "timestamp": ts,
+        }
+        for teammate_player_id, teammate_user_id in newly_notified:
+            loop.create_task(connection_manager.send_personal_message(
+                str(teammate_user_id),
+                {**payload, "player_id": str(teammate_player_id)},
+            ))
+    except Exception:
+        logger.debug(
+            "Skipped warp corp-share WS push (no loop or socket)", exc_info=True,
+        )
 
 
 def _dispatch_exploration_medals(db: Session, player: Player, context: Dict[str, Any]) -> None:

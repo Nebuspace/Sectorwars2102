@@ -59,6 +59,9 @@ from src.models.ship import Ship, ShipSpecification, ShipStatus, ShipType
 from src.models.sector import Sector, SectorType, sector_warps
 from src.models.station import Station
 from src.models.cluster import Cluster
+from src.models.region import Region
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus, WarpTunnelType
+from src.models.player_warp_knowledge import PlayerWarpKnowledge, WarpLayer, WarpRevealedVia
 from src.services.ship_upgrade_service import ShipUpgradeService
 from src.services.emergent_reputation_service import apply_emergent_action
 
@@ -994,6 +997,91 @@ MINIMAP_RANGE_SPACINGS = 25.0
 MINIMAP_SECTOR_CAP = 400
 
 
+def _resolve_nexus_warp_marker(db: Session, player: Player) -> Optional[Dict[str, Any]]:
+    """ADR-0064 R-V3 — the Nexus warp marker for the player's CURRENT region
+    (``Player.current_region_id``, kept in sync on every move/jump — see
+    movement_service.py:1428-1431 and this module's own jump() at :741),
+    filtered to PERSONAL discovery ONLY.
+
+    Per ADR-0043 the Region ↔ Central Nexus connection is a natural, latent
+    ``WarpTunnel`` anchored at the region's Frontier Gateway Plaza landing
+    sector (``Region.nexus_warp_sector`` — a region-LOCAL ``Sector.sector_
+    number``, written by bang import only, read by nothing until this WO).
+    ADR-0064 R-V3's own filter pseudocode is explicit: "the Nexus warp marker
+    is NOT public — it requires personal discovery, regardless of corp
+    share" — a corp-shared row does not unlock it, on purpose, so a free-tier
+    player who cannot traverse the Nexus warp can't piggyback on a Galactic-
+    Citizen corp-mate's discovery just by scanning nothing themselves. This
+    is why the check below excludes a knowledge row whose provenance is
+    STILL ``CORP_SHARE`` (``_reveal_warp_to_player`` upgrades that provenance
+    to personal the moment this same player later scans the tunnel
+    themselves, so the check stays correct over time without a separate
+    subscription-tier read here).
+
+    Returns ``None`` when the region has no Nexus warp, its tunnel can't be
+    resolved, or the viewer hasn't personally discovered it yet.
+    """
+    if player.current_region_id is None:
+        return None
+    region = db.query(Region).filter(Region.id == player.current_region_id).first()
+    if region is None or region.nexus_warp_sector is None:
+        return None
+
+    landing_sector = db.query(Sector).filter(
+        Sector.region_id == region.id,
+        Sector.sector_number == region.nexus_warp_sector,
+    ).first()
+    if landing_sector is None:
+        return None
+
+    # Disambiguate the Nexus tunnel from any ordinary intra-region NATURAL
+    # tunnel that also happens to touch the landing sector: the Nexus side
+    # is the endpoint whose OWN region is the Central Nexus hub.
+    candidates = db.query(WarpTunnel).filter(
+        WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+        WarpTunnel.type == WarpTunnelType.NATURAL,
+        or_(
+            WarpTunnel.origin_sector_id == landing_sector.id,
+            WarpTunnel.destination_sector_id == landing_sector.id,
+        ),
+    ).all()
+    tunnel: Optional[WarpTunnel] = None
+    for candidate in candidates:
+        other_id = (
+            candidate.destination_sector_id
+            if candidate.origin_sector_id == landing_sector.id
+            else candidate.origin_sector_id
+        )
+        other_sector = db.query(Sector).filter(Sector.id == other_id).first()
+        other_region = (
+            db.query(Region).filter(Region.id == other_sector.region_id).first()
+            if other_sector is not None else None
+        )
+        if other_region is not None and other_region.is_central_nexus:
+            tunnel = candidate
+            break
+    if tunnel is None:
+        return None
+
+    row = db.query(PlayerWarpKnowledge).filter(
+        PlayerWarpKnowledge.player_id == player.id,
+        PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
+        PlayerWarpKnowledge.warp_id == tunnel.id,
+    ).first()
+    if row is None or not row.is_known or row.revealed_via == WarpRevealedVia.CORP_SHARE:
+        return None
+
+    # sector_id (GLOBAL) mirrors the get_available_moves / MoveOption
+    # convention for an already-known warp's destination — NOT the fuzzy
+    # position-only "sectors" list below, whose deliberate no-sector-id rule
+    # (ADR-0031) governs undiscovered scan targets, not a marker the viewer
+    # has already personally discovered.
+    return {
+        "sector_id": landing_sector.sector_id,
+        "region_sector_number": region.nexus_warp_sector,
+    }
+
+
 def get_minimap(db: Session, player: Player) -> Dict[str, Any]:
     """Astrogation chart for the Quantum Drive console (ADR-0030 Phase 1).
 
@@ -1058,6 +1146,9 @@ def get_minimap(db: Session, player: Player) -> Dict[str, Any]:
             {"dx": dx, "dy": dy, "dz": dz}
             for _, dx, dy, dz in nearby
         ],
+        # ADR-0064 R-V3: present only once the viewer has PERSONALLY
+        # discovered the Nexus warp — see _resolve_nexus_warp_marker.
+        "nexus_warp_marker": _resolve_nexus_warp_marker(db, player),
     }
 
 
@@ -1107,4 +1198,7 @@ def get_status(db: Session, player: Player) -> Dict[str, Any]:
         "can_jump": can_jump,
         "is_warp_jumper": is_warp_jumper,
         "sensor_level": sensor_level,
+        # ADR-0064 R-V3: present only once the viewer has PERSONALLY
+        # discovered the Nexus warp — see _resolve_nexus_warp_marker.
+        "nexus_warp_marker": _resolve_nexus_warp_marker(db, player),
     }
