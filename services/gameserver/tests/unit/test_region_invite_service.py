@@ -282,8 +282,12 @@ class TestConsumeInvite:
         db = _LockingDB(invite, region)
         result = await RegionInviteService.consume_invite(db, invite)
         assert result["ok"] is False
-        # status is non-active -> rejected on status (the first under-lock gate).
-        assert result["code"] == "ERR_INVITE_NOT_ACTIVE"
+        # uses >= max_uses reads as EXHAUSTED regardless of how the status column
+        # got stamped -- consume_invite reads status + uses together under the
+        # SAME lock (unlike validate_invite's separate pre-lock convention), so a
+        # row already at the cap and a row a concurrent racer just exhausted are
+        # indistinguishable and get the same, more specific reason.
+        assert result["code"] == "ERR_INVITE_EXHAUSTED"
         db.rollback.assert_awaited()
 
     @pytest.mark.asyncio
