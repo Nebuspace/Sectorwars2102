@@ -324,6 +324,21 @@ services:
       # (Vite proxy / nginx gateway), which works from any browser. Set
       # API_BASE_URL in the per-tier .env only when the API truly lives on a
       # different origin than the page.
+      # WARNING: this same-origin fallback relies on `||` (falsy) checks at the
+      # client call sites (player-client App.tsx / AuthContext.tsx) — a future
+      # `??` refactor there would treat "" as a real value and break it.
+      #
+      # DEV TIER: a host .env `API_BASE_URL`/`WS_BASE_URL` override (e.g. one
+      # copy-pasted from a stage config) renders straight into these two
+      # values for EVERY profile, including development — that class of bug
+      # once pointed the dev-host player-client at the stage API and it could
+      # not hydrate. docker-compose.dev.yml pins both to empty regardless of
+      # the host .env; the dev launcher MUST include it:
+      #   docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+      #     --profile development up -d
+      # Omitting `-f docker-compose.dev.yml` silently loses the pin — the
+      # player-client container logs a "[dev-tier]" line at startup showing
+      # what actually resolved; scripts/check-dev-tier-env.sh asserts it statically.
       - VITE_API_URL=${API_BASE_URL:-}
       - VITE_WS_URL=${WS_BASE_URL:-}
     restart: unless-stopped
@@ -362,6 +377,15 @@ services:
       - REACT_APP_API_BASE_URL=${API_BASE_URL:-http://localhost:8080}
       - REACT_APP_ENVIRONMENT=${ENVIRONMENT:-development}
       - REACT_APP_NEXUS_MODE=${NEXUS_MODE:-false}
+      # Same host-.env leak risk as player-client above (see that block's
+      # comment for the full story). Only two admin-ui call sites actually
+      # read VITE_API_URL today (LoginForm.tsx's debug test button,
+      # Dashboard.tsx — both via `|| ''` falsy fallback); the primary
+      # login/dashboard/websocket flows use same-origin relative paths /
+      # window.location and ignore these two vars entirely. Still pinned in
+      # docker-compose.dev.yml for the dev tier, for consistency and because
+      # a future call site could start reading these without re-auditing
+      # every dev-host .env for a stale API_BASE_URL first.
       - VITE_API_URL=${API_BASE_URL:-http://localhost:8080}/api/v1
       - VITE_WS_URL=${WS_BASE_URL:-ws://localhost:8080}/ws
       # When the gateway publishes admin-ui under /admin/ (stage/prod),
