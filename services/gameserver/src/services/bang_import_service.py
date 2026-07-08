@@ -313,53 +313,16 @@ def _gx1_sector_bias(
     return resources, defenses, controlling_faction, force_nebula
 
 
-#: Canonical nebula-color → galaxy-map render hex, from sw2102-docs
-#: quantum-resources.md § "Nebula types and field strengths". These hexes ARE
-#: canon (quantum-resources.md:44); only the density boundary cutpoints below
-#: are a builder proposal.
-_NEBULA_COLOR_HEX: Dict[str, str] = {
-    "crimson": "#DC143C",
-    "azure": "#1E90FF",
-    "emerald": "#00FF7F",
-    "violet": "#9370DB",
-    "amber": "#FF8C00",
-    "obsidian": "#2F4F4F",
-}
-
-#: WO-SB-QH2 [NO-CANON, flag to DECISIONS]: canon's per-color field-strength
-#: ranges OVERLAP (e.g. azure 60-80 vs emerald 50-70 — quantum-resources.md
-#: nebula table), so no single mean-density value maps unambiguously under
-#: canon as written. These are disjoint cutpoints a builder proposes so
-#: harvest can key on exactly one color per cluster: ≥80 crimson, 60-79
-#: azure, 50-59 emerald, 40-49 violet, 20-39 amber, <20 obsidian.
-_NEBULA_COLOR_BOUNDARY_CRIMSON: int = 80
-_NEBULA_COLOR_BOUNDARY_AZURE: int = 60
-_NEBULA_COLOR_BOUNDARY_EMERALD: int = 50
-_NEBULA_COLOR_BOUNDARY_VIOLET: int = 40
-_NEBULA_COLOR_BOUNDARY_AMBER: int = 20
-
-
-def _derive_nebula_color(mean_density: float) -> str:
-    """Map a cluster's mean per-sector nebula density to a canon color key.
-
-    bang emits per-sector nebula as ``{type: 'normal'|'magnetic', density:
-    1-100}`` (content.ts:404-408) with no color concept of its own; this
-    derives the six-color canon taxonomy that
-    ``quantum_service._HARVEST_YIELD_BANDS`` is keyed by, so a bang-imported
-    nebula cluster can actually be harvested instead of rejected as
-    'uncharted'. See the [NO-CANON] boundary comment above.
-    """
-    if mean_density >= _NEBULA_COLOR_BOUNDARY_CRIMSON:
-        return "crimson"
-    if mean_density >= _NEBULA_COLOR_BOUNDARY_AZURE:
-        return "azure"
-    if mean_density >= _NEBULA_COLOR_BOUNDARY_EMERALD:
-        return "emerald"
-    if mean_density >= _NEBULA_COLOR_BOUNDARY_VIOLET:
-        return "violet"
-    if mean_density >= _NEBULA_COLOR_BOUNDARY_AMBER:
-        return "amber"
-    return "obsidian"
+#: Canon color/hex table + the [NO-CANON] density-boundary derivation now
+#: live in one SHARED home (WO-GWQ-NEXUS-NEBULA-FIELDS lifted them out so
+#: nexus_generation_service can derive the identical colors for its
+#: synthetic nebula clusters instead of duplicating the cutpoint table).
+#: Re-imported under their original private names here so nothing else in
+#: this module (or its existing tests) needs to change.
+from src.services.nebula_color import (  # noqa: E402
+    NEBULA_COLOR_HEX as _NEBULA_COLOR_HEX,
+    derive_nebula_color as _derive_nebula_color,
+)
 
 
 def _finalize_cluster_nebula_fields(

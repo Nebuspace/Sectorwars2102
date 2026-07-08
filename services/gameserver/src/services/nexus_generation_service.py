@@ -19,10 +19,42 @@ from src.models.warp_tunnel import WarpTunnel, WarpTunnelType, WarpTunnelStatus
 from src.models.region import Region, RegionType
 from src.models.zone import Zone
 from src.models.cluster import Cluster, ClusterType
+from src.services.nebula_color import NEBULA_COLOR_HEX, derive_nebula_color
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _synthesize_cluster_nebula_fields(cluster: Cluster, nebula_sector_count: int) -> None:
+    """WO-GWQ-NEXUS-NEBULA-FIELDS: give a nexus-generated cluster the same
+    canon nebula fields bang import derives, so quantum_service.harvest_nebula
+    stops rejecting every generator-made nebula as 'uncharted'
+    (_HARVEST_YIELD_BANDS keys on the six canon colors only).
+
+    NO-CANON [flag to DECISIONS]: bang emits a per-sector {type, density}
+    sample that bang_import_service._finalize_cluster_nebula_fields averages
+    into quantum_field_strength; nexus's synthetic sectors carry only a bare
+    SectorType.NEBULA flag with no density to average. Convention adopted
+    here: roll ONE uniform 1-100 field strength per nebula-bearing cluster
+    (the same 0-100 domain the shared boundary table keys on) rather than
+    fabricating per-sector densities to average. nebula_type/color_hex are
+    then derived from that roll via the SAME shared derive_nebula_color /
+    NEBULA_COLOR_HEX bang import uses (src.services.nebula_color), so a
+    generator-made nebula cluster harvests through the identical six-color
+    band table.
+
+    A cluster with zero NEBULA sectors is left untouched — all three fields
+    stay at their column default (None), matching bang import's "no nebula
+    samples -> all three None" convention.
+    """
+    if nebula_sector_count <= 0:
+        return
+    field_strength = float(random.randint(1, 100))
+    color = derive_nebula_color(field_strength)
+    cluster.quantum_field_strength = field_strength
+    cluster.nebula_type = color
+    cluster.color_hex = NEBULA_COLOR_HEX[color]
 
 
 class NexusGenerationService:
@@ -105,6 +137,15 @@ class NexusGenerationService:
                 generation_stats["total_sectors"] += cluster_stats["sectors"]
                 generation_stats["total_ports"] += cluster_stats["ports"]
                 generation_stats["total_planets"] += cluster_stats["planets"]
+
+                # WO-GWQ-NEXUS-NEBULA-FIELDS: any cluster that just got >=1
+                # NEBULA sector needs the canon nebula fields quantum_service
+                # harvest gates on — mutate the SAME Cluster ORM object
+                # _create_nexus_clusters added to this session; the trailing
+                # session.flush() below picks up the change.
+                _synthesize_cluster_nebula_fields(
+                    cluster, cluster_stats.get("nebula_sectors", 0)
+                )
 
                 current_sector_num = end_sector + 1
                 logger.info(f"Cluster {cluster.name} completed: {cluster_stats}")
@@ -310,7 +351,7 @@ class NexusGenerationService:
         the exact same code path (and RNG-call sequence) as before this WO, so
         an unbiased Nexus is byte-identical to today.
         """
-        stats = {"sectors": 0, "ports": 0, "planets": 0}
+        stats = {"sectors": 0, "ports": 0, "planets": 0, "nebula_sectors": 0}
 
         # WO-GX1 bias parameters (NO-CANON magnitudes from the work order)
         is_resource_rich = cluster_type == ClusterType.RESOURCE_RICH
@@ -392,6 +433,7 @@ class NexusGenerationService:
             # FRONTIER_OUTPOST: more nebula. NEVER the starter (sector 1).
             if is_frontier and sector_num != 1 and random.random() < nebula_chance:
                 sector_data["type"] = SectorType.NEBULA
+                stats["nebula_sectors"] += 1
 
             batch_sectors.append(sector_data)
             stats["sectors"] += 1
