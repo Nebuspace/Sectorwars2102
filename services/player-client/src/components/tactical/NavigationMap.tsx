@@ -50,7 +50,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   const [hoveredNode, setHoveredNode] = useState<number | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
   const [isMoving, setIsMoving] = useState(false);
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number | undefined>(undefined);
 
   // Stable reference to onNavigate to avoid stale closures
   const onNavigateRef = useRef(onNavigate);

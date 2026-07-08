@@ -298,7 +298,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     if (!currentShip?.cargo) return 0;
     // Check contents field first (new format)
     if (typeof currentShip.cargo === 'object' && 'contents' in currentShip.cargo) {
-      const contents = currentShip.cargo.contents as Record<string, number>;
+      const contents = currentShip.cargo.contents as unknown as Record<string, number>;
       return Number(contents[resourceType]) || 0;
     }
     // Legacy format
@@ -310,7 +310,7 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     if (!currentShip?.cargo) return 0;
     // Check contents field first (new format)
     if (typeof currentShip.cargo === 'object' && 'contents' in currentShip.cargo) {
-      const contents = currentShip.cargo.contents as Record<string, number>;
+      const contents = currentShip.cargo.contents as unknown as Record<string, number>;
       return Object.values(contents)
         .filter((v): v is number => typeof v === 'number')
         .reduce((a, b) => a + b, 0);

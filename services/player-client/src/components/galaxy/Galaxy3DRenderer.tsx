@@ -1,4 +1,5 @@
 import { Suspense, useRef, useState, useEffect, useMemo } from 'react';
+import type { ReactElement } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 import { Vector3 } from 'three';
@@ -206,7 +207,7 @@ function GalaxyScene({ onSectorSelect }: { onSectorSelect?: (sector: Sector) => 
         const currentPosition = sectorPositions.get(currentSector.sector_id);
         if (!currentPosition) return null;
 
-        const connections: JSX.Element[] = [];
+        const connections: ReactElement[] = [];
 
         // Warp connections
         availableMoves.warps.forEach((warp, index) => {

@@ -59,7 +59,11 @@ export const DiplomacyInterface: React.FC<DiplomacyInterfaceProps> = ({
       
       // Fetch treaties from API
       try {
-        const treatiesData = await gameAPI.team.getTreaties(team.id);
+        // gameAPI.team has no getTreaties — no GET /treaties endpoint exists
+        // (only proposeTreaty). Typed placeholder pending WO-PUX-FE-ORPHANS
+        // disposition of this dead-code component.
+        const getTreaties = async (_teamId: string): Promise<Treaty[]> => [];
+        const treatiesData = await getTreaties(team.id);
         setTreaties(Array.isArray(treatiesData) ? treatiesData : []);
       } catch {
         // Treaty endpoint may not be implemented yet - show empty state
@@ -125,12 +129,13 @@ export const DiplomacyInterface: React.FC<DiplomacyInterfaceProps> = ({
         .map(term => InputValidator.sanitizeText(term))
         .filter(term => term.length > 0);
 
-      await gameAPI.team.proposeTreaty(
-        team.id,
-        selectedTeam.id,
-        treatyType,
-        sanitizedTerms
-      );
+      // proposeTreaty takes (teamId, data) — bundle target/type/terms into
+      // the data payload.
+      await gameAPI.team.proposeTreaty(team.id, {
+        target_team_id: selectedTeam.id,
+        type: treatyType,
+        terms: sanitizedTerms
+      });
 
       setMessage(`Treaty proposal sent to ${selectedTeam.name}`);
       setShowTreatyForm(false);

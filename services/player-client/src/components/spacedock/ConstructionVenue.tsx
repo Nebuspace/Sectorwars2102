@@ -69,6 +69,7 @@ interface ConstructionReservation {
   ship_name?: string | null;
   total_cost?: number;
   credits_paid?: number;
+  queue_bonus_credit: number;
   paused?: boolean;
   needs?: string[];
   queue_position?: number | null;

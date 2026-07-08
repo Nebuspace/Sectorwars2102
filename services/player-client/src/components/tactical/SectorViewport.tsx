@@ -37,7 +37,7 @@ const SectorViewport: React.FC<SectorViewportProps> = ({
   const { uiScale } = useSettings();
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animationFrameRef = useRef<number>();
+  const animationFrameRef = useRef<number | undefined>(undefined);
   const [isAnimating, setIsAnimating] = useState(true);
   const [hoveredEntity, setHoveredEntity] = useState<{ type: 'station' | 'planet'; name: string; x: number; y: number } | null>(null);
 

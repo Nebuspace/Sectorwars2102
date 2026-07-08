@@ -241,11 +241,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
                 so its controls can't be tab-focused underneath. */}
             <div
               className="main-viewport"
-              // `inert` isn't in the installed @types/react (18.x) surface yet,
-              // but the DOM supports it and React passes unknown lowercase
-              // attrs through. Spread it so hidden controls under the
-              // initial-load overlay can't be tab-focused.
-              {...(isInitialLoad ? { inert: '' } : {})}
+              inert={isInitialLoad}
             >
               <PlayerVitalsHud />
               {/* Windshield minimize/expand (id=151 + id=151b) — only while

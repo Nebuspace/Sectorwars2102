@@ -182,8 +182,13 @@ const FirstLoginContainer: React.FC = () => {
     const circumference = 2 * Math.PI * radius;
     const strokeDashoffset = circumference - (currentTrust * circumference);
 
-    // Calculate threshold marker rotation (example: 60% threshold = 216 degrees)
-    const thresholdPercent = session?.ship_choice ? 0.6 : 0.5; // Example threshold
+    // Pinned to the marker's actual lifelong behavior: the server never
+    // serializes ship_choice (only ship_claimed), so this expression always
+    // evaluated 0.5 and the 0.6 branch never executed. Whether the marker
+    // SHOULD respond to ship_claimed (and at what threshold) is an open
+    // product call -- escalated in STATUS; wire ship_claimed here only
+    // after that ruling.
+    const thresholdPercent = 0.5;
     const thresholdRotation = (thresholdPercent * 360) - 90;
 
     return (
