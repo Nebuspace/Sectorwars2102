@@ -85,6 +85,20 @@ export interface ARIAResponseMessage {
   signature?: string;
 }
 
+// Quantum-shard harvest push (quantum.py's _emit_quantum_harvest, sent to the
+// harvesting player's own socket only, post-commit). Canon Resolution step 6:
+// "Emit a real-time event on the WebSocket bus so the client UI updates
+// without polling". Payload shape is a builder proposal pending DECISIONS
+// ratification — consumers should treat every field but `type` as optional.
+export interface QuantumHarvestMessage {
+  type: 'quantum_harvest';
+  sector_id: number;
+  nebula_type: string;
+  shards: number;
+  crit: boolean;
+  timestamp: string;
+}
+
 type MessageHandler = (message: WebSocketMessage) => void;
 
 class WebSocketService {
@@ -566,6 +580,17 @@ class WebSocketService {
     const handler = (message: WebSocketMessage) => {
       if (message.type === 'aria_response') {
         callback(message as ARIAResponseMessage);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // Quantum-shard harvest push (see QuantumHarvestMessage above)
+  onQuantumHarvest(callback: (message: QuantumHarvestMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'quantum_harvest') {
+        callback(message as QuantumHarvestMessage);
       }
     };
     this.addMessageHandler(handler);

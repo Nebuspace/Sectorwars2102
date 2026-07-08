@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import apiClient from '../services/apiClient';
+import websocketService from '../services/websocket';
+import { ariaFeed } from '../components/mfd/ariaFeedStore';
 
 // Types for game state
 export interface Ship {
@@ -1620,6 +1622,27 @@ export const GameProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setQuantumStatus(null);
     }
   }, [currentShip?.id, currentShip?.type, playerState?.turns, playerState?.current_sector_id]);
+
+  // Live quantum-shard harvest push (quantum.py's _emit_quantum_harvest,
+  // canon Resolution step 6 — "client UI updates without polling"). Keeps
+  // the shard wallet in lockstep with the server the instant a harvest
+  // lands, and narrates it into the ARIA feed store so a pilot watching a
+  // different MFD page still sees it land. Payload fields beyond `type` are
+  // a builder proposal pending DECISIONS ratification, so every field is
+  // read defensively.
+  useEffect(() => {
+    if (!user) return;
+
+    const unsubscribe = websocketService.onQuantumHarvest((message) => {
+      refreshQuantumStatus();
+
+      const shards = typeof message?.shards === 'number' ? message.shards : 0;
+      const critSuffix = message?.crit ? ' — critical!' : '';
+      ariaFeed.appendNav(`Harvested ${shards} quantum shard${shards === 1 ? '' : 's'}${critSuffix}.`);
+    });
+
+    return unsubscribe;
+  }, [user]);
 
   // Hyperspace echo scan along a bearing (spends turns; far band spends a shard)
   const quantumScan = async (payload: QuantumBearing): Promise<QuantumScanResult> => {
