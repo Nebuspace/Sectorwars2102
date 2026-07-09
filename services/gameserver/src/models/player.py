@@ -119,6 +119,12 @@ class Player(Base):
     # Journey victory (rank-1 completion of the campaign).
     is_game_complete = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     rank_victory_at = Column(DateTime(timezone=True), nullable=True)
+    # Federation distress-beacon 24h scaled cooldown anchor (WO-GWQ-STRANDING;
+    # factions-and-teams.md#reputation-triggers). NULL = never used, beacon
+    # available now. Set to the fire time by distress_service.use_distress_
+    # beacon; the cooldown deadline is derived at read time via
+    # scaled_deadline(24, start=last_distress_at) -- never stored pre-computed.
+    last_distress_at = Column(DateTime(timezone=True), nullable=True)
     settings = Column(JSONB, nullable=False, default={})
     first_login = Column(JSONB, nullable=False, default={"completed": False})
     # CRT WO-K0-2: the research ledger. ONE additive NULLABLE JSONB column — the

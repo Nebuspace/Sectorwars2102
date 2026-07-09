@@ -57,6 +57,7 @@ from src.api.routes.port_ownership import router as port_ownership_router
 from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
 from src.api.routes.refining import router as refining_router
+from src.api.routes.recovery import router as recovery_router
 from src.api.routes.warp_gates import router as warp_gates_router
 from src.api.routes.nav import router as nav_router
 from src.api.routes.medals import router as medals_router
@@ -155,6 +156,10 @@ api_router.include_router(quantum_router, tags=["quantum"])
 # ONLY player-driven source of Quantum Crystals (router carries its own
 # /refining prefix; distinct from the 1:1 /quantum/refine-charge jump charge)
 api_router.include_router(refining_router, tags=["refining"])
+# One-way-stranding recovery: Federation distress beacon (any hull, -10 rep,
+# 24h cooldown) + Warp Jumper Slipdrive (quantum_jump_capable hulls, charge +
+# fuel-scaled escape) (router carries its own /recovery prefix)
+api_router.include_router(recovery_router, tags=["recovery"])
 # Player warp gates: three-phase construction ritual (ADR-0029) + sector
 # structure listing (router carries its own /warp-gates prefix; traversal
 # itself rides the normal /player/move endpoints via MovementService)
