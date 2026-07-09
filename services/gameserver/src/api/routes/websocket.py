@@ -250,7 +250,7 @@ async def admin_websocket_endpoint(
         try:
             await websocket.close(code=4003, reason="Connection initialization failed")
         except Exception:
-            pass
+            logger.debug("admin websocket_endpoint: websocket.close failed during connection-init cleanup", exc_info=True)
 
 
 

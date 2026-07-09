@@ -1571,7 +1571,7 @@ class ARIAPersonalIntelligenceService:
             try:
                 await db.rollback()
             except Exception:
-                pass
+                logger.debug("ARIA storage prune: db.rollback failed for player %s", player_id, exc_info=True)
             return {
                 "success": False,
                 "over_cap": False,

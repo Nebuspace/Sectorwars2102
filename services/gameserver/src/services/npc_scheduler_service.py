@@ -5134,7 +5134,7 @@ async def _run_aria_prune_async() -> Dict[str, int]:
             try:
                 await db.rollback()
             except Exception:
-                pass
+                logger.debug("ARIA prune: rollback failed after pass-level failure", exc_info=True)
             return result
 
 

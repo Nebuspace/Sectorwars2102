@@ -862,7 +862,7 @@ class ConnectionManager:
                 try:
                     await ws.close(code=4008, reason="Heartbeat timeout")
                 except Exception:
-                    pass
+                    logger.debug(f"cleanup_stale_connections: ws.close failed for stale user {user_id}", exc_info=True)
             await self.disconnect(user_id)
 
             # WO-G1: announce that a stale socket was dropped. disconnect()
@@ -908,7 +908,7 @@ class ConnectionManager:
                 try:
                     await ws.close(code=4008, reason="Heartbeat timeout")
                 except Exception:
-                    pass
+                    logger.debug(f"cleanup_stale_connections: ws.close failed for stale admin {admin_id}", exc_info=True)
             await self.disconnect_admin(admin_id)
 
         if stale_users or stale_admins:

@@ -2,6 +2,7 @@
 Economy Analytics Service for Admin Dashboard
 """
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
@@ -19,6 +20,9 @@ from src.models.station import Station
 from src.models.player import Player
 from src.services.audit_service import AuditService, AuditAction
 from src.services.trading_service import TradingService
+
+
+logger = logging.getLogger(__name__)
 
 
 class InterventionError(Exception):
@@ -173,7 +177,7 @@ class EconomyAnalyticsService:
             manipulation_alerts = self._detect_market_manipulation()
             alerts.extend(manipulation_alerts)
         except Exception:
-            pass
+            logger.warning("get_market_alerts: _detect_market_manipulation failed, manipulation alerts dropped", exc_info=True)
 
         # Sort by severity and timestamp
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -376,7 +380,7 @@ class EconomyAnalyticsService:
                 else:
                     inflation[resource_name] = 0.0
         except Exception:
-            pass
+            logger.warning("_calculate_inflation_rates: inflation calculation failed, partial/empty inflation dict returned", exc_info=True)
 
         return inflation
 
@@ -509,7 +513,7 @@ class EconomyAnalyticsService:
                 )
                 prices[resource_name] = float(avg_price) if avg_price else 0
         except Exception:
-            pass
+            logger.warning("_get_average_prices: average price calculation failed, partial/empty prices dict returned", exc_info=True)
 
         return prices
 
@@ -538,7 +542,7 @@ class EconomyAnalyticsService:
                 else:
                     volatility[resource_name] = 0
         except Exception:
-            pass
+            logger.warning("_calculate_price_volatility: volatility calculation failed, partial/empty volatility dict returned", exc_info=True)
 
         return volatility
 
@@ -642,7 +646,7 @@ class EconomyAnalyticsService:
                     "recommended_action": "Investigate player trading patterns and consider temporary trading restrictions"
                 })
         except Exception:
-            pass
+            logger.warning("_detect_market_manipulation: wash-trading detection query failed, manipulation alerts dropped", exc_info=True)
 
         return alerts
 
