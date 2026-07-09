@@ -710,10 +710,16 @@ async def get_team_messages(
     if not permissions["is_member"]:
         raise HTTPException(status_code=403, detail="You are not a member of this team")
     
-    # Get team messages
+    # Get team messages. moderation_status IS NULL excludes moderator-
+    # deleted messages (WO-RT-MOD-AUDIT-KERNEL) -- this route bypasses
+    # MessageService.get_team_messages (which already carries this filter)
+    # with its own direct query, so the exclusion has to be repeated here.
     messages = (
         db.query(Message)
-        .filter(Message.team_id == team_id)
+        .filter(
+            Message.team_id == team_id,
+            Message.moderation_status.is_(None)
+        )
         .order_by(Message.sent_at.desc())
         .offset(skip)
         .limit(limit)

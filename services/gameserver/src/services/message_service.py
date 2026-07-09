@@ -212,11 +212,15 @@ class MessageService:
     ) -> Dict[str, Any]:
         """Get player's inbox messages"""
         
-        # Base query for messages sent to this player
+        # Base query for messages sent to this player. moderation_status
+        # IS NULL excludes moderator-deleted messages (audit-trail-only,
+        # not player-visible) -- unread_count below inherits this filter
+        # since it further-filters this same query.
         query = db.query(Message).filter(
             and_(
                 Message.recipient_id == player_id,
-                Message.deleted_by_recipient == False
+                Message.deleted_by_recipient == False,
+                Message.moderation_status.is_(None)
             )
         )
         
@@ -259,14 +263,16 @@ class MessageService:
         if not team or not any(member.id == player_id for member in team.members):
             raise ValueError("Player is not a member of this team")
         
-        # Get team messages
+        # Get team messages. moderation_status IS NULL excludes
+        # moderator-deleted messages (audit-trail-only, not player-visible).
         query = db.query(Message).filter(
             and_(
                 Message.team_id == team_id,
                 or_(
                     Message.deleted_by_sender == False,
                     Message.sender_id != player_id
-                )
+                ),
+                Message.moderation_status.is_(None)
             )
         )
         
@@ -345,7 +351,10 @@ class MessageService:
         # Get latest message from each thread
         from sqlalchemy import func
         
-        # Subquery to get latest message per thread
+        # Subquery to get latest message per thread. moderation_status
+        # IS NULL here keeps a moderator-deleted message from being picked
+        # as a thread's "latest" (its sent_at would otherwise win the max()
+        # and surface it via the join below).
         latest_messages = db.query(
             Message.thread_id,
             func.max(Message.sent_at).label('latest_sent')
@@ -358,18 +367,22 @@ class MessageService:
                 or_(
                     and_(Message.sender_id == player_id, Message.deleted_by_sender == False),
                     and_(Message.recipient_id == player_id, Message.deleted_by_recipient == False)
-                )
+                ),
+                Message.moderation_status.is_(None)
             )
         ).group_by(Message.thread_id).subquery()
-        
-        # Get the actual messages
+
+        # Get the actual messages. moderation_status IS NULL is repeated
+        # here (defense in depth alongside the subquery filter above) so
+        # this query stays correct even if the join condition alone would
+        # have let a deleted row through on a sent_at tie.
         query = db.query(Message).join(
             latest_messages,
             and_(
                 Message.thread_id == latest_messages.c.thread_id,
                 Message.sent_at == latest_messages.c.latest_sent
             )
-        )
+        ).filter(Message.moderation_status.is_(None))
         
         total = query.count()
         
@@ -455,8 +468,13 @@ class MessageService:
             return False
         
         if action == "delete":
-            # Hard delete the message
-            db.delete(message)
+            # Soft delete: keep the row (and the moderator stamps below) for
+            # the audit log -- messaging.md "Moderated messages remain in
+            # the database for the audit log even after content removal".
+            # Player-facing reads filter moderation_status IS NULL; admin
+            # queries (admin_messages.py) are untouched and keep full
+            # visibility, including previously-deleted rows.
+            message.moderation_status = "deleted"
         elif action == "unflag":
             message.flagged = False
             message.flagged_reason = None
