@@ -49,6 +49,23 @@ NPC_KILL_LOOT_MINT_MAX_PCT = 0.15  # NO-CANON, flagged — lifecycle.md "≈ 15%
 NPC_KILL_LOOT_MINT_CAP = 5000      # NO-CANON, flagged — per-encounter ceiling
 
 
+def _combat_log_region_snapshot(sector: Optional[Sector]) -> Optional[uuid.UUID]:
+    """The ``CombatLog.region_id_snapshot`` value for a fight resolved in
+    ``sector`` (ADR-0050 SK24, DATA_MODELS/combat.md "Region-deletion
+    handling"): a plain copy of the sector's region at combat time, so the
+    audit row still names its region after ``sector_uuid`` SETs NULL on a
+    region regenerate/terminate. ``sector`` is already required non-None by
+    every existing column on the same CombatLog row (sector_id, sector_uuid),
+    but this helper stays defensive independently of that so a future call
+    site is never the one that turns a missing sector into a hard crash.
+    ``getattr`` (not a plain attribute read) so a sector-like stand-in
+    without the column -- e.g. an older test double built before this WO --
+    degrades to NULL rather than raising; a real Sector row's ``region_id``
+    is itself nullable (an unassigned sector), which flows through as NULL
+    the same way."""
+    return getattr(sector, "region_id", None) if sector is not None else None
+
+
 def _regen_turns(db: Session, player: Player) -> None:
     """Bring a player's turn balance current (lazy ADR-0004 regen) before an
     affordability check / spend, via the turns-lane frozen hook
@@ -686,6 +703,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
@@ -1234,6 +1252,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
@@ -1581,6 +1600,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
@@ -1741,6 +1761,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,
@@ -1891,6 +1912,7 @@ class CombatService:
             outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
             sector_id=sector.sector_id,
             sector_uuid=sector.id,
+            region_id_snapshot=_combat_log_region_snapshot(sector),
             attacker_id=attacker.id,
             attacker_ship_id=attacker.current_ship_id,
             attacker_ship_name=attacker_ship.name if attacker_ship else None,

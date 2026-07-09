@@ -42,6 +42,16 @@ class CombatLog(Base):
     sector_uuid = Column(UUID(as_uuid=True), ForeignKey("sectors.id", ondelete="SET NULL"), nullable=True)
     port_id = Column(UUID(as_uuid=True), ForeignKey("stations.id", ondelete="SET NULL"), nullable=True)
     planet_id = Column(UUID(as_uuid=True), ForeignKey("planets.id", ondelete="SET NULL"), nullable=True)
+
+    # Region-deletion handling (ADR-0050 SK24, DATA_MODELS/combat.md
+    # "Region-deletion handling"): a plain UUID snapshot of the sector's
+    # region at combat time, deliberately WITHOUT a ForeignKey. sector_uuid
+    # above already SETs NULL when its sector cascades away on region
+    # regeneration/termination; this column is what lets the row still say
+    # WHICH region the fight happened in after that sector row is gone, so
+    # it must survive the region itself being deleted (an FK to regions.id
+    # would either block that deletion or SET NULL too, defeating the point).
+    region_id_snapshot = Column(UUID(as_uuid=True), nullable=True)
     
     # Combat details
     combat_type = Column(String(50), nullable=False, default="ship_to_ship")  # ship_to_ship, port_attack, planet_defense
