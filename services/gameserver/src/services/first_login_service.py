@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any, Union
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.models.player import Player
 from src.models.first_login import (
@@ -1828,13 +1829,25 @@ Description: {ship_specs.get('description', 'N/A')}
         
         # Apply any bonuses or penalties from the dialogue outcome
         if session.negotiation_bonus_flag:
-            # Store negotiation bonus in player settings
-            player.settings["trade_bonus"] = 0.1  # 10% better prices
-        
-        if session.notoriety_penalty:
-            # Start with minor negative reputation
-            player.reputation = {"faction1": -10}
-        
+            # Reassign (not in-place mutation) + flag_modified so SQLAlchemy
+            # detects the JSONB change (matches
+            # emergent_reputation_service._store_throttle_bucket /
+            # faction_service.apply_faction_rep_delta's history pattern) --
+            # the prior in-place `player.settings["trade_bonus"] = ...` was
+            # invisible to the ORM and silently dropped at commit.
+            settings = dict(player.settings) if isinstance(player.settings, dict) else {}
+            settings["trade_bonus"] = 0.1  # 10% better prices
+            player.settings = settings
+            flag_modified(player, "settings")
+
+        # notoriety_penalty is already persisted on the session (line ~1611,
+        # `session.notoriety_penalty`) and surfaced in the response below --
+        # SYSTEMS/first-login.md:186 documents the lower 300-credit hard-fail
+        # payout plus that persistent session flag as the only mechanical
+        # penalty for deceptive play. No replacement write belongs here; the
+        # removed `player.reputation = {"faction1": -10}` was a ghost write
+        # into a dead JSONB store the canonical Reputation table never reads.
+
         # Update the player's first login state
         state = self.get_player_first_login_state(player.id)
         state.has_completed_first_login = True

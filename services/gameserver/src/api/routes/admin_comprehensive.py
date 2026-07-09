@@ -27,8 +27,10 @@ from src.models.zone import Zone
 from src.models.warp_tunnel import WarpTunnel
 from src.models.team import Team
 from src.models.route_optimization_run import RouteOptimizationRun
+from src.models.faction import Faction
 from src.services.analytics_service import AnalyticsService
 from src.services.ai_security_service import get_security_service
+from src.services.faction_service import FactionService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -404,16 +406,39 @@ async def update_player(
         if update_data.is_active is not None:
             player.user.is_active = update_data.is_active
         
-        # Handle reputation adjustments
+        # Handle reputation adjustments -- routed through the canonical
+        # Reputation table via FactionService.update_reputation, the same
+        # admin-set surface admin_factions.py's PUT /{faction_id}/reputation
+        # already uses (internal commit + level-change WebSocket notify +
+        # HONORED-transition medal dispatch). The prior code mutated
+        # player.reputation, a dead JSONB store nothing else in the codebase
+        # writes or reads. `faction` keys are matched against Faction.name
+        # (case-insensitive) -- the model has no `code` column, and the
+        # lowercase roster codes in
+        # emergent_reputation_service.FACTION_CODE_TO_TYPE are scoped to
+        # NPCCharacter.faction_code, not an admin-facing identifier.
         if update_data.reputation_adjustments:
-            for faction, adjustment in update_data.reputation_adjustments.items():
-                if faction in player.reputation:
-                    current_rep = player.reputation[faction].get('value', 0)
-                    new_rep = max(-800, min(800, current_rep + adjustment))
-                    player.reputation[faction]['value'] = new_rep
-                    # Update level based on new value
-                    player.reputation[faction]['level'] = calculate_reputation_level(new_rep)
-        
+            faction_service = FactionService(db)
+            for faction_name, adjustment in update_data.reputation_adjustments.items():
+                faction_row = (
+                    db.query(Faction)
+                    .filter(func.lower(Faction.name) == faction_name.lower())
+                    .first()
+                )
+                if not faction_row:
+                    logger.warning(
+                        "update_player: no faction named %r -- reputation "
+                        "adjustment %+d for player %s dropped",
+                        faction_name, adjustment, player_id,
+                    )
+                    continue
+                await faction_service.update_reputation(
+                    player_id=player.id,
+                    faction_id=faction_row.id,
+                    change=adjustment,
+                    reason=f"Admin adjustment by {current_admin.username}",
+                )
+
         db.commit()
         
         # Log admin action
