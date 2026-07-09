@@ -194,64 +194,6 @@ class RankingService:
 
         return int(base_turns + rank_bonus)
 
-    def refresh_daily_turns(
-        self,
-        player: Player,
-        base_turns: int = 1000,
-        force: bool = False,
-    ) -> Dict[str, Any]:
-        """DEPRECATED daily-reset shim — now delegates to continuous regen.
-
-        ADR-0004 replaced the once-per-UTC-day reset with continuous lazy
-        regeneration (``turn_service.regenerate_turns``). This method is
-        retained ONLY as a backwards-compatible shim for existing callers
-        (e.g. the ``/player/state`` read endpoint) so the turn pool stays
-        up-to-date on read without a behavioural break. It no longer performs
-        a midnight reset; it advances the pool by real elapsed time.
-
-        The ``force`` flag is preserved for callers that previously used it to
-        top a player up: when ``force`` is set and the pool is below cap, we
-        fill to cap and re-baseline the regen anchor.
-
-        Returns the same key shape it always did so callers don't break.
-        """
-        from src.services.turn_service import regenerate_turns
-
-        now = datetime.now(timezone.utc)
-        old_turns = player.turns or 0
-        max_turns = self.calculate_max_turns(player, base_turns)
-
-        if force:
-            # Admin / explicit top-up path: fill to cap and re-anchor regen.
-            if player.turns < max_turns:
-                player.turns = max_turns
-            player.max_turns = max_turns
-            player.last_turn_regeneration = now
-            player.turn_reset_at = now  # keep legacy column coherent
-            self.db.flush()
-            result = {
-                "refreshed": player.turns != old_turns,
-                "old_turns": old_turns,
-                "new_turns": player.turns,
-                "max_turns": max_turns,
-                "rank_bonus": self.get_rank_bonuses(player.military_rank)["max_turns_bonus"],
-                "aria_multiplier": getattr(player, "aria_bonus_multiplier", 1.0) or 1.0,
-            }
-            return result
-
-        # Normal path: lazy continuous regen (ADR-0004).
-        regen = regenerate_turns(self.db, player)
-        self.db.flush()
-
-        return {
-            "refreshed": regen.get("turns_added", 0) > 0,
-            "old_turns": regen.get("old_turns", old_turns),
-            "new_turns": regen.get("new_turns", player.turns),
-            "max_turns": regen.get("max_turns", max_turns),
-            "rank_bonus": self.get_rank_bonuses(player.military_rank)["max_turns_bonus"],
-            "aria_multiplier": getattr(player, "aria_bonus_multiplier", 1.0) or 1.0,
-        }
-
     # ------------------------------------------------------------------
     # Point calculation helpers
     # ------------------------------------------------------------------

@@ -208,14 +208,23 @@ async def get_player_state(
 ):
     """Get current player state including credits, turns, ship, and location.
 
-    Also triggers a daily turn refresh if the player's turns have not been
-    reset today.  The refresh incorporates both the military-rank bonus and
-    the ARIA consciousness multiplier.
+    Lazily advances the turn pool for real time elapsed via the same
+    ADR-0004 FROZEN HOOK every spend site uses (rank bonus + ARIA
+    consciousness multiplier applied inside it).
     """
-    # Check for daily turn refresh (rank bonus + ARIA multiplier applied)
-    ranking_service = RankingService(db)
-    ranking_service.refresh_daily_turns(player)
-    db.commit()
+    # WO-QTI-STATE-POLL: this is a hot poll — commit ONLY when regen actually
+    # advanced the balance. The no-op branches (no full turn earned yet, or
+    # already at cap) may still bump last_turn_regeneration / resync the
+    # denormalized max_turns cache in memory, but leaving those uncommitted
+    # is safe: an at-cap anchor is re-baselined again the moment any real
+    # spend site runs (before turns can drop below cap), and max_turns is
+    # never read from the stored column — every reader recomputes it fresh
+    # from military_rank. So a skipped commit here loses nothing observable,
+    # and the in-memory `player` object still reflects the fresh value for
+    # THIS response either way.
+    regen_result = turn_service.regenerate_turns(db, player)
+    if regen_result["regenerated"]:
+        db.commit()
 
     max_turns = RankingService.calculate_max_turns(player)
 
