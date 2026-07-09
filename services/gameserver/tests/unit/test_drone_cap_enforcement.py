@@ -26,6 +26,7 @@ Findings this file pins:
 """
 import types
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -42,8 +43,27 @@ def _result(*, scalar_one_or_none=None, scalar=None):
     return r
 
 
-def _player(current_ship_id=None):
-    return types.SimpleNamespace(id=uuid.uuid4(), current_ship_id=current_ship_id)
+def _player(current_ship_id=None, turns=100):
+    # WO-PROG-TURN-COSTS: deploy_drone's turn-spend rail row-locks the FULL
+    # Player (not just its id) and runs turn_service.regenerate_turns against
+    # it, so the fake player needs the columns that hook reads. Anchoring
+    # last_turn_regeneration at "now" makes elapsed_seconds ~0 for the
+    # duration of a test, so regenerate_turns takes its "not yet a full turn"
+    # early return before ever touching the (unmocked) sync db argument the
+    # run_sync bridge passes it — these cap-enforcement tests don't need a
+    # working medal-bonus lookup, just a regen call that doesn't crash.
+    now = datetime.now(timezone.utc)
+    return types.SimpleNamespace(
+        id=uuid.uuid4(),
+        current_ship_id=current_ship_id,
+        turns=turns,
+        max_turns=1000,
+        last_turn_regeneration=now,
+        created_at=now,
+        aria_bonus_multiplier=1.0,
+        military_rank="Recruit",
+        lifetime_turns_spent=0,
+    )
 
 
 def _ship(upgrades=None):
@@ -120,19 +140,25 @@ async def test_create_drone_no_ship_caps_at_zero():
 
 class _DeploySession:
     """Drives DroneService.deploy_drone's fixed call order:
-    get (Drone) -> execute (lock) -> get (Player) -> get (Ship)
-    -> execute (max_drones) -> execute (deployed count)
+    get (Drone) -> execute (lock, now the FULL Player row) -> run_sync
+    (regenerate_turns bridge) -> get (Player, inside _get_max_drones)
+    -> get (Ship) -> execute (max_drones) -> execute (deployed count)
     -> [execute (prior deployment) -> add/commit/refresh on success].
     """
 
     def __init__(self, *, drone, player, ship, max_drones, deployed_count, prior_deployment=None):
         self.get = AsyncMock(side_effect=[drone, player, ship])
         self.execute = AsyncMock(side_effect=[
-            _result(scalar_one_or_none=player.id),               # lock check
+            _result(scalar_one_or_none=player),                   # lock check (full Player, WO-PROG-TURN-COSTS)
             _result(scalar_one_or_none=max_drones),               # ShipSpecification.max_drones
             _result(scalar=deployed_count),                       # _count_deployed_drones
             _result(scalar_one_or_none=prior_deployment),         # prior active deployment
         ])
+        # AsyncSession.run_sync(fn, *args) -> fn(sync_session, *args). These
+        # tests never exercise a real medal-bonus lookup (see _player's
+        # last_turn_regeneration comment), so a bare None sync-db stand-in is
+        # sufficient -- regenerate_turns never dereferences it on this path.
+        self.run_sync = AsyncMock(side_effect=lambda fn, *a, **kw: fn(None, *a, **kw))
         self.add = MagicMock()
         self.commit = AsyncMock()
         self.refresh = AsyncMock()
