@@ -1646,6 +1646,9 @@ class BangImportService:
             # (None falls through to the model's BORDER default).
             if stsp.trader_personality is not None:
                 station_kwargs["trader_personality"] = stsp.trader_personality
+            # WO-CMB-PORT-DEF-SEED-1: class-scaled defenses (replaces the
+            # flat Column default) for every freshly-imported station.
+            station_kwargs["defenses"] = Station.default_defenses_for_class(stsp.station_class)
             station = Station(**station_kwargs)
             session.add(station)
             created_stations.append(station)

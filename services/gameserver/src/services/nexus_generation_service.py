@@ -489,6 +489,10 @@ class NexusGenerationService:
                 # long-term docking slips, distinct from a regional Capital
                 # (also CLASS_0, but 80 / 30). docking_service reads this flag.
                 "is_starport_prime": True,
+                # WO-CMB-PORT-DEF-SEED-1: class-scaled defenses (replaces the
+                # flat Column default). CLASS_0 borrows the Class-5 profile —
+                # see Station._STATION_DEFENSE_BY_CLASS docstring.
+                "defenses": Station.default_defenses_for_class(StationClass.CLASS_0),
             }
 
         # Random port types for other sectors
@@ -519,7 +523,10 @@ class NexusGenerationService:
             "station_class": port_class,
             "type": port_type,
             "status": StationStatus.OPERATIONAL,
-            "size": size
+            "size": size,
+            # WO-CMB-PORT-DEF-SEED-1: class-scaled defenses (replaces the
+            # flat Column default) for every freshly-generated port.
+            "defenses": Station.default_defenses_for_class(port_class),
         }
     
     def _generate_planet_for_sector(self, sector_num: int, region_id: str) -> Dict[str, Any]:
