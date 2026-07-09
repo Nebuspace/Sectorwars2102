@@ -2438,6 +2438,26 @@ class PlanetaryService:
             equipment_rate *= citadel_multiplier
             research_rate *= citadel_multiplier
 
+        # Admin-tunable catch-all multiplier (CANON planetary-production-tick.md:106-113
+        # `effective_rate = base_rate * (1 + 0.10*building) * specialization * (1 + 0.05*citadel)
+        # * production_efficiency`). Scoped to the three commodity rates only — the doc's
+        # base_rate formula (lines 56-60) only defines fuel/organics/equipment; colonist
+        # growth is governed solely by the habitability formula and research yield solely by
+        # "the research multiplier, citadel bonus, and siege penalty" (line 76), neither of
+        # which lists production_efficiency. getattr(..., None) covers pre-existing DB-free
+        # test fixtures (e.g. test_colony_cap_taper.py) that predate this column's wiring and
+        # don't set the attribute; a real Planet row always has it (default 1.0). NULL and the
+        # neutral default both resolve to an exact ×1.0 (no float drift). Clamped to the
+        # documented 0.0-2.0 admin band so an out-of-range manual DB edit can't runaway or
+        # zero the world.
+        production_efficiency = getattr(planet, "production_efficiency", None)
+        if production_efficiency is None:
+            production_efficiency = 1.0
+        production_efficiency = max(0.0, min(2.0, production_efficiency))
+        fuel_rate *= production_efficiency
+        organics_rate *= production_efficiency
+        equipment_rate *= production_efficiency
+
         # CRT-T1.5-2 Overclock directive (§3.2): a player-bought, perishable
         # Citadel-Research directive lifts ONE planet's production by +15% for its
         # duration. The effect is point-of-use READ here at the moment production is
