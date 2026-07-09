@@ -234,7 +234,8 @@ def regenerate_turns(db: Session, player: Player) -> Dict[str, Any]:
 
 
 def _emit_turn_pool_update(player: Player, new_turns: int, max_turns: int,
-                           turns_added: int, aria_multiplier: float) -> None:
+                           turns_added: int, aria_multiplier: float,
+                           reason: Optional[str] = None) -> None:
     """Best-effort player-scoped ``turn_pool_updated`` WS push.
 
     ``regenerate_turns`` is sync and runs inside the caller's row-locked
@@ -251,6 +252,12 @@ def _emit_turn_pool_update(player: Player, new_turns: int, max_turns: int,
     Payload (NO-CANON for ``turns_added``): canon SYSTEMS/turn-regeneration.md
     specifies ``{player_id, turns, max_turns, bonus_multiplier}``; the WO also
     requires "turns added", so ``turns_added`` is added beyond canon and FLAGGED.
+
+    ``reason`` (WO-PROG-TURN-VISIBILITY, NO-CANON) is an optional discriminator
+    — ``welcome_back`` on the one-time returning-player grant (see
+    :func:`welcome_back`) so a client can distinguish a lump-sum top-up from
+    ordinary lazy regen. Omitted from the payload entirely when ``None`` (the
+    lazy-regen call site below) so the canon 5-key regen frame is unchanged.
     """
     try:
         import asyncio
@@ -260,16 +267,19 @@ def _emit_turn_pool_update(player: Player, new_turns: int, max_turns: int,
         if user_id is None:
             return
 
+        payload = {
+            "player_id": str(getattr(player, "id", "")),
+            "turns": new_turns,
+            "max_turns": max_turns,
+            "turns_added": turns_added,  # NO-CANON: WO-required, beyond spec
+            "bonus_multiplier": aria_multiplier,
+        }
+        if reason is not None:
+            payload["reason"] = reason  # NO-CANON: WO-PROG-TURN-VISIBILITY
+
         loop = asyncio.get_running_loop()
         loop.create_task(connection_manager.send_turn_pool_update(
-            str(user_id),
-            {
-                "player_id": str(getattr(player, "id", "")),
-                "turns": new_turns,
-                "max_turns": max_turns,
-                "turns_added": turns_added,  # NO-CANON: WO-required, beyond spec
-                "bonus_multiplier": aria_multiplier,
-            },
+            str(user_id), payload,
         ))
     except Exception:
         logger.debug("Skipped turn_pool_updated WS push (no loop or socket)",
@@ -395,6 +405,14 @@ def welcome_back(player: Player, prior_last_game_login: Optional[datetime]) -> D
         getattr(player, "id", "?"), actually_added, current_turns, new_turns,
         days_inactive,
     )
+
+    # WO-PROG-TURN-VISIBILITY: mirror regenerate_turns' authoritative push (see
+    # _emit_turn_pool_update above the one guarding actually_added > 0 there)
+    # so the HUD pool figure moves immediately instead of waiting for the next
+    # lazy-regen tick. reason='welcome_back' lets a client tell this one-shot
+    # top-up apart from ordinary regen. Best-effort — never raises.
+    _emit_turn_pool_update(player, new_turns, max_turns, actually_added,
+                           _aria_bonus_multiplier(player), reason="welcome_back")
 
     result.update({
         "granted": True,

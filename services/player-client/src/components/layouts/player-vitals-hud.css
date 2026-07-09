@@ -165,6 +165,14 @@
   letter-spacing: 0.3px;
 }
 
+/* Low-turn warning (WO-PROG-TURN-VISIBILITY, canon threshold <50) — tints the
+   icon (currentColor svg fill) and count amber via `color`, no new elements
+   and no size change, so the HUD's layout footprint is unchanged. */
+.pvh-turns-low .pvh-k,
+.pvh-turns-low .pvh-v {
+  color: var(--health-warning, #f59e0b);
+}
+
 /* Turn-regen subscript (id=145d) — now a sub-line BELOW the count, not inline-right.
    margin-left removed (was 0.3rem for inline placement); font-size shrunk to 0.55rem
    so it reads clearly as subordinate at small HUD sizes. */

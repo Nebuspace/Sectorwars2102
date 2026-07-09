@@ -64,6 +64,7 @@ const TurnEconomyPage: React.FC = () => {
   const maxTurns = playerState.max_turns;
   const hasMax = typeof maxTurns === 'number';
   const isFull = hasMax && playerState.turns >= (maxTurns as number);
+  const remainingTurns = hasMax ? (maxTurns as number) - playerState.turns : 0;
 
   // The ticker is referenced so the countdown re-renders each second; the
   // projection itself is from current turns (server is authoritative on poll).
@@ -73,17 +74,40 @@ const TurnEconomyPage: React.FC = () => {
     if (isFull) {
       timeToFull = 'FULL';
     } else {
-      const remaining = (maxTurns as number) - playerState.turns;
-      timeToFull = formatDuration(remaining / REGEN_PER_SEC);
+      timeToFull = formatDuration(remainingTurns / REGEN_PER_SEC);
     }
   }
+
+  // WO-PROG-TURN-VISIBILITY: scarcity warning per canon (turns.md "Low-turn
+  // warning UI hints when the pool is below thresholds (design: <50)"). The
+  // hint reuses the same remainingTurns/REGEN_PER_SEC math as timeToFull
+  // above, just rounded to whole hours for a compact one-liner.
+  const lowTurns = playerState.turns < 50;
+  const lowTurnsHint =
+    lowTurns && hasMax && !isFull
+      ? `low turns — regen in ${
+          remainingTurns / REGEN_PER_SEC / 3600 < 1
+            ? '<1h'
+            : `${Math.round(remainingTurns / REGEN_PER_SEC / 3600)}h`
+        }`
+      : null;
 
   return (
     <>
       <MFDPageHeader title="TURN ECONOMY" accent={ACCENT} status="shipped" />
       <MFDPageBody scrollKey="turn-economy">
         <div className="mfd-page-fields">
-          <MFDField label="TURNS" value={playerState.turns.toLocaleString()} accent />
+          <MFDField
+            label="TURNS"
+            value={
+              lowTurns ? (
+                <span className="mfd-value-caution">{playerState.turns.toLocaleString()}</span>
+              ) : (
+                playerState.turns.toLocaleString()
+              )
+            }
+            accent
+          />
           {hasMax && (
             <MFDField label="MAX TURNS" value={(maxTurns as number).toLocaleString()} />
           )}
@@ -101,6 +125,11 @@ const TurnEconomyPage: React.FC = () => {
             accent={nextHop !== null}
           />
         </div>
+        {lowTurnsHint && (
+          <div className="mfd-page-cautionline" role="status">
+            {lowTurnsHint}
+          </div>
+        )}
       </MFDPageBody>
     </>
   );

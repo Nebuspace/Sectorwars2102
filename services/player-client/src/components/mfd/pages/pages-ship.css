@@ -40,6 +40,26 @@
   letter-spacing: 0.1em;
 }
 
+/* Caution line (WO-PROG-TURN-VISIBILITY: low-turn scarcity hint) — same
+   one-line structural language as .mfd-page-warnline but amber, since a
+   scarcity heads-up is informational, not a failure alert. */
+.mfd-page-cautionline {
+  margin-top: 8px;
+  padding: 3px 6px;
+  border-left: 2px solid var(--health-warning, #f59e0b);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--health-warning, #f59e0b);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+/* Field-value tint for the TURNS figure when the pool is below the canon
+   scarcity threshold (<50) — matches .mfd-page-cautionline's amber. */
+.mfd-value-caution {
+  color: var(--health-warning, #f59e0b);
+}
+
 /* ── Cargo manifest ─────────────────────────────────────────── */
 
 .mfd-page-cargo-list {

@@ -28,6 +28,11 @@ const PlayerVitalsHud: React.FC = () => {
   const regenPerHr = playerState?.turn_regen_per_hour ?? 0;
   const turnsNow = playerState?.turns ?? 0;
   const maxTurns = playerState?.max_turns;
+  // WO-PROG-TURN-VISIBILITY: scarcity warning per canon (turns.md "Player-facing
+  // affordances": "Low-turn warning UI hints when the pool is below thresholds
+  // (design: <50)"). Gated on playerState existing so a loading/absent state
+  // (turnsNow defaulting to 0 above) never falsely reads as "low".
+  const lowTurns = !!playerState && turnsNow < 50;
   const turnsTitle = (() => {
     if (typeof maxTurns !== 'number') return 'Turns';
     if (turnsNow >= maxTurns) return 'Turns — full';
@@ -61,7 +66,7 @@ const PlayerVitalsHud: React.FC = () => {
         </span>
         {/* Change 1: TurnsIcon sized to match digit cap-height (0.8rem = pvh-v font-size). */}
         {/* Change 3: regen is a sub-line beneath the turn count, not inline-right. */}
-        <span className="pvh-stat" title={turnsTitle}>
+        <span className={lowTurns ? 'pvh-stat pvh-turns-low' : 'pvh-stat'} title={turnsTitle}>
           <span className="pvh-k"><TurnsIcon size="0.8rem" /></span>
           <span className="pvh-v pvh-turns-stack">
             <span className="pvh-turns-count">
