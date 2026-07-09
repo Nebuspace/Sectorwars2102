@@ -59,10 +59,17 @@ jobs:
 
       - name: Install dependencies
         working-directory: services/admin-ui
-        # Same ERESOLVE conflict as player-client (eslint-plugin-react vs.
-        # eslint 10.x) — reproduced locally; matches the Dockerfile's
-        # `--legacy-peer-deps` install.
-        run: npm ci --legacy-peer-deps
+        # Can't use `npm ci` here: unlike player-client's, this lockfile
+        # exists on disk but isn't tracked in git (.gitignore:37 ignores
+        # `services/*/package-lock.json`; player-client's is only tracked
+        # because it was force-added despite that rule), so a clean
+        # checkout in CI has no lockfile for `npm ci` to consume. Falling
+        # back to `npm install --no-save` (this repo's designated
+        # lockfile-absent fallback) instead of switching to a different
+        # installer or committing a lockfile here. Also carries
+        # `--legacy-peer-deps` for the same eslint-plugin-react vs.
+        # eslint 10.x ERESOLVE conflict as player-client.
+        run: npm install --legacy-peer-deps --no-save
 
       - name: Build
         working-directory: services/admin-ui
