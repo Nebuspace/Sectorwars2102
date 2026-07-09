@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 # in-memory registry key. Reported to the Orchestrator.
 MAX_TOPIC_NAME_LENGTH = 128
 
+# Canon: SYSTEMS/realtime-bus.md "Rate limits" table — "Topic subscriptions
+# per socket | 50 | binding" — and the "Subscription spam" failure mode:
+# "Server caps subscriptions per socket (e.g. 50 topics); excess returns
+# subscription_rejected." (WO-RT-BUS-HARDENING)
+MAX_TOPICS_PER_USER = 50
+
 
 class ConnectionManager:
     """Manages WebSocket connections for real-time multiplayer features"""
@@ -107,7 +113,7 @@ class ConnectionManager:
                 "timestamp": datetime.now(UTC).isoformat()
             }, exclude_user=user_id)
     
-    async def disconnect(self, user_id: str, websocket: Optional[WebSocket] = None):
+    async def disconnect(self, user_id: str, websocket: Optional[WebSocket] = None) -> bool:
         """Remove a WebSocket connection.
 
         `websocket`, when passed, must be the exact socket the caller owns
@@ -117,11 +123,19 @@ class ConnectionManager:
         that superseded it (WO-RT-EVICTION-SUPERSEDE). Internal prune paths
         that only know the user_id (e.g. send-failure cleanup) call this
         with websocket=None and keep the prior unconditional behavior.
+
+        Returns True iff this call actually performed the teardown (identity
+        matched, or no identity was given), False on the no-op/stale-handler
+        path. WO-RT-BUS-HARDENING: the route uses this to gate pruning its
+        own per-user rate-limit/violation dicts — a superseded handler's
+        finally must not wipe out the state a live successor connection has
+        already started accumulating (the same eviction race this identity
+        check was built to close, applied to a second piece of per-user state).
         """
         if user_id not in self.active_connections:
-            return
+            return False
         if websocket is not None and self.active_connections[user_id] is not websocket:
-            return
+            return False
 
         metadata = self.connection_metadata.get(user_id, {})
         current_sector = metadata.get("current_sector")
@@ -170,7 +184,9 @@ class ConnectionManager:
                 "sector_id": current_sector,
                 "timestamp": datetime.now(UTC).isoformat()
             })
-    
+
+        return True
+
     async def send_personal_message(self, user_id: str, message: Dict[str, Any]):
         """Send a message to a specific user"""
         if user_id in self.active_connections:
@@ -284,19 +300,41 @@ class ConnectionManager:
 
     # --- Generic topic pub/sub (WO-DBB-RT5) --------------------------------
 
-    def subscribe_topic(self, user_id: str, topic: str):
+    def count_topic_subscriptions(self, user_id: str) -> int:
+        """Count how many distinct topics user_id is currently subscribed to.
+
+        O(topics), not O(1) — no reverse per-user index exists (mirrors the
+        rest of this registry, which is all topic -> set-of-users). Topic
+        counts are small enough in practice that this is fine; introduce a
+        reverse index only if profiling says otherwise."""
+        return sum(1 for subscribers in self.topic_subscriptions.values() if user_id in subscribers)
+
+    def subscribe_topic(self, user_id: str, topic: str) -> bool:
         """Subscribe a connected user to a generic topic.
 
         WO-DBB-RT5 — opt a user into a named topic so a later publish_topic()
         reaches them. Idempotent (a set). Only subscribes already-connected
         users so a topic set never references a dead connection; teardown lives
         in disconnect(). Mirrors the team_connections registry idiom (a
-        topic -> set-of-user_ids map)."""
+        topic -> set-of-user_ids map).
+
+        WO-RT-BUS-HARDENING: enforces canon's MAX_TOPICS_PER_USER cap (50,
+        binding per SYSTEMS/realtime-bus.md's Rate limits table). A topic the
+        user is already subscribed to never consumes a fresh slot (idempotent
+        re-subscribe always succeeds). Returns True if the subscription is
+        registered (new or already-present), False if the cap was hit — the
+        caller (handle_websocket_message) sends a subscription_rejected frame
+        and does not register."""
         if not topic or user_id not in self.active_connections:
-            return
+            return False
+        if topic in self.topic_subscriptions and user_id in self.topic_subscriptions[topic]:
+            return True
+        if self.count_topic_subscriptions(user_id) >= MAX_TOPICS_PER_USER:
+            return False
         if topic not in self.topic_subscriptions:
             self.topic_subscriptions[topic] = set()
         self.topic_subscriptions[topic].add(user_id)
+        return True
 
     def unsubscribe_topic(self, user_id: str, topic: str):
         """Unsubscribe a user from a generic topic (WO-DBB-RT5)."""
@@ -934,7 +972,45 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
         
         elif target_type == "global":
             await connection_manager.broadcast_global(chat_message, exclude_user=user_id)
-    
+
+        elif target_type == "private":
+            # WO-RT-BUS-HARDENING: the ephemeral "Private" room from
+            # OPERATIONS/realtime.md#3-rooms ("direct player-to-player"),
+            # NOT the persistent mailbox (message_service.py / POST
+            # /api/v1/messages, already wired to a WS priority-delivery
+            # push per FINDINGS.md 2026-06-12). This is live-only chat: if
+            # the recipient isn't connected right now, nothing is stored —
+            # the sender is pointed at the persistent mailbox instead.
+            # Payload key / echo semantics are NO-CANON (no wire-format spec
+            # exists for this room yet); kept minimal, flagged to the
+            # Orchestrator.
+            target_user_id = str(message_data.get("target_user_id") or "").strip()
+            if not target_user_id or target_user_id == user_id:
+                await connection_manager.send_personal_message(user_id, {
+                    "type": "error",
+                    "message": "Private chat requires a valid target_user_id"
+                })
+                return
+
+            if not await _private_chat_recipient_exists(target_user_id):
+                await connection_manager.send_personal_message(user_id, {
+                    "type": "error",
+                    "message": "Recipient not found"
+                })
+                return
+
+            if target_user_id not in connection_manager.active_connections:
+                await connection_manager.send_personal_message(user_id, {
+                    "type": "error",
+                    "code": "recipient_offline",
+                    "message": "Recipient is offline. Send a persistent message via the mailbox instead."
+                })
+                return
+
+            chat_message["target_user_id"] = target_user_id
+            await connection_manager.send_personal_message(target_user_id, chat_message)
+            await connection_manager.send_personal_message(user_id, chat_message)
+
     elif message_type == "request_sector_players":
         # Send list of players in current sector
         metadata = connection_manager.connection_metadata.get(user_id, {})
@@ -974,7 +1050,20 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
                 "message": "Invalid topic name"
             })
             return
-        connection_manager.subscribe_topic(user_id, topic)
+        accepted = connection_manager.subscribe_topic(user_id, topic)
+        if not accepted:
+            # WO-RT-BUS-HARDENING: canon's per-socket subscription cap (50,
+            # SYSTEMS/realtime-bus.md Rate limits table) was hit — reject and
+            # do not register (realtime-bus.md's "Subscription spam" failure
+            # mode names this exact frame type).
+            await connection_manager.send_personal_message(user_id, {
+                "type": "subscription_rejected",
+                "topic": topic,
+                "reason": f"Subscription limit reached ({MAX_TOPICS_PER_USER} topics max)",
+                "current_count": connection_manager.count_topic_subscriptions(user_id),
+                "timestamp": datetime.now(UTC).isoformat()
+            })
+            return
         await connection_manager.send_personal_message(user_id, {
             "type": "topic_subscribed",
             "topic": topic,
@@ -997,6 +1086,37 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
 
     else:
         logger.warning(f"Unknown WebSocket message type: {message_type} from user {user_id}")
+
+
+async def _private_chat_recipient_exists(target_user_id: str) -> bool:
+    """Check that target_user_id names a real, non-deleted User row.
+
+    WO-RT-BUS-HARDENING: private chat needs to tell "no such user" apart from
+    "real user, just not connected right now" (the latter steers the sender
+    toward the persistent mailbox instead). This handler is otherwise DB-free,
+    operating only on the in-memory ConnectionManager registries; opens its
+    own short-lived session the same way handle_aria_chat does below."""
+    import uuid as _uuid
+
+    try:
+        target_uuid = _uuid.UUID(str(target_user_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+    try:
+        from sqlalchemy import select
+
+        from src.core.database import AsyncSessionLocal
+        from src.models.user import User
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(User.id).where(User.id == target_uuid, User.deleted.is_(False))
+            )
+            return result.scalar_one_or_none() is not None
+    except Exception as e:
+        logger.error(f"Private-chat recipient lookup failed for {target_user_id}: {e}")
+        return False
 
 
 async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):

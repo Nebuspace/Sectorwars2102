@@ -29,6 +29,15 @@ _ws_rate_limits: Dict[str, list] = defaultdict(list)
 WS_RATE_LIMIT = 100  # messages per window
 WS_RATE_WINDOW = 1.0  # seconds
 
+# Sustained-violation escalation (WO-RT-BUS-HARDENING). Canon (SYSTEMS/
+# realtime-bus.md:230) mandates "Sustained violations escalate to a forced
+# disconnect with close code 4002" but does not define "sustained"
+# numerically. NO-CANON: proposed threshold below, flagged to the
+# Orchestrator — 3 rate-limit violations within a 10s rolling window.
+_ws_violations: Dict[str, list] = defaultdict(list)
+WS_VIOLATION_ESCALATION_THRESHOLD = 3  # NO-CANON
+WS_VIOLATION_ESCALATION_WINDOW = 10.0  # seconds, NO-CANON
+
 
 def _check_ws_rate_limit(user_id: str) -> bool:
     """Return True if under rate limit, False if exceeded."""
@@ -40,6 +49,18 @@ def _check_ws_rate_limit(user_id: str) -> bool:
         return False
     _ws_rate_limits[user_id].append(now)
     return True
+
+
+def _record_ws_violation(user_id: str) -> bool:
+    """Record a rate-limit violation for user_id; return True once sustained
+    violations (WS_VIOLATION_ESCALATION_THRESHOLD within
+    WS_VIOLATION_ESCALATION_WINDOW) cross the escalation threshold, signaling
+    the caller to force-disconnect with close code 4002."""
+    now = time.monotonic()
+    violations = [t for t in _ws_violations[user_id] if now - t < WS_VIOLATION_ESCALATION_WINDOW]
+    violations.append(now)
+    _ws_violations[user_id] = violations
+    return len(violations) >= WS_VIOLATION_ESCALATION_THRESHOLD
 
 
 @router.websocket("/connect")
@@ -97,6 +118,19 @@ async def websocket_endpoint(
 
                 # Rate limit: 100 msg/s per connection
                 if not _check_ws_rate_limit(str(user.id)):
+                    if _record_ws_violation(str(user.id)):
+                        # Sustained violations escalate to a forced disconnect
+                        # (SYSTEMS/realtime-bus.md:230, close code 4002).
+                        logger.warning(
+                            f"WebSocket user {user.id} hit sustained rate-limit "
+                            f"violations; forcing disconnect (code 4002)."
+                        )
+                        await connection_manager.send_personal_message(str(user.id), {
+                            "type": "error",
+                            "message": "Sustained rate limit violations. Disconnecting."
+                        })
+                        await websocket.close(code=4002, reason="sustained rate limit violations")
+                        break
                     await connection_manager.send_personal_message(str(user.id), {
                         "type": "error",
                         "message": "Rate limit exceeded. Max 100 messages per second."
@@ -127,7 +161,17 @@ async def websocket_endpoint(
             # Pass our own socket: if we were the one evicted (superseded by
             # a newer connection for this user), disconnect() no-ops instead
             # of scrubbing the successor's registration (WO-RT-EVICTION-SUPERSEDE).
-            await connection_manager.disconnect(str(user.id), websocket)
+            disconnected = await connection_manager.disconnect(str(user.id), websocket)
+            if disconnected:
+                # WO-RT-BUS-HARDENING: _ws_rate_limits/_ws_violations are
+                # defaultdicts keyed by user_id that never shed entries on
+                # their own. Gated on disconnect() actually having fired (not
+                # a no-op) — a superseded handler's finally must not wipe out
+                # rate/violation state a live successor connection has
+                # already started accumulating (mirrors the identity guard
+                # that closed the same race for active_connections itself).
+                _ws_rate_limits.pop(str(user.id), None)
+                _ws_violations.pop(str(user.id), None)
     
     except Exception as e:
         logger.error(f"WebSocket connection error: {e}")
