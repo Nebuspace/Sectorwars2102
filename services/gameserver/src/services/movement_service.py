@@ -1,7 +1,7 @@
 import logging
 import random
 import uuid
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Iterable, Set
 from datetime import datetime, timedelta, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, select
@@ -109,6 +109,28 @@ def _player_knows_warp(db: Session, player_id: uuid.UUID, tunnel: WarpTunnel) ->
         PlayerWarpKnowledge.warp_id == tunnel.id,
     ).first()
     return row is not None and row.is_known
+
+
+def _player_known_warp_ids(
+    db: Session, player_id: uuid.UUID, tunnel_ids: Iterable[uuid.UUID]
+) -> Set[uuid.UUID]:
+    """Batched sibling of ``_player_knows_warp`` for the move-listing hot
+    path: ONE query for however many tunnel ids are passed, returning the
+    subset the player holds a known (``is_known``) PlayerWarpKnowledge row
+    for (ADR-0045). The scan-reveal (``scan_for_latent_tunnels``) and
+    traversal-reject (``_validate_tunnel_traversal`` et al) call sites keep
+    using the single-tunnel ``_player_knows_warp`` above — this helper is
+    for listing callers only.
+    """
+    ids = list(tunnel_ids)
+    if not ids:
+        return set()
+    rows = db.query(PlayerWarpKnowledge).filter(
+        PlayerWarpKnowledge.player_id == player_id,
+        PlayerWarpKnowledge.warp_layer == WarpLayer.WARP_TUNNELS,
+        PlayerWarpKnowledge.warp_id.in_(ids),
+    ).all()
+    return {row.warp_id for row in rows if row.is_known}
 
 
 def _reveal_warp_to_player(
@@ -895,18 +917,6 @@ class MovementService:
         direct_warps = []
         seen_sector_ids: set = set()
 
-        # Outgoing edges (this sector is the source).
-        for connected_sector in current_sector.outgoing_warps:
-            warp_cost = self._calculate_warp_cost(current_sector, connected_sector, ship)
-            direct_warps.append({
-                "sector_id": connected_sector.sector_id,
-                "name": connected_sector.name,
-                "type": connected_sector.type.name,
-                "turn_cost": warp_cost,
-                "can_afford": player.turns >= warp_cost
-            })
-            seen_sector_ids.add(connected_sector.sector_id)
-
         # Incoming bidirectional edges — the bang translator stores a
         # two-way warp A↔B as one row (source=A, dest=B, bidir=true),
         # so from B's POV the reverse traversal is this incoming row.
@@ -918,19 +928,43 @@ class MovementService:
                 sector_warps.c.is_bidirectional == True,  # noqa: E712 — SQLA boolean column compare
             )
         ).fetchall()
-        for row in incoming_bidir_rows:
-            origin = self.db.query(Sector).filter(Sector.id == row.source_sector_id).first()
-            if origin is None or origin.sector_id in seen_sector_ids:
-                continue
-            warp_cost = self._calculate_warp_cost(current_sector, origin, ship)
+
+        # WO-QTI-MOVES-BATCH: _calculate_warp_cost re-queries sector_warps
+        # per edge to find the row's turn_cost -- another per-edge query the
+        # outgoing-warps loop below used to pay W times. ONE query for every
+        # outgoing edge's turn_cost, keyed by destination, so the loop can
+        # use the pure _warp_cost_from_turn_cost formula instead. (The
+        # incoming_bidir_rows fetched above already carry turn_cost
+        # directly -- no separate lookup needed for that side.)
+        outgoing_edge_rows = self.db.execute(
+            sector_warps.select().where(
+                sector_warps.c.source_sector_id == current_sector.id,
+            )
+        ).fetchall()
+        outgoing_turn_cost_by_dest = {
+            row.destination_sector_id: row.turn_cost for row in outgoing_edge_rows
+        }
+
+        # Outgoing edges (this sector is the source).
+        for connected_sector in current_sector.outgoing_warps:
+            if connected_sector.id in outgoing_turn_cost_by_dest:
+                warp_cost = self._warp_cost_from_turn_cost(
+                    outgoing_turn_cost_by_dest[connected_sector.id], ship
+                )
+            else:
+                # Defensive fallback (should be unreachable -- the batched
+                # query above uses the same source_sector_id predicate the
+                # relationship itself is built from): preserves exact
+                # behavior if the two ever disagree.
+                warp_cost = self._calculate_warp_cost(current_sector, connected_sector, ship)
             direct_warps.append({
-                "sector_id": origin.sector_id,
-                "name": origin.name,
-                "type": origin.type.name,
+                "sector_id": connected_sector.sector_id,
+                "name": connected_sector.name,
+                "type": connected_sector.type.name,
                 "turn_cost": warp_cost,
                 "can_afford": player.turns >= warp_cost
             })
-            seen_sector_ids.add(origin.sector_id)
+            seen_sector_ids.add(connected_sector.sector_id)
 
         # Get warp tunnels - both outgoing and incoming (for bidirectional)
         warp_tunnels = []
@@ -940,6 +974,57 @@ class MovementService:
             WarpTunnel.origin_sector_id == current_sector.id,
             WarpTunnel.status == WarpTunnelStatus.ACTIVE
         ).all()
+
+        # Incoming bidirectional tunnels (destination is current sector, but tunnel is bidirectional)
+        incoming_bidirectional = self.db.query(WarpTunnel).filter(
+            WarpTunnel.destination_sector_id == current_sector.id,
+            WarpTunnel.is_bidirectional == True,
+            WarpTunnel.status == WarpTunnelStatus.ACTIVE
+        ).all()
+
+        # WO-QTI-MOVES-BATCH: everything below this point used to issue a
+        # Sector query per warp edge / per tunnel and a PlayerWarpKnowledge
+        # query per latent tunnel (~W+2T+2 queries per listing). Batch both
+        # into ONE Sector load (IN source_ids ∪ dest_ids) and ONE
+        # PlayerWarpKnowledge load, independent of W/T. Output ordering and
+        # fields are unchanged — the loops below just read from dicts/sets
+        # instead of re-querying per row.
+        needed_sector_ids = {row.source_sector_id for row in incoming_bidir_rows}
+        needed_sector_ids.update(t.destination_sector_id for t in outgoing_tunnels)
+        needed_sector_ids.update(t.origin_sector_id for t in incoming_bidirectional)
+        sectors_by_id = {}
+        if needed_sector_ids:
+            sectors_by_id = {
+                s.id: s
+                for s in self.db.query(Sector).filter(Sector.id.in_(needed_sector_ids)).all()
+            }
+
+        latent_tunnel_ids = [
+            t.id for t in outgoing_tunnels
+            if getattr(t, "is_latent", False) and not _is_player_gate(t)
+        ]
+        latent_tunnel_ids += [
+            t.id for t in incoming_bidirectional
+            if getattr(t, "is_latent", False) and not _is_player_gate(t)
+        ]
+        known_tunnel_ids = _player_known_warp_ids(self.db, player.id, latent_tunnel_ids)
+
+        for row in incoming_bidir_rows:
+            origin = sectors_by_id.get(row.source_sector_id)
+            if origin is None or origin.sector_id in seen_sector_ids:
+                continue
+            # row IS the definitive sector_warps edge (this is exactly the
+            # reverse-direction row _calculate_warp_cost's fallback lookup
+            # would find) -- its turn_cost is used directly, no re-query.
+            warp_cost = self._warp_cost_from_turn_cost(row.turn_cost, ship)
+            direct_warps.append({
+                "sector_id": origin.sector_id,
+                "name": origin.name,
+                "type": origin.type.name,
+                "turn_cost": warp_cost,
+                "can_afford": player.turns >= warp_cost
+            })
+            seen_sector_ids.add(origin.sector_id)
 
         for tunnel in outgoing_tunnels:
             # WO-WC: a lifetime-expired tunnel is collapsed and must not list as
@@ -952,10 +1037,10 @@ class MovementService:
             if (
                 getattr(tunnel, "is_latent", False)
                 and not _is_player_gate(tunnel)
-                and not _player_knows_warp(self.db, player.id, tunnel)
+                and tunnel.id not in known_tunnel_ids
             ):
                 continue
-            dest_sector = self.db.query(Sector).filter(Sector.id == tunnel.destination_sector_id).first()
+            dest_sector = sectors_by_id.get(tunnel.destination_sector_id)
             if dest_sector:
                 tunnel_cost = tunnel.turn_cost
                 player_gate = _is_player_gate(tunnel)
@@ -980,13 +1065,6 @@ class MovementService:
                     "can_afford": player.turns >= tunnel_cost
                 })
 
-        # Incoming bidirectional tunnels (destination is current sector, but tunnel is bidirectional)
-        incoming_bidirectional = self.db.query(WarpTunnel).filter(
-            WarpTunnel.destination_sector_id == current_sector.id,
-            WarpTunnel.is_bidirectional == True,
-            WarpTunnel.status == WarpTunnelStatus.ACTIVE
-        ).all()
-
         for tunnel in incoming_bidirectional:
             # WO-WC: hide a lifetime-expired (collapsed) tunnel from the reverse view too.
             if _tunnel_collapse_due(tunnel):
@@ -996,11 +1074,11 @@ class MovementService:
             if (
                 getattr(tunnel, "is_latent", False)
                 and not _is_player_gate(tunnel)
-                and not _player_knows_warp(self.db, player.id, tunnel)
+                and tunnel.id not in known_tunnel_ids
             ):
                 continue
             # The "destination" for travel is the tunnel's origin sector
-            dest_sector = self.db.query(Sector).filter(Sector.id == tunnel.origin_sector_id).first()
+            dest_sector = sectors_by_id.get(tunnel.origin_sector_id)
             if dest_sector:
                 # Don't add duplicates (in case there's already a tunnel in the other direction)
                 if any(t["sector_id"] == dest_sector.sector_id for t in warp_tunnels):
@@ -1465,9 +1543,21 @@ class MovementService:
 
         if not warp:
             return 999  # Very high cost if no direct connection (should not happen)
-        
+
+        return self._warp_cost_from_turn_cost(warp.turn_cost, ship)
+
+    def _warp_cost_from_turn_cost(self, raw_turn_cost: Optional[int], ship: Optional[Ship]) -> int:
+        """Pure cost computation shared by ``_calculate_warp_cost`` (which
+        queries ``sector_warps`` for ``raw_turn_cost``) and WO-QTI-MOVES-
+        BATCH's listing loops (which already hold the row's turn_cost from a
+        batched fetch and must not re-query per edge). Same formula, no I/O.
+
+        ``raw_turn_cost`` is the edge's raw ``sector_warps.turn_cost``
+        (falls back to 1 if falsy, matching the pre-existing
+        ``warp.turn_cost if warp.turn_cost else 1``).
+        """
         # Get base turn cost from the warp
-        base_cost = warp.turn_cost if warp.turn_cost else 1
+        base_cost = raw_turn_cost if raw_turn_cost else 1
 
         # Maintenance performance-band SPEED modifier (ships.md:68-75). A worn
         # ship moves slower (costs more turns); a pristine ship moves faster
@@ -1479,7 +1569,7 @@ class MovementService:
 
         # No turn cost can be less than 1
         return max(1, base_cost)
-    
+
     # Hull damage one armored mine deals to a hostile ship entering the sector.
     # Proposed in ADR-0083 (pending Max bless); deterrent-scale, non-lethal
     # (hull is floored at 1.0 so a minefield cripples but does not destroy —
