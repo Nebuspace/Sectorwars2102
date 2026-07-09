@@ -66,6 +66,20 @@ vi.mock('../../../services/apiClient', () => ({
   default: { get: mockGet },
 }));
 
+// This suite is about trend glyphs/sparklines, not the live market stream
+// (WO-RT-MARKET-STREAM-CLIENT) — TradingInterface now subscribes on mount
+// whenever is_docked is true, so the service is stubbed out here rather
+// than letting a real WebSocket construction attempt run in jsdom.
+vi.mock('../../../services/marketStream', () => ({
+  default: {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    onUpdate: vi.fn(() => vi.fn()),
+    onStatus: vi.fn(() => vi.fn()),
+    isConnected: vi.fn(() => false),
+  },
+}));
+
 import TradingInterface from '../TradingInterface';
 
 const cardFor = (container: HTMLElement, resourceType: string): HTMLElement => {

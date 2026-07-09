@@ -258,8 +258,19 @@ class EnhancedWebSocketService:
                 await self._handle_heartbeat(player_id)
             
             else:
-                # Fall back to base handler for standard messages
-                await self.connection_manager.handle_websocket_message(player_id, message)
+                # Fall back to base handler for standard messages.
+                # handle_websocket_message is a MODULE-level function in
+                # websocket_service.py, NOT a ConnectionManager method --
+                # self.connection_manager.handle_websocket_message(...) does
+                # not exist and raised AttributeError on every message type
+                # this branch was meant to handle (chat_message,
+                # request_sector_players, etc.), silently swallowed by this
+                # method's own except-clause below and surfaced to the player
+                # as a generic "Internal server error" (WO-RT-MARKET-STREAM-
+                # CLIENT). Imported locally to dodge any circular-import risk
+                # between this module and websocket_service.py.
+                from src.services.websocket_service import handle_websocket_message
+                await handle_websocket_message(player_id, message)
                 
         except Exception as e:
             logger.error(f"Error handling WebSocket message: {e}")

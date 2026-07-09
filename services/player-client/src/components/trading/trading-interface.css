@@ -611,6 +611,29 @@
   font-weight: 600;
 }
 
+/* WO-RT-MARKET-STREAM-CLIENT — brief highlight when a live price update
+   lands on this commodity. Duration/palette mirrors the trend glyph's own
+   up/down colors (#22c55e / #ef4444); NO-CANON, propose+flag. */
+.resource-prices.price-flash-up {
+  animation: price-flash-up 0.9s ease-out;
+  border-radius: 4px;
+}
+
+.resource-prices.price-flash-down {
+  animation: price-flash-down 0.9s ease-out;
+  border-radius: 4px;
+}
+
+@keyframes price-flash-up {
+  0% { background-color: rgba(34, 197, 94, 0.35); }
+  100% { background-color: transparent; }
+}
+
+@keyframes price-flash-down {
+  0% { background-color: rgba(239, 68, 68, 0.35); }
+  100% { background-color: transparent; }
+}
+
 .resource-quantity {
   text-align: center;
   font-size: var(--text-sm);
@@ -1146,6 +1169,11 @@
   }
 
   .dock-full-panel {
+    animation: none;
+  }
+
+  .resource-prices.price-flash-up,
+  .resource-prices.price-flash-down {
     animation: none;
   }
 }

@@ -8,6 +8,7 @@ import { StationClassBadge, getTraderPersonality } from '../common/stationIdenti
 import { formatCredits } from '../../utils/formatters';
 import { resourceIcon } from '../../services/resourceCatalog';
 import apiClient from '../../services/apiClient';
+import marketStreamService from '../../services/marketStream';
 import HaggleDesk from './HaggleDesk';
 import RoutePlannerPanel from './RoutePlannerPanel';
 import './trading-interface.css';
@@ -195,6 +196,17 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
   const [expandedSparkline, setExpandedSparkline] = useState<string | null>(null);
   const [historyByKey, setHistoryByKey] = useState<Record<string, PriceHistoryPoint[] | 'loading' | 'error'>>({});
 
+  // WO-RT-MARKET-STREAM-CLIENT: live price overlay on top of the REST
+  // snapshot in marketInfo.resources, keyed by commodity. Only buy_price/
+  // sell_price are tracked — everything else (quantity, station_sells/buys,
+  // trend) still comes from the REST snapshot, refreshed after each trade.
+  const [liveOverrides, setLiveOverrides] = useState<Record<string, { buy_price?: number; sell_price?: number }>>({});
+  // Which commodities are mid-flash and in which direction, for a brief
+  // highlight on the price cell. Duration/styling is NO-CANON (see
+  // trading-interface.css price-flash-* rules) — propose+flag.
+  const [priceFlash, setPriceFlash] = useState<Record<string, 'up' | 'down'>>({});
+  const flashTimers = useRef<Record<string, number>>({});
+
   // Track which port we've already fetched market info for
   const lastFetchedPortId = useRef<string | null>(null);
 
@@ -238,6 +250,80 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPort]); // Only trigger when selectedPort changes
+
+  const triggerFlash = (commodity: string, direction: 'up' | 'down') => {
+    setPriceFlash(prev => ({ ...prev, [commodity]: direction }));
+    if (flashTimers.current[commodity]) {
+      window.clearTimeout(flashTimers.current[commodity]);
+    }
+    flashTimers.current[commodity] = window.setTimeout(() => {
+      setPriceFlash(prev => {
+        const next = { ...prev };
+        delete next[commodity];
+        return next;
+      });
+      delete flashTimers.current[commodity];
+    }, 900); // NO-CANON: flash duration — propose+flag
+  };
+
+  // Subscribe to the live market stream for exactly the commodities this
+  // docked port trades (the server has no per-port filter, only
+  // per-commodity — see marketStream.ts's docstring), scoped to the
+  // resource keys the REST snapshot already told us about. Recomputed only
+  // when the docked port or its commodity set changes, not on every
+  // marketInfo refresh (e.g. after a trade) — the commodity set at a given
+  // port is stable within a dock session.
+  const commodityKey = marketInfo ? Object.keys(marketInfo.resources).sort().join(',') : '';
+  useEffect(() => {
+    if (!playerState?.is_docked || !selectedPort || !commodityKey) {
+      marketStreamService.disconnect();
+      setLiveOverrides({});
+      return;
+    }
+
+    setLiveOverrides({});
+    const commodities = commodityKey.split(',');
+
+    const unsubscribe = marketStreamService.onUpdate((message) => {
+      const { commodity, data } = message;
+      if (!commodity) return;
+      // Scope to the docked port: a commodity channel spans every station
+      // trading that commodity, not just this one.
+      if (data.station_id && data.station_id !== selectedPort) return;
+      if (data.buy_price === undefined && data.sell_price === undefined) return;
+
+      setLiveOverrides(prev => {
+        const priorBuy = prev[commodity]?.buy_price ?? marketInfo?.resources[commodity]?.buy_price;
+        const nextBuy = data.buy_price ?? prev[commodity]?.buy_price;
+        const nextSell = data.sell_price ?? prev[commodity]?.sell_price;
+
+        // Flash direction keyed off buy_price (mirrors the sparkline's own
+        // buy/sell-midpoint convention) — NO-CANON, propose+flag.
+        if (priorBuy !== undefined && nextBuy !== undefined && nextBuy !== priorBuy) {
+          triggerFlash(commodity, nextBuy > priorBuy ? 'up' : 'down');
+        }
+
+        return { ...prev, [commodity]: { buy_price: nextBuy, sell_price: nextSell } };
+      });
+    });
+
+    marketStreamService.connect(commodities);
+
+    return () => {
+      unsubscribe();
+      marketStreamService.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerState?.is_docked, selectedPort, commodityKey]);
+
+  // Belt-and-braces: clear any in-flight flash timers on unmount (undock
+  // already tears them down implicitly via the effect above re-running with
+  // fresh state, but a hard unmount mid-flash should not leak timers).
+  useEffect(() => {
+    return () => {
+      Object.values(flashTimers.current).forEach(id => window.clearTimeout(id));
+    };
+  }, []);
 
   // Fetch price history for the expanded sparkline — keyed by
   // "station:commodity" so a cached series never bleeds across stations, and
@@ -947,6 +1033,12 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                 const trend = trendGlyph(resource.price_trend);
                 const isSparklineOpen = expandedSparkline === resourceType;
                 const sparklineData = historyByKey[`${selectedPort}:${resourceType}`];
+                // Live overlay from marketStream, falling back to the REST
+                // snapshot for any field a given publisher didn't send.
+                const liveOverride = liveOverrides[resourceType];
+                const displaySellPrice = liveOverride?.sell_price ?? resource.sell_price;
+                const displayBuyPrice = liveOverride?.buy_price ?? resource.buy_price;
+                const flashDirection = priceFlash[resourceType];
 
                 return (
                   <div
@@ -968,10 +1060,10 @@ const TradingInterface: React.FC<TradingInterfaceProps> = ({ onClose }) => {
                       {resource.station_sells && <span className="direction-badge sells">Station Sells</span>}
                       {resource.station_buys && <span className="direction-badge buys">Station Buys</span>}
                     </div>
-                    <div className="resource-prices">
+                    <div className={`resource-prices ${flashDirection ? `price-flash-${flashDirection}` : ''}`.trim()}>
                       {/* Player buys at the station's sell_price, sells at its buy_price */}
-                      {resource.station_sells && <div className="buy-price">You pay: {formatCredits(resource.sell_price)}</div>}
-                      {resource.station_buys && <div className="sell-price">You get: {formatCredits(resource.buy_price)}</div>}
+                      {resource.station_sells && <div className="buy-price">You pay: {formatCredits(displaySellPrice)}</div>}
+                      {resource.station_buys && <div className="sell-price">You get: {formatCredits(displayBuyPrice)}</div>}
                     </div>
                     <div className="resource-trend-row">
                       <span
