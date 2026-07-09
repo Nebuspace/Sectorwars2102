@@ -197,7 +197,16 @@ class FleetService:
         return member
 
     def remove_ship_from_fleet(self, fleet_id: UUID, ship_id: UUID) -> bool:
-        """Remove a ship from a fleet."""
+        """Remove a ship from a fleet.
+
+        If the removed member held the FLAGSHIP role, promotes a successor
+        in the SAME transaction (WO-FLEET-CASUALTY-SUCCESSION,
+        fleet-tactics.md:80 — "leadership transitions to the next-most-senior
+        member"). This is the single shared removal path for BOTH a manual
+        removal (fleets.py route) and a combat KIA (_record_ship_casualty),
+        so hooking succession here covers both triggers without duplication.
+        See _promote_flagship_successor for the NO-CANON seniority kernel.
+        """
         member = self.db.query(FleetMember).filter(
             and_(
                 FleetMember.fleet_id == fleet_id,
@@ -209,6 +218,8 @@ class FleetService:
             return False
 
         fleet = member.fleet
+        was_flagship = (member.role or "") == FleetRole.FLAGSHIP.value
+        fallen_pilot_id = member.player_id
         self.db.delete(member)
 
         # Recalculate fleet stats
@@ -224,11 +235,71 @@ class FleetService:
         if fleet.total_ships == 0:
             fleet.status = FleetStatus.DISBANDED.value
             fleet.disbanded_at = datetime.utcnow()
+        elif was_flagship:
+            self._promote_flagship_successor(fleet, fallen_pilot_id)
 
         self.db.commit()
 
         logger.info(f"Removed ship {ship_id} from fleet {fleet_id}")
         return True
+
+    def _promote_flagship_successor(
+        self,
+        fleet: Fleet,
+        fallen_pilot_id: Optional[UUID],
+    ) -> Optional[FleetMember]:
+        """Promote the next-most-senior surviving member to FLAGSHIP after
+        the prior flagship's FleetMember row was removed (destroyed OR
+        manually removed — see remove_ship_from_fleet, the single caller).
+
+        NO-CANON KERNEL (flagged for a DECISIONS.md ruling): fleet-tactics.md
+        only says "leadership transitions to the next-most-senior member"
+        (target spec) without defining "seniority". This kernel treats
+        seniority as earliest FleetMember.joined_at, ties broken by the
+        lowest member id (str-compared UUID — a stable, deterministic
+        tie-break, not a canon ruling). Swapping the definition later is a
+        one-line change to the sort key below.
+
+        If the fallen flagship's pilot (fallen_pilot_id — the removed
+        member's OWN player_id, who is the commander under normal operation
+        per "The commander is automatically the flagship's pilot") held
+        Fleet.commander_id, command transfers to the promoted member's
+        player_id in the SAME transaction — the fleet is never left without
+        both a flagship AND a commander while a successor exists.
+
+        Queries FleetMember fresh (not fleet.members) because the caller's
+        session.delete() on the old flagship member is only guaranteed to be
+        reflected via SQLAlchemy's autoflush-on-query, not in an
+        already-loaded in-memory relationship collection.
+
+        Returns the promoted FleetMember, or None if no member remains (the
+        caller only reaches this branch when fleet.total_ships > 0, so this
+        is a defensive no-op guard, not the expected path).
+        """
+        remaining = self.db.query(FleetMember).filter(
+            FleetMember.fleet_id == fleet.id
+        ).all()
+        if not remaining:
+            return None
+
+        successor = min(
+            remaining,
+            key=lambda m: (m.joined_at or datetime.min, str(m.id))
+        )
+        successor.role = FleetRole.FLAGSHIP.value
+
+        transferred_command = False
+        if fallen_pilot_id is not None and fleet.commander_id == fallen_pilot_id:
+            fleet.commander_id = successor.player_id
+            transferred_command = True
+
+        logger.info(
+            "Flagship succession: fleet %s promotes member %s (player %s) to "
+            "FLAGSHIP%s",
+            fleet.id, successor.id, successor.player_id,
+            " + transferred command" if transferred_command else "",
+        )
+        return successor
 
     def set_fleet_formation(self, fleet_id: UUID, formation: str) -> Fleet:
         """Change fleet formation."""
@@ -349,10 +420,17 @@ class FleetService:
     def resupply_fleet(self, fleet_id: UUID, player_id: UUID) -> Dict[str, Any]:
         """Pay credits to raise a docked fleet's supply_level back toward max.
 
-        This is the recovery counterpart to the WO-R decay tick (which only ever
-        LOWERS supply); it is the only path that RAISES Fleet.supply_level, so a
-        depleted fleet is no longer permanently combat-locked once it can reach a
-        friendly station. DOES NOT touch decay or _calculate_formation_bonus.
+        CORRECTION (WO-FLEET-CASUALTY-SUCCESSION): this method previously
+        claimed to be "the recovery counterpart to the WO-R decay tick" —
+        that decay tick does not exist. Grep-verified: Fleet.supply_level is
+        written NOWHERE else in the codebase (no scheduler job, no per-round
+        combat write, no admin override) — this method is the SOLE writer of
+        Fleet.supply_level, in EITHER direction. Supply never drops on its
+        own; it starts at the model default (100) and only ever moves via a
+        resupply purchase here. Whether supply SHOULD decay over time (and if
+        so, by what rate/trigger) is an open design question tracked as
+        WO-FLEET-SUPPLY-SINK — that is where the decay question lives, not
+        here. DOES NOT touch decay (there is none) or _calculate_formation_bonus.
 
         Requirements (all enforced; reject before mutating any state):
           - The fleet exists and is not disbanded.
@@ -602,7 +680,16 @@ class FleetService:
             "attacker_damage": 0,
             "defender_damage": 0,
             "ships_destroyed": [],
-            "ships_retreated": []
+            "ships_retreated": [],
+            # Per-shot ledger (WO-FLEET-CASUALTY-SUCCESSION): {ship_id, damage,
+            # killed} for every LANDED shot this round, keyed by the FIRING
+            # ship. Persisted verbatim into FleetBattle.battle_log alongside
+            # the rest of round_results (existing append below), and summed
+            # by _ship_battle_contribution to populate
+            # FleetBattleCasualty.damage_dealt/kills when a ship becomes a
+            # casualty. A miss never reaches this list (a miss deals no
+            # damage, so it has nothing to attribute).
+            "shots": [],
         }
 
         # Attackers fire at defenders
@@ -610,8 +697,11 @@ class FleetService:
             if random.random() < 0.7 and defender_ships:  # 70% hit chance
                 damage = self._calculate_ship_damage(ship, attacker_bonus, attacker)
                 target = random.choice(defender_ships)
-                self._apply_damage_to_ship(target, damage, battle, round_results)
+                target_destroyed = self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["attacker_damage"] += damage
+                round_results["shots"].append({
+                    "ship_id": str(ship.id), "damage": damage, "killed": target_destroyed
+                })
                 # Remove destroyed ships mid-round
                 defender_ships = [s for s in defender_ships if (self._get_ship_combat_stat(s, "hull", 0) or 0) > 0]
 
@@ -626,8 +716,11 @@ class FleetService:
             if random.random() < 0.7 and attacker_ships:  # 70% hit chance
                 damage = self._calculate_ship_damage(ship, defender_bonus, defender)
                 target = random.choice(attacker_ships)
-                self._apply_damage_to_ship(target, damage, battle, round_results)
+                target_destroyed = self._apply_damage_to_ship(target, damage, battle, round_results)
                 round_results["defender_damage"] += damage
+                round_results["shots"].append({
+                    "ship_id": str(ship.id), "damage": damage, "killed": target_destroyed
+                })
                 # Remove destroyed ships mid-round
                 attacker_ships = [s for s in attacker_ships if (self._get_ship_combat_stat(s, "hull", 0) or 0) > 0]
 
@@ -882,8 +975,14 @@ class FleetService:
         damage: int,
         battle: FleetBattle,
         round_results: Dict[str, Any]
-    ):
-        """Apply damage to a ship, reducing shields first then hull."""
+    ) -> bool:
+        """Apply damage to a ship, reducing shields first then hull.
+
+        Returns True iff THIS call destroyed the ship — the caller (the two
+        fire loops in simulate_battle_round) uses it to attribute kill credit
+        to the FIRING ship's own "shots" ledger entry (WO-FLEET-CASUALTY-
+        SUCCESSION), separate from this ship's own casualty bookkeeping below.
+        """
         # Apply target's defense formation bonus to reduce incoming damage
         member = self.db.query(FleetMember).filter(
             FleetMember.ship_id == ship.id
@@ -929,30 +1028,82 @@ class FleetService:
                 # _record_ship_casualty, owns the is_destroyed flag along with
                 # the escape-pod swap, emergency-cargo transfer, and insurance
                 # payout — giving FLEET kills parity with SOLO kills.
-                self._record_ship_casualty(ship, battle, destroyed=True)
+                self._record_ship_casualty(ship, battle, destroyed=True, round_results=round_results)
                 round_results["ships_destroyed"].append({
                     "ship_id": str(ship.id),
                     "ship_name": ship.name,
                     "player": ship.owner.username if ship.owner else "Unknown"
                 })
+                return True
             else:
                 self._set_ship_combat_stat(ship, "hull", current_hull)
 
                 # Check for retreat (hull below 30% of max)
                 if max_hull > 0 and current_hull < max_hull * 0.3:
                     if random.random() < 0.3:  # 30% chance to retreat when heavily damaged
-                        self._record_ship_casualty(ship, battle, destroyed=False)
+                        self._record_ship_casualty(ship, battle, destroyed=False, round_results=round_results)
                         round_results["ships_retreated"].append({
                             "ship_id": str(ship.id),
                             "ship_name": ship.name,
                             "player": ship.owner.username if ship.owner else "Unknown"
                         })
 
+        return False
+
+    def _ship_battle_contribution(
+        self,
+        ship_id: UUID,
+        battle: FleetBattle,
+        round_results: Optional[Dict[str, Any]],
+    ) -> Tuple[int, int]:
+        """Sum a ship's OWN damage_dealt + kills across the whole battle so
+        far: every prior round already persisted in battle.battle_log, plus
+        shots fired so far in the CURRENT (in-progress, not-yet-appended)
+        round. Read-only, no DB access — pure over battle.battle_log +
+        round_results, both plain JSON-shaped Python structures.
+
+        Used by _record_ship_casualty to populate
+        FleetBattleCasualty.damage_dealt/kills when THIS ship itself becomes
+        a casualty (WO-FLEET-CASUALTY-SUCCESSION). A ship that never fires a
+        landed shot (or whose shots are all misses) correctly resolves to
+        (0, 0).
+
+        NOTE (discovered during design, not a defect introduced here): a
+        fleet-battle round always fires attackers before defenders, so the
+        side that ultimately WINS a decisive engagement necessarily retains
+        at least one living, undamaged-this-round member whose own
+        contribution is never captured by any casualty row — casualties are
+        recorded only for ships that are destroyed or retreat (invariant 9,
+        fleet-coordination.md), never for survivors. This means SUM(damage_
+        dealt) across a battle's casualty rows will generally be <=
+        battle.attacker_damage_dealt + battle.defender_damage_dealt, with
+        equality only when every ship that ever landed a shot also became a
+        casualty. This is a structural property of the round-resolution
+        algorithm (out of this WO's scope to change), not a bug in this
+        accumulation.
+        """
+        sid = str(ship_id)
+        damage_dealt = 0
+        kills = 0
+
+        prior_log = battle.battle_log if isinstance(battle.battle_log, list) else []
+        all_rounds = list(prior_log) + [{"results": round_results or {}}]
+        for entry in all_rounds:
+            shots = (entry.get("results") or {}).get("shots") or []
+            for shot in shots:
+                if shot.get("ship_id") == sid:
+                    damage_dealt += int(shot.get("damage", 0) or 0)
+                    if shot.get("killed"):
+                        kills += 1
+
+        return damage_dealt, kills
+
     def _record_ship_casualty(
         self,
         ship: Ship,
         battle: FleetBattle,
-        destroyed: bool
+        destroyed: bool,
+        round_results: Optional[Dict[str, Any]] = None,
     ):
         """Record a ship casualty in the battle via FleetBattleCasualty."""
         member = self.db.query(FleetMember).filter(
@@ -970,6 +1121,13 @@ class FleetService:
         # ship.type is an enum — store its string value
         ship_type_str = ship.type.value if hasattr(ship.type, 'value') else str(ship.type)
 
+        # WO-FLEET-CASUALTY-SUCCESSION: this SHIP's own accumulated damage
+        # dealt + kills scored (as a FIRER) up to this casualty event — was
+        # always hard-0 before (never populated). See
+        # _ship_battle_contribution for the accumulation + its documented
+        # survivor-asymmetry caveat.
+        damage_dealt, kills = self._ship_battle_contribution(ship.id, battle, round_results)
+
         casualty = FleetBattleCasualty(
             battle_id=battle.id,
             ship_id=ship.id,
@@ -981,6 +1139,8 @@ class FleetService:
             destroyed=destroyed,
             retreated=not destroyed,
             damage_taken=max_hull - current_hull,
+            damage_dealt=damage_dealt,
+            kills=kills,
             battle_phase=battle.phase
         )
 
