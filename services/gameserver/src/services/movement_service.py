@@ -594,16 +594,24 @@ class MovementService:
             )
 
     def _broadcast_sector_presence(self, old_sector_id: int, new_sector_id: int,
-                                   presence_entry: Dict[str, Any],
-                                   mover_ws_user_id: str) -> None:
-        """Schedule the async sector join/leave presence broadcasts.
+                                   mover_ws_user_id: str,
+                                   old_region_id: Optional[uuid.UUID] = None,
+                                   new_region_id: Optional[uuid.UUID] = None) -> None:
+        """Schedule the async WS room-hop for the moving player (WO-RT-ROOM-HOP).
 
-        Fires a ``player_left_sector`` event to the OLD sector and a
-        ``player_entered_sector`` event to the NEW sector, each carrying the
-        moving player's presence-entry payload (the same shape stored in
-        ``sector.players_present``) so subscribers can update who's-here in real
-        time. ``exclude_user`` is the moving player's WS user id, so they never
-        receive their own join/leave echo.
+        Delegates to ``connection_manager.update_user_location``, which both
+        corrects the WS sector-room registry (previously frozen at connect
+        time — a moved player kept receiving broadcasts for their OLD sector
+        forever, per realtime-bus.md:92) AND emits the ``player_left_sector`` /
+        ``player_entered_sector`` frames itself, in the same shape the
+        player-client's PlayerMovementMessage contract expects
+        (websocket.ts:19-25) — this method no longer emits raw
+        ``broadcast_to_sector`` frames directly, so each move emits exactly one
+        leave + one enter instead of two independent sources racing to do it.
+        When the destination sector's region differs from the origin's, also
+        schedules ``update_user_region`` so region-scoped broadcasts
+        (governance / election / treaty) follow the player across the
+        boundary.
 
         Mirrors ``_dispatch_hostile_detected`` / docking_service._notify_bumped /
         turn_service._emit_turn_pool_update: import inside the function, grab the
@@ -616,36 +624,16 @@ class MovementService:
             from src.services.websocket_service import connection_manager
 
             loop = asyncio.get_running_loop()
-            # FLAT payload matching the player-client contract (websocket.ts PlayerMovementMessage /
-            # WebSocketContext.tsx, which read user_id/username/sector_id at top level and key the
-            # who's-here list on user_id = User.id). mover_ws_user_id IS str(player.user_id).
-            ts = datetime.now().isoformat()
-            username = presence_entry.get("username")
-            loop.create_task(connection_manager.broadcast_to_sector(
-                old_sector_id,
-                {
-                    "type": "player_left_sector",
-                    "user_id": mover_ws_user_id,
-                    "username": username,
-                    "sector_id": old_sector_id,
-                    "timestamp": ts,
-                },
-                exclude_user=mover_ws_user_id,
-            ))
-            loop.create_task(connection_manager.broadcast_to_sector(
-                new_sector_id,
-                {
-                    "type": "player_entered_sector",
-                    "user_id": mover_ws_user_id,
-                    "username": username,
-                    "sector_id": new_sector_id,
-                    "timestamp": ts,
-                },
-                exclude_user=mover_ws_user_id,
-            ))
+            loop.create_task(connection_manager.update_user_location(mover_ws_user_id, new_sector_id))
+
+            if old_region_id != new_region_id:
+                loop.create_task(connection_manager.update_user_region(
+                    mover_ws_user_id,
+                    str(new_region_id) if new_region_id is not None else None,
+                ))
         except Exception:
             logger.debug(
-                "Skipped sector join/leave WS broadcast (no loop or socket)",
+                "Skipped sector/region WS room-hop (no loop or socket)",
                 exc_info=True,
             )
 
@@ -1544,6 +1532,9 @@ class MovementService:
     def _execute_movement(self, player: Player, destination_sector_id: int, turn_cost: int) -> Dict[str, Any]:
         """Execute a player's movement to a destination sector."""
         old_sector_id = player.current_sector_id
+        # Snapshot BEFORE the region mutation below, so the WS room-hop can
+        # tell whether this move crossed a region boundary (WO-RT-ROOM-HOP).
+        old_region_id = player.current_region_id
 
         # Fetch the destination up front: the move needs its region for the
         # player sync below, and the response reuses it for sector_info.
@@ -1747,33 +1738,25 @@ class MovementService:
         # Updates player's presence in sector records
         self._update_player_presence(player, old_sector_id, destination_sector_id)
 
-        # Snapshot the moving player's presence-entry payload BEFORE the commit,
-        # while its ORM attributes are still loaded in this session. Mirrors the
-        # entry shape written by _update_player_presence so subscribers receive
-        # the same presence record they would read from sector.players_present.
-        presence_entry = {
-            "player_id": str(player.id),
-            "username": player.username,
-            "ship_id": str(player.current_ship_id) if player.current_ship_id else None,
-            "ship_name": player.current_ship.name if player.current_ship else "None",
-            "ship_type": player.current_ship.type.name if player.current_ship else "None",
-            "team_id": str(player.team_id) if player.team_id else None,
-        }
-        # The WS connection key is the User id (str(user.id) at connect time);
-        # Player.user_id IS that user id, so excluding it suppresses the moving
-        # player's own join/leave echo.
+        # Snapshot the destination region + WS connection key BEFORE the
+        # commit, while destination_sector's ORM attributes are still loaded
+        # in this session. The WS connection key is the User id (str(user.id)
+        # at connect time); Player.user_id IS that user id.
+        new_region_id = destination_sector.region_id
         mover_ws_user_id = str(player.user_id)
 
         # Commit changes
         self.db.commit()
 
-        # Broadcast sector join/leave presence to the OLD and NEW sectors so
-        # other players' clients can update who's-here in real time. Done AFTER
-        # the commit so subscribers never observe pre-commit presence, and
-        # strictly best-effort — a WS hiccup must NOT break the move (mirrors
-        # _dispatch_hostile_detected / the ARIA/medal hooks above).
+        # Room-hop the WS registry to the OLD/NEW sector (and region, if this
+        # move crossed one) so subscribers' who's-here / region-scoped views
+        # stay live instead of frozen at connect-time (WO-RT-ROOM-HOP). Done
+        # AFTER the commit so subscribers never observe pre-commit presence,
+        # and strictly best-effort — a WS hiccup must NOT break the move
+        # (mirrors _dispatch_hostile_detected / the ARIA/medal hooks above).
         self._broadcast_sector_presence(
-            old_sector_id, destination_sector_id, presence_entry, mover_ws_user_id
+            old_sector_id, destination_sector_id, mover_ws_user_id,
+            old_region_id=old_region_id, new_region_id=new_region_id,
         )
 
         # Get sector information for response (sector fetched and

@@ -147,8 +147,18 @@ class TeamService:
             resource_id=str(team.id),
             details={"team_name": name, "team_id": str(team.id)}
         )
-        
+
+        # Snapshot as plain strs BEFORE commit — ORM attributes expire on
+        # commit, but the WS room-hop fires AFTER (WO-RT-ROOM-HOP). Not in
+        # the WO's original enumeration (join_team / remove_member /
+        # leave_team), but creator.team_id is the identical None->team.id
+        # transition join_team makes — skipping it would leave a team's own
+        # creator failing the ~:921 team-chat revalidation until reconnect.
+        hop_user_id = str(creator.user_id)
+        hop_team_id = str(team.id)
+
         self.db.commit()
+        self._schedule_team_hop(hop_user_id, hop_team_id)
         return team
     
     def get_team(self, team_id: uuid.UUID) -> Optional[Team]:
@@ -403,8 +413,14 @@ class TeamService:
             resource_id=team.id,
             details={"team_name": team.name, "method": "invitation" if invitation_code else "direct"}
         )
-        
+
+        # Snapshot as plain strs BEFORE commit — ORM attributes expire on
+        # commit, but the WS room-hop fires AFTER (WO-RT-ROOM-HOP).
+        hop_user_id = str(player.user_id)
+        hop_team_id = str(team.id)
+
         self.db.commit()
+        self._schedule_team_hop(hop_user_id, hop_team_id)
         return team
     
     def remove_member(self, team_id: uuid.UUID, actor_id: uuid.UUID, 
@@ -438,9 +454,10 @@ class TeamService:
         
         # Update player's team_id
         player = self.db.query(Player).filter(Player.id == member_id).first()
+        hop_user_id = str(player.user_id) if player else None
         if player:
             player.team_id = None
-        
+
         # Send notification
         self._send_notification(
             sender_id=actor_id,
@@ -459,10 +476,12 @@ class TeamService:
             resource_id=team_id,
             details={"removed_member_id": str(member_id)}
         )
-        
+
         self.db.commit()
+        if hop_user_id is not None:
+            self._schedule_team_hop(hop_user_id, None)
         return True
-    
+
     def leave_team(self, player_id: uuid.UUID) -> bool:
         """Leave the current team"""
         player = self.db.query(Player).filter(Player.id == player_id).first()
@@ -518,10 +537,13 @@ class TeamService:
         
         # Remove member record
         self.db.delete(member)
-        
+
         # Update player's team_id
         player.team_id = None
-        
+        # Snapshot BEFORE commit — ORM attributes expire on commit, but the
+        # WS room-hop fires AFTER (WO-RT-ROOM-HOP).
+        hop_user_id = str(player.user_id)
+
         # Notify team
         if team:
             self._send_notification(
@@ -540,10 +562,11 @@ class TeamService:
             resource_id=team.id if team else None,
             details={"team_name": team.name if team else "disbanded"}
         )
-        
+
         self.db.commit()
+        self._schedule_team_hop(hop_user_id, None)
         return True
-    
+
     def update_member_role(self, team_id: uuid.UUID, actor_id: uuid.UUID,
                           member_id: uuid.UUID, new_role: str) -> TeamMember:
         """Update a member's role in the team"""
@@ -653,7 +676,34 @@ class TeamService:
             )
             .first()
         )
-    
+
+    @staticmethod
+    def _schedule_team_hop(user_id: str, new_team_id: Optional[str]) -> None:
+        """Best-effort WS team-room hop after a membership change commits
+        (WO-RT-ROOM-HOP). Keeps ConnectionManager.team_connections — and so
+        both team-chat delivery and the revalidation gate in
+        handle_websocket_message's "team" branch — correct without requiring
+        a reconnect: a kicked/left member immediately stops receiving AND
+        sending team chat, a joined member immediately starts.
+
+        Mirrors movement_service._broadcast_sector_presence /
+        hangar_service._schedule_region_hop: import inside the function, grab
+        the running loop, schedule connection_manager.update_user_team with
+        loop.create_task (so it runs after the caller's commit and never
+        blocks the sync team transaction), and swallow any failure (no loop,
+        no socket) so a quiet socket can never break a team operation."""
+        try:
+            import asyncio
+            from src.services.websocket_service import connection_manager
+
+            loop = asyncio.get_running_loop()
+            loop.create_task(connection_manager.update_user_team(user_id, new_team_id))
+        except Exception:
+            logger.debug(
+                "Skipped team WS room-hop (no loop or socket)",
+                exc_info=True,
+            )
+
     def transfer_leadership(self, team_id: uuid.UUID, current_leader_id: uuid.UUID,
                            new_leader_id: uuid.UUID) -> Team:
         """Transfer team leadership to another member"""

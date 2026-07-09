@@ -706,6 +706,44 @@ class ConnectionManager:
         # Update metadata
         metadata["current_region"] = new_region
 
+    async def update_user_team(self, user_id: str, new_team_id: Optional[str]):
+        """Move a connected user between team rooms on a team-membership change.
+
+        WO-RT-ROOM-HOP — keep team_connections correct when a player joins,
+        creates, is kicked from, or leaves a team, so team chat
+        (broadcast_to_team) and the revalidation gate in
+        handle_websocket_message's "team" chat branch (this file, ~line 921:
+        ``if user_id in connection_manager.team_connections.get(team_id,
+        set())``) stay correct without requiring a reconnect — a kicked
+        member immediately stops receiving AND sending team chat. Mirrors
+        update_user_region for regions: leave the old team set, join the new.
+        ``new_team_id`` may be None (player left/was removed and has no
+        team). No-op for an unknown user."""
+        if user_id not in self.connection_metadata:
+            return
+
+        metadata = self.connection_metadata[user_id]
+        old_team = metadata.get("team_id")
+        new_team = str(new_team_id) if new_team_id is not None else None
+
+        if old_team == new_team:
+            return
+
+        # Remove from old team
+        if old_team and old_team in self.team_connections:
+            self.team_connections[old_team].discard(user_id)
+            if not self.team_connections[old_team]:
+                del self.team_connections[old_team]
+
+        # Add to new team
+        if new_team:
+            if new_team not in self.team_connections:
+                self.team_connections[new_team] = set()
+            self.team_connections[new_team].add(user_id)
+
+        # Update metadata
+        metadata["team_id"] = new_team
+
     def get_sector_players(self, sector_id: int) -> List[Dict[str, Any]]:
         """Get list of players currently in a sector"""
         if sector_id not in self.sector_connections:

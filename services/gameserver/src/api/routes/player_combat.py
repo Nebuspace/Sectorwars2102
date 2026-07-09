@@ -11,6 +11,7 @@ there is no ongoing-combat entity to poll or retreat from mid-fight.
 """
 
 import json
+import logging
 import random
 from typing import Optional
 from uuid import UUID
@@ -30,6 +31,8 @@ from src.services.combat_service import CombatService
 from src.services.movement_service import MovementService
 from src.services.planetary_service import PlanetaryService
 from src.services.turn_service import spend_turns
+
+logger = logging.getLogger(__name__)
 
 # Mounted under the /api/v1 api_router — a "/api/combat" prefix here doubled
 # up to /api/v1/api/combat, which no client called.
@@ -544,12 +547,37 @@ async def retreat_from_sector(
         player.current_sector_id = target_sector.sector_id
         # Keep current_region_id in sync — region-filtered routes like
         # /player/current-sector 404 on a stale region
+        old_region_id = player.current_region_id
         player.current_region_id = target_sector.region_id
         # Keep the ship row in sync too — sector views read Ship.sector_id,
         # and a ship left behind in the fled sector renders a ghost
         if player.current_ship:
             player.current_ship.sector_id = target_sector.sector_id
+        new_region_id = target_sector.region_id
+        mover_user_id = player.user_id
         db.commit()
+
+        # Best-effort WS region-room hop (WO-RT-ROOM-HOP), only when the
+        # retreat actually crossed a region boundary. Mirrors
+        # movement_service._broadcast_sector_presence: import inside the
+        # block, grab the running loop, schedule with loop.create_task (never
+        # blocks the route), swallow any failure (no loop, no socket) so a
+        # quiet socket can never turn a successful retreat into an error.
+        if mover_user_id is not None and old_region_id != new_region_id:
+            try:
+                import asyncio
+                from src.services.websocket_service import connection_manager
+
+                loop = asyncio.get_running_loop()
+                loop.create_task(connection_manager.update_user_region(
+                    str(mover_user_id),
+                    str(new_region_id) if new_region_id is not None else None,
+                ))
+            except Exception:
+                logger.debug(
+                    "Skipped retreat region WS room-hop (no loop or socket)",
+                    exc_info=True,
+                )
 
         return SectorRetreatResponse(
             success=True,
