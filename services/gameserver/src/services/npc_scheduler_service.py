@@ -220,6 +220,12 @@ _ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY = "active_players_30d_last_day"
 # player counts as "active in this region" if they logged any PlayerActivity in
 # one of the region's sectors within the trailing 30 days).
 _ACTIVE_PLAYERS_WINDOW_DAYS = 30
+# Galaxy.state JSONB key holding the canonical-DAY index of the last treasury
+# reconciliation pass (ADR-0059 N-I4 / WO-REGOV-TREASURY-RECON). The recompute
+# rides the governance sweep as Phase 6, gated to run at most ONCE per
+# canonical day — mirroring _ACTIVE_PLAYERS_RECOMPUTE_STATE_KEY's discipline —
+# regardless of process restarts.
+_TREASURY_RECON_STATE_KEY = "treasury_reconciliation_last_day"
 # Galaxy.state JSONB key holding the canonical-DAY index of the last ARIA
 # storage-prune pass (WO-F16). The dormant prune kernel
 # (ARIAPersonalIntelligenceService.prune_player_storage) evicts each player's
@@ -2132,6 +2138,107 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Treasury reconciliation — ADR-0059 N-I4 / WO-REGOV-TREASURY-RECON
+# ---------------------------------------------------------------------------
+
+def reconcile_region_treasuries(db: Session) -> Dict[str, int]:
+    """Verify SUM(RegionalTreasuryEntry.delta) == Region.treasury_balance for
+    every ACTIVE region — the exact invariant RegionalTreasuryEntry's own
+    docstring (region.py) names as this table's purpose.
+
+    Two bounded queries, NOT one per region: a single grouped SUM aggregate
+    across every region's ledger rows, then a single filtered fetch of every
+    ACTIVE region's id + treasury_balance. A region with zero ledger entries
+    never appears in the grouped aggregate's result set at all (nothing to
+    group), so its ledger sum is read as the Python default 0 rather than a
+    SQL NULL — comparing cleanly against treasury_balance without a crash or
+    a COALESCE.
+
+    ALERT-ONLY: a mismatch is logged via ``logger.error`` naming the region
+    and both figures. This function NEVER writes to treasury_balance or the
+    ledger — it is a verification pass, not a repair pass. (NO-CANON: no
+    ops-alert bus exists yet; ``logger.error`` is the interim channel pending
+    a DECISIONS ruling on an admin-facing notification surface.)
+
+    Returns {"checked": <active regions examined>, "mismatched": <count>}.
+    """
+    from src.models.region import Region, RegionStatus, RegionalTreasuryEntry
+    from sqlalchemy import func as sa_func
+
+    ledger_sums = dict(
+        db.query(
+            RegionalTreasuryEntry.region_id,
+            sa_func.sum(RegionalTreasuryEntry.delta),
+        )
+        .group_by(RegionalTreasuryEntry.region_id)
+        .all()
+    )
+
+    active_regions = (
+        db.query(Region.id, Region.treasury_balance)
+        .filter(Region.status == RegionStatus.ACTIVE)
+        .all()
+    )
+
+    mismatched = 0
+    for region_id, balance in active_regions:
+        ledger_sum = int(ledger_sums.get(region_id, 0) or 0)
+        balance = int(balance or 0)
+        if ledger_sum != balance:
+            mismatched += 1
+            logger.error(
+                "Treasury reconciliation MISMATCH region_id=%s ledger_sum=%d "
+                "treasury_balance=%d drift=%d",
+                region_id, ledger_sum, balance, balance - ledger_sum,
+            )
+    return {"checked": len(active_regions), "mismatched": mismatched}
+
+
+def _run_treasury_reconciliation_gated(db: Session) -> Dict[str, Any]:
+    """Day-gate wrapper around ``reconcile_region_treasuries`` — takes an
+    already-open session so it is independently testable (fake session, no
+    live DB) without spinning up the whole governance sweep. Mirrors
+    ``_run_governance_sweep_sync`` Phase 4's Galaxy.state day-anchor
+    discipline EXACTLY, including reading the canonical day via the SAME
+    no-arg ``canonical_day_number()`` call (real aware ``datetime.now(UTC)``,
+    never the sweep's naive ``now`` — see Phase 4's own comment on why). The
+    caller (Phase 6 of the governance sweep) owns the commit/rollback around
+    this call, same as every other phase in that sweep.
+
+    Returns {"treasury_checked", "treasury_mismatched", "treasury_recon_skipped"}.
+    """
+    from src.models.galaxy import Galaxy
+
+    result: Dict[str, Any] = {
+        "treasury_checked": 0, "treasury_mismatched": 0, "treasury_recon_skipped": False,
+    }
+
+    this_day = canonical_day_number()
+    galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+    gstate = dict(galaxy.state or {}) if galaxy is not None else {}
+    last_day = gstate.get(_TREASURY_RECON_STATE_KEY)
+    already_today = (
+        galaxy is not None
+        and last_day is not None
+        and int(last_day) >= this_day
+    )
+    if already_today:
+        result["treasury_recon_skipped"] = True
+        return result
+
+    stats = reconcile_region_treasuries(db)
+    result["treasury_checked"] = stats["checked"]
+    result["treasury_mismatched"] = stats["mismatched"]
+
+    if galaxy is not None:
+        gstate = dict(galaxy.state or {})
+        gstate[_TREASURY_RECON_STATE_KEY] = this_day
+        galaxy.state = gstate
+        flag_modified(galaxy, "state")
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Regional governance sweep — open/close elections + finalize policies
 # ---------------------------------------------------------------------------
 
@@ -2191,8 +2298,17 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     The flip uses the SAME 'active' -> 'expired' literals as the lazy path, so a
     treaty caught by either path is byte-identical.
 
+    Phase 6 reconciles regional treasuries (ADR-0059 N-I4 / WO-REGOV-TREASURY-
+    RECON): verifies SUM(RegionalTreasuryEntry.delta) == Region.treasury_balance
+    for every ACTIVE region via ``_run_treasury_reconciliation_gated`` /
+    ``reconcile_region_treasuries``, self-gated to once per canonical day by a
+    durable Galaxy.state anchor (mirroring Phase 4's discipline exactly).
+    ALERT-ONLY — a mismatch is logged, never auto-corrected; this phase writes
+    nothing to any balance.
+
     Returns {auto_created, opened, tallied, enacted, rejected,
-    regions_recomputed, treaties_expired}.
+    regions_recomputed, treaties_expired, treasury_checked,
+    treasury_mismatched}.
     """
     from src.core.database import SessionLocal
     from src.models.region import (
@@ -2216,7 +2332,8 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     from sqlalchemy.orm.attributes import flag_modified
 
     result = {"auto_created": 0, "opened": 0, "tallied": 0, "enacted": 0,
-              "rejected": 0, "regions_recomputed": 0, "treaties_expired": 0}
+              "rejected": 0, "regions_recomputed": 0, "treaties_expired": 0,
+              "treasury_checked": 0, "treasury_mismatched": 0}
     now = datetime.utcnow()
 
     db = SessionLocal()
@@ -2673,6 +2790,24 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
                 db.commit()
         except Exception:
             logger.exception("Governance sweep: treaty expiry phase failed")
+            db.rollback()
+
+        # --- Phase 6: treasury reconciliation (WO-REGOV-TREASURY-RECON) ------
+        # RegionalTreasuryEntry's own docstring (region.py) names this
+        # verification as the ledger's purpose: SUM(delta) must equal
+        # Region.treasury_balance for every ACTIVE region. Self-gated to once
+        # per canonical day (see _run_treasury_reconciliation_gated), mirroring
+        # Phase 4's day-anchor discipline exactly. ALERT-ONLY — a mismatch is
+        # logged via logger.error naming the region and both figures; this
+        # phase NEVER writes to any balance. A failure here must NEVER break
+        # the governance sweep proper.
+        try:
+            recon = _run_treasury_reconciliation_gated(db)
+            result["treasury_checked"] = recon["treasury_checked"]
+            result["treasury_mismatched"] = recon["treasury_mismatched"]
+            db.commit()
+        except Exception:
+            logger.exception("Governance sweep: treasury reconciliation phase failed")
             db.rollback()
 
         # Final commit closes out any open (no-op) transaction so the advisory
