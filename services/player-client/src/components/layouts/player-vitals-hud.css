@@ -215,6 +215,41 @@
   text-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
 }
 
+/* LINK chip (WO-PUX-UPLINK-HUD) — always-on uplink-health indicator. The
+   value text swaps length (OK/RELINK/DOWN); pinning min-width to the widest
+   ("RELINK") keeps the chip's own footprint fixed across states so a status
+   flip never reflows its neighbors in the single-row strip. */
+.pvh-link .pvh-v {
+  display: inline-block;
+  min-width: 3.2rem;
+  text-align: left;
+}
+
+.pvh-link--up .pvh-v {
+  color: var(--health-good, #10b981);
+}
+
+.pvh-link--reconnecting .pvh-v {
+  color: var(--health-warning, #f59e0b);
+  animation: pvh-link-pulse 1.2s ease-in-out infinite;
+}
+
+.pvh-link--down .pvh-v {
+  color: var(--health-danger, #ef4444);
+  text-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+@keyframes pvh-link-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pvh-link--reconnecting .pvh-v {
+    animation: none;
+  }
+}
+
 /* RIGHT — logout. The control re-enables pointer events. */
 .pvh-logout {
   flex: 0 1 auto;

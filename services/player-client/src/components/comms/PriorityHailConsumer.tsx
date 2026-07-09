@@ -1,8 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useGame } from '../../contexts/GameContext';
 import './priority-hail-consumer.css';
+
+// WO-PUX-UPLINK-HUD: a blip shorter than this never surfaces a toast — most
+// backoff retries recover well inside it and a toast per retry would be
+// noise, not signal. NO-CANON threshold, flagged for ratification.
+const UPLINK_TOAST_DEBOUNCE_MS = 2000;
 
 /**
  * PriorityHailConsumer — the cockpit's priority-driven notification surfaces.
@@ -26,17 +31,80 @@ import './priority-hail-consumer.css';
  * inbox refresh (handled by CommsMailbox off `newMessageSignal`), honoring the
  * canon "inbox only" behavior.
  *
+ * Also owns the uplink lost/restored toast pair (WO-PUX-UPLINK-HUD): a
+ * debounced watch on WebSocketContext.linkStatus that surfaces the SAME toast
+ * queue above, keeping the "one place chrome renders a toast" invariant
+ * rather than adding a second toast surface elsewhere.
+ *
  * Mounted once in GameLayout (inside WebSocketProvider, always present on /game
  * routes). The modal renders through a portal to document.body so it overlays
  * the entire cockpit regardless of the layout's stacking context.
  */
 
 const PriorityHailConsumer: React.FC = () => {
-  const { notifications, removeNotification, urgentMessageSignal, lastUrgentMessage } =
+  const { notifications, removeNotification, urgentMessageSignal, lastUrgentMessage, linkStatus, addNotification } =
     useWebSocket();
   // markMessageRead lets "ACKNOWLEDGE" on the urgent modal also clear the
   // unread state, so dismissing the interrupt doesn't leave a stale badge.
   const { markMessageRead } = useGame();
+
+  // ── Uplink lost/restored toast pairing (WO-PUX-UPLINK-HUD) ──────────────
+  // Exactly ONE "lost" + ONE "restored" toast per outage, no matter how many
+  // backoff attempts happen in between. outageAnnouncedRef tracks whether the
+  // CURRENT outage already crossed the debounce and got its "lost" toast (so
+  // "restored" only fires when there is something to restore FROM); the
+  // debounce timer is armed once per fresh up->down transition and cleared
+  // the moment the link recovers before it fires (the blip case: no toast at
+  // all). prevLinkStatusRef lets the effect see "up" was the PRIOR state on
+  // mount, which the [linkStatus] dependency alone can't distinguish from a
+  // real transition.
+  const prevLinkStatusRef = useRef(linkStatus);
+  const debounceTimerRef = useRef<number | null>(null);
+  const outageAnnouncedRef = useRef(false);
+
+  useEffect(() => {
+    const prev = prevLinkStatusRef.current;
+    prevLinkStatusRef.current = linkStatus;
+    if (prev === linkStatus) return;
+
+    if (linkStatus === 'up') {
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      if (outageAnnouncedRef.current) {
+        outageAnnouncedRef.current = false;
+        addNotification({
+          title: 'Uplink restored',
+          content: 'Live updates resumed.',
+          level: 'success'
+        });
+      }
+      return;
+    }
+
+    // linkStatus is now 'reconnecting' or 'down'. Only arm the debounce on a
+    // FRESH loss (prev === 'up') — a further reconnecting<->down flap while
+    // already mid-outage must not re-arm or double-toast.
+    if (prev === 'up') {
+      debounceTimerRef.current = window.setTimeout(() => {
+        debounceTimerRef.current = null;
+        outageAnnouncedRef.current = true;
+        addNotification({
+          title: 'Uplink lost — reconnecting',
+          content: 'Live updates paused while the connection recovers.',
+          level: 'warning'
+        });
+      }, UPLINK_TOAST_DEBOUNCE_MS);
+    }
+  }, [linkStatus, addNotification]);
+
+  // Unmount safety: don't let a pending debounce fire into an unmounted tree.
+  useEffect(() => () => {
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+    }
+  }, []);
 
   // ── Urgent modal ──────────────────────────────────────────────────────
   // The modal opens on each NEW urgent signal (not merely on a non-null

@@ -26,6 +26,12 @@ vi.mock('../../auth/LogoutButton', () => ({
   default: () => <button data-testid="logout-stub" />,
 }));
 
+// PlayerVitalsHud now reads linkStatus (WO-PUX-UPLINK-HUD) — stub the hook so
+// this pre-existing low-turn suite doesn't need a real WebSocketProvider.
+vi.mock('../../../contexts/WebSocketContext', () => ({
+  useWebSocket: () => ({ linkStatus: 'up' }),
+}));
+
 let mockPlayerState: Record<string, unknown> | null = null;
 vi.mock('../../../contexts/GameContext', () => ({
   useGame: () => ({

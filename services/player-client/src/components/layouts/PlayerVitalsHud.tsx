@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useGame } from '../../contexts/GameContext';
+import { useWebSocket } from '../../contexts/WebSocketContext';
 import LogoutButton from '../auth/LogoutButton';
 import { formatCredits } from '../../utils/formatters';
 import { TurnsIcon } from '../icons/TurnsIcon';
@@ -12,8 +13,12 @@ import './player-vitals-hud.css';
  * windshield band (WO-INVERTED-L + WO-PLAYERINFO id=145). Three zones:
  *   • commander NAME (left) — tinted by playerState.name_color;
  *   • live vitals (center) — a SINGLE-ROW inline strip (Max: "too tall, make it
- *     wider"): ₡credits · TRN turns(/max) · ATK/DEF drones · MINE;
+ *     wider"): ₡credits · TRN turns(/max) · ATK/DEF drones · MINE · LINK;
  *   • LOGOUT (right) — reuses the shared LogoutButton.
+ *
+ * LINK (WO-PUX-UPLINK-HUD) — always-on uplink-health chip, the ONE indicator
+ * a pilot can't miss (previously buried in the COMMS MFD page only). Driven
+ * by WebSocketContext.linkStatus; copy/thresholds NO-CANON.
  *
  * Credits use the shared ₡ glyph (formatCredits, id=148) — never 'CRED'/'cr'.
  * The bar is click-through (pointer-events:none); only logout / the
@@ -23,6 +28,7 @@ import './player-vitals-hud.css';
 const PlayerVitalsHud: React.FC = () => {
   const { user } = useAuth();
   const { playerState, isLoading, refreshPlayerState } = useGame();
+  const { linkStatus } = useWebSocket();
 
   // id=145d — turns regen: +N/hr subscript + hover→time-to-full (id=142 fields).
   const regenPerHr = playerState?.turn_regen_per_hour ?? 0;
@@ -43,6 +49,17 @@ const PlayerVitalsHud: React.FC = () => {
     return `Turns — ${h > 0 ? `${h}h ${m}m` : `${m}m`} to full (+${Math.round(regenPerHr)}/hr)`;
   })();
   const bounty = playerState?.bounty_total ?? 0;
+
+  // id=LINK — reuses the "LINK OK" / "LINK DOWN" copy already established in
+  // CommsCrewPage's UPLINK field; RELINK is new (mid-reconnect), no prior
+  // canon term to match. Value text is intentionally SHORT (OK/RELINK/DOWN)
+  // and width-pinned in CSS so a state change never reflows neighboring chips.
+  const linkLabel = linkStatus === 'up' ? 'OK' : linkStatus === 'reconnecting' ? 'RELINK' : 'DOWN';
+  const linkTitle = linkStatus === 'up'
+    ? 'Uplink connected'
+    : linkStatus === 'reconnecting'
+      ? 'Uplink lost — reconnecting'
+      : 'Uplink down';
 
   return (
     <div className="player-vitals-hud">
@@ -91,6 +108,10 @@ const PlayerVitalsHud: React.FC = () => {
         <span className="pvh-stat" title="Mines">
           <span className="pvh-k"><MineIcon size="0.8rem" /></span>
           <span className="pvh-v">{playerState?.mines ?? 0}</span>
+        </span>
+        <span className={`pvh-stat pvh-link pvh-link--${linkStatus}`} title={linkTitle}>
+          <span className="pvh-k">LINK</span>
+          <span className="pvh-v">{linkLabel}</span>
         </span>
         {bounty > 0 && (
           <span className="pvh-stat pvh-bounty" title="Bounty on your head">

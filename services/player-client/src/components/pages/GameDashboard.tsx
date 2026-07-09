@@ -574,7 +574,7 @@ const GameDashboard: React.FC = () => {
   const autopilot = useAutopilot();
 
   const { requiresFirstLogin } = useFirstLogin();
-  const { sectorPlayers, isConnected } = useWebSocket();
+  const { sectorPlayers } = useWebSocket();
 
   // Autopilot plot input state (NAV monitor destination field)
   const [plotTarget, setPlotTarget] = useState('');

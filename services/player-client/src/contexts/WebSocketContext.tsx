@@ -5,7 +5,8 @@ import websocketService, {
   PlayerMovementMessage,
   SectorPlayersMessage,
   NotificationMessage,
-  ARIAResponseMessage
+  ARIAResponseMessage,
+  LinkStatus
 } from '../services/websocket';
 import { useAuth } from './AuthContext';
 
@@ -13,7 +14,12 @@ interface WebSocketContextType {
   // Connection status
   isConnected: boolean;
   connectionStatus: string;
-  
+
+  // Coarse uplink health for chrome (WO-PUX-UPLINK-HUD) — projects the
+  // reconnect state machine in websocketService without exposing every close
+  // code/backoff detail. See LinkStatus in services/websocket.ts.
+  linkStatus: LinkStatus;
+
   // Chat functionality
   chatMessages: ChatMessage[];
   sendChatMessage: (content: string, targetType?: 'sector' | 'team' | 'global') => boolean;
@@ -166,6 +172,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   const token = localStorage.getItem('accessToken');
   const [isConnected, setIsConnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('Disconnected');
+  // Seeded from the service's current value (not a hardcoded 'down') so a
+  // provider mounted after the singleton already started connecting reflects
+  // reality on first render instead of a false initial flash.
+  const [linkStatus, setLinkStatus] = useState<LinkStatus>(() => websocketService.getLinkStatus());
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [ariaMessages, setAriaMessages] = useState<Array<{
     id: string;
@@ -339,6 +349,13 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
       }
     });
     cleanups.push(connectionHandler);
+
+    // Link-status handler (WO-PUX-UPLINK-HUD) — mirrors the service's own
+    // reconnect-state projection into React state for chrome consumers.
+    const linkStatusHandler = websocketService.onLinkStatus((status) => {
+      setLinkStatus(status);
+    });
+    cleanups.push(linkStatusHandler);
 
     // Chat message handler
     const chatHandler = websocketService.onChatMessage((message) => {
@@ -730,7 +747,8 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     // Connection status
     isConnected,
     connectionStatus,
-    
+    linkStatus,
+
     // Chat functionality
     chatMessages,
     sendChatMessage,
