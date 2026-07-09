@@ -125,6 +125,29 @@ class GovernanceConfigUpdate(BaseModel):
     voting_threshold: float = Field(ge=0.1, le=0.9)
     election_frequency_days: int = Field(ge=30, le=365)
     constitutional_text: Optional[str] = None
+    # ADR-0059 N-D5 owner-configurable participation threshold
+    # (regional-governance.md:91, band [0.25, 0.60]). Optional so a caller
+    # that omits it leaves the region's existing dial untouched; read back
+    # via regional_governance_service.quorum_pct_for_region.
+    governance_quorum_pct: Optional[float] = Field(None, ge=0.25, le=0.60)
+
+
+class MemberDialsUpdate(BaseModel):
+    """Owner request to adjust one member's regional-governance dials
+    (SYSTEMS/regional-governance.md:71-76 -- owner-adjustable voting power,
+    citizen tier target 1.5; the :77 auto-recalc is DESIGN-ONLY and is NOT
+    built here). Both fields are optional -- a partial PATCH sends only what
+    changed.
+
+    ``voting_power`` is clamped to the canon [0.0, 5.0] band. 0.0 is a
+    DELIBERATE allowance (NO-CANON extension, not spelled out in the doc):
+    it lets an owner disenfranchise a member outright, since
+    RegionalMembership.can_vote already gates on voting_power > 0.
+
+    ``local_rank`` is free text bounded by the column's String(50) limit;
+    canon defines no vocabulary for its contents (NO-CANON format)."""
+    voting_power: Optional[float] = Field(None, ge=0.0, le=5.0)
+    local_rank: Optional[str] = Field(None, max_length=50)
 
 
 class PolicyCreate(BaseModel):
@@ -428,20 +451,24 @@ async def update_governance_config(
         raise HTTPException(status_code=400, detail="Invalid governance type")
     
     # Update region
+    values: Dict[str, Any] = dict(
+        governance_type=config.governance_type,
+        voting_threshold=config.voting_threshold,
+        election_frequency_days=config.election_frequency_days,
+        constitutional_text=config.constitutional_text,
+        updated_at=datetime.utcnow()
+    )
+    if config.governance_quorum_pct is not None:
+        values["governance_quorum_pct"] = config.governance_quorum_pct
+
     await db.execute(
         update(Region)
         .where(Region.id == region.id)
-        .values(
-            governance_type=config.governance_type,
-            voting_threshold=config.voting_threshold,
-            election_frequency_days=config.election_frequency_days,
-            constitutional_text=config.constitutional_text,
-            updated_at=datetime.utcnow()
-        )
+        .values(**values)
     )
-    
+
     await db.commit()
-    
+
     return {"message": "Governance configuration updated successfully"}
 
 
@@ -855,6 +882,55 @@ async def get_regional_members(
     return await RegionalGovernanceService.get_regional_members(
         db, region.id, limit=limit, offset=offset
     )
+
+
+@router.patch("/my-region/members/{player_id}")
+async def update_member_dials(
+    player_id: uuid.UUID,
+    body: MemberDialsUpdate,
+    current_user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Adjust a region member's voting_power / local_rank (region OWNER
+    only; SYSTEMS/regional-governance.md:71-76).
+
+    404 if the caller owns no region (verify_region_owner) or if
+    ``player_id`` does not resolve to a RegionalMembership in the caller's
+    region; 400 if neither field is supplied. Schema-level 422 covers the
+    [0.0, 5.0] voting_power band and the 50-char local_rank cap."""
+    region = await verify_region_owner(db, current_user)
+
+    result = await db.execute(
+        select(RegionalMembership).where(
+            RegionalMembership.region_id == region.id,
+            RegionalMembership.player_id == player_id
+        )
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Member not found in this region")
+
+    values: Dict[str, Any] = {}
+    if body.voting_power is not None:
+        values["voting_power"] = body.voting_power
+    if body.local_rank is not None:
+        values["local_rank"] = body.local_rank
+    if not values:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    await db.execute(
+        update(RegionalMembership)
+        .where(RegionalMembership.id == membership.id)
+        .values(**values)
+    )
+    await db.commit()
+
+    return {
+        "message": "Member dials updated successfully",
+        "player_id": str(player_id),
+        "voting_power": values.get("voting_power", float(membership.voting_power)),
+        "local_rank": values.get("local_rank", membership.local_rank),
+    }
 
 
 # =====================================================================

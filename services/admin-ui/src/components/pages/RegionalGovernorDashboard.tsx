@@ -12,6 +12,7 @@ interface Region {
   governance_type: string;
   tax_rate: number;
   voting_threshold: number;
+  governance_quorum_pct?: number;
   economic_specialization: string;
   total_sectors: number;
   active_players_30d: number;
@@ -23,6 +24,21 @@ interface Region {
   aesthetic_theme: Record<string, any>;
   trade_bonuses: Record<string, number>;
 }
+
+interface RegionalMember {
+  player_id: string;
+  username: string;
+  membership_type: string;
+  reputation_score: number;
+  local_rank: string | null;
+  voting_power: number;
+  joined_at: string;
+  last_visit: string;
+  total_visits: number;
+}
+
+// Canon citizen-tier voting_power target (SYSTEMS/regional-governance.md:71-76).
+const CITIZEN_DEFAULT_VOTING_POWER = 1.5;
 
 interface RegionalStats {
   total_population: number;
@@ -88,10 +104,11 @@ const RegionalGovernorDashboard: React.FC = () => {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [elections, setElections] = useState<Election[]>([]);
   const [treaties, setTreaties] = useState<Treaty[]>([]);
+  const [members, setMembers] = useState<RegionalMember[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'governance' | 'economy' | 'policies' | 'elections' | 'diplomacy' | 'culture'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'governance' | 'economy' | 'policies' | 'elections' | 'diplomacy' | 'culture' | 'members'>('overview');
   const isAdmin = user?.is_admin || false;
 
   // Policy creation state
@@ -124,7 +141,8 @@ const RegionalGovernorDashboard: React.FC = () => {
     governance_type: 'autocracy',
     voting_threshold: 0.51,
     election_frequency_days: 90,
-    constitutional_text: ''
+    constitutional_text: '',
+    governance_quorum_pct: 0.33
   });
 
   useEffect(() => {
@@ -139,7 +157,8 @@ const RegionalGovernorDashboard: React.FC = () => {
         loadRegionalStats(),
         loadPolicies(),
         loadElections(),
-        loadTreaties()
+        loadTreaties(),
+        loadMembers()
       ]);
     } catch (err) {
       setError('Failed to load regional data');
@@ -168,7 +187,8 @@ const RegionalGovernorDashboard: React.FC = () => {
           governance_type: data.governance_type,
           voting_threshold: data.voting_threshold,
           election_frequency_days: data.election_frequency_days || 90,
-          constitutional_text: data.constitutional_text || ''
+          constitutional_text: data.constitutional_text || '',
+          governance_quorum_pct: data.governance_quorum_pct ?? 0.33
         });
         return;
       }
@@ -209,7 +229,8 @@ const RegionalGovernorDashboard: React.FC = () => {
               governance_type: firstRegion.governance_type || 'autocracy',
               voting_threshold: firstRegion.voting_threshold || 0.51,
               election_frequency_days: firstRegion.election_frequency_days || 90,
-              constitutional_text: firstRegion.constitutional_text || ''
+              constitutional_text: firstRegion.constitutional_text || '',
+              governance_quorum_pct: firstRegion.governance_quorum_pct ?? 0.33
             });
           }
         }
@@ -272,6 +293,20 @@ const RegionalGovernorDashboard: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to load treaties:', err);
+    }
+  };
+
+  const loadMembers = async () => {
+    try {
+      const response = await fetch('/api/v1/regions/my-region/members', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setMembers(data);
+      }
+    } catch (err) {
+      console.error('Failed to load regional members:', err);
     }
   };
 
@@ -363,6 +398,43 @@ const RegionalGovernorDashboard: React.FC = () => {
     }
   };
 
+  const handleMemberFieldChange = (playerId: string, field: 'voting_power' | 'local_rank', value: string | number) => {
+    setMembers(prev => prev.map(m => m.player_id === playerId ? { ...m, [field]: value } : m));
+  };
+
+  const updateMemberDials = async (playerId: string) => {
+    const member = members.find(m => m.player_id === playerId);
+    if (!member) return;
+
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/v1/regions/my-region/members/${playerId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          voting_power: member.voting_power,
+          local_rank: member.local_rank || null
+        })
+      });
+
+      if (response.ok) {
+        setSuccess(`Updated governance dials for ${member.username}`);
+        await loadMembers();
+      } else {
+        const error = await response.json();
+        setError(error.detail || 'Failed to update member dials');
+      }
+    } catch (err) {
+      setError('Network error occurred');
+      console.error('Update member dials error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const startElection = async (position: string) => {
     setLoading(true);
     try {
@@ -449,7 +521,8 @@ const RegionalGovernorDashboard: React.FC = () => {
       governance_type: selectedRegion.governance_type || 'autocracy',
       voting_threshold: selectedRegion.voting_threshold || 0.51,
       election_frequency_days: 90,
-      constitutional_text: selectedRegion.constitutional_text || ''
+      constitutional_text: selectedRegion.constitutional_text || '',
+      governance_quorum_pct: selectedRegion.governance_quorum_pct ?? 0.33
     });
   };
 
@@ -505,7 +578,7 @@ const RegionalGovernorDashboard: React.FC = () => {
       )}
 
       <div className="governor-tabs">
-        {['overview', 'governance', 'economy', 'policies', 'elections', 'diplomacy', 'culture'].map(tab => (
+        {['overview', 'governance', 'economy', 'policies', 'elections', 'members', 'diplomacy', 'culture'].map(tab => (
           <button
             key={tab}
             className={`tab-button ${activeTab === tab ? 'active' : ''}`}
@@ -643,6 +716,19 @@ const RegionalGovernorDashboard: React.FC = () => {
                   onChange={(e) => setGovernanceConfig(prev => ({...prev, voting_threshold: parseFloat(e.target.value)}))}
                 />
                 <small>Percentage of votes required to pass policies ({formatPercentage(governanceConfig.voting_threshold)})</small>
+              </div>
+
+              <div className="form-group">
+                <label>Quorum Participation Threshold</label>
+                <input
+                  type="number"
+                  min="0.25"
+                  max="0.60"
+                  step="0.01"
+                  value={governanceConfig.governance_quorum_pct}
+                  onChange={(e) => setGovernanceConfig(prev => ({...prev, governance_quorum_pct: parseFloat(e.target.value)}))}
+                />
+                <small>Share of eligible voters required for a vote to count ({formatPercentage(governanceConfig.governance_quorum_pct)}, must stay between 25% and 60%)</small>
               </div>
 
               <div className="form-group">
@@ -919,6 +1005,85 @@ const RegionalGovernorDashboard: React.FC = () => {
                 </div>
               ) : (
                 <div className="no-data">No elections found</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'members' && (
+          <div className="members-tab">
+            <h3>Regional Members</h3>
+            <div className="form-group">
+              <small>
+                Voting power ranges 0.0–5.0 (citizen tier target {CITIZEN_DEFAULT_VOTING_POWER.toFixed(1)});
+                setting a member to 0.0 revokes their voting rights. Local rank is a free-text title (max 50 characters).
+              </small>
+            </div>
+
+            <div className="members-list">
+              {members.length > 0 ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Username</th>
+                      <th>Type</th>
+                      <th>Reputation</th>
+                      <th>Local Rank</th>
+                      <th>Voting Power</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {members.map(member => (
+                      <tr key={member.player_id}>
+                        <td>{member.username}</td>
+                        <td>{member.membership_type}</td>
+                        <td>{formatNumber(member.reputation_score)}</td>
+                        <td>
+                          <input
+                            type="text"
+                            maxLength={50}
+                            value={member.local_rank || ''}
+                            onChange={(e) => handleMemberFieldChange(member.player_id, 'local_rank', e.target.value)}
+                            style={{ width: '140px', padding: '6px 8px' }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0.0"
+                            max="5.0"
+                            step="0.1"
+                            value={member.voting_power}
+                            onChange={(e) => handleMemberFieldChange(member.player_id, 'voting_power', parseFloat(e.target.value))}
+                            style={{ width: '80px', padding: '6px 8px' }}
+                          />
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={() => handleMemberFieldChange(member.player_id, 'voting_power', CITIZEN_DEFAULT_VOTING_POWER)}
+                              className="action-button small secondary"
+                              disabled={loading}
+                              title={`Set voting power to the citizen default (${CITIZEN_DEFAULT_VOTING_POWER})`}
+                            >
+                              Citizen Default
+                            </button>
+                            <button
+                              onClick={() => updateMemberDials(member.player_id)}
+                              className="action-button small primary"
+                              disabled={loading}
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="no-data">No members found</div>
               )}
             </div>
           </div>
