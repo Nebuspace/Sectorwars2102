@@ -1,0 +1,95 @@
+name: ci-build-test
+
+# Cheap, DB-free build/test lanes for all three services. None of these
+# jobs stand up Postgres/Redis or the docker-compose stack — that's
+# out of scope for v1 (see per-job notes below for the follow-up WOs
+# that unblock the deeper gates).
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  player-client:
+    name: player-client (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Matches services/player-client/Dockerfile's `FROM node:24-slim`.
+          node-version: "24"
+
+      - name: Install dependencies
+        working-directory: services/player-client
+        # Plain `npm ci` fails here: eslint-plugin-react@7.37.5 caps its
+        # peer eslint at ^9.7, but the installed eslint is 10.6.0 — an
+        # ERESOLVE conflict, reproduced locally. The service's own
+        # Dockerfile already installs with `--legacy-peer-deps` for the
+        # same reason; matching it here instead of silently switching
+        # installers or masking the conflict another way.
+        run: npm ci --legacy-peer-deps
+
+      - name: Build
+        working-directory: services/player-client
+        run: npm run build
+
+      - name: Test
+        working-directory: services/player-client
+        run: npm test
+
+  admin-ui:
+    name: admin-ui (build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Matches services/admin-ui/Dockerfile's `FROM node:20-slim`.
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: services/admin-ui
+        # Same ERESOLVE conflict as player-client (eslint-plugin-react vs.
+        # eslint 10.x) — reproduced locally; matches the Dockerfile's
+        # `--legacy-peer-deps` install.
+        run: npm ci --legacy-peer-deps
+
+      - name: Build
+        working-directory: services/admin-ui
+        # admin-ui's build script is `tsc --noEmit && vite build` — the
+        # type-check gate is already inline here, unlike player-client.
+        run: npm run build
+
+      # No test step: admin-ui has zero vitest/jsdom/RTL test runner today
+      # (Playwright e2e only, which needs a live stack). Gated behind
+      # Max-approved WO-QTI-ADMINUI-TEST-INFRA.
+
+  gameserver:
+    name: gameserver (compile check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches services/gameserver/Dockerfile's `FROM python:3.12-slim`.
+          python-version: "3.12"
+
+      - name: Compile check
+        run: python -m compileall services/gameserver/src -q
+
+      # No pytest step: conftest.py requires a real DATABASE_URL at import
+      # time (no in-CI Postgres in this lane), so the suite can't run
+      # DB-free yet. Gated behind Max-approved WO-QTI-TESTDB-ISOLATION.
