@@ -2959,6 +2959,211 @@ def _construction_state_snapshot(db: Session, station_id) -> tuple:
 # Economy-metrics snapshot — daily galaxy-wide economic state writer
 # ---------------------------------------------------------------------------
 
+def _compute_daily_economic_enrichment(
+    db: Session,
+    *,
+    window_start: datetime,
+    credit_velocity: float,
+) -> Dict[str, Any]:
+    """Populate the ~13 EconomicMetrics columns the daily snapshot wrote as
+    bare column defaults (DATA_MODELS/economy.md:134-140) -- inflation,
+    health, volatility, commodity/sector/station leaders, wealth disparity,
+    and new-trader count. Pure/session-injectable so it's testable DB-free,
+    mirroring reconcile_region_treasuries's pure-fn/day-gate-wrapper split
+    (this function has no day-gate of its own -- the caller already owns
+    that via the EconomicMetrics.date uniqueness check).
+
+    DEGRADATION -- each field group has its own try/except: a single
+    calculator raising leaves ONLY the fields it feeds at the
+    EconomicMetrics column default (logged at warning, never the caller's
+    problem, never aborts the snapshot). Defaults below are copy-exact from
+    the model (market_transaction.py).
+
+    BOUNDEDNESS -- every query here is a single aggregate/fetch round trip,
+    never a per-player or per-transaction Python loop:
+      - richest_player_credits: one Player fetch (row count = active
+        players, not transactions).
+      - most/least traded commodity, most_active_sector,
+        most_valuable_station, new_traders: one GROUP BY over the trailing
+        24h MarketTransaction window each (row count = distinct
+        commodities/sectors/stations/traders that day, not raw rows).
+      - commodity_price_index / average_profit_margin: ONE shared,
+        unfiltered MarketPrice fetch -- bounded by station x commodity
+        cardinality (not by trade volume), the same table the pre-existing
+        _calculate_market_liquidity / _get_average_prices calculators
+        already scan per-commodity.
+    economic_health_score / inflation_rate / market_volatility /
+    economic_disparity_index / median_player_credits reuse the EXISTING
+    EconomyAnalyticsService calculators (_calculate_inflation_rates,
+    _calculate_price_volatility, _calculate_wealth_distribution,
+    _calculate_health_score) rather than re-deriving them -- their own
+    query cost is that service's existing, already-relied-upon behavior.
+
+    NO-CANON: commodity_price_index's "base period" is canon-silent (the
+    model defaults to 100.0 with no documented reference point). This uses
+    COMMODITY_BASE_PRICES (the static canonical price table) as the
+    denominator -- current buy price vs. canonical base price, summed
+    across every live MarketPrice row (each station-commodity row counted
+    once, so coverage naturally weights toward commodities carried at more
+    stations). Flagged for DECISIONS.md: a rolling prior-snapshot baseline
+    is an equally valid reading and would produce a different index
+    trajectory over time.
+    """
+    from sqlalchemy import func as sa_func
+    from src.core.commodity_economy import COMMODITY_BASE_PRICES
+    from src.models.market_transaction import MarketPrice, MarketTransaction
+    from src.services.economy_analytics_service import EconomyAnalyticsService
+
+    fields: Dict[str, Any] = {
+        "inflation_rate": 0.0,
+        "economic_health_score": 0.5,
+        "market_volatility": 0.0,
+        "most_traded_commodity": None,
+        "least_traded_commodity": None,
+        "commodity_price_index": 100.0,
+        "most_active_sector": None,
+        "most_valuable_station": None,
+        "economic_disparity_index": 0.0,
+        "richest_player_credits": 0,
+        "median_player_credits": 0,
+        "new_traders": 0,
+        "average_profit_margin": 0.0,
+    }
+
+    analytics = EconomyAnalyticsService(db)
+    volatility_by_commodity: Dict[str, float] = {}
+    wealth_dist: Dict[str, Any] = {}
+
+    try:
+        inflation_by_commodity = analytics._calculate_inflation_rates()
+        if inflation_by_commodity:
+            fields["inflation_rate"] = sum(inflation_by_commodity.values()) / len(inflation_by_commodity)
+    except Exception:
+        logger.warning("Economy snapshot enrichment: inflation_rate failed, left at default", exc_info=True)
+
+    try:
+        volatility_by_commodity = analytics._calculate_price_volatility()
+        if volatility_by_commodity:
+            fields["market_volatility"] = sum(volatility_by_commodity.values()) / len(volatility_by_commodity)
+    except Exception:
+        volatility_by_commodity = {}
+        logger.warning("Economy snapshot enrichment: market_volatility failed, left at default", exc_info=True)
+
+    try:
+        wealth_dist = analytics._calculate_wealth_distribution()
+        fields["economic_disparity_index"] = float(wealth_dist.get("gini_coefficient", 0.0))
+        fields["median_player_credits"] = int(wealth_dist.get("median_wealth", 0))
+    except Exception:
+        wealth_dist = {}
+        logger.warning("Economy snapshot enrichment: wealth distribution failed, left at default", exc_info=True)
+
+    try:
+        # _calculate_health_score returns a 0-100 scale; the column is
+        # documented 0-1 (market_transaction.py:205, DATA_MODELS/economy.md).
+        raw_score = analytics._calculate_health_score(
+            {"price_volatility": volatility_by_commodity}, credit_velocity, wealth_dist,
+        )
+        fields["economic_health_score"] = raw_score / 100.0
+    except Exception:
+        logger.warning("Economy snapshot enrichment: economic_health_score failed, left at default", exc_info=True)
+
+    try:
+        active_credits = (
+            db.query(Player.credits)
+            .filter(Player.is_active.is_(True))
+            .all()
+        )
+        if active_credits:
+            fields["richest_player_credits"] = max(c for (c,) in active_credits)
+    except Exception:
+        logger.warning("Economy snapshot enrichment: richest_player_credits failed, left at default", exc_info=True)
+
+    try:
+        commodity_rows = (
+            db.query(MarketTransaction.commodity, sa_func.sum(MarketTransaction.quantity))
+            .filter(MarketTransaction.timestamp >= window_start)
+            .group_by(MarketTransaction.commodity)
+            .order_by(sa_func.sum(MarketTransaction.quantity).desc())
+            .all()
+        )
+        if commodity_rows:
+            fields["most_traded_commodity"] = commodity_rows[0][0]
+            fields["least_traded_commodity"] = commodity_rows[-1][0]
+    except Exception:
+        logger.warning("Economy snapshot enrichment: most/least traded commodity failed, left at default", exc_info=True)
+
+    try:
+        sector_row = (
+            db.query(MarketTransaction.sector_id, sa_func.count(MarketTransaction.id))
+            .filter(
+                MarketTransaction.timestamp >= window_start,
+                MarketTransaction.sector_id.isnot(None),
+            )
+            .group_by(MarketTransaction.sector_id)
+            .order_by(sa_func.count(MarketTransaction.id).desc())
+            .first()
+        )
+        if sector_row:
+            fields["most_active_sector"] = int(sector_row[0])
+    except Exception:
+        logger.warning("Economy snapshot enrichment: most_active_sector failed, left at default", exc_info=True)
+
+    try:
+        station_row = (
+            db.query(MarketTransaction.station_id, sa_func.sum(MarketTransaction.total_value))
+            .filter(
+                MarketTransaction.timestamp >= window_start,
+                MarketTransaction.station_id.isnot(None),
+            )
+            .group_by(MarketTransaction.station_id)
+            .order_by(sa_func.sum(MarketTransaction.total_value).desc())
+            .first()
+        )
+        if station_row:
+            fields["most_valuable_station"] = station_row[0]
+    except Exception:
+        logger.warning("Economy snapshot enrichment: most_valuable_station failed, left at default", exc_info=True)
+
+    try:
+        # A "new trader" is a player whose EARLIEST-ever transaction falls
+        # inside this window -- GROUP BY + HAVING MIN(timestamp), not a
+        # window-only COUNT, so a long-time trader who simply traded today
+        # doesn't get miscounted as new.
+        new_trader_rows = (
+            db.query(MarketTransaction.player_id)
+            .filter(MarketTransaction.player_id.isnot(None))
+            .group_by(MarketTransaction.player_id)
+            .having(sa_func.min(MarketTransaction.timestamp) >= window_start)
+            .all()
+        )
+        fields["new_traders"] = len(new_trader_rows)
+    except Exception:
+        logger.warning("Economy snapshot enrichment: new_traders failed, left at default", exc_info=True)
+
+    try:
+        price_rows = db.query(MarketPrice.commodity, MarketPrice.buy_price, MarketPrice.sell_price).all()
+        index_numerator = index_denominator = 0.0
+        margin_values: List[float] = []
+        for commodity, buy_price, sell_price in price_rows:
+            base = COMMODITY_BASE_PRICES.get(commodity, {}).get("base")
+            if base:
+                index_numerator += float(buy_price)
+                index_denominator += float(base)
+            if sell_price and sell_price > 0:
+                margin_values.append((sell_price - buy_price) / sell_price * 100.0)
+        if index_denominator > 0:
+            fields["commodity_price_index"] = (index_numerator / index_denominator) * 100.0
+        if margin_values:
+            fields["average_profit_margin"] = sum(margin_values) / len(margin_values)
+    except Exception:
+        logger.warning(
+            "Economy snapshot enrichment: commodity_price_index/average_profit_margin failed, left at default",
+            exc_info=True,
+        )
+
+    return fields
+
+
 def _run_economic_metrics_snapshot_sync() -> Dict[str, Any]:
     """Write ONE daily EconomicMetrics row so the admin economy dashboard has
     real data instead of zeros.
@@ -3104,6 +3309,15 @@ def _run_economic_metrics_snapshot_sync() -> Dict[str, Any]:
             if player_credits > 0 else 0.0
         )
 
+        # Enrichment (WO-ECON-METRICS-ENRICH) -- inflation/health/volatility/
+        # commodity+sector+station leaders/wealth disparity/new-traders. Its
+        # own internal try/except degrades any single failed calculator to
+        # that field's column default; it never raises, so it can't abort
+        # this snapshot.
+        enrichment = _compute_daily_economic_enrichment(
+            db, window_start=window_start, credit_velocity=credit_velocity,
+        )
+
         snapshot = EconomicMetrics(
             date=today_midnight,
             metric_type="daily",
@@ -3115,6 +3329,7 @@ def _run_economic_metrics_snapshot_sync() -> Dict[str, Any]:
             credits_in_npc_accounts=npc_credits,
             credit_velocity=credit_velocity,
             total_players_trading=active_traders,
+            **enrichment,
         )
         db.add(snapshot)
         db.commit()  # releases the xact lock
