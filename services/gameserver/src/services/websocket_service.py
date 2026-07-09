@@ -362,31 +362,13 @@ class ConnectionManager:
             # Broadcast globally for major events
             await self.broadcast_global(message)
     
-    async def send_new_message_notification(self, recipient_user_id: str, message_data: Dict[str, Any]):
-        """Send new message notification to a specific user"""
-        notification = {
-            "type": "new_message",
-            "timestamp": datetime.now(UTC).isoformat(),
-            **message_data
-        }
-        await self.send_personal_message(recipient_user_id, notification)
-    
-    async def send_ship_status_change(self, user_id: str, ship_data: Dict[str, Any]):
-        """Send ship status change to ship owner"""
-        message = {
-            "type": "ship_status_change",
-            "timestamp": datetime.now(UTC).isoformat(),
-            **ship_data
-        }
-        await self.send_personal_message(user_id, message)
-
     async def send_turn_pool_update(self, user_id: str, turn_data: Dict[str, Any]):
         """Push an authoritative turn-pool snapshot to the pool's owner.
 
         The promised SYSTEMS/turn-regeneration.md "Authoritative push": a
         player-scoped ``turn_pool_updated`` frame emitted by ``regenerate_turns``
         whenever lazy regen actually credits turns (N>0), so connected clients
-        refresh the pool without polling. Mirrors send_ship_status_change /
+        refresh the pool without polling. Mirrors send_hostile_detected /
         send_personal_message (typed message, personal scope). ``user_id`` is the
         owning User's id string (the key send_personal_message routes on)."""
         message = {
@@ -402,9 +384,9 @@ class ConnectionManager:
         A Long-Range Scanner Array (citadel_service DEFENSE_BUILDINGS
         "scanner_array", effect detection_range_sectors) on the owner's planet
         picks up a hostile ship moving within detection range of the planet's
-        sector. Mirrors send_turn_pool_update / send_ship_status_change (typed
-        message, personal scope). ``owner_user_id`` is the owning User's id
-        string (the key send_personal_message routes on); ``payload`` carries
+        sector. Mirrors send_turn_pool_update (typed message, personal scope).
+        ``owner_user_id`` is the owning User's id string (the key
+        send_personal_message routes on); ``payload`` carries
         ``{sector_id, detection_range, ship_id, detected_player_id}``."""
         message = {
             "type": "hostile_detected",
@@ -426,20 +408,6 @@ class ConnectionManager:
             await self.broadcast_to_admins(message)
         else:
             # Broadcast to all users
-            await self.broadcast_global(message)
-    
-    async def send_fleet_update(self, fleet_id: str, fleet_data: Dict[str, Any], team_id: str = None):
-        """Send fleet update to team members or global"""
-        message = {
-            "type": "fleet_update",
-            "fleet_id": fleet_id,
-            "timestamp": datetime.now(UTC).isoformat(),
-            **fleet_data
-        }
-        
-        if team_id:
-            await self.broadcast_to_team(team_id, message)
-        else:
             await self.broadcast_global(message)
     
     async def send_market_update(self, market_data: Dict[str, Any], sector_id: int = None):

@@ -446,7 +446,26 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
             level: 'warning'
           });
           break;
-          
+
+        case 'teammate_under_attack': {
+          // Team defensive notification (factions-and-teams.md "Combat
+          // advantages: Defensive notifications when any teammate is
+          // attacked" — combat_service._emit_teammate_under_attack).
+          // Toast only, never a modal (matches the other combat/chat frames
+          // in this handler) — a heads-up, not an interrupt.
+          const defenderName = String(message.defender_name || 'A teammate');
+          const sectorId = message.sector_id;
+          addNotification({
+            title: 'Teammate Under Attack',
+            content: sectorId !== undefined && sectorId !== null
+              ? `${defenderName} is under attack in sector ${sectorId}`
+              : `${defenderName} is under attack`,
+            level: 'warning'
+          });
+          break;
+        }
+
+
         case 'new_message': {
           // Player-to-player hail (message_service → notification_service).
           // The backend resolves the canon delivery surfaces by priority

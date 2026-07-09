@@ -182,6 +182,54 @@ def _emit_bounty_collected(collector_id, target_id, bounty_result: Dict[str, Any
         )
 
 
+def _emit_teammate_under_attack(attacker: Player, defender: Player, sector_id: Optional[int]) -> None:
+    """Best-effort ``teammate_under_attack`` push to the DEFENDER's team-mates
+    at combat initiation (factions-and-teams.md "Combat advantages":
+    "Defensive notifications when any teammate is attacked").
+
+    Called once per ``attack_player`` fight, from the same POST-COMMIT spot
+    ``_emit_combat_phase_events`` fires from (never before the commit — a WS
+    hiccup must not be able to touch the already-landed transaction). Only
+    the defender's team hears it (the attacker's team gets nothing here —
+    that would be a different notification); the defender itself is
+    excluded via ``exclude_user`` since they already get the personal
+    ``combat_update`` frame. A solo defender (``team_id`` is ``None``) is a
+    silent no-op — there's no team to notify.
+
+    Transport mirrors ``_emit_bounty_collected`` / ``_emit_combat_phase_events``
+    verbatim: lazy import, grab the running loop, ``loop.create_task`` so the
+    send never blocks, and swallow every failure (no loop, no socket, a quiet
+    client).
+
+    NO-CANON (flag for Max): canon confirms the notification exists but not
+    its frame shape — kept deliberately small, just enough for a client
+    toast ("<defender> is under attack in sector <N>")."""
+    if not defender.team_id:
+        return
+    try:
+        import asyncio
+        from src.services.websocket_service import connection_manager
+
+        loop = asyncio.get_running_loop()
+        loop.create_task(connection_manager.broadcast_to_team(
+            str(defender.team_id),
+            {
+                "type": "teammate_under_attack",
+                "defender_id": str(defender.id),
+                "defender_name": defender.username,
+                "attacker_name": attacker.username,
+                "sector_id": sector_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+            exclude_user=str(defender.user_id) if defender.user_id else None,
+        ))
+    except Exception:
+        logger.debug(
+            "Skipped teammate_under_attack WS event (no loop or socket)",
+            exc_info=True,
+        )
+
+
 def _combat_round_deltas(combat_details: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
     """Group a fight's ``combat_details`` action log by round number (WO-DBB-RT3).
 
@@ -922,6 +970,13 @@ class CombatService:
 
         # Commit changes
         self.db.commit()
+
+        # Defensive team notification (WO-RT-TEAM-DEFENSE / factions-and-
+        # teams.md "Combat advantages: Defensive notifications when any
+        # teammate is attacked"). POST-COMMIT, fully try/except-isolated
+        # inside the emitter, fired first — a heads-up to the defender's
+        # team-mates ahead of the granular phase events below.
+        _emit_teammate_under_attack(attacker, defender, sector.sector_id if sector else None)
 
         # Granular phase WS events (WO-DBB-RT3 / combat-resolver.md "Events
         # emitted"): combat_started → combat_round(s) → combat_resolved, to the
