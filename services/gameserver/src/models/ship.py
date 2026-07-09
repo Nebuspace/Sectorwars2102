@@ -424,5 +424,13 @@ class ShipSpecification(Base):
     acquisition_methods = Column(JSONB, nullable=False, default=[])
     faction_requirements = Column(JSONB, nullable=True)
 
+    # Whether this hull can be insured at all (DATA_MODELS/ships.md:175;
+    # FEATURES/gameplay/ship-insurance.md "Non-insurable ships"; ADR-0029).
+    # Registry CONFIG, not player state — the seeder (ship_specifications_seeder.py)
+    # is the single source of truth for which hulls flip this false (Warp Jumper,
+    # Escape Pod at launch). Defaults true so every other hull is insurable
+    # without an explicit opt-in.
+    insurable = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+
     def __repr__(self):
         return f"<ShipSpecification for {self.type.name}>" 

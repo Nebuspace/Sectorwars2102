@@ -59,6 +59,18 @@ _NO_CANON_MITIGATION = {
     ShipType.NPC_SENTINEL_INTERDICTOR: {"shield_resistance": 0.20, "armor_rating": 0.20},
 }
 
+# ----------------------------------------------------------------------------
+# Non-insurable hulls — the registry source of truth for
+# ShipSpecification.insurable (DATA_MODELS/ships.md:175;
+# FEATURES/gameplay/ship-insurance.md "Non-insurable ships"; ADR-0029). Every
+# hull absent from this set seeds insurable=True (the column default); WARP_JUMPER
+# and ESCAPE_POD seed insurable=False. This replaces the old route-level
+# NON_INSURABLE_TYPES enum set that used to live in ship_upgrades.py — the gate
+# now lives entirely in data, so flipping a hull's insurability is a registry
+# edit here, never a route-code change.
+# ----------------------------------------------------------------------------
+_NON_INSURABLE_TYPES = {ShipType.WARP_JUMPER, ShipType.ESCAPE_POD}
+
 # Ship specifications based on DOCS/FEATURES/SHIP_TYPES.md
 SHIP_SPECIFICATIONS = {
     ShipType.ESCAPE_POD: {
@@ -772,6 +784,7 @@ def seed_ship_specifications(db: Session) -> None:
             **_NO_CANON_MITIGATION.get(
                 ship_type, {"shield_resistance": 0.0, "armor_rating": 0.0}
             ),
+            "insurable": ship_type not in _NON_INSURABLE_TYPES,
         }
 
         # Check if specification already exists
