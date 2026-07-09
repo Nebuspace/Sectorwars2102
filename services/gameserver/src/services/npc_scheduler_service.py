@@ -68,10 +68,12 @@ from src.models.npc_character import (
     NPCRoster,
     NPCStatus,
 )
+from src.models.faction import FactionType
 from src.models.player import Player
 from src.models.sector import Sector
 from src.models.ship import ShipSpecification
 from src.services import npc_movement_service
+from src.services.faction_service import apply_faction_rep_delta
 from src.services.npc_spawn_service import (
     KIND_CONFIG,
     POLICE_WANTED_THRESHOLD,
@@ -466,6 +468,23 @@ STATION_RECOVERY_CHECK_SECONDS = int(
 # cadence is operational.
 RECLAIM_FLAG_CHECK_SECONDS = int(
     os.environ.get("RECLAIM_FLAG_CHECK_SECONDS", str(55 * 60))
+)
+
+# Sustained-reputation-drip sweep cadence (factions-and-teams.md:229-230,
+# WO-PROG-SUSTAINED-DRIPS). Like the port-cost / station-recovery / reclaim-
+# flag sweeps, the cadence is a COARSE elapsed pre-filter (so we don't take
+# the advisory lock + scan players every 60s); the actual once-per-canonical-
+# day-per-player drip guarantee comes from the DURABLE per-player anchor —
+# Player.settings["sustained_tier"]["last_drip_day"] — which survives a
+# restart (the process-relative elapsed counter resets; the stored anchor
+# does not). Offset to 60m so it does not share a wake with the other coarse
+# probes (decay 15m / faucet 20m / snapshot 25m / idle 30m / stipend 35m /
+# bounty 40m / port-costs 45m / station-recovery 50m / reclaim-flag 55m).
+# CADENCE IS NO-CANON: canon gives the 7-day sustained threshold and the
+# per-day drip figures; the background SWEEP cadence is an implementation
+# choice — flagged for a DECISIONS.md ruling.
+SUSTAINED_REP_DRIP_CHECK_SECONDS = int(
+    os.environ.get("SUSTAINED_REP_DRIP_CHECK_SECONDS", str(60 * 60))
 )
 
 # Price-recompute flush cadence (WO-DBB-EC4, ADR-0051 SK30). The hot
@@ -3800,6 +3819,302 @@ def _run_bounty_accrual_sweep_sync() -> Dict[str, int]:
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# Sustained-reputation drips (factions-and-teams.md:220-230 "Ongoing-state
+# drip mechanics", WO-PROG-SUSTAINED-DRIPS)
+# ---------------------------------------------------------------------------
+#
+# Of the six ongoing-state drip rows in that canon table, only the two below
+# are BUILDABLE today (personal_reputation is a live Player column with no
+# unbuilt dependency). The other four are BLOCKED and intentionally NOT
+# scaffolded here: ship-skin wearing (no skin-ownership/equip system yet),
+# the contraband-per-sector-hop drip (no hop-tracking hook), and the
+# Wanted-status-docked-at-a-Fringe-port drip (no live docked-location x
+# wanted-status join exists on the scheduler side).
+#
+# Personal-reputation band thresholds — CANON numbers (factions-and-
+# teams.md:229-230), matching personal_reputation_service.REPUTATION_TIERS'
+# own Heroic (250-499) / Outlaw (-499..-250) tier boundaries. "Heroic+" reads
+# as personal_reputation >= 250 (covers Heroic AND Legendary); "Outlaw+"
+# reads as personal_reputation <= -250 (covers Outlaw, Criminal, AND
+# Villain) — exactly the canon table's ">= +250" / "<= -250" wording, not a
+# single-tier match.
+SUSTAINED_HEROIC_THRESHOLD = 250   # personal_reputation >= this -> "heroic" band
+SUSTAINED_OUTLAW_THRESHOLD = -250  # personal_reputation <= this -> "outlaw" band
+# CANON: 7+ CANONICAL days sustained before the drip starts (factions-and-
+# teams.md:229-230) — see apply_sustained_reputation_drip's docstring for the
+# wall-vs-canonical time-domain reasoning.
+SUSTAINED_DRIP_DAYS_REQUIRED = 7
+# CANON per-canonical-day drip magnitudes once sustained, applied to the
+# guardian faction that distrusts the extreme, sustained alignment.
+SUSTAINED_HEROIC_DRIP_DELTA = -5   # Fringe Alliance (FactionType.OUTLAWS)
+SUSTAINED_OUTLAW_DRIP_DELTA = -2   # Mercantile Guild (FactionType.MERCHANTS)
+
+# Durable per-player anchor key on Player.settings (additive JSONB, NO
+# migration, NO new table — NO-CANON key shape, documented here since canon
+# only specifies the drip EFFECT, not its persistence mechanism). Value
+# shape: {"band": "heroic" | "outlaw", "since_day": <canonical_day_number()
+# int the band was entered>, "last_drip_day": <canonical_day_number() int of
+# the most recently applied drip, or None>}. Both day fields are CANONICAL-
+# DAY INTEGERS (not ISO timestamps) so the 7-day comparison is a plain
+# integer subtraction — consistent with every other durable day-anchor in
+# this file (Player.settings[system_bounty_pot_period], Galaxy.
+# state[treasury_reconciliation_last_day]) and immune to timezone/parsing
+# edge cases an ISO string invites.
+_SUSTAINED_TIER_SETTINGS_KEY = "sustained_tier"
+
+
+def apply_sustained_reputation_drip(
+    db: Session, player: Player, today: int
+) -> Optional[str]:
+    """Pure per-player state-machine step for the sustained-reputation drip.
+    Mutates ``player.settings`` (dict-copy reassignment + flag_modified — the
+    FL-INTEGRITY pattern in emergent_reputation_service._store_throttle_
+    bucket) and, when a drip is actually due, calls the module-level
+    ``apply_faction_rep_delta`` — NEVER a direct Reputation write, so a
+    caller-supplied fake/spy on that name observes every drip without this
+    function needing to know anything about the Reputation/Faction schema.
+
+    ``apply_faction_rep_delta`` is the SYNC, flush-only primitive built for
+    in-transaction penalty hooks outside a request/route (combat_service,
+    mining_service, contraband_service, distress_service all call it the
+    same way) — the only surface usable from THIS sync scheduler sweep.
+    ``FactionService.update_reputation`` is async, commits internally
+    mid-transaction, and fires websocket sends; calling it here would
+    double-commit and break the sweep's per-row transaction exactly the way
+    calling it from combat_service's sync path would (see apply_faction_rep_
+    delta's own docstring). The CALLER owns ``player``'s row lock and the
+    transaction commit — this function only flushes (via apply_faction_rep_
+    delta) and reassigns the JSONB attribute; it never commits.
+
+    TIME DOMAIN: ``today`` MUST be a CANONICAL day index
+    (``canonical_day_number()``), not a wall-clock UTC day. This drip is a
+    simulation-time consequence of a player's reputation STATE persisting,
+    not a real-world-engagement signal — unlike the daily rep-stipend
+    faucet's deliberate wall-clock UTC gate (which rewards an actual login
+    THAT calendar day and would make no sense accelerated), a sustained-
+    reputation drip belongs in the same time domain as every other
+    reputation/economy mechanic keyed off this scheduler's canonical clock:
+    _run_weekly_decay_sync's canonical-week decay, _run_bounty_accrual_
+    sweep_sync's canonical-day pot growth, and the ongoing-state drip
+    table's own intro ("per-tick updates are accumulated and flushed hourly
+    by the wrapper" — already a simulation-clock cadence, not a real-time
+    one). Dev-observable at GAME_TIME_SCALE=144: a canonical day elapses
+    every ~10 wall-clock minutes, so the 7-canonical-day sustained threshold
+    resolves in ~70 wall-clock minutes — the same canonical-week span
+    _run_weekly_decay_sync's own docstring cites.
+
+    STATE MACHINE:
+      * current personal_reputation resolves to band "heroic" (>= +250),
+        "outlaw" (<= -250), or None (back in the middle).
+      * band is None: if a tracker exists, CLEAR it (pop the settings key) —
+        canon's "sustained" wording carries no partial credit, so dropping
+        out of range and back in later starts the clock over. If no tracker
+        exists, a clean no-op (no write).
+      * band is set and (no tracker exists, OR the tracker's band differs,
+        OR the tracker's since_day is corrupted/unparsable/in the future):
+        START a fresh tracker — since_day = today, last_drip_day = None, no
+        drip yet. A flip straight from heroic to outlaw (or vice versa) is
+        treated as leaving the old band (its clock resets) and entering the
+        new one (its own clock starts at zero) — canon has no notion of a
+        combined clock across the two mutually-exclusive bands.
+      * band matches the tracker and (today - since_day) < 7: not yet
+        sustained — no write (nothing changed; since_day is preserved as-is
+        by simply not touching settings).
+      * band matches, elapsed >= 7, and last_drip_day >= today: ALREADY
+        dripped this canonical day — idempotent no-op, no write, no second
+        call to apply_faction_rep_delta (a restart or a second sweep wake
+        within the same canonical day never double-drips).
+      * band matches, elapsed >= 7, and last_drip_day < today (or None):
+        APPLY today's drip via apply_faction_rep_delta, then persist
+        last_drip_day = today (since_day is preserved, NOT reset — the
+        sustained clock keeps running for as long as the band holds, so a
+        player who stays Heroic for 30 days drips every one of the 23 days
+        past the 7-day threshold).
+
+    Returns "heroic" or "outlaw" when a drip was actually applied this call,
+    else None (every other branch above, including a fresh/cleared/reset
+    tracker or a not-yet-sustained/already-dripped no-op)."""
+    rep = player.personal_reputation or 0
+    if rep >= SUSTAINED_HEROIC_THRESHOLD:
+        band = "heroic"
+    elif rep <= SUSTAINED_OUTLAW_THRESHOLD:
+        band = "outlaw"
+    else:
+        band = None
+
+    settings = player.settings if isinstance(player.settings, dict) else {}
+    tracker = settings.get(_SUSTAINED_TIER_SETTINGS_KEY)
+    if not isinstance(tracker, dict):
+        tracker = None
+
+    def _write(new_tracker: Optional[Dict[str, Any]]) -> None:
+        new_settings = dict(settings)
+        if new_tracker is None:
+            new_settings.pop(_SUSTAINED_TIER_SETTINGS_KEY, None)
+        else:
+            new_settings[_SUSTAINED_TIER_SETTINGS_KEY] = new_tracker
+        player.settings = new_settings
+        flag_modified(player, "settings")
+
+    if band is None:
+        if tracker is not None:
+            _write(None)  # left the sustained range -- clock resets to zero
+        return None
+
+    since_day: Optional[int] = None
+    if tracker is not None and tracker.get("band") == band:
+        try:
+            candidate_since = int(tracker.get("since_day"))
+            if candidate_since <= today:
+                since_day = candidate_since
+        except (TypeError, ValueError):
+            since_day = None
+
+    if since_day is None:
+        # First entry into this band, a flip from the other band, or a
+        # corrupted/future anchor -- fresh clock, no drip yet.
+        _write({"band": band, "since_day": today, "last_drip_day": None})
+        return None
+
+    if today - since_day < SUSTAINED_DRIP_DAYS_REQUIRED:
+        return None  # not yet sustained -- tracker unchanged, no write
+
+    last_drip_day: Optional[int] = None
+    try:
+        last_drip_raw = tracker.get("last_drip_day")
+        last_drip_day = int(last_drip_raw) if last_drip_raw is not None else None
+    except (TypeError, ValueError):
+        last_drip_day = None
+
+    if last_drip_day is not None and last_drip_day >= today:
+        return None  # already dripped this canonical day -- idempotent no-op
+
+    if band == "heroic":
+        apply_faction_rep_delta(
+            db, player.id, FactionType.OUTLAWS, SUSTAINED_HEROIC_DRIP_DELTA,
+            "Sustained Heroic+ personal reputation (7+ canonical days) -- "
+            "Fringe Alliance distrust drip",
+        )
+    else:
+        apply_faction_rep_delta(
+            db, player.id, FactionType.MERCHANTS, SUSTAINED_OUTLAW_DRIP_DELTA,
+            "Sustained Outlaw+ personal reputation (7+ canonical days) -- "
+            "Mercantile Guild distrust drip",
+        )
+
+    _write({"band": band, "since_day": since_day, "last_drip_day": today})
+    return band
+
+
+def _run_sustained_reputation_drip_sweep_sync() -> Dict[str, int]:
+    """Own-session wrapper that DRIVES ``apply_sustained_reputation_drip``
+    for every candidate player, once per canonical day per player
+    (WO-PROG-SUSTAINED-DRIPS).
+
+    DISCIPLINE — mirrors _run_bounty_accrual_sweep_sync / _run_daily_
+    stipend_sweep_sync EXACTLY: own SessionLocal (never the request session,
+    never the async engine); xact-level advisory lock so a second
+    gameserver instance skips instead of double-dripping (the lock
+    auto-releases on the first commit), then commit immediately to claim the
+    sweep without pinning the lock; a candidate-id query, then a per-row
+    with_for_update re-read so a concurrent reputation change can't race the
+    drip; per-row commit and per-row try/except — one bad player cannot
+    abort the batch or roll back an already-processed one.
+
+    CANDIDATE GATE: a player is a candidate iff EITHER (a) currently in a
+    sustained band (personal_reputation >= +250 or <= -250 — so a fresh
+    entry can start its clock, and an existing sustained player can keep
+    dripping), OR (b) already carries a ``sustained_tier`` settings tracker
+    (via the JSONB ``?`` has_key operator) even if no longer in-band — this
+    second arm is what lets a player who has DROPPED OUT of the sustained
+    range (e.g. Heroic -> Lawful) get their tracker CLEARED by apply_
+    sustained_reputation_drip on the next sweep wake; without it, a player
+    who fell out of range would never be re-selected and their stale
+    since_day would incorrectly resume counting (false partial credit) if
+    they climbed back into the same band later. The per-row re-read + the
+    state machine inside apply_sustained_reputation_drip re-confirm
+    everything on the locked row regardless of which arm matched.
+
+    Returns {"players_scanned", "heroic_dripped", "outlaw_dripped"} —
+    the drip counts are NONZERO-drip counts (a scanned player who didn't
+    drip this call — not yet sustained, already dripped today, or a
+    clear/reset with no drip — is not counted in either)."""
+    from src.core.database import SessionLocal
+
+    result = {"players_scanned": 0, "heroic_dripped": 0, "outlaw_dripped": 0}
+
+    db = SessionLocal()
+    try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _ADVISORY_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            return result
+        # Release the lock-acquiring transaction before per-row work (same
+        # rationale as every other daily sweep): claim the sweep, then iterate.
+        db.commit()
+
+        today = canonical_day_number()
+
+        candidate_ids = (
+            db.query(Player.id)
+            .filter(
+                Player.is_active.is_(True),
+                (
+                    (Player.personal_reputation >= SUSTAINED_HEROIC_THRESHOLD)
+                    | (Player.personal_reputation <= SUSTAINED_OUTLAW_THRESHOLD)
+                    | (Player.settings.has_key(_SUSTAINED_TIER_SETTINGS_KEY))
+                ),
+            )
+            .all()
+        )
+
+        for (player_id,) in candidate_ids:
+            try:
+                player = (
+                    db.query(Player)
+                    .filter(Player.id == player_id)
+                    .with_for_update()
+                    .first()
+                )
+                if player is None or not player.is_active:
+                    db.rollback()  # release row lock; nothing to do
+                    continue
+
+                result["players_scanned"] += 1
+                dripped = apply_sustained_reputation_drip(db, player, today)
+
+                db.commit()  # drip/tracker-write + anchor advance commit atomically
+                if dripped == "heroic":
+                    result["heroic_dripped"] += 1
+                elif dripped == "outlaw":
+                    result["outlaw_dripped"] += 1
+            except Exception:
+                logger.exception(
+                    "Sustained-reputation-drip sweep: processing failed for "
+                    "player %s", player_id,
+                )
+                db.rollback()
+
+        if result["heroic_dripped"] or result["outlaw_dripped"]:
+            logger.info(
+                "Sustained-reputation-drip sweep: canonical day %d -- "
+                "%d Heroic+ drip(s) (Fringe Alliance), %d Outlaw+ drip(s) "
+                "(Mercantile Guild), %d candidate(s) scanned",
+                today, result["heroic_dripped"], result["outlaw_dripped"],
+                result["players_scanned"],
+            )
+        return result
+    except Exception:
+        logger.exception("Sustained-reputation-drip sweep failed")
+        db.rollback()
+        return result
+    finally:
+        db.close()
+
+
 def _run_port_operating_costs_sync() -> Dict[str, int]:
     """Charge each player-owned port its accrued maintenance/upkeep and force-sell
     any port that has been insolvent for the canon threshold (WO-B3). This is the
@@ -5916,6 +6231,32 @@ async def npc_scheduler_loop() -> None:
                 raise
             except Exception:
                 logger.exception("NPC scheduler: reclaim-flag sweep crashed (loop continues)")
+
+        # Sustained-reputation-drip sweep (factions-and-teams.md:229-230,
+        # WO-PROG-SUSTAINED-DRIPS) — a player sustaining Heroic+ personal
+        # reputation (>= +250) for 7+ canonical days drips -5/day Fringe
+        # Alliance; a player sustaining Outlaw+ (<= -250) for 7+ canonical
+        # days drips -2/day Mercantile Guild. Like the port-cost /
+        # station-recovery / reclaim-flag sweeps, the cadence is a COARSE
+        # elapsed pre-filter; the once-per-canonical-day-per-player
+        # guarantee + restart-proofing come from the durable per-player
+        # anchor in Player.settings["sustained_tier"].
+        if elapsed % SUSTAINED_REP_DRIP_CHECK_SECONDS == 0:
+            try:
+                sustained = await asyncio.to_thread(_run_sustained_reputation_drip_sweep_sync)
+                if sustained.get("heroic_dripped") or sustained.get("outlaw_dripped"):
+                    logger.info(
+                        "NPC scheduler: sustained-reputation-drip sweep — "
+                        "%d Heroic+ drip(s), %d Outlaw+ drip(s) (of %d "
+                        "candidate(s) scanned)",
+                        sustained.get("heroic_dripped", 0),
+                        sustained.get("outlaw_dripped", 0),
+                        sustained.get("players_scanned", 0),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("NPC scheduler: sustained-reputation-drip sweep crashed (loop continues)")
 
         # Price-recompute flush sweep (WO-DBB-EC4, ADR-0051 SK30) — settle any
         # station the hot read path deferred (pending_price_recomputation set
