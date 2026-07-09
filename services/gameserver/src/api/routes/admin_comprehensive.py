@@ -1432,15 +1432,39 @@ async def get_real_time_analytics(
     try:
         analytics_service = AnalyticsService(db)
         metrics = analytics_service.get_real_time_metrics()
-        
+
+        # WO-ADM-ONLINE-COUNT: overwrite the User.last_login-within-1h
+        # approximation with the live presence-set cardinality
+        # (activity:online_players -- OPERATIONS/player-activity.md:30-32).
+        # `redis_pool is None` (never connected) is indistinguishable from
+        # "genuinely zero online" at get_online_player_count()'s own return
+        # value, so the pool is checked directly here rather than trusting a
+        # bare 0; any other failure (pool connected but the call itself
+        # raises) falls through the except. Either path keeps the
+        # last_login-derived figure already in `metrics` -- never a 500.
+        try:
+            from src.services.player_activity_service import get_player_activity_service
+            from src.services.redis_service import get_redis_service
+
+            redis_svc = await get_redis_service()
+            if redis_svc.redis_pool is not None:
+                activity_service = await get_player_activity_service()
+                metrics["players_online_now"] = await activity_service.get_online_player_count()
+                metrics["players_online_source"] = "presence"
+            else:
+                metrics["players_online_source"] = "fallback"
+        except Exception:
+            logger.warning("presence online-count lookup failed, keeping last_login fallback", exc_info=True)
+            metrics["players_online_source"] = "fallback"
+
         logger.info(f"Admin {current_admin.username} requested real-time analytics")
-        
+
         return {
             "success": True,
             "data": metrics,
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         logger.error(f"Error fetching real-time analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch analytics: {str(e)}")
