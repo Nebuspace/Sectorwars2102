@@ -48,6 +48,65 @@ NPC_KILL_LOOT_MINT_MIN_PCT = 0.05  # NO-CANON, flagged — lifecycle.md "≈ 5%"
 NPC_KILL_LOOT_MINT_MAX_PCT = 0.15  # NO-CANON, flagged — lifecycle.md "≈ 15%"
 NPC_KILL_LOOT_MINT_CAP = 5000      # NO-CANON, flagged — per-encounter ceiling
 
+# ── NPC quantum-shard drop table (WO-CMB-QDROP-NPC-1 / FEATURES/galaxy/
+# quantum-resources.md §3 "Combat salvage"): "Quantum Smuggler NPC" kill →
+# 5% chance of 1-2 shards; "Rogue Scientist encounter" kill → 15% chance of
+# 1-3 shards. The percentages/ranges themselves ARE canon — not NO-CANON
+# numbers.
+#
+# ⚠️ NO-CANON MAPPING — FLAGGED FOR MAX: canon names two NPC kinds that do
+# not exist as spawn kinds in npc_spawn_service.py. Existing substrate:
+# NPCArchetype.TRADER personas draw a persona TITLE from
+# TRADER_TITLES_BY_TIER["NOTORIOUS"] (npc_spawn_service.py), which includes
+# "Smuggler" and "Black Marketeer"; NPCArchetype.RESEARCHER is declared but
+# never spawned (npc_spawn_service.py only spawns TRADER / HOSTILE_RAIDER /
+# LAW_ENFORCEMENT today). We bridge the canon table onto this vocabulary: a
+# Smuggler/Black-Marketeer-titled TRADER kill rolls the 5%/1-2 row; a
+# RESEARCHER-archetype kill (currently unspawned, so this row is inert
+# until a future npc_spawn_service WO) rolls the 15%/1-3 row; every other
+# NPC never drops. If Max prefers dedicated QUANTUM_SMUGGLER /
+# ROGUE_SCIENTIST spawn kinds instead, that is a follow-up
+# npc_spawn_service WO, not a rename here. Destroyed-gate drops
+# (quantum-resources.md's third salvage row) stay 0% — no gate-destruction
+# combat path exists yet.
+NPC_QUANTUM_DROP_SMUGGLER_TITLES = frozenset({"Smuggler", "Black Marketeer"})
+NPC_QUANTUM_DROP_SMUGGLER_CHANCE = 0.05
+NPC_QUANTUM_DROP_SMUGGLER_MIN = 1
+NPC_QUANTUM_DROP_SMUGGLER_MAX = 2
+NPC_QUANTUM_DROP_RESEARCHER_CHANCE = 0.15
+NPC_QUANTUM_DROP_RESEARCHER_MIN = 1
+NPC_QUANTUM_DROP_RESEARCHER_MAX = 3
+
+
+def _roll_npc_quantum_drop(looted_npc: Optional["NPCCharacter"]) -> int:  # noqa: F821 (typing-only forward ref, lazily imported below)
+    """Roll the NPC quantum-shard drop table on a genuine NPC-hull kill
+    (quantum-resources.md §3 "Combat salvage"). Returns the shard count to
+    award — 0 if ``looted_npc`` is None or its archetype/title isn't one of
+    the two mapped rows (every non-mapped NPC never drops). See the
+    NO-CANON mapping note on the NPC_QUANTUM_DROP_* constants above for why
+    a TRADER persona title and the RESEARCHER archetype stand in for
+    canon's "Quantum Smuggler" / "Rogue Scientist" kinds. Uses the same
+    random.random() gate + random.randint() magnitude idiom as the rest of
+    this module's combat rolls, so tests can seed/script it consistently.
+    """
+    if looted_npc is None:
+        return 0
+    from src.models.npc_character import NPCArchetype as _Arch
+    if (
+        looted_npc.archetype == _Arch.TRADER
+        and (looted_npc.title or "") in NPC_QUANTUM_DROP_SMUGGLER_TITLES
+    ):
+        chance = NPC_QUANTUM_DROP_SMUGGLER_CHANCE
+        lo, hi = NPC_QUANTUM_DROP_SMUGGLER_MIN, NPC_QUANTUM_DROP_SMUGGLER_MAX
+    elif looted_npc.archetype == _Arch.RESEARCHER:
+        chance = NPC_QUANTUM_DROP_RESEARCHER_CHANCE
+        lo, hi = NPC_QUANTUM_DROP_RESEARCHER_MIN, NPC_QUANTUM_DROP_RESEARCHER_MAX
+    else:
+        return 0
+    if random.random() < chance:
+        return random.randint(lo, hi)
+    return 0
+
 
 def _combat_log_region_snapshot(sector: Optional[Sector]) -> Optional[uuid.UUID]:
     """The ``CombatLog.region_id_snapshot`` value for a fight resolved in
@@ -767,8 +826,9 @@ class CombatService:
         # "PvP Warp Jumper kill (pre-expedition) → 100% of victim's unused
         # shards/crystals"). The defeated PLAYER's quantum_shards/crystals (Player
         # columns, not the ship) transfer in full to the VICTOR player on actual
-        # ship destruction. Drop-FRACTION (the NPC 5%/15% drop tables) is NO-CANON
-        # for PvP and deferred — PvP canon is a flat 100%. _transfer_quantum_wallet
+        # ship destruction. Drop-FRACTION (the NPC 5%/15% drop tables, now LIVE
+        # in attack_npc_ship via _roll_npc_quantum_drop / WO-CMB-QDROP-NPC-1) is
+        # NO-CANON for PvP — PvP canon stays a flat 100%. _transfer_quantum_wallet
         # zeroes the loser's wallet, so a mutual-destruction double-fire (both
         # branches true) and a multi-round resolution can never double-transfer,
         # and a victim carrying 0 is a no-op.
@@ -1099,6 +1159,7 @@ class CombatService:
         # profit rather than minting a large seed into the economy.
         looted_credits = 0
         minted_loot = 0
+        quantum_shards_dropped = 0
         if combat_result["result"] == CombatResult.ATTACKER_VICTORY:
             full_contents = (npc_ship.cargo or {}).get("contents") or {}
             combat_result["cargo_stolen"] = {
@@ -1170,6 +1231,28 @@ class CombatService:
                             minted_loot, loot_pct * 100, hull_value,
                             NPC_KILL_LOOT_MINT_CAP, attacker.id, npc_ship.id,
                         )
+
+            # NPC quantum-shard drop table (WO-CMB-QDROP-NPC-1 /
+            # quantum-resources.md §3 "Combat salvage"). Same one-time gate
+            # as the loot faucet above — ATTACKER_VICTORY (this branch) +
+            # defender_ship_destroyed, asserted explicitly for the same
+            # non-farmable reason: a fled/survived NPC or a per-round tick
+            # can never roll this. looted_npc is None-safe inside the
+            # helper, so a hull with no NPCCharacter row (defense-in-depth)
+            # is silently a no-op rather than an error.
+            if looted_npc is not None and combat_result["defender_ship_destroyed"]:
+                quantum_shards_dropped = _roll_npc_quantum_drop(looted_npc)
+                if quantum_shards_dropped > 0:
+                    attacker.quantum_shards = (
+                        (attacker.quantum_shards or 0) + quantum_shards_dropped
+                    )
+                    logger.info(
+                        "NPC quantum-shard drop: %d shard(s) to player %s "
+                        "from NPC %s (archetype=%s, title=%s; "
+                        "quantum-resources.md §3 NPC drop table)",
+                        quantum_shards_dropped, attacker.id, looted_npc.id,
+                        looted_npc.archetype, looted_npc.title,
+                    )
 
             # Notoriety consequence: gunning down a REPUTABLE merchant is a
             # crime — the canon attack_innocent penalty (−100, mirroring PvP).
@@ -1517,6 +1600,11 @@ class CombatService:
         }
         if police_response:
             result_dict["police_response"] = police_response
+        # FE-consumable NPC quantum drop: present only on an actual hit
+        # (mirrors the police_response idiom above) so the normal no-drop
+        # case doesn't spam every NPC-kill payload with a zero field.
+        if quantum_shards_dropped > 0:
+            result_dict["quantum_shards_dropped"] = quantum_shards_dropped
         return result_dict
 
     def attack_sector_drones(self, attacker_id: uuid.UUID, sector_id: int) -> Dict[str, Any]:
@@ -4188,8 +4276,9 @@ class CombatService:
         swap. Zeroing the victim's wallet makes the transfer idempotent: a
         mutual-destruction double-fire or a re-entered resolution cannot move the
         same resource twice, and a victim holding 0 of both is a no-op (no write).
-        Drop-FRACTION (the NPC drop-table percentages) is NO-CANON for PvP and is
-        deferred — the canon PvP yield is a flat 100% transfer.
+        Drop-FRACTION (the NPC drop-table percentages, now LIVE in
+        attack_npc_ship via _roll_npc_quantum_drop / WO-CMB-QDROP-NPC-1) is
+        NO-CANON for PvP — the canon PvP yield stays a flat 100% transfer.
         """
         if not victor or not victim or victor.id == victim.id:
             return
