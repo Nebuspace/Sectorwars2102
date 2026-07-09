@@ -39,6 +39,9 @@ Acceptance-criteria map (WO-GWQ-STRANDING, 11 numbered + 4 "Plus" items):
         test_slipdrive_begin_refuses_harmonizing_ship
         TestConcurrentRace::test_beacon_second_fire_within_cooldown_rejected /
         test_slipdrive_second_begin_while_charging_rejected
+        TestZeroHopSelfMatch::test_distress_beacon_fired_from_fedspace_is_zero_hop_noop /
+        test_slipdrive_completed_from_non_sink_sector_is_zero_hop_noop (NO-CANON
+        0-hop self-match design choice, pinned per team-lead instruction)
 """
 from __future__ import annotations
 
@@ -696,6 +699,77 @@ class TestConcurrentRace:
         slipdrive_service.begin_charge(db, player.id, now=t0)
         with pytest.raises(SlipdriveError, match="already charging"):
             slipdrive_service.begin_charge(db, player.id, now=t0 + timedelta(seconds=1))
+
+
+# --- Plus: 0-hop self-match (NO-CANON, Max-gated -- see DECISIONS) ----------- #
+#
+# Both tools' BFS checks `matches(start_pk)` before ever touching the graph
+# (see `_bfs_nearest` in each service): firing the beacon FROM a fedspace
+# sector, or completing a Slipdrive charge FROM an already-non-sink sector,
+# resolves at hop 0 -- a harmless no-op teleport-to-self that still pays the
+# full cost (rep hit / fuel + turns). This is a deliberate design choice
+# (documented in both services' own docstrings), not an unhandled edge case:
+# pinned here per team-lead's explicit instruction so a future refactor
+# can't silently flip it without a test noticing.
+
+
+@pytest.mark.unit
+class TestZeroHopSelfMatch:
+    def test_distress_beacon_fired_from_fedspace_is_zero_hop_noop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        origin = _sector(1, fedspace=True)  # already fedspace -- no other sectors/edges needed
+        ship = _fake_ship(sector_id=origin.sector_id)
+        player = _fake_player(current_sector_id=origin.sector_id, current_ship=ship, turns=500, credits=999)
+        db = _FakeSession(player=player, sectors=[origin], warps=[])
+        rep_calls = _spy_rep_delta(monkeypatch)
+        move_calls = _install_movement_and_docking_stubs(monkeypatch)
+        pinned_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        result = distress_service.use_distress_beacon(db, player.id, now=pinned_now)
+
+        assert result["destination_sector_id"] == origin.sector_id
+        assert result["hops"] == 0
+        assert result["reputation_delta"] == -10  # the cost still applies
+        assert player.current_sector_id == origin.sector_id  # unchanged (was already there)
+        assert player.turns == 500  # still free
+        assert player.credits == 999  # still unaffected (distress never touches credits)
+        assert player.last_distress_at == pinned_now  # cooldown still arms
+        assert rep_calls == [(player.id, FactionType.FEDERATION, -10, distress_service.DISTRESS_REASON)]
+        # No actual sector transition -> no presence-sync / docking-release call fired
+        assert move_calls["presence"] == []
+        assert move_calls["release"] == []
+
+    def test_slipdrive_completed_from_non_sink_sector_is_zero_hop_noop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        origin = _sector(1)  # NOT a sink -- has its own outbound edge below
+        other = _sector(2)
+        ship = _real_ship(sector_id=origin.sector_id)
+        player = _fake_player(current_sector_id=origin.sector_id, current_ship=ship, turns=100, credits=10000)
+        spec = SimpleNamespace(type=ShipType.WARP_JUMPER, quantum_jump_capable=True)
+        db = _FakeSession(
+            player=player, spec=spec, sectors=[origin, other],
+            warps=[_edge(origin, other, bidirectional=False)],  # origin -> other gives origin outbound reach
+        )
+        move_calls = _install_movement_and_docking_stubs(monkeypatch)
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        slipdrive_service.begin_charge(db, player.id, now=t0)
+        ready_at = t0 + timedelta(hours=CHARGE_HOURS, seconds=1)
+        result = slipdrive_service.complete_charge(db, player.id, now=ready_at)
+
+        assert result["destination_sector_id"] == origin.sector_id
+        assert result["hops"] == 0
+        expected_fuel = slipdrive_service._fuel_cost(0)  # base cost only, no hop multiplier -- still charged
+        assert expected_fuel == FUEL_BASE
+        assert result["fuel_spent"] == expected_fuel
+        assert player.credits == 10000 - CHARGE_TURN_COST * 0 - expected_fuel  # turns are separate from credits
+        assert player.current_sector_id == origin.sector_id  # unchanged (was already there)
+        assert ship.equipment_slots.get(slipdrive_service._EQUIPMENT_KEY) is None  # charge cleared regardless
+        # No actual sector transition -> no presence-sync / docking-release call fired
+        assert move_calls["presence"] == []
+        assert move_calls["release"] == []
 
 
 # --- Accept #10: movement_service.py / regional_governance_service.py untouched --- #
