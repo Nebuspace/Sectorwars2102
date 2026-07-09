@@ -282,7 +282,48 @@ class Player(Base):
         """Get player's reputation score in specific region"""
         membership = self.get_regional_membership(region_id)
         return membership.reputation_score if membership else 0
-    
+
+    def is_wanted_at(self, faction_code: Optional[str], threshold) -> bool:
+        """Interim Wanted-standing check for faction-patrol pursuit
+        (SYSTEMS/sector-presence.md "NPC faction patrols" encounter leg).
+
+        NO-CANON semantics (WO-RT-PATROL-ENCOUNTER): the doc says
+        ``is_wanted_at`` "consults Player.personal_reputation, the
+        player's active stolen-ship reports, and standing with the named
+        faction" without specifying how the signals combine. This build
+        ORs three conservative checks (any one true -> wanted):
+          1. The existing Suspect/Wanted flags (is_suspect / is_wanted).
+          2. personal_reputation <= threshold -- mirrors police-forces.md's
+             own Wanted-Status predicate (personal_reputation < -500),
+             generalized to whatever threshold the calling patrol carries
+             (police squads seed wanted_threshold = -500 today, see
+             npc_spawn_service.POLICE_WANTED_THRESHOLD).
+          3. Standing with the named faction (Reputation.current_value <=
+             threshold) via faction_reputations, resolving faction_code
+             against Faction.name -- the established faction_code lookup
+             convention already used by construction_service._faction_rep_tier,
+             docking_service, trading_service, and haggle_service.
+        Active stolen-ship reports (SYSTEMS/ship-registry.md) have no live
+        table in this codebase -- not consulted; flagged, not invented.
+        Defensive: an unresolvable threshold, an unknown faction_code, or
+        a missing faction_reputations entry never raises -- returns False.
+        """
+        if self.is_wanted or self.is_suspect:
+            return True
+        try:
+            thresh = int(threshold)
+        except (TypeError, ValueError):
+            return False
+        if (self.personal_reputation or 0) <= thresh:
+            return True
+        if not faction_code:
+            return False
+        for rep in (self.faction_reputations or []):
+            faction = getattr(rep, "faction", None)
+            if faction is not None and getattr(faction, "name", None) == faction_code:
+                return (getattr(rep, "current_value", 0) or 0) <= thresh
+        return False
+
     def can_vote_in_region(self, region_id: str) -> bool:
         """Check if player can vote in region's elections/referendums"""
         membership = self.get_regional_membership(region_id)

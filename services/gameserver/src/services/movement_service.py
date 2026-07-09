@@ -1877,7 +1877,67 @@ class MovementService:
                 "count": hostile_drone_count,
                 "threat_level": "low" if hostile_drone_count < 10 else "medium"
             })
-        
+
+        # Check for faction patrols (Wanted-status detection --
+        # WO-RT-PATROL-ENCOUNTER, sector-presence.md "NPC faction
+        # patrols"). Canon's pseudocode reads sector.defenses['patrol_ships']
+        # as a list of squad dicts, but that key is ALREADY a live SCALAR
+        # INT elsewhere in this codebase -- station siege-defense fire
+        # power (combat_service.py _resolve_port_combat), admin's
+        # security_level rollup, and MILITARY_ZONE seeding
+        # (nexus_generation_service.py / bang_import_service.py) all
+        # read/write it as an int; nexus_generation_service.py even
+        # comments "patrol_ships MUST be a SCALAR INT, never a [list]".
+        # The already-shipped police/pirate squad writer
+        # (npc_spawn_service.py) hit this exact conflict already and
+        # deliberately lands squad rows under a SEPARATE dedicated key --
+        # POLICE_PATROL_DEFENSES_KEY = "police_patrol_ships" -- flagging
+        # the divergence there rather than silently overloading
+        # patrol_ships. This leg follows that precedent.
+        #
+        # NO-CANON / PARKED (flagged to the orchestrator, not silently
+        # invented): the doc's pseudocode also has this leg call
+        # "combat_resolver.attack_player(patrol, player) directly" as
+        # non-optional, NPC-initiated combat. combat_service.py has no
+        # entry point shaped for that -- attack_player requires two real
+        # Player rows with a current_ship; a squad row is a plain dict,
+        # not a Player. The squads npc_spawn_service seeds are already
+        # placed as live NPCCharacter+Ship presence entries (added to
+        # this same sector's players_present precisely "to make the NPCs
+        # visible in COMMS and the combat target list"), and the
+        # already-shipped v1 scope for those same squads explicitly
+        # defers automatic engagement: npc_spawn_service.py's module
+        # docstring says v1 has "no NPC-initiated combat", and
+        # npc_engagement_service.py's docstring says "combat with the
+        # arrived squad is player-initiated PvE via the existing attack
+        # path". Auto-firing combat here would silently override that
+        # documented decision without sign-off, so this leg stops at
+        # detection -- an informational encounter entry, matching the
+        # players/hazard/drones legs above, which are all pings the
+        # client surfaces rather than forced combat calls.
+        patrols = (sector.defenses or {}).get("police_patrol_ships")
+        if isinstance(patrols, list):
+            for patrol in patrols:
+                if not isinstance(patrol, dict):
+                    continue
+                threshold = patrol.get("wanted_threshold")
+                if threshold is None:
+                    continue
+                faction_code = patrol.get("faction_code")
+                try:
+                    matched = player.is_wanted_at(faction_code, threshold)
+                except Exception:
+                    continue
+                if matched:
+                    encounters.append({
+                        "type": "faction_patrol",
+                        "faction": faction_code,
+                        "squad": patrol.get("squad_kind"),
+                        "ship_count": patrol.get("ship_count"),
+                        "threat_level": "high",
+                        "engagement": "pursuit"
+                    })
+
         return encounters
     
     def _check_for_tunnel_events(self, player: Player, from_sector_id: int, to_sector_id: int) -> List[Dict[str, Any]]:
