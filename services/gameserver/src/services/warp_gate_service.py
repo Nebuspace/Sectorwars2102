@@ -2384,3 +2384,224 @@ def transfer_gate(
             _access_mode_of(tunnel) if tunnel is not None else ACCESS_MODE_PUBLIC
         ),
     }
+
+
+# --- Region-termination cascade (ADR-0052 SK38 / ADR-0050, WO-GWQ-GATE-CASCADE) --
+# KERNEL ONLY -- no caller anywhere in src/ yet. The region-lifecycle epic
+# (structures.py's `_is_border_contested` docstring: "Depends on
+# region-lifecycle, which is unbuilt") is what will eventually invoke this
+# once a real region-cleanup orchestrator exists. Exercised directly by
+# tests/unit/test_gate_region_cascade.py in the meantime.
+
+# ADR-0052 SK38 / warp-gates.md "Region-termination cascade": 50% of the
+# construction-cost snapshot, as exact integer halving (no float rounding
+# risk on a credits figure) -- equals floor(0.5 * construction_cost) for the
+# non-negative Integer column.
+GATE_CASCADE_REFUND_DIVISOR = 2
+
+
+def _notify_gate_cascade_destroyed(
+    db: Session, owner: Player, gate_name: str, region_name: str, refund_amount: int
+) -> None:
+    """Best-effort, offline-survivable notice -- mirrors medal_service's
+    _notify_medal_awarded self-addressed system Message convention
+    (sender_id == recipient_id == owner.id; the Message model's sender_id FK
+    is non-null and a cascade teardown has no human sender).
+
+    warp-gates.md's own template calls for "realtime broadcast + ARIA
+    narration". This kernel takes a bare (db, region_id) signature with no
+    ConnectionManager/manager handle (that's async, live-connection state --
+    see notification_service.py's own PARKED precedent for the analogous gap
+    on the `push` delivery surface), so the live-broadcast half is PARKED
+    here. The persistent inbox message is the durable half of the canon
+    requirement and is what actually reaches an OFFLINE owner -- the case
+    this cascade exists for in the first place. Wording is NO-CANON (canon
+    states the facts the message must carry, not exact prose). Fully
+    defensive: any failure here must never break the teardown or its
+    already-applied refund.
+    """
+    try:
+        from src.models.message import Message
+
+        message = Message(
+            sender_id=owner.id,
+            recipient_id=owner.id,
+            subject="Warp gate destroyed — region terminated",
+            content=(
+                f"Your warp gate {gate_name} has been destroyed — the "
+                f"{region_name} side terminated. A 50% construction-cost "
+                f"refund of {refund_amount:,} credits has been credited to "
+                "your account."
+            ),
+            message_type="system",
+            priority="high",
+        )
+        db.add(message)
+    except Exception:
+        logger.warning(
+            "Cascade-teardown notification failed for owner %s (refund "
+            "already applied)", owner.id, exc_info=True,
+        )
+
+
+def cascade_region_gate_teardown(db: Session, region_id) -> Dict[str, Any]:
+    """ADR-0052 SK38 / ADR-0050 / warp-gates.md "Region-termination cascade":
+    called BY the future region-lifecycle cleanup orchestrator once a region
+    enters cleanup. Tears down every player-built warp gate with an endpoint
+    sector in `region_id`:
+
+      1. Both endpoints severed atomically. The traversable connection IS
+         the linked WarpTunnel row (movement_service._has_player_gate reads
+         ONLY WarpTunnel.status == ACTIVE, never WarpGate.status -- deleting
+         the tunnel is what actually cuts traversal); the WarpGate row is
+         flipped to the pre-existing, previously-never-written COLLAPSED
+         status (its own docstring: "Destroyed (combat / cascade)") rather
+         than hard-deleted, so the row survives as an idempotency marker +
+         audit trail -- the same pattern this file already uses on cancel
+         (_dispose_beacon_construction_sites flips CANCELLED rather than
+         deleting the gate row), and it frees the owner's ADR-0010 gate-cap
+         slot (_check_gate_cap counts ACTIVE/HARMONIZING only). The
+         WarpGateBeacon row is left untouched: its status enum has no member
+         for cascade-destruction, and WarpGate.beacon_id is
+         ondelete="CASCADE" -- hard-deleting the beacon would DB-cascade
+         -delete the very WarpGate row this function relies on for the
+         mark-before-pay idempotency guard below. This is a documented
+         interpretation of canon's literal "the entire WarpGate row (beacon
+         + focus) deletes" (mirrors this file's own "Interpretations where
+         canon leaves room" section) -- traversal is fully severed either
+         way (see the movement_service citation above), so nothing is
+         player-facing half-broken.
+      2. floor(construction_cost / 2) refunded to the owner's Player.credits,
+         marked BEFORE paying -- the status flip flushes first -- so a gate
+         spanning two terminating regions, or a re-invocation of this same
+         kernel, pays exactly once: the sweep below only ever matches a gate
+         still in HARMONIZING/ACTIVE.
+      3. A best-effort, self-addressed system Message notifies the owner
+         (see _notify_gate_cascade_destroyed for the realtime-broadcast gap).
+      4. An orphaned/deleted owner: destroyed with NO refund, WARNed, never
+         raised -- the region is terminating regardless of the owner row's
+         fate.
+
+    CENTRAL-BANK ROUTING GAP (flagged, not built): canon says refund the
+    ONLINE owner's Player.credits, or PlayerCentralBankAccount if offline.
+    `PlayerCentralBankAccount` does not exist anywhere in src/models -- it is
+    100% design-only text in ADR-0050 (no migration ever created the table).
+    There is also no synchronously-readable "is this player online" signal
+    reachable from a flush-only (db, region_id) kernel (the nearest thing,
+    redis_service.sync_player_online_status, is async/Redis-backed
+    infrastructure, not a plain column read). This function therefore
+    refunds EVERY owner's credits unconditionally to Player.credits, online
+    or not, until the Central Bank feature exists to receive the offline
+    branch.
+
+    Both endpoints of a single gate are torn down inside one flush sequence
+    per gate. A failure mid-loop propagates out of this function uncaught
+    (never swallowed) so the CALLER's transaction rollback is what reverses
+    any already-flushed-but-uncommitted work; this kernel commits NOTHING,
+    ever (house convention -- the calling route/orchestrator owns the
+    transaction boundary).
+
+    Processes both HARMONIZING and ACTIVE gates (canon says "a player-built
+    warp gate" without qualifying status; a HARMONIZING gate already carries
+    its full construction_cost snapshot and a real FORMING WarpTunnel row
+    from anchor_focus -- the same sunk-cost exposure as an ACTIVE one). A
+    CANCELLED/COLLAPSED gate is already dead and is skipped.
+
+    Does NOT read/require `Region.status == TERMINATED` -- deciding WHEN a
+    region has entered cleanup is the caller's (region-lifecycle
+    orchestrator's) job; this kernel is purely mechanical given a region_id.
+    """
+    region = db.query(Region).filter(Region.id == region_id).first()
+    region_name = region.name if region is not None else "the connected region"
+
+    sector_rows = db.query(Sector).filter(Sector.region_id == region_id).all()
+    sector_numbers = {s.sector_id for s in sector_rows}
+    if not sector_numbers:
+        return {
+            "region_id": str(region_id),
+            "gates_processed": 0,
+            "gate_ids": [],
+            "total_refunded": 0,
+            "orphaned_owners": 0,
+        }
+
+    gates = (
+        db.query(WarpGate)
+        .join(WarpGateBeacon, WarpGate.beacon_id == WarpGateBeacon.id)
+        .filter(
+            WarpGate.status.in_([WarpGateStatus.HARMONIZING, WarpGateStatus.ACTIVE]),
+            or_(
+                WarpGateBeacon.source_sector_id.in_(sector_numbers),
+                WarpGateBeacon.destination_sector_id.in_(sector_numbers),
+            ),
+        )
+        .populate_existing()
+        .with_for_update(of=WarpGate)
+        .all()
+    )
+
+    processed: List[str] = []
+    total_refunded = 0
+    orphaned_owners = 0
+
+    for gate in gates:
+        # Re-invocation / cross-regional double-cascade guard: a gate whose
+        # OTHER endpoint's region already cascaded it (or a prior call for
+        # THIS same region already did) is no longer HARMONIZING/ACTIVE --
+        # the query above already excludes it on a real DB, but a caller
+        # handing us a stale Python reference could still repeat one.
+        if gate.status not in (WarpGateStatus.HARMONIZING, WarpGateStatus.ACTIVE):
+            continue
+
+        refund_amount = gate.construction_cost // GATE_CASCADE_REFUND_DIVISOR
+
+        # Mark BEFORE paying (flush) -- see docstring point 2.
+        gate.status = WarpGateStatus.COLLAPSED
+        db.flush()
+
+        gate_name = "(unnamed)"
+        if gate.warp_tunnel_id:
+            tunnel = (
+                db.query(WarpTunnel)
+                .filter(WarpTunnel.id == gate.warp_tunnel_id)
+                .first()
+            )
+            gate.warp_tunnel_id = None
+            if tunnel is not None:
+                gate_name = tunnel.name
+                db.delete(tunnel)
+
+        owner = (
+            db.query(Player)
+            .filter(Player.id == gate.player_id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if owner is None:
+            logger.warning(
+                "Cascade teardown: gate %s owner %s not found -- destroyed "
+                "with no refund", gate.id, gate.player_id,
+            )
+            orphaned_owners += 1
+        else:
+            owner.credits += refund_amount
+            total_refunded += refund_amount
+            _notify_gate_cascade_destroyed(db, owner, gate_name, region_name, refund_amount)
+
+        db.flush()
+        processed.append(str(gate.id))
+        logger.info(
+            "Region %s termination cascade: warp gate %s destroyed, %d cr "
+            "refunded (owner=%s)",
+            region_id, gate.id, refund_amount,
+            "orphaned" if owner is None else owner.id,
+        )
+
+    return {
+        "region_id": str(region_id),
+        "gates_processed": len(processed),
+        "gate_ids": processed,
+        "total_refunded": total_refunded,
+        "orphaned_owners": orphaned_owners,
+    }
