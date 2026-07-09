@@ -12,6 +12,7 @@ import { ariaFeed } from '../mfd/ariaFeedStore';
 import RouteRail from '../mfd/RouteRail';
 import MedalToast from '../ranking/MedalToast';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
+import WelcomeBackToast from '../auth/WelcomeBackToast';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -197,6 +198,7 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
           stack (normal/high messages + other WS toasts) and the urgent
           action-interrupting modal — per messaging.md "Priority levels". */}
       <PriorityHailConsumer />
+      <WelcomeBackToast />
       <div className="game-layout">
         {/* WO-INVERTED-L: .console-expand → docked/landed make the opaque
             console fill the lower area (right viewport column collapses);
