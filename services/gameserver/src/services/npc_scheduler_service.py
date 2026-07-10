@@ -782,6 +782,12 @@ _PIRATE_ECOSYSTEM_TICK_LOCK_KEY = _mnemonic_lock_key("PECO")
 # gameserver instances can't double-generate against the same galaxy in a
 # multi-instance deployment. 'CGEN' = Contract GENeration.
 _CONTRACT_GENERATION_LOCK_KEY = _mnemonic_lock_key("CGEN")
+# NPC contract EXPIRE sweep (WO-DRIFT-econ-contract-sweep-advisory-lock,
+# expire half — the generation half above shipped its CGEN lock in a921392).
+# The wrapper previously took no lock at all; two gameserver instances could
+# double-expire (and double-refund) the same contracts. 'CEXP' = Contract
+# EXPire.
+_CONTRACT_EXPIRE_LOCK_KEY = _mnemonic_lock_key("CEXP")
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
@@ -4895,11 +4901,29 @@ def _run_contract_generation_sync(cancel_event: "threading.Event | None" = None)
 
 
 def _run_contract_expire_sweep_sync() -> int:
+    """Expire due NPC contracts (and refund escrow — WO-DRIFT-econ-expired-
+    escrow-refund builds on top of this lock). WO-DRIFT-econ-contract-sweep-
+    advisory-lock (expire half): previously took no lock at all, unlike the
+    generation sweep's own CGEN-gated write phase (a921392) — two gameserver
+    instances could double-expire (and double-refund) the same contracts.
+    Mirrors _run_suspect_clear_sweep_sync's lock-then-due-check ordering: the
+    advisory lock is acquired FIRST, and only a successful acquirer proceeds
+    to the durable due-check. On lock contention this logs and returns 0
+    rather than skipping silently (WO-SWEEP-SILENT-SWEEPS discipline — a
+    lock-skip must be distinguishable, in the log, from a legitimate
+    ran-and-found-nothing-due tick)."""
     from src.core.database import SessionLocal
     from src.services.contract_service import sweep_expired_contracts
 
     db = SessionLocal()
     try:
+        got_lock = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _CONTRACT_EXPIRE_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info("NPC scheduler: contract expire sweep — lock busy, skipped")
+            return 0
         if not _sweep_due_and_advance(
             db, _CONTRACT_EXPIRE_STATE_KEY, CONTRACT_EXPIRE_SWEEP_SECONDS, datetime.now(UTC),
         ):

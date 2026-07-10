@@ -83,6 +83,10 @@ ALL_STATIC_KEYS = {
     # takes its own lock (the wrapper previously took none at all), so two
     # gameserver instances can't double-generate.
     "_CONTRACT_GENERATION_LOCK_KEY": sched._CONTRACT_GENERATION_LOCK_KEY,
+    # WO-DRIFT-econ-contract-sweep-advisory-lock (expire half) — the contract
+    # expire sweep now takes its own lock too, so two gameserver instances
+    # can't double-expire (and double-refund) the same contracts.
+    "_CONTRACT_EXPIRE_LOCK_KEY": sched._CONTRACT_EXPIRE_LOCK_KEY,
 }
 
 # Every {"key": <bare Name>} lock-acquisition site, keyed by its enclosing
@@ -127,9 +131,11 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_pirate_ecosystem_tick_sync": "_PIRATE_ECOSYSTEM_TICK_LOCK_KEY",
     # WO-SCHED-LOOP-WEDGE: generation's write phase, own advisory lock.
     "_run_contract_generation_sync": "_CONTRACT_GENERATION_LOCK_KEY",
+    # WO-DRIFT-econ-contract-sweep-advisory-lock (expire half).
+    "_run_contract_expire_sweep_sync": "_CONTRACT_EXPIRE_LOCK_KEY",
 }
 
-# 27 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
+# 28 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
 # lock-site count (superseding any stale figure quoted anywhere else --
 # this file is the enumeration of record going forward).
 EXPECTED_TOTAL_LOCK_SITES = len(EXPECTED_NAME_SITE_MAP) + 1
@@ -261,7 +267,7 @@ def test_all_static_keys_pairwise_distinct():
         seen[value] = name
     assert not dupes, f"colliding lock keys: {dupes}"
     assert len(values) == len(set(values))
-    assert len(ALL_STATIC_KEYS) == 29  # 1 global + 2 legacy + 26 new sweep-type keys
+    assert len(ALL_STATIC_KEYS) == 30  # 1 global + 2 legacy + 27 new sweep-type keys
 
 
 def test_all_static_keys_nonnegative_and_63bit_safe():

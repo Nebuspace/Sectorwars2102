@@ -27,6 +27,7 @@ from src.services.npc_scheduler_service import (
     SUSPECT_CLEAR_SWEEP_SECONDS,
     _contract_generation_loop,
     _npc_scheduler_main_loop,
+    _run_contract_expire_sweep_sync,
     _run_pirate_ecosystem_tick_sync,
     _run_suspect_clear_sweep_sync,
     _run_team_reputation_sweep_sync,
@@ -304,6 +305,47 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
             "src.services.suspect_service.clear_expired_suspects",
         ) as mock_core:
             result = _run_suspect_clear_sweep_sync()
+        assert result == 0
+        mock_core.assert_not_called()
+        assert db.closed is True
+        assert any(
+            "lock busy, skipped" in r.getMessage() for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+    def test_contract_expire_sweep_survives_a_raising_core(self):
+        """WO-DRIFT-econ-contract-sweep-advisory-lock (expire half): same
+        raising-core contract as every other held-sweep wrapper above — a
+        lock acquirer whose core explodes rolls back and returns 0 rather
+        than propagating out of asyncio.to_thread."""
+        db = _FakeLockDB()
+        with patch("src.core.database.SessionLocal", return_value=db), patch(
+            "src.services.contract_service.sweep_expired_contracts",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = _run_contract_expire_sweep_sync()
+        assert result == 0
+        assert db.rolled_back is True
+        assert db.committed is False
+        assert db.closed is True
+
+    def test_contract_expire_sweep_locked_elsewhere_skips_cleanly_without_touching_the_core(self, caplog):
+        """Mirrors test_locked_elsewhere_skips_cleanly_without_touching_the_
+        core above (WO-SWEEP-SILENT-SWEEPS discipline applied to the newly
+        lock-guarded expire sweep): a lock-busy tick must not reach
+        sweep_expired_contracts at all, and must log the skip so it's
+        distinguishable, in the log, from a legitimate ran-and-found-
+        nothing-due tick."""
+        class _LockHeldDB(_FakeLockDB):
+            def execute(self, *args, **kwargs):
+                return SimpleNamespace(scalar=lambda: False)
+
+        db = _LockHeldDB()
+        with caplog.at_level(logging.INFO), patch(
+            "src.core.database.SessionLocal", return_value=db,
+        ), patch(
+            "src.services.contract_service.sweep_expired_contracts",
+        ) as mock_core:
+            result = _run_contract_expire_sweep_sync()
         assert result == 0
         mock_core.assert_not_called()
         assert db.closed is True
