@@ -198,8 +198,20 @@ def test_defender_side_defense_drones_reads_are_untouched():
 
 
 def test_combat_log_attacker_drones_snapshot_reads_attack_drones():
-    """All 5 CombatLog(...) constructor sites (ship-vs-ship, NPC, sector
-    drones, planet, port) snapshot attacker_drones= from attacker.attack_drones."""
+    """5 of 6 CombatLog(...) constructor sites (ship-vs-ship, sector drones,
+    planet, port, plus attack_npc_ship) snapshot attacker_drones= from
+    attacker.attack_drones -- a real Player row.
+
+    The 6th site, npc_attack_player (WO-CMB-NPC-INITIATED-1, Max ruling
+    2026-07-10 -- the symmetric NPC-initiated-attack mirror of
+    attack_npc_ship), is the deliberate exception: there IS no `attacker`
+    Player variable in that function at all (attacker=None is passed to
+    _resolve_ship_combat; the attacking side is npc_ship, an NPC-controlled
+    Ship). It carries a literal attacker_drones=0, not an attribute read --
+    an NPC ship has no attack_drones concept to snapshot. Bumped 5 -> 6 as
+    its own reviewed change (mirrors test_combat_log_region_snapshot.py's
+    own 5->6 pin bump documenting this same site) rather than a silent
+    widening of the assertion -- a further count change must stay deliberate."""
     tree = _combat_service_ast()
     kwarg_values = [
         kw.value
@@ -210,12 +222,27 @@ def test_combat_log_attacker_drones_snapshot_reads_attack_drones():
         for kw in node.keywords
         if kw.arg == "attacker_drones"
     ]
-    assert len(kwarg_values) == 5
-    for value in kwarg_values:
-        assert isinstance(value, ast.Attribute)
+    assert len(kwarg_values) == 6
+
+    attribute_reads = [v for v in kwarg_values if isinstance(v, ast.Attribute)]
+    constant_zeros = [v for v in kwarg_values if isinstance(v, ast.Constant)]
+    assert len(attribute_reads) == 5, (
+        "expected exactly 5 sites reading attacker.attack_drones -- a "
+        "changed count here means a real Player-attacker site stopped "
+        "snapshotting the live drone count (or gained/lost a site); review "
+        "deliberately."
+    )
+    assert len(constant_zeros) == 1, (
+        "expected exactly 1 constant-0 site (npc_attack_player, no Player "
+        "attacker to read from) -- if this count changed, either a new "
+        "NPC-attacker site was added (review + document it here) or the "
+        "existing one now wrongly reads an attribute."
+    )
+    for value in attribute_reads:
         assert value.attr == "attack_drones"
         assert isinstance(value.value, ast.Name)
         assert value.value.id == "attacker"
+    assert constant_zeros[0].value == 0
 
 
 # --- Armory: carried-scalar caps honor the Drone Bay bonus ---
