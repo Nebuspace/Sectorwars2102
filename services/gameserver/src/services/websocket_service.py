@@ -1151,10 +1151,30 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
         })
         return
 
+    # WO-ARIA-TRUST-PERSIST: short-lived session solely to fetch/seed/write-
+    # through the trust ladder -- separate from the LATER AsyncSessionLocal
+    # opened below for EnhancedAIService, matching this function's own
+    # established "open one here" per-concern session pattern.
+    from src.core.database import AsyncSessionLocal as _TrustAsyncSessionLocal
+    from src.models.player import Player as _Player
+
     security_service = get_security_service()
-    is_safe, violations = security_service.validate_input(
-        content, str(player_id), str(conversation_id or "ws-aria-chat"),
-    )
+    async with _TrustAsyncSessionLocal() as _trust_db:
+        player_row = await _trust_db.get(_Player, _uuid.UUID(str(player_id)))
+        is_safe, violations = security_service.validate_input(
+            content, str(player_id), str(conversation_id or "ws-aria-chat"),
+            seed_from=player_row,
+        )
+        if player_row is not None:
+            for _col, _val in security_service.get_trust_columns(str(player_id)).items():
+                setattr(player_row, _col, _val)
+            # EXPLICIT commit -- AsyncSessionLocal never auto-commits (same
+            # verified behavior as get_db()/get_async_session()); an
+            # uncommitted mutation would be lost on the early `return`
+            # below, exactly the path where a NEW block is most likely to
+            # have just triggered (see first_login.py's identical fix).
+            await _trust_db.commit()
+
     if not is_safe:
         logger.warning(f"ARIA WS security violation by player {player_id}: {[v.violation_type.value for v in violations]}")
         await connection_manager.send_personal_message(user_id, {
@@ -1233,6 +1253,13 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
                 "actions": [],
                 "suggestions": [],
                 "learning_note": None,
+                # WO-ARIA-CHAT-LLM: absent from result (== None here)
+                # whenever ARIA_LLM_CHAT_ENABLED is off -- the flag-off pin.
+                "mode": result.get("mode"),
+                # Max's GO amendment: a Resonance-ledger accounting SEAM --
+                # hook point only, always None until a future post-ADR-0092
+                # WO builds the ledger itself.
+                "ledger_entry": result.get("ledger_entry"),
             },
         })
     except Exception as e:

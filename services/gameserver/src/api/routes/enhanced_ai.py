@@ -175,6 +175,15 @@ class ConversationResponse(BaseModel):
     # normal response.
     degraded: bool = False
     scope: Optional[str] = None
+    # WO-ARIA-CHAT-LLM: which engine answered this turn -- "llm" |
+    # "template" | None. None on every response while ARIA_LLM_CHAT_ENABLED
+    # is off (the pinned flag-off contract) or on any error-path response
+    # built before EnhancedAIService ever ran.
+    mode: Optional[str] = None
+    # Max's GO amendment on WO-ARIA-CHAT-LLM: a Resonance-ledger accounting
+    # SEAM -- a documented hook point only. The ledger itself is a future
+    # post-ADR-0092 WO; this field is deliberately always None today.
+    ledger_entry: Optional[Any] = None
 
     class Config:
         schema_extra = {
@@ -398,9 +407,24 @@ async def chat_with_ai(
     # login already uses); a COST-cap hit is the one outcome dispatch says
     # must NEVER be a hard error -- it degrades to a fallback response with
     # a scope flag instead (ADR-0092 §4).
+    #
+    # WO-ARIA-TRUST-PERSIST: this route never loaded a Player row before --
+    # fetched here solely to seed/write-through the trust ladder, mirroring
+    # first_login.py's pattern with an AsyncSession twin.
+    player_row = await db.get(Player, uuid.UUID(player_id))
     is_safe, violations = security_service.validate_input(
         request.message, player_id, request.conversation_id or "chat",
+        seed_from=player_row,
     )
+    if player_row is not None:
+        for _col, _val in security_service.get_trust_columns(player_id).items():
+            setattr(player_row, _col, _val)
+        # EXPLICIT commit -- verified get_db()'s async twin behaves the
+        # same as the sync version (never auto-commits); an uncommitted
+        # mutation would be silently discarded on the early `raise` below,
+        # exactly the path where a NEW block is most likely to have just
+        # triggered (see first_login.py's identical fix, same WO).
+        await db.commit()
     if not is_safe:
         logger.warning(f"Security violation by player {player_id}: {[v.violation_type.value for v in violations]}")
         raise HTTPException(status_code=400, detail="Input validation failed due to security policy")
@@ -454,7 +478,11 @@ async def chat_with_ai(
             response=response_data["response"],
             conversation_id=response_data["conversation_id"],
             response_time=response_data["response_time"],
-            intent=response_data.get("intent")
+            intent=response_data.get("intent"),
+            # WO-ARIA-CHAT-LLM: absent from response_data (== None here)
+            # whenever ARIA_LLM_CHAT_ENABLED is off -- the flag-off pin.
+            mode=response_data.get("mode"),
+            ledger_entry=response_data.get("ledger_entry"),
         )
 
     except ValueError as e:

@@ -198,6 +198,40 @@ class TestRateLimitsStillEnforced:
 
 # --- chat-path fallback: correct scope flag both ways, never a hard error - #
 
+class _FakeAsyncDbNoPlayerRow:
+    """WO-ARIA-TRUST-PERSIST: chat_with_ai now fetches a Player row via
+    `db.get(...)` to seed/write-through the trust ladder, even on a
+    cost-blocked request. This fake simulates "no row found" (a real,
+    harmless path -- the route's write-through block no-ops when
+    player_row is None) without needing a real AsyncSession."""
+
+    async def get(self, model: Any, pk: Any) -> None:
+        return None
+
+    async def commit(self) -> None:  # pragma: no cover -- unreached when get() returns None
+        pass
+
+
+class _FakeAsyncSessionLocalNoPlayerRow:
+    """WO-ARIA-TRUST-PERSIST: handle_aria_chat now opens its OWN short-
+    lived `AsyncSessionLocal()` to fetch/seed/write-through the trust
+    ladder, before this WO a real DB call these tests never needed. Fakes
+    the async-context-manager protocol; `.get()` returns None (harmless
+    no-row-found path -- same reasoning as _FakeAsyncDbNoPlayerRow)."""
+
+    async def __aenter__(self) -> "_FakeAsyncSessionLocalNoPlayerRow":
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> bool:
+        return False
+
+    async def get(self, model: Any, pk: Any) -> None:
+        return None
+
+    async def commit(self) -> None:  # pragma: no cover -- unreached when get() returns None
+        pass
+
+
 @pytest.mark.unit
 class TestChatPathFallback:
     def test_enhanced_ai_chat_degrades_on_personal_cap_hit(self) -> None:
@@ -211,7 +245,7 @@ class TestChatPathFallback:
 
         request = ConversationRequest(message="What's a good trade route?")
         result = asyncio.run(
-            chat_with_ai(request=request, player_id=player_id, db=None, security_service=svc)
+            chat_with_ai(request=request, player_id=player_id, db=_FakeAsyncDbNoPlayerRow(), security_service=svc)
         )
 
         assert result.degraded is True
@@ -232,7 +266,7 @@ class TestChatPathFallback:
         fresh_player_id = "22222222-2222-2222-2222-222222222222"  # $0 personal spend
         request = ConversationRequest(message="Any tips for combat?")
         result = asyncio.run(
-            chat_with_ai(request=request, player_id=fresh_player_id, db=None, security_service=svc)
+            chat_with_ai(request=request, player_id=fresh_player_id, db=_FakeAsyncDbNoPlayerRow(), security_service=svc)
         )
 
         assert result.degraded is True
@@ -248,6 +282,8 @@ class TestChatPathFallback:
         player_id = "33333333-3333-3333-3333-333333333333"
         svc.track_cost(player_id, 1.60)
         monkeypatch.setattr(ai_security_module, "get_security_service", lambda: svc)
+        import src.core.database as database_module
+        monkeypatch.setattr(database_module, "AsyncSessionLocal", _FakeAsyncSessionLocalNoPlayerRow)
 
         ws_module.connection_manager.connection_metadata["user-1"] = {
             "user_data": {"player_id": player_id},
@@ -279,6 +315,8 @@ class TestChatPathFallback:
         svc = AISecurityService()
         svc.track_cost("some-other-player", 50.00)
         monkeypatch.setattr(ai_security_module, "get_security_service", lambda: svc)
+        import src.core.database as database_module
+        monkeypatch.setattr(database_module, "AsyncSessionLocal", _FakeAsyncSessionLocalNoPlayerRow)
 
         fresh_player_id = "44444444-4444-4444-4444-444444444444"
         ws_module.connection_manager.connection_metadata["user-2"] = {

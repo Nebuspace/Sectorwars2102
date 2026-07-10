@@ -740,6 +740,62 @@ class AIProviderService:
         logger.error(f"All AI providers failed for outcome generation: {last_error}")
         return None, ProviderType.MANUAL
 
+    async def generate_chat_reply(
+        self, system_prompt: str, user_prompt: str, *, max_tokens: int = 400,
+    ) -> Tuple[Optional[str], ProviderType]:
+        """WO-ARIA-CHAT-LLM — generic chat-completion entry point for
+        ARIA's LLM-backed chat mode. Same chain-walk/skip-MANUAL/retry-
+        delay shape as generate_initial_scene/generate_outcome_text
+        (this class's own established generic-custom-prompt idiom) —
+        reuses _call_openai_custom/_call_anthropic_custom rather than
+        inventing new provider-call code, so the canon primary/secondary/
+        fallback ordering (aria.md:130-141) is identical across every
+        custom-prompt caller in this service.
+
+        Returns (reply_text, provider_used) on success, or (None,
+        ProviderType.MANUAL) when every AI provider is unavailable or
+        failed — the caller (EnhancedAIService's LLM-path attempt) treats
+        None as "fall back to the template engine", never raises through
+        here. max_tokens=400 is [NO-CANON] — a reasonable chat-reply
+        budget between generate_outcome_text's 200 and roughly double
+        generate_initial_scene's 300; no token budget is specified
+        anywhere in canon for this new path."""
+        prompts = {"system": system_prompt, "user": user_prompt}
+        last_error = None
+
+        for provider in self.providers:
+            if not provider.is_available():
+                continue
+
+            # No chat template lives in this service — the MANUAL provider
+            # has nothing to generate; the CALLER owns the template-engine
+            # fallback (mirrors generate_initial_scene/generate_outcome_text).
+            if provider.provider_type == ProviderType.MANUAL:
+                continue
+
+            try:
+                logger.debug(f"Attempting chat reply with {provider.provider_type.value}")
+
+                if provider.provider_type == ProviderType.OPENAI:
+                    reply_text = await self._call_openai_custom(prompts, max_tokens=max_tokens)
+                elif provider.provider_type == ProviderType.ANTHROPIC:
+                    reply_text = await self._call_anthropic_custom(prompts, max_tokens=max_tokens)
+                else:
+                    continue
+
+                logger.info(f"Chat reply successful with {provider.provider_type.value}")
+                return reply_text.strip(), provider.provider_type
+
+            except Exception as e:
+                logger.warning(f"Chat reply failed with {provider.provider_type.value}: {e}")
+                last_error = e
+                if provider.provider_type != ProviderType.MANUAL:
+                    await asyncio.sleep(self.config.retry_delay)
+
+        # All AI providers failed or unavailable.
+        logger.error(f"All AI providers failed for chat reply: {last_error}")
+        return None, ProviderType.MANUAL
+
     async def _call_openai_custom(self, prompts: Dict[str, str], max_tokens: int = 300) -> str:
         """Helper to call OpenAI with custom prompts"""
         if not OPENAI_AVAILABLE:

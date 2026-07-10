@@ -823,7 +823,7 @@ class EnhancedAIService:
             
             # Generate response based on intent
             _gen_start = time.perf_counter()
-            response = await self._generate_ai_response(intent_analysis, assistant, conversation_context)
+            response, mode = await self._generate_ai_response(intent_analysis, assistant, conversation_context)
             _gen_elapsed_ms = int((time.perf_counter() - _gen_start) * 1000)
 
             # SECURITY: Sanitize AI response content
@@ -831,13 +831,24 @@ class EnhancedAIService:
 
             # Log conversation for learning and audit
             await self._log_conversation(assistant_id, sanitized_input, response, conversation_context, _gen_elapsed_ms)
-            
-            return {
+
+            result = {
                 "response": response,
                 "intent": intent_analysis,
                 "conversation_id": conversation_context.session_id,
                 "response_time": datetime.utcnow().isoformat()
             }
+            # WO-ARIA-CHAT-LLM: additive, ONLY when the LLM chat path is
+            # active (mode is None on the flag-off path — see
+            # _generate_ai_response) — the dict above is otherwise
+            # byte-identical to the pre-WO shape (the pinned contract).
+            if mode is not None:
+                result["mode"] = mode
+                # Max's GO amendment: a Resonance-ledger accounting SEAM —
+                # a documented hook point only. The ledger itself is a
+                # future post-ADR-0092 WO; deliberately always None here.
+                result["ledger_entry"] = None
+            return result
             
         except Exception as e:
             await self._log_security_event(
@@ -928,16 +939,43 @@ class EnhancedAIService:
         
         return entities
 
-    async def _generate_ai_response(self, intent_analysis: Dict[str, Any], 
+    async def _generate_ai_response(self, intent_analysis: Dict[str, Any],
+                                  assistant: AIComprehensiveAssistant,
+                                  context: ConversationContext) -> Tuple[str, Optional[str]]:
+        """WO-ARIA-CHAT-LLM orchestrator — built DARK behind
+        settings.ARIA_LLM_CHAT_ENABLED (default False).
+
+        Returns (response_text, mode). mode is None when the flag is off:
+        the call below is the EXACT pre-existing call this method used to
+        make itself (now named _generate_template_response, body
+        unchanged) — flag-off behavior is byte-identical to before this
+        WO, which is the pinned contract (test_aria_chat_llm.py). mode is
+        "llm" or "template" only once the flag is on.
+        """
+        from src.core.config import settings
+
+        if not settings.ARIA_LLM_CHAT_ENABLED:
+            return await self._generate_template_response(intent_analysis, assistant, context), None
+
+        llm_text = await self._try_llm_chat_response(intent_analysis, assistant, context)
+        if llm_text is not None:
+            return llm_text, "llm"
+        return await self._generate_template_response(intent_analysis, assistant, context), "template"
+
+    async def _generate_template_response(self, intent_analysis: Dict[str, Any],
                                   assistant: AIComprehensiveAssistant,
                                   context: ConversationContext) -> str:
         """
         Generate intelligent AI response based on intent analysis
         Coordinates responses across all game systems
+
+        WO-ARIA-CHAT-LLM: renamed from _generate_ai_response, body
+        UNCHANGED — retained VERBATIM as the documented fallback mode
+        (flag-off, or the LLM path failing/being unavailable).
         """
         primary_intent = intent_analysis["primary_intent"]
         entities = intent_analysis["entities"]
-        
+
         try:
             if primary_intent == "trading":
                 return await self._generate_trading_response(assistant, entities, context)
@@ -953,10 +991,60 @@ class EnhancedAIService:
                 return await self._generate_help_response(assistant, entities, context)
             else:
                 return await self._generate_general_response(assistant, entities, context)
-                
+
         except Exception as e:
             logger.error(f"Error generating AI response: {e}")
             return "I encountered an issue processing your request. Could you please rephrase your question?"
+
+    async def _try_llm_chat_response(self, intent_analysis: Dict[str, Any],
+                                  assistant: AIComprehensiveAssistant,
+                                  context: ConversationContext) -> Optional[str]:
+        """WO-ARIA-CHAT-LLM's LLM-path attempt — a single, clearly-
+        delineated seam (the provider call at the bottom of this method)
+        so PROMPT-DEFENSE (next WO) can slot its own pre/post-processing
+        stages in front of/behind that one call without restructuring
+        this method. Returns the LLM's text on success, or None on ANY
+        failure — missing player row, no provider available, a raised
+        provider exception, or an empty/None reply — so the caller
+        (_generate_ai_response) always has a clean "fall back to the
+        template engine" signal and never has to catch anything itself.
+
+        The cost-cap gate (check_cost_limits_detailed) already ran
+        upstream of this whole call chain, in the ROUTE (enhanced_ai.py /
+        websocket_service.py's handle_aria_chat) — a request only reaches
+        process_natural_language_query, and therefore this method, once
+        it has already cleared that gate. This method does not re-check
+        cost caps (WO's own "don't duplicate" instruction) and issues
+        exactly one provider attempt per chat turn."""
+        try:
+            stmt = select(Player).where(Player.id == assistant.player_id)
+            result = await self.db.execute(stmt)
+            player = result.scalar_one_or_none()
+            if player is None:
+                return None
+
+            game_state = await self._analyze_player_strategic_position(assistant.player_id)
+
+            from src.services.ai_prompts import AriaChatPrompts
+            prompts = AriaChatPrompts.build_chat_prompt(
+                consciousness_level=player.aria_consciousness_level or 1,
+                relationship_score=player.aria_relationship_score or 0,
+                player_name=player.username,
+                game_state=game_state,
+                user_input=intent_analysis.get("original_input", ""),
+            )
+
+            from src.services.ai_provider_service import get_ai_provider_service
+            provider_service = get_ai_provider_service()
+            reply_text, _provider_used = await provider_service.generate_chat_reply(
+                prompts["system"], prompts["user"],
+            )
+            if not reply_text:
+                return None
+            return reply_text
+        except Exception as e:
+            logger.warning(f"ARIA LLM chat path failed, falling back to template engine: {e}")
+            return None
 
     async def _generate_trading_response(self, assistant: AIComprehensiveAssistant,
                                        entities: Dict[str, List[str]], context: ConversationContext) -> str:

@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-3-sonnet-20240229")
     AI_DIALOGUE_ENABLED: bool = os.environ.get("AI_DIALOGUE_ENABLED", "true").lower() == "true"
 
+    # ARIA LLM-backed chat (WO-ARIA-CHAT-LLM). BUILT DARK per Max's GO:
+    # defaults false, so ARIA's chat path stays byte-identical to the
+    # existing keyword/template engine until this is explicitly flipped —
+    # zero spend, zero behavior change, until then.
+    ARIA_LLM_CHAT_ENABLED: bool = os.environ.get("ARIA_LLM_CHAT_ENABLED", "false").lower() == "true"
+
     # Living NPC System — gates the npc_scheduler_service lifespan task
     # (Loops A/B/C). Default off so prod stays static until proven on dev.
     NPC_SCHEDULER_ENABLED: bool = os.environ.get("NPC_SCHEDULER_ENABLED", "false").lower() == "true"
