@@ -71,6 +71,15 @@ from src.models.station import (
     StationType,
 )
 from src.schemas.bang_config import BangConfig, RegionType
+# Station-protection security-tier seeding (WO-STN-SEC-1, FEATURES/economy/
+# station-protection.md § Security tiers). Lives in src.core.station_
+# security_tiers (WO-TD-NEXGEN-1) so nexus_generation_service can seed the
+# same rule without importing this module (which pulls in the docker SDK at
+# module scope). Re-imported here so every existing `from
+# src.services.bang_import_service import _derive_station_security_tier` call
+# site (this module's own _apply_region, plus
+# tests/unit/test_station_security_seeding.py) keeps working unchanged.
+from src.core.station_security_tiers import _derive_station_security_tier
 
 logger = logging.getLogger(__name__)
 
@@ -2933,53 +2942,6 @@ def _build_default_services(is_spacedock: bool) -> Dict[str, Any]:
     }
 
 
-# Station-protection security-tier seeding (WO-STN-SEC-1, FEATURES/economy/
-# station-protection.md § Security tiers). Station.security has ZERO writers
-# today (model docstring: defaults "are SEEDED by the larger system, NOT
-# here") — every station imported through this pipeline now carries an
-# explicit tier so the combat_service.py Guarantee #1 gate
-# (ERR_DOCKED_SHIP_PROTECTED at security_rank >= basic) can actually fire.
-#
-# Canon pins exactly three literal anchors to Standard/Premium: "Federation
-# Capital station" (Terran Space's CLASS_0 hub, Earth Station), "Nexus
-# Starport Prime" (Central Nexus's CLASS_0 hub), and "Terran Space hub
-# stations" (the region's other service hubs — the CLASS_11 Stardock
-# SpaceDock, the Tier-A TradeDocks). Frontier/lawless CLUSTERS get "none"
-# ("frontier outposts...lawless ports" — the ClusterType vocabulary already
-# used for hazard/resource biasing, WO-GX1). Everything else is NO-CANON
-# (see WO-STN-SEC-1 report): canon states only "Player-owned stations
-# default to Basic" and is silent on ordinary CLASS_1-11 NPC ports (in ANY
-# region, including the thousands of background ports inside Terran Space/
-# Central Nexus that aren't a named anchor). The proposed default is a
-# uniform "basic" floor — matching the stated player-owned default and
-# giving every unconfigured station SOME protection — rather than a
-# per-class gradient canon gives no basis for.
-_OPERATOR_MANAGED_REGION_TYPES = ("terran_space", "central_nexus")
-_LAWLESS_CLUSTER_TYPES = (ClusterType.FRONTIER_OUTPOST, ClusterType.CONTESTED)
-
-
-def _derive_station_security_tier(
-    *,
-    region_type: str,
-    cluster_type: Optional[ClusterType],
-    station_class: StationClass,
-    is_spacedock: bool,
-    tradedock_tier: Optional[str],
-) -> str:
-    """Return the tier string ("none"/"basic"/"standard"/"premium") to seed
-    on a freshly-created station's ``Station.security`` JSONB. Pure/DB-free —
-    see tests/unit/test_station_security_seeding.py."""
-    if region_type in _OPERATOR_MANAGED_REGION_TYPES:
-        if station_class == StationClass.CLASS_0:
-            # Central Nexus's CLASS_0 hub = Nexus Starport Prime (premium);
-            # Terran Space's CLASS_0 hub = Federation Capital station / Earth
-            # Station (standard).
-            return "premium" if region_type == "central_nexus" else "standard"
-        if is_spacedock or tradedock_tier == "A":
-            return "standard"  # Terran Space / Central Nexus hub stations
-    if cluster_type in _LAWLESS_CLUSTER_TYPES:
-        return "none"
-    return "basic"
 
 
 def _coerce_formation_type(value: str) -> SpecialFormationType:
