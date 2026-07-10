@@ -27,6 +27,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
+import pytest
+
 from src.models.pirate_holding import PirateHolding, PirateHoldingTier
 from src.models.pirate_kill_log import PirateKillLog, PirateKillDisposition
 from src.models.region import Region, RegionStatus
@@ -124,6 +126,23 @@ def _formation(*, region_id, anchor_sector_id, formation_type, interior_sector_i
         anchor_sector_id=anchor_sector_id,
         interior_sector_ids=interior_sector_ids or [],
     )
+
+
+def _capture_broadcasts(monkeypatch):
+    """Bypasses asyncio entirely -- monkeypatches the ONE shared
+    ``_broadcast_pirate_event`` helper (every WO-PIRATE-ECO-2 lane C emitter
+    routes through it) to a plain recorder, returning the ``(region_id,
+    payload)`` call list. This is how "exactly once" / "emits nothing" get
+    asserted deterministically: a plain sync test has no running event loop,
+    so the REAL transport path (asyncio.get_running_loop().create_task(...))
+    always silently no-ops there anyway -- this fixture observes the call
+    that would have been scheduled, not the scheduling itself."""
+    calls: list = []
+    monkeypatch.setattr(
+        pes, "_broadcast_pirate_event",
+        lambda region_id, payload: calls.append((region_id, payload)),
+    )
+    return calls
 
 
 def _kill_log(*, region_id, attacker_player_id=None, kill_weight=1, created_at=None):
@@ -691,14 +710,14 @@ class TestUpdateCleansedStateForRegion:
         event_calls = []
         monkeypatch.setattr(
             pes, "_emit_region_cleansed_event",
-            lambda region_, **kwargs: event_calls.append(region_.id),
+            lambda region_, attackers_, **kwargs: event_calls.append((region_.id, list(attackers_))),
         )
 
         state = pes.update_cleansed_state_for_region(db, region, now=now)
 
         assert state["cleansed_at"] == now.isoformat()
         assert award_calls == [[attacker]]
-        assert event_calls == [region.id]
+        assert event_calls == [(region.id, [attacker])]
 
     def test_already_cleansed_rerun_does_not_redispatch(self, monkeypatch):
         region = _region(total_sectors=300)
@@ -744,3 +763,304 @@ class TestDispatchPirateHunterMedalsIsHarmlessNoOp:
         # Must not raise, even though the fake session has zero support for
         # whatever table award_medal would query.
         pes._dispatch_pirate_hunter_medals(db, region, [uuid.uuid4()])
+
+
+# ---------------------------------------------------------------------------
+# Realtime telemetry -- WO-PIRATE-ECO-2 lane C (pirate-ecosystem.md:413-423).
+# region_pirate_growth / region_pirate_seed_spawn [NO-CANON] / holding_evolved
+# / holding_evolution_suppressed [NO-CANON] / region_cleansed.
+# ---------------------------------------------------------------------------
+
+class TestRegionPirateGrowthTelemetry:
+    def test_growth_action_emits_exactly_once(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)  # target=12
+        # Pre-seed ONE parent so every spawn this tick takes the regular
+        # daughter path -- isolates this test from seed_spawn_camp's OWN
+        # telemetry (covered separately below).
+        existing_parent = _holding(region_id=region.id, tier=PirateHoldingTier.CAMP, sector_id=50)
+        db = _FakeSession(holdings=[existing_parent], sectors=_sectors(region.id, 20, start=100))
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        result = pes.run_weekly_tick(db, region, now=now, rng=_ScriptedRng())
+
+        assert result["action"] == "growth"
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == region.id
+        assert payload["type"] == "region_pirate_growth"
+        assert payload["region_id"] == str(region.id)
+        assert payload["action"] == "growth"
+        assert payload["spawn_count"] == len(result["spawned"])
+        assert payload["sites_spawned"] == result["spawned"]
+        assert payload["target_population"] == result["target"]
+        assert payload["current_population"] == result["current"]
+
+    def test_no_growth_action_emits_exactly_once(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)  # target=12
+        holdings = [_holding(region_id=region.id, sector_id=100 + i) for i in range(10)]
+        db = _FakeSession(holdings=holdings, sectors=_sectors(region.id, 20))
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        result = pes.run_weekly_tick(db, region, now=now, rng=_ScriptedRng())
+
+        assert result["action"] == "no_growth"
+        assert len(calls) == 1
+        _region_id, payload = calls[0]
+        assert payload["type"] == "region_pirate_growth"
+        assert payload["action"] == "no_growth"
+        assert payload["spawn_count"] == 0
+        assert payload["sites_spawned"] == []
+
+    def test_skipped_non_active_region_emits_nothing(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300, status=RegionStatus.SUSPENDED.value)
+        db = _FakeSession()
+
+        result = pes.run_weekly_tick(db, region, now=datetime.now(timezone.utc))
+
+        assert result["action"] == "skipped"
+        assert calls == []
+
+    def test_already_ticked_this_window_emits_nothing(self, monkeypatch):
+        region = _region(total_sectors=300)
+        db = _FakeSession(sectors=_sectors(region.id, 20))
+        first_now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        second_now = first_now + timedelta(days=2)  # same UTC week
+
+        pes.run_weekly_tick(db, region, now=first_now, rng=_ScriptedRng())
+
+        calls = _capture_broadcasts(monkeypatch)  # only observe the SECOND call
+        result = pes.run_weekly_tick(db, region, now=second_now, rng=_ScriptedRng())
+
+        assert result["action"] == "already_ticked_this_window"
+        assert calls == []
+
+
+class TestSeedSpawnTelemetry:
+    def test_seed_spawn_emits_exactly_once(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        db = _FakeSession(sectors=_sectors(region.id, 5))
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        holding = pes.seed_spawn_camp(db, region, now=now, rng=_ScriptedRng())
+
+        assert holding is not None
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == region.id
+        assert payload["type"] == "region_pirate_seed_spawn"
+        assert payload["region_id"] == str(region.id)
+        assert payload["holding_id"] == str(holding.id)
+        assert payload["sector_id"] == holding.sector_id
+
+    def test_seed_spawn_emits_nothing_when_capped(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)  # cap=18
+        holdings = [_holding(region_id=region.id, sector_id=100 + i) for i in range(18)]
+        db = _FakeSession(holdings=holdings, sectors=_sectors(region.id, 5))
+
+        result = pes.seed_spawn_camp(db, region, now=datetime.now(timezone.utc), rng=_ScriptedRng())
+
+        assert result is None
+        assert calls == []
+
+    def test_seed_spawn_emits_nothing_when_no_eligible_sectors(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        db = _FakeSession(sectors=[])
+
+        result = pes.seed_spawn_camp(db, region, now=datetime.now(timezone.utc), rng=_ScriptedRng())
+
+        assert result is None
+        assert calls == []
+
+    def test_growth_tick_seed_fallback_fires_both_events(self, monkeypatch):
+        """A tick whose first spawn hits an empty region (seed fallback)
+        fires BOTH the specific region_pirate_seed_spawn event AND the
+        aggregate region_pirate_growth event -- they are additive, not
+        mutually exclusive (see _emit_seed_spawn_event's own docstring)."""
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)  # target=12, no holdings at all
+        db = _FakeSession(sectors=_sectors(region.id, 20))
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        result = pes.run_weekly_tick(db, region, now=now, rng=_ScriptedRng())
+
+        assert result["action"] == "growth"
+        types = [payload["type"] for _rid, payload in calls]
+        assert types.count("region_pirate_seed_spawn") == 1
+        assert types.count("region_pirate_growth") == 1
+
+
+class TestEvolutionTelemetry:
+    def test_promotion_emits_holding_evolved_exactly_once(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        holding = _holding(
+            region_id=region.id, tier=PirateHoldingTier.CAMP,
+            current_strength=1.0, created_at=now - timedelta(days=30),
+        )
+        db = _FakeSession(holdings=[holding], regions=[region])
+
+        result = pes.evolution_tick(db, holding, now=now, rng=_ScriptedRng([0.0]))
+
+        assert result["action"] == "evolved"
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == holding.region_id
+        assert payload["type"] == "holding_evolved"
+        assert payload["holding_id"] == str(holding.id)
+        assert payload["sector_id"] == holding.sector_id
+        assert payload["old_tier"] == "CAMP"
+        assert payload["new_tier"] == "OUTPOST"
+
+    def test_formation_suppression_emits_holding_evolution_suppressed_exactly_once(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=1200)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        [sector] = _sectors(region.id, count=1, start=700)
+        holding = _holding(
+            region_id=region.id, tier=PirateHoldingTier.OUTPOST, current_strength=1.0,
+            created_at=now - timedelta(days=60), sector_id=sector.sector_id,
+        )
+        db = _FakeSession(holdings=[holding], regions=[region], sectors=[sector], formations=[])
+
+        result = pes.evolution_tick(db, holding, now=now, rng=_ScriptedRng([0.0]))
+
+        assert result == {"action": "suppressed", "reason": "no_formation"}
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == holding.region_id
+        assert payload["type"] == "holding_evolution_suppressed"
+        assert payload["holding_id"] == str(holding.id)
+        assert payload["tier"] == "OUTPOST"
+        assert payload["reason"] == "no_formation"
+
+    def test_noop_outcomes_emit_nothing(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        # not_full_strength -- an early no-op guard well before any
+        # cap/formation/roll logic runs.
+        holding = _holding(
+            region_id=region.id, tier=PirateHoldingTier.CAMP, current_strength=0.50,
+            created_at=now - timedelta(days=90),
+        )
+        db = _FakeSession(holdings=[holding], regions=[region])
+
+        result = pes.evolution_tick(db, holding, now=now, rng=_ScriptedRng([0.0]))
+
+        assert result["action"] == "none"
+        assert calls == []
+
+    def test_roll_failure_emits_nothing(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        holding = _holding(
+            region_id=region.id, tier=PirateHoldingTier.CAMP, current_strength=1.0,
+            created_at=now - timedelta(days=30),
+        )
+        db = _FakeSession(holdings=[holding], regions=[region])
+
+        result = pes.evolution_tick(db, holding, now=now, rng=_ScriptedRng([0.99]))
+
+        assert result["action"] == "none"
+        assert result["reason"] == "roll_failed"
+        assert calls == []
+
+
+class TestRegionCleansedTelemetry:
+    def test_newly_cleansed_emits_region_cleansed_exactly_once(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        pre_state = dict(pes.DEFAULT_ECOSYSTEM_STATE)
+        pre_state["zero_population_since"] = (now - timedelta(days=8)).isoformat()
+        region.pirate_ecosystem_state = pre_state
+        attacker = uuid.uuid4()
+        logs = [_kill_log(region_id=region.id, attacker_player_id=attacker, kill_weight=5, created_at=now)]
+        db = _FakeSession(kill_logs=logs)
+
+        state = pes.update_cleansed_state_for_region(db, region, now=now)
+
+        assert state["cleansed_at"] == now.isoformat()
+        assert len(calls) == 1
+        region_id, payload = calls[0]
+        assert region_id == region.id
+        assert payload["type"] == "region_cleansed"
+        assert payload["region_id"] == str(region.id)
+        assert payload["cleansed_at"] == now.isoformat()
+        assert payload["attacker_leaderboard"] == [str(attacker)]
+
+    def test_not_yet_cleansed_emits_nothing(self, monkeypatch):
+        calls = _capture_broadcasts(monkeypatch)
+        region = _region(total_sectors=300)
+        holding = _holding(region_id=region.id, sector_id=999)  # score=1, not zero
+        db = _FakeSession(holdings=[holding])
+
+        pes.update_cleansed_state_for_region(db, region, now=datetime.now(timezone.utc))
+
+        assert calls == []
+
+    def test_already_cleansed_rerun_emits_nothing(self, monkeypatch):
+        region = _region(total_sectors=300)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        pre_state = dict(pes.DEFAULT_ECOSYSTEM_STATE)
+        pre_state["cleansed_at"] = (now - timedelta(days=1)).isoformat()
+        pre_state["zero_population_since"] = None
+        region.pirate_ecosystem_state = pre_state
+        db = _FakeSession()
+
+        calls = _capture_broadcasts(monkeypatch)
+        pes.update_cleansed_state_for_region(db, region, now=now)
+
+        assert calls == []
+
+
+class TestTelemetryTransportNeverPropagates:
+    @pytest.mark.asyncio
+    async def test_dead_connection_manager_never_breaks_a_growth_tick(self, monkeypatch):
+        """Real (unmocked) _broadcast_pirate_event path, WITH a genuinely
+        running event loop (pytest-asyncio) so asyncio.get_running_loop()
+        actually succeeds -- proving the general `except Exception` branch,
+        not just the "no loop" RuntimeError branch every other sync test in
+        this file exercises implicitly. connection_manager is knocked out
+        entirely (simulates a dead/unavailable telemetry layer); the tick's
+        own result must be completely unaffected."""
+        import src.services.websocket_service as ws_module
+        monkeypatch.setattr(ws_module, "connection_manager", None)
+
+        region = _region(total_sectors=300)
+        existing_parent = _holding(region_id=region.id, tier=PirateHoldingTier.CAMP, sector_id=50)
+        db = _FakeSession(holdings=[existing_parent], sectors=_sectors(region.id, 20, start=100))
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+
+        result = pes.run_weekly_tick(db, region, now=now, rng=_ScriptedRng())
+
+        assert result["action"] == "growth"
+        assert len(result["spawned"]) == 4
+
+    def test_no_running_loop_never_breaks_evolution(self):
+        """Every OTHER test in this class runs as a plain sync test (no
+        running event loop) -- this one exists purely to document that the
+        "no loop" path is the REALISTIC baseline case (sync/worker
+        contexts), not an edge case, and it is exercised by literally every
+        telemetry-adjacent test above that doesn't monkeypatch
+        _broadcast_pirate_event."""
+        region = _region(total_sectors=300)
+        now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+        holding = _holding(
+            region_id=region.id, tier=PirateHoldingTier.CAMP,
+            current_strength=1.0, created_at=now - timedelta(days=30),
+        )
+        db = _FakeSession(holdings=[holding], regions=[region])
+
+        result = pes.evolution_tick(db, holding, now=now, rng=_ScriptedRng([0.0]))
+
+        assert result["action"] == "evolved"
+        assert holding.tier == PirateHoldingTier.OUTPOST

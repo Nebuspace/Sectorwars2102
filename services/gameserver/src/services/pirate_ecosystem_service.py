@@ -466,6 +466,127 @@ def _eligible_region_sectors(db: Session, region_id: uuid.UUID) -> List[int]:
     return find_eligible_sectors(db, region_id, candidate_ids)
 
 
+# ---------------------------------------------------------------------------
+# Realtime telemetry (pirate-ecosystem.md:413-423). WO-PIRATE-ECO-2 lane C --
+# fills the seam lane A left marked. ARIA reads these events to compose
+# player-facing narration (:422). NOT wired this wave: `region_suppression_high`
+# (:420, suppression_modifier < 0.30) -- it has no call site inside the tick
+# engines this WO instruments; its natural home is refresh_pirate_ecosystem_
+# snapshot (ECO-1 foundation), which computes suppression_modifier. Flagged,
+# not silently dropped.
+# ---------------------------------------------------------------------------
+
+def _broadcast_pirate_event(region_id: uuid.UUID, payload: Dict[str, Any]) -> None:
+    """Best-effort realtime broadcast to the region room. Mirrors the
+    established idiom EXACTLY (combat_service._emit_teammate_under_attack /
+    npc_spawn_service's npc_kia block): lazy import, grab the running loop,
+    loop.create_task() so the send never blocks the caller, swallow every
+    failure -- no running loop (sync/worker context, the case in every unit
+    test in this file), a broken/unavailable connection_manager, or
+    anything else -- so telemetry can NEVER break a tick. Shared by every
+    WO-PIRATE-ECO-2 lane C emitter below; the only thing that differs per
+    event is the payload shape, so the transport plumbing lives here once."""
+    try:
+        import asyncio
+
+        from src.services.websocket_service import connection_manager
+
+        asyncio.get_running_loop().create_task(
+            connection_manager.broadcast_to_region(str(region_id), payload)
+        )
+    except RuntimeError:
+        pass  # no running loop -- sync/worker context; nothing polls this today
+    except Exception:
+        logger.exception(
+            "pirate ecosystem telemetry broadcast failed for type=%s (non-fatal)",
+            payload.get("type"),
+        )
+
+
+def _emit_region_growth_event(
+    region: Region, result: Dict[str, Any], *, now: Optional[datetime] = None
+) -> None:
+    """`region_pirate_growth` (:417) -- spawn count, target, current score,
+    sites spawned. Callers gate this to genuine tick outcomes only
+    ("growth"/"no_growth") -- the idempotence/skip short-circuits
+    (already_ticked_this_window, skipped) never reach this call, matching
+    "no-op ticks emit nothing".
+
+    [NO-CANON]: canon names the fields in prose only ("spawn count, target,
+    current score, sites spawned"), no JSON shape -- the field names below
+    are a reasonable rendering of that prose, flagged for DECISIONS."""
+    _broadcast_pirate_event(region.id, {
+        "type": "region_pirate_growth",
+        "region_id": str(region.id),
+        "action": result.get("action"),
+        "spawn_count": len(result.get("spawned") or []),
+        "target_population": result.get("target"),
+        "current_population": result.get("current"),
+        "sites_spawned": list(result.get("spawned") or []),
+        "timestamp": _iso(_now(now)),
+    })
+
+
+def _emit_seed_spawn_event(holding: PirateHolding, *, now: Optional[datetime] = None) -> None:
+    """[NO-CANON] `region_pirate_seed_spawn` -- canon's telemetry list
+    (:413-423) has no event distinct from region_pirate_growth for the
+    Cleansed-region seed fallback (:245-277); a seed-fallback spawn already
+    contributes to the enclosing run_weekly_tick's region_pirate_growth
+    sites_spawned count when reached via that path. This is an ADDITIONAL,
+    separately-typed event on top of that (not a replacement) because "a
+    cleansed region just got reseeded" is a materially different narrative
+    beat for ARIA (:422) than "the network grew". Fires at the point of
+    creation regardless of caller (mirrors promote_holding_tier/evolution_
+    tick's own self-contained emission), so a future direct caller of
+    seed_spawn_camp still gets this signal. Flagged for DECISIONS, not
+    silently invented as canon."""
+    _broadcast_pirate_event(holding.region_id, {
+        "type": "region_pirate_seed_spawn",
+        "region_id": str(holding.region_id),
+        "holding_id": str(holding.id),
+        "sector_id": holding.sector_id,
+        "timestamp": _iso(_now(now)),
+    })
+
+
+def _emit_holding_evolved_event(
+    holding: PirateHolding, old_tier: str, new_tier: str, *, now: Optional[datetime] = None,
+) -> None:
+    """`holding_evolved` (:418) -- pre/post tier, location, region.
+    ``old_tier``/``new_tier`` are plain string values (matching
+    promote_holding_tier's own return-dict shape) -- no enum re-derivation
+    needed at the call site."""
+    _broadcast_pirate_event(holding.region_id, {
+        "type": "holding_evolved",
+        "region_id": str(holding.region_id),
+        "holding_id": str(holding.id),
+        "sector_id": holding.sector_id,
+        "old_tier": old_tier,
+        "new_tier": new_tier,
+        "timestamp": _iso(_now(now)),
+    })
+
+
+def _emit_evolution_suppressed_event(
+    holding: PirateHolding, *, reason: str, now: Optional[datetime] = None,
+) -> None:
+    """[NO-CANON] `holding_evolution_suppressed` -- canon's telemetry list
+    (:413-423) names only the SUCCESSFUL promotion event (holding_evolved);
+    the no-qualifying-formation suppression outcome (:309-313) has no named
+    event. Its own type (not a holding_evolved variant -- nothing evolved)
+    so ARIA/admin telemetry can distinguish "grew" from "tried to grow and
+    was blocked". Flagged for DECISIONS."""
+    _broadcast_pirate_event(holding.region_id, {
+        "type": "holding_evolution_suppressed",
+        "region_id": str(holding.region_id),
+        "holding_id": str(holding.id),
+        "sector_id": holding.sector_id,
+        "tier": holding.tier.value,
+        "reason": reason,
+        "timestamp": _iso(_now(now)),
+    })
+
+
 def spawn_daughter_holding(
     db: Session, region: Region, *, now: Optional[datetime] = None, rng: Any = None
 ) -> Optional[PirateHolding]:
@@ -578,6 +699,7 @@ def seed_spawn_camp(
     )
     db.add(holding)
     db.flush()
+    _emit_seed_spawn_event(holding, now=now)
     return holding
 
 
@@ -643,6 +765,7 @@ def run_weekly_tick(
     region.pirate_ecosystem_state = state
     flag_modified(region, "pirate_ecosystem_state")
     db.flush()
+    _emit_region_growth_event(region, result, now=now)
     return result
 
 
@@ -783,6 +906,7 @@ def evolution_tick(
             # reset the clock (same as a real damage event).
             holding.last_damage_at = now
             db.flush()
+            _emit_evolution_suppressed_event(holding, reason="no_formation", now=now)
             return {"action": "suppressed", "reason": "no_formation"}
 
     chance = EVOLUTION_CHANCE[holding.tier]
@@ -790,6 +914,7 @@ def evolution_tick(
     if picker.random() < chance:
         result = promote_holding_tier(holding, now=now)
         db.flush()
+        _emit_holding_evolved_event(holding, result["old_tier"], result["new_tier"], now=now)
         return result
 
     return {"action": "none", "reason": "roll_failed"}
@@ -877,18 +1002,20 @@ def _dispatch_pirate_hunter_medals(
         logger.error("Pirate Hunter medal dispatch hook failed: %s", e)
 
 
-def _emit_region_cleansed_event(region: Region, *, now: Optional[datetime] = None) -> None:
-    """MARKED SEAM for Lane C (websocket telemetry), deferred out of this
-    WO's scope per the dispatch brief ("do NOT touch... websocket_service.py").
-    Canon (:358-362) fires a `region_cleansed` realtime event here with
-    {region_id, cleansed_at, recent_attackers}. Currently a documented
-    no-op -- Lane C wires the actual connection_manager dispatch when it
-    lands; this function exists so that call site is already in the right
-    place and doesn't need a second edit to THIS file later."""
-    logger.info(
-        "pirate.region_cleansed region=%s at=%s (realtime emit deferred to Lane C)",
-        region.id, _iso(_now(now)),
-    )
+def _emit_region_cleansed_event(
+    region: Region, attackers: List[uuid.UUID], *, now: Optional[datetime] = None
+) -> None:
+    """`region_cleansed` (:358-362, :419) -- region ID, attacker
+    leaderboard. WO-PIRATE-ECO-2 lane C: fills the seam lane A left marked
+    (this call site was already correctly placed in
+    update_cleansed_state_for_region -- only the body changes here, from a
+    documented no-op to the real broadcast)."""
+    _broadcast_pirate_event(region.id, {
+        "type": "region_cleansed",
+        "region_id": str(region.id),
+        "cleansed_at": _iso(_now(now)),
+        "attacker_leaderboard": [str(a) for a in attackers],
+    })
 
 
 def update_cleansed_state_for_region(
@@ -914,7 +1041,7 @@ def update_cleansed_state_for_region(
     if newly_cleansed:
         attackers = top_attackers_by_kill_weight(db, region.id, days=30, now=now)
         _dispatch_pirate_hunter_medals(db, region, attackers)
-        _emit_region_cleansed_event(region, now=now)
+        _emit_region_cleansed_event(region, attackers, now=now)
 
     db.flush()
     return state
