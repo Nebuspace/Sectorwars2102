@@ -37,6 +37,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import random
 import time
 import uuid
@@ -89,7 +90,11 @@ logger = logging.getLogger(__name__)
 
 #: Pinned bang image tag used by :meth:`BangImportService.invoke_bang`.
 #: Overridable via the ``BANG_VERSION`` env var (set by Phase 2 Dockerfile work).
-DEFAULT_BANG_IMAGE = "docker.io/drxelanull/sw2102-bang:1.3.0"
+#: Default (1.3.3) is CLI-mode -- matches compose's BANG_VERSION lockstep pin.
+#: 1.3.0's old entrypoint enters a db-writer phase that needs network; that
+#: phase is incompatible with invoke_bang's network_mode="none"
+#: (WO-BANG-NETMODE-1) -- do not default this back below 1.3.1.
+DEFAULT_BANG_IMAGE = f"docker.io/drxelanull/sw2102-bang:{os.environ.get('BANG_VERSION', '1.3.3')}"
 
 #: PG advisory-lock key used to serialise concurrent generation jobs.
 #: Lives here (not in the schema package) so the translator and any future
