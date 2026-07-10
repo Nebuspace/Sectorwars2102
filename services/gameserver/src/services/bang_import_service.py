@@ -377,6 +377,26 @@ _EXPECTED_SECTOR_COUNT: Dict[RegionType, Optional[int]] = {
     "central_nexus": 5000,
 }
 
+#: WO-BANG-ONEWAY-RATE: GLOSSARY.md's canonical one-way-warp fraction
+#: target (~5%). Every BangConfig construction site below pins this
+#: EXPLICITLY rather than relying on bang's own CLI default (also 5% per
+#: `--help`) -- an implicit cross-repo default is fragile (round-3 census
+#: passed `one_way_warp_percent: null` with no explicit value anywhere in
+#: OUR config).
+#: [NO-CANON] tolerance/verdict: pinning this INPUT value does NOT reliably
+#: produce a ~5% OUTPUT fraction. Direct empirical testing against the
+#: live bang CLI (v1.3.4, 1000-sector player_owned samples, seed 42)
+#: measured 29.6% / 32.9% / 44.6% one-way warps at input 0 / 5 / 25
+#: respectively -- input=5 alone reproduces the ~32% census finding almost
+#: exactly, it does not fix it. Excluding bang's structurally-always-
+#: one-way "latent" (quantum-tunnel) warps, NORMAL warps alone still
+#: measured 25.0% one-way at input=0. This is bang's own generation-
+#: algorithm behavior (sw2102-bang, a separate repo/lane), not a
+#: translator or job-config mapping bug -- pinning this constant is the
+#: best available lever from our side; closing the gap to canon's actual
+#: ~5% OUTPUT needs a bang-repo investigation, flagged separately.
+CANON_ONE_WAY_WARP_PERCENT = 5.0
+
 #: BangConfig snake_case field → bang CLI kebab-case flag. Only optional
 #: flags with a 1:1 CLI surface live here; the three required fields
 #: (seed, sectors, region_type) are emitted directly in
@@ -870,6 +890,23 @@ class BangImportService:
         REGION_ORDER: Tuple[RegionType, ...] = (
             "terran_space", "player_owned", "central_nexus",
         )
+        # WO-BANG-CAPITAL-DEDUP: bang names EVERY region's Capital-sector
+        # planet 'Earth' (sw2102-bang/src/content.ts:346-354) -- each
+        # region-type invocation is generated independently with no
+        # cross-region awareness, so it can't know 'Earth' is already taken
+        # elsewhere in the SAME galaxy. terran_space is exempt: its capital
+        # is already uniquely renamed to 'New Earth' by
+        # _apply_terran_space_invariants below (that name is OURS, not
+        # bang-emitted -- bang's own payload for terran_space ALSO says
+        # 'Earth'; the starter-invariant override is a pre-existing,
+        # unrelated mechanic that happens to also solve terran_space's
+        # collision as a side effect). This loop has galaxy-wide visibility
+        # (all regions in one call, in canonical REGION_ORDER), so it is the
+        # correct place to dedupe -- bang itself, one repo over, cannot.
+        # [NO-CANON] rename pattern -- ships.md/DATA_MODELS name no
+        # disambiguation scheme; "<name> (<Region Type>)" is this fix's pin,
+        # flagged for design sign-off.
+        seen_capital_planet_names = {"New Earth"}
         running_offset = 0
         for region_type in REGION_ORDER:
             universe = universes.get(region_type)
@@ -880,6 +917,27 @@ class BangImportService:
                 # Enforce the legacy starter-region invariants per the
                 # GalaxyGenerator audit's "Top 3 risks".
                 plan = self._apply_terran_space_invariants(plan, warnings)
+            else:
+                capital_planet = next(
+                    (p for p in plan.planets if p.sector_int_id == plan.capital_sector_number),
+                    None,
+                )
+                if capital_planet is not None and capital_planet.name in seen_capital_planet_names:
+                    original_name = capital_planet.name
+                    capital_planet.name = (
+                        f"{original_name} ({region_type.replace('_', ' ').title()})"
+                    )
+                    warnings.append({
+                        "category": "CAPITAL_DEDUP",
+                        "code": "WARN-CAPITAL-DEDUP",
+                        "message": (
+                            f"Renamed duplicate capital planet '{original_name}' in "
+                            f"{region_type} to '{capital_planet.name}' (galaxy already "
+                            f"has a planet named '{original_name}')"
+                        ),
+                    })
+                if capital_planet is not None:
+                    seen_capital_planet_names.add(capital_planet.name)
             # ADR-0041 Phase 10.5: seed TradeDocks per region quota
             plan = self._apply_tradedock_seeding(region_type, plan, warnings)
             if running_offset:
@@ -1174,6 +1232,7 @@ class BangImportService:
                     seed=params.seed,
                     sectors=params.sectors,
                     region_type="player_owned",
+                    one_way_warp_percent=CANON_ONE_WAY_WARP_PERCENT,
                 )
                 parsed = await asyncio.to_thread(self.invoke_bang, sub_config, 300)
                 await self._append_log(
@@ -1483,6 +1542,7 @@ class BangImportService:
                             else (_EXPECTED_SECTOR_COUNT[region_type] or params.sectors)
                         ),
                         region_type=region_type,
+                        one_way_warp_percent=CANON_ONE_WAY_WARP_PERCENT,
                     )
                     parsed = await asyncio.to_thread(self.invoke_bang, sub_config, 300)
                     universes[region_type] = parsed
@@ -2021,6 +2081,7 @@ class BangImportService:
                             else (_EXPECTED_SECTOR_COUNT[region_type] or params.sectors)
                         ),
                         region_type=region_type,
+                        one_way_warp_percent=CANON_ONE_WAY_WARP_PERCENT,
                     )
                     parsed = await asyncio.to_thread(
                         self.invoke_bang, sub_config, 300
