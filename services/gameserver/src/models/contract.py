@@ -107,7 +107,24 @@ class Contract(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    issuer_type = Column(Enum(ContractIssuerType, name="contract_issuer_type"), nullable=False)
+    # WO-SWEEP-CONTRACT-ENUM: values_callable is REQUIRED on all six enum
+    # columns below (same defect class as WO-SWEEP-WARPLAYER-ENUM). Plain
+    # SQLAlchemy Enum(PyEnum) serializes the member NAME (e.g. "NPC",
+    # "POSTED") by default -- but migration 1aab831e9008 created the six
+    # Postgres enum TYPES from the lowercase VALUES ('npc'/'player',
+    # 'posted'/'accepted'/..., etc. -- see ISSUER_TYPE_VALUES/STATUS_VALUES/
+    # etc. in that migration). Without values_callable, every INSERT/UPDATE
+    # and every enum-compared read against a real (values-built) Postgres DB
+    # fails with "invalid input value for enum". Python-side member names
+    # (ContractStatus.POSTED etc.) are completely unchanged; every existing
+    # call site keeps working.
+    issuer_type = Column(
+        Enum(
+            ContractIssuerType, name="contract_issuer_type",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
+    )
     # [NO-CANON] contracts.md:31 types this "UUID / Integer -- FK -> Player.id
     # (player) or NPC identifier (npc)" without defining what an "NPC
     # identifier" is -- there is no NPC-registry model in this codebase.
@@ -127,9 +144,18 @@ class Contract(Base):
     issuer_id = Column(UUID(as_uuid=True), nullable=False)
     acceptor_player_id = Column(UUID(as_uuid=True), ForeignKey("players.id", ondelete="SET NULL"), nullable=True)
 
-    contract_type = Column(Enum(ContractType, name="contract_type"), nullable=False)
+    contract_type = Column(
+        Enum(
+            ContractType, name="contract_type",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
+    )
     status = Column(
-        Enum(ContractStatus, name="contract_status"),
+        Enum(
+            ContractStatus, name="contract_status",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
         nullable=False,
         default=ContractStatus.POSTED,
         server_default=ContractStatus.POSTED.value,
@@ -147,7 +173,10 @@ class Contract(Base):
 
     escrow_amount = Column(Numeric(19, 2), nullable=False, default=0, server_default=text("0"))
     escrow_state = Column(
-        Enum(ContractEscrowState, name="contract_escrow_state"),
+        Enum(
+            ContractEscrowState, name="contract_escrow_state",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
         nullable=False,
         default=ContractEscrowState.HELD,
         server_default=ContractEscrowState.HELD.value,
@@ -166,13 +195,23 @@ class Contract(Base):
     partial_fulfilled_payout = Column(Numeric(19, 2), nullable=False, default=0, server_default=text("0"))
 
     dispute_filed_at = Column(DateTime(timezone=True), nullable=True)
-    dispute_resolution = Column(Enum(ContractDisputeResolution, name="contract_dispute_resolution"), nullable=True)
+    dispute_resolution = Column(
+        Enum(
+            ContractDisputeResolution, name="contract_dispute_resolution",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=True,
+    )
     dispute_resolved_at = Column(DateTime(timezone=True), nullable=True)
     dispute_notes = Column(Text, nullable=True)
     escalated_to_admin = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     insurance_coverage_tier = Column(
-        Enum(ContractInsuranceCoverageTier, name="contract_insurance_coverage_tier"), nullable=True,
+        Enum(
+            ContractInsuranceCoverageTier, name="contract_insurance_coverage_tier",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=True,
     )
     insurance_premium_paid = Column(Numeric(19, 2), nullable=False, default=0, server_default=text("0"))
     insurance_claim_filed = Column(Boolean, nullable=False, default=False, server_default=text("false"))
