@@ -20,12 +20,25 @@ DOCS/PLANS/bang-integration-schema-map.md § 6):
   Q6 - Extend Postgres enum ``special_formation_type`` with the 3 ADR-0070
        island values: LOST_SECTOR, LOST_CLUSTER, ARCHIPELAGO.
        Postgres requires ALTER TYPE ... ADD VALUE to run outside any
-       wrapping transaction (each ADD VALUE auto-commits). Alembic's
-       default migration runs inside a transaction, so we set
-       ``with_variant``/``transaction_per_migration`` via the env config
-       OR (as here) issue each ALTER TYPE as a separate
-       ``op.execute`` call against ``connection.execution_options(
-       isolation_level='AUTOCOMMIT')``.
+       wrapping transaction (each ADD VALUE auto-commits) UNLESS the new
+       value is never referenced within that same transaction -- true here
+       (nothing in this revision inserts a row using the new values), which
+       PG12+ permits inside the ambient transaction. We still isolate each
+       ALTER TYPE via ``op.get_context().autocommit_block()`` rather than
+       relying on that same-transaction exemption, for two reasons: (1) it
+       is Alembic's own documented mechanism for exactly this pattern, and
+       (2) it matches the precedent already established in
+       d4f7a2c91e58_add_npc_interdictor_hulls.py for the identical
+       ship_type-enum-append case -- one canonical way to do this across the
+       migration history rather than two. (FIXED, WO-QTI-MIGRATION-CHAIN-
+       FRESH: this revision previously used ``bind.execution_options(
+       isolation_level='AUTOCOMMIT')`` directly, which raises
+       InvalidRequestError under SQLAlchemy 2.x because env.py's
+       ``context.begin_transaction()`` has already opened the ambient
+       migration transaction by the time this code runs -- you cannot
+       switch isolation_level on a connection mid-transaction. d4f7a2c91e58
+       already used the correct ``autocommit_block()`` pattern and did NOT
+       need this fix; only this revision did.)
 
 Revision ID: c4f1d8b27e63
 Revises: b3e5c7a92f48
@@ -86,19 +99,20 @@ def upgrade() -> None:
     )
 
     # --- Q6: extend special_formation_type enum ---
-    # Postgres 12+ allows ALTER TYPE ... ADD VALUE inside a transaction,
-    # but only when the new value is used in the SAME transaction. To
-    # avoid that footgun and stay compatible with older PG versions, run
-    # each ADD VALUE with AUTOCOMMIT isolation. They are idempotent via
-    # IF NOT EXISTS.
-    bind = op.get_bind()
-    autocommit_conn = bind.execution_options(isolation_level='AUTOCOMMIT')
-    for value in NEW_FORMATION_VALUES:
-        autocommit_conn.execute(
-            sa.text(
-                f"ALTER TYPE special_formation_type ADD VALUE IF NOT EXISTS '{value}'"
+    # autocommit_block() commits the ambient migration transaction (opened by
+    # env.py's context.begin_transaction()), runs these statements outside
+    # any transaction, then opens a fresh one for whatever follows in this
+    # revision (there is nothing after this block here). Idempotent via IF
+    # NOT EXISTS. See the module docstring for why the direct
+    # ``bind.execution_options(isolation_level='AUTOCOMMIT')`` this revision
+    # used to call is invalid under SQLAlchemy 2.x.
+    with op.get_context().autocommit_block():
+        for value in NEW_FORMATION_VALUES:
+            op.execute(
+                sa.text(
+                    f"ALTER TYPE special_formation_type ADD VALUE IF NOT EXISTS '{value}'"
+                )
             )
-        )
 
 
 def downgrade() -> None:
