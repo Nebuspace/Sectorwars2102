@@ -750,6 +750,16 @@ class MovementService:
         if current_sector_id == destination_sector_id:
             return {"success": True, "message": "Already in this sector", "turn_cost": 0}
 
+        # Auth fix (b) / ADR-0043: Galactic Citizen subscription gate on
+        # Region<->Nexus natural-warp traversal. Runs ONCE here, before the
+        # player-gate / direct-warp / warp-tunnel branches below, so no
+        # movement path into Central Nexus can bypass it — see
+        # _check_nexus_subscription_gate's docstring for the full
+        # canon citation and the [NO-CANON] directionality note.
+        nexus_gate_rejection = self._check_nexus_subscription_gate(player, destination_sector_id)
+        if nexus_gate_rejection is not None:
+            return nexus_gate_rejection
+
         # Tractor tow (WO-AF; ships.md:354-357): if THIS ship is actively towing
         # another, the hauler pays its full move cost PLUS a tow surcharge. The
         # surcharge is size-based on warps/tunnels (the cached surcharge_per_move:
@@ -878,7 +888,86 @@ class MovementService:
 
         # If we get here, no valid path was found
         return {"success": False, "message": "No valid path to destination sector", "turn_cost": 0}
-    
+
+    def _check_nexus_subscription_gate(
+        self, player: Player, destination_sector_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Auth fix (b), Max-approved 2026-07-10: ADR-0043 / SYSTEMS/region-
+        lifecycle.md:655 — "The Galactic Citizen subscription gate is
+        enforced at traversal, not at the warp's existence: every region
+        carries the warp regardless of subscription tier, and the cross-
+        region traversal endpoint checks the traversing player's tier,
+        rejecting free-tier players with ERR_GALACTIC_CITIZEN_REQUIRED."
+
+        Fires exactly when this move crosses FROM a non-Nexus region INTO
+        Central Nexus (``Region.is_central_nexus`` on the destination, and
+        NOT already true of the player's current region — pure intra-Nexus
+        movement is never gated). Runs once in move_player_to_sector before
+        any of the three movement-path branches, so no path (player-built
+        gate, direct warp, natural warp tunnel) can reach Nexus unchecked.
+
+        Returns a rejection dict (the same ``{"success": False, "message":
+        ..., "turn_cost": 0}`` shape every other early-exit in this method
+        uses) if the player must be blocked, else ``None`` to let the move
+        proceed unchanged.
+
+        [NO-CANON] Directionality, flagged not silently resolved: canon's
+        sentence does not say whether the gate applies to both directions
+        or entry only. This implementation gates ENTRY into Central Nexus
+        only — leaving Nexus back to a region is always allowed. Rationale:
+        a bidirectional gate would permanently strand a player already
+        inside Nexus whose subscription lapses mid-visit, with no way back
+        to their home region (new players always start in Terran Space,
+        never in Nexus — auth.py:580-606 — so this is a mid-visit-lapse
+        scenario, not an onboarding one, but still a real trap). The SAME
+        canon document's sibling rule (ADR-0054 suspended-region-ingress,
+        region-lifecycle.md:85) explicitly states "Outbound... always
+        allowed" for its own, different gate — the closest textual analog
+        available, and the only directionally-safe reading. Flagged for
+        DECISIONS in case an intentional bidirectional (or Nexus-side) gate
+        is what Max actually wants.
+
+        [NO-CANON] Scope, flagged not silently resolved: this gates the
+        TRAVERSAL endpoint only, per the WO's explicit scope. It does NOT
+        filter Central Nexus destinations out of get_available_moves's
+        listing — a free-tier player can still see Nexus sectors advertised
+        as reachable and will be rejected only when actually attempting the
+        move. Widening into the available-moves listing was out of this
+        fix's approved scope (AUTH DISCIPLINE: exact fix approved, no
+        widening without asking) — flagged as a follow-up, not built here.
+        """
+        from src.models.region import Region
+
+        origin_region_id = player.current_region_id
+        if origin_region_id is not None:
+            origin_region = self.db.query(Region).filter(Region.id == origin_region_id).first()
+            if origin_region is not None and origin_region.is_central_nexus:
+                return None  # already inside Nexus -- not an entry, always allowed
+
+        destination_sector = self.db.query(Sector).filter(
+            Sector.sector_id == destination_sector_id
+        ).first()
+        if destination_sector is None or destination_sector.region_id is None:
+            return None  # unknown/unattributed destination -- nothing to gate
+
+        destination_region = self.db.query(Region).filter(
+            Region.id == destination_sector.region_id
+        ).first()
+        if destination_region is None or not destination_region.is_central_nexus:
+            return None  # not entering Nexus -- gate does not apply
+
+        from src.services.ship_upgrade_service import is_galactic_citizen as _is_galactic_citizen
+
+        if not _is_galactic_citizen(self.db, player):
+            return {
+                "success": False,
+                "message": "ERR_GALACTIC_CITIZEN_REQUIRED",
+                "error": "ERR_GALACTIC_CITIZEN_REQUIRED",
+                "turn_cost": 0,
+            }
+        return None
+
     def get_available_moves(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """
         Get all sectors a player can move to from their current position.
