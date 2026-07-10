@@ -20,6 +20,7 @@ import logging
 import uuid
 import hashlib
 import re
+import unicodedata
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
 from dataclasses import dataclass, asdict
@@ -258,57 +259,36 @@ class EnhancedAIService:
         """
         if not user_input:
             return ""
-        
+
         # Convert to string and limit length
         user_input = str(user_input)[:self.max_conversation_length]
-        
+
+        # ADR-0057 A-V1 layer 1 -- Unicode NFKC normalization, FIRST,
+        # before any pattern check below sees the input. Mirrors
+        # ai_security_service.sanitize_input's own layer-1 fix
+        # (WO-ARIA-PROMPT-DEFENSE) -- this is a SEPARATE sanitizer used
+        # for the general/template AI-conversation path, not just chat,
+        # so it gets the same hardening independently.
+        user_input = unicodedata.normalize('NFKC', user_input)
+
         # Remove HTML tags and dangerous characters. `[^<>]*` (rather than
         # `[^>]*`) prevents the inner class from running over `<`, eliminating
         # the O(n²) polynomial-redos pattern CodeQL flags.
         user_input = re.sub(r'<[^<>]*>', '', user_input)
         user_input = re.sub(r'[<>"\'`]', '', user_input)
         user_input = re.sub(r'javascript:|data:|vbscript:', '', user_input, flags=re.IGNORECASE)
-        
+
         # Remove potential SQL injection patterns
         user_input = re.sub(r'(union|select|insert|update|delete|drop|exec|script)\s', '', user_input, flags=re.IGNORECASE)
-        
-        # Apply prompt injection filtering
-        user_input = self._filter_prompt_injections(user_input)
-        
-        return user_input.strip()
 
-    def _filter_prompt_injections(self, user_input: str) -> str:
-        """
-        SECURITY: Filter potential prompt injection attacks
-        """
-        # Common prompt injection patterns
-        injection_patterns = [
-            r'ignore\s+previous\s+instructions',
-            r'disregard\s+above',
-            r'forget\s+everything',
-            r'you\s+are\s+now',
-            r'act\s+as\s+if',
-            r'pretend\s+you\s+are',
-            r'imagine\s+you\s+are',
-            r'system\s*:\s*you',
-            r'assistant\s*:\s*you',
-            r'human\s*:\s*you',
-            r'override\s+instructions',
-            r'new\s+instructions',
-            r'forget\s+your\s+role',
-            r'ignore\s+your\s+training'
-        ]
-        
-        # Check for injection patterns
-        filtered_input = user_input
-        for pattern in injection_patterns:
-            if re.search(pattern, user_input, re.IGNORECASE):
-                # Log security event
-                logger.warning(f"Potential prompt injection attempt detected: {pattern}")
-                # Replace with safe text
-                filtered_input = re.sub(pattern, '[filtered]', filtered_input, flags=re.IGNORECASE)
-        
-        return filtered_input
+        # ADR-0057 A-V1 layer 4 -- versioned pattern list, defense-in-depth
+        # (WO-ARIA-PROMPT-DEFENSE). Replaces the old inline injection_
+        # patterns list that used to live directly in this method (Accept
+        # #4: "inline regex lists in enhanced_ai_service.py are GONE").
+        from src.services.aria_pattern_guard import get_pattern_guard
+        user_input = get_pattern_guard().filter(user_input)
+
+        return user_input.strip()
 
     def _sanitize_response(self, response: str) -> str:
         """
@@ -996,32 +976,106 @@ class EnhancedAIService:
             logger.error(f"Error generating AI response: {e}")
             return "I encountered an issue processing your request. Could you please rephrase your question?"
 
+    def _apply_cheap_prompt_defense_layers(
+        self, raw_input: str, player_id: uuid.UUID, context: ConversationContext,
+    ) -> Optional[str]:
+        """ADR-0057 A-V1 layers 1 (NFKC), 2 (JSON-envelope breakout / A-I2),
+        and 4 (versioned pattern list) -- the cheap, always-on pre-filters
+        (WO-ARIA-PROMPT-DEFENSE), run in canonical order, self-contained
+        so _try_llm_chat_response's own gate doesn't depend on the caller
+        having already sanitized the text. process_natural_language_
+        query's upstream _sanitize_user_input already applies layers 1+4
+        too (general AI-conversation path, not chat-specific) -- running
+        them again here is deliberate belt-and-suspenders for the one
+        call this WO exists to protect, not a correctness dependency;
+        NFKC is idempotent and a second pattern-guard pass over
+        already-filtered text is a cheap no-op.
+
+        Returns None when layer 2 detects an envelope-breakout attempt --
+        the A-I2 violation + escalation-ladder penalty is already applied
+        (via ai_security_service, same detector/ladder validate_input's
+        route-level call already uses) before returning. The caller
+        treats None exactly like any other _try_llm_chat_response
+        failure signal, falling back to the template engine."""
+        # Layer 1
+        normalized = unicodedata.normalize('NFKC', raw_input or "")
+
+        # Layer 2 (A-I2)
+        from src.services.ai_security_service import SecurityViolationType, get_security_service
+        security_service = get_security_service()
+        session_id = getattr(context, "session_id", "") or ""
+        envelope_violations = security_service.detect_envelope_breakout(
+            normalized, str(player_id), session_id,
+        )
+        if envelope_violations:
+            security_service.log_security_violations(envelope_violations)
+            security_service.apply_security_penalty(str(player_id), SecurityViolationType.MALFORMED_ENVELOPE)
+            logger.warning("ARIA prompt-defense layer 2 rejected chat input: envelope breakout (ERR_ARIA_MALFORMED_INPUT)")
+            return None
+
+        # Layer 4
+        from src.services.aria_pattern_guard import get_pattern_guard
+        return get_pattern_guard().filter(normalized)
+
     async def _try_llm_chat_response(self, intent_analysis: Dict[str, Any],
                                   assistant: AIComprehensiveAssistant,
                                   context: ConversationContext) -> Optional[str]:
         """WO-ARIA-CHAT-LLM's LLM-path attempt — a single, clearly-
-        delineated seam (the provider call at the bottom of this method)
-        so PROMPT-DEFENSE (next WO) can slot its own pre/post-processing
-        stages in front of/behind that one call without restructuring
-        this method. Returns the LLM's text on success, or None on ANY
-        failure — missing player row, no provider available, a raised
-        provider exception, or an empty/None reply — so the caller
-        (_generate_ai_response) always has a clean "fall back to the
-        template engine" signal and never has to catch anything itself.
+        delineated seam (the provider call in the middle of this method)
+        that WO-ARIA-PROMPT-DEFENSE wraps with ADR-0057 A-V1's five-layer
+        defense, in canonical order: 1 (NFKC) -> 2 (envelope/A-I2) -> 4
+        (pattern list) -> 3 (input classifier, load-bearing) -> [provider
+        call] -> 5 (output classifier, load-bearing). Layers 3+5 only run
+        when settings.ARIA_PROMPT_CLASSIFIER_ENABLED is True (BUILT DARK,
+        same convention as ARIA_LLM_CHAT_ENABLED -- see config.py); when
+        False, 1+2+4 still gate every call (never "regex-only" -- NFKC +
+        envelope-breakout detection + versioned patterns already exceed
+        that bar), but the load-bearing classifiers are skipped, matching
+        this method's pre-existing behavior for any caller that predates
+        this WO. Returns the LLM's text on success, or None on ANY
+        failure — missing player row, an envelope-breakout / classifier
+        rejection, no provider available, a raised provider exception, or
+        an empty/None reply — so the caller (_generate_ai_response)
+        always has a clean "fall back to the template engine" signal and
+        never has to catch anything itself. A layer-5-flagged OUTPUT is
+        the one exception: per canon, a flagged reply is replaced with a
+        generic refusal and returned as a normal (mode="llm") reply,
+        not collapsed to None/template -- ARIA still answers, just safely.
 
         The cost-cap gate (check_cost_limits_detailed) already ran
         upstream of this whole call chain, in the ROUTE (enhanced_ai.py /
         websocket_service.py's handle_aria_chat) — a request only reaches
         process_natural_language_query, and therefore this method, once
         it has already cleared that gate. This method does not re-check
-        cost caps (WO's own "don't duplicate" instruction) and issues
-        exactly one provider attempt per chat turn."""
+        cost caps (WO's own "don't duplicate" instruction) and issues at
+        most one main-dispatch provider attempt per chat turn (plus, when
+        classifiers are enabled, up to two additional cheap classifier
+        calls)."""
         try:
             stmt = select(Player).where(Player.id == assistant.player_id)
             result = await self.db.execute(stmt)
             player = result.scalar_one_or_none()
             if player is None:
                 return None
+
+            raw_input = intent_analysis.get("original_input", "")
+            gated_input = self._apply_cheap_prompt_defense_layers(raw_input, assistant.player_id, context)
+            if gated_input is None:
+                return None
+
+            from src.core.config import settings
+            classifier = None
+            if settings.ARIA_PROMPT_CLASSIFIER_ENABLED:
+                from src.services.aria_classifier_service import (
+                    INJECT_PROBABILITY_THRESHOLD, get_aria_classifier_service,
+                )
+                classifier = get_aria_classifier_service()
+                input_verdict = await classifier.classify_input(gated_input)
+                if input_verdict is None or input_verdict.inject_probability >= INJECT_PROBABILITY_THRESHOLD:
+                    logger.warning(
+                        "ARIA prompt-defense layer 3 rejected chat input (verdict=%s)", input_verdict,
+                    )
+                    return None
 
             game_state = await self._analyze_player_strategic_position(assistant.player_id)
 
@@ -1031,7 +1085,7 @@ class EnhancedAIService:
                 relationship_score=player.aria_relationship_score or 0,
                 player_name=player.username,
                 game_state=game_state,
-                user_input=intent_analysis.get("original_input", ""),
+                user_input=gated_input,
             )
 
             from src.services.ai_provider_service import get_ai_provider_service
@@ -1041,6 +1095,20 @@ class EnhancedAIService:
             )
             if not reply_text:
                 return None
+
+            if classifier is not None:
+                output_verdict = await classifier.classify_output(reply_text)
+                if output_verdict is None or output_verdict.flagged:
+                    logger.warning(
+                        "ARIA prompt-defense layer 5 flagged output (verdict=%s) -- replaced with generic refusal",
+                        output_verdict,
+                    )
+                    # Canon (ADR-0057 A-V1 layer 5): "A flagged response is
+                    # replaced with a generic 'I can't help with that'
+                    # before send" -- ARIA still answers (mode="llm"), the
+                    # unsafe text just never reaches the player.
+                    return "I can't help with that."
+
             return reply_text
         except Exception as e:
             logger.warning(f"ARIA LLM chat path failed, falling back to template engine: {e}")

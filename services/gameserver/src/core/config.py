@@ -54,6 +54,26 @@ class Settings(BaseSettings):
                 "SECURITY WARNING: REDIS_URL is using the default dev-only password. "
                 "Set REDIS_URL with a strong password for production deployments."
             )
+        # WO-ARIA-PROMPT-DEFENSE addendum: a runtime tripwire for the exact
+        # unsafe combination flagged in that WO's NO-CANON #1 -- LLM chat
+        # live with the load-bearing content classifiers (ADR-0057 A-V1
+        # layers 3+5) still dark. Deliberately a WARN, not a raise: the two
+        # flags stay independently togglable by design (coupling them would
+        # break the mock-isolation this WO's test suite depends on), so a
+        # deploy CAN legitimately run this combination during staged
+        # rollout -- it just must never be mistaken for "fully protected."
+        # "ARIA-DEFENSE-MISCONFIG" is a deliberately greppable token for
+        # log-based alerting.
+        if self.ARIA_LLM_CHAT_ENABLED and not self.ARIA_PROMPT_CLASSIFIER_ENABLED:
+            logger.warning(
+                "ARIA-DEFENSE-MISCONFIG: ARIA_LLM_CHAT_ENABLED is true but "
+                "ARIA_PROMPT_CLASSIFIER_ENABLED is false. ARIA's LLM chat "
+                "path is LIVE without the load-bearing input/output content "
+                "classifiers (ADR-0057 A-V1 layers 3+5) -- only the cheap "
+                "pre-filters (NFKC normalization, JSON-envelope breakout "
+                "detection, versioned pattern list) are protecting it. "
+                "Go-live requires BOTH flags set true together."
+            )
     
     # AI Provider Configuration
     OPENAI_API_KEY: Optional[str] = os.environ.get("OPENAI_API_KEY")
@@ -72,6 +92,21 @@ class Settings(BaseSettings):
     # existing keyword/template engine until this is explicitly flipped —
     # zero spend, zero behavior change, until then.
     ARIA_LLM_CHAT_ENABLED: bool = os.environ.get("ARIA_LLM_CHAT_ENABLED", "false").lower() == "true"
+
+    # ADR-0057 A-V1 layers 3+5 -- the load-bearing input/output content
+    # classifiers wrapping the LLM provider call (WO-ARIA-PROMPT-DEFENSE).
+    # BUILT DARK, same convention as ARIA_LLM_CHAT_ENABLED above: defaults
+    # false so a pre-existing/unmocked test exercising _try_llm_chat_
+    # response never risks a real classifier provider call. [NO-CANON] --
+    # this is a SEPARATE flag from ARIA_LLM_CHAT_ENABLED, not a
+    # sub-setting of it. Per this WO's own mission ("never LLM chat on
+    # regex-only defense"), operational go-live MUST flip this ALONGSIDE
+    # (or before) ARIA_LLM_CHAT_ENABLED -- flagged prominently for the
+    # orchestrator/Max, since two independent flags both defaulting off
+    # creates exactly the gap the WO exists to close if only one is ever
+    # flipped. Layers 1/2/4 (NFKC, envelope, pattern-list) are NOT gated
+    # by this flag -- they are cheap, local, and always on.
+    ARIA_PROMPT_CLASSIFIER_ENABLED: bool = os.environ.get("ARIA_PROMPT_CLASSIFIER_ENABLED", "false").lower() == "true"
 
     # Living NPC System — gates the npc_scheduler_service lifespan task
     # (Loops A/B/C). Default off so prod stays static until proven on dev.
