@@ -1,0 +1,187 @@
+"""
+Trade Contract API routes -- WO-ECON-CONTRACT-1-KERNEL lane 4. Canon target
+paths: FEATURES/economy/contracts.md:197-215. Only the subset this WO
+exercises is mounted: board/mine/{id} reads, accept/complete/abandon
+writes. Player-issued posting (`POST /contracts`), insurance, bulk-partial
+`deliver`, `cancel`, and dispute/resolve-dispute are later build steps
+(contracts.md:421-431 steps 4/6/7) and are intentionally NOT mounted here.
+"""
+import uuid
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+
+from src.auth.dependencies import get_current_player
+from src.core.database import get_db
+from src.models.contract import Contract, ContractStatus
+from src.models.player import Player
+from src.services import contract_service
+from src.services.contract_service import ContractConflictError, ContractError, ContractNotFoundError
+
+router = APIRouter(prefix="/contracts", tags=["contracts"])
+
+
+def _serialize_contract(c: Contract) -> Dict[str, Any]:
+    return {
+        "id": str(c.id),
+        "issuer_type": c.issuer_type.value,
+        "issuer_id": str(c.issuer_id),
+        "acceptor_player_id": str(c.acceptor_player_id) if c.acceptor_player_id else None,
+        "contract_type": c.contract_type.value,
+        "status": c.status.value,
+        "origin_station_id": str(c.origin_station_id) if c.origin_station_id else None,
+        "destination_station_id": str(c.destination_station_id),
+        "commodity_type": c.commodity_type,
+        "quantity": c.quantity,
+        "payment": float(c.payment) if c.payment is not None else None,
+        "penalty": float(c.penalty) if c.penalty is not None else None,
+        "acceptance_fee_pct": float(c.acceptance_fee_pct) if c.acceptance_fee_pct is not None else None,
+        "faction_id": str(c.faction_id) if c.faction_id else None,
+        "deadline": c.deadline.isoformat() if c.deadline else None,
+        "posted_at": c.posted_at.isoformat() if c.posted_at else None,
+        "accepted_at": c.accepted_at.isoformat() if c.accepted_at else None,
+        "completed_at": c.completed_at.isoformat() if c.completed_at else None,
+    }
+
+
+def _parse_uuid(raw: str, field_name: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(raw)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {field_name}") from None
+
+
+def _raise_for(exc: ContractError) -> None:
+    if isinstance(exc, ContractNotFoundError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(exc, ContractConflictError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get("/board")
+async def get_contract_board(
+    station_id: str = Query(..., description="List contracts visible at this station"),
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> List[Dict[str, Any]]:
+    """contracts.md:203, :92-98. A board is the union of: NPC contracts
+    ISSUED by this station (issuer_id -- see contract.py's issuer_id
+    docstring for why that's destination_station_id, not origin, for
+    cargo_delivery) and player-posted contracts listing this station in
+    posting_stations (the latter is wired now so it activates
+    automatically once CONTRACT-2 ships player posting -- this WO
+    generates no player-issued rows yet)."""
+    station_uuid = _parse_uuid(station_id, "station_id")
+    contracts = (
+        db.query(Contract)
+        .filter(
+            Contract.status == ContractStatus.POSTED,
+            or_(
+                Contract.issuer_id == station_uuid,
+                Contract.posting_stations.any(station_uuid),
+            ),
+        )
+        .order_by(Contract.posted_at.desc())
+        .all()
+    )
+    return [_serialize_contract(c) for c in contracts]
+
+
+@router.get("/mine")
+async def get_my_contracts(
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, List[Dict[str, Any]]]:
+    """contracts.md:204. The caller's posted (issuer_type=player,
+    issuer_id=self -- none exist yet, this WO never sets issuer_type=
+    player) plus accepted contracts."""
+    accepted = (
+        db.query(Contract)
+        .filter(Contract.acceptor_player_id == current_player.id)
+        .order_by(Contract.posted_at.desc())
+        .all()
+    )
+    posted = (
+        db.query(Contract)
+        .filter(Contract.issuer_id == current_player.id)
+        .order_by(Contract.posted_at.desc())
+        .all()
+    )
+    return {
+        "posted": [_serialize_contract(c) for c in posted],
+        "accepted": [_serialize_contract(c) for c in accepted],
+    }
+
+
+@router.get("/{contract_id}")
+async def get_contract(
+    contract_id: str,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """contracts.md:205."""
+    contract_uuid = _parse_uuid(contract_id, "contract_id")
+    contract = db.query(Contract).filter(Contract.id == contract_uuid).first()
+    if contract is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
+    return _serialize_contract(contract)
+
+
+@router.post("/{contract_id}/accept")
+async def accept_contract(
+    contract_id: str,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """contracts.md:207, :247-262."""
+    contract_uuid = _parse_uuid(contract_id, "contract_id")
+    try:
+        result = contract_service.accept(db, contract_uuid, current_player.id)
+    except ContractError as exc:
+        db.rollback()
+        _raise_for(exc)
+    else:
+        db.commit()
+        return result
+
+
+@router.post("/{contract_id}/complete")
+async def complete_contract(
+    contract_id: str,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """contracts.md:210 -- server verifies cargo at destination."""
+    contract_uuid = _parse_uuid(contract_id, "contract_id")
+    try:
+        result = contract_service.complete(db, contract_uuid, current_player.id)
+    except ContractError as exc:
+        db.rollback()
+        _raise_for(exc)
+    else:
+        db.commit()
+        return result
+
+
+@router.post("/{contract_id}/abandon")
+async def abandon_contract(
+    contract_id: str,
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+) -> Dict[str, Any]:
+    """Kernel scope: the mutual-cancel / kill-fee flavor at
+    contracts.md:211 targets player-issued contracts (CONTRACT-2); an
+    NPC-issued contract's acceptor walking away simply pays the flat
+    penalty -- there's no counterparty issuer to owe a kill-fee to."""
+    contract_uuid = _parse_uuid(contract_id, "contract_id")
+    try:
+        result = contract_service.abandon(db, contract_uuid, current_player.id)
+    except ContractError as exc:
+        db.rollback()
+        _raise_for(exc)
+    else:
+        db.commit()
+        return result
