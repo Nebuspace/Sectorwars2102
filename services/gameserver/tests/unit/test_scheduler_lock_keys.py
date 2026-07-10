@@ -26,9 +26,13 @@ from pathlib import Path
 import pytest
 
 from src.services import npc_scheduler_service as sched
+from src.services import economy_faucet_service as faucet
 
 _MODULE_PATH = Path(sched.__file__)
 _SOURCE = _MODULE_PATH.read_text(encoding="utf-8")
+
+_FAUCET_MODULE_PATH = Path(faucet.__file__)
+_FAUCET_SOURCE = _FAUCET_MODULE_PATH.read_text(encoding="utf-8")
 
 
 def _parse_module() -> ast.Module:
@@ -299,3 +303,65 @@ def test_region_lock_key_distinct_from_every_static_key():
     for rid in region_ids:
         key = sched.region_lock_key(rid)
         assert key not in static_values, f"region_lock_key({rid}) collides with a static sweep key"
+
+
+# --------------------------------------------------------------------------- #
+# Weekly-faucet lock key (WO-RT-LOCK-ACTIVATE follow-up): economy_faucet_
+# service.py's run_weekly_faucet_sync used to reuse npc_scheduler_service's
+# global _ADVISORY_LOCK_KEY literal verbatim ("the value MUST match"), which
+# meant it still contended with the main NPC tick after every OTHER sweep was
+# de-globalized onto its own key. It now derives its own key via the same
+# _mnemonic_lock_key idiom, imported from npc_scheduler_service (verified
+# import-graph-safe: npc_scheduler_service's only references to
+# economy_faucet_service are function-scoped lazy imports, never module-level,
+# so no cycle).
+# --------------------------------------------------------------------------- #
+
+def test_weekly_faucet_lock_key_matches_mnemonic_pack():
+    """Proof the faucet key extends the same idiom as every other per-sweep
+    key rather than reintroducing a hand-picked literal."""
+    assert faucet._WEEKLY_FAUCET_LOCK_KEY == sched._mnemonic_lock_key("WFCT")
+
+
+def test_weekly_faucet_lock_key_distinct_from_all_static_scheduler_keys():
+    """The whole point of this follow-up: the faucet no longer contends with
+    the main NPC tick, or any other sweep, for the same advisory-lock key."""
+    assert faucet._WEEKLY_FAUCET_LOCK_KEY not in ALL_STATIC_KEYS.values()
+
+
+def test_weekly_faucet_lock_key_distinct_from_region_lock_key_samples():
+    """Sampled region_lock_key() outputs must never collide with the
+    faucet's static key either."""
+    region_ids = [uuid.uuid4() for _ in range(200)]
+    for rid in region_ids:
+        key = sched.region_lock_key(rid)
+        assert key != faucet._WEEKLY_FAUCET_LOCK_KEY, (
+            f"region_lock_key({rid}) collides with the weekly-faucet key"
+        )
+
+
+def test_weekly_faucet_lock_key_is_63_bit_safe():
+    key = faucet._WEEKLY_FAUCET_LOCK_KEY
+    assert isinstance(key, int) and not isinstance(key, bool)
+    assert 0 <= key < 2 ** 63
+
+
+def test_economy_faucet_service_has_no_shared_literal_or_stale_name():
+    """Source pin: the old shared-literal constant (0x53573231 / 'SW21') and
+    its name (_ADVISORY_LOCK_KEY) must be fully gone from
+    economy_faucet_service.py's CODE -- AST-based (not a raw string search),
+    so a comment/docstring that legitimately narrates the pre-de-globalization
+    history (mentioning the old name in prose) can't produce a false
+    positive."""
+    tree = ast.parse(_FAUCET_SOURCE, filename=str(_FAUCET_MODULE_PATH))
+    stale_literal = 0x53573231
+    violations = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "_ADVISORY_LOCK_KEY":
+            violations.append(f"Name:{node.lineno}")
+        if isinstance(node, ast.Constant) and node.value == stale_literal:
+            violations.append(f"Constant:{node.lineno}")
+    assert not violations, (
+        f"stale shared lock-key literal/name still present in "
+        f"economy_faucet_service.py: {violations}"
+    )
