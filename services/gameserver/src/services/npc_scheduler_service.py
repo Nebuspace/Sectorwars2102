@@ -614,6 +614,72 @@ def region_lock_key(region_id: Any) -> int:
     region_hash = int.from_bytes(digest, "big")
     return (_ADVISORY_LOCK_KEY ^ region_hash) & _LOCK_KEY_MASK_63
 
+
+def _mnemonic_lock_key(code: str) -> int:
+    """Pack a 4-character ASCII mnemonic into a lock-key int, exactly the
+    scheme already hand-applied for ``_CITIZEN_REBAKE_LOCK_KEY`` ('GCRB') and
+    ``_PRESENCE_SWEEP_LOCK_KEY`` ('PRSW') — four ASCII bytes packed
+    big-endian give a value in ``[0, 2**32)``, always non-negative and well
+    inside the signed-63-bit range ``pg_try_advisory_xact_lock``'s bigint
+    argument requires. Distinct 4-character codes are byte-for-byte
+    distinct, so no two mnemonic-derived keys can ever collide as long as
+    their codes differ (a guarantee, not a probabilistic hash property) —
+    this is what makes the per-sweep-type keys below safe to hand-assign
+    without a collision check."""
+    code_bytes = code.encode("ascii")
+    if len(code_bytes) != 4:
+        raise ValueError(f"lock-key mnemonic must be exactly 4 ASCII chars: {code!r}")
+    return int.from_bytes(code_bytes, "big")
+
+
+# ---------------------------------------------------------------------------
+# Per-sweep-type advisory-lock keys (WO-RT-LOCK-ACTIVATE)
+#
+# Before this, every sweep below shared the single global _ADVISORY_LOCK_KEY
+# with the main NPC tick (_run_due_ticks_sync) — a tick that runs Loop A/B/C
+# across the whole galaxy could hold that key for minutes, and every other
+# sweep sharing the key would skip (pg_try_advisory_xact_lock) or, for the
+# one blocking acquirer, stall behind it. Each sweep below now gets its OWN
+# derived key so it only ever serializes against another instance of ITSELF
+# (the actual collision this locking exists to prevent — two gameserver
+# instances double-running the SAME sweep), never against the main tick or
+# any unrelated sweep. The main tick keeps _ADVISORY_LOCK_KEY; no sweep here
+# uses it anymore.
+# ---------------------------------------------------------------------------
+_WEEKLY_DECAY_LOCK_KEY = _mnemonic_lock_key("WKDY")
+_GENESIS_COMPLETION_LOCK_KEY = _mnemonic_lock_key("GNCP")
+_PLANETARY_ADVANCE_LOCK_KEY = _mnemonic_lock_key("PLAD")
+# Covers the whole 7-phase governance sweep, INCLUDING the nested Phase-6
+# treasury reconciliation call (_run_treasury_reconciliation_gated) — that
+# helper takes an already-open, already-locked session and acquires no lock
+# of its own, so it rides this same key rather than double-keying.
+_GOVERNANCE_SWEEP_LOCK_KEY = _mnemonic_lock_key("GOVN")
+_CONSTRUCTION_ADVANCE_LOCK_KEY = _mnemonic_lock_key("CNAD")
+# Covers the daily economic-metrics snapshot, INCLUDING the nested
+# inflation/health/volatility/leaders enrichment call
+# (_compute_daily_economic_enrichment) for the same no-lock-of-its-own
+# reason as the governance sweep above.
+_ECONOMIC_METRICS_LOCK_KEY = _mnemonic_lock_key("ECMT")
+_IDLE_INCOME_LOCK_KEY = _mnemonic_lock_key("IDLI")
+_DAILY_STIPEND_LOCK_KEY = _mnemonic_lock_key("STIP")
+_BOUNTY_ACCRUAL_LOCK_KEY = _mnemonic_lock_key("BNTY")
+_SUSTAINED_DRIP_LOCK_KEY = _mnemonic_lock_key("SDRP")
+_PORT_OPERATING_COSTS_LOCK_KEY = _mnemonic_lock_key("PORT")
+_STATION_RECOVERY_LOCK_KEY = _mnemonic_lock_key("STRC")
+_RECLAIM_FLAG_LOCK_KEY = _mnemonic_lock_key("RCLM")
+_PRICE_HISTORY_LOCK_KEY = _mnemonic_lock_key("PXHS")
+_ROUTE_RUNS_RETENTION_LOCK_KEY = _mnemonic_lock_key("RTRT")
+_ORPHAN_SCHEDULE_REPAIR_LOCK_KEY = _mnemonic_lock_key("ORPH")
+_SEED_TRADER_ROSTERS_LOCK_KEY = _mnemonic_lock_key("SEED")
+_LAW_PATROL_DISPERSAL_LOCK_KEY = _mnemonic_lock_key("LAWP")
+_STRANDED_RELOCATE_LOCK_KEY = _mnemonic_lock_key("STRN")
+_TRADER_NOTORIETY_LOCK_KEY = _mnemonic_lock_key("NTRY")
+_TRADER_MISSION_LOCK_KEY = _mnemonic_lock_key("TMSN")
+_BULK_FILL_TRADERS_LOCK_KEY = _mnemonic_lock_key("BFIL")
+# Player retention-SIGNAL sweep (WO-RE2) — distinct from the unrelated
+# RouteOptimizationRun retention job just above (_ROUTE_RUNS_RETENTION_LOCK_KEY).
+_RETENTION_SWEEP_LOCK_KEY = _mnemonic_lock_key("RETN")
+
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
 
@@ -1931,7 +1997,7 @@ def _run_weekly_decay_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _WEEKLY_DECAY_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return not_due
@@ -2020,7 +2086,7 @@ def _run_genesis_completion_sync() -> Tuple[int, List[Dict[str, Any]]]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _GENESIS_COMPLETION_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return 0, events
@@ -2081,7 +2147,7 @@ def _run_planetary_advance_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _PLANETARY_ADVANCE_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -2359,7 +2425,7 @@ def _run_governance_sweep_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _GOVERNANCE_SWEEP_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -2893,7 +2959,7 @@ def _run_construction_advance_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _CONSTRUCTION_ADVANCE_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -3249,7 +3315,7 @@ def _run_economic_metrics_snapshot_sync() -> Dict[str, Any]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _ECONOMIC_METRICS_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return not_written
@@ -3438,7 +3504,7 @@ def _run_idle_income_sweep_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _IDLE_INCOME_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -3607,7 +3673,7 @@ def _run_daily_stipend_sweep_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _DAILY_STIPEND_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -3754,7 +3820,7 @@ def _run_bounty_accrual_sweep_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _BOUNTY_ACCRUAL_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -4048,7 +4114,7 @@ def _run_sustained_reputation_drip_sweep_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _SUSTAINED_DRIP_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -4176,7 +4242,7 @@ def _run_port_operating_costs_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _PORT_OPERATING_COSTS_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -4294,7 +4360,7 @@ def _run_station_recovery_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _STATION_RECOVERY_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -4407,7 +4473,7 @@ def _run_reclaim_flag_sweep_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _RECLAIM_FLAG_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return result
@@ -4737,7 +4803,7 @@ def _run_price_history_sweep_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _PRICE_HISTORY_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return not_written
@@ -4847,7 +4913,7 @@ def _run_route_runs_retention_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _ROUTE_RUNS_RETENTION_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return not_pruned
@@ -4954,7 +5020,7 @@ def _repair_orphan_schedules_sync() -> int:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _ORPHAN_SCHEDULE_REPAIR_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return 0
@@ -4986,7 +5052,7 @@ def _seed_trader_rosters_sync() -> int:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _SEED_TRADER_ROSTERS_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return 0
@@ -5025,22 +5091,27 @@ def bootstrap_region_sync(region_id: uuid.UUID) -> Dict[str, Any]:
     scheduler-boot ``_seed_trader_rosters_sync`` — whichever runs first
     creates the trader rosters; the other no-ops on the existing refs.
 
-    Serialized against the scheduler's tick bodies via the same xact-level
-    advisory lock. Unlike the boot repairs, this acquires the lock
-    *blockingly* (``pg_advisory_xact_lock``) rather than skip-on-contention:
-    a post-import bootstrap MUST run, so it waits for a concurrent tick to
-    finish rather than silently dropping the seed.
+    Locked on ``region_lock_key(region_id)`` (WO-RT-LOCK-ACTIVATE) rather
+    than the global tick key — a bootstrap for region A no longer waits on
+    an unrelated region's tick work or on any other sweep, and this is the
+    guard's first production call site. Unlike the boot repairs, this
+    acquires the lock *blockingly* (``pg_advisory_xact_lock``) rather than
+    skip-on-contention: a post-import bootstrap MUST run, so it waits for a
+    concurrent bootstrap of the SAME region (e.g. a duplicate import retry)
+    to finish rather than silently dropping the seed or double-seeding it.
     """
     from src.core.database import SessionLocal
     from src.services import npc_spawn_service
 
     db = SessionLocal()
     try:
-        # Blocking acquire — the import just committed; we must seed, so we
-        # wait for any in-flight tick rather than skip. Released on commit.
+        # Blocking acquire, region-scoped — a same-region bootstrap already
+        # in flight (e.g. a retried import) must be waited out, not skipped;
+        # a different region's bootstrap or the main tick never contends
+        # here at all. Released on commit.
         db.execute(
             text("SELECT pg_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": region_lock_key(region_id)},
         )
         stats = npc_spawn_service.bootstrap_region(db, region_id)
         db.commit()  # releases the xact lock
@@ -5063,7 +5134,7 @@ def _disperse_law_patrols_sync() -> int:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _LAW_PATROL_DISPERSAL_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return 0
@@ -5088,7 +5159,7 @@ def _relocate_stranded_npcs_sync() -> int:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _STRANDED_RELOCATE_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return 0
@@ -5112,7 +5183,7 @@ def _assign_trader_notoriety_sync() -> int:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _TRADER_NOTORIETY_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return 0
@@ -5148,7 +5219,7 @@ def _assign_trader_missions_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _TRADER_MISSION_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return {}
@@ -5210,7 +5281,7 @@ def _bulk_fill_traders_sync() -> int:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _BULK_FILL_TRADERS_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return 0
@@ -5340,7 +5411,7 @@ def _run_retention_sweep_sync() -> Dict[str, int]:
     try:
         got_lock = db.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
+            {"key": _RETENTION_SWEEP_LOCK_KEY},
         ).scalar()
         if not got_lock:
             return not_due
