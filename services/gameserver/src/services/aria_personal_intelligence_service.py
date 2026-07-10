@@ -36,7 +36,8 @@ from src.models.station import Station
 from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
-    ARIATradingPattern, ARIAQuantumCache, ARIASecurityLog
+    ARIATradingPattern, ARIAQuantumCache, ARIASecurityLog,
+    ARIATradingObservation, ObservationAction, ObservationOutcome,
 )
 from src.core.config import settings
 from src.core.security import get_password_hash
@@ -437,6 +438,92 @@ class ARIAPersonalIntelligenceService:
         except Exception as e:
             logger.warning(
                 "Failed to record trade memory for player %s: %s",
+                player_id, e,
+            )
+
+    def record_trade_memory_sync(self, player_id: str, trade_data: dict,
+                                 db: Session) -> None:
+        """Synchronous twin of ``record_trade_memory`` for sync-Session callers.
+
+        trading.py's buy/sell routes run entirely on a synchronous SQLAlchemy
+        ``Session`` (WO-ARIA-OBS-LOG addendum): the async ``record_trade_memory``
+        internally ``await``s ``db.execute(select(...))``, which raises against a
+        sync ``Session`` -- swallowed by its own except, so zero
+        ``ARIAPersonalMemory`` rows ever persisted through the trade path. This
+        method records the exact same ``trade_transaction`` memory shape via the
+        sync session: identical encryption, content schema, importance formula,
+        and dedup-by-hash logic as ``record_trade_memory`` -- only the DB calls
+        differ (sync ``query``/``add`` instead of ``await db.execute``/``select``),
+        mirroring ``record_combat_memory_sync``'s existing precedent exactly.
+
+        FLUSH-FREE: only ``db.add``s the memory; the CALLER owns the commit (so
+        it folds into the trade's single commit). Never raises -- an ARIA
+        memory hiccup must never break a real trade.
+
+        Args:
+            player_id: the player whose ARIA should remember this trade.
+            trade_data: same keys as ``record_trade_memory`` -- ``station_name``,
+                ``action``, ``commodity``, ``quantity``, ``total_value``,
+                ``profit``.
+            db: synchronous database session (caller commits).
+        """
+        try:
+            action = trade_data.get("action", "unknown")
+            commodity = trade_data.get("commodity", "unknown")
+            profit = trade_data.get("profit")
+
+            # Profitable trades are more memorable
+            if profit is not None and profit > 0:
+                importance = min(0.5 + (profit / 10000), 0.9)
+            else:
+                importance = 0.5
+
+            content = {
+                "event": "trade_transaction",
+                "station_name": str(trade_data.get("station_name", "Unknown")),
+                "action": str(action),
+                "commodity": str(commodity),
+                "quantity": trade_data.get("quantity"),
+                "total_value": trade_data.get("total_value"),
+                "profit": profit,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+
+            encrypted_content = self._encrypt_memory(content)
+            content_str = json.dumps(content, sort_keys=True)
+            memory_hash = hashlib.sha256(content_str.encode()).hexdigest()
+
+            existing = (
+                db.query(ARIAPersonalMemory)
+                .filter(
+                    ARIAPersonalMemory.player_id == player_id,
+                    ARIAPersonalMemory.memory_hash == memory_hash,
+                )
+                .first()
+            )
+            if existing is not None:
+                return  # Memory already exists (dedup -- also our double-fire guard)
+
+            memory = ARIAPersonalMemory(
+                player_id=player_id,
+                memory_type="market",
+                importance_score=importance,
+                memory_content={"encrypted": encrypted_content},
+                memory_hash=memory_hash,
+                confidence_level=0.9,
+                decay_rate=self.MEMORY_DECAY_RATE,
+            )
+            db.add(memory)
+            self.memories_created += 1
+
+            logger.info(
+                "Recorded trade memory (sync) for player %s: %s %s at %s",
+                player_id, action, commodity,
+                trade_data.get("station_name", "Unknown"),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record trade memory (sync) for player %s: %s",
                 player_id, e,
             )
 
@@ -2019,6 +2106,377 @@ class ARIAPersonalIntelligenceService:
             "next_level_requirements": next_level_requirements,
             "progress_to_next": progress_to_next,
         }
+
+    # =============================================================================
+    # OBSERVATION LOG + RECOMMENDATION ENGINE (WO-ARIA-OBS-LOG, ADR-0038)
+    # =============================================================================
+    #
+    # Append-only per-trade observation log mined by SQL aggregates -- the
+    # genetic-algorithm framing above (evolve_trading_pattern /
+    # ARIATradingPattern) is retired for this data per ADR-0038; this
+    # section is its replacement recommendation engine.
+    #
+    # DELIBERATELY SYNC (Session, not AsyncSession): the intended write-path
+    # caller is trading.py's buy/sell routes (lane C of this WO, deferred --
+    # this table has zero writers until that follow-up lands), which run
+    # entirely on a synchronous Session, exactly like this class's existing
+    # record_combat_memory_sync twin. Rather than splitting one substrate
+    # across two session types, both the write and the read/aggregate side
+    # stay sync; a future async caller (e.g. an ARIA-recommendations route)
+    # bridges in via AsyncSession.run_sync(...) -- the same established
+    # pattern this codebase already uses for sync compute under async
+    # callers (see turn_service's regen bridge) -- rather than this one
+    # table inventing a second, mixed-session surface.
+
+    # aria.md:220 / ADR-0038 Anti-gaming -- the wash-trade floor. A trade is
+    # only counted as a "success" toward any aggregate below if its profit
+    # clears this bar; near-zero-margin wash trades and small real losses
+    # both land on the "not successful" side of every ratio computed here.
+    MIN_SIGNIFICANT_PROFIT_CR = 100
+
+    MIN_ROUTE_SAMPLES = 3           # aria.md:210 "count >= 3"
+    MIN_RELIABLE_SAMPLES = 5        # aria.md:211 "count >= 5"
+    MIN_WATCHOUT_SAMPLES = 5        # aria.md:213 "count >= 5"
+    RELIABLE_SUCCESS_RATE = 0.7     # aria.md:211
+    WATCHOUT_SUCCESS_RATE = 0.3     # aria.md:213
+    AGGREGATE_CACHE_TTL = timedelta(hours=4)  # aria.md:218
+
+    _RECOMMENDATION_CACHE_KEY = "recommendation_aggregates"
+    _AGGREGATE_CACHE_SCOPE_COMMODITY = "__ALL__"
+
+    def record_trade_observation(
+        self, player_id: str, trade_result: Dict[str, Any], db: Session,
+    ) -> Optional[ARIATradingObservation]:
+        """
+        Insert one ARIATradingObservation row for a completed trade leg.
+
+        Canonical entry-point name/signature per OPERATIONS/aria.md:222
+        ("aria_personal_intelligence_service.record_trade_observation
+        (player_id, trade_result)"). SYNC on purpose -- see section
+        docstring above.
+
+        FLUSH-FREE like record_combat_memory_sync: only db.add()s; the
+        CALLER owns the commit (folds into the trade's single commit, same
+        convention as trading.py's existing pending_aria_memories append).
+        Never raises -- an ARIA logging hiccup must never break a real
+        trade (single insert, non-blocking).
+
+        trade_result keys: commodity, action ("buy"|"sell"),
+        source_station_id, dest_station_id (optional, buy-only omits it),
+        source_sector_id / dest_sector_id (optional), quantity, unit_price,
+        total_credits, profit (optional, sell-leg only), hours_held
+        (optional, sell-leg only), trade_id / matched_market_intel_id /
+        recommendation_id (all optional FKs).
+
+        Returns the inserted (unflushed) row, or None on any invalid input
+        or failure -- callers should treat this as best-effort telemetry,
+        never a return value that gates trade logic.
+        """
+        try:
+            try:
+                action = ObservationAction(trade_result.get("action"))
+            except ValueError:
+                logger.warning(
+                    "record_trade_observation: unrecognised action %r for player %s",
+                    trade_result.get("action"), player_id,
+                )
+                return None
+
+            profit = trade_result.get("profit")
+            outcome = None
+            if action is ObservationAction.sell and profit is not None:
+                if profit > 0:
+                    outcome = ObservationOutcome.profit
+                elif profit == 0:
+                    outcome = ObservationOutcome.break_even
+                else:
+                    outcome = ObservationOutcome.loss
+
+            observation = ARIATradingObservation(
+                player_id=player_id,
+                trade_id=trade_result.get("trade_id"),
+                commodity=trade_result["commodity"],
+                action=action,
+                source_station_id=trade_result["source_station_id"],
+                dest_station_id=trade_result.get("dest_station_id"),
+                source_sector_id=trade_result.get("source_sector_id"),
+                dest_sector_id=trade_result.get("dest_sector_id"),
+                quantity=trade_result["quantity"],
+                unit_price=trade_result["unit_price"],
+                total_credits=trade_result["total_credits"],
+                profit=profit,
+                hours_held=trade_result.get("hours_held"),
+                outcome_classification=outcome,
+                observed_at=datetime.now(UTC),
+                matched_market_intel_id=trade_result.get("matched_market_intel_id"),
+                recommendation_id=trade_result.get("recommendation_id"),
+            )
+            db.add(observation)
+
+            # aria.md:222 -- new observations invalidate cached aggregates.
+            self._invalidate_aggregate_cache_sync(player_id, db)
+
+            return observation
+        except Exception as e:
+            logger.warning(
+                "record_trade_observation failed for player %s: %s", player_id, e,
+            )
+            return None
+
+    def get_top_routes(
+        self, player_id: str, db: Session, limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Top profitable repeated routes. OPERATIONS/aria.md:210:
+        ``GROUP BY (commodity, source_station, dest_station) HAVING count
+        >= 3 ORDER BY avg_profit DESC LIMIT 5``. Surfaced on the "Suggested
+        trades" panel.
+
+        SQL does the GROUP BY / HAVING(count) / SUM(profit) reduction;
+        avg-profit ranking + LIMIT happen in Python over the (small,
+        already-reduced) per-player group set -- see section docstring for
+        why this avoids ORDER BY on a derived expression.
+        """
+        rows = (
+            db.query(
+                ARIATradingObservation.commodity,
+                ARIATradingObservation.source_station_id,
+                ARIATradingObservation.dest_station_id,
+                func.sum(ARIATradingObservation.profit),
+                func.count(ARIATradingObservation.id),
+            )
+            .filter(
+                ARIATradingObservation.player_id == player_id,
+                ARIATradingObservation.action == ObservationAction.sell,
+                ARIATradingObservation.profit >= self.MIN_SIGNIFICANT_PROFIT_CR,
+                ARIATradingObservation.dest_station_id.isnot(None),
+            )
+            .group_by(
+                ARIATradingObservation.commodity,
+                ARIATradingObservation.source_station_id,
+                ARIATradingObservation.dest_station_id,
+            )
+            .having(func.count(ARIATradingObservation.id) >= self.MIN_ROUTE_SAMPLES)
+            .all()
+        )
+
+        routes = []
+        for commodity, source_station_id, dest_station_id, total_profit, sample_count in rows:
+            avg_profit = total_profit / sample_count
+            routes.append({
+                "commodity": commodity,
+                "source_station_id": str(source_station_id),
+                "dest_station_id": str(dest_station_id),
+                "avg_profit": avg_profit,
+                "sample_count": sample_count,
+                "explanation": (
+                    f"You've made an average of {avg_profit:,.0f} cr trading "
+                    f"{commodity} on this route over your last {sample_count} trades."
+                ),
+            })
+        routes.sort(key=lambda r: r["avg_profit"], reverse=True)
+        return routes[:limit]
+
+    def _commodity_success_rate_aggregate(
+        self, player_id: str, db: Session, group_cols: list,
+        min_samples: int, rate_ok,
+    ) -> List[Dict[str, Any]]:
+        """
+        Shared SQL-aggregate core for get_reliable_commodities /
+        get_watch_out_commodities -- both are "group by N columns, HAVING
+        count >= min_samples, then keep groups whose success_rate clears
+        rate_ok" over sell-leg observations. Two grouped COUNT queries
+        (total samples, then samples clearing MIN_SIGNIFICANT_PROFIT_CR)
+        rather than one query with a CASE-WHEN, matching this codebase's
+        established sum/count-only aggregate-query convention.
+
+        Returns a list of {"group_key": <tuple>, "sample_count": int,
+        "success_rate": float} dicts for groups where rate_ok(rate) is True.
+        """
+        base_filter = (
+            ARIATradingObservation.player_id == player_id,
+            ARIATradingObservation.action == ObservationAction.sell,
+            ARIATradingObservation.profit.isnot(None),
+        )
+
+        total_rows = (
+            db.query(*group_cols, func.count(ARIATradingObservation.id))
+            .filter(*base_filter)
+            .group_by(*group_cols)
+            .having(func.count(ARIATradingObservation.id) >= min_samples)
+            .all()
+        )
+        if not total_rows:
+            return []
+
+        totals = {tuple(row[:-1]): row[-1] for row in total_rows}
+
+        success_rows = (
+            db.query(*group_cols, func.count(ARIATradingObservation.id))
+            .filter(*base_filter, ARIATradingObservation.profit >= self.MIN_SIGNIFICANT_PROFIT_CR)
+            .group_by(*group_cols)
+            .all()
+        )
+        successes = {tuple(row[:-1]): row[-1] for row in success_rows}
+
+        results = []
+        for key, total in totals.items():
+            success = successes.get(key, 0)
+            rate = success / total if total else 0.0
+            if rate_ok(rate):
+                results.append({"group_key": key, "sample_count": total, "success_rate": rate})
+        return results
+
+    def get_reliable_commodities(self, player_id: str, db: Session) -> List[Dict[str, Any]]:
+        """
+        Reliable commodities by station. OPERATIONS/aria.md:211:
+        ``GROUP BY (commodity, source_station) HAVING count >= 5 AND
+        success_rate >= 0.7``. Surfaced on the "Stations to revisit" panel.
+        """
+        raw = self._commodity_success_rate_aggregate(
+            player_id, db,
+            group_cols=[ARIATradingObservation.commodity, ARIATradingObservation.source_station_id],
+            min_samples=self.MIN_RELIABLE_SAMPLES,
+            rate_ok=lambda rate: rate >= self.RELIABLE_SUCCESS_RATE,
+        )
+        out = []
+        for r in raw:
+            commodity, station_id = r["group_key"]
+            out.append({
+                "commodity": commodity,
+                "source_station_id": str(station_id),
+                "sample_count": r["sample_count"],
+                "success_rate": r["success_rate"],
+                "explanation": (
+                    f"{r['success_rate'] * 100:.0f}% of your {commodity} sales from "
+                    f"this station over {r['sample_count']} trades cleared a profit."
+                ),
+            })
+        return out
+
+    def get_watch_out_commodities(self, player_id: str, db: Session) -> List[Dict[str, Any]]:
+        """
+        Watch-out commodities. OPERATIONS/aria.md:213: ``GROUP BY
+        (commodity) HAVING count >= 5 AND success_rate <= 0.3``. Surfaced
+        as a warning on the "Caution" panel -- never a positive
+        recommendation.
+        """
+        raw = self._commodity_success_rate_aggregate(
+            player_id, db,
+            group_cols=[ARIATradingObservation.commodity],
+            min_samples=self.MIN_WATCHOUT_SAMPLES,
+            rate_ok=lambda rate: rate <= self.WATCHOUT_SUCCESS_RATE,
+        )
+        out = []
+        for r in raw:
+            (commodity,) = r["group_key"]
+            out.append({
+                "commodity": commodity,
+                "sample_count": r["sample_count"],
+                "success_rate": r["success_rate"],
+                "explanation": (
+                    f"Only {r['success_rate'] * 100:.0f}% of your {commodity} trades "
+                    f"over {r['sample_count']} attempts cleared a profit -- consider "
+                    f"avoiding it."
+                ),
+            })
+        return out
+
+    def compute_recommendation_aggregates(
+        self, player_id: str, db: Session, force_refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Umbrella entry point: returns {top_routes, reliable_commodities,
+        watch_out_commodities, computed_at}, backed by a 4-hour
+        stale-while-revalidate cache in ARIAQuantumCache (repurposed per
+        ADR-0038's Caching section -- aria.md:218; the whole bundle is
+        cached as ONE row per player rather than partitioned per
+        (commodity, station_id) -- see _invalidate_aggregate_cache_sync for
+        why).
+
+        NOTE (flagged, not guessed): aria.md's recommendation-engine table
+        (:204-222) has two further rows -- "routes within explored space"
+        (filtering top routes by ARIAExplorationMap + a distance <=
+        max_jumps graph traversal) and "off-peak buy windows" (hour-of-day
+        grouping). Neither is implemented in this WO: this WO's explicit
+        method list and D-tests' acceptance criteria named only top routes/
+        reliable/watch-out, and "routes within explored space" needs a
+        warp-graph distance utility this WO doesn't define or own. Left for
+        a follow-up WO once that utility question is resolved.
+        """
+        if not force_refresh:
+            cached = self._get_cached_aggregates_sync(player_id, db)
+            if cached is not None:
+                return cached
+
+        bundle = {
+            "top_routes": self.get_top_routes(player_id, db),
+            "reliable_commodities": self.get_reliable_commodities(player_id, db),
+            "watch_out_commodities": self.get_watch_out_commodities(player_id, db),
+            "computed_at": datetime.now(UTC).isoformat(),
+        }
+        self._cache_aggregates_sync(player_id, bundle, db)
+        return bundle
+
+    def _get_cached_aggregates_sync(self, player_id: str, db: Session) -> Optional[Dict[str, Any]]:
+        entry = (
+            db.query(ARIAQuantumCache)
+            .filter(
+                ARIAQuantumCache.player_id == player_id,
+                ARIAQuantumCache.cache_key == self._RECOMMENDATION_CACHE_KEY,
+                ARIAQuantumCache.expires_at > datetime.now(UTC),
+            )
+            .first()
+        )
+        if entry is None:
+            return None
+        entry.hit_count = (entry.hit_count or 0) + 1
+        return entry.ghost_results
+
+    def _cache_aggregates_sync(self, player_id: str, bundle: Dict[str, Any], db: Session) -> None:
+        existing = (
+            db.query(ARIAQuantumCache)
+            .filter(
+                ARIAQuantumCache.player_id == player_id,
+                ARIAQuantumCache.cache_key == self._RECOMMENDATION_CACHE_KEY,
+            )
+            .first()
+        )
+        expires_at = datetime.now(UTC) + self.AGGREGATE_CACHE_TTL
+        if existing is not None:
+            existing.ghost_results = bundle
+            existing.expires_at = expires_at
+        else:
+            db.add(ARIAQuantumCache(
+                player_id=player_id,
+                cache_key=self._RECOMMENDATION_CACHE_KEY,
+                commodity=self._AGGREGATE_CACHE_SCOPE_COMMODITY,
+                station_id=None,
+                sector_id=None,
+                quantum_states=[],  # unused for this repurposed cache use
+                ghost_results=bundle,
+                expected_value=0.0,  # unused for this repurposed cache use
+                confidence_interval=[0, 0],  # unused for this repurposed cache use
+                expires_at=expires_at,
+            ))
+
+    def _invalidate_aggregate_cache_sync(self, player_id: str, db: Session) -> None:
+        """
+        New-observation cache invalidation (aria.md:218's "new observations
+        invalidate cache entries that touch the same (commodity,
+        station_id) tuple" rule). This WO caches the full recommendation
+        bundle as ONE row per player rather than partitioning per
+        (commodity, station_id) pair -- so any new observation invalidates
+        the whole bundle. This is the conservative superset of aria.md's
+        per-tuple rule (correct, slightly less cache-efficient); flagged in
+        the dispatch report as a deliberate simplification given the
+        observation-log's per-player scale doesn't warrant a finer
+        partition yet.
+        """
+        db.query(ARIAQuantumCache).filter(
+            ARIAQuantumCache.player_id == player_id,
+            ARIAQuantumCache.cache_key == self._RECOMMENDATION_CACHE_KEY,
+        ).delete(synchronize_session=False)
 
 
 # Singleton instance

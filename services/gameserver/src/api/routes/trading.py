@@ -323,6 +323,76 @@ async def _emit_transaction_completed(
         logger.debug("transaction_completed WS push skipped", exc_info=True)
 
 
+async def _record_aria_trade_hooks(
+    db: Session,
+    player: Player,
+    station: Station,
+    transaction: MarketTransaction,
+    *,
+    action: str,
+    commodity: str,
+    quantity: int,
+    unit_price: float,
+    total_value: float,
+) -> None:
+    """Best-effort ARIA trade recording (WO-ARIA-OBS-LOG): one
+    ``ARIAPersonalMemory`` row (``record_trade_memory_sync`` semantics,
+    aria-companion.md:156) + one ``ARIATradingObservation`` row (append-only
+    observation log, ADR-0038 / OPERATIONS/aria.md:222). Replaces the retired
+    ``pending_aria_memories`` player-settings stash, which had zero readers.
+
+    Each write is independently defensive -- a failure in the memory write
+    must never block the observation write, and neither may ever fail the
+    trade (by this point the trade is already fully validated and staged;
+    only ``db.commit()`` remains).
+
+    Both surfaces are SYNC (``record_trade_memory_sync`` /
+    ``record_trade_observation``): this route's ``db`` is a sync
+    ``Session`` (core/database.py's ``get_db``), not the ``AsyncSession``
+    the plain ``record_trade_memory`` requires -- calling that async method
+    here previously raised internally on every trade (swallowed, but zero
+    rows ever persisted). ``record_trade_memory_sync`` closes that gap,
+    mirroring the existing ``record_combat_memory_sync`` precedent.
+    """
+    from src.services.aria_personal_intelligence_service import get_aria_intelligence_service
+
+    aria_service = get_aria_intelligence_service()
+    player_id = str(player.id)
+
+    try:
+        aria_service.record_trade_memory_sync(
+            player_id,
+            {
+                "station_name": station.name if station else "Unknown",
+                "action": action,
+                "commodity": commodity,
+                "quantity": quantity,
+                "total_value": total_value,
+            },
+            db,
+        )
+    except Exception as e:
+        logger.debug("ARIA trade memory recording skipped: %s", e)
+
+    try:
+        aria_service.record_trade_observation(
+            player_id,
+            {
+                "commodity": commodity,
+                "action": action,
+                "source_station_id": station.id,
+                "source_sector_id": player.current_sector_id,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "total_credits": total_value,
+                "trade_id": transaction.id if transaction is not None else None,
+            },
+            db,
+        )
+    except Exception as e:
+        logger.debug("ARIA trade observation recording skipped: %s", e)
+
+
 @router.post("/buy")
 async def buy_resource(
     trade_request: TradeRequest,
@@ -609,24 +679,17 @@ async def buy_resource(
         except Exception as e:
             logger.error("Failed ARIA/medal hooks for buy trade: %s", e)
 
-        # Record ARIA trade memory (best-effort, don't block trade)
-        try:
-            trade_memory = {
-                "station_name": station.name if station else "Unknown",
-                "action": "buy",
-                "commodity": trade_request.resource_type,
-                "quantity": trade_request.quantity,
-                "total_value": total_cost,
-            }
-            if not current_player.settings:
-                current_player.settings = {}
-            pending = current_player.settings.get("pending_aria_memories", [])
-            pending.append({"type": "trade", "data": trade_memory})
-            # Keep only last 10 pending memories
-            current_player.settings["pending_aria_memories"] = pending[-10:]
-            flag_modified(current_player, "settings")
-        except Exception as e:
-            logger.debug("ARIA trade memory recording skipped: %s", e)
+        # Record ARIA trade memory + observation (best-effort, don't block
+        # trade). WO-ARIA-OBS-LOG: replaces the retired pending_aria_memories
+        # player-settings stash, which had zero readers.
+        await _record_aria_trade_hooks(
+            db, current_player, station, transaction,
+            action="buy",
+            commodity=trade_request.resource_type,
+            quantity=trade_request.quantity,
+            unit_price=effective_buy_price,
+            total_value=total_cost,
+        )
 
         db.commit()
 
@@ -956,24 +1019,17 @@ async def sell_resource(
         except Exception as e:
             logger.error("Failed ARIA/medal hooks for sell trade: %s", e)
 
-        # Record ARIA trade memory (best-effort, don't block trade)
-        try:
-            trade_memory = {
-                "station_name": station.name if station else "Unknown",
-                "action": "sell",
-                "commodity": trade_request.resource_type,
-                "quantity": trade_request.quantity,
-                "total_value": total_earnings,
-            }
-            if not current_player.settings:
-                current_player.settings = {}
-            pending = current_player.settings.get("pending_aria_memories", [])
-            pending.append({"type": "trade", "data": trade_memory})
-            # Keep only last 10 pending memories
-            current_player.settings["pending_aria_memories"] = pending[-10:]
-            flag_modified(current_player, "settings")
-        except Exception as e:
-            logger.debug("ARIA trade memory recording skipped: %s", e)
+        # Record ARIA trade memory + observation (best-effort, don't block
+        # trade). WO-ARIA-OBS-LOG: replaces the retired pending_aria_memories
+        # player-settings stash, which had zero readers.
+        await _record_aria_trade_hooks(
+            db, current_player, station, transaction,
+            action="sell",
+            commodity=trade_request.resource_type,
+            quantity=trade_request.quantity,
+            unit_price=effective_sell_price,
+            total_value=total_earnings,
+        )
 
         db.commit()
 

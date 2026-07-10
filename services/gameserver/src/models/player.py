@@ -203,6 +203,7 @@ class Player(Base):
     aria_market_intelligence = relationship("ARIAMarketIntelligence", back_populates="player", cascade="all, delete-orphan")
     aria_exploration_map = relationship("ARIAExplorationMap", back_populates="player", cascade="all, delete-orphan")
     aria_trading_patterns = relationship("ARIATradingPattern", back_populates="player", cascade="all, delete-orphan")
+    aria_trading_observations = relationship("ARIATradingObservation", back_populates="player", cascade="all, delete-orphan")
     
     # Fleet relationships
     commanded_fleets = relationship("Fleet", back_populates="commander", foreign_keys="Fleet.commander_id")
