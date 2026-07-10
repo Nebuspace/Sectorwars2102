@@ -2506,24 +2506,32 @@ class MovementService:
         # NO-CANON / PARKED (flagged to the orchestrator, not silently
         # invented): the doc's pseudocode also has this leg call
         # "combat_resolver.attack_player(patrol, player) directly" as
-        # non-optional, NPC-initiated combat. combat_service.py has no
-        # entry point shaped for that -- attack_player requires two real
+        # non-optional, IMMEDIATE NPC-initiated combat right here on
+        # sector entry. That part stays parked -- combat_service.py has
+        # no entry point shaped for it (attack_player requires two real
         # Player rows with a current_ship; a squad row is a plain dict,
-        # not a Player. The squads npc_spawn_service seeds are already
-        # placed as live NPCCharacter+Ship presence entries (added to
-        # this same sector's players_present precisely "to make the NPCs
-        # visible in COMMS and the combat target list"), and the
-        # already-shipped v1 scope for those same squads explicitly
-        # defers automatic engagement: npc_spawn_service.py's module
-        # docstring says v1 has "no NPC-initiated combat", and
-        # npc_engagement_service.py's docstring says "combat with the
-        # arrived squad is player-initiated PvE via the existing attack
-        # path". Auto-firing combat here would silently override that
-        # documented decision without sign-off, so this leg stops at
-        # detection -- an informational encounter entry, matching the
-        # players/hazard/drones legs above, which are all pings the
-        # client surfaces rather than forced combat calls.
+        # not a Player), and more importantly ADR-0042's whole design is
+        # a 2-turn dispatch-then-arrival delay, not an instant fight (see
+        # npc_engagement_service.route_engagement's own module
+        # docstring). Immediate combat here would skip that delay
+        # entirely, not just fill a missing entry point.
+        #
+        # WO-DRIFT-combat-patrol-entry-dispatch (2026-07-10) closes the
+        # REAL gap: detection alone used to leave this leg cosmetic (an
+        # informational "faction_patrol" ping only, no actual police
+        # response). The informational encounter entry below is
+        # unchanged; a matched patrol now ALSO dispatches the real
+        # ADR-0042 response via _maybe_dispatch_police_engagement, which
+        # calls route_engagement (creates the durable PendingEngagement
+        # watcher, arrival_turn_threshold = turn+2) -- never
+        # _maybe_initiate_police_combat, which is npc_engagement_service's
+        # OWN sweep-side ARRIVED-transition combat trigger
+        # (sweep_pending_engagements -> _place_squad ->
+        # _maybe_initiate_police_combat, WO-CMB-NPC-INITIATED-1 lane B,
+        # already wired) and would fire combat through a squad that
+        # hasn't actually arrived in this sector yet.
         patrols = (sector.defenses or {}).get("police_patrol_ships")
+        any_patrol_matched = False
         if isinstance(patrols, list):
             for patrol in patrols:
                 if not isinstance(patrol, dict):
@@ -2537,6 +2545,7 @@ class MovementService:
                 except Exception:
                     continue
                 if matched:
+                    any_patrol_matched = True
                     encounters.append({
                         "type": "faction_patrol",
                         "faction": faction_code,
@@ -2545,6 +2554,18 @@ class MovementService:
                         "threat_level": "high",
                         "engagement": "pursuit"
                     })
+            if any_patrol_matched:
+                # One dispatch per sector-entry, not one per matched squad
+                # entry -- jurisdiction (and therefore which officers get
+                # picked) is derived from the SECTOR itself
+                # (jurisdiction_of), not the individual patrol dict, so a
+                # sector carrying two matched squad rows (e.g. a Federation
+                # entry and a Sentinel entry) would otherwise fire the same
+                # "wanted_status" dispatch twice in one call. The 5-turn
+                # per-offense-type cooldown in route_engagement would
+                # absorb that as a no-op second call anyway, but doing it
+                # once here is the correct shape, not just a safe one.
+                self._maybe_dispatch_police_engagement(player, sector)
 
         # WO-CMB-NPC-INITIATED-1 lane C (Max ruling, 2026-07-10) — pirate
         # trigger. VERIFY-FIRST found this leg's police_patrol_ships block
@@ -2610,6 +2631,50 @@ class MovementService:
                 break
 
         return encounters
+
+    def _maybe_dispatch_police_engagement(
+        self, player: Player, sector: Sector, offense_type: str = "wanted_status",
+    ) -> None:
+        """WO-DRIFT-combat-patrol-entry-dispatch: fires the real ADR-0042
+        police response when a wanted player enters a patrolled sector.
+        Deliberately dispatch-only (route_engagement) — never
+        npc_engagement_service._maybe_initiate_police_combat, which is the
+        sweep's own ARRIVED-transition combat trigger and would attack
+        the player through a squad that hasn't actually been placed in
+        this sector yet, skipping ADR-0042's 2-turn arrival delay.
+
+        Dedup vs the PvP path (combat_service.py's own "wanted_status"
+        route_engagement call after a fight): both call sites use the
+        IDENTICAL offense_type string, and route_engagement's own per-
+        offense-type 5-turn cooldown is keyed purely on
+        (player_id, offense_type, recent-turn-window) — agnostic of which
+        caller fired it. A player who warps into a patrolled sector and
+        then attacks someone (or vice versa) within the cooldown window
+        gets exactly one PendingEngagement, not two, with no extra dedup
+        code needed here.
+
+        route_engagement is flush-only by design (its own docstring) and
+        this method runs after _execute_movement's own commit has already
+        landed, so a successful dispatch needs its own commit — same
+        distinct-commit-boundary shape as _maybe_initiate_pirate_combat
+        below. Never raises — a failed dispatch degrades to no
+        PendingEngagement, never breaks the player's already-committed
+        move (route_engagement itself already never raises into its
+        caller, but the commit() here still needs its own guard)."""
+        try:
+            from src.services import npc_engagement_service
+
+            engagement = npc_engagement_service.route_engagement(
+                self.db, player, offense_type, sector
+            )
+            if engagement is not None:
+                self.db.commit()
+        except Exception:
+            logger.exception(
+                "Police engagement dispatch failed for player %s in sector %s "
+                "(non-fatal — the move itself already committed)",
+                player.id, sector.sector_id,
+            )
 
     def _maybe_initiate_pirate_combat(
         self, player: Player, sector: Sector, npc_ids: List[uuid.UUID],
