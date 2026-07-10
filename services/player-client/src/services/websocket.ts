@@ -112,6 +112,46 @@ export interface QuantumHarvestMessage {
   timestamp: string;
 }
 
+// Personal per-faction reputation TIER change (faction_service
+// .update_reputation → manager.send_personal_message). Fires ONLY when
+// current_level actually crosses a boundary, never on every point delta —
+// new_value/new_level are already the post-change standing, so a consumer
+// can patch its row in place without a refetch. No dedicated on* handler:
+// WebSocketContext's generalHandler is the only consumer (same shape as
+// npc_combat_initiated / planetary_update below it).
+export interface ReputationChangedMessage {
+  type: 'reputation_changed';
+  faction_id: string;
+  faction_name: string;
+  old_level: string;
+  new_level: string;
+  old_value: number;
+  new_value: number;
+  title: string;
+}
+
+// Team-AGGREGATE per-faction reputation tier change
+// (team_reputation_service.recalculate_team →
+// _emit_team_reputation_changed_event, broadcast to the team room via
+// connection_manager.broadcast_to_team — every member's socket gets it, not
+// just the actor's). new_value/new_level are the TEAM's aggregated standing
+// under its configured method (average / lowest / leader —
+// factions-and-teams.md "Team reputation with factions"), a DIFFERENT
+// number from the receiving player's own reputation_changed — consumers
+// must keep it a separate field, never merge it into the personal value.
+export interface TeamReputationChangedMessage {
+  type: 'team_reputation_changed';
+  team_id: string;
+  method: string;
+  timestamp: string;
+  faction_id: string;
+  faction_name: string;
+  old_value: number;
+  new_value: number;
+  old_level: string;
+  new_level: string;
+}
+
 // Coarse link-status projection of the reconnect state machine below, for
 // chrome that needs "is the uplink healthy" without tracking every close
 // code/backoff detail itself (WO-PUX-UPLINK-HUD). 'reconnecting' covers both

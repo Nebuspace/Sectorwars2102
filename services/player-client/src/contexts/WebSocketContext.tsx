@@ -148,6 +148,41 @@ interface WebSocketContextType {
     ariaText: string | null;
   } | null;
 
+  // Faction reputation ticks (WO-UIPC-REP-MFD-FACTION): bumps once per
+  // inbound `reputation_changed` (personal — faction_service.update_reputation)
+  // or `team_reputation_changed` (team-aggregate — team_reputation_service
+  // ._emit_team_reputation_changed_event) frame. Both fire ONLY on a tier
+  // boundary crossing, never on every point delta, and both already carry
+  // the new standing — REPUTATION MFD patches its matching faction row in
+  // place from lastReputationChanged / lastTeamReputationChanged, no
+  // refetch. The two payloads are kept SEPARATE (not merged into one field):
+  // lastReputationChanged.new_value is the player's OWN standing;
+  // lastTeamReputationChanged.new_value is the TEAM's aggregated standing
+  // with the same faction under its configured average/lowest/leader method
+  // (factions-and-teams.md) — a genuinely different number, never the same
+  // reading, so overwriting one with the other would misreport the player's
+  // actual personal reputation.
+  reputationEventSignal: number;
+  lastReputationChanged: {
+    faction_id: string;
+    faction_name: string;
+    old_level: string;
+    new_level: string;
+    old_value: number;
+    new_value: number;
+    title: string;
+  } | null;
+  lastTeamReputationChanged: {
+    team_id: string;
+    method: string;
+    faction_id: string;
+    faction_name: string;
+    old_level: string;
+    new_level: string;
+    old_value: number;
+    new_value: number;
+  } | null;
+
   // NPC-initiated combat (WO-CMB-NPC-INITIATED-1 lane D): bumps once per
   // inbound `npc_combat_initiated` frame (an NPC — police interdiction or
   // pirate raid — attacks a player; combat_service emits this personal-to-
@@ -275,6 +310,26 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     rpPerDay: number | null;
     throughputPct: number | null;
     ariaText: string | null;
+  } | null>(null);
+  const [reputationEventSignal, setReputationEventSignal] = useState(0);
+  const [lastReputationChanged, setLastReputationChanged] = useState<{
+    faction_id: string;
+    faction_name: string;
+    old_level: string;
+    new_level: string;
+    old_value: number;
+    new_value: number;
+    title: string;
+  } | null>(null);
+  const [lastTeamReputationChanged, setLastTeamReputationChanged] = useState<{
+    team_id: string;
+    method: string;
+    faction_id: string;
+    faction_name: string;
+    old_level: string;
+    new_level: string;
+    old_value: number;
+    new_value: number;
   } | null>(null);
   const [npcCombatSignal, setNpcCombatSignal] = useState(0);
   const [lastNpcCombatInitiated, setLastNpcCombatInitiated] = useState<{
@@ -737,6 +792,42 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'reputation_changed': {
+          // Personal per-faction tier change (see ReputationChangedMessage in
+          // services/websocket.ts). Already carries the new standing —
+          // REPUTATION MFD patches its row from lastReputationChanged, no refetch.
+          setLastReputationChanged({
+            faction_id: String(message.faction_id || ''),
+            faction_name: String(message.faction_name || ''),
+            old_level: String(message.old_level || ''),
+            new_level: String(message.new_level || ''),
+            old_value: typeof message.old_value === 'number' ? message.old_value : 0,
+            new_value: typeof message.new_value === 'number' ? message.new_value : 0,
+            title: String(message.title || '')
+          });
+          setReputationEventSignal(prev => prev + 1);
+          break;
+        }
+
+        case 'team_reputation_changed': {
+          // Team-AGGREGATE per-faction tier change (see
+          // TeamReputationChangedMessage in services/websocket.ts) — a
+          // DIFFERENT number from the player's own standing above; kept in
+          // its own field, never merged into lastReputationChanged.
+          setLastTeamReputationChanged({
+            team_id: String(message.team_id || ''),
+            method: String(message.method || ''),
+            faction_id: String(message.faction_id || ''),
+            faction_name: String(message.faction_name || ''),
+            old_level: String(message.old_level || ''),
+            new_level: String(message.new_level || ''),
+            old_value: typeof message.old_value === 'number' ? message.old_value : 0,
+            new_value: typeof message.new_value === 'number' ? message.new_value : 0
+          });
+          setReputationEventSignal(prev => prev + 1);
+          break;
+        }
+
         case 'npc_combat_initiated': {
           // WO-CMB-NPC-INITIATED-1 lane D: see the field doc-comment on
           // npcCombatSignal above for why this is plumbing-only (no toast/
@@ -789,7 +880,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // (aria_response is consumed by the dedicated ariaHandler above; the
           // generalHandler still sees it, so exclude it from the noise warning.
           // aria_narration is consumed by ariaNarrationHandler the same way.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'npc_combat_initiated'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'reputation_changed', 'team_reputation_changed', 'npc_combat_initiated'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -877,6 +968,11 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     researchEventSignal,
     lastContractOffer,
     lastGovernorStatus,
+
+    // Faction reputation ticks (reputation_changed / team_reputation_changed — WO-UIPC-REP-MFD-FACTION)
+    reputationEventSignal,
+    lastReputationChanged,
+    lastTeamReputationChanged,
 
     // NPC-initiated combat (npc_combat_initiated — WO-CMB-NPC-INITIATED-1 lane D)
     npcCombatSignal,

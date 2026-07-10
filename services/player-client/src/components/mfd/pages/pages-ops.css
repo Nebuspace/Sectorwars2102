@@ -118,6 +118,79 @@
   color: #00d9ff;
 }
 
+/* ── REPUTATION — per-faction standings list ─── */
+
+.mfd-page-faction-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mfd-page-faction-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.66rem;
+  line-height: 1.5;
+  padding: 0.12rem 0;
+  border-bottom: 1px solid rgba(255, 215, 0, 0.08);
+}
+
+.mfd-page-faction-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(220, 235, 255, 0.85);
+}
+
+.mfd-page-faction-level {
+  flex-shrink: 0;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mfd-accent, #FFD700);
+  opacity: 0.85;
+}
+
+.mfd-page-faction-value {
+  flex-shrink: 0;
+  min-width: 3em;
+  text-align: right;
+  font-weight: 700;
+  color: #00FF7F;
+}
+
+.mfd-page-faction-value.negative {
+  color: #FF4D6D;
+}
+
+/* Distinct visual weight from .mfd-page-faction-value — a TEAM aggregate
+   reading is informational context, never the player's own standing. */
+.mfd-page-faction-team {
+  flex-shrink: 0;
+  width: 100%;
+  font-size: 0.56rem;
+  letter-spacing: 0.05em;
+  color: rgba(158, 197, 255, 0.75);
+}
+
+/* Failure / alert line — mirrors pages-ship.css's .mfd-page-warnline
+   exactly (same class name, same visual language) so a fetch failure reads
+   consistently as an alarm across both page families. */
+.mfd-page-warnline {
+  margin-top: 8px;
+  padding: 3px 6px;
+  border-left: 2px solid #ff4d6d;
+  background: rgba(255, 77, 109, 0.08);
+  color: #ff4d6d;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
 /* ── ARIA TERMINAL ──────────────────────────
    Feed scrolls inside MFDPageBody; status row +
    input row are pinned below it by .mfd-page-ops.
