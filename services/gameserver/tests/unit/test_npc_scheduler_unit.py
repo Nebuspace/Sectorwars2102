@@ -13,13 +13,18 @@ import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 from src.core import game_time
+from src.models.galaxy import Galaxy
 from src.services.npc_engagement_service import _federation_squad_size
 from src.services.npc_scheduler_service import (
+    SUSPECT_CLEAR_SWEEP_SECONDS,
     _run_pirate_ecosystem_tick_sync,
     _run_suspect_clear_sweep_sync,
     _run_team_reputation_sweep_sync,
+    _sweep_due_and_advance,
+    _SUSPECT_CLEAR_STATE_KEY,
     canonical_day_number,
     canonical_minute_of_day,
     canonical_weekday,
@@ -195,7 +200,15 @@ class _FakeLockDB:
     """Minimal SessionLocal() stand-in: db.execute(...).scalar() always
     reports the lock acquired; commit/rollback/close just record whether
     they fired, matching a real session shape closely enough for a
-    wrapper-level pin (no live Postgres)."""
+    wrapper-level pin (no live Postgres).
+
+    query(Galaxy) succeeds (WO-SCHED-CADENCE-DRIFT's durable due-check reads
+    Galaxy.state before any of these wrappers reach their real core) —
+    returns a real, detached Galaxy row with an empty state dict, so
+    _sweep_due_and_advance reports "due" and the wrapper proceeds to the
+    core these tests actually pin. Any OTHER entity still raises — these
+    tests deliberately kept that to simulate "the core's own query layer
+    exploded", now exercised just past the due-check instead of at it."""
     def __init__(self):
         self.committed = False
         self.rolled_back = False
@@ -204,7 +217,11 @@ class _FakeLockDB:
     def execute(self, *args, **kwargs):
         return SimpleNamespace(scalar=lambda: True)
 
-    def query(self, *args, **kwargs):
+    def query(self, *entities, **kwargs):
+        from src.models.galaxy import Galaxy
+        if entities and entities[0] is Galaxy:
+            galaxy = Galaxy(id=uuid4(), created_at=datetime(2020, 1, 1, tzinfo=UTC), state={})
+            return SimpleNamespace(order_by=lambda *a, **k: SimpleNamespace(first=lambda: galaxy))
         raise RuntimeError("query layer exploded")
 
     def commit(self):
@@ -285,3 +302,121 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
         assert any(
             "lock busy, skipped" in r.getMessage() for r in caplog.records
         ), [r.getMessage() for r in caplog.records]
+
+
+# ---------------------------------------------------------------------------
+# WO-SCHED-CADENCE-DRIFT — durable, wall-clock, restart-safe cadence for the
+# sub-daily loop-table sweeps. Two falsifiers per the WO: cadence must track
+# WALL-CLOCK elapsed regardless of how many times the wrapper was invoked in
+# between (the drift bug this replaces was an ITERATION counter, not a
+# clock), and the anchor must survive what a process restart does — a fresh
+# SessionLocal() with no in-process state carried over (the restart-reset
+# bug this replaces was `elapsed = 0` on every process start).
+# ---------------------------------------------------------------------------
+
+class _FakeDurableCadenceDB:
+    """Session stand-in sharing ONE persistent Galaxy row across every fresh
+    instance — mirrors the real world exactly: a fresh SessionLocal() call
+    (as happens on every real sweep tick, or after a process restart) still
+    reads the SAME durable row from the DB, never an in-process counter."""
+    def __init__(self, galaxy: Galaxy):
+        self.galaxy = galaxy
+        self.committed = False
+        self.rolled_back = False
+        self.closed = False
+
+    def execute(self, *args, **kwargs):
+        return SimpleNamespace(scalar=lambda: True)  # advisory lock always free
+
+    def query(self, *entities, **kwargs):
+        if entities and entities[0] is Galaxy:
+            galaxy = self.galaxy
+            return SimpleNamespace(order_by=lambda *a, **k: SimpleNamespace(first=lambda: galaxy))
+        raise RuntimeError("query layer exploded")
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        self.closed = True
+
+
+class TestSweepDueAndAdvance:
+    def test_cadence_tracks_wall_clock_not_invocation_count(self):
+        """Drift falsifier: MANY rapid consecutive calls, all still inside
+        the interval by wall-clock, must not fire — no matter how many of
+        them there are. This is exactly the old bug's shape: an iteration
+        counter that advances by a fixed amount PER CALL would eventually
+        cross the threshold purely from call-count; a wall-clock check
+        driven by the caller-supplied `now` never does, until `now` itself
+        genuinely crosses the interval."""
+        galaxy = Galaxy(id=uuid4(), created_at=datetime(2020, 1, 1, tzinfo=UTC), state={})
+        t0 = datetime(2026, 1, 1, tzinfo=UTC)
+        interval = 300
+
+        # First call: nothing stamped yet -- due, fires, stamps t0.
+        assert _sweep_due_and_advance(_FakeDurableCadenceDB(galaxy), "k", interval, t0) is True
+
+        # 250 rapid "iterations" 1 second apart (a fast/idle loop) -- every
+        # single one is still inside the 300s window and must not fire,
+        # regardless of the call COUNT (250 calls, zero fires).
+        for i in range(1, 251):
+            due = _sweep_due_and_advance(_FakeDurableCadenceDB(galaxy), "k", interval, t0 + timedelta(seconds=i))
+            assert due is False, f"fired early at +{i}s on call #{i} — tracking call count, not wall-clock"
+
+        # Wall-clock genuinely crosses the interval -- fires, independent of
+        # the 250 calls that just happened.
+        assert _sweep_due_and_advance(_FakeDurableCadenceDB(galaxy), "k", interval, t0 + timedelta(seconds=300)) is True
+
+    def test_cadence_survives_a_simulated_restart(self):
+        """Restart falsifier: stamp the anchor, then read it back through a
+        BRAND NEW db/session instance (no object identity, no in-process
+        state shared with the stamping call) — exactly what a fresh
+        SessionLocal() after a process restart does. Must still correctly
+        report not-due until the real interval has elapsed, proving the
+        guarantee lives in the persisted row, not in anything the old
+        `elapsed = 0` process-relative counter tracked."""
+        galaxy = Galaxy(id=uuid4(), created_at=datetime(2020, 1, 1, tzinfo=UTC), state={})
+        t0 = datetime(2026, 1, 1, tzinfo=UTC)
+        interval = 1800
+
+        assert _sweep_due_and_advance(_FakeDurableCadenceDB(galaxy), "k", interval, t0) is True
+
+        # A brand new fake session (simulates a fresh SessionLocal() post-
+        # restart) reading the SAME underlying galaxy row, well before the
+        # interval elapses -- must still say "not due".
+        restarted_db = _FakeDurableCadenceDB(galaxy)
+        assert _sweep_due_and_advance(restarted_db, "k", interval, t0 + timedelta(seconds=5)) is False
+
+        # Once the real interval has elapsed, another fresh "post-restart"
+        # session correctly sees it's due again.
+        another_restart_db = _FakeDurableCadenceDB(galaxy)
+        assert _sweep_due_and_advance(another_restart_db, "k", interval, t0 + timedelta(seconds=1800)) is True
+
+    def test_wrapper_wiring_skips_the_real_core_when_not_yet_due(self):
+        """Ties the mechanism to a REAL sweep wrapper (not just the bare
+        helper): two back-to-back calls to _run_suspect_clear_sweep_sync,
+        sharing one persistent Galaxy row across fresh SessionLocal()
+        instances (mirroring what actually happens tick-to-tick) — the
+        second call, happening a real wall-clock instant later (nowhere
+        near SUSPECT_CLEAR_SWEEP_SECONDS), must skip the core entirely."""
+        galaxy = Galaxy(id=uuid4(), created_at=datetime(2020, 1, 1, tzinfo=UTC), state={})
+
+        with patch(
+            "src.core.database.SessionLocal", side_effect=lambda: _FakeDurableCadenceDB(galaxy),
+        ), patch(
+            "src.services.suspect_service.clear_expired_suspects", return_value=3,
+        ) as mock_core:
+            first = _run_suspect_clear_sweep_sync()
+            second = _run_suspect_clear_sweep_sync()
+
+        assert first == 3
+        assert second == 0
+        mock_core.assert_called_once()
+        assert _SUSPECT_CLEAR_STATE_KEY in galaxy.state
+        # Sanity: the interval this wrapper actually uses is what gated the
+        # second call, not some other/default value.
+        assert SUSPECT_CLEAR_SWEEP_SECONDS > 0

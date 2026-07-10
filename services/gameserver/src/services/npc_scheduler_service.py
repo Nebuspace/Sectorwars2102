@@ -281,6 +281,40 @@ _CITIZEN_REBAKE_STATE_KEY = "citizen_rebake_last_day"
 CITIZEN_REBAKE_CHECK_SECONDS = int(
     os.environ.get("CITIZEN_REBAKE_CHECK_SECONDS", str(50 * 60))
 )
+# WO-SCHED-CADENCE-DRIFT: durable, wall-clock, restart-safe last-run anchors
+# for the 5 sub-daily loop-table sweeps (WO-ECON-CONTRACT-1-KERNEL / WO-CMB-
+# SUSPECT-LIFE-1 / WO-RT-TEAM-REP / WO-PIRATE-ECO-2 held wiring). These used
+# to fire on `elapsed % INTERVAL_SECONDS == 0`, where `elapsed` is a pure
+# ITERATION counter (+= TICK_SECONDS every loop pass) — NOT wall-clock: each
+# iteration's real wall-clock duration is TICK_SECONDS plus every due sweep's
+# awaited work THAT iteration (the to_thread calls below are sequential, not
+# concurrent), so under real load `elapsed % 300 == 0` fires every 5
+# ITERATIONS, not every 300 wall-clock seconds — the more work a tick does,
+# the slower every gated sweep's TRUE cadence gets, unboundedly. `elapsed`
+# also resets to 0 on every process restart, so a longer-interval sweep can
+# be starved indefinitely on a frequently-restarted host. Fixed the same way
+# the weekly job already was (see _WEEKLY_DECAY_STATE_KEY above): a Galaxy.
+# state anchor holding a wall-clock ISO timestamp, checked via
+# `now() - last_run_at >= interval` — see _sweep_due_and_advance.
+_SUSPECT_CLEAR_STATE_KEY = "suspect_clear_last_run_at"
+_CONTRACT_GENERATION_STATE_KEY = "contract_generation_last_run_at"
+_CONTRACT_EXPIRE_STATE_KEY = "contract_expire_last_run_at"
+_TEAM_REPUTATION_SWEEP_STATE_KEY = "team_reputation_sweep_last_run_at"
+_PIRATE_ECOSYSTEM_TICK_STATE_KEY = "pirate_ecosystem_tick_last_run_at"
+# Deliberately NO coarse elapsed pre-filter for these 4 (unlike the
+# day-scale anchors above) — their intervals (300-1800s) are close enough to
+# TICK_SECONDS that a coarse pre-filter would reintroduce the very drift
+# being fixed here; _sweep_due_and_advance is called every iteration and a
+# cheap Galaxy-row read + advisory-lock attempt every 60s is negligible
+# load. PECO's interval is daily (86400s default) — large enough that,
+# matching the citizen-rebake/ARIA-prune/retention convention above, a
+# coarse pre-filter IS safe (drift on a 55-minute pre-filter is negligible
+# against a day-scale target) and avoids a wasted per-60s check ~23 of 24
+# hours a day. Offset from the other day-scale pre-filters (45m/50m) to
+# avoid stacking on the same wake.
+PIRATE_ECOSYSTEM_TICK_CHECK_SECONDS = int(
+    os.environ.get("PIRATE_ECOSYSTEM_TICK_CHECK_SECONDS", str(55 * 60))
+)
 # Coarse CHEAP pre-filter cadence for the weekly-decay check. The durable
 # canonical-week anchor is what actually guarantees once-per-week; this only
 # keeps us from taking the advisory lock + querying Galaxy.state every 60s. A
@@ -4658,13 +4692,64 @@ def _run_price_alert_sweep_sync() -> int:
         db.close()
 
 
+def _sweep_due_and_advance(
+    db: Session, state_key: str, interval_seconds: int, now: datetime,
+) -> bool:
+    """WO-SCHED-CADENCE-DRIFT: the ONLY correctness guarantee for the 5
+    sub-daily loop-table sweeps below — see the _SUSPECT_CLEAR_STATE_KEY
+    block's comment for the full mechanism this replaces (iteration-counted
+    `elapsed`, which drifts under load and resets on restart).
+
+    Durable, wall-clock, restart-safe due-check. Mirrors _run_weekly_decay_
+    sync's own Galaxy.state anchor discipline exactly, adapted from a
+    canonical-week index to a wall-clock ISO timestamp: same stable-anchor-
+    row selection (oldest Galaxy by created_at — a dev re-bootstrap creates
+    a NEWER galaxy; keying off the newest would reset every anchor and
+    double-fire every sweep at once), same "advance in the caller's own
+    transaction, not here" discipline.
+
+    Returns False (not due) without mutating anything if the interval
+    hasn't elapsed, or if no Galaxy row exists yet. Returns True AND stamps
+    the anchor to `now` if due — the caller does its real work in the SAME
+    transaction as this stamp and commits once, so the anchor only survives
+    if the work actually committed too (a crash or raised exception between
+    this stamp and the caller's db.commit() rolls BOTH back together — the
+    sweep is retried next wake, never silently marked done without running).
+
+    Does not take any lock itself — callers that need one (double-run
+    protection across gameserver instances) acquire it BEFORE calling this,
+    same as they always did for the sweep's own work."""
+    from src.models.galaxy import Galaxy
+
+    galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+    if galaxy is None:
+        return False
+    state = dict(galaxy.state or {})
+    last_run_raw = state.get(state_key)
+    if last_run_raw is not None:
+        try:
+            last_run = datetime.fromisoformat(last_run_raw)
+        except (TypeError, ValueError):
+            last_run = None
+        if last_run is not None and (now - last_run).total_seconds() < interval_seconds:
+            return False
+    state[state_key] = now.isoformat()
+    galaxy.state = state
+    flag_modified(galaxy, "state")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # NPC contract generation + expiry sweeps (WO-ECON-CONTRACT-1-KERNEL) — own
 # SessionLocal, commit after, close on exit; mirrors _run_price_alert_sweep_
 # sync's discipline exactly. The pure, testable cores
 # (contract_generator.generate_npc_contracts / contract_service.sweep_
 # expired_contracts) live in their own service modules — these wrappers are
-# session-management glue only, not independently unit-tested.
+# session-management glue only, not independently unit-tested. Cadence is
+# now durable/wall-clock via _sweep_due_and_advance (WO-SCHED-CADENCE-DRIFT)
+# — the caller (npc_scheduler_loop) invokes these EVERY iteration; the
+# not-due-yet case returns cheaply without touching contract_generator /
+# contract_service at all.
 # ---------------------------------------------------------------------------
 
 def _run_contract_generation_sync() -> int:
@@ -4673,6 +4758,10 @@ def _run_contract_generation_sync() -> int:
 
     db = SessionLocal()
     try:
+        if not _sweep_due_and_advance(
+            db, _CONTRACT_GENERATION_STATE_KEY, CONTRACT_GENERATION_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return 0
         result = generate_npc_contracts(db)
         db.commit()
         return result.get("generated", 0)
@@ -4690,6 +4779,10 @@ def _run_contract_expire_sweep_sync() -> int:
 
     db = SessionLocal()
     try:
+        if not _sweep_due_and_advance(
+            db, _CONTRACT_EXPIRE_STATE_KEY, CONTRACT_EXPIRE_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return 0
         result = sweep_expired_contracts(db)
         db.commit()
         return result.get("expired", 0)
@@ -4732,6 +4825,10 @@ def _run_suspect_clear_sweep_sync() -> int:
         if not got_lock:
             logger.info("NPC scheduler: suspect auto-clear sweep — lock busy, skipped")
             return 0
+        if not _sweep_due_and_advance(
+            db, _SUSPECT_CLEAR_STATE_KEY, SUSPECT_CLEAR_SWEEP_SECONDS, datetime.now(UTC),
+        ):
+            return 0
         cleared = clear_expired_suspects(db)
         db.commit()
         return cleared
@@ -4762,6 +4859,10 @@ def _run_team_reputation_sweep_sync() -> Dict[str, int]:
             {"key": TEAM_REPUTATION_SWEEP_LOCK_KEY},
         ).scalar()
         if not got_lock:
+            return {"due": 0, "recalculated": 0}
+        if not _sweep_due_and_advance(
+            db, _TEAM_REPUTATION_SWEEP_STATE_KEY, TEAM_REPUTATION_SWEEP_SECONDS, datetime.now(UTC),
+        ):
             return {"due": 0, "recalculated": 0}
         result = sweep_due_team_reputations(db)
         db.commit()
@@ -4806,6 +4907,10 @@ def _run_pirate_ecosystem_tick_sync() -> Dict[str, int]:
             {"key": _PIRATE_ECOSYSTEM_TICK_LOCK_KEY},
         ).scalar()
         if not got_lock:
+            return empty
+        if not _sweep_due_and_advance(
+            db, _PIRATE_ECOSYSTEM_TICK_STATE_KEY, PIRATE_ECOSYSTEM_TICK_SWEEP_SECONDS, datetime.now(UTC),
+        ):
             return empty
 
         counts = dict(empty)
@@ -6812,74 +6917,87 @@ async def npc_scheduler_loop() -> None:
         # station as a potential cargo_delivery pickup point and posts new
         # NPC-issued contracts on stations under their per-destination pool
         # cap. Own SessionLocal, commit in the wrapper — NOT awaited inline.
-        if elapsed % CONTRACT_GENERATION_SWEEP_SECONDS == 0:
-            try:
-                generated = await asyncio.to_thread(_run_contract_generation_sync)
-                if generated:
-                    logger.info(
-                        "NPC scheduler: contract generation — posted %d new contract(s)",
-                        generated,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("NPC scheduler: contract generation sweep crashed (loop continues)")
+        # WO-SCHED-CADENCE-DRIFT: called EVERY iteration, deliberately no
+        # `elapsed % ... == 0` gate — the durable wall-clock anchor inside
+        # _run_contract_generation_sync (via _sweep_due_and_advance) is the
+        # real cadence guarantee now; an elapsed-based gate here would be
+        # exactly the iteration-counter drift this WO fixes. The not-due
+        # case returns cheaply (one Galaxy-row read) without touching
+        # contract_generator at all.
+        try:
+            generated = await asyncio.to_thread(_run_contract_generation_sync)
+            if generated:
+                logger.info(
+                    "NPC scheduler: contract generation — posted %d new contract(s)",
+                    generated,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: contract generation sweep crashed (loop continues)")
 
         # NPC contract expiry (WO-ECON-CONTRACT-1-KERNEL) — bulk-expires any
         # posted-but-never-accepted contract strictly past its deadline.
         # Tighter cadence than generation — a stale board is more visible
-        # to players than a slow generation refresh.
-        if elapsed % CONTRACT_EXPIRE_SWEEP_SECONDS == 0:
-            try:
-                expired = await asyncio.to_thread(_run_contract_expire_sweep_sync)
-                if expired:
-                    logger.info(
-                        "NPC scheduler: contract expiry sweep — expired %d contract(s)",
-                        expired,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("NPC scheduler: contract expiry sweep crashed (loop continues)")
+        # to players than a slow generation refresh. WO-SCHED-CADENCE-DRIFT:
+        # same no-gate treatment as contract generation above.
+        try:
+            expired = await asyncio.to_thread(_run_contract_expire_sweep_sync)
+            if expired:
+                logger.info(
+                    "NPC scheduler: contract expiry sweep — expired %d contract(s)",
+                    expired,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: contract expiry sweep crashed (loop continues)")
 
         # Suspect auto-clear sweep (WO-CMB-SUSPECT-LIFE-1 held wiring) —
         # ships.md:293's "auto-clears at suspect_until" guarantee needed a
         # sweep since nothing else re-checks a stale is_suspect flag once
-        # the triggering encounter is over.
-        if elapsed % SUSPECT_CLEAR_SWEEP_SECONDS == 0:
-            try:
-                cleared = await asyncio.to_thread(_run_suspect_clear_sweep_sync)
-                if cleared:
-                    logger.info(
-                        "NPC scheduler: suspect auto-clear sweep — cleared %d player(s)",
-                        cleared,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("NPC scheduler: suspect auto-clear sweep crashed (loop continues)")
+        # the triggering encounter is over. WO-SCHED-CADENCE-DRIFT: same
+        # no-gate treatment — see contract generation's comment above.
+        try:
+            cleared = await asyncio.to_thread(_run_suspect_clear_sweep_sync)
+            if cleared:
+                logger.info(
+                    "NPC scheduler: suspect auto-clear sweep — cleared %d player(s)",
+                    cleared,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: suspect auto-clear sweep crashed (loop continues)")
 
         # Team-reputation recalculation sweep (WO-RT-TEAM-REP held wiring)
         # — recalculates every team whose next_recalculation is due.
-        if elapsed % TEAM_REPUTATION_SWEEP_SECONDS == 0:
-            try:
-                team_rep = await asyncio.to_thread(_run_team_reputation_sweep_sync)
-                if team_rep.get("recalculated"):
-                    logger.info(
-                        "NPC scheduler: team-reputation sweep — recalculated %d of %d "
-                        "due team(s)",
-                        team_rep.get("recalculated", 0), team_rep.get("due", 0),
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("NPC scheduler: team-reputation sweep crashed (loop continues)")
+        # WO-SCHED-CADENCE-DRIFT: same no-gate treatment as above.
+        try:
+            team_rep = await asyncio.to_thread(_run_team_reputation_sweep_sync)
+            if team_rep.get("recalculated"):
+                logger.info(
+                    "NPC scheduler: team-reputation sweep — recalculated %d of %d "
+                    "due team(s)",
+                    team_rep.get("recalculated", 0), team_rep.get("due", 0),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("NPC scheduler: team-reputation sweep crashed (loop continues)")
 
         # Pirate-ecosystem weekly growth + evolution tick sweep
         # (WO-PIRATE-ECO-2 held wiring) — the outer per-region/per-holding
         # loop pirate_ecosystem_service's own docstrings named as deferred
-        # scheduler work (Lane B).
-        if elapsed % PIRATE_ECOSYSTEM_TICK_SWEEP_SECONDS == 0:
+        # scheduler work (Lane B). WO-SCHED-CADENCE-DRIFT: unlike its 4
+        # siblings above, PECO's real interval is daily (86400s default) —
+        # large enough that a coarse elapsed pre-filter (PIRATE_ECOSYSTEM_
+        # TICK_CHECK_SECONDS, 55m) is safe (drift on a 55-minute pre-filter
+        # is negligible against a day-scale target), matching the citizen-
+        # rebake/ARIA-prune/retention convention. The durable wall-clock
+        # anchor inside _run_pirate_ecosystem_tick_sync is still what
+        # actually guarantees once-per-real-day regardless of restarts.
+        if elapsed % PIRATE_ECOSYSTEM_TICK_CHECK_SECONDS == 0:
             try:
                 eco = await asyncio.to_thread(_run_pirate_ecosystem_tick_sync)
                 if eco.get("growth_actions") or eco.get("evolutions"):
