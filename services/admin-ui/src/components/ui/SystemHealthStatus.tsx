@@ -66,36 +66,9 @@ interface DatabaseHealth {
   error?: string;
 }
 
-interface ContainerInfo {
-  name: string;
-  status: 'healthy' | 'unhealthy';
-  docker_status: string;
-  image: string;
-  uptime_seconds: number;
-  uptime_human: string;
-  created_at: string;
-  is_game_service: boolean;
-  cpu_percent?: string;
-  memory_usage?: string;
-  memory_percent?: string;
-  network_io?: string;
-  block_io?: string;
-}
-
-interface ContainerHealth {
-  provider: string;
-  status: 'healthy' | 'degraded' | 'unavailable';
-  containers: Record<string, ContainerInfo>;
-  summary: {
-    total_containers: number;
-    game_containers: number;
-    healthy_game_containers: number;
-    all_healthy: boolean;
-  };
-  response_time: number;
-  last_check: string;
-  error?: string;
-}
+// ContainerInfo/ContainerHealth types removed 2026-07-10: orphaned after the
+// Docker-socket health check they described was removed for security -- see
+// the "REMOVED: checkContainerHealth()" note below.
 
 const SystemHealthStatus: React.FC = () => {
   const [serverStatus, setServerStatus] = useState<ServerStatus>({

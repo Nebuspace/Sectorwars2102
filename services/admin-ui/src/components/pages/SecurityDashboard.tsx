@@ -475,7 +475,7 @@ export const SecurityDashboard: React.FC = () => {
               </div>
               <div className="header-item enabled">
                 <i className="fas fa-check-circle"></i>
-                <span>Content-Security-Policy: default-src 'self'</span>
+                <span>Content-Security-Policy: default-src &apos;self&apos;</span>
               </div>
             </div>
           </div>

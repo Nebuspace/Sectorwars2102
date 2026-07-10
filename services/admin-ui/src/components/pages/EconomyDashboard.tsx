@@ -378,7 +378,7 @@ const EconomyDashboard: React.FC = () => {
     setPriceAlerts(prev => [data, ...prev].slice(0, 10)); // Keep last 10 alerts
   }, []);
 
-  const handleIntervention = useCallback((data: any) => {
+  const handleIntervention = useCallback((_data: any) => {
     // Refresh market data after intervention
     fetchEconomicData();
   }, []);

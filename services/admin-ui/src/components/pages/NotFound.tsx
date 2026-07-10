@@ -18,7 +18,7 @@ const NotFound: React.FC = () => {
       />
       <div className="card">
         <div className="card-body">
-          <p>The page you requested doesn't exist or may have moved.</p>
+          <p>The page you requested doesn&apos;t exist or may have moved.</p>
           <Link to="/dashboard" className="btn btn-primary">
             Return to Dashboard
           </Link>

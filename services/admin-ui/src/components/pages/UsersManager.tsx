@@ -280,7 +280,7 @@ const UsersManager: React.FC = () => {
               {filteredUsers.length} of {users.length} users
               {searchTerm && (
                 <span className="ml-2 text-xs">
-                  (filtered by "{searchTerm}")
+                  (filtered by &quot;{searchTerm}&quot;)
                 </span>
               )}
               {!includeNpc && (

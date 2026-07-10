@@ -18,10 +18,10 @@ interface AssetData {
   availablePorts: any[];
 }
 
-const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({ 
-  player, 
-  onClose, 
-  onUpdate 
+const PlayerAssetManager: React.FC<PlayerAssetManagerProps> = ({
+  player,
+  onClose,
+  onUpdate: _onUpdate
 }) => {
   const [assets, setAssets] = useState<AssetData>({
     ships: [],

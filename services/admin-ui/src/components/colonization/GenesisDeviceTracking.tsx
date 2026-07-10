@@ -56,7 +56,7 @@ interface GenesisAlert {
 }
 
 export const GenesisDeviceTracking: React.FC = () => {
-  const { user } = useAuth();
+  useAuth();
   const [devices, setDevices] = useState<GenesisDevice[]>([]);
   const [stats, setStats] = useState<GenesisStats | null>(null);
   const [alerts, setAlerts] = useState<GenesisAlert[]>([]);

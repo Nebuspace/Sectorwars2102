@@ -130,6 +130,9 @@ const WarpTunnelsManager: React.FC = () => {
       // enum), max_ship_size (not in WarpTunnelUpdateRequest). The same stripped
       // object is used for both the payload and the optimistic state merge so
       // max_ship_size is never transiently shown as saved.
+      // _dropSize is destructured solely to exclude max_ship_size from `rest`
+      // (no varsIgnorePattern is configured for this codebase's TS override).
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { is_active, max_ship_size: _dropSize, ...rest } = updatedData;
       const payload: Record<string, unknown> = { ...rest };
       if (is_active !== undefined) {
@@ -395,7 +398,7 @@ interface WarpTunnelModalProps {
   getStabilityColor: (s: number) => string;
 }
 
-const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose, onSave, saving, formatStability, getStabilityColor }) => {
+const WarpTunnelModal: React.FC<WarpTunnelModalProps> = ({ tunnel, mode, onClose, onSave, saving, formatStability, getStabilityColor: _getStabilityColor }) => {
   const [formData, setFormData] = useState({
     stability: tunnel.stability || 0,
     energy_cost: tunnel.energy_cost || 0,

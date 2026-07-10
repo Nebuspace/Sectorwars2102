@@ -241,7 +241,7 @@ const CentralNexusManager: React.FC = () => {
                 <div className="info-card" style={{ marginTop: '16px' }}>
                   <p>
                     Central Nexus auto-generates when you create a new galaxy.
-                    Use the "Bang a New Galaxy!" button on the Universe Management page.
+                    Use the &quot;Bang a New Galaxy!&quot; button on the Universe Management page.
                   </p>
                 </div>
               )}

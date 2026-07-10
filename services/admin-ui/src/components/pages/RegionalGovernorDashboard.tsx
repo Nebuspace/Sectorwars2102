@@ -120,14 +120,6 @@ const RegionalGovernorDashboard: React.FC = () => {
     proposed_changes: {}
   });
 
-  // Cultural configuration state
-  const [culturalConfig, setCulturalConfig] = useState({
-    theme: 'default',
-    motto: '',
-    traditions: '',
-    language: 'universal'
-  });
-
   // Economic configuration state
   const [economicConfig, setEconomicConfig] = useState({
     tax_rate: 0.10,
@@ -1151,7 +1143,7 @@ const RegionalGovernorDashboard: React.FC = () => {
             <div className="culture-config">
               <div className="tab-unavailable-note">
                 Regional cultural identity (theme, motto, traditions, language) is set by a
-                region's <strong>owner</strong> from their own region console. There is currently
+                region&apos;s <strong>owner</strong> from their own region console. There is currently
                 no admin endpoint to edit cultural identity for a selected region, so this control
                 is disabled here. Current values, when present, are shown in region details above.
               </div>

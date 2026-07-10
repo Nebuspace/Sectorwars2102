@@ -35,14 +35,14 @@ const PlanetDetailModal: React.FC<PlanetDetailModalProps> = ({
   planet,
   isOpen,
   onClose,
-  onSave,
+  onSave: _onSave,
   mode
 }) => {
   const [editedPlanet, setEditedPlanet] = useState<Planet | null>(null);
   // Planet editing is disabled: no admin planet-edit endpoint exists, so the
   // modal is view-only regardless of the requested mode.
   const [isEditing, setIsEditing] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {

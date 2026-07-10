@@ -23,16 +23,16 @@ interface OperationField {
   options?: string[];
 }
 
-const BulkOperationPanel: React.FC<BulkOperationPanelProps> = ({ 
-  selectedPlayers, 
-  onClose, 
-  onComplete 
+const BulkOperationPanel: React.FC<BulkOperationPanelProps> = ({
+  selectedPlayers,
+  onClose,
+  onComplete: _onComplete
 }) => {
   const [selectedOperation, setSelectedOperation] = useState<string>('');
   const [operationData, setOperationData] = useState<any>({});
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [results, setResults] = useState<BulkOperationResult[]>([]);
-  const [showResults, setShowResults] = useState(false);
+  const [isExecuting] = useState(false);
+  const [results] = useState<BulkOperationResult[]>([]);
+  const [showResults] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Bulk operations are disabled: the backend route

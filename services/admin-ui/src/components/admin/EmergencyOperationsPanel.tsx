@@ -25,16 +25,16 @@ interface EmergencyOperation {
   }>;
 }
 
-const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({ 
-  player, 
-  onClose, 
-  onUpdate 
+const EmergencyOperationsPanel: React.FC<EmergencyOperationsPanelProps> = ({
+  player,
+  onClose,
+  onUpdate: _onUpdate
 }) => {
   const [selectedOperation, setSelectedOperation] = useState<string>('');
   const [operationData, setOperationData] = useState<any>({});
   const [isExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<string>('');
-  const [_playerInfo, setPlayerInfo] = useState<any>(null);
+  const [, setPlayerInfo] = useState<any>(null);
 
   // Emergency operations are disabled: the backend routes
   // POST /api/v1/admin/players/emergency-operation and

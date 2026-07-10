@@ -72,14 +72,6 @@ const Dashboard: React.FC = () => {
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [auditFeed, setAuditFeed] = useState<AuditFeedState>({ status: 'loading' });
 
-  // Get API URL helper
-  const getApiUrl = () => {
-    if (import.meta.env.VITE_API_URL) {
-      return import.meta.env.VITE_API_URL;
-    }
-    return '';
-  };
-
   const fetchDashboardData = async () => {
     try {
       // Prepare headers with authentication
@@ -229,15 +221,6 @@ const Dashboard: React.FC = () => {
       return `${entry.resource_type}:${entry.resource_id.slice(0, 8)}`;
     }
     return entry.resource_type || (entry.resource_id ? entry.resource_id.slice(0, 8) : null);
-  };
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'healthy': return '✓';
-      case 'degraded': return '⚠';
-      case 'unavailable': return '✗';
-      default: return '?';
-    }
   };
 
   if (isLoading) {

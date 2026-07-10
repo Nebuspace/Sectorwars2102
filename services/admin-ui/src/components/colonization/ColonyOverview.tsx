@@ -79,7 +79,7 @@ interface ColonyStats {
 }
 
 export const ColonyOverview: React.FC = () => {
-  const { user, token } = useAuth();
+  const { token } = useAuth();
   const { getIcon, getLabel } = useResourceCatalog();
   const [colonies, setColonies] = useState<Colony[]>([]);
   const [stats, setStats] = useState<ColonyStats | null>(null);

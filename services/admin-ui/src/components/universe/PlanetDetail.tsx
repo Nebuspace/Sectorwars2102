@@ -8,16 +8,11 @@ interface PlanetDetailProps {
   onUpdate?: (updatedPlanet: any) => void;
 }
 
-const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate }) => {
+const PlanetDetail: React.FC<PlanetDetailProps> = ({ planet, onBack, onUpdate: _onUpdate }) => {
   const { getIcon, getLabel } = useResourceCatalog();
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleEdit = (field: string, currentValue: any) => {
-    setEditingField(field);
-    setEditValues({ ...editValues, [field]: currentValue });
-  };
+  const [isLoading] = useState(false);
 
   const handleSave = async (_field: string) => {
     // There is no admin planet-edit endpoint (no PATCH/PUT /admin/planets/{id}).

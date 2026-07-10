@@ -74,7 +74,7 @@ interface TerraformingProject {
 }
 
 export const PlanetaryManagement: React.FC = () => {
-  const { user } = useAuth();
+  useAuth();
   const [planets, setPlanets] = useState<Planet[]>([]);
   const [stats, setStats] = useState<PlanetStats | null>(null);
   const [terraformingProjects, setTerraformingProjects] = useState<TerraformingProject[]>([]);

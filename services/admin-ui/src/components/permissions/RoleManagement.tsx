@@ -24,7 +24,7 @@ interface RoleManagementProps {
   onRoleUpdate?: (role: Role) => void;
 }
 
-export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate }) => {
+export const RoleManagement: React.FC<RoleManagementProps> = ({ onRoleUpdate: _onRoleUpdate }) => {
   const [roles, setRoles] = useState<Role[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);

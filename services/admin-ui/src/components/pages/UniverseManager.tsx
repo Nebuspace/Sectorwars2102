@@ -19,7 +19,6 @@ const UniverseManager: React.FC = () => {
     loadGalaxyInfo,
     loadSectors,
     loadRegions,
-    clearGalaxyData,
     isLoading,
     error
   } = useAdmin();

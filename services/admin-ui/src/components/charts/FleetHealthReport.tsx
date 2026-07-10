@@ -70,14 +70,14 @@ const FleetHealthReport: React.FC = () => {
     if (report && statusChartRef.current) {
       drawStatusChart(report);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [report]);
 
   useEffect(() => {
     if (report && conditionChartRef.current) {
       drawConditionChart(report);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [report]);
 
   const drawStatusChart = (data: FleetHealthReportData) => {

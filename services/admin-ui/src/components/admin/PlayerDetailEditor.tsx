@@ -398,7 +398,7 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
         <div className="editor-section aria-assistant-section">
           <h4>🤖 ARIA Personal Assistant</h4>
           <div className="aria-subtitle">
-            Autonomous Resource Intelligence Assistant - {player.username}'s Personal AI
+            Autonomous Resource Intelligence Assistant - {player.username}&apos;s Personal AI
           </div>
 
           {player.aria ? (
@@ -493,7 +493,7 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
               <div className="empty-state-icon">🤖</div>
               <h5>ARIA Data Collection Not Started</h5>
               <p>
-                This player's ARIA personal intelligence system has not collected any data yet.
+                This player&apos;s ARIA personal intelligence system has not collected any data yet.
                 ARIA will begin learning once the player:
               </p>
               <ul>
@@ -502,7 +502,7 @@ const PlayerDetailEditor: React.FC<PlayerDetailEditorProps> = ({ player, onClose
                 <li>Makes strategic decisions in the game</li>
               </ul>
               <p className="text-muted">
-                Data collection is automatic and privacy-protected. Each player's ARIA is
+                Data collection is automatic and privacy-protected. Each player&apos;s ARIA is
                 completely isolated and learns only from their personal gameplay.
               </p>
             </div>

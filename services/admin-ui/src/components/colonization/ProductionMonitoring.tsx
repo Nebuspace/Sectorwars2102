@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Line, Bar, Doughnut } from 'react-chartjs-2';
+import { Line, Doughnut } from 'react-chartjs-2';
 import { useAuth } from '../../contexts/AuthContext';
 import './production-monitoring.css';
 
@@ -52,7 +52,7 @@ interface ProductionStats {
 }
 
 export const ProductionMonitoring: React.FC = () => {
-  const { user } = useAuth();
+  useAuth();
   const [timeRange, setTimeRange] = useState<'hour' | 'day' | 'week' | 'month'>('day');
   const [selectedResource, setSelectedResource] = useState<'all' | 'energy' | 'minerals' | 'food' | 'water'>('all');
   const [productionHistory, setProductionHistory] = useState<ProductionData[]>([]);
