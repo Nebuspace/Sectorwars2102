@@ -1198,6 +1198,236 @@ class MovementService:
             "tunnels": warp_tunnels
         }
 
+    # ------------------------------------------------------------------
+    # WO-PROG-SECTOR-SCAN-1 -- scan adjacent sectors (turns.md:83)
+    # ------------------------------------------------------------------
+    #
+    # CANON: "Scan adjacent sectors | 2 [turns] | Design-only -- currently
+    # free / passive map fill" (sw2102-docs/FEATURES/gameplay/turns.md:83).
+    # get_available_moves already discloses {sector_id, name, type,
+    # turn_cost, can_afford} for every neighbor at ZERO cost -- this action
+    # is the PAID enrichment above that baseline, never a duplicate of it.
+    #
+    # THE SCALING LADDER (Max-approved 2026-07-10 off a 3-rail investigation
+    # -- WO-PROG-SECTOR-SCAN-1). Every magnitude below is [NO-CANON],
+    # flagged for DECISIONS: canon confirms the feature and its 2-turn cost
+    # only, not these tiers/thresholds.
+    #
+    #   Rail A (PRIMARY) -- the scanning ship's effective scanner_range
+    #   (ShipSpecification.scanner_range + the SENSOR ship-upgrade bonus via
+    #   ShipUpgradeService.effective_scanner_range) -- the SAME mechanism
+    #   already driving the long-range quantum scan's reach
+    #   (quantum_service.py:348-365/446):
+    #     Tier 0 (range 0-1): hazard_level + radiation_level only.
+    #     Tier 1 (range 2-3): + resources summary (has_asteroids,
+    #       gas-cloud presence) + a binary presence echo (any non-self ship
+    #       in the sector -- no count, no identity; mirrors
+    #       quantum_service's own "echo: faint motion / silent").
+    #     Tier 2 (range >=4, chosen to sit roughly where a hull reaches
+    #       Sensor L3 -- conceptually mirroring quantum_service's own
+    #       EXTENDED_BAND_SENSOR_LEVEL=3 gate -- AND Rail C's second gate
+    #       clears): + defenses summary (mine presence, a patrol-ship COUNT
+    #       BAND not an exact count) + planet/station presence flags.
+    #       Still short of on-arrival truth -- no player identity, no
+    #       formation identity (those stay gated by their own existing
+    #       per-player discovery mechanics).
+    #
+    #   Rail C (SECONDARY, accuracy/insight modifier) -- ARIA consciousness
+    #   level (Player.aria_consciousness_level, WO-ARIA-PROGRESSION):
+    #     - Tier 2's extra reveal ALSO requires aria_consciousness_level>=3
+    #       (Awakened) -- "tier-2's second gate"; Tier 0/1 never check this.
+    #     - Every scan's misread chance drops -2 points per consciousness
+    #       level above 1, ON TOP OF the existing per-Sensor-level
+    #       reduction -- mirrors quantum_service.py's own
+    #       MISREAD_REDUCTION_PER_SENSOR_LEVEL mechanic verbatim, with an
+    #       added ARIA term. Floored at 0. The roll itself (and whether it
+    #       fired) is NEVER surfaced to the caller, matching quantum_service.
+    #       scan()'s own choice not to expose misread_pct/misread in its
+    #       response -- telling the player "this reading might be wrong"
+    #       would defeat the fog-of-war point of the mechanic.
+    #
+    #   Rail B (research/tech tree) is PARKED for v1: a real tech-tree
+    #   kernel exists (src/services/tech_tree.py, CRT WO-K0-1) with generic
+    #   point-of-use readers (has_tool/gate_value/tech_modifier), but its
+    #   one exploration-branch node (t.exploration.survey.1, "Orbital
+    #   Survey Suite") is reserved for K1b's PLANETARY grid fog/reveal -- a
+    #   different subsystem. A future scan-specific node (e.g.
+    #   t.exploration.deep_scan.1) can be appended to the catalog cheaply
+    #   (the tree is designed to grow by appending rows -- zero migration
+    #   risk) WITHOUT reusing the reserved survey node.
+    #
+    # Stateless + ephemeral by design (Max-approved): a passive-fill
+    # enhancement, not a permanent per-player discovery -- no persistence
+    # table; the payload is computed fresh on every call and never stored.
+    # Fuzzy-disclosure discipline is a HARD constraint (mirrors the quantum
+    # scan): never more than on-arrival truth, no identities, bands not
+    # counts.
+
+    SCAN_TURN_COST = 2  # canon: turns.md:83, exact.
+    SCAN_TIER1_MIN_RANGE = 2   # [NO-CANON]
+    SCAN_TIER2_MIN_RANGE = 4   # [NO-CANON]
+    SCAN_TIER2_MIN_ARIA_LEVEL = 3  # [NO-CANON] -- Awakened
+    SCAN_MISREAD_BASE_PCT = 15  # [NO-CANON] -- mirrors quantum_service.MISREAD_BASE_PCT
+    SCAN_MISREAD_REDUCTION_PER_SENSOR_LEVEL = 5  # [NO-CANON] -- mirrors quantum_service
+    SCAN_MISREAD_REDUCTION_PER_ARIA_LEVEL = 2  # [NO-CANON] -- new term, this WO
+
+    @staticmethod
+    def _patrol_band(patrol_count: int) -> str:
+        """Fuzzy patrol-strength band, never an exact count (fuzzy-disclosure
+        discipline). [NO-CANON] boundaries."""
+        if patrol_count <= 0:
+            return "none"
+        if patrol_count <= 2:
+            return "light"
+        if patrol_count <= 4:
+            return "moderate"
+        return "heavy"
+
+    @classmethod
+    def _scan_tier(cls, effective_range: int, aria_level: int) -> int:
+        """Pure Rail-A/Rail-C tier resolution -- no DB, directly unit-testable.
+        See the scan_adjacent_sector module comment for the full ladder design."""
+        if effective_range >= cls.SCAN_TIER2_MIN_RANGE:
+            return 2 if aria_level >= cls.SCAN_TIER2_MIN_ARIA_LEVEL else 1
+        if effective_range >= cls.SCAN_TIER1_MIN_RANGE:
+            return 1
+        return 0
+
+    @classmethod
+    def _scan_misread_pct(cls, sensor_level: int, aria_level: int) -> int:
+        """Pure misread-chance formula -- no DB, directly unit-testable.
+        Mirrors quantum_service's MISREAD_BASE_PCT -
+        MISREAD_REDUCTION_PER_SENSOR_LEVEL*sensor_level shape, with an added
+        ARIA term. Floored at 0."""
+        return max(
+            0,
+            cls.SCAN_MISREAD_BASE_PCT
+            - cls.SCAN_MISREAD_REDUCTION_PER_SENSOR_LEVEL * sensor_level
+            - cls.SCAN_MISREAD_REDUCTION_PER_ARIA_LEVEL * max(0, aria_level - 1),
+        )
+
+    def scan_adjacent_sector(self, player_id: uuid.UUID, target_sector_id: int) -> Dict[str, Any]:
+        """Scan a directly-reachable neighbor sector for a paid preview
+        beyond get_available_moves' free {name, type, turn_cost} baseline.
+        See the module comment above this method for the full ladder design.
+        """
+        player = self.db.query(Player).filter(Player.id == player_id).with_for_update().first()
+        if not player:
+            return {"success": False, "message": "Player not found"}
+
+        # ADR-0004 continuous regen, inside the row lock, before the
+        # affordability check -- same discipline as every other spend site.
+        regenerate_turns(self.db, player)
+
+        if player.turns < self.SCAN_TURN_COST:
+            return {
+                "success": False,
+                "message": f"Not enough turns to scan (need {self.SCAN_TURN_COST}, have {player.turns})",
+            }
+
+        ship = player.current_ship
+        if not ship:
+            return {"success": False, "message": "No active ship to scan with"}
+
+        # Adjacency: reuse get_available_moves VERBATIM so "adjacent" can
+        # never drift from the free listing's own definition of a neighbor
+        # (both direct warps and warp tunnels count, exactly as they do for
+        # movement itself).
+        available = self.get_available_moves(player_id)
+        neighbor_ids = {w["sector_id"] for w in available.get("warps", [])}
+        neighbor_ids |= {t["sector_id"] for t in available.get("tunnels", [])}
+        if target_sector_id not in neighbor_ids:
+            return {
+                "success": False,
+                "message": "That sector is not adjacent to your current position",
+            }
+
+        target_sector = self.db.query(Sector).filter(Sector.sector_id == target_sector_id).first()
+        if not target_sector:
+            return {"success": False, "message": "Target sector not found"}
+
+        # --- Rail A: effective scanner_range (hull spec + SENSOR upgrade) ---
+        from src.models.ship import ShipSpecification
+        from src.services.ship_upgrade_service import ShipUpgradeService
+
+        spec = (
+            self.db.query(ShipSpecification)
+            .filter(ShipSpecification.type == ship.type)
+            .first()
+        )
+        base_range = spec.scanner_range if spec and spec.scanner_range is not None else 0
+        effective_range = ShipUpgradeService.effective_scanner_range(ship, base_range)
+        # Reuse the established helper (not a hand-rolled upgrades.get) --
+        # same source ShipUpgradeService.effective_scanner_range/
+        # effective_evasion already consult.
+        sensor_level = ShipUpgradeService.get_sensor_level(ship)
+
+        # --- Rail C: ARIA consciousness (Tier-2's second gate + accuracy) ---
+        aria_level = player.aria_consciousness_level or 1
+
+        tier = self._scan_tier(effective_range, aria_level)
+
+        result: Dict[str, Any] = {
+            "sector_id": target_sector_id,
+            "name": target_sector.name,
+            "type": target_sector.type.name,
+            "tier": tier,
+            "hazard_level": target_sector.hazard_level,
+            "radiation_level": target_sector.radiation_level,
+        }
+
+        if tier >= 1:
+            resources = target_sector.resources or {}
+            result["has_asteroids"] = bool(resources.get("has_asteroids", False))
+            result["has_gas_clouds"] = bool(resources.get("gas_clouds"))
+            # Binary presence echo -- any non-self ship (player OR NPC;
+            # NPC-piloted ships carry owner_id NULL) in the target sector.
+            # No count, no identity -- mirrors quantum_service's own echo.
+            other_ships = (
+                self.db.query(Ship)
+                .filter(
+                    Ship.sector_id == target_sector_id,
+                    Ship.is_destroyed == False,  # noqa: E712 -- SQLA boolean compare
+                    or_(Ship.owner_id != player.id, Ship.owner_id.is_(None)),
+                )
+                .count()
+            )
+            result["presence_echo"] = "faint motion" if other_ships > 0 else "silent"
+
+        if tier >= 2:
+            defenses = target_sector.defenses or {}
+            result["mines_present"] = int(defenses.get("mines", 0) or 0) > 0
+            result["patrol_band"] = self._patrol_band(len(defenses.get("patrol_ships") or []))
+            result["has_planet"] = (
+                self.db.query(Planet).filter(Planet.sector_id == target_sector_id).first()
+                is not None
+            )
+            from src.models.station import Station
+            result["has_station"] = (
+                self.db.query(Station).filter(Station.sector_id == target_sector_id).first()
+                is not None
+            )
+
+        # --- Rail C accuracy term: misread roll (mirrors quantum_service) ---
+        # Never surfaced to the caller -- see the module comment above.
+        misread_pct = self._scan_misread_pct(sensor_level, aria_level)
+        if misread_pct and random.random() < misread_pct / 100.0:
+            if "presence_echo" in result:
+                result["presence_echo"] = (
+                    "silent" if result["presence_echo"] != "silent" else "faint motion"
+                )
+            logger.info(
+                "Scan misread: player %s sector %s (misread_pct=%d)",
+                player.id, target_sector_id, misread_pct,
+            )
+
+        spend_turns(player, self.SCAN_TURN_COST)
+        self.db.commit()
+
+        result["success"] = True
+        result["turns_remaining"] = player.turns
+        return result
+
     def scan_for_latent_tunnels(self, player_id: uuid.UUID) -> Dict[str, Any]:
         """WO-LW — reveal the latent warp tunnels touching the player's current
         sector, writing a per-player PlayerWarpKnowledge row for each newly

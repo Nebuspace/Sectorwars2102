@@ -752,6 +752,55 @@ async def scan_latent_tunnels(
     )
 
 
+# WO-PROG-SECTOR-SCAN-1 — paid enrichment scan of an adjacent sector (turns.md:83).
+# See MovementService.scan_adjacent_sector's module comment for the full
+# scaling-ladder design (ship scanner_range primary, ARIA consciousness
+# secondary). Stateless — no fields here persist anything; the response is a
+# fresh reveal on every call, never a per-player unlock.
+class ScanAdjacentSectorResponse(BaseModel):
+    success: bool
+    message: str = ""
+    sector_id: int | None = None
+    name: str | None = None
+    type: str | None = None
+    tier: int | None = None
+    hazard_level: int | None = None
+    radiation_level: float | None = None
+    # Tier 1+
+    has_asteroids: bool | None = None
+    has_gas_clouds: bool | None = None
+    presence_echo: str | None = None
+    # Tier 2+
+    mines_present: bool | None = None
+    patrol_band: str | None = None
+    has_planet: bool | None = None
+    has_station: bool | None = None
+    turns_remaining: int = 0
+
+
+@router.post("/scan/{sector_id}", response_model=ScanAdjacentSectorResponse)
+async def scan_adjacent_sector(
+    sector_id: int,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db)
+):
+    """Scan an adjacent sector for a paid preview beyond the free
+    /available-moves {name, type, turn_cost} baseline. 2 turns
+    (turns.md:83); reveal depth scales with the scanning ship's sensor
+    reach and the player's ARIA consciousness level — see
+    MovementService.scan_adjacent_sector for the full design."""
+    movement_service = MovementService(db)
+    result = movement_service.scan_adjacent_sector(player.id, sector_id)
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("message", "Scan failed"),
+        )
+
+    return ScanAdjacentSectorResponse(**result)
+
+
 # Genesis Device Purchase
 #
 # Genesis devices are a single FUNGIBLE consumable (untiered count on the ship —
