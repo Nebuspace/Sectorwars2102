@@ -5,6 +5,7 @@ from src.models.oauth_account import OAuthAccount
 from src.models.refresh_token import RefreshToken
 from src.models.player import Player
 from src.models.ship import Ship, ShipSpecification, ShipType, FailureType, UpgradeType, InsuranceType, ShipStatus
+from src.models.ship_registry import ShipRegistry, RegistryEventType
 from src.models.reputation import Reputation, TeamReputation, ReputationLevel
 from src.models.team import Team, TeamReputationHandling, TeamRecruitmentStatus
 from src.models.team_member import TeamMember, TeamRole
