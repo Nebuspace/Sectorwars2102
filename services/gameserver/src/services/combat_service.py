@@ -1615,10 +1615,13 @@ class CombatService:
         ship is the defender; here the NPC ship is the attacker and the
         PLAYER is the defender.
 
-        Callers: ``npc_engagement_service.npc_initiate_attack`` is the
-        police/pirate POLICY layer — defender/NPC guards, squad selection,
-        the Terran-Space law-enforcement bypass amendment, and the
-        ``npc_combat_initiated`` WS event all live THERE, not here. This
+        Callers: ``npc_combat_initiation_service.initiate_npc_combat`` is the
+        police/pirate POLICY layer — defender/NPC guards, the Terran-Space
+        law-enforcement bypass amendment, and the ``npc_combat_initiated``
+        WS event all live THERE, not here (squad selection is the CALLER's
+        own concern one level up — npc_engagement_service._maybe_initiate_
+        police_combat picks the squad's first member before ever reaching
+        this module). This
         method is purely mechanical resolution + persistence, mirroring
         ``attack_npc_ship``'s own shape and re-using its exact NPC-ship-
         destroyed handling (``is_destroyed``/``is_active``/``status``,
