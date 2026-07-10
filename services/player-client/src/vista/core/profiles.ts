@@ -306,6 +306,18 @@ export interface TypeGrade {
    * desirability; this scales that computed value.
    */
   grainScale?: number;
+
+  /**
+   * WO-VISTA-MOUNTAINOUS-IDENTITY-R2: post-process bloom-intensity
+   * multiplier (1 = default scaling; 0 = disable bloom entirely; >1 =
+   * stronger). Absent → 1. Applied to `model.lighting.bloom` (a shared,
+   * desirability-driven value — NOT profile-specific) in post.ts's
+   * applyBloom call, so a per-type "how much does emissive/bright content
+   * glow" tuning knob exists without touching the shared bloom FORMULA
+   * itself. Every other type's `?? 1` default reproduces the exact prior
+   * bloom intensity — parameterized, not globally capped.
+   */
+  bloomScale?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1426,7 +1438,18 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
   ],
 
   water:        'coastal',
-  floraKinds:   ['alpine-grass', 'highland-shrub', 'conifer-silhouette'],
+  // WO-VISTA-MOUNTAINOUS-IDENTITY-R2: 'highland-shrub' (shrub class) swapped
+  // for 'alpine-lichen' (moss class) -- root cause of the "green-oval
+  // artifacts": drawScatterShrub (backend.ts, SHARED across every biome
+  // with shrub-kind flora -- TERRAN/ARCTIC/DESERT/TROPICAL all use it too,
+  // so it can't be touched without affecting them) draws 2-3 TALL rounded
+  // humps that read fine as a low bush against those types' softer terrain,
+  // but sat as isolated floating green ovals against R1's now-dramatic
+  // rocky peaks. drawScatterMoss (moss class) draws a FLAT, WIDE,
+  // ground-hugging patch instead -- both thematically correct for alpine
+  // rock (lichen growing on stone) and visually reads as texture, not a
+  // floating blob. Data-only change -- neither shared renderer touched.
+  floraKinds:   ['alpine-grass', 'alpine-lichen', 'conifer-silhouette'],
   rockKinds:    ['mountain-boulder', 'scree-scatter', 'cliff-face'],
   defaultCloud: 'cumulus',
 
@@ -1450,7 +1473,17 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
   },
 
   // Alpine film stock: muted neutral, deep vignette for dramatic peaks.
-  grade: { warmthBias: -0.05, vignetteStrength: 0.60, grainScale: 1.0 },
+  // WO-VISTA-MOUNTAINOUS-IDENTITY-R2: bloomScale tames the shared
+  // desirability-driven bloom pass (post.ts applyBloom) specifically for
+  // MOUNTAINOUS -- the R1 sunGlareCap only capped the corona/horizon-glow
+  // gradients drawn INTO the scene buffer; bloom is a SEPARATE additive
+  // pass applied to the whole composited frame afterward and was still
+  // blowing out the sky. Parameterized via TypeGrade (mirrors grainScale's
+  // own multiplier pattern), not a global cap -- every other type's
+  // `?? 1` default leaves its bloom byte-identical to before this WO. Landed
+  // at 0.20 after a first pass at 0.45 (live-mount screenshot diff still
+  // showed the moon corona/horizon-glow dome as visually prominent).
+  grade: { warmthBias: -0.05, vignetteStrength: 0.60, grainScale: 1.0, bloomScale: 0.20 },
 
   // Alpine-ridges terrain signature (WO-V5-MOUNTAINOUS): 4 ridge layers, snow line
   // at 60 % of terrainH (raised from 0.30 to keep peaks inside the visible snow zone),
@@ -1481,13 +1514,30 @@ const MOUNTAINOUS_PROFILE: PlanetProfile = {
   },
 
   // WO-VISTA-MOUNTAINOUS-IDENTITY: caps the sun corona's glare spread (the
-  // atmospheric glow halo, not the disc) at 60% of the generic radius —
-  // critic tour reported the sun blowing out ~1/3 of the sky against
-  // MOUNTAINOUS's dark, high-contrast basePalette.
-  sunGlareCap: 0.60,
+  // atmospheric glow halo, not the disc) — critic tour reported the sun
+  // blowing out ~1/3 of the sky against MOUNTAINOUS's dark, high-contrast
+  // basePalette. R1 landed at 0.60; R2 (this WO) tightened it further to
+  // 0.40 alongside bloomScale above, after a live-mount screenshot diff at
+  // 0.60/bloomScale=0.45 still read as too prominent against the now-jagged
+  // peaks.
+  sunGlareCap: 0.40,
 
-  // Alpine meadows in lowlands; half density — not a jungle.
-  denseFloraFactor: 0.5,
+  // WO-VISTA-MOUNTAINOUS-IDENTITY-R2: 0.5 (top of the "moderate cap" bucket
+  // documented on the field itself) was still placing enough LARGE dense-
+  // flora instances to read as scattered green-oval clusters against R1's
+  // now-prominent rock peaks (confirmed via live-mount screenshot — even
+  // after the alpine-lichen swap above, both shrub AND moss classes render
+  // via multi-lobe/multi-bump techniques that read as a row of circles at
+  // dense-flora scale). Dropped to the bucket's LOW end: a rocky, sparse
+  // alpine environment should have rare dense growth, not "half a jungle."
+  denseFloraFactor: 0.15,
+
+  // Further de-emphasizes alpine-lichen (still the most oval-cluster-prone
+  // of the three kinds even at low density) in favor of alpine-grass
+  // (proven clean blade rendering, no cluster shape) and conifer-
+  // silhouette (triangle silhouette, also clean) — grass 3x and conifer 2x
+  // as likely to be picked as lichen for any given dense-flora instance.
+  floraKindWeights: [3, 1, 2],
 };
 
 // ---------------------------------------------------------------------------

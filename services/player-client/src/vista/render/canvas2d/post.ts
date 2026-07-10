@@ -98,8 +98,13 @@ export function postProcess(
   ctx.drawImage(offscreen, 0, 0);
 
   // 2. Bloom — quarter-res bright-pass; skipped on 'low' quality or near-zero bloom.
+  //    grade.bloomScale (WO-VISTA-MOUNTAINOUS-IDENTITY-R2) is a per-type
+  //    multiplier on the shared, desirability-driven model.lighting.bloom
+  //    value -- absent (`?? 1`) reproduces the exact prior intensity for
+  //    every type that doesn't set it.
   if (bloomScratch && quality !== 'low') {
-    applyBloom(ctx, offscreen, bloomScratch, w, h, model.lighting.bloom, quality);
+    const bloomIntensity = model.lighting.bloom * (grade?.bloomScale ?? 1);
+    applyBloom(ctx, offscreen, bloomScratch, w, h, bloomIntensity, quality);
   }
 
   // 3. Vignette

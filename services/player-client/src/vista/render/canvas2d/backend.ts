@@ -6351,12 +6351,25 @@ function drawAlpineRidges(
     const STEP   = 4;
     const numPts = Math.ceil(w / STEP) + 2;
 
-    // Ridge Y sampler: abs-sin peaks point upward (toward horizon in canvas space),
-    // producing a multi-peak mountain silhouette from a single seeded formula.
+    // WO-VISTA-MOUNTAINOUS-IDENTITY-R2: the macro silhouette (freqA/freqB)
+    // now samples a TRIANGLE wave (linear ramps, sharp corners at both
+    // peak and valley) instead of abs(sin) (smooth rounded crest) —
+    // confirmed via live-mount screenshot that R1's freqA-depth-scaling
+    // alone still read as smooth rolling hills, since MORE humps of the
+    // SAME rounded shape is still rounded. A triangle wave gives genuinely
+    // angular, sawtooth mountain geometry while staying a CONTINUOUS
+    // connected ridgeline (unlike a power-sharpened sine, which collapses
+    // to a flat trough between peaks — isolated spikes, not a range).
+    // freqC (fine rocky jaggedness) stays plain sine — it's texture noise
+    // layered on the macro shape, not the silhouette itself.
+    const triangleWave = (phase: number): number => {
+      const p = phase - Math.floor(phase);
+      return p < 0.5 ? p * 2 : 2 - p * 2;
+    };
     const ridgeAt = (xNorm: number): number =>
       ridgeBaseY
-      - Math.abs(Math.sin(xNorm * Math.PI * 2 * freqA + phaseA)) * amplitude
-      - Math.abs(Math.sin(xNorm * Math.PI * 2 * freqB + phaseB)) * amplitude * bRatio
+      - triangleWave(xNorm * freqA + phaseA / (Math.PI * 2)) * amplitude
+      - triangleWave(xNorm * freqB + phaseB / (Math.PI * 2)) * amplitude * bRatio
       - Math.abs(Math.sin(xNorm * Math.PI * 2 * freqC + phaseC)) * amplitude * cRatio;
 
     // ---- Fill color: interpolate pal.ridge[] by depthFrac (far→near) ----
