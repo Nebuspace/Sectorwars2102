@@ -147,6 +147,33 @@ interface WebSocketContextType {
     ariaText: string | null;
   } | null;
 
+  // NPC-initiated combat (WO-CMB-NPC-INITIATED-1 lane D): bumps once per
+  // inbound `npc_combat_initiated` frame (an NPC — police interdiction or
+  // pirate raid — attacks a player; combat_service emits this personal-to-
+  // defender AND sector-broadcast, SAME payload shape both times).
+  // WebSocketContext deliberately does no defender-vs-spectator branching
+  // here (it never imports GameContext, so it has no player id to compare
+  // defender_id against) — it's pure data plumbing. NpcCombatBanner (mounted
+  // in GameLayout, which has both useWebSocket and useGame) reads this
+  // signal/payload and does the actual branch: an unmistakable banner for
+  // the defender, the lighter toast idiom (matching teammate_under_attack)
+  // for everyone else in the sector. combat_id rides along for hand-off
+  // correlation to whatever eventually renders the resolved fight.
+  npcCombatSignal: number;
+  lastNpcCombatInitiated: {
+    npc_id: string;
+    npc_display_name: string;
+    npc_archetype: 'LAW_ENFORCEMENT' | 'HOSTILE_RAIDER';
+    npc_ship_name: string | null;
+    npc_ship_type: string | null;
+    defender_id: string;
+    defender_name: string | null;
+    sector_id: number | null;
+    trigger: string | null;
+    combat_id: string;
+    timestamp: string | null;
+  } | null;
+
   // Connection management
   connect: () => void;
   disconnect: () => void;
@@ -246,6 +273,20 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     rpPerDay: number | null;
     throughputPct: number | null;
     ariaText: string | null;
+  } | null>(null);
+  const [npcCombatSignal, setNpcCombatSignal] = useState(0);
+  const [lastNpcCombatInitiated, setLastNpcCombatInitiated] = useState<{
+    npc_id: string;
+    npc_display_name: string;
+    npc_archetype: 'LAW_ENFORCEMENT' | 'HOSTILE_RAIDER';
+    npc_ship_name: string | null;
+    npc_ship_type: string | null;
+    defender_id: string;
+    defender_name: string | null;
+    sector_id: number | null;
+    trigger: string | null;
+    combat_id: string;
+    timestamp: string | null;
   } | null>(null);
 
   // Keep track of cleanup functions
@@ -674,6 +715,29 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           break;
         }
 
+        case 'npc_combat_initiated': {
+          // WO-CMB-NPC-INITIATED-1 lane D: see the field doc-comment on
+          // npcCombatSignal above for why this is plumbing-only (no toast/
+          // banner decision here — NpcCombatBanner does that).
+          const archetype: 'LAW_ENFORCEMENT' | 'HOSTILE_RAIDER' =
+            message.npc_archetype === 'LAW_ENFORCEMENT' ? 'LAW_ENFORCEMENT' : 'HOSTILE_RAIDER';
+          setLastNpcCombatInitiated({
+            npc_id: String(message.npc_id || ''),
+            npc_display_name: String(message.npc_display_name || 'An NPC vessel'),
+            npc_archetype: archetype,
+            npc_ship_name: message.npc_ship_name != null ? String(message.npc_ship_name) : null,
+            npc_ship_type: message.npc_ship_type != null ? String(message.npc_ship_type) : null,
+            defender_id: String(message.defender_id || ''),
+            defender_name: message.defender_name != null ? String(message.defender_name) : null,
+            sector_id: typeof message.sector_id === 'number' ? message.sector_id : null,
+            trigger: message.trigger != null ? String(message.trigger) : null,
+            combat_id: String(message.combat_id || ''),
+            timestamp: message.timestamp != null ? String(message.timestamp) : null
+          });
+          setNpcCombatSignal(prev => prev + 1);
+          break;
+        }
+
         case 'admin_broadcast':
           addNotification({
             title: message.title || 'System Message',
@@ -702,7 +766,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           // Only log truly unhandled message types, not ones handled by specific handlers
           // (aria_response is consumed by the dedicated ariaHandler above; the
           // generalHandler still sees it, so exclude it from the noise warning.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status'].includes(message.type)) {
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'npc_combat_initiated'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }
@@ -790,6 +854,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
     researchEventSignal,
     lastContractOffer,
     lastGovernorStatus,
+
+    // NPC-initiated combat (npc_combat_initiated — WO-CMB-NPC-INITIATED-1 lane D)
+    npcCombatSignal,
+    lastNpcCombatInitiated,
 
     // Connection management
     connect,

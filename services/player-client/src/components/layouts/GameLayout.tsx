@@ -13,6 +13,7 @@ import RouteRail from '../mfd/RouteRail';
 import MedalToast from '../ranking/MedalToast';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
+import NpcCombatBanner from '../combat/NpcCombatBanner';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -199,6 +200,9 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
           action-interrupting modal — per messaging.md "Priority levels". */}
       <PriorityHailConsumer />
       <WelcomeBackToast />
+      {/* NPC-initiated combat alert (WO-CMB-NPC-INITIATED-1 lane D): the
+          npc_combat_initiated WS event's defender-side banner. */}
+      <NpcCombatBanner />
       <div className="game-layout">
         {/* WO-INVERTED-L: .console-expand → docked/landed make the opaque
             console fill the lower area (right viewport column collapses);

@@ -1,0 +1,97 @@
+/* NpcCombatBanner — the defender-side alert for the npc_combat_initiated WS
+   event (WO-CMB-NPC-INITIATED-1 lane D). Centered top-of-viewport, above the
+   toast stack (priority-hail-consumer.css sits at z-index: 9000, top-right)
+   so it never collides with routine toasts, but below the urgent-hail modal
+   backdrop (z-index: 10000) since it must never block interaction with the
+   rest of the cockpit -- SCROLL LAW: visible without scrolling, an
+   interrupt, not a log line. Manually dismissed (no auto-timeout) -- unlike
+   MedalToast's celebratory self-clear, this is actionable and must not
+   disappear before the pilot reads it. */
+
+.npc-combat-banner {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9500;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 480px;
+  width: min(90vw, 480px);
+  padding: 12px 40px 12px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--cockpit-danger);
+  background: linear-gradient(135deg, rgba(40, 0, 0, 0.94) 0%, rgba(15, 0, 0, 0.96) 100%);
+  box-shadow: 0 0 20px rgba(255, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.55);
+  color: var(--cockpit-text, #eee);
+  animation: npc-combat-banner-in 220ms ease-out, npc-combat-banner-pulse 1.8s ease-in-out infinite 220ms;
+}
+
+.npc-combat-banner--patrol {
+  border-color: var(--cockpit-warning, #ffb020);
+  background: linear-gradient(135deg, rgba(40, 28, 0, 0.94) 0%, rgba(18, 12, 0, 0.96) 100%);
+  box-shadow: 0 0 20px rgba(255, 176, 32, 0.35), 0 8px 24px rgba(0, 0, 0, 0.55);
+  animation: npc-combat-banner-in 220ms ease-out;
+}
+
+@keyframes npc-combat-banner-in {
+  from { transform: translateX(-50%) translateY(-16px); opacity: 0; }
+  to { transform: translateX(-50%) translateY(0); opacity: 1; }
+}
+
+@keyframes npc-combat-banner-pulse {
+  0%, 100% { box-shadow: 0 0 14px rgba(255, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.55); }
+  50% { box-shadow: 0 0 26px rgba(255, 0, 0, 0.55), 0 8px 24px rgba(0, 0, 0, 0.55); }
+}
+
+.npc-combat-banner-icon {
+  font-size: 1.6rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.npc-combat-banner-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.npc-combat-banner-eyebrow {
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--cockpit-danger);
+}
+
+.npc-combat-banner--patrol .npc-combat-banner-eyebrow {
+  color: var(--cockpit-warning, #ffb020);
+}
+
+.npc-combat-banner-headline {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.npc-combat-banner-detail {
+  font-size: 0.76rem;
+  opacity: 0.85;
+}
+
+.npc-combat-banner-dismiss {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.npc-combat-banner-dismiss:hover {
+  color: #fff;
+}
