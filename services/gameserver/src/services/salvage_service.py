@@ -9,9 +9,12 @@ Canon:
     for 1 hour from ``created_at`` only three parties may salvage exemptly —
     the ``original_owner_id``, a CURRENT team-mate of ``original_team_id``, and
     the ``killing_blow_pilot_id``. An OUTSIDE-team salvager may STILL salvage
-    during that window, but doing so flags them Suspect (sets the existing
-    ``Player.is_suspect`` + ``Player.suspect_declared_at``). After the hour
-    elapses anyone salvages freely with no Suspect flag.
+    during that window, but doing so flags them Suspect. The full lifecycle
+    (timer extension capped at 4h cumulative, team-snapshot-once, -25
+    personal rep per event -- ships.md:287-296, ADR-0061 S-V4,
+    WO-CMB-SUSPECT-LIFE-1) is owned by ``src.services.suspect_service``,
+    not hand-rolled here. After the hour elapses anyone salvages freely with
+    no Suspect flag.
   - ships.md:275-277 (WO-CMB-SALVAGE-LOOP-1): salvage is time-cost gated at
     1 turn per 100 cargo units retrieved (rounded up), charged to every
     salvager regardless of grace/exemption -- the grace window only exempts
@@ -37,6 +40,7 @@ from src.models.cargo_wreck import CargoWreck
 from src.models.player import Player
 from src.models.sector import Sector
 from src.models.ship import effective_cargo_capacity
+from src.services import suspect_service
 from src.services.turn_service import regenerate_turns, spend_turns
 
 # ADR-0007: the salvage grace / Suspect window is 1 hour from wreck birth.
@@ -174,18 +178,17 @@ def salvage_wreck(db: Session, player: Player, wreck_id, quantity: Optional[int]
     now = datetime.now(timezone.utc)
     in_grace, exempt = grace_status(wreck, player, now=now)
 
+    # Outside-team salvage during grace is ALLOWED but flags the salvager
+    # Suspect (WO-CMB-SUSPECT-LIFE-1: +1h timer capped at 4h cumulative,
+    # team snapshot once at first acquisition, -25 personal rep -- every
+    # early-salvage event, first or repeat). suspect_flagged mirrors the
+    # pre-existing "was this a FRESH acquisition" contract this function's
+    # callers already depend on.
     suspect_flagged = False
     if in_grace and not exempt:
-        # Outside-team salvage during grace is ALLOWED but flags the salvager
-        # Suspect (existing Player fields, models/player.py:86-88).
-        if not player.is_suspect:
-            player.is_suspect = True
-            player.suspect_declared_at = now
-            suspect_flagged = True
-        else:
-            # Already suspect — re-stamp so the lifecycle clock reflects the
-            # latest offense without "downgrading" an existing flag.
-            player.suspect_declared_at = now
+        suspect_flagged = suspect_service.apply_suspect_event(
+            db, player, reason="early_salvage", now=now
+        )
 
     # --- transfer as much as fits, decrement the wreck ---
     wreck_cargo = dict(wreck.cargo or {})

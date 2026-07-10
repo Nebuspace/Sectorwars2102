@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from sqlalchemy import Boolean, Column, DateTime, String, Integer, Float, ForeignKey, func, text
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
 from src.core.database import Base
@@ -103,8 +103,22 @@ class Player(Base):
     # Suspect / Wanted lifecycle (Fringe/Federation contraband + bounty law).
     is_suspect = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     is_wanted = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # suspect_declared_at doubles as the FIRST-acquisition anchor for the 4h
+    # cumulative cap (WO-CMB-SUSPECT-LIFE-1, ships.md:289) -- set ONCE when
+    # is_suspect first flips True, never re-stamped by a later suspect event
+    # (src/services/suspect_service.py owns this contract).
     suspect_declared_at = Column(DateTime(timezone=True), nullable=True)
     wanted_declared_at = Column(DateTime(timezone=True), nullable=True)
+    # WO-CMB-SUSPECT-LIFE-1 (Max ruling, 2026-07-10) -- ships.md:287-296 +
+    # ADR-0061 S-V4. suspect_until: auto-clear timestamp, extended +1h per
+    # suspect-flagging event, capped at suspect_declared_at + 4h cumulative.
+    # suspect_team_snapshot: the flagged player's team roster (self-inclusive,
+    # mirrors ADR-0060 G-F2's combat_lock_team_snapshot pattern) frozen at
+    # FIRST acquisition only -- NULL when not flagged, [] when the player had
+    # no team at acquisition. Both clear together when suspect_until elapses
+    # (src.services.suspect_service.clear_expired_suspects).
+    suspect_until = Column(DateTime(timezone=True), nullable=True)
+    suspect_team_snapshot = Column(ARRAY(UUID(as_uuid=True)), nullable=True)
     # Grey-flag PvP status (WO-BL, Max-ruled). A temporary "open season" mark
     # earned by aggressing on a lawful target:
     #   - attacking a GOOD-STANDING player → grey 1h (grey_kind="player_attack");

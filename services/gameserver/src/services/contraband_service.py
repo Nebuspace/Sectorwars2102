@@ -89,6 +89,7 @@ from src.models.reputation import Reputation, ReputationLevel
 from src.models.sector import Sector
 from src.models.ship import Ship
 from src.models.station import Station, StationType
+from src.services import suspect_service
 from src.services.faction_service import apply_faction_rep_delta
 
 logger = logging.getLogger(__name__)
@@ -744,7 +745,7 @@ class ContrabandService:
         player.credits = available - fine_charged
 
         # Heat flip (severity → suspect/wanted).
-        heat = self._apply_heat(player, meta.severity)
+        heat = self._apply_heat(self.db, player, meta.severity)
 
         # Faction rep deltas — getting BUSTED applies the contraband rep deltas
         # (Federation down hardest). Sync, in-txn helper.
@@ -775,25 +776,24 @@ class ContrabandService:
         }
 
     @staticmethod
-    def _apply_heat(player: Player, severity: IllegalSeverity) -> str:
+    def _apply_heat(db: Session, player: Player, severity: IllegalSeverity) -> str:
         """Flip the player's heat flag per severity (brief [OPEN-7]):
         LIGHT/MODERATE → ``is_suspect``; SEVERE → ``is_wanted`` (which also implies
-        suspect). Records the declared-at timestamp on a fresh flip. Returns the
+        suspect). Every suspect flip (direct or WANTED-implied) now runs the full
+        WO-CMB-SUSPECT-LIFE-1 lifecycle via ``suspect_service.apply_suspect_event``
+        -- timer extension capped at 4h cumulative, team snapshot once at first
+        acquisition, -25 personal rep per event (ships.md:287-296). Returns the
         heat state set ("wanted" / "suspect")."""
         now = datetime.now(UTC)
         if severity in WANTED_SEVERITIES:
             if not player.is_wanted:
                 player.is_wanted = True
                 player.wanted_declared_at = now
-            # A wanted player is implicitly also a suspect.
-            if not player.is_suspect:
-                player.is_suspect = True
-                player.suspect_declared_at = now
+            # A wanted player is implicitly also a suspect -- same lifecycle event.
+            suspect_service.apply_suspect_event(db, player, reason="black_market_bust", now=now)
             return "wanted"
         # LIGHT / MODERATE → suspect.
-        if not player.is_suspect:
-            player.is_suspect = True
-            player.suspect_declared_at = now
+        suspect_service.apply_suspect_event(db, player, reason="black_market_bust", now=now)
         return "suspect"
 
     # ------------------------------------------------------------------
