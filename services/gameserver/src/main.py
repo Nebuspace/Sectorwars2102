@@ -28,9 +28,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """FastAPI 0.115+ lifespan handler (replaces @app.on_event startup/shutdown).
 
-    Runs DB schema init, admin user bootstrap, the WebSocket heartbeat cleanup
-    background task, and the bang job orphan recovery sweep on startup; logs
-    a shutdown line on teardown.
+    Runs DB schema init, admin user bootstrap, the Redis service connection,
+    the WebSocket heartbeat cleanup background task, and the bang job orphan
+    recovery sweep on startup; disconnects Redis and logs a shutdown line on
+    teardown.
     """
     # ---------- startup ----------
     logger.info("Starting Sectorwars 2102 Game Server...")
@@ -175,6 +176,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning(f"Resource registry seed skipped: {e}")
 
+    # Redis service connection (WO-SWEEP-REDIS-LIFESPAN). RedisService backs
+    # player-activity tracking, pub/sub, session cache, and cross-region
+    # service discovery -- every caller already tolerates redis_pool being
+    # None (RedisService/PlayerActivityService gate on `if redis.redis_pool:`
+    # / `if self._redis is None:`), so a failed connection here must not
+    # block startup. Mirrors the seed blocks above: best-effort, logged,
+    # non-fatal -- redis_pool simply stays None (its __init__ default) and
+    # everything downstream keeps no-op'ing exactly as it did before this
+    # was wired in.
+    try:
+        from src.services.redis_service import init_redis
+
+        await init_redis()
+        logger.info("Redis service connected")
+    except Exception as e:
+        logger.warning(
+            f"Redis connection failed at startup (non-fatal, activity "
+            f"tracking/caching/pub-sub will no-op until reconnected): {e}"
+        )
+
     # Start WebSocket heartbeat cleanup background task
     import asyncio
     async def _heartbeat_cleanup_loop():
@@ -264,6 +285,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.debug(f"{label} task cancelled cleanly")
         except Exception as e:  # noqa: BLE001 — best-effort shutdown
             logger.warning(f"{label} raised during shutdown (ignored): {e}")
+
+    # Redis service disconnect (WO-SWEEP-REDIS-LIFESPAN). Runs after the
+    # background tasks above are cancelled so nothing can attempt a Redis
+    # call against an already-closed pool. Best-effort: disconnect() itself
+    # is already defensive (no-ops when redis_pool/sync_redis were never
+    # set, e.g. because the startup connect() above failed or was skipped).
+    try:
+        from src.services.redis_service import close_redis
+
+        await close_redis()
+        logger.info("Redis service disconnected")
+    except Exception as e:  # noqa: BLE001 — best-effort shutdown
+        logger.warning(f"Redis disconnect failed during shutdown (ignored): {e}")
 
 # Create FastAPI application
 app = FastAPI(
