@@ -22,18 +22,30 @@ this suite:
     test_resource_registry.py's convention)
   * migration chain integrity -- AST-pinned, mirrors test_ship_registry.py
 
-LANE C MISMATCH (documented here, not silently resolved): the three
-memory_type string literals aria_personal_intelligence_service.py actually
-writes today ("combat", "market", "exploration") do not byte-match any
-registry key in this catalog. The closest is "combat" vs. this registry's
-"threat.combat"; "market" and "exploration" have no ARIAPersonalMemory-
-backed doc stream at all (commerce.trade routes to ARIATradingObservation,
-nav.sector_visit routes to ARIAExplorationMap -- neither is
-ARIAPersonalMemory). Per the WO's explicit "STOP and report the mismatch,
-don't invent a mapping" instruction, aria_personal_intelligence_service.py
-is untouched by this WO -- TestLaneCMemoryTypeMismatch below is the durable
-regression pin for that decision, so a future change to either side doesn't
-silently drift without going through review.
+LANE C CANON RENAME (MAX-RULED follow-up): the original mismatch report --
+none of the three memory_type literals aria_personal_intelligence_service.py
+wrote ("combat", "market", "exploration") byte-matched a registry key -- was
+resolved by an explicit ruling to rename the write-site literals to their
+canon registry keys rather than leave the mismatch standing. "combat" ->
+"threat.combat" (registry key exists, ARIAPersonalMemory-backed -- clean
+rename, and the LIVE write site via record_combat_memory_sync). "exploration"
+-> "nav.sector_visit" (registry key exists but its registry storage_table is
+ARIAExplorationMap, not ARIAPersonalMemory -- renamed anyway because
+record_exploration_memory, the only writer of this literal, is DEAD CODE, 0
+callers; a cosmetic consistency rename with zero live-row impact). "market"
+is UNCHANGED: no registry key routes to ARIAPersonalMemory for either
+"market" write site (record_market_observation's significant-price-change
+alert, or record_trade_memory_sync's LIVE trade-completion memory --
+commerce.trade, the closest conceptual match, routes to
+ARIATradingObservation instead, which already gets its own row via the same
+hook's record_trade_observation call). Per the WO's "STOP and report the
+mismatch, don't invent a mapping" instruction, "market" is left as-is,
+flagged in the dispatch report. TestLaneCMemoryTypeMismatch below now pins
+the RESOLVED state (combat/exploration renamed to their canon keys, market
+still disjoint) -- a durable regression pin so a future change to either
+side doesn't silently drift without going through review. The one-time data
+migration backfilling existing rows is
+alembic/versions/40ce9a434884_aria_memory_type_canon_rename.py.
 """
 from __future__ import annotations
 
@@ -123,45 +135,55 @@ def test_npc_sighting_display_name_is_not_mistitlecased():
 
 def test_commerce_trade_routes_to_observation_log_not_personal_memory():
     """commerce.trade -> ARIATradingObservation (ADR-0038), NOT
-    ARIAPersonalMemory -- the fact that makes the existing "market" memory_
-    type literal unmappable (see TestLaneCMemoryTypeMismatch)."""
+    ARIAPersonalMemory -- the fact that keeps the "market" memory_type
+    literal unmappable to a canon key (see TestLaneCMemoryTypeMismatch)."""
     assert ARIA_DATA_STREAMS["commerce.trade"]["storage_table"] == "ARIATradingObservation"
 
 
 def test_nav_sector_visit_routes_to_exploration_map_not_personal_memory():
-    """nav.sector_visit -> ARIAExplorationMap, NOT ARIAPersonalMemory -- the
-    fact that makes the existing "exploration" memory_type literal
-    unmappable (see TestLaneCMemoryTypeMismatch)."""
+    """nav.sector_visit -> ARIAExplorationMap, NOT ARIAPersonalMemory --
+    the renamed "exploration" literal (see TestLaneCMemoryTypeMismatch) still
+    doesn't match this registry key's OWN storage_table; the rename was
+    accepted anyway because the write site is dead code (0 callers)."""
     assert ARIA_DATA_STREAMS["nav.sector_visit"]["storage_table"] == "ARIAExplorationMap"
 
 
 # ---------------------------------------------------------------------------
-# Lane C: the memory_type mismatch is a durable, tested decision -- not a
-# silently-dropped TODO.
+# Lane C: the memory_type canon-rename is a durable, tested decision -- not
+# a silently-dropped TODO.
 # ---------------------------------------------------------------------------
 
 class TestLaneCMemoryTypeMismatch:
-    """aria_personal_intelligence_service.py's actual written memory_type
-    literals ("combat"/"market"/"exploration") were left untouched by this
-    WO because none of them byte-match a registry key. This pin fails (and
-    demands a real decision) if either side ever drifts in a way that would
-    silently resolve -- or silently break -- that gap."""
+    """MAX-RULED rename (follow-up to the original mismatch report):
+    aria_personal_intelligence_service.py's write-site literals for combat
+    and exploration were renamed to their canon registry keys; market was
+    not, because no registry key routes to ARIAPersonalMemory for it. This
+    pin fails (and demands a real decision) if either side ever drifts in a
+    way that would silently break the resolved rename, or silently resolve
+    -- or silently invent a mapping for -- the still-open market gap."""
 
-    EXISTING_WRITTEN_LITERALS = {"combat", "market", "exploration"}
+    RENAMED_TO_CANON_KEYS = {"threat.combat", "nav.sector_visit"}
+    STILL_UNMAPPED_LITERALS = {"market"}
 
-    def test_no_existing_written_literal_matches_a_registry_key(self):
-        assert self.EXISTING_WRITTEN_LITERALS.isdisjoint(ARIA_DATA_STREAMS.keys())
+    def test_renamed_literals_now_match_their_registry_keys(self):
+        assert self.RENAMED_TO_CANON_KEYS <= ARIA_DATA_STREAMS.keys()
 
-    def test_service_file_still_writes_the_three_literals_verbatim(self):
-        """If this ever fails, Lane C's premise changed -- re-evaluate the
-        mapping rather than assuming this pin is stale."""
+    def test_market_still_has_no_matching_registry_key(self):
+        assert self.STILL_UNMAPPED_LITERALS.isdisjoint(ARIA_DATA_STREAMS.keys())
+
+    def test_service_file_writes_the_canon_keys_and_the_still_unmapped_literal(self):
+        """If this ever fails, Lane C's rename premise changed -- re-evaluate
+        the mapping rather than assuming this pin is stale."""
         source = (
             pathlib.Path(__file__).resolve().parents[2]
             / "src" / "services" / "aria_personal_intelligence_service.py"
         ).read_text()
-        assert 'memory_type="combat"' in source
+        assert 'memory_type="threat.combat"' in source
         assert 'memory_type="market"' in source
-        assert '"exploration"' in source  # record_exploration_memory's _create_memory call
+        assert '"nav.sector_visit"' in source  # record_exploration_memory's _create_memory call
+        # the pre-rename literals must no longer appear as memory_type values
+        assert 'memory_type="combat"' not in source
+        assert 'memory_type="exploration"' not in source
 
 
 # ---------------------------------------------------------------------------

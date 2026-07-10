@@ -425,7 +425,7 @@ class ARIAPersonalIntelligenceService:
 
             await self._create_memory(
                 player_id,
-                "combat",
+                "threat.combat",
                 content,
                 importance=importance,
                 db=db,
@@ -510,7 +510,7 @@ class ARIAPersonalIntelligenceService:
 
             memory = ARIAPersonalMemory(
                 player_id=player_id,
-                memory_type="combat",
+                memory_type="threat.combat",
                 importance_score=importance,
                 memory_content={"encrypted": encrypted_content},
                 memory_hash=memory_hash,
@@ -694,7 +694,7 @@ class ARIAPersonalIntelligenceService:
 
             await self._create_memory(
                 player_id,
-                "exploration",
+                "nav.sector_visit",
                 content,
                 importance=importance,
                 db=db,
@@ -1796,8 +1796,8 @@ class ARIAPersonalIntelligenceService:
         distinct ARIAPersonalMemory.memory_type COUNT is mathematically
         incapable of ever promoting past level 1 (Dormant) -- only THREE
         memory_type values are ever actually written anywhere in this
-        codebase (combat / market / exploration; "social" is named in a
-        docstring but never instantiated by any caller), and even the
+        codebase (threat.combat / market / nav.sector_visit; "social" is
+        named in a docstring but never instantiated by any caller), and even the
         LOWEST threshold (level 2) requires 10. This method therefore uses
         the RAW TOTAL memory count (matching this method's own pre-existing
         arithmetic before this WO), not distinct-type cardinality -- see the
@@ -1990,11 +1990,11 @@ class ARIAPersonalIntelligenceService:
         market_count = 0
         exploration_count = 0
         for mem in recent_memories:
-            if mem.memory_type == "combat":
+            if mem.memory_type == "threat.combat":
                 combat_count += 1
             elif mem.memory_type == "market":
                 market_count += 1
-            elif mem.memory_type == "exploration":
+            elif mem.memory_type == "nav.sector_visit":
                 exploration_count += 1
 
         # ------------------------------------------------------------------
@@ -2135,7 +2135,7 @@ class ARIAPersonalIntelligenceService:
             total_memories += row.cnt
 
         # Ensure common types are present even if zero
-        for mtype in ("combat", "market", "exploration"):
+        for mtype in ("threat.combat", "market", "nav.sector_visit"):
             memory_counts.setdefault(mtype, 0)
 
         # Next level requirements and progress calculation

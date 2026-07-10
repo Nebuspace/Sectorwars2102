@@ -30,7 +30,7 @@ class ARIAPersonalMemory(Base):
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"), nullable=False)
     
     # Memory metadata
-    memory_type = Column(String(50), nullable=False)  # market, combat, exploration, social
+    memory_type = Column(String(50), nullable=False)  # market, threat.combat, nav.sector_visit, social
     importance_score = Column(Float, default=0.5)  # 0-1, how significant this memory is
     confidence_level = Column(Float, default=0.5)  # 0-1, how certain ARIA is about this
     
