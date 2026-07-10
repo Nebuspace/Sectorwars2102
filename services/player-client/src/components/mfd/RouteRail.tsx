@@ -14,6 +14,7 @@ const NAV_ITEMS: Array<{ to: string; mnemonic: string; label: string; accent: st
   { to: '/game/planets', mnemonic: 'COL', label: 'COLONIES', accent: '#7B2FFF' },
   { to: '/game/combat', mnemonic: 'WPN', label: 'WEAPONS', accent: '#FF4D6D' },
   { to: '/game/team', mnemonic: 'CRW', label: 'CREW', accent: '#00FF7F' },
+  { to: '/game/governance', mnemonic: 'GOV', label: 'GOVERNANCE', accent: '#00D9FF' },
   { to: '/game/ranking', mnemonic: 'SVC', label: 'SERVICE RECORD', accent: '#FFD700' },
 ];
 

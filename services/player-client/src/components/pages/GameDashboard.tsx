@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
 import { useGame, type MoveOption } from '../../contexts/GameContext';
 import { useAutopilot } from '../../contexts/AutopilotContext';
 import { useFirstLogin } from '../../contexts/FirstLoginContext';
@@ -533,6 +534,7 @@ const TerraformHeaderPanel: React.FC<{
 };
 
 const GameDashboard: React.FC = () => {
+  const navigate = useNavigate();
   const {
     playerState,
     currentShip,
@@ -2382,6 +2384,16 @@ const GameDashboard: React.FC = () => {
                   regionId={currentSector.region_id}
                   regionName={currentSector.region_name}
                 />
+                {currentSector.region_id && (
+                  <button
+                    type="button"
+                    className="hud-region-governance-btn"
+                    onClick={() => navigate('/game/governance')}
+                    title="Open regional governance — elections, policies, treaties"
+                  >
+                    ◆ GOVERNANCE
+                  </button>
+                )}
                 {isRegionOwner && (
                   <button
                     type="button"

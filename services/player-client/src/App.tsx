@@ -32,6 +32,7 @@ import { PlanetManager } from './components/planetary'
 import { ShipSelector } from './components/ships'
 import { TradingInterface } from './components/trading'
 import PlayerInfo from './components/player/PlayerInfo'
+import GovernancePanel from './components/governance/GovernancePanel'
 
 // Dev-only lab routes — dead-code-eliminated from prod builds by Vite
 // Both imports are gated on import.meta.env.DEV so Vite dead-code-eliminates
@@ -645,6 +646,11 @@ function App() {
               <Route path="/game/team" element={
                 <ProtectedRoute>
                   <TeamManager />
+                </ProtectedRoute>
+              } />
+              <Route path="/game/governance" element={
+                <ProtectedRoute>
+                  <GovernancePanel />
                 </ProtectedRoute>
               } />
               <Route path="/game/combat" element={

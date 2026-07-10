@@ -31,10 +31,29 @@ async function apiRequest(
       // `detail` (a string; 422 validation makes it an array — skip those), but
       // this gameserver's global error handler wraps errors as `{message}`.
       // Prefer a string `detail`, fall back to `message`, then a generic code.
-      const msg = data && typeof data === 'object'
-        ? (typeof data.detail === 'string' ? data.detail : undefined) || data.message
-        : undefined;
-      throw new Error(msg || `API Error: ${error.response.status}`);
+      //
+      // Some routes (e.g. POST /regions/{id}/policies validation) reject with
+      // a STRUCTURED `detail: {code, errors: string[]}` instead of a plain
+      // string. Surface that errors array on the thrown Error too (as
+      // `.errors`) so a call site that needs per-field detail can read it,
+      // while `.message` still gets a sane joined fallback for every other
+      // (non-field-aware) caller.
+      let msg: string | undefined;
+      let errors: string[] | undefined;
+      if (data && typeof data === 'object') {
+        if (typeof data.detail === 'string') {
+          msg = data.detail;
+        } else if (
+          data.detail && typeof data.detail === 'object' && Array.isArray(data.detail.errors)
+        ) {
+          errors = data.detail.errors;
+          msg = errors!.join('; ');
+        }
+        msg = msg || data.message;
+      }
+      const err = new Error(msg || `API Error: ${error.response.status}`);
+      if (errors) (err as any).errors = errors;
+      throw err;
     }
     // Network-level failure (no response) – rethrow like fetch would.
     throw error;
@@ -808,6 +827,67 @@ export const governanceAPI = {
   claimColonyCitizenship: (regionId: string) =>
     apiRequest(`/api/v1/regions/${regionId}/citizenship/colony-claim`, {
       method: 'POST',
+    }),
+
+  // Member-scoped discovery (WO-REGOV-CITIZEN-API — any region member, not
+  // just the owner, may list). 403 ERR_NOT_A_MEMBER / 404 propagate as thrown
+  // Errors via apiRequest.
+  listPolicies: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/policies`),
+
+  listElections: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/elections`),
+
+  // `terms` is redacted server-side for this member view (owner-only via
+  // the separate /my-region/treaties read).
+  listTreaties: (regionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/treaties`),
+
+  // Cast (or reject) a vote in an ACTIVE election. One vote per (election,
+  // voter) — a repeat call rejects 409 ERR_ALREADY_VOTED.
+  castElectionVote: (regionId: string, electionId: string, candidateId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/elections/${electionId}/vote`, {
+      method: 'POST',
+      body: JSON.stringify({ candidate_id: candidateId }),
+    }),
+
+  // Self-nominate in a PENDING (candidate-registration phase) election.
+  // Locks 409 ERR_CANDIDATES_LOCKED once the election advances to ACTIVE.
+  registerCandidacy: (regionId: string, electionId: string, platform?: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/elections/${electionId}/candidates`, {
+      method: 'POST',
+      body: JSON.stringify(platform ? { platform } : {}),
+    }),
+
+  // Read an election's status + tally (results is populated once COMPLETED).
+  getElectionResults: (regionId: string, electionId: string) =>
+    apiRequest(`/api/v1/regions/${regionId}/elections/${electionId}/results`),
+
+  // Cast (or reject) a yes/no vote on a VOTING-state policy. One vote per
+  // (policy, voter) — a repeat call rejects 409 ERR_ALREADY_VOTED.
+  castPolicyVote: (regionId: string, policyId: string, support: boolean) =>
+    apiRequest(`/api/v1/regions/${regionId}/policies/${policyId}/vote`, {
+      method: 'POST',
+      body: JSON.stringify({ support }),
+    }),
+
+  // Propose a new policy. 403 ERR_NOT_ELIGIBLE if the caller isn't a voting
+  // member; 400 ERR_INVALID_PROPOSED_CHANGES (with a structured `.errors`
+  // array on the thrown Error — see apiRequest above) if proposed_changes
+  // fails server-side validation.
+  proposePolicy: (
+    regionId: string,
+    data: {
+      policy_type: string;
+      title: string;
+      description?: string;
+      proposed_changes: Record<string, unknown>;
+      voting_duration_days?: number;
+    }
+  ) =>
+    apiRequest(`/api/v1/regions/${regionId}/policies`, {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
 };
 
