@@ -14,6 +14,8 @@ import MedalToast from '../ranking/MedalToast';
 import PriorityHailConsumer from '../comms/PriorityHailConsumer';
 import WelcomeBackToast from '../auth/WelcomeBackToast';
 import NpcCombatBanner from '../combat/NpcCombatBanner';
+import FirstSessionObjectives from '../onboarding/FirstSessionObjectives';
+import { useFirstSession } from '../onboarding/useFirstSession';
 import './game-layout.css';
 import '../../styles/themes/cockpit-animations.css';
 import '../../styles/themes/cockpit-components.css';
@@ -32,7 +34,7 @@ const MFDAlertWiring: React.FC = () => {
   const { raiseAlert } = useMFD();
   const { ariaMessages } = useWebSocket();
   const { status, course, pauseReason } = useAutopilot();
-  const { unreadMessageCount } = useGame();
+  const { unreadMessageCount, playerState, currentSector, stationsInSector } = useGame();
 
   const prevAriaCount = React.useRef(ariaMessages.length);
   React.useEffect(() => {
@@ -75,6 +77,52 @@ const MFDAlertWiring: React.FC = () => {
     }
     prevUnread.current = unreadMessageCount;
   }, [unreadMessageCount, raiseAlert]);
+
+  // WO-PUX-ONBOARD: first-session orientation narration, into the SAME
+  // ariaFeed.appendNav channel the autopilot transitions above use. One
+  // effect, ref-diffed exactly like those (fires on TRANSITIONS only, never
+  // replays on a later re-render/remount). Lines are deterministic, built
+  // from real state (turn count / current sector name / port presence) --
+  // NO-CANON copy, see useFirstSession's doc-comment.
+  const { visible: firstSessionArmed, progress: firstSessionProgress, allComplete: firstSessionComplete } =
+    useFirstSession();
+  const prevFirstSession = React.useRef({ armed: false, dock: false, trade: false, travel: false, complete: false });
+  React.useEffect(() => {
+    const prev = prevFirstSession.current;
+    const turns = playerState?.turns ?? 0;
+    const sectorName = currentSector?.name || `Sector ${playerState?.current_sector_id ?? '?'}`;
+
+    if (firstSessionArmed && !prev.armed) {
+      const hasPort = stationsInSector.length > 0;
+      ariaFeed.appendNav(
+        `Orientation started, Commander. ${turns} turn${turns === 1 ? '' : 's'} banked in ${sectorName}` +
+        `${hasPort ? ' — a station is right here.' : '.'} Three objectives ahead: dock, trade, travel.`
+      );
+    }
+    if (firstSessionProgress.dock && !prev.dock) {
+      ariaFeed.appendNav('Docking confirmed. Objective cleared — dock at a station.');
+    }
+    if (firstSessionProgress.trade && !prev.trade) {
+      ariaFeed.appendNav('First trade logged. Objective cleared — make a trade.');
+    }
+    if (firstSessionProgress.travel && !prev.travel) {
+      ariaFeed.appendNav(`Arrived in ${sectorName}. Objective cleared — travel to a new sector.`);
+    }
+    if (firstSessionComplete && !prev.complete) {
+      ariaFeed.appendNav(
+        `Orientation complete, Commander — all three objectives cleared in ${turns} turn${turns === 1 ? '' : 's'}. ` +
+        `You're clear for open operations.`
+      );
+    }
+
+    prevFirstSession.current = {
+      armed: firstSessionArmed,
+      dock: firstSessionProgress.dock,
+      trade: firstSessionProgress.trade,
+      travel: firstSessionProgress.travel,
+      complete: firstSessionComplete,
+    };
+  }, [firstSessionArmed, firstSessionProgress, firstSessionComplete, playerState?.turns, playerState?.current_sector_id, currentSector?.name, stationsInSector.length]);
 
   return null;
 };
@@ -203,6 +251,9 @@ const GameLayout: React.FC<GameLayoutProps> = ({ children }) => {
       {/* NPC-initiated combat alert (WO-CMB-NPC-INITIATED-1 lane D): the
           npc_combat_initiated WS event's defender-side banner. */}
       <NpcCombatBanner />
+      {/* First-session orientation chip (WO-PUX-ONBOARD) -- renders nothing
+          unless this tab just landed here from first-login completion. */}
+      <FirstSessionObjectives />
       <div className="game-layout">
         {/* WO-INVERTED-L: .console-expand → docked/landed make the opaque
             console fill the lower area (right viewport column collapses);

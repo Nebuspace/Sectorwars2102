@@ -81,6 +81,12 @@ const OutcomeDisplay: React.FC = () => {
       // Refresh all game data in GameContext
       await onFirstLoginComplete();
 
+      // WO-PUX-ONBOARD: arm the first-session orientation chip for the
+      // cockpit it's about to land in. Bare session flag (no player id
+      // needed here -- see useFirstSession's ARM doc-comment); sessionStorage
+      // so it never survives to a LATER login in the same tab.
+      sessionStorage.setItem('sw:onboarding:armed', '1');
+
       // Redirect to the game dashboard after a short delay. Give the
       // player a moment longer to read a rejection notice if one landed.
       setTimeout(() => {
@@ -98,6 +104,9 @@ const OutcomeDisplay: React.FC = () => {
         if (stillRequiresFirstLogin === false) {
           setRecoveryNotice('Registration already completed -- resuming.');
           await onFirstLoginComplete();
+          // WO-PUX-ONBOARD: same arm as the happy path above -- this is
+          // also a "requires_first_login just flipped false" landing.
+          sessionStorage.setItem('sw:onboarding:armed', '1');
           setTimeout(() => {
             navigate('/game');
           }, 1500);

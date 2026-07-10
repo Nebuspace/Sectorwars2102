@@ -1,0 +1,88 @@
+/* FirstSessionObjectives — first-session orientation chip
+   (WO-PUX-ONBOARD). Fixed, bottom-left overlay so it never introduces a
+   document scroll surface (Scroll Law) and sits clear of the other fixed
+   chrome: MedalToast (top-right), PriorityHailConsumer's toast stack
+   (top-right) and urgent modal (full backdrop), NpcCombatBanner
+   (top-center). Anchored to the console corner rather than the top toast
+   rail so it reads as part of the inverted-L console, not another alert. */
+
+.first-session-chip {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 8000;
+  width: 260px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--cockpit-primary, rgba(0, 200, 255, 0.5));
+  background: linear-gradient(135deg, rgba(0, 24, 32, 0.94) 0%, rgba(0, 10, 16, 0.96) 100%);
+  box-shadow: 0 0 14px rgba(0, 200, 255, 0.2), 0 8px 20px rgba(0, 0, 0, 0.5);
+  color: var(--cockpit-text, #d8f4ff);
+  animation: first-session-chip-in 220ms ease-out;
+}
+
+@keyframes first-session-chip-in {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.first-session-chip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.first-session-chip-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cockpit-primary, #6fe0ff);
+}
+
+.first-session-chip-dismiss {
+  background: none;
+  border: none;
+  color: rgba(216, 244, 255, 0.6);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.first-session-chip-dismiss:hover {
+  color: #fff;
+}
+
+.first-session-chip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.first-session-chip-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.first-session-chip-item--done {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.first-session-chip-check {
+  flex-shrink: 0;
+  width: 1em;
+  color: var(--cockpit-success, #5ee08a);
+}
+
+.first-session-chip-item:not(.first-session-chip-item--done) .first-session-chip-check {
+  color: rgba(216, 244, 255, 0.4);
+}
