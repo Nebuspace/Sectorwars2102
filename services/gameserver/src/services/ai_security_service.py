@@ -561,7 +561,17 @@ class AISecurityService:
         
         # Prompt injection patterns
         injection_patterns = [
-            r'ignore\s+previous\s+instructions',
+            # WO-SWEEP-INJECTION-GATE-REGRESSION: the original
+            # r'ignore\s+previous\s+instructions' requires "ignore" and
+            # "previous" strictly adjacent, so the single most common
+            # phrasing of this exact attack -- "ignore ALL previous
+            # instructions" -- silently fell through with zero violations
+            # (live-stage confirmed: is_safe=True for the qualifier-bearing
+            # phrasing, is_safe=False for the bare one). Same fix shape
+            # already used a few lines down in this same list
+            # (r'act\s+as\s+(if\s+)?you\s+are'): an optional qualifier-word
+            # group between the two anchor phrases, not a broad wildcard.
+            r'ignore\s+(all\s+|any\s+|these\s+|those\s+|my\s+|your\s+|the\s+)?previous\s+instructions',
             r'forget\s+everything',
             r'new\s+instructions?:',
             r'system\s*[:\-]',
