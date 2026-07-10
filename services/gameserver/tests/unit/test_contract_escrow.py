@@ -438,6 +438,110 @@ class TestEscrowConservationEndToEnd:
         # the issuer ends exactly where they started.
         assert issuer.credits == 5000
 
+    def test_accepted_expiry_charges_acceptor_and_refunds_issuer_in_full(self) -> None:
+        """WO-DRIFT-econ-accepted-deadline-expiry -- the ACCEPTED-deadline
+        twin of test_post_to_expire_refunds_issuer_and_conserves_the_sum
+        above. [NO-CANON] the issuer-refund half is the flagged conservative
+        default (see sweep_expired_accepted_contracts's own docstring) --
+        reuses abandon()'s exact refund idiom rather than inventing a new
+        forfeit-to-sink behavior."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+        deadline = _NOW + timedelta(hours=2)
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, deadline=deadline, payment=Decimal("1000")),
+        )
+        contract = db.added[0]
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        acceptor_after_accept = acceptor.credits  # 5000 - 20 (2% acceptance fee)
+        assert issuer.credits == 4000  # escrow (1000) left at post time
+
+        past_deadline = deadline + timedelta(seconds=1)
+        result = contract_service.sweep_expired_accepted_contracts(db, now=past_deadline)
+
+        assert result == {"expired": 1}
+        assert contract.status == ContractStatus.EXPIRED
+        # Acceptor pays the FLAT penalty (1.0x payment, same math as
+        # abandon()) -- the acceptance fee sunk at accept time is NOT
+        # refunded (contracts.md's Penalties section: "acceptance fee is
+        # not refunded").
+        assert acceptor.credits == acceptor_after_accept - 1000
+        # Issuer's FULL escrow refunds separately -- the flagged NO-CANON
+        # default.
+        assert issuer.credits == 4000 + 1000
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+
+    def test_accepted_expiry_does_not_double_refund_an_already_refunding_row(self) -> None:
+        """Mirrors test_sweep_does_not_double_refund_an_already_refunding_
+        row -- the accepted-expiry sweep's escrow branch is gated on
+        `escrow_state == HELD`, same idempotency guard."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        contract = SimpleNamespace(
+            id=uuid.uuid4(), issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id,
+            acceptor_player_id=acceptor.id, destination_station_id=destination.id,
+            commodity_type="ore", quantity=50, status=ContractStatus.ACCEPTED,
+            payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            acceptance_fee_pct=Decimal("2.0"), escrow_amount=Decimal("1000.00"),
+            escrow_state=ContractEscrowState.REFUNDING,  # already handled (raced cancel, say)
+            deadline=_NOW - timedelta(hours=1), posted_at=_NOW - timedelta(hours=5),
+            posting_stations=[destination.id], accepted_at=_NOW - timedelta(hours=4), completed_at=None,
+        )
+        db = _FakeSession(players=[issuer, acceptor], contracts=[contract])
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert result == {"expired": 1}  # still expires -- the penalty leg is unconditional
+        assert contract.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 5000 - 1000  # penalty still charged
+        assert issuer.credits == 5000  # untouched -- NOT refunded a second time
+        assert contract.escrow_state == ContractEscrowState.REFUNDING  # unchanged
+
+    def test_issuer_cancel_past_deadline_blocked_409_sweep_still_enforces_penalty(self) -> None:
+        """Mack HIGH #1 regression (WO-DRIFT-econ-accepted-deadline-expiry
+        revise): full post -> accept -> deadline-lapse -> issuer-cancel-
+        attempt -> sweep flow, through the realistic post_player_contract/
+        accept path (not a hand-built SimpleNamespace) -- proves the fix at
+        the level a real caller would hit it. Before the fix, this exact
+        cancel call succeeded and silently waived the acceptor's deadline
+        penalty (see test_mack_attack_accepted_sweep.py's own before/after
+        docstring for the original finding)."""
+        issuer = _player(credits=5000)
+        acceptor = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer, acceptor], stations=[destination], resources=[_resource()])
+        deadline = _NOW + timedelta(hours=2)
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, deadline=deadline, payment=Decimal("1000")),
+        )
+        contract = db.added[0]
+        contract_service.accept(db, contract.id, acceptor.id, now=_NOW)
+        acceptor_after_accept = acceptor.credits  # 5000 - 20 (2% acceptance fee)
+        issuer_after_post = issuer.credits  # 5000 - 1000 escrow
+
+        past_deadline = deadline + timedelta(seconds=1)
+        with pytest.raises(contract_service.ContractConflictError, match="past_deadline"):
+            contract_service.cancel_player_contract(db, contract.id, issuer.id, now=past_deadline)
+
+        # Blocked BEFORE any mutation -- contract still accepted, both
+        # balances exactly where they were, nothing waived or diverged.
+        assert contract.status == ContractStatus.ACCEPTED
+        assert acceptor.credits == acceptor_after_accept
+        assert issuer.credits == issuer_after_post
+
+        # The sweep still enforces the acceptor's WO-guaranteed penalty --
+        # no cancel-shaped escape hatch remains.
+        result = contract_service.sweep_expired_accepted_contracts(db, now=past_deadline)
+        assert result == {"expired": 1}
+        assert contract.status == ContractStatus.EXPIRED
+        assert acceptor.credits == acceptor_after_accept - 1000  # penalty enforced
+        assert issuer.credits == issuer_after_post + 1000  # full escrow refund
+
 
 @pytest.mark.unit
 class TestDoubleReleaseImpossibility:
@@ -580,5 +684,28 @@ class TestNpcPathByteUnchangedRegression:
 
         assert result == {"expired": 1}
         assert contract.status == ContractStatus.EXPIRED  # the only field touched
+        assert contract.escrow_amount == Decimal("0")  # untouched
+        assert contract.escrow_state == ContractEscrowState.HELD  # untouched -- refund branch never fires
+
+    def test_npc_accepted_expiry_charges_acceptor_only_no_issuer_refund_branch(self) -> None:
+        """WO-DRIFT-econ-accepted-deadline-expiry sibling to the posted-
+        expiry test above: an NPC-issued ACCEPTED contract past deadline
+        pays the acceptor's penalty (the one leg every row gets, NPC or
+        PLAYER) but must NOT touch the issuer-refund branch. NO station-as-
+        player row seeded for `destination` on purpose -- if the refund
+        branch wrongly matched this row, `_load_player(db, destination.id)`
+        would raise (no such player), making a regression fail loudly."""
+        destination = _station()
+        acceptor = _player(credits=1000)
+        contract = self._npc_contract(destination)
+        contract.acceptor_player_id = acceptor.id
+        contract.deadline = _NOW - timedelta(hours=1)
+        db = _FakeSession(players=[acceptor], contracts=[contract])  # NO station-as-player row
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert result == {"expired": 1}
+        assert contract.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 0  # 1000 - penalty(1000), exactly as WO-1's flat-penalty math
         assert contract.escrow_amount == Decimal("0")  # untouched
         assert contract.escrow_state == ContractEscrowState.HELD  # untouched -- refund branch never fires

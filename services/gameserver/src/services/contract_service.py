@@ -70,7 +70,13 @@ LEGAL_TRANSITIONS: Dict[ContractStatus, FrozenSet[ContractStatus]] = {
     # existing NPC-facing function transitions POSTED -> CANCELLED, so
     # this new edge is inert for the NPC path.
     ContractStatus.POSTED: frozenset({ContractStatus.ACCEPTED, ContractStatus.EXPIRED, ContractStatus.CANCELLED}),
-    ContractStatus.ACCEPTED: frozenset({ContractStatus.COMPLETED, ContractStatus.CANCELLED}),
+    # WO-DRIFT-econ-accepted-deadline-expiry adds ACCEPTED -> EXPIRED. Canon
+    # (contracts.md's state-transition matrix) puts this edge on
+    # `in_progress`, not `accepted` -- this codebase collapses `in_progress`
+    # into `accepted` (no code path ever sets IN_PROGRESS), so this is the
+    # code-equivalent of canon's in_progress -> expired edge. See
+    # sweep_expired_accepted_contracts's own docstring for the transition.
+    ContractStatus.ACCEPTED: frozenset({ContractStatus.COMPLETED, ContractStatus.CANCELLED, ContractStatus.EXPIRED}),
 }
 
 # --- WO-ECON-CONTRACT-2-PLAYER-ESCROW: player-posted contract constants ---
@@ -505,6 +511,112 @@ def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict
     return {"expired": expired_with_refund + (bulk_result.rowcount or 0)}
 
 
+def sweep_expired_accepted_contracts(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
+    """WO-DRIFT-econ-accepted-deadline-expiry: bulk-expire every `accepted`
+    contract whose deadline has strictly passed without completion.
+    Canon (contracts.md's state-transition matrix) puts this edge on
+    `in_progress -> expired`; this codebase never sets IN_PROGRESS (`accept`
+    -> `ACCEPTED` is the terminal pre-completion state here), so this sweep
+    is the code-equivalent of canon's in_progress deadline-expiry, not a new
+    concept -- see the LEGAL_TRANSITIONS comment above.
+
+    ACCEPTOR PENALTY -- canon-backed (contracts.md's Penalties section:
+    "penalty credits are debited from the acceptor's account"). Charges
+    `contract.penalty`, clamped to 0, the EXACT idiom `abandon()` already
+    uses for the player-initiated failure case (this sweep is the
+    deadline-initiated twin of that same failure).
+
+    [NO-CANON] issuer escrow disposition on an ACCEPTOR-caused failure is
+    NOT canon-pinned. contracts.md's escrow table's `Expired / failed` row
+    shows no explicit issuer credit for this case ("Issuer" column reads
+    "--"), while the separate Penalties section only speaks to the
+    acceptor's own debit -- the two sections don't agree on what happens to
+    the issuer's escrow here. Two plausible readings: (a) REFUND the issuer
+    in full -- they never received their goods, mirroring `abandon()`'s and
+    `sweep_expired_contracts`'s own proven refund idiom; (b) FORFEIT the
+    escrow -- the issuer eats the loss too, on top of the acceptor's
+    penalty (a harsher "escrow sink" reading closer to the post-accept
+    mutual-cancel kill-fee's own precedent). This kernel builds (a), the
+    conservative default that reuses an already-proven idiom rather than
+    inventing new escrow-sink behavior, and flags it here for a real
+    DECISIONS ruling rather than silently picking one. Gated on
+    `escrow_state == HELD` -- a row already REFUNDING/RELEASED/DISPUTED
+    (an earlier tick, or a race with the issuer's own cancel) is excluded,
+    same idempotency guard `sweep_expired_contracts` uses. NPC-issued rows
+    (escrow_amount always 0) never match the PLAYER-only gate.
+
+    Every candidate -- NPC or PLAYER-issued -- needs an individualized
+    acceptor-penalty Python touch, so unlike `sweep_expired_contracts` this
+    sweep has no bulk-shortcut for a "most rows need nothing but a status
+    flip" majority; every row goes through the per-row loop. The per-row
+    transition is a raw guarded `update()` -- NOT `_guarded_transition` --
+    on purpose: `_guarded_transition` conflates two different failure modes
+    under one exception (an ILLEGAL edge per LEGAL_TRANSITIONS, which would
+    recur identically on every retry of the SAME row, vs. a genuinely-RACED
+    row, which won't recur since a fresh SELECT excludes it once its real
+    DB status has moved on) -- catching both the same way here would let a
+    LEGAL_TRANSITIONS regression (the table missing the ACCEPTED -> EXPIRED
+    edge this WO adds) spin this `while True` forever on the same
+    permanently-illegal candidate instead of failing loudly. The raw UPDATE
+    below can only ever fail for the second reason (no table consultation
+    to fail), exactly mirroring sweep_expired_contracts's own per-row idiom:
+    a row raced away between the SELECT and the UPDATE (a live
+    complete()/abandon() on a different session -- the CEXP advisory lock
+    only serializes concurrent *sweep* instances) is simply skipped; the
+    next iteration's fresh, server-side-filtered SELECT excludes it (its
+    real DB status has already moved past 'accepted') -- no infinite loop.
+    A per-row UPDATE that DOES match is applied to the in-memory `candidate`
+    object too (same convention `sweep_expired_contracts` and
+    `_guarded_transition` both use -- a raw Core `update()` never syncs the
+    ORM identity map on its own). FLUSH-ONLY -- the scheduler wrapper
+    commits inside the same CEXP advisory lock sweep_expired_contracts
+    uses."""
+    now = now or _now()
+
+    expired = 0
+    while True:
+        candidate = (
+            db.query(Contract)
+            .filter(
+                Contract.status == ContractStatus.ACCEPTED,
+                Contract.deadline < now,
+            )
+            .first()
+        )
+        if candidate is None:
+            break
+
+        row_stmt = (
+            update(Contract)
+            .where(Contract.id == candidate.id, Contract.status == ContractStatus.ACCEPTED)
+            .values(status=ContractStatus.EXPIRED)
+        )
+        result = db.execute(row_stmt)
+        if result.rowcount == 0:
+            # Raced away between the SELECT above and this UPDATE (a live
+            # complete()/abandon() on a different session/connection) -- no
+            # mutation occurred, so the next iteration's fresh SELECT simply
+            # won't return this row again (its real DB status has already
+            # moved past 'accepted').
+            continue
+        candidate.status = ContractStatus.EXPIRED
+
+        acceptor = _load_player(db, candidate.acceptor_player_id)
+        penalty = int(_round_credits(_as_decimal(candidate.penalty)))
+        acceptor.credits = max(0, (acceptor.credits or 0) - penalty)
+
+        if candidate.issuer_type == ContractIssuerType.PLAYER and candidate.escrow_state == ContractEscrowState.HELD:
+            issuer = _load_player(db, candidate.issuer_id)
+            refund = int(_round_credits(_as_decimal(candidate.escrow_amount)))
+            issuer.credits = (issuer.credits or 0) + refund
+            candidate.escrow_state = ContractEscrowState.REFUNDING
+
+        expired += 1
+
+    db.flush()
+    return {"expired": expired}
+
+
 # --- WO-ECON-CONTRACT-2-PLAYER-ESCROW: player-issued posting + cancel ----
 
 def post_player_contract(
@@ -652,7 +764,23 @@ def cancel_player_contract(
 
     Disputed/other statuses are not cancellable this stage -- dispute
     adjudication is explicitly out of scope; the `disputed` status is
-    never reached by any code this WO ships. FLUSH-ONLY."""
+    never reached by any code this WO ships.
+
+    PAST-DEADLINE ACCEPTED GUARD (WO-DRIFT-econ-accepted-deadline-expiry,
+    Mack HIGH #1): before that WO, `accepted` could never reach `expired`
+    (LEGAL_TRANSITIONS[ACCEPTED] was only {COMPLETED, CANCELLED}), so an
+    issuer cancelling a long-overdue accepted contract never competed with
+    anything. That WO's new ACCEPTED -> EXPIRED sweep edge makes the race
+    live: with no deadline check here, an issuer's ordinary unilateral
+    cancel around the same moment the periodic sweep ticks silently waives
+    the acceptor's WO-guaranteed deadline-failure penalty (this branch
+    never touches acceptor.credits at all) AND nets the issuer a WORSE
+    refund than sweep_expired_accepted_contracts's own full-escrow refund
+    -- no attacker or malice required, just an issuer clicking cancel at
+    the wrong moment. Once the deadline has passed, an accepted contract
+    routes exclusively through the sweep (acceptor penalized, escrow
+    settled per that sweep's own NO-CANON-flagged disposition) -- the
+    unilateral-cancel path is withdrawn. FLUSH-ONLY."""
     now = now or _now()
     contract = _load_contract(db, contract_id)
     if contract.issuer_type != ContractIssuerType.PLAYER or contract.issuer_id != issuer_player_id:
@@ -666,6 +794,12 @@ def cancel_player_contract(
             _as_decimal(contract.escrow_amount) * PLAYER_POST_CANCEL_REFUND_PCT_PRE_ACCEPT / Decimal(100)
         )
     elif contract.status == ContractStatus.ACCEPTED:
+        if contract.deadline is not None and now >= contract.deadline:
+            raise ContractConflictError(
+                f"past_deadline: contract {contract.id}'s deadline has already passed -- "
+                "it will be expired (acceptor penalized, escrow settled) on the next "
+                "scheduler sweep, not cancelled"
+            )
         _guarded_transition(db, contract, ContractStatus.ACCEPTED, ContractStatus.CANCELLED)
         accept_fee_equivalent = _as_decimal(contract.payment) * _as_decimal(contract.acceptance_fee_pct) / Decimal(100)
         cancel_fee = _as_decimal(contract.payment) * PLAYER_POST_CANCEL_FEE_PCT_POST_ACCEPT / Decimal(100)

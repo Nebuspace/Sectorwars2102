@@ -412,3 +412,85 @@ class TestSweepExpiredContracts:
         assert posted_future.status == ContractStatus.POSTED
         assert posted_exact.status == ContractStatus.POSTED
         assert accepted_past.status == ContractStatus.ACCEPTED  # untouched -- not posted
+
+
+@pytest.mark.unit
+class TestSweepExpiredAcceptedContracts:
+    """WO-DRIFT-econ-accepted-deadline-expiry -- the ACCEPTED-past-deadline
+    twin of TestSweepExpiredContracts above. NPC-issued fixtures only here
+    (no escrow_amount/escrow_state on this file's plain `_contract()`
+    fixture -- the escrow-refund branch is gated on `issuer_type ==
+    PLAYER` and never reads those attrs for an NPC row); the PLAYER-issued
+    escrow-conservation half lives in test_contract_escrow.py alongside its
+    sibling abandon()/sweep_expired_contracts refund-idiom tests."""
+
+    def test_only_accepted_and_strictly_past_deadline_swept(self) -> None:
+        acceptor = _player(credits=5000)
+        accepted_past = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor.id,
+        )
+        accepted_future = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW + timedelta(minutes=1),
+            acceptor_player_id=acceptor.id,
+        )
+        accepted_exact = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW, acceptor_player_id=acceptor.id,
+        )  # NOT strictly past
+        posted_past = _contract(status=ContractStatus.POSTED, deadline=_NOW - timedelta(minutes=1))
+        db = _FakeSession(
+            contracts=[accepted_past, accepted_future, accepted_exact, posted_past],
+            players=[acceptor],
+        )
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert result == {"expired": 1}
+        assert accepted_past.status == ContractStatus.EXPIRED
+        assert accepted_future.status == ContractStatus.ACCEPTED
+        assert accepted_exact.status == ContractStatus.ACCEPTED
+        assert posted_past.status == ContractStatus.POSTED  # untouched -- not accepted
+
+    def test_charges_acceptor_the_penalty_npc_issued(self) -> None:
+        acceptor = _player(credits=5000)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor.id, penalty=Decimal("750.00"),
+        )
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert result == {"expired": 1}
+        assert c.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 4250  # 5000 - 750, same flat-penalty math as abandon()
+
+    def test_penalty_clamped_at_zero_not_negative(self) -> None:
+        acceptor = _player(credits=100)
+        c = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor.id, penalty=Decimal("1000.00"),
+        )
+        db = _FakeSession(contracts=[c], players=[acceptor])
+
+        contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+        assert acceptor.credits == 0
+
+    def test_multiple_due_rows_all_expired_and_charged(self) -> None:
+        acceptor = _player(credits=5000)
+        c1 = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(hours=1),
+            acceptor_player_id=acceptor.id, penalty=Decimal("100.00"),
+        )
+        c2 = _contract(
+            status=ContractStatus.ACCEPTED, deadline=_NOW - timedelta(minutes=1),
+            acceptor_player_id=acceptor.id, penalty=Decimal("200.00"),
+        )
+        db = _FakeSession(contracts=[c1, c2], players=[acceptor])
+
+        result = contract_service.sweep_expired_accepted_contracts(db, now=_NOW)
+
+        assert result == {"expired": 2}
+        assert c1.status == ContractStatus.EXPIRED
+        assert c2.status == ContractStatus.EXPIRED
+        assert acceptor.credits == 4700  # 5000 - 100 - 200

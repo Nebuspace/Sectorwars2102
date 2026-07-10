@@ -328,6 +328,27 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
         assert db.committed is False
         assert db.closed is True
 
+    def test_contract_expire_sweep_combines_posted_and_accepted_counts(self):
+        """WO-DRIFT-econ-accepted-deadline-expiry: the CONTRACT_EXPIRE
+        driver now runs sweep_expired_accepted_contracts alongside sweep_
+        expired_contracts under the SAME CEXP lock/due-check/commit -- the
+        wrapper's return value is their sum, and both cores are reached
+        exactly once."""
+        db = _FakeLockDB()
+        with patch("src.core.database.SessionLocal", return_value=db), patch(
+            "src.services.contract_service.sweep_expired_contracts",
+            return_value={"expired": 3},
+        ) as mock_posted, patch(
+            "src.services.contract_service.sweep_expired_accepted_contracts",
+            return_value={"expired": 2},
+        ) as mock_accepted:
+            result = _run_contract_expire_sweep_sync()
+        assert result == 5
+        mock_posted.assert_called_once()
+        mock_accepted.assert_called_once()
+        assert db.committed is True
+        assert db.closed is True
+
     def test_contract_expire_sweep_locked_elsewhere_skips_cleanly_without_touching_the_core(self, caplog):
         """Mirrors test_locked_elsewhere_skips_cleanly_without_touching_the_
         core above (WO-SWEEP-SILENT-SWEEPS discipline applied to the newly

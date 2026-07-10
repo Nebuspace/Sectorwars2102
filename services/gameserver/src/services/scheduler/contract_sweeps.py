@@ -161,9 +161,16 @@ def _run_contract_expire_sweep_sync() -> int:
     to the durable due-check. On lock contention this logs and returns 0
     rather than skipping silently (WO-SWEEP-SILENT-SWEEPS discipline — a
     lock-skip must be distinguishable, in the log, from a legitimate
-    ran-and-found-nothing-due tick)."""
+    ran-and-found-nothing-due tick).
+
+    WO-DRIFT-econ-accepted-deadline-expiry: also runs sweep_expired_
+    accepted_contracts (the ACCEPTED-past-deadline half — previously never
+    swept at all, so an accepted contract's failure penalty was never
+    applied) under this SAME CEXP lock + due-check + single commit, rather
+    than a second lock/tick of its own — both are "contract expiry", just
+    two different source statuses. The returned count is the sum of both."""
     from src.core.database import SessionLocal
-    from src.services.contract_service import sweep_expired_contracts
+    from src.services.contract_service import sweep_expired_accepted_contracts, sweep_expired_contracts
 
     db = SessionLocal()
     try:
@@ -178,9 +185,10 @@ def _run_contract_expire_sweep_sync() -> int:
             db, _CONTRACT_EXPIRE_STATE_KEY, CONTRACT_EXPIRE_SWEEP_SECONDS, datetime.now(UTC),
         ):
             return 0
-        result = sweep_expired_contracts(db)
+        posted_result = sweep_expired_contracts(db)
+        accepted_result = sweep_expired_accepted_contracts(db)
         db.commit()
-        return result.get("expired", 0)
+        return posted_result.get("expired", 0) + accepted_result.get("expired", 0)
     except Exception:
         logger.exception("Contract expire sweep failed")
         db.rollback()
