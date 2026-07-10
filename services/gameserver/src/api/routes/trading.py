@@ -1,21 +1,26 @@
+import logging
+from datetime import UTC, datetime, timedelta
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta, UTC
-from pydantic import BaseModel, Field
 
+from src.auth.dependencies import get_current_player, get_current_user
 from src.core.database import get_db
-from src.auth.dependencies import get_current_user, get_current_player
-from src.models.user import User
+from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
+from src.models.market_transaction import MarketPrice, MarketTransaction, PriceHistory, TransactionType
 from src.models.player import Player
-from src.models.station import Station
 from src.models.sector import Sector
 from src.models.ship import Ship, ShipStatus, effective_cargo_capacity
-from src.models.docking import DockingQueueEntry, DockingSlipOccupancy
-from src.models.market_transaction import MarketTransaction, MarketPrice, PriceHistory, TransactionType
+from src.models.station import Station
+from src.models.user import User
+from src.services import docking_service, station_security_service
+from src.services.medal_service import MedalService, check_and_award_trade_medals
+from src.services.ranking_service import RankingService
 from src.services.trading_service import (
     TradingService,
     clamp_to_commodity_band,
@@ -23,12 +28,7 @@ from src.services.trading_service import (
     compute_region_tariff_multiplier,
     compute_station_lever_multiplier,
 )
-from src.services.ranking_service import RankingService
-from src.services.medal_service import MedalService, check_and_award_trade_medals
-from src.services import docking_service
-from src.services.turn_service import spend_turns, regenerate_turns
-
-import logging
+from src.services.turn_service import regenerate_turns, spend_turns
 
 logger = logging.getLogger(__name__)
 
@@ -1560,6 +1560,28 @@ async def undock_from_port(
 
     if not current_player.is_docked:
         raise HTTPException(status_code=400, detail="You are not currently docked at a station")
+
+    # Station protection -- Guarantee #2 (FEATURES/economy/station-protection.md
+    # §§ "Anti-theft tractor beam" + "Security tiers"): a ship attempting to
+    # undock from a security_rank >= basic station is checked against the
+    # canon deny-list (stolen / wanted / deny-listed). A hit locks the ship to
+    # the docking ring -- reject BEFORE any turn charge, mirroring Guarantee
+    # #1's own "reject before any turn charge" discipline (combat_service.py
+    # ERR_DOCKED_SHIP_PROTECTED). A clean pilot is completely unaffected:
+    # check_tractor_lock returns None below security_rank "basic" or when no
+    # deny-list signal fires, and this block is a no-op in both cases.
+    if current_player.current_port_id:
+        station_for_lock = db.query(Station).filter(
+            Station.id == current_player.current_port_id
+        ).first()
+        ship_for_lock = current_player.current_ship
+        if station_for_lock is not None and ship_for_lock is not None:
+            lock_payload = station_security_service.check_tractor_lock(
+                db, station_for_lock, ship_for_lock, current_player
+            )
+            if lock_payload is not None:
+                db.commit()  # persist the (possibly newly-created) lock record
+                raise HTTPException(status_code=403, detail=lock_payload)
 
     # Check if player has enough turns
     if current_player.turns < UNDOCKING_TURN_COST:
