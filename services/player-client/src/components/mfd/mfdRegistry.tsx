@@ -1,5 +1,5 @@
 /**
- * mfdRegistry — the nine MFD page definitions, decoupled from screens.
+ * mfdRegistry — the ten MFD page definitions, decoupled from screens.
  *
  * Pages are lazy chunks so a faulting or heavy page never taxes the
  * console shell. Accents reuse the NAV_ITEMS palette (Law-5 system
@@ -102,6 +102,14 @@ export const MFD_PAGES: Record<MFDPageId, MFDPageDef> = {
     accent: '#FFD700',
     status: 'shipped',
     Component: React.lazy(() => import('./pages/ReputationPage')),
+  },
+  'salvage': {
+    id: 'salvage',
+    title: 'SALVAGE',
+    softLabel: 'SALV',
+    accent: '#9EC5FF',
+    status: 'shipped',
+    Component: React.lazy(() => import('./pages/SalvagePage')),
   },
 };
 

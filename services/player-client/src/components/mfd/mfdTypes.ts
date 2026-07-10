@@ -3,13 +3,18 @@
  *
  * B1 implements these; B2/B3/B4 import them. Do not widen or rename
  * without re-freezing the contract.
+ *
+ * Re-frozen at 10 pages (WO-CMB-SALVAGE-LOOP-1 added 'salvage') — this is
+ * the designed extension path for a new shipped MFD page: widen
+ * MFDPageId, update this note, done. Not a casual/undocumented widening.
+ * The queued DroneBay WO will do the same.
  */
 
 import type React from 'react';
 
 export type MFDPageId =
   | 'vessel-status' | 'cargo' | 'turn-economy' | 'threat-readiness' | 'quantum-drive'
-  | 'nav-position' | 'aria-terminal' | 'comms-crew' | 'reputation';
+  | 'nav-position' | 'aria-terminal' | 'comms-crew' | 'reputation' | 'salvage';
 
 export type MFDFeatureStatus = 'shipped' | 'partial';
 

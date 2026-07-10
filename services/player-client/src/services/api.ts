@@ -746,9 +746,53 @@ export const navAPI = {
 // to the player's CURRENT region server-side (pre-existing constraint,
 // unchanged by WO-PUX-NAVCHART) — a known sector in a different region 404s;
 // callers should treat that as "contents unknown", not a hard failure.
+
+// WO-CMB-SALVAGE-LOOP-1: one wreck row from GET /sectors/{id}/wrecks.
+// Field shape mirrors routes/sectors.py's WreckResponse exactly — no
+// damage_type key (the column does not exist on CargoWreck, NO-CANON).
+export interface SectorWreck {
+  id: string;
+  original_owner_id: string | null;
+  original_owner_name: string | null;
+  destroyed_ship_type: string;
+  cause: string;
+  created_at: string;
+  age_seconds: number;
+  cargo: Record<string, number>;
+  // Live preview only — can flip true->false while a page is open as the
+  // grace window elapses; treat as advisory, not a lock-in (server re-checks
+  // at salvage time regardless of what this said when the list loaded).
+  would_flag_suspect: boolean;
+}
+
+// Mirrors routes/sectors.py's SalvageResponse.
+export interface SalvageResult {
+  salvaged: Record<string, number>;
+  suspect_flagged: boolean;
+  wreck_cleared: boolean;
+  turns_spent: number;
+}
+
 export const sectorAPI = {
   getPlanets: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/planets`),
   getStations: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/stations`),
+
+  // List salvageable wrecks in a sector (numeric, cockpit-native sector id —
+  // the server resolves it to the sector's UUID internally).
+  sectorWrecks: (sectorId: number): Promise<SectorWreck[]> =>
+    apiRequest(`/api/v1/sectors/${sectorId}/wrecks`),
+
+  // Salvage a wreck. `quantity` omitted = take as much as fits (server
+  // default); a positive int requests a specific amount, further capped
+  // server-side by free cargo hold and available turns (whichever is
+  // tightest) — 1 turn per 100 units taken, rounded up.
+  salvageWreck: (wreckId: string, quantity?: number): Promise<SalvageResult> =>
+    apiRequest('/api/v1/sectors/salvage', {
+      method: 'POST',
+      body: JSON.stringify(
+        quantity === undefined ? { wreck_id: wreckId } : { wreck_id: wreckId, quantity }
+      ),
+    }),
 };
 
 // Export all APIs

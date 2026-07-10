@@ -11,7 +11,10 @@ import type { MFDScreenConfig } from './mfdTypes';
 // registered; they're just no longer surfaced as sidebar softkeys.
 export const SIDEBAR_A: MFDScreenConfig = {
   screenId: 'sidebar-a', systemLabel: 'MFD-A', defaultPageId: 'vessel-status',
-  pageIds: ['vessel-status', 'cargo', 'threat-readiness', 'quantum-drive'],
+  // WO-CMB-SALVAGE-LOOP-1: 'salvage' joins the cargo/threat cluster
+  // (post-combat loot recovery) — lands this screen at its documented
+  // max of 5. Further additions belong on SIDEBAR_B.
+  pageIds: ['vessel-status', 'cargo', 'threat-readiness', 'quantum-drive', 'salvage'],
 };
 
 export const SIDEBAR_B: MFDScreenConfig = {
