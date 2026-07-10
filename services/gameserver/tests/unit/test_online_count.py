@@ -77,31 +77,12 @@ from datetime import datetime, timedelta
 
 import pytest
 
-# Local Mac test venv runs Python 3.14 (`.venv-test`); the real deploy target
-# is 3.11 (pyproject.toml `python = "^3.11"`). `aioredis` (pinned `^2.0.1`,
-# already unmaintained upstream) does `from distutils.version import
-# StrictVersion` at import time purely to gate a hiredis-version `<`
-# comparison -- `distutils` was removed from the stdlib in 3.12. Nothing in
-# this repo currently imports `redis_service.py` (and transitively
-# `aioredis`) at module load time except this file's route-level tests
-# (`admin_comprehensive.get_real_time_analytics`'s new presence-path import
-# is local/call-time, so it's never hit until a test actually invokes that
-# branch), so no existing test currently trips this. Test-only shim, 3.11
-# untouched, no production file involved.
-if "distutils" not in sys.modules:
-    class _StrictVersionShim:
-        def __init__(self, vstring):
-            self._parts = tuple(int(p) for p in vstring.split(".")[:3])
-
-        def __lt__(self, other):
-            return self._parts < other._parts
-
-    _distutils_version_shim = types.ModuleType("distutils.version")
-    _distutils_version_shim.StrictVersion = _StrictVersionShim
-    _distutils_shim = types.ModuleType("distutils")
-    _distutils_shim.version = _distutils_version_shim
-    sys.modules["distutils"] = _distutils_shim
-    sys.modules["distutils.version"] = _distutils_version_shim
+# NOTE: this file used to open with a `distutils` shim here, needed because
+# `redis_service.py` did `import aioredis`, which crashes on `distutils`
+# removal in Python 3.12. WO-SWEEP-AIOREDIS-PY312 replaced that import with
+# `redis.asyncio` (already installed, no new dependency), so nothing in this
+# file's import chain touches `distutils` anymore -- see Section 2a below for
+# the now-passing real-import pin that used to require the shim.
 
 import src.api.routes.admin_comprehensive as admin_mod
 from src.api.routes.admin_comprehensive import get_real_time_analytics
@@ -237,19 +218,15 @@ def test_analytics_service_online_count_zero_when_nobody_recent():
 # ---------------------------------------------------------------------------
 # Section 2 -- route-level presence overwrite / fallback behavior
 #
-# `src.services.redis_service` (hence `player_activity_service`, which
-# imports it eagerly at module level) does NOT actually import successfully
-# in this repo's own target runtime -- see Section 2a below for the empirical
-# proof, done separately from these isolated-logic tests. Rather than lean
-# on the distutils shim for every scenario (which only gets past ONE of the
-# two independent breaks), these tests inject fully synthetic modules
+# `src.services.redis_service` now imports cleanly (WO-SWEEP-AIOREDIS-PY312;
+# see Section 2a below), but these tests still inject fully synthetic modules
 # straight into `sys.modules["src.services.redis_service"]` /
-# `["src.services.player_activity_service"]`. Python's import system
-# short-circuits on an already-present `sys.modules` entry and never
-# re-executes the real file, so the route's local `from X import Y` picks up
-# the fake cleanly, with zero dependency on the real (currently broken)
-# aioredis import chain. This tests the route's OWN branching logic in
-# isolation, decoupled from that separate, pre-existing dependency defect.
+# `["src.services.player_activity_service"]` rather than drive a real Redis
+# connection. Python's import system short-circuits on an already-present
+# `sys.modules` entry and never re-executes the real file, so the route's
+# local `from X import Y` picks up the fake cleanly. This isolates the
+# route's OWN branching logic from needing a live Redis in this DB-free unit
+# suite -- Section 2a below covers the real, unfaked import chain.
 # ---------------------------------------------------------------------------
 
 class _FakeActivityService:
@@ -401,58 +378,63 @@ async def test_presence_zero_is_reported_as_presence_not_mistaken_for_down(monke
 
 
 # ---------------------------------------------------------------------------
-# Section 2a -- the REAL import chain, unfaked: empirical proof of a
-# discovered pre-existing defect (surfaced, not fixed -- out of this WO's
-# three named lanes).
+# Section 2a -- the REAL import chain, unfaked (historical defect, RESOLVED
+# by WO-SWEEP-AIOREDIS-PY312).
 #
-# `redis_service.py` does `import aioredis` unconditionally at module level;
-# `player_activity_service.py` does `from src.services.redis_service import
-# RedisService, get_redis_service` unconditionally at module level too. On
-# this repo's OWN deploy target (`Dockerfile`: `FROM python:3.12-slim`),
-# `aioredis`'s `exceptions.py` declares
-# `class TimeoutError(asyncio.TimeoutError, builtins.TimeoutError,
-# RedisError)` -- and `asyncio.TimeoutError is builtins.TimeoutError` as of
-# Python 3.11 (verified directly against a real `/usr/local/bin/python3.12`
-# interpreter on this machine, independent of any venv: reproduces `TypeError:
-# duplicate base class TimeoutError`). This is NOT a Mac-venv-only artifact --
-# it reproduces on the exact Python minor version the Dockerfile ships.
+# `redis_service.py` used to do `import aioredis` unconditionally at module
+# level; `player_activity_service.py` imports `redis_service` eagerly at
+# module level too. On this repo's OWN deploy target (`Dockerfile`: `FROM
+# python:3.12-slim`), `aioredis`'s `exceptions.py` declared `class
+# TimeoutError(asyncio.TimeoutError, builtins.TimeoutError, RedisError)` --
+# and `asyncio.TimeoutError is builtins.TimeoutError` as of Python 3.11,
+# reproducing `TypeError: duplicate base class TimeoutError` on import.
 # Practical effect: `redis_service.py` (and therefore `player_activity_
-# service.py`) cannot be imported in this repo's real runtime AT ALL today.
-# `auth.py`'s `_track_player_login`/`_track_player_logout` already wrap their
-# `from src.services.player_activity_service import get_player_activity_
-# service` call in a blanket `except Exception:` (logged as a non-fatal
-# warning) -- meaning the entire presence-tracking write side
-# (`activity:online_players` population on login/logout) has likely never
-# actually run in any environment using this aioredis pin, not just this
-# WO's read side. A prerequisite fix (replace `aioredis` with the already-
-# installed `redis.asyncio`, since `redis = {extras = ["hiredis"], version =
-# ">=5.0.1,<9.0.0"}` already ships full async support and would make
-# `aioredis` redundant) is a dependency change outside this WO's three named
-# lanes and requires sign-off per this repo's "no new external deps without
-# sign-off" rule -- flagged here, not silently attempted.
+# service.py`) could not be imported in this repo's real runtime AT ALL.
+# `auth.py`'s `_track_player_login`/`_track_player_logout` already wrapped
+# their `get_player_activity_service` call in a blanket `except Exception:`
+# (logged as a non-fatal warning), so login itself never 500'd -- but the
+# entire presence-tracking write side (`activity:online_players` population
+# on login/logout) silently never ran in any environment using the aioredis
+# pin, not just this route's read side.
 #
-# This test proves this route survives that REAL failure today, unfaked: no
+# WO-SWEEP-AIOREDIS-PY312 fixed this at the source: `redis_service.py` now
+# imports `redis.asyncio` instead of the archived, distutils-dependent
+# `aioredis` package -- `redis = {extras = ["hiredis"], version =
+# ">=5.0.1,<9.0.0"}` was already in pyproject.toml and absorbed the aioredis
+# 2.x codebase, so this needed zero new dependencies. `aioredis` itself is
+# still pinned in pyproject.toml/poetry.lock, unused -- pruning it needs a
+# Max-blessed lockfile regen, captured as a follow-up, not done here.
+#
+# The tests below prove the REAL import chain now succeeds, unfaked: no
 # `sys.modules` injection, the actual `redis_service.py` file is really
-# imported and really raises. The distutils shim at the top of this file
-# only clears a SEPARATE, Mac-venv-only gap (`.venv-test` lacks `setuptools`,
-# so `distutils` isn't shimmed the way it would be via a real Poetry/Docker
-# build) so this test reaches the SAME real TypeError the deployed container
-# hits, rather than stopping short at a local-only artifact.
+# imported.
+#
+# NOTE (still true, unaffected by this fix): `RedisService.connect()`
+# (`init_redis()` in `redis_service.py`) is still never invoked anywhere in
+# `main.py`'s lifespan, so `redis_service.redis_pool` is still `None` for the
+# lifetime of the running process today -- the route below still falls back
+# to the last_login approximation in practice, correctly and safely, just for
+# a different reason now (pool never connected, not an import crash). That
+# startup wiring remains out of scope here (shared file outside this WO's/
+# WO-ADM-ONLINE-COUNT's named lanes).
 # ---------------------------------------------------------------------------
 
-def test_aioredis_import_chain_is_actually_broken_on_this_deploy_target():
-    """Empirical proof of the discovered defect itself (not just that the
-    route tolerates it) -- confirms this isn't a stale/misread claim."""
-    with pytest.raises(TypeError, match="duplicate base class"):
-        import src.services.redis_service  # noqa: F401
+def test_redis_service_imports_cleanly_on_this_deploy_target():
+    """WO-SWEEP-AIOREDIS-PY312 regression pin: the real, unfaked import chain
+    (redis_service.py -> redis.asyncio) must succeed with no exception -- the
+    inverse of the defect this suite used to pin (see Section 2a)."""
+    import src.services.redis_service as rs
+    assert rs.aioredis.__name__ == "redis.asyncio"
 
 
 @pytest.mark.asyncio
-async def test_route_survives_the_real_broken_import_chain_unfaked():
-    """No sys.modules fakery at all here -- the route's own try/except must
-    swallow the REAL import-time TypeError from the broken aioredis pin and
-    still return the last_login-derived figure, exactly as it would in this
-    repo's actual container today."""
+async def test_route_falls_back_when_redis_pool_never_connected_unfaked():
+    """No sys.modules fakery at all here -- the real redis_service.py import
+    chain now succeeds (WO-SWEEP-AIOREDIS-PY312), but connect() is still
+    never wired into startup (see the Section 2a note above), so redis_pool
+    stays None and the route's own failure-mode-1 short-circuit must still
+    deliver the safe fallback, exactly as it would in this repo's actual
+    container today."""
     now = datetime.utcnow()
     db = _AnalyticsFakeDB([_user(now - timedelta(minutes=1))])  # baseline == 1
 
