@@ -1208,6 +1208,60 @@ def handle_npc_ship_destroyed(
 
     sector_id = npc.current_sector_id
     now = datetime.now(UTC)
+    npc_id_str = str(npc.id)
+
+    # Row lock + presence/defenses cleanup, done FIRST and under a single
+    # with_for_update() (WO-PIRATE-ECO-2 TOCTOU fix, consolidated from what
+    # used to be two separate reads of this sector: an early UNLOCKED peek
+    # feeding the kill-log block below, and a later locked pass doing the
+    # actual removal). This is JSONB read-modify-write, so it must
+    # serialize against concurrent writers — the kill-log feeder now reads
+    # squad_holding_id / squad_cleared out of THIS SAME locked pass instead
+    # of a separate earlier unlocked query, so two near-simultaneous final
+    # kills from the same squad serialize on this row lock rather than both
+    # observing the pre-removal npc_character_ids list.
+    squad_holding_id = None
+    squad_cleared = False
+    if sector_id is not None:
+        sector = (
+            db.query(Sector)
+            .filter(Sector.sector_id == sector_id)
+            .with_for_update()
+            .first()
+        )
+        if sector is not None:
+            players_present = [
+                p for p in (sector.players_present or [])
+                if p.get("player_id") != npc_id_str
+            ]
+            sector.players_present = players_present
+            flag_modified(sector, "players_present")
+
+            defenses = dict(sector.defenses or {})
+            for defenses_key in PATROL_DEFENSES_KEYS:
+                if defenses_key not in defenses:
+                    continue
+                patrols: List[Dict[str, Any]] = []
+                for patrol in (defenses.get(defenses_key) or []):
+                    ids = patrol.get("npc_character_ids") or []
+                    if npc_id_str not in ids:
+                        patrols.append(patrol)
+                        continue
+                    remaining = [nid for nid in ids if nid != npc_id_str]
+                    if defenses_key == PIRATE_PATROL_DEFENSES_KEY:
+                        # The kill-log feeder's ONLY read of this squad's
+                        # membership -- taken under this row's lock.
+                        squad_holding_id = patrol.get("holding_id")
+                        squad_cleared = not remaining
+                    if remaining:
+                        updated = dict(patrol)
+                        updated["npc_character_ids"] = remaining
+                        updated["ship_count"] = len(remaining)
+                        patrols.append(updated)
+                    # canon: empty squad rows are deleted
+                defenses[defenses_key] = patrols
+            sector.defenses = defenses
+            flag_modified(sector, "defenses")
 
     # Kill-log feeder (WO-PIRATE-ECO-1 lane C) — SAVEPOINT-scoped so a flush
     # failure rolls back only this insert, never the caller's open unit of
@@ -1233,65 +1287,45 @@ def handle_npc_ship_destroyed(
     # this branch is an honest, currently-unreachable kernel in
     # production: it starts firing the moment ECO-2 spawns
     # holding-anchored squads, with no further change needed here.
-    if npc.archetype == NPCArchetype.HOSTILE_RAIDER and sector_id is not None:
+    if npc.archetype == NPCArchetype.HOSTILE_RAIDER and squad_holding_id is not None and squad_cleared:
         try:
-            npc_id_str = str(npc.id)
-            peek_sector = (
-                db.query(Sector)
-                .filter(Sector.sector_id == sector_id)
+            from src.models.pirate_holding import PirateHolding, PirateHoldingTier
+            from src.models.pirate_kill_log import (
+                PirateKillDisposition,
+                PirateKillLog,
+            )
+
+            holding = (
+                db.query(PirateHolding)
+                .filter(PirateHolding.id == squad_holding_id)
                 .first()
             )
-            squad_holding_id = None
-            squad_cleared = False
-            if peek_sector is not None:
-                for patrol in (
-                    (peek_sector.defenses or {}).get(PIRATE_PATROL_DEFENSES_KEY) or []
-                ):
-                    ids = patrol.get("npc_character_ids") or []
-                    if npc_id_str not in ids:
-                        continue
-                    squad_holding_id = patrol.get("holding_id")
-                    squad_cleared = not [nid for nid in ids if nid != npc_id_str]
-                    break
+            if holding is not None:
+                tier_kill_weight = {
+                    PirateHoldingTier.CAMP: 1,
+                    PirateHoldingTier.OUTPOST: 3,
+                    PirateHoldingTier.STRONGHOLD: 10,
+                }
+                attacker_team_id = None
+                if killed_by_player_id is not None:
+                    from src.models.player import Player
 
-            if squad_holding_id is not None and squad_cleared:
-                from src.models.pirate_holding import PirateHolding, PirateHoldingTier
-                from src.models.pirate_kill_log import (
-                    PirateKillDisposition,
-                    PirateKillLog,
-                )
-
-                holding = (
-                    db.query(PirateHolding)
-                    .filter(PirateHolding.id == squad_holding_id)
-                    .first()
-                )
-                if holding is not None:
-                    tier_kill_weight = {
-                        PirateHoldingTier.CAMP: 1,
-                        PirateHoldingTier.OUTPOST: 3,
-                        PirateHoldingTier.STRONGHOLD: 10,
-                    }
-                    attacker_team_id = None
-                    if killed_by_player_id is not None:
-                        from src.models.player import Player
-
-                        attacker_team_id = (
-                            db.query(Player.team_id)
-                            .filter(Player.id == killed_by_player_id)
-                            .scalar()
-                        )
-                    with db.begin_nested():
-                        db.add(PirateKillLog(
-                            region_id=holding.region_id,
-                            holding_id=holding.id,
-                            tier=holding.tier,
-                            kill_weight=tier_kill_weight.get(holding.tier, 1),
-                            attacker_player_id=killed_by_player_id,
-                            attacker_team_id=attacker_team_id,
-                            disposition=PirateKillDisposition.CLEARED,
-                        ))
-                        db.flush()
+                    attacker_team_id = (
+                        db.query(Player.team_id)
+                        .filter(Player.id == killed_by_player_id)
+                        .scalar()
+                    )
+                with db.begin_nested():
+                    db.add(PirateKillLog(
+                        region_id=holding.region_id,
+                        holding_id=holding.id,
+                        tier=holding.tier,
+                        kill_weight=tier_kill_weight.get(holding.tier, 1),
+                        attacker_player_id=killed_by_player_id,
+                        attacker_team_id=attacker_team_id,
+                        disposition=PirateKillDisposition.CLEARED,
+                    ))
+                    db.flush()
         except Exception:
             logger.exception(
                 "PirateKillLog feeder failed for NPC %s (ship %s) — non-fatal",
@@ -1367,47 +1401,9 @@ def handle_npc_ship_destroyed(
                 "at": now.isoformat(),
             }
 
-    if sector_id is not None:
-        # Row lock: the presence cleanup below is JSONB read-modify-write —
-        # serialize against concurrent writers.
-        sector = (
-            db.query(Sector)
-            .filter(Sector.sector_id == sector_id)
-            .with_for_update()
-            .first()
-        )
-        if sector is not None:
-            npc_id_str = str(npc.id)
-
-            players_present = [
-                p for p in (sector.players_present or [])
-                if p.get("player_id") != npc_id_str
-            ]
-            sector.players_present = players_present
-            flag_modified(sector, "players_present")
-
-            defenses = dict(sector.defenses or {})
-            for defenses_key in PATROL_DEFENSES_KEYS:
-                if defenses_key not in defenses:
-                    continue
-                patrols: List[Dict[str, Any]] = []
-                for patrol in (defenses.get(defenses_key) or []):
-                    remaining = [
-                        nid for nid in (patrol.get("npc_character_ids") or [])
-                        if nid != npc_id_str
-                    ]
-                    if npc_id_str not in (patrol.get("npc_character_ids") or []):
-                        patrols.append(patrol)
-                    elif remaining:
-                        updated = dict(patrol)
-                        updated["npc_character_ids"] = remaining
-                        updated["ship_count"] = len(remaining)
-                        patrols.append(updated)
-                    # canon: empty squad rows are deleted
-                defenses[defenses_key] = patrols
-            sector.defenses = defenses
-            flag_modified(sector, "defenses")
-
+    # players_present / defenses cleanup already happened under the row
+    # lock acquired up top (WO-PIRATE-ECO-2 TOCTOU fix) -- no second
+    # sector fetch here.
     db.flush()
     logger.info(
         "NPC %s (%s) KIA — ship %s destroyed in sector %s",

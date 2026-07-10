@@ -280,6 +280,114 @@ def test_feeder_no_crash_when_npc_has_no_sector():
     assert not [o for o in db.added if isinstance(o, PirateKillLog)]
 
 
+def test_squad_cleared_derives_from_the_single_locked_sector_read():
+    """WO-PIRATE-ECO-2 TOCTOU fix pin (structural): squad_cleared /
+    squad_holding_id must come from the SAME with_for_update() read used
+    for the actual npc_character_ids removal -- not a second, separate,
+    unlocked peek. Exactly ONE db.query(Sector) call per handler invocation
+    proves there is no such second read.
+
+    The original bug: two near-simultaneous kills from the same squad each
+    ran their own UNLOCKED peek before either's locked removal had
+    committed, so BOTH computed squad_cleared=False even though the squad
+    was, in fact, empty -- silently dropping the "cleared" event."""
+    ship_id = uuid_mod.uuid4()
+    killer_id = uuid_mod.uuid4()
+    holding_id = uuid_mod.uuid4()
+    region_id = uuid_mod.uuid4()
+
+    npc = make_npc(archetype=NPCArchetype.HOSTILE_RAIDER)
+    npc.ship_id = ship_id
+    sector = make_sector(
+        sector_id=npc.current_sector_id, npc_id=npc.id,
+        holding_id=holding_id, other_ids=[],
+    )
+    holding = PirateHolding(
+        id=holding_id, region_id=region_id, sector_id=npc.current_sector_id,
+        tier=PirateHoldingTier.CAMP,
+    )
+    db = make_db(npc=npc, sector=sector, holding=holding)
+
+    npc_spawn_service.handle_npc_ship_destroyed(db, ship_id, killed_by_player_id=killer_id)
+
+    sector_query_calls = [c for c in db.query.call_args_list if c.args and c.args[0] is Sector]
+    assert len(sector_query_calls) == 1, (
+        "exactly one db.query(Sector) call is expected per handler "
+        "invocation -- a second call would mean squad_cleared is being "
+        "read from a separate, unlocked peek again"
+    )
+    kill_logs = [o for o in db.added if isinstance(o, PirateKillLog)]
+    assert len(kill_logs) == 1
+    assert kill_logs[0].holding_id == holding_id
+
+
+def test_squad_cleared_reads_the_locked_chain_not_a_stale_unlocked_one():
+    """WO-PIRATE-ECO-2 TOCTOU fix pin (behavioral): the two Sector query
+    chains are deliberately seeded with DIFFERENT snapshots -- the plain
+    ``.first()`` chain returns a STALE squad (still shows another member,
+    not cleared, simulating a peek taken before a concurrent transaction's
+    removal committed); the ``.with_for_update().first()`` chain returns
+    the CURRENT, correctly-cleared squad (this NPC was the last member,
+    already reflecting the serialized removal). A regression back to
+    reading squad membership via the plain chain would silently drop the
+    cleared event here -- exactly the bug this WO fixed."""
+    ship_id = uuid_mod.uuid4()
+    holding_id = uuid_mod.uuid4()
+
+    npc = make_npc(archetype=NPCArchetype.HOSTILE_RAIDER)
+    npc.ship_id = ship_id
+
+    stale_sector = make_sector(
+        sector_id=npc.current_sector_id, npc_id=npc.id,
+        holding_id=holding_id, other_ids=["still-here-in-the-stale-read"],
+    )
+    current_sector = make_sector(
+        sector_id=npc.current_sector_id, npc_id=npc.id,
+        holding_id=holding_id, other_ids=[],
+    )
+    holding = PirateHolding(
+        id=holding_id, region_id=uuid_mod.uuid4(), sector_id=npc.current_sector_id,
+        tier=PirateHoldingTier.CAMP,
+    )
+
+    db = MagicMock()
+
+    def _query(model, *args, **kwargs):
+        chain = MagicMock()
+        if model is NPCCharacter:
+            chain.filter.return_value.first.return_value = npc
+            chain.filter.return_value.order_by.return_value.first.return_value = None
+        elif model is Sector:
+            chain.filter.return_value.first.return_value = stale_sector
+            chain.filter.return_value.with_for_update.return_value.first.return_value = current_sector
+        elif model is PirateHolding:
+            chain.filter.return_value.first.return_value = holding
+        else:
+            chain.filter.return_value.scalar.return_value = None
+        return chain
+
+    db.query.side_effect = _query
+    added: list = []
+    db.add = MagicMock(side_effect=added.append)
+    db.added = added
+    db.flush = MagicMock()
+
+    @contextmanager
+    def _begin_nested():
+        yield
+
+    db.begin_nested = MagicMock(side_effect=_begin_nested)
+
+    npc_spawn_service.handle_npc_ship_destroyed(db, ship_id)
+
+    kill_logs = [o for o in db.added if isinstance(o, PirateKillLog)]
+    assert len(kill_logs) == 1, (
+        "the handler must derive squad_cleared from the LOCKED "
+        "with_for_update() read (current_sector, squad now empty), not "
+        "the stale plain .first() chain (still shows another member)"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Lane D — GET /regions/{region_id}/pirate-ecosystem
 # --------------------------------------------------------------------------- #
