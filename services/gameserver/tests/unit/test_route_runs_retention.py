@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy.sql import operators
 
-import src.services.npc_scheduler_service as npc_scheduler_service
+from src.services.scheduler import presence_helpers
 from src.services.npc_scheduler_service import prune_route_optimization_runs
 
 NOW = datetime(2026, 7, 8, 12, 0, 0)
@@ -144,8 +144,8 @@ def _small_policy(monkeypatch):
     -- the sweep reads these as bare module globals at call time, so
     monkeypatching the live module attribute is genuinely load-bearing (see
     the falsifiability test at the bottom of this file)."""
-    monkeypatch.setattr(npc_scheduler_service, "ROUTE_RUNS_RETENTION_DAYS", 10)
-    monkeypatch.setattr(npc_scheduler_service, "ROUTE_RUNS_RETENTION_MAX_PER_PLAYER", 2)
+    monkeypatch.setattr(presence_helpers, "ROUTE_RUNS_RETENTION_DAYS", 10)
+    monkeypatch.setattr(presence_helpers, "ROUTE_RUNS_RETENTION_MAX_PER_PLAYER", 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -321,7 +321,7 @@ class TestFalsifiability:
         assert deleted_under_10_day_window == 0
         assert rank3_young_but_beyond_cap.id in _surviving_ids(session)
 
-        monkeypatch.setattr(npc_scheduler_service, "ROUTE_RUNS_RETENTION_DAYS", 0)
+        monkeypatch.setattr(presence_helpers, "ROUTE_RUNS_RETENTION_DAYS", 0)
 
         deleted_under_0_day_window = prune_route_optimization_runs(session, now=NOW)
         assert deleted_under_0_day_window == 1
@@ -343,7 +343,7 @@ class TestFalsifiability:
         assert deleted_under_cap_2 == 0
         assert rank2_old_but_within_cap.id in _surviving_ids(session)
 
-        monkeypatch.setattr(npc_scheduler_service, "ROUTE_RUNS_RETENTION_MAX_PER_PLAYER", 1)
+        monkeypatch.setattr(presence_helpers, "ROUTE_RUNS_RETENTION_MAX_PER_PLAYER", 1)
 
         deleted_under_cap_1 = prune_route_optimization_runs(session, now=NOW)
         assert deleted_under_cap_1 == 1

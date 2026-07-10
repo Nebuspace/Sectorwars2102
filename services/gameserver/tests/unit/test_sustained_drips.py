@@ -53,7 +53,7 @@ import pytest
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm.attributes import get_history
 
-import src.services.npc_scheduler_service as npc_scheduler_service
+from src.services.scheduler import reputation_team_sweeps
 from src.models.faction import FactionType
 from src.models.player import Player
 from src.services.npc_scheduler_service import (
@@ -118,7 +118,7 @@ class _RepDeltaSpy:
 @pytest.fixture
 def rep_spy(monkeypatch):
     spy = _RepDeltaSpy()
-    monkeypatch.setattr(npc_scheduler_service, "apply_faction_rep_delta", spy)
+    monkeypatch.setattr(reputation_team_sweeps, "apply_faction_rep_delta", spy)
     return spy
 
 
@@ -482,7 +482,7 @@ class TestFalsifiability:
         assert not_yet is None
         assert rep_spy.calls == []
 
-        monkeypatch.setattr(npc_scheduler_service, "SUSTAINED_DRIP_DAYS_REQUIRED", 3)
+        monkeypatch.setattr(reputation_team_sweeps, "SUSTAINED_DRIP_DAYS_REQUIRED", 3)
 
         now_dripped = apply_sustained_reputation_drip(db=None, player=player, today=TODAY)
         assert now_dripped == "heroic"

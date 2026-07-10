@@ -39,7 +39,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.sql import operators
 
-import src.services.npc_scheduler_service as npc_scheduler_service
+from src.services.scheduler import economy_governance_sweeps
 from src.models.market_transaction import MarketPrice, MarketTransaction
 from src.models.player import Player
 from src.services.economy_analytics_service import EconomyAnalyticsService
@@ -399,7 +399,7 @@ class TestDegradation:
     def test_one_calculator_raising_leaves_only_its_fields_at_default(self, monkeypatch):
         session, _ids = _fixture_session()
         warn_mock = MagicMock()
-        monkeypatch.setattr(npc_scheduler_service.logger, "warning", warn_mock)
+        monkeypatch.setattr(economy_governance_sweeps.logger, "warning", warn_mock)
 
         def _boom(self):
             raise RuntimeError("inflation calculator exploded")

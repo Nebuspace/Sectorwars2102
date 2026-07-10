@@ -27,9 +27,28 @@ import pytest
 
 from src.services import npc_scheduler_service as sched
 from src.services import economy_faucet_service as faucet
+from src.services import scheduler as scheduler_pkg
+
+
+def _read_scheduler_package_source() -> str:
+    """WO-QUALITY-techdebt-scheduler-split: the scheduler moved from one
+    module (``sched.__file__``) to the package below it, split into
+    per-concern submodules -- ``sched`` is now a thin re-export shim that
+    contains none of the ``{"key": ...}`` lock-acquisition sites this file
+    scans for. Concatenating every submodule's source reproduces the exact
+    same AST scan surface regardless of which physical file a site now
+    lives in: every function moved verbatim into exactly one submodule (no
+    site was duplicated or dropped), and the site-attribution logic below
+    keys off each site's ENCLOSING FUNCTION NAME -- unique across the whole
+    package -- not its file, so the pinned maps stay byte-identical."""
+    pkg_dir = Path(scheduler_pkg.__file__).parent
+    return "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted(pkg_dir.glob("*.py"))
+    )
+
 
 _MODULE_PATH = Path(sched.__file__)
-_SOURCE = _MODULE_PATH.read_text(encoding="utf-8")
+_SOURCE = _read_scheduler_package_source()
 
 _FAUCET_MODULE_PATH = Path(faucet.__file__)
 _FAUCET_SOURCE = _FAUCET_MODULE_PATH.read_text(encoding="utf-8")

@@ -356,8 +356,15 @@ class TestSourceScanPins:
         """npc_scheduler_service.py's ARIA relationship decay
         (_apply_aria_decay_sync) is explicitly READ-ONLY for this WO --
         pin its presence/shape so a future change is visible, without
-        exercising it (out of this WO's scope)."""
-        text = (SRC_ROOT / "services" / "npc_scheduler_service.py").read_text(encoding="utf-8")
+        exercising it (out of this WO's scope).
+
+        WO-QUALITY-techdebt-scheduler-split relocated _apply_aria_decay_sync
+        (verbatim, alongside _run_weekly_decay_sync) into the scheduler
+        package's reputation_team_sweeps module -- retargeting the read path
+        only; the literal assertions below are unchanged."""
+        text = (
+            SRC_ROOT / "services" / "scheduler" / "reputation_team_sweeps.py"
+        ).read_text(encoding="utf-8")
         assert "def _apply_aria_decay_sync(" in text
         assert "player.aria_relationship_score = max(0, score - decay)" in text
 

@@ -29,7 +29,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.sql import operators
 
-import src.services.npc_scheduler_service as npc_scheduler_service
+from src.services.scheduler import economy_governance_sweeps
 from src.models.galaxy import Galaxy
 from src.models.region import Region, RegionStatus, RegionalTreasuryEntry
 from src.services.npc_scheduler_service import (
@@ -186,7 +186,7 @@ class TestReconcileRegionTreasuries:
         ]
         session = FakeReconSession(ledger_rows=ledger, region_rows=[region])
         error_mock = MagicMock()
-        monkeypatch.setattr(npc_scheduler_service.logger, "error", error_mock)
+        monkeypatch.setattr(economy_governance_sweeps.logger, "error", error_mock)
 
         result = reconcile_region_treasuries(session)
 
@@ -200,7 +200,7 @@ class TestReconcileRegionTreasuries:
         ledger = [FakeLedgerRow(region.id, 300)]  # sums to 300, balance says 500
         session = FakeReconSession(ledger_rows=ledger, region_rows=[region])
         error_mock = MagicMock()
-        monkeypatch.setattr(npc_scheduler_service.logger, "error", error_mock)
+        monkeypatch.setattr(economy_governance_sweeps.logger, "error", error_mock)
 
         result = reconcile_region_treasuries(session)
 
@@ -223,7 +223,7 @@ class TestReconcileRegionTreasuries:
         drifted = FakeRegionRow(treasury_balance=75)
         session = FakeReconSession(ledger_rows=[], region_rows=[matched, drifted])
         error_mock = MagicMock()
-        monkeypatch.setattr(npc_scheduler_service.logger, "error", error_mock)
+        monkeypatch.setattr(economy_governance_sweeps.logger, "error", error_mock)
 
         result = reconcile_region_treasuries(session)
 
@@ -283,7 +283,7 @@ class TestDayGate:
         own comment on why). Pin it so the day-gate is deterministic instead
         of racing the real wall clock."""
         self.day = 999000
-        monkeypatch.setattr(npc_scheduler_service, "canonical_day_number", lambda *a, **k: self.day)
+        monkeypatch.setattr(economy_governance_sweeps, "canonical_day_number", lambda *a, **k: self.day)
 
     def test_second_run_same_day_is_a_noop(self, monkeypatch):
         region = FakeRegionRow(treasury_balance=500)
@@ -291,7 +291,7 @@ class TestDayGate:
         galaxy = _fresh_galaxy(state={})
         session = FakeReconSession(ledger_rows=ledger, region_rows=[region], galaxy=galaxy)
         error_mock = MagicMock()
-        monkeypatch.setattr(npc_scheduler_service.logger, "error", error_mock)
+        monkeypatch.setattr(economy_governance_sweeps.logger, "error", error_mock)
 
         first = _run_treasury_reconciliation_gated(session)
         assert first["treasury_recon_skipped"] is False

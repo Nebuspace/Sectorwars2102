@@ -505,7 +505,7 @@ class TestContractGenerationDecoupling:
             return 0
 
         monkeypatch.setattr(
-            "src.services.npc_scheduler_service._run_contract_generation_sync",
+            "src.services.scheduler.core_loop._run_contract_generation_sync",
             _slow_sync_call,
         )
 
@@ -542,6 +542,7 @@ class TestContractGenerationDecoupling:
         await) before running the main loop, and must cancel + await it
         once the main loop exits (for ANY reason) — never left orphaned."""
         import src.services.npc_scheduler_service as svc
+        from src.services.scheduler import core_loop
 
         gen_loop_started = asyncio.Event()
         gen_loop_cancelled = asyncio.Event()
@@ -560,15 +561,18 @@ class TestContractGenerationDecoupling:
             # genuinely started.
             await asyncio.sleep(0.05)
 
-        monkeypatch.setattr(svc, "_contract_generation_loop", _fake_contract_generation_loop)
-        monkeypatch.setattr(svc, "_npc_scheduler_main_loop", _fake_main_loop)
+        # WO-QUALITY-techdebt-scheduler-split: npc_scheduler_loop now lives in
+        # core_loop.py and resolves these names via ITS OWN module globals (they
+        # moved there together) -- patch core_loop, not the shim.
+        monkeypatch.setattr(core_loop, "_contract_generation_loop", _fake_contract_generation_loop)
+        monkeypatch.setattr(core_loop, "_npc_scheduler_main_loop", _fake_main_loop)
         for name in (
             "_repair_orphan_schedules_sync", "_seed_trader_rosters_sync",
             "_bulk_fill_traders_sync", "_assign_trader_notoriety_sync",
             "_relocate_stranded_npcs_sync", "_disperse_law_patrols_sync",
         ):
-            monkeypatch.setattr(svc, name, lambda: 0)
-        monkeypatch.setattr(svc, "_assign_trader_missions_sync", lambda: {})
+            monkeypatch.setattr(core_loop, name, lambda: 0)
+        monkeypatch.setattr(core_loop, "_assign_trader_missions_sync", lambda: {})
 
         await svc.npc_scheduler_loop()
 
@@ -583,6 +587,7 @@ class TestContractGenerationDecoupling:
         in transaction for 28+ minutes' shape the orchestrator's live
         capture on heimdall found)."""
         import src.services.npc_scheduler_service as svc
+        from src.services.scheduler import contract_sweeps
 
         events: list = []
 
@@ -607,8 +612,10 @@ class TestContractGenerationDecoupling:
         monkeypatch.setattr(
             "src.core.database.SessionLocal", lambda: _TrackedDB(next(labels)),
         )
-        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
-        monkeypatch.setattr(svc, "_sweep_due_and_advance", lambda db, *a, **k: True)
+        # _run_contract_generation_sync (contract_sweeps.py) resolves these via
+        # its OWN imported copy from _common -- patch there, not the shim.
+        monkeypatch.setattr(contract_sweeps, "_sweep_is_due", lambda db, *a, **k: True)
+        monkeypatch.setattr(contract_sweeps, "_sweep_due_and_advance", lambda db, *a, **k: True)
 
         def _fake_gather(db):
             events.append(("gather", db.label))
@@ -653,6 +660,7 @@ class TestContractGenerationDecoupling:
         WO-SWEEP-SILENT-SWEEPS observability lesson — must log the skip
         rather than returning silently."""
         import src.services.npc_scheduler_service as svc
+        from src.services.scheduler import contract_sweeps
 
         class _LockBusyDB:
             def __init__(self):
@@ -665,7 +673,7 @@ class TestContractGenerationDecoupling:
                 self.closed = True
 
         monkeypatch.setattr("src.core.database.SessionLocal", lambda: _LockBusyDB())
-        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+        monkeypatch.setattr(contract_sweeps, "_sweep_is_due", lambda db, *a, **k: True)
         monkeypatch.setattr(
             "src.services.contract_generator.gather_contract_generation_inputs",
             lambda db: "INPUTS-SENTINEL",
@@ -713,6 +721,7 @@ class TestContractGenerationCancelEvent:
         structurally unreachable, not just unused, and
         write_contract_generation_batch must never run."""
         import src.services.npc_scheduler_service as svc
+        from src.services.scheduler import contract_sweeps
 
         events: list = []
         cancel_event = threading.Event()
@@ -744,7 +753,7 @@ class TestContractGenerationCancelEvent:
             return _TrackedDB(label)
 
         monkeypatch.setattr("src.core.database.SessionLocal", _open_db)
-        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+        monkeypatch.setattr(contract_sweeps, "_sweep_is_due", lambda db, *a, **k: True)
 
         def _fake_gather(db):
             events.append(("gather", None))
@@ -803,13 +812,14 @@ class TestContractGenerationCancelEvent:
         would silently swallow a raise and still report result == 0 even
         if the phase actually ran."""
         import src.services.npc_scheduler_service as svc
+        from src.services.scheduler import contract_sweeps
 
         cancel_event = threading.Event()
         cancel_event.set()
 
         peek_db = SimpleNamespace(close=lambda: None)
         monkeypatch.setattr("src.core.database.SessionLocal", lambda: peek_db)
-        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+        monkeypatch.setattr(contract_sweeps, "_sweep_is_due", lambda db, *a, **k: True)
 
         called = {"gather": False, "compute": False, "write": False}
 
@@ -834,14 +844,15 @@ class TestContractGenerationCancelEvent:
         """The default (no Event passed) must never gate anything — every
         pre-F1 caller/test keeps working unmodified."""
         import src.services.npc_scheduler_service as svc
+        from src.services.scheduler import contract_sweeps
 
-        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+        monkeypatch.setattr(contract_sweeps, "_sweep_is_due", lambda db, *a, **k: True)
         db_stub = SimpleNamespace(
             execute=lambda *a, **k: SimpleNamespace(scalar=lambda: True),
             commit=lambda: None, rollback=lambda: None, close=lambda: None,
         )
         monkeypatch.setattr("src.core.database.SessionLocal", lambda: db_stub)
-        monkeypatch.setattr(svc, "_sweep_due_and_advance", lambda db, *a, **k: True)
+        monkeypatch.setattr(contract_sweeps, "_sweep_due_and_advance", lambda db, *a, **k: True)
         monkeypatch.setattr(
             "src.services.contract_generator.gather_contract_generation_inputs",
             lambda db: "INPUTS-SENTINEL",
@@ -871,6 +882,7 @@ class TestContractGenerationCancelEvent:
 class TestContractGenerationPeekPhaseObservability:
     def test_peek_phase_exception_is_caught_logged_and_returns_zero(self, monkeypatch, caplog):
         import src.services.npc_scheduler_service as svc
+        from src.services.scheduler import contract_sweeps
 
         class _RaisingPeekDB:
             def __init__(self):
@@ -885,7 +897,7 @@ class TestContractGenerationPeekPhaseObservability:
         def _boom(*a, **k):
             raise RuntimeError("peek boom")
 
-        monkeypatch.setattr(svc, "_sweep_is_due", _boom)
+        monkeypatch.setattr(contract_sweeps, "_sweep_is_due", _boom)
 
         with caplog.at_level(logging.INFO):
             result = svc._run_contract_generation_sync()
