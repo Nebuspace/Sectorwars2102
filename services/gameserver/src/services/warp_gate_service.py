@@ -2243,6 +2243,143 @@ def set_gate_permissions(
     }
 
 
+# --- Layered access-gate setters (WO-QUALITY-techdebt-gate-access-setters) --
+#
+# _check_faction_rep_layers (:1780) and collect_toll's toll_bypass exemption
+# (:2038-2042) have READ the "faction_rep_min" / "faction_rep_max" /
+# "toll_bypass" access_requirements keys since WO-GWQ-GATE-TOLL, but nothing
+# ever WROTE them -- set_gate_permissions above only ever touches mode/
+# whitelist/allies/toll_amount. That enforcement code was unreachable
+# through any player-facing action. These two functions close that gap.
+
+def _validate_faction_rep_layer(raw: Any, label: str) -> Optional[Dict[str, Any]]:
+    """Validate + canonicalize an inbound faction_rep_min/max layer to the
+    NO-CANON storage shape _check_faction_rep_layers reads (:1790-1791):
+    {"faction_type": <FactionType value>, "value": <int>}. Canon (warp-
+    gates.md "Access control" -- "Faction reputation minimum" / "...
+    maximum") names the LAYER, not this JSONB shape or key -- flagged to
+    DECISIONS, same as _check_faction_rep_layers' own NO-CANON note.
+
+    None means "omitted" (caller leaves the layer unchanged -- see
+    set_gate_access_layers). A present-but-invalid faction_type is
+    rejected here rather than silently accepted: an unrecognized
+    faction_type would otherwise sail through and, at READ time,
+    _faction_rep_value's own permissive fallback resolves it to 0 rep for
+    every player, silently turning a typo'd rep-min layer into "reject
+    everyone" or a typo'd rep-max into "reject no one" with no error ever
+    surfaced to the owner who configured it."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise WarpGateError(400, f"{label} must be an object with faction_type and value")
+    try:
+        # FactionType._missing_ (faction.py) does value.upper() with no
+        # None/type guard -- a missing or non-string faction_type raises
+        # AttributeError there, not the ValueError/TypeError enum.__new__
+        # normally raises for an unrecognized value. Caught alongside the
+        # usual pair so a validation failure here always surfaces as a
+        # clean 400, never an uncaught 500 -- a real fragility in the
+        # shared enum helper, flagged rather than silently worked around
+        # by also fixing faction.py (out of this WO's scope).
+        faction_type = FactionType(raw.get("faction_type"))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise WarpGateError(
+            400,
+            f"{label}.faction_type must be one of: "
+            + ", ".join(sorted(ft.value for ft in FactionType)),
+        )
+    value_raw = raw.get("value")
+    if not isinstance(value_raw, int) or isinstance(value_raw, bool):
+        raise WarpGateError(400, f"{label}.value must be a whole number")
+    return {"faction_type": faction_type.value, "value": value_raw}
+
+
+def _validate_toll_bypass(raw: Any) -> Optional[List[str]]:
+    """toll_bypass is [NO-CANON] end to end -- collect_toll's own docstring
+    (:1983) flags canon names the toll-bypass EXEMPTION, not its storage
+    key or shape. Reuses _validate_uuid_list's already-established
+    player-id-list validation (the SAME shape whitelist/allies already
+    use in set_gate_permissions) rather than inventing a new one. None
+    means "omitted" (leave unchanged)."""
+    if raw is None:
+        return None
+    return _validate_uuid_list(raw, "toll_bypass")
+
+
+def set_gate_access_layers(
+    db: Session,
+    player: Player,
+    gate_id: str,
+    faction_rep_min: Optional[Dict[str, Any]] = None,
+    faction_rep_max: Optional[Dict[str, Any]] = None,
+    toll_bypass: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """WO-QUALITY-techdebt-gate-access-setters -- owner-only setter for the
+    optional layered access gates on top of a gate's base mode
+    (_check_faction_rep_layers' faction_rep_min/max, collect_toll's
+    toll_bypass) that were previously unreachable (see module comment
+    above).
+
+    Each of the three parameters is OPTIONAL and, like set_gate_
+    permissions' own `toll` parameter, PRESERVED UNCHANGED when omitted
+    (None) -- an owner adding a toll_bypass entry should never silently
+    wipe an already-configured faction_rep_min, and vice versa. There is
+    currently no way to CLEAR an already-set layer back to unconfigured
+    through this call (same limitation set_gate_permissions' own `toll`
+    already has) -- a real gap if ever needed, but out of this WO's
+    scope; flagged, not silently worked around.
+
+    All three are validated BEFORE anything is locked or mutated, so a
+    rejected call leaves the gate's JSONB completely unchanged (same
+    discipline as set_gate_permissions' toll bound-check).
+
+    OWNERSHIP GUARD: identical to set_gate_permissions/transfer_gate --
+    _resolve_owned_active_gate resolves the gate from the AUTHENTICATED
+    `player` (never a client-supplied owner id) and 404s (no existence
+    leak) if `gate.player_id != player.id`. Lock order: gate row first
+    (then the tunnel is fetched under the same txn). No credit movement,
+    so no player lock is needed."""
+    validated_rep_min = _validate_faction_rep_layer(faction_rep_min, "faction_rep_min")
+    validated_rep_max = _validate_faction_rep_layer(faction_rep_max, "faction_rep_max")
+    validated_bypass = _validate_toll_bypass(toll_bypass)
+
+    gate = _resolve_owned_active_gate(db, player, gate_id, lock=True)
+    if not gate.warp_tunnel_id:
+        raise WarpGateError(400, "This gate has no traversable connection to configure")
+    tunnel = (
+        db.query(WarpTunnel)
+        .filter(WarpTunnel.id == gate.warp_tunnel_id)
+        .with_for_update()
+        .first()
+    )
+    if tunnel is None:
+        raise WarpGateError(404, "The gate's warp tunnel could not be found")
+
+    reqs = dict(tunnel.access_requirements or {}) if isinstance(tunnel.access_requirements, dict) else {}
+    if validated_rep_min is not None:
+        reqs["faction_rep_min"] = validated_rep_min
+    if validated_rep_max is not None:
+        reqs["faction_rep_max"] = validated_rep_max
+    if validated_bypass is not None:
+        reqs["toll_bypass"] = validated_bypass
+    tunnel.access_requirements = reqs
+    flag_modified(tunnel, "access_requirements")
+    db.flush()
+
+    logger.info(
+        "Player %s set warp gate %s access layers (faction_rep_min=%s "
+        "faction_rep_max=%s toll_bypass=%d entries)",
+        player.id, gate.id, reqs.get("faction_rep_min"), reqs.get("faction_rep_max"),
+        len(reqs.get("toll_bypass") or []),
+    )
+    return {
+        "gate_id": str(gate.id),
+        "faction_rep_min": reqs.get("faction_rep_min"),
+        "faction_rep_max": reqs.get("faction_rep_max"),
+        "toll_bypass": reqs.get("toll_bypass") or [],
+    }
+
+
 # --- Ownership transfer / sale (WO-DBB-WG2) ---------------------------------
 
 def transfer_gate(

@@ -79,6 +79,32 @@ class SetPermissionsResponse(BaseModel):
     toll_amount: int
 
 
+class FactionRepLayer(BaseModel):
+    """NO-CANON storage shape for the faction_rep_min/max layered access
+    gates (warp-gates.md "Access control" -- canon names the layer, not
+    this JSONB shape)."""
+    faction_type: str
+    value: int
+
+
+class SetAccessLayersRequest(BaseModel):
+    """WO-QUALITY-techdebt-gate-access-setters. Each field is OPTIONAL and
+    preserved unchanged when omitted -- matches SetPermissionsRequest's own
+    `toll` field convention (see that class's own comment)."""
+    faction_rep_min: Optional[FactionRepLayer] = None
+    faction_rep_max: Optional[FactionRepLayer] = None
+    # Player UUIDs exempted from this gate's toll — [NO-CANON] key/shape,
+    # see collect_toll's own docstring.
+    toll_bypass: Optional[List[str]] = None
+
+
+class SetAccessLayersResponse(BaseModel):
+    gate_id: str
+    faction_rep_min: Optional[Dict[str, Any]] = None
+    faction_rep_max: Optional[Dict[str, Any]] = None
+    toll_bypass: List[str]
+
+
 class TransferRequest(BaseModel):
     new_owner_id: str
     sale_price: Optional[int] = None
@@ -303,6 +329,38 @@ async def set_permissions(
         db.rollback()
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     return SetPermissionsResponse(**result)
+
+
+@router.patch("/{gate_id}/access-requirements", response_model=SetAccessLayersResponse)
+async def set_access_layers(
+    gate_id: str,
+    request: SetAccessLayersRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """WO-QUALITY-techdebt-gate-access-setters — set the optional layered
+    access gates (faction reputation minimum/maximum, toll-bypass list) on
+    top of an active gate's base mode (owner-only; a gate that isn't yours
+    404s, identical ownership guard to set_permissions/transfer above —
+    _resolve_owned_active_gate always resolves from the AUTHENTICATED
+    `player`, never a client-supplied id). Each field is a PATCH: omitted
+    fields are left unchanged, matching set_permissions' own `toll` field
+    convention. This makes warp_gate_service.check_traversal_access's
+    faction-rep enforcement and collect_toll's toll_bypass exemption —
+    both already live at traversal/toll time — reachable for the first
+    time; previously nothing ever wrote these keys."""
+    try:
+        result = warp_gate_service.set_gate_access_layers(
+            db, player, gate_id,
+            request.faction_rep_min.model_dump() if request.faction_rep_min else None,
+            request.faction_rep_max.model_dump() if request.faction_rep_max else None,
+            request.toll_bypass,
+        )
+        db.commit()
+    except WarpGateError as e:
+        db.rollback()
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return SetAccessLayersResponse(**result)
 
 
 @router.post("/{gate_id}/transfer", response_model=TransferResponse)
