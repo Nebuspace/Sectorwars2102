@@ -31,8 +31,17 @@ Documented v1 deferrals (flagged, not invented):
     (only NAMED officers dispatch — escort hulls are a later slice).
   - Post-arrival pursuit (chasing a player who moves within
     jurisdiction) — the squad releases when the offender leaves the
-    encounter sector; combat with the arrived squad is player-initiated
-    PvE via the existing attack path.
+    encounter sector.
+  - Surrender (police-forces.md "Engagement outcomes" #1 — a pre-combat
+    choice to decline and pay a fine). WO-CMB-NPC-INITIATED-1 (Max
+    ruling, 2026-07-10) supersedes this bullet's old text ("combat with
+    the arrived squad is player-initiated PvE via the existing attack
+    path"): npc_combat_initiation_service.initiate_npc_combat now has
+    the squad attack FIRST once ARRIVED/ENGAGED (lane B calls it from
+    the PendingEngagement ARRIVED path above). Surrender itself is
+    still NOT built — no negotiation prompt — so the only escape once
+    combat starts is the existing defender combat-escape roll,
+    unchanged.
   - Contraband scans and stolen-ship reports (their source systems are
     Design-only).
 

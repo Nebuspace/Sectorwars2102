@@ -2515,10 +2515,11 @@ class CombatService:
 
     def _resolve_ship_combat(
         self,
-        attacker: Player,
+        attacker: Optional[Player],
         defender: Optional[Player],
         sector: Sector,
-        defender_ship: Optional[Ship] = None
+        defender_ship: Optional[Ship] = None,
+        attacker_ship: Optional[Ship] = None,
     ) -> Dict[str, Any]:
         """Resolve ship-to-ship combat.
 
@@ -2526,9 +2527,23 @@ class CombatService:
         defender is None and defender_ship is the NPC-controlled Ship — the
         NPC fights with its ship alone (no rank damage bonus, no player-owned
         defense drones).
+
+        WO-CMB-NPC-INITIATED-1 (Max ruling, 2026-07-10): attacker is now
+        symmetric — None for an NPC-INITIATED attack, with attacker_ship the
+        NPC-controlled Ship. The NPC fights with its ship alone (no rank
+        damage bonus, no medal bonus, no player-owned attack drones) — the
+        literal mirror of the existing NPC-defender branch below. The
+        DEFENDER-side escape roll is completely UNCHANGED by this: flee
+        remains possible exactly as it always has.
         """
         # Get ships and equipment
-        attacker_ship = attacker.current_ship
+        if attacker is not None:
+            attacker_ship = attacker.current_ship
+            attacker_name = attacker.username
+        elif attacker_ship is None:
+            raise ValueError("NPC-initiated combat requires an attacker_ship")
+        else:
+            attacker_name = attacker_ship.name
 
         # WO-BC tractor escape-suppression (single-shot MVP). CANON combat.md:162
         # — a tractor-locked target "cannot succeed at flee actions while the lock
@@ -2577,17 +2592,24 @@ class CombatService:
             defender_drones = 0
             defender_damage_mult = 1.0
 
-        # Get rank combat bonus for the attacker
-        attacker_bonuses = RankingService.get_rank_bonuses(attacker.military_rank)
-        # WO-CG: fold the attacker's summed, capped medal combat_damage bonus into
-        # the damage multiplier alongside the rank term (≤ +3% from all medals).
-        attacker_medal_pct = _medal_combat_damage_bonus(self.db, attacker)
-        attacker_damage_mult = 1.0 + (
-            (attacker_bonuses["combat_damage_bonus_percent"] + attacker_medal_pct) / 100.0
-        )
+        if attacker is not None:
+            # Get rank combat bonus for the attacker
+            attacker_bonuses = RankingService.get_rank_bonuses(attacker.military_rank)
+            # WO-CG: fold the attacker's summed, capped medal combat_damage bonus into
+            # the damage multiplier alongside the rank term (≤ +3% from all medals).
+            attacker_medal_pct = _medal_combat_damage_bonus(self.db, attacker)
+            attacker_damage_mult = 1.0 + (
+                (attacker_bonuses["combat_damage_bonus_percent"] + attacker_medal_pct) / 100.0
+            )
+            attacker_drones = attacker.attack_drones
+        else:
+            # NPC-initiated attacker (WO-CMB-NPC-INITIATED-1): no rank bonus,
+            # no medal bonus, no player-owned attack drones — the literal
+            # mirror of the existing NPC-defender branch above.
+            attacker_damage_mult = 1.0
+            attacker_drones = 0
 
         # Combat parameters
-        attacker_drones = attacker.attack_drones
         attacker_attack = self._calculate_attack_power(attacker_ship, attacker_drones)
         defender_defense = self._calculate_defense_power(defender_ship, defender_drones)
 
@@ -2654,7 +2676,7 @@ class CombatService:
                             "round": round_number,
                             "actor": "attacker",
                             "action": "drone_attack",
-                            "message": f"{attacker.username}'s {atk_weapon_name} destroyed {drones_destroyed} of {defender_name}'s drones",
+                            "message": f"{attacker_name}'s {atk_weapon_name} destroyed {drones_destroyed} of {defender_name}'s drones",
                             "drones_destroyed": drones_destroyed,
                             "weapon_type": atk_weapon_name,
                             "weapon_effectiveness": atk_weapon["shield_effectiveness"]
@@ -2703,7 +2725,7 @@ class CombatService:
                                 "round": round_number,
                                 "actor": "attacker",
                                 "action": "ship_destroyed",
-                                "message": f"{attacker.username}'s {atk_weapon_name} critically damaged {defender_name}'s ship, {destroy_flavor}",
+                                "message": f"{attacker_name}'s {atk_weapon_name} critically damaged {defender_name}'s ship, {destroy_flavor}",
                                 "weapon_type": atk_weapon_name,
                                 "shield_damage": hit["shield_damage"],
                                 "hull_damage": hit["hull_damage"],
@@ -2717,7 +2739,7 @@ class CombatService:
                                 "actor": "attacker",
                                 "action": "ship_attack",
                                 "message": (
-                                    f"{attacker.username}'s {atk_weapon_name} hit {defender_name}'s ship for "
+                                    f"{attacker_name}'s {atk_weapon_name} hit {defender_name}'s ship for "
                                     f"{hit['shield_damage']} shield / {hit['hull_damage']} hull damage"
                                     f"{crit_note}{modifier_note}"
                                 ),
@@ -2734,7 +2756,7 @@ class CombatService:
                         "round": round_number,
                         "actor": "attacker",
                         "action": "miss",
-                        "message": f"{attacker.username}'s attack missed {defender_name}'s ship"
+                        "message": f"{attacker_name}'s attack missed {defender_name}'s ship"
                     })
 
             # Check if combat is over
@@ -2765,7 +2787,7 @@ class CombatService:
                             "round": round_number,
                             "actor": "defender",
                             "action": "drone_attack",
-                            "message": f"{defender_name}'s {def_weapon_name} destroyed {drones_destroyed} of {attacker.username}'s drones",
+                            "message": f"{defender_name}'s {def_weapon_name} destroyed {drones_destroyed} of {attacker_name}'s drones",
                             "drones_destroyed": drones_destroyed,
                             "weapon_type": def_weapon_name,
                             "weapon_effectiveness": def_weapon["shield_effectiveness"]
@@ -2800,11 +2822,19 @@ class CombatService:
 
                         if hit["destroyed"]:
                             attacker_ship_destroyed = True
+                            # NPC attackers (attacker is None, WO-CMB-NPC-
+                            # INITIATED-1) have no escape pod to eject into —
+                            # the literal mirror of the destroy_flavor
+                            # ternary above for NPC defenders.
+                            attacker_destroy_flavor = (
+                                "destroying the vessel" if attacker is None
+                                else "forcing ejection"
+                            )
                             combat_details.append({
                                 "round": round_number,
                                 "actor": "defender",
                                 "action": "ship_destroyed",
-                                "message": f"{defender_name}'s {def_weapon_name} critically damaged {attacker.username}'s ship, forcing ejection",
+                                "message": f"{defender_name}'s {def_weapon_name} critically damaged {attacker_name}'s ship, {attacker_destroy_flavor}",
                                 "weapon_type": def_weapon_name,
                                 "shield_damage": hit["shield_damage"],
                                 "hull_damage": hit["hull_damage"],
@@ -2818,7 +2848,7 @@ class CombatService:
                                 "actor": "defender",
                                 "action": "ship_attack",
                                 "message": (
-                                    f"{defender_name}'s {def_weapon_name} hit {attacker.username}'s ship for "
+                                    f"{defender_name}'s {def_weapon_name} hit {attacker_name}'s ship for "
                                     f"{hit['shield_damage']} shield / {hit['hull_damage']} hull damage"
                                     f"{crit_note}{modifier_note}"
                                 ),
@@ -2835,7 +2865,7 @@ class CombatService:
                         "round": round_number,
                         "actor": "defender",
                         "action": "miss",
-                        "message": f"{defender_name}'s attack missed {attacker.username}'s ship"
+                        "message": f"{defender_name}'s attack missed {attacker_name}'s ship"
                     })
 
             # --- Escape check after both sides have dealt damage this round ---
@@ -2877,8 +2907,13 @@ class CombatService:
                             "escape_chance": escape_pct
                         })
 
-                # Attacker tries to escape if they have no drones left (hull exposed)
-                if fled_result is None and attacker_drones <= 0:
+                # Attacker tries to escape if they have no drones left (hull
+                # exposed). NPC attackers (attacker is None, WO-CMB-NPC-
+                # INITIATED-1) never roll — the literal mirror of the NPC
+                # defender skip above: v1 static NPCs stand and fight; NPC
+                # flee behavior is Design-only (npc-scheduler.md) regardless
+                # of which side of the fight the NPC is on.
+                if attacker is not None and fled_result is None and attacker_drones <= 0:
                     escape_pct = self._calculate_escape_chance(
                         attacker_ship, defender_ship,
                         self._sector_edge_proximity(attacker_ship))
@@ -2889,7 +2924,7 @@ class CombatService:
                             "actor": "attacker",
                             "action": "escape",
                             "message": (
-                                f"{attacker.username}'s ship engaged emergency thrusters "
+                                f"{attacker_name}'s ship engaged emergency thrusters "
                                 f"and escaped! (escape chance: {escape_pct}%)"
                             ),
                             "escape_chance": escape_pct
@@ -2924,18 +2959,18 @@ class CombatService:
         if fled_result is not None:
             result = fled_result
             if fled_result == CombatResult.ATTACKER_FLED:
-                message = f"{attacker.username} fled from combat with {defender_name}"
+                message = f"{attacker_name} fled from combat with {defender_name}"
             else:
-                message = f"{defender_name} escaped from {attacker.username}'s attack"
+                message = f"{defender_name} escaped from {attacker_name}'s attack"
         elif attacker_ship_destroyed and defender_ship_destroyed:
             result = CombatResult.MUTUAL_DESTRUCTION
             message = "Combat ended in mutual destruction"
         elif attacker_ship_destroyed:
             result = CombatResult.DEFENDER_VICTORY
-            message = f"{defender_name} defeated {attacker.username} in combat"
+            message = f"{defender_name} defeated {attacker_name} in combat"
         elif defender_ship_destroyed:
             result = CombatResult.ATTACKER_VICTORY
-            message = f"{attacker.username} defeated {defender_name} in combat"
+            message = f"{attacker_name} defeated {defender_name} in combat"
         else:
             result = CombatResult.DRAW
             message = "Combat ended in a draw"
@@ -2961,7 +2996,7 @@ class CombatService:
                     "round": round_number,
                     "actor": "attacker",
                     "action": "cargo_theft",
-                    "message": f"{attacker.username} salvaged cargo from {defender_name}'s ship: {cargo_list}"
+                    "message": f"{attacker_name} salvaged cargo from {defender_name}'s ship: {cargo_list}"
                 })
         
         # Finalize results
