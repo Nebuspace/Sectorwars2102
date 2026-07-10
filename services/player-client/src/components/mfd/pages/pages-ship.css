@@ -337,3 +337,26 @@
 }
 .mfd-salvage-btn:hover:not(:disabled) { background: rgba(158, 197, 255, 0.3); }
 .mfd-salvage-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Law status / grey-flag (WO-UIPC-LAW-GREY-STATUS) ────────── */
+
+.mfd-law-clean {
+  font-size: 0.62rem;
+  color: rgba(102, 221, 153, 0.9);
+  letter-spacing: 0.04em;
+}
+
+.mfd-law-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.mfd-law-btn {
+  flex: 1; background: rgba(255, 77, 109, 0.16); color: #FF4D6D;
+  border: 1px solid rgba(255, 77, 109, 0.5); border-radius: 3px; padding: 3px 8px;
+  font: inherit; font-size: 0.66rem; cursor: pointer; transition: all 0.15s ease;
+}
+.mfd-law-btn:hover:not(:disabled) { background: rgba(255, 77, 109, 0.3); }
+.mfd-law-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Distinct class from .mfd-mine-msg (same visual language) -- ThreatPage now
+   hosts two independent action outcomes (mine deploy + fine clear) that can
+   both be visible at once, so they need separable selectors. */
+.mfd-law-msg { margin-top: 5px; font-size: 0.62rem; }
+.mfd-law-msg.ok { color: #66dd99; }
+.mfd-law-msg.err { color: #ff7a6b; }

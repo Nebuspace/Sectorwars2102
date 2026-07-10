@@ -90,6 +90,35 @@ export const combatAPI = {
     })
 };
 
+// Grey-flag PvP status (WO-BL). Mirrors player_combat.py's
+// GreyStatusResponse exactly — a temporary "open season" mark earned by
+// aggressing on a lawful target (attacking a player -> 1h, a station -> 1
+// day). While grey, qualifying players may attack this player with no
+// reputation penalty. Clears at greyUntil or by paying clearFineCredits early.
+export interface GreyStatus {
+  isGrey: boolean;
+  kind: 'player_attack' | 'station_attack' | null;
+  greyUntil: string | null;
+  remainingSeconds: number;
+  clearFineCredits: number | null;
+}
+
+// Mirrors player_combat.py's GreyClearFineResponse. success=false (with a
+// reason in `message`) covers: not grey, already expired, insufficient
+// credits -- credits and grey status are left untouched in every failure case.
+export interface GreyClearFineResult {
+  success: boolean;
+  message: string;
+  finePaid: number | null;
+  creditsRemaining: number | null;
+}
+
+export const greyStatusAPI = {
+  getStatus: (): Promise<GreyStatus> => apiRequest('/api/v1/combat/grey-status'),
+  clearFine: (): Promise<GreyClearFineResult> =>
+    apiRequest('/api/v1/combat/grey-status/clear-fine', { method: 'POST' }),
+};
+
 // Planetary Management APIs
 export const planetaryAPI = {
   getOwnedPlanets: () =>
@@ -1040,6 +1069,7 @@ export const contractsAPI = {
 
 export const gameAPI = {
   combat: combatAPI,
+  greyStatus: greyStatusAPI,
   planetary: planetaryAPI,
   registry: registryAPI,
   team: teamAPI,
