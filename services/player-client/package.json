@@ -45,7 +45,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext ts,tsx",
     "preview": "vite preview",
