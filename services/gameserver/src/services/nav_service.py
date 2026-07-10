@@ -144,6 +144,126 @@ class NavService:
 
         return known
 
+    def get_chart(self, player: Player) -> Dict:
+        """
+        Assemble the player's KNOWN navigation surface for the NAV CHART
+        cockpit view (WO-PUX-NAVCHART): every sector in the known graph
+        (``get_known_sector_ids`` — visited ∪ corp-shared ∪ current, the
+        same assembly ``plot()`` uses), the warp/tunnel edges between them,
+        and "frontier" stubs — the numeric ``sector_id``s of unknown
+        sectors one hop beyond a known one.
+
+        Read-only, like ``plot()``. Frontier entries carry ONLY a
+        ``sector_id`` — never name, type, or coordinates — so an
+        unexplored neighbour's identity is never leaked through the chart
+        (mirrors course-plotting.md's visit-gated-intelligence invariant:
+        knowing an edge exists is not the same as knowing what's on the
+        other end of it).
+
+        Returns:
+          {"sectors": [{"sector_id", "name", "type", "x", "y", "z",
+                        "visited", "current"}, ...],
+           "edges": [{"from", "to", "kind": "warp"|"tunnel"}, ...],
+           "frontier": [sector_id, ...]}
+        """
+        known_ids = self.get_known_sector_ids(player)
+        if not known_ids:
+            return {"sectors": [], "edges": [], "frontier": []}
+
+        known_sectors = (
+            self.db.query(Sector).filter(Sector.sector_id.in_(known_ids)).all()
+        )
+        uuid_to_sid: Dict[object, int] = {s.id: s.sector_id for s in known_sectors}
+        known_uuids = list(uuid_to_sid.keys())
+
+        # Own-visited set — the same visit-derived source plot() uses for
+        # hop.visited (corp-shared membership makes a sector known/plottable
+        # but does not mark it visited; only the player's OWN exploration
+        # counts here).
+        own_visited_ids = set(self._build_safety_by_sid(player).keys())
+
+        sectors_payload = [
+            {
+                "sector_id": s.sector_id,
+                "name": s.name,
+                "type": s.type.value if hasattr(s.type, "value") else str(s.type),
+                "x": s.x_coord,
+                "y": s.y_coord,
+                "z": s.z_coord,
+                "visited": s.sector_id in own_visited_ids,
+                "current": s.sector_id == player.current_sector_id,
+            }
+            for s in known_sectors
+        ]
+
+        warp_rows = self.db.execute(
+            sector_warps.select().where(
+                sector_warps.c.source_sector_id.in_(known_uuids)
+            )
+        ).fetchall()
+
+        tunnel_rows = (
+            self.db.query(WarpTunnel)
+            .filter(
+                WarpTunnel.status == WarpTunnelStatus.ACTIVE,
+                WarpTunnel.origin_sector_id.in_(known_uuids),
+            )
+            .all()
+        )
+
+        # Resolve the numeric sector_id of any neighbour OUTSIDE the known
+        # set — needed to report frontier stubs by id (name/type withheld).
+        neighbour_uuids = {row.destination_sector_id for row in warp_rows}
+        neighbour_uuids.update(t.destination_sector_id for t in tunnel_rows)
+        unknown_uuids = neighbour_uuids - set(uuid_to_sid.keys())
+        if unknown_uuids:
+            extra = self.db.query(Sector).filter(Sector.id.in_(unknown_uuids)).all()
+            for s in extra:
+                uuid_to_sid[s.id] = s.sector_id
+
+        edges: List[Dict] = []
+        edge_seen: Set[Tuple[int, int, str]] = set()
+        frontier_ids: Set[int] = set()
+
+        def add_edge(src_sid: int, dst_sid: int, kind: str) -> None:
+            key = (src_sid, dst_sid, kind)
+            if key in edge_seen:
+                return
+            edge_seen.add(key)
+            edges.append({"from": src_sid, "to": dst_sid, "kind": kind})
+
+        for row in warp_rows:
+            src_sid = uuid_to_sid.get(row.source_sector_id)
+            dst_sid = uuid_to_sid.get(row.destination_sector_id)
+            if src_sid is None or dst_sid is None:
+                logger.warning("nav_service.get_chart: unresolved warp endpoint")
+                continue
+            if dst_sid in known_ids:
+                add_edge(src_sid, dst_sid, "warp")
+                if row.is_bidirectional and src_sid != dst_sid:
+                    add_edge(dst_sid, src_sid, "warp")
+            else:
+                frontier_ids.add(dst_sid)
+
+        for tunnel in tunnel_rows:
+            src_sid = uuid_to_sid.get(tunnel.origin_sector_id)
+            dst_sid = uuid_to_sid.get(tunnel.destination_sector_id)
+            if src_sid is None or dst_sid is None:
+                logger.warning("nav_service.get_chart: unresolved tunnel endpoint")
+                continue
+            if dst_sid in known_ids:
+                add_edge(src_sid, dst_sid, "tunnel")
+                if tunnel.is_bidirectional:
+                    add_edge(dst_sid, src_sid, "tunnel")
+            else:
+                frontier_ids.add(dst_sid)
+
+        return {
+            "sectors": sectors_payload,
+            "edges": edges,
+            "frontier": sorted(frontier_ids),
+        }
+
     def _build_safety_by_sid(self, player: Player) -> Dict[int, Optional[float]]:
         """
         Map numeric ``Sector.sector_id`` -> the player's OWN visit-derived

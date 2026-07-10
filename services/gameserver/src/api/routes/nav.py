@@ -5,6 +5,12 @@ POST /api/v1/nav/plot
   Compute a course from the player's current sector to a target sector
   through the player's known graph (visited ∪ corp-shared ∪ current sector).
 
+GET /api/v1/nav/chart
+  Return the player's known navigation surface (WO-PUX-NAVCHART) for the
+  cockpit NAV CHART page: sectors in the known graph, the warp/tunnel edges
+  between them, and frontier stubs (id-only) for unknown adjacent sectors.
+  Read-only, additive — reuses the same known-graph assembly as /nav/plot.
+
 The route handler follows the trading.py pattern:
   - Session = Depends(get_db)  (sync)
   - current_player: Player = Depends(get_current_player)
@@ -71,3 +77,27 @@ async def plot_course(
         objective=plot_request.objective,
     )
     return result
+
+
+@router.get("/chart")
+async def get_nav_chart(
+    db: Session = Depends(get_db),
+    current_player: Player = Depends(get_current_player),
+):
+    """
+    Return the player's known navigation surface for the cockpit NAV CHART
+    page (WO-PUX-NAVCHART).
+
+    {"sectors": [{"sector_id", "name", "type", "x", "y", "z", "visited",
+                  "current"}, ...],
+     "edges": [{"from", "to", "kind": "warp"|"tunnel"}, ...],
+     "frontier": [sector_id, ...]}
+
+    Sectors are the player's known graph (visited ∪ corp-shared ∪ current —
+    the same ``get_known_sector_ids`` assembly ``POST /nav/plot`` uses).
+    Frontier entries carry only a bare sector_id — no name/type/contents —
+    for sectors adjacent to known space but not themselves known. Read-only;
+    mutates nothing.
+    """
+    nav = NavService(db)
+    return nav.get_chart(current_player)

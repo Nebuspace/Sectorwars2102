@@ -182,6 +182,14 @@
   box-shadow: 0 0 8px rgba(249, 115, 22, 0.6);
 }
 
+/* Known-but-not-personally-visited (corp-shared only) — a dashed ring
+   distinguishes it from a fully-explored (solid border) sector without
+   needing a second color, which is already spoken for by sector type. */
+.sector-node.unvisited:not(.current) {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
 .sector-node.standard {
   background-color: #213252;
 }
@@ -280,6 +288,95 @@
   border-radius: 4px;
   background-color: rgba(74, 222, 128, 0.1);
   text-align: center;
+}
+
+.sector-known-badge {
+  font-size: 0.8rem;
+  color: #f5c451;
+  font-style: italic;
+}
+
+.sector-contents-loading {
+  font-size: 0.85rem;
+  color: #8892b0;
+}
+
+.sector-contents {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.85rem;
+  color: #ccd6f6;
+}
+
+.course-preview {
+  font-size: 0.85rem;
+  color: #ccd6f6;
+  background-color: rgba(77, 138, 255, 0.08);
+  border: 1px solid #213252;
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  display: flex;
+  gap: 1rem;
+}
+
+.course-preview-unreachable {
+  color: #ff9b9b;
+}
+
+.engage-button {
+  background-color: #22c55e;
+}
+
+.engage-button:hover {
+  background-color: #16a34a;
+}
+
+.chart-error {
+  position: absolute;
+  top: 5.5rem;
+  right: 1.5rem;
+  z-index: 20;
+  font-size: 0.85rem;
+  color: #ff9b9b;
+  background-color: rgba(19, 27, 44, 0.9);
+  border: 1px solid #6f2a2a;
+  border-radius: 4px;
+  padding: 0.4rem 0.75rem;
+}
+
+.frontier-strip {
+  position: absolute;
+  top: 5.5rem;
+  left: 1.5rem;
+  z-index: 15;
+  max-width: 60%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  background-color: rgba(19, 27, 44, 0.75);
+  border: 1px solid #213252;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+}
+
+.frontier-strip-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #5a6a8a;
+  margin-right: 0.25rem;
+}
+
+.frontier-chip {
+  font-size: 0.75rem;
+  color: #5a6a8a;
+  background-color: #131b2c;
+  border: 1px dashed #2a3a5a;
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  opacity: 0.7;
 }
 
 @media (max-width: 1440px) {

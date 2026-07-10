@@ -708,6 +708,49 @@ export const resourceAPI = {
   list: () => apiRequest('/api/v1/resources'),
 };
 
+// Navigation — the cockpit NAV CHART's known-graph surface (WO-PUX-NAVCHART).
+// GET /api/v1/nav/chart returns the player's KNOWN sectors (visited ∪
+// corp-shared ∪ current — course-plotting.md), the warp/tunnel edges between
+// them, and id-only frontier stubs for adjacent-but-unknown sectors. Course
+// plotting/engagement itself stays on AutopilotContext's own apiClient.post
+// call to POST /api/v1/nav/plot (unchanged by this WO).
+export interface NavChartSector {
+  sector_id: number;
+  name: string;
+  type: string;
+  x: number;
+  y: number;
+  z: number;
+  visited: boolean;
+  current: boolean;
+}
+
+export interface NavChartEdge {
+  from: number;
+  to: number;
+  kind: 'warp' | 'tunnel';
+}
+
+export interface NavChartResponse {
+  sectors: NavChartSector[];
+  edges: NavChartEdge[];
+  frontier: number[];
+}
+
+export const navAPI = {
+  getChart: (): Promise<NavChartResponse> => apiRequest('/api/v1/nav/chart'),
+};
+
+// Sector contents — existing read-only endpoints (services/gameserver/src/
+// api/routes/sectors.py), previously unconsumed by the player client. Scoped
+// to the player's CURRENT region server-side (pre-existing constraint,
+// unchanged by WO-PUX-NAVCHART) — a known sector in a different region 404s;
+// callers should treat that as "contents unknown", not a hard failure.
+export const sectorAPI = {
+  getPlanets: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/planets`),
+  getStations: (sectorId: number) => apiRequest(`/api/v1/sectors/${sectorId}/stations`),
+};
+
 // Export all APIs
 // Regional governance APIs (member-facing). The owner-scoped /my-region/*
 // endpoints live in the admin surface; these are the player-facing reads/writes.

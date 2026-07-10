@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useGame } from '../../contexts/GameContext';
+import { useAutopilot, CoursePlot } from '../../contexts/AutopilotContext';
+import { navAPI, sectorAPI, NavChartResponse } from '../../services/api';
 import GameLayout from '../layouts/GameLayout';
 import CockpitInstrument from '../cockpit/CockpitInstrument';
 import Galaxy3DRenderer from '../galaxy/Galaxy3DRenderer';
@@ -13,7 +15,14 @@ interface MapSector {
   type: string;
   x: number;
   y: number;
+  // Directly adjacent (1-hop) to the player's current sector, per
+  // availableMoves -- the existing single-hop Travel button stays wired to
+  // these; anything else known but non-adjacent routes through the new
+  // plotCourse/"Lay in course" flow instead.
   isConnected: boolean;
+  // The player's OWN visit -- course-plotting.md's `visited` semantics
+  // (corp-shared knowledge makes a sector known/plottable but never marks
+  // it visited).
   isDiscovered: boolean;
   isCurrent: boolean;
 }
@@ -25,11 +34,94 @@ interface MapConnection {
   isOneWay: boolean;
 }
 
+// Fits the known-graph's real server coordinates into a fixed-size layout
+// square, preserving aspect ratio and centering the bounding box at the
+// origin -- server x/y units are arbitrary per-galaxy grid coordinates, not
+// pixels, so this normalizes them into a renderable local space (mirrors the
+// map-content/posX = centerX + sector.x rendering convention below).
+const LAYOUT_SPAN_PX = 500;
+
+function layoutKnownSectors(
+  chart: NavChartResponse,
+  adjacentIds: Set<number>
+): { sectors: MapSector[]; connections: MapConnection[] } {
+  if (!chart.sectors.length) return { sectors: [], connections: [] };
+
+  const xs = chart.sectors.map((s) => s.x);
+  const ys = chart.sectors.map((s) => s.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const span = Math.max(maxX - minX, maxY - minY, 1);
+  const scale = LAYOUT_SPAN_PX / span;
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+
+  const sectors: MapSector[] = chart.sectors.map((s) => ({
+    id: s.sector_id,
+    name: s.name,
+    type: s.type,
+    x: (s.x - midX) * scale,
+    y: (s.y - midY) * scale,
+    isConnected: s.current || adjacentIds.has(s.sector_id),
+    isDiscovered: s.visited,
+    isCurrent: s.current,
+  }));
+
+  // chart.edges already lists both directions of a bidirectional edge --
+  // dedupe to one rendered line per undirected pair+kind, and use whether a
+  // reverse entry exists to decide the one-way arrow.
+  const edgeKeys = new Set(chart.edges.map((e) => `${e.from}>${e.to}:${e.kind}`));
+  const seenPairs = new Set<string>();
+  const connections: MapConnection[] = [];
+  for (const e of chart.edges) {
+    const canonical = e.from < e.to ? `${e.from}-${e.to}:${e.kind}` : `${e.to}-${e.from}:${e.kind}`;
+    if (seenPairs.has(canonical)) continue;
+    seenPairs.add(canonical);
+    connections.push({
+      from: e.from,
+      to: e.to,
+      isTunnel: e.kind === 'tunnel',
+      isOneWay: !edgeKeys.has(`${e.to}>${e.from}:${e.kind}`),
+    });
+  }
+
+  return { sectors, connections };
+}
+
+interface SectorContents {
+  planets: Array<{ id: string; name: string }>;
+  stations: Array<{ id: string; name: string }>;
+}
+
+// Plain-function narrowing (rather than an inline JSX ternary) so the
+// reachable/unreachable discriminant narrows reliably.
+function renderCoursePreview(preview: CoursePlot) {
+  if ('hops' in preview) {
+    return (
+      <>
+        <div>Hops: {preview.hops.length}</div>
+        <div>Turn cost: {preview.total_turns}</div>
+      </>
+    );
+  }
+  return (
+    <div className="course-preview-unreachable">
+      Unreachable
+      {preview.nearest_known ? ` — nearest known: ${preview.nearest_known.name}` : ''}
+    </div>
+  );
+}
+
 const GalaxyMap: React.FC = () => {
   const { playerState, currentSector, availableMoves, getAvailableMoves, moveToSector, scanForLatentTunnels } = useGame();
-  const [localSectors, setLocalSectors] = useState<MapSector[]>([]);
-  const [connections, setConnections] = useState<MapConnection[]>([]);
+  const { course, lastPlot, status: autopilotStatus, plotCourse, engage } = useAutopilot();
+  const [chart, setChart] = useState<NavChartResponse | null>(null);
+  const [chartError, setChartError] = useState<string | null>(null);
   const [selectedSector, setSelectedSector] = useState<MapSector | null>(null);
+  const [contents, setContents] = useState<SectorContents | null>(null);
+  const [contentsLoading, setContentsLoading] = useState(false);
   const [mapOffset, setMapOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
@@ -39,112 +131,52 @@ const GalaxyMap: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [scanResult, setScanResult] = useState<{ ok: boolean; message: string } | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
-  
-  // Simulated data for visualization - in a real game, this would come from API
+
+  // The player's real KNOWN navigation surface (WO-PUX-NAVCHART) -- visited ∪
+  // corp-shared ∪ current, per course-plotting.md. Re-fetched whenever the
+  // player's sector changes so a fresh move's newly-known sectors appear
+  // without leaving the page.
   useEffect(() => {
-    if (currentSector) {
-      // Clear previous data
-      setLocalSectors([]);
-      setConnections([]);
-      
-      // Add current sector (use sector_id for the numeric display ID, not id which is UUID)
-      const currentSectorObj: MapSector = {
-        id: currentSector.sector_id,
-        name: currentSector.name,
-        type: currentSector.type,
-        x: 0,
-        y: 0,
-        isConnected: true,
-        isDiscovered: true,
-        isCurrent: true
-      };
-      
-      const newSectors: MapSector[] = [currentSectorObj];
-      const newConnections: MapConnection[] = [];
-      
-      // Track sector IDs already added to avoid duplicate React keys
-      const addedSectorIds = new Set<number>([currentSector.sector_id]);
+    let cancelled = false;
+    navAPI.getChart()
+      .then((data) => {
+        if (!cancelled) {
+          setChart(data);
+          setChartError(null);
+        }
+      })
+      .catch((error: any) => {
+        if (!cancelled) {
+          setChart(null);
+          setChartError(error?.message || 'Failed to load nav chart');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSector?.sector_id]);
 
-      // Add directly connected sectors (warps), skipping duplicates of current sector
-      if (availableMoves.warps && availableMoves.warps.length) {
-        const filteredWarps = availableMoves.warps.filter(
-          warp => !addedSectorIds.has(warp.sector_id)
-        );
-        filteredWarps.forEach((warp, index) => {
-          // Layout in a circle around current sector
-          const angle = (2 * Math.PI * index) / filteredWarps.length;
-          const radius = 150;
-          const x = Math.cos(angle) * radius;
-          const y = Math.sin(angle) * radius;
-
-          newSectors.push({
-            id: warp.sector_id,
-            name: warp.name,
-            type: warp.type,
-            x,
-            y,
-            isConnected: true,
-            isDiscovered: true,
-            isCurrent: false
-          });
-
-          addedSectorIds.add(warp.sector_id);
-
-          newConnections.push({
-            from: currentSector.sector_id,
-            to: warp.sector_id,
-            isTunnel: false,
-            isOneWay: false // Assuming bidirectional by default
-          });
-        });
-      }
-
-      // Add warp tunnel connections, skipping duplicates of current sector or warps
-      if (availableMoves.tunnels && availableMoves.tunnels.length) {
-        const filteredTunnels = availableMoves.tunnels.filter(
-          tunnel => !addedSectorIds.has(tunnel.sector_id)
-        );
-        filteredTunnels.forEach((tunnel, index) => {
-          // Layout tunnels further out
-          const angle = (2 * Math.PI * index) / filteredTunnels.length;
-          const radius = 300;
-          const x = Math.cos(angle) * radius;
-          const y = Math.sin(angle) * radius;
-
-          newSectors.push({
-            id: tunnel.sector_id,
-            name: tunnel.name,
-            type: tunnel.type,
-            x,
-            y,
-            isConnected: true,
-            isDiscovered: true,
-            isCurrent: false
-          });
-
-          addedSectorIds.add(tunnel.sector_id);
-
-          newConnections.push({
-            from: currentSector.sector_id,
-            to: tunnel.sector_id,
-            isTunnel: true,
-            isOneWay: false // Could use tunnel.tunnel_type to determine this
-          });
-        });
-      }
-      
-      setLocalSectors(newSectors);
-      setConnections(newConnections);
-    }
-  }, [currentSector, availableMoves]);
-  
   useEffect(() => {
     if (playerState) {
       // Get current location's exits when map loads
       getAvailableMoves();
     }
   }, [playerState]);
-  
+
+  const adjacentIds = useMemo(() => {
+    const ids = new Set<number>();
+    (availableMoves.warps || []).forEach((w) => ids.add(w.sector_id));
+    (availableMoves.tunnels || []).forEach((t) => ids.add(t.sector_id));
+    return ids;
+  }, [availableMoves]);
+
+  const { sectors: localSectors, connections } = useMemo(
+    () => (chart ? layoutKnownSectors(chart, adjacentIds) : { sectors: [], connections: [] }),
+    [chart, adjacentIds]
+  );
+
+  const frontier = chart?.frontier ?? [];
+
   // Map interaction handlers
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button === 0) { // Left mouse button
@@ -152,7 +184,7 @@ const GalaxyMap: React.FC = () => {
       setDragStart({ x: e.clientX, y: e.clientY });
     }
   };
-  
+
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isDragging) {
       const deltaX = e.clientX - dragStart.x;
@@ -164,27 +196,63 @@ const GalaxyMap: React.FC = () => {
       setDragStart({ x: e.clientX, y: e.clientY });
     }
   };
-  
+
   const handleMouseUp = () => {
     setIsDragging(false);
   };
-  
+
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const zoomDelta = -e.deltaY * 0.001;
     const newZoom = Math.max(0.5, Math.min(2, zoom + zoomDelta));
     setZoom(newZoom);
   };
-  
+
   const handleSectorClick = (sector: MapSector) => {
     setSelectedSector(sector);
+    setContents(null);
+
+    if (!sector.isCurrent && !sector.isConnected) {
+      // Preview: hop distance / turn cost come straight from AutopilotContext's
+      // plot response -- never re-derived client-side. Only fetched for
+      // non-adjacent known sectors -- an adjacent sector's single-hop cost is
+      // already carried by availableMoves and the existing Travel button
+      // doesn't need a plot at all, so skip the redundant network call.
+      plotCourse(sector.id);
+    }
+
+    // Contents where known -- existing read-only sector endpoints
+    // (services/gameserver/src/api/routes/sectors.py), previously unconsumed
+    // by the client. Best-effort: a known sector outside the player's
+    // current region 404s (pre-existing, unrelated constraint) -- treated as
+    // "contents unknown" rather than a hard failure.
+    setContentsLoading(true);
+    Promise.all([sectorAPI.getPlanets(sector.id), sectorAPI.getStations(sector.id)])
+      .then(([planetsRes, stationsRes]) => {
+        setContents({
+          planets: planetsRes?.planets || [],
+          stations: stationsRes?.stations || [],
+        });
+      })
+      .catch(() => setContents(null))
+      .finally(() => setContentsLoading(false));
   };
-  
+
   const handleTravelClick = () => {
     if (selectedSector && selectedSector.id !== currentSector?.sector_id) {
       moveToSector(selectedSector.id);
       setSelectedSector(null);
     }
+  };
+
+  const handleLayInCourse = () => {
+    if (selectedSector) {
+      plotCourse(selectedSector.id);
+    }
+  };
+
+  const handleEngage = () => {
+    engage();
   };
 
   // WO-LW — sweep this sector for latent (hidden) warp tunnels. The context
@@ -216,7 +284,17 @@ const GalaxyMap: React.FC = () => {
       setIsScanning(false);
     }
   };
-  
+
+  const coursePreview = selectedSector && lastPlot && lastPlot.target_sector_id === selectedSector.id
+    ? lastPlot
+    : null;
+  const canEngage = !!(
+    selectedSector &&
+    course &&
+    course.target_sector_id === selectedSector.id &&
+    autopilotStatus === 'idle'
+  );
+
   return (
     <GameLayout>
       <CockpitInstrument title="NAV CHART" accent="#00D9FF" subtitle="GALACTIC CARTOGRAPHY">
@@ -225,7 +303,7 @@ const GalaxyMap: React.FC = () => {
           {/* Page-level title removed — the instrument LED header carries
               NAV CHART (Law 3); this strip keeps only the view controls. */}
           <div className="map-controls">
-            <button 
+            <button
               className={`view-mode-button ${viewMode === '3d' ? 'active' : ''}`}
               onClick={() => setViewMode('3d')}
               title="3D Galaxy View"
@@ -249,20 +327,20 @@ const GalaxyMap: React.FC = () => {
             </button>
             {viewMode === '2d' && (
               <>
-                <button 
-                  className="zoom-button" 
+                <button
+                  className="zoom-button"
                   onClick={() => setZoom(Math.min(2, zoom + 0.1))}
                 >
                   +
                 </button>
-                <button 
-                  className="zoom-button" 
+                <button
+                  className="zoom-button"
                   onClick={() => setZoom(Math.max(0.5, zoom - 0.1))}
                 >
                   -
                 </button>
-                <button 
-                  className="reset-button" 
+                <button
+                  className="reset-button"
                   onClick={() => {
                     setMapOffset({ x: 0, y: 0 });
                     setZoom(1);
@@ -304,27 +382,28 @@ const GalaxyMap: React.FC = () => {
                 </button>
               </div>
             }>
-              <Galaxy3DRenderer 
+              <Galaxy3DRenderer
                 className="galaxy-3d-view"
                 onSectorSelect={(sector) => {
                   // Convert from full Sector to MapSector for compatibility
+                  const known = chart?.sectors.find((s) => s.sector_id === sector.sector_id);
                   const mapSector: MapSector = {
                     id: sector.sector_id,
                     name: sector.name,
                     type: (sector as any).sector_type || 'normal',
                     x: 0, // Position handled by 3D renderer
                     y: 0,
-                    isConnected: true,
-                    isDiscovered: true,
+                    isConnected: known ? adjacentIds.has(sector.sector_id) || known.current : adjacentIds.has(sector.sector_id),
+                    isDiscovered: known ? known.visited : true,
                     isCurrent: sector.sector_id === currentSector?.sector_id
                   };
-                  setSelectedSector(mapSector);
+                  handleSectorClick(mapSector);
                 }}
               />
             </ErrorBoundary>
           </div>
         ) : (
-          <div 
+          <div
             className="map-view map-view-2d"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
@@ -332,7 +411,7 @@ const GalaxyMap: React.FC = () => {
             onMouseLeave={handleMouseUp}
             onWheel={handleWheel}
           >
-          <div 
+          <div
             className="map-content"
             ref={mapRef}
             style={{
@@ -345,29 +424,29 @@ const GalaxyMap: React.FC = () => {
               {connections.map((conn, i) => {
                 const fromSector = localSectors.find(s => s.id === conn.from);
                 const toSector = localSectors.find(s => s.id === conn.to);
-                
+
                 if (!fromSector || !toSector) return null;
-                
+
                 // Calculate center of map as the reference
                 const mapWidth = mapRef.current?.clientWidth || 800;
                 const mapHeight = mapRef.current?.clientHeight || 600;
                 const centerX = mapWidth / 2;
                 const centerY = mapHeight / 2;
-                
+
                 const x1 = centerX + fromSector.x;
                 const y1 = centerY + fromSector.y;
                 const x2 = centerX + toSector.x;
                 const y2 = centerY + toSector.y;
-                
+
                 return (
                   <g key={`conn-${i}`}>
-                    <line 
+                    <line
                       x1={x1} y1={y1} x2={x2} y2={y2}
                       className={conn.isTunnel ? 'warp-tunnel' : 'warp-path'}
                       strokeDasharray={conn.isTunnel ? "5,5" : ""}
                     />
                     {conn.isOneWay && (
-                      <polygon 
+                      <polygon
                         points={`${x2},${y2} ${x2-10},${y2-5} ${x2-10},${y2+5}`}
                         className="direction-arrow"
                         transform={`rotate(${Math.atan2(y2-y1, x2-x1) * (180/Math.PI)}, ${x2}, ${y2})`}
@@ -377,7 +456,7 @@ const GalaxyMap: React.FC = () => {
                 );
               })}
             </svg>
-            
+
             {/* Draw sectors */}
             <div className="sectors-layer">
               {localSectors.map(sector => {
@@ -386,21 +465,23 @@ const GalaxyMap: React.FC = () => {
                 const mapHeight = mapRef.current?.clientHeight || 600;
                 const centerX = mapWidth / 2;
                 const centerY = mapHeight / 2;
-                
+
                 const posX = centerX + sector.x;
                 const posY = centerY + sector.y;
-                
+
                 return (
-                  <div 
+                  <div
                     key={`sector-${sector.id}`}
+                    data-testid={`sector-node-${sector.id}`}
                     className={`sector-node ${sector.isCurrent ? 'current' : ''} ${
                       selectedSector?.id === sector.id ? 'selected' : ''
-                    } ${sector.isConnected ? 'connected' : ''} ${sector.type.toLowerCase()}`}
+                    } ${sector.isConnected ? 'connected' : ''} ${sector.isDiscovered ? 'visited' : 'unvisited'} ${sector.type.toLowerCase()}`}
                     style={{
                       left: `${posX}px`,
                       top: `${posY}px`
                     }}
                     onClick={() => handleSectorClick(sector)}
+                    title={sector.isDiscovered ? sector.name : `${sector.name} (known, not yet visited)`}
                   >
                     <div className="sector-id">{sector.id}</div>
                   </div>
@@ -410,10 +491,30 @@ const GalaxyMap: React.FC = () => {
           </div>
           </div>
         )}
-        
+
+        {frontier.length > 0 && (
+          <div className="frontier-strip" data-testid="frontier-strip">
+            <span className="frontier-strip-label">FRONTIER</span>
+            {frontier.map((sectorId) => (
+              <span
+                key={`frontier-${sectorId}`}
+                data-testid={`frontier-chip-${sectorId}`}
+                className="frontier-chip"
+                title="Detected beyond known space — fly there to learn more"
+              >
+                {sectorId}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {chartError && (
+          <div className="chart-error" role="status">{chartError}</div>
+        )}
+
         {selectedSector && (
           <div className="sector-details-panel">
-            <h3>{selectedSector.id === currentSector?.sector_id ? 'Current Location' : 'Selected Sector'}</h3>
+            <h3>{selectedSector.isCurrent ? 'Current Location' : 'Selected Sector'}</h3>
             <div className="sector-info">
               <div className="sector-name">
                 Sector {selectedSector.id}: {selectedSector.name}
@@ -421,18 +522,59 @@ const GalaxyMap: React.FC = () => {
               <div className="sector-type">
                 {selectedSector.type}
               </div>
-              {selectedSector.id !== currentSector?.sector_id && selectedSector.isConnected ? (
+              {!selectedSector.isCurrent && !selectedSector.isDiscovered && (
+                <div className="sector-known-badge">Known via corp-share — not personally visited</div>
+              )}
+
+              {contentsLoading && <div className="sector-contents-loading">Scanning contents…</div>}
+              {contents && (contents.planets.length > 0 || contents.stations.length > 0) && (
+                <div className="sector-contents">
+                  {contents.planets.map((p) => (
+                    <div key={p.id} className="sector-content-row">🪐 {p.name}</div>
+                  ))}
+                  {contents.stations.map((s) => (
+                    <div key={s.id} className="sector-content-row">🛰️ {s.name}</div>
+                  ))}
+                </div>
+              )}
+
+              {selectedSector.isCurrent ? (
+                <div className="current-sector-badge">
+                  Current Sector
+                </div>
+              ) : selectedSector.isConnected ? (
                 <button
                   className="travel-button"
+                  data-testid="travel-to-sector"
                   onClick={handleTravelClick}
                 >
                   Travel to Sector
                 </button>
-              ) : selectedSector.id === currentSector?.sector_id ? (
-                <div className="current-sector-badge">
-                  Current Sector
-                </div>
-              ) : null}
+              ) : (
+                <>
+                  {coursePreview && (
+                    <div className="course-preview" data-testid="course-preview">
+                      {renderCoursePreview(coursePreview)}
+                    </div>
+                  )}
+                  <button
+                    className="travel-button"
+                    data-testid="lay-in-course"
+                    onClick={handleLayInCourse}
+                  >
+                    Lay in course
+                  </button>
+                  {canEngage && (
+                    <button
+                      className="travel-button engage-button"
+                      data-testid="engage-autopilot"
+                      onClick={handleEngage}
+                    >
+                      Engage Autopilot
+                    </button>
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}
