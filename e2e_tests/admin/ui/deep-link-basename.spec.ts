@@ -51,3 +51,42 @@ test.describe('Admin UI - deep-link basename (WO-NEON-NH8)', () => {
     await expect(page.locator('h1.page-title')).toHaveText('User Management');
   });
 });
+
+test.describe('Admin UI - unknown-route 404 (WO-ADM-FALLBACK-404)', () => {
+  authTest('an authenticated visit to an unknown route renders the 404 view showing the attempted path, not a silent /dashboard redirect', async ({ page, adminCredentials }) => {
+    await loginAsAdmin(page, adminCredentials);
+
+    await page.goto(`${BASE_PATH}/definitely-not-a-route`, { waitUntil: 'domcontentloaded' });
+
+    // The old behaviour silently redirected every unknown path to /dashboard,
+    // which is exactly what let dead-link regressions go unnoticed. Assert
+    // both that we did NOT land on /dashboard and that the 404 view names
+    // the actual attempted path (proving it's not a generic error screen).
+    expect(page.url()).not.toContain('/dashboard');
+    await expect(page.locator('h1.page-title')).toHaveText('Page Not Found');
+    await expect(page.getByText('/definitely-not-a-route', { exact: false })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Return to Dashboard' })).toBeVisible();
+  });
+
+  test('a logged-out visit to an unknown route still redirects to login with state.from preserved, landing on the 404 view after auth', async ({ page }) => {
+    // Start from a clean, logged-out slate (mirrors the known-route case above).
+    await page.goto(`${BASE_PATH}/login`, { waitUntil: 'domcontentloaded' });
+    await page.evaluate(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+
+    await page.goto(`${BASE_PATH}/definitely-not-a-route`, { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(new RegExp(`${BASE_PATH}/login$`));
+
+    await page.fill('#username, [name="username"], input[type="text"]', 'admin');
+    await page.fill('#password, [name="password"], input[type="password"]', 'admin');
+    await page.click('.login-button, button[type="submit"], [role="button"]');
+
+    // state.from carries the ORIGINAL unknown path back through login, so
+    // the admin lands there (now authenticated) and sees the 404 view --
+    // not /dashboard.
+    await expect(page).toHaveURL(new RegExp(`${BASE_PATH}/definitely-not-a-route$`), { timeout: 15000 });
+    await expect(page.locator('h1.page-title')).toHaveText('Page Not Found');
+  });
+});

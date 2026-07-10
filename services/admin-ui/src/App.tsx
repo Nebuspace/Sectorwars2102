@@ -51,6 +51,7 @@ const BangGalaxyPage = lazy(() => import('./components/pages/BangGalaxyPage'));
 const FactionManagement = lazy(() => import('./components/pages/FactionManagement'));
 const MessageModeration = lazy(() => import('./components/pages/MessageModeration'));
 const TranslationManagement = lazy(() => import('./components/pages/TranslationManagement'));
+const NotFound = lazy(() => import('./components/pages/NotFound'));
 
 // Helper component for protected lazy routes.
 // The ErrorBoundary is keyed by pathname so a crash on one page resets
@@ -124,9 +125,15 @@ function App() {
 
                 {/* Redirect root to dashboard */}
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                
-                {/* Fallback route - also redirect to dashboard */}
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+
+                {/* Fallback route - an honest 404 instead of a silent redirect
+                    (WO-ADM-FALLBACK-404). Uses the same ProtectedLazyRoute
+                    wrapper every other route does: AppLayout above already
+                    redirects a logged-out admin to /login with state.from
+                    preserved before this route's element ever renders, and
+                    ProtectedRoute is the second, defense-in-depth guard on
+                    this specific route. */}
+                <Route path="*" element={<ProtectedLazyRoute element={<NotFound />} />} />
               </Route>
             </Routes>
           </Router>
