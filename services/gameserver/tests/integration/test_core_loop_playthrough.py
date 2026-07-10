@@ -83,6 +83,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -97,6 +98,28 @@ from src.models.warp_tunnel import WarpTunnel, WarpTunnelType
 from src.services import ai_provider_service as ai_provider_module
 
 API = settings.API_V1_STR
+
+
+@pytest.fixture
+def client(app_fixture: FastAPI, db: Session) -> TestClient:
+    """Shadows ``tests/conftest.py``'s own ``client`` fixture for THIS FILE
+    ONLY (pytest resolves same-named fixtures file-local-first — zero effect
+    on any other test file) — the shared fixture's ``TestClient(app_fixture)``
+    sends Starlette's default ``Host: testserver``, which
+    ``TrustedHostMiddleware`` (main.py:326-328) rejects with a 400 whenever
+    ``settings.DEVELOPMENT_MODE`` is false at app-construction time (the
+    live stage run hit exactly this — DEVELOPMENT_MODE is false there).
+
+    ``base_url="http://localhost"`` is env-independent BY CONSTRUCTION, not
+    by reading DEVELOPMENT_MODE and branching: main.py's allowed_hosts is
+    ``["*"]`` when DEVELOPMENT_MODE else
+    ``["localhost", "*.app.github.dev", "*.repl.co"]`` — "localhost" is a
+    member of BOTH branches (the wildcard trivially allows it; the
+    restrictive list names it explicitly), so this Host header passes
+    regardless of which branch a given environment (stage's DEVELOPMENT_
+    MODE=false pin, a permissive CI, or a local run) actually took. Never
+    hardcodes a stage/tailnet-specific host."""
+    return TestClient(app_fixture, base_url="http://localhost")
 
 
 def _commodity(quantity: int, capacity: int, base_price: int, *, buys: bool, sells: bool) -> dict:
