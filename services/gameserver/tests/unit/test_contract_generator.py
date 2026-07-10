@@ -23,6 +23,7 @@ from src.models.contract import Contract, ContractIssuerType, ContractStatus
 from src.models.faction import Faction
 from src.models.sector import Sector, sector_warps
 from src.models.station import StationClass
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services import contract_generator
 from src.services.contract_generator import compute_cargo_delivery_payment
 
@@ -55,18 +56,26 @@ class _FakeQuery:
         return sum(1 for row in self._rows if all(_match(row, c) for c in self._criteria))
 
     def all(self) -> List[Any]:
-        return list(self._rows)
+        # No pre-existing query in this file chained .filter() before
+        # .all() (the sector_warps/Sector reads used here are unfiltered),
+        # so this used to ignore self._criteria entirely -- silently
+        # correct only because it was never exercised. The new WarpTunnel
+        # query (WO-SWEEP-SILENT-SWEEPS) is the first .filter().all() in
+        # this file's call graph and needs criteria genuinely applied.
+        return [row for row in self._rows if all(_match(row, c) for c in self._criteria)]
 
 
 class _FakeSession:
     def __init__(
         self, *, sectors: Optional[List[Any]] = None, edges: Optional[List[Any]] = None,
         contracts: Optional[List[Any]] = None, factions: Optional[List[Any]] = None,
+        tunnels: Optional[List[Any]] = None,
     ) -> None:
         self.sectors = sectors or []
         self.edges = edges or []
         self.contracts = contracts or []
         self.factions = factions or []
+        self.tunnels = tunnels or []
         self.added: List[Any] = []
         self.flush_calls = 0
 
@@ -80,6 +89,8 @@ class _FakeSession:
             return _FakeQuery(self.contracts)
         if head is Faction:
             return _FakeQuery(self.factions)
+        if head is WarpTunnel:
+            return _FakeQuery(self.tunnels)
         raise AssertionError(f"unexpected query for {entities!r}")
 
     def add(self, obj: Any) -> None:
@@ -98,6 +109,20 @@ def _sector(sector_id: int) -> SimpleNamespace:
 
 def _edge(a: SimpleNamespace, b: SimpleNamespace, *, bidirectional: bool = False) -> SimpleNamespace:
     return SimpleNamespace(source_sector_id=a.id, destination_sector_id=b.id, is_bidirectional=bidirectional)
+
+
+def _tunnel(
+    a: SimpleNamespace, b: SimpleNamespace, *,
+    bidirectional: bool = False, status: WarpTunnelStatus = WarpTunnelStatus.ACTIVE,
+) -> SimpleNamespace:
+    """WarpTunnel row shape (WO-SWEEP-SILENT-SWEEPS) -- the inter-region
+    connection bang_import_service._add_nexus_warp actually writes; a
+    sector_warps-only graph never includes it (see
+    test_cross_region_pair_reachable_only_via_warp_tunnel below)."""
+    return SimpleNamespace(
+        origin_sector_id=a.id, destination_sector_id=b.id,
+        is_bidirectional=bidirectional, status=status,
+    )
 
 
 def _station(
@@ -166,7 +191,10 @@ class TestGenerateNpcContracts:
     def test_single_station_is_a_no_op(self) -> None:
         db, origin, _destination = _one_hop_pair()
         result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin])
-        assert result == {"generated": 0, "stations_scanned": 1}
+        assert result == {
+            "generated": 0, "stations_scanned": 1,
+            "blocked_by": {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 0},
+        }
 
     def test_skips_zero_price_commodity(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """calculate_dynamic_price's own band-clamp floors any KNOWN
@@ -269,6 +297,118 @@ class TestGenerateNpcContracts:
         # rather than merely counting).
         assert result["generated"] == 1
         assert db.added[0].destination_station_id == open_destination.id
+
+    def test_cross_region_pair_reachable_only_via_warp_tunnel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """WO-SWEEP-SILENT-SWEEPS root-cause regression: bang_import_
+        service._add_nexus_warp wires every spoke region to the Nexus with
+        a WarpTunnel row, never a sector_warps row -- that's the ONLY
+        inter-region edge that exists. No sector_warps edge here at all
+        (mirrors two real regions with zero in-region overlap); the pair
+        is reachable ONLY through the WarpTunnel. Fails pre-fix (with
+        _load_directed_sector_graph reading sector_warps alone, this pair
+        is unreachable and generates nothing)."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        sec_a, sec_b = _sector(1), _sector(2)
+        origin = _station(sector=sec_a, commodities={"ore": _sells(100)})
+        destination = _station(sector=sec_b, commodities={"ore": _buys()})
+        db = _FakeSession(
+            sectors=[sec_a, sec_b], edges=[],  # no sector_warps edge anywhere
+            tunnels=[_tunnel(sec_a, sec_b)],
+        )
+
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert result["generated"] == 1
+        assert db.added[0].destination_station_id == destination.id
+
+    def test_bidirectional_warp_tunnel_reaches_both_ways(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        sec_a, sec_b = _sector(1), _sector(2)
+        # Tunnel direction is B -> A; origin is A. Only reachable if the
+        # bidirectional flag adds the reverse edge too.
+        origin = _station(sector=sec_a, commodities={"ore": _sells(100)})
+        destination = _station(sector=sec_b, commodities={"ore": _buys()})
+        db = _FakeSession(
+            sectors=[sec_a, sec_b], edges=[],
+            tunnels=[_tunnel(sec_b, sec_a, bidirectional=True)],
+        )
+
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert result["generated"] == 1
+
+    def test_inactive_warp_tunnel_is_not_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        sec_a, sec_b = _sector(1), _sector(2)
+        origin = _station(sector=sec_a, commodities={"ore": _sells(100)})
+        destination = _station(sector=sec_b, commodities={"ore": _buys()})
+        db = _FakeSession(
+            sectors=[sec_a, sec_b], edges=[],
+            tunnels=[_tunnel(sec_a, sec_b, status=WarpTunnelStatus.COLLAPSED)],
+        )
+
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert result["generated"] == 0
+        assert result["blocked_by"]["unreachable"] == 1
+
+
+@pytest.mark.unit
+class TestBlockedByCounters:
+    """WO-SWEEP-SILENT-SWEEPS: generate_npc_contracts' blocked_by dict is
+    the thing that turns a silent legitimate-zero into a diagnosable one --
+    one test per bucket, each isolating exactly one blocking reason."""
+
+    def test_price_bucket_counts_non_positive_price(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, origin, destination = _one_hop_pair()
+        monkeypatch.setattr(
+            "src.services.trading_service.TradingService.calculate_dynamic_price",
+            lambda self, station, commodity, transaction_type: 0,
+        )
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert result["blocked_by"] == {"no_buyer": 0, "unreachable": 0, "price": 1, "pool": 0}
+
+    def test_no_buyer_bucket_counts_pairs_with_zero_buy_flagged_stations(self) -> None:
+        sec_a, sec_b = _sector(1), _sector(2)
+        origin = _station(sector=sec_a, commodities={"ore": _sells(100)})
+        # A second station exists, but never flags "ore" as buys -- no
+        # candidate is even a buyer, distinct from "a buyer exists but is
+        # unreachable/pool-capped".
+        other = _station(sector=sec_b, commodities={"fuel": _buys()})
+        db = _FakeSession(sectors=[sec_a, sec_b], edges=[_edge(sec_a, sec_b)])
+
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, other])
+        assert result["blocked_by"] == {"no_buyer": 1, "unreachable": 0, "price": 0, "pool": 0}
+
+    def test_unreachable_bucket_counts_pairs_with_a_buyer_but_no_path(self) -> None:
+        sec_a, sec_b = _sector(1), _sector(2)
+        origin = _station(sector=sec_a, commodities={"ore": _sells(100)})
+        destination = _station(sector=sec_b, commodities={"ore": _buys()})
+        db = _FakeSession(sectors=[sec_a, sec_b], edges=[])  # buyer exists, no path at all
+
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert result["blocked_by"] == {"no_buyer": 0, "unreachable": 1, "price": 0, "pool": 0}
+
+    def test_pool_bucket_counts_pairs_where_every_buyer_is_at_cap(self) -> None:
+        db, origin, destination = _one_hop_pair()
+        db.contracts = [
+            SimpleNamespace(
+                id=uuid.uuid4(), issuer_id=destination.id, issuer_type=ContractIssuerType.NPC,
+                status=ContractStatus.POSTED,
+            )
+            for _ in range(contract_generator.MAX_ACTIVE_NPC_CONTRACTS_PER_STATION)
+        ]
+
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        assert result["blocked_by"] == {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 1}
+
+    def test_buckets_and_generated_sum_to_pairs_scanned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """generated + every blocked_by bucket must account for every
+        sell-eligible (origin, commodity) pair scanned -- no pair silently
+        falls through uncounted."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, origin, destination = _one_hop_pair()
+        result = contract_generator.generate_npc_contracts(db, now=_NOW, stations=[origin, destination])
+        total = result["generated"] + sum(result["blocked_by"].values())
+        assert total == 1  # exactly one (origin, commodity) pair existed
 
 
 @pytest.mark.unit

@@ -9,6 +9,7 @@ held-sweep wrapper-level pins (WO-CMB-SUSPECT-LIFE-1 / WO-RT-TEAM-REP /
 WO-PIRATE-ECO-2 loop wiring).
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -257,19 +258,30 @@ class TestHeldSweepWiringNeverBreaksTheLoop:
         assert db.committed is False
         assert db.closed is True
 
-    def test_locked_elsewhere_skips_cleanly_without_touching_the_core(self):
+    def test_locked_elsewhere_skips_cleanly_without_touching_the_core(self, caplog):
         """A skip-on-contention path (lock held by another instance) must
         NOT call the core at all, and must NOT roll back (there is nothing
-        to roll back — the lock-check itself is the only statement run)."""
+        to roll back — the lock-check itself is the only statement run).
+
+        WO-SWEEP-SILENT-SWEEPS: this path used to return 0 with NO log line
+        at all — indistinguishable, from the log, from "ran and found
+        nothing due" (the caller only logs `if cleared:`). caplog pins that
+        it now logs, so a lock-contention run is visible even though its
+        return value is identical to a legitimate empty run."""
         class _LockHeldDB(_FakeLockDB):
             def execute(self, *args, **kwargs):
                 return SimpleNamespace(scalar=lambda: False)
 
         db = _LockHeldDB()
-        with patch("src.core.database.SessionLocal", return_value=db), patch(
+        with caplog.at_level(logging.INFO), patch(
+            "src.core.database.SessionLocal", return_value=db,
+        ), patch(
             "src.services.suspect_service.clear_expired_suspects",
         ) as mock_core:
             result = _run_suspect_clear_sweep_sync()
         assert result == 0
         mock_core.assert_not_called()
         assert db.closed is True
+        assert any(
+            "lock busy, skipped" in r.getMessage() for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]

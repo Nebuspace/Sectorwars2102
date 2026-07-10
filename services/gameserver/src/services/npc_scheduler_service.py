@@ -4713,7 +4713,13 @@ def _run_suspect_clear_sweep_sync() -> int:
     """Auto-clear every player whose suspect_until has elapsed
     (ships.md:293's "auto-clears at suspect_until" guarantee — nothing else
     re-checks a stale is_suspect flag once the triggering encounter is
-    over). Returns the count cleared."""
+    over). Returns the count cleared.
+
+    WO-SWEEP-SILENT-SWEEPS: got_lock=False used to return 0 with no log
+    line at all -- indistinguishable, from the log, from "ran and found
+    nothing due" (the caller only logs `if cleared:`). Both are legitimately
+    silent-most-of-the-time states, but only ONE of them means the sweep
+    never actually ran this tick -- that one now gets its own line."""
     from src.core.database import SessionLocal
     from src.services.suspect_service import clear_expired_suspects
 
@@ -4724,6 +4730,7 @@ def _run_suspect_clear_sweep_sync() -> int:
             {"key": _SUSPECT_CLEAR_LOCK_KEY},
         ).scalar()
         if not got_lock:
+            logger.info("NPC scheduler: suspect auto-clear sweep — lock busy, skipped")
             return 0
         cleared = clear_expired_suspects(db)
         db.commit()

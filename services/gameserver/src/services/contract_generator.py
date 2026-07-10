@@ -23,6 +23,7 @@ from src.models.contract import Contract, ContractIssuerType, ContractStatus, Co
 from src.models.faction import Faction
 from src.models.sector import Sector, sector_warps
 from src.models.station import Station
+from src.models.warp_tunnel import WarpTunnel, WarpTunnelStatus
 from src.services.trading_service import TradingService
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,22 @@ def compute_cargo_delivery_payment(
 # which must respect warp directionality, not an out-of-band teleport. ---
 
 def _load_directed_sector_graph(db: Session) -> Tuple[Dict[uuid.UUID, int], Dict[uuid.UUID, List[uuid.UUID]]]:
+    """Edge sources mirror the established pair nav_service.NavService.
+    _build_known_graph / aria_personal_intelligence_service._build_
+    explored_adjacency already use: the ``sector_warps`` association table
+    (bang's IN-region warp topology) PLUS ACTIVE ``WarpTunnel`` rows.
+
+    WarpTunnel is not optional here (WO-SWEEP-SILENT-SWEEPS): bang_import_
+    service._add_nexus_warp wires every spoke region to the Nexus with a
+    WarpTunnel row, not a sector_warps row -- that ONE tunnel per region is
+    the entire inter-region graph. Reading sector_warps alone (as this
+    function did before) leaves every cross-region origin/destination pair
+    unreachable, which -- with a real galaxy spanning many regions -- silently
+    zeroed out contract generation for any pair that wasn't in the same
+    region. No is_latent filter, unlike a player's own explored-graph view:
+    this represents the galaxy's REAL connectivity for NPC-run cargo (see
+    this function's own directed-BFS docstring above), not what a player has
+    scanned yet."""
     sectors = db.query(Sector.id, Sector.sector_id).all()
     pk_to_sector_id = {s.id: s.sector_id for s in sectors}
     edges = db.query(
@@ -115,6 +132,13 @@ def _load_directed_sector_graph(db: Session) -> Tuple[Dict[uuid.UUID, int], Dict
         adjacency.setdefault(row.source_sector_id, []).append(row.destination_sector_id)
         if row.is_bidirectional:
             adjacency.setdefault(row.destination_sector_id, []).append(row.source_sector_id)
+
+    tunnels = db.query(WarpTunnel).filter(WarpTunnel.status == WarpTunnelStatus.ACTIVE).all()
+    for tunnel in tunnels:
+        adjacency.setdefault(tunnel.origin_sector_id, []).append(tunnel.destination_sector_id)
+        if tunnel.is_bidirectional:
+            adjacency.setdefault(tunnel.destination_sector_id, []).append(tunnel.origin_sector_id)
+
     return pk_to_sector_id, adjacency
 
 
@@ -172,7 +196,7 @@ def generate_npc_contracts(
     db: Session,
     now: Optional[datetime] = None,
     stations: Optional[List[Any]] = None,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """Scan every station as a potential `cargo_delivery` PICKUP point
     (origin). For each commodity the origin SELLS
     (station.commodities[c]["sells"]) with enough live stock, find another
@@ -187,11 +211,22 @@ def generate_npc_contracts(
     wrapper commits.
 
     `stations`, if given, overrides the full `db.query(Station).all()`
-    scan (test injection point) -- real callers omit it."""
+    scan (test injection point) -- real callers omit it.
+
+    Returns a ``blocked_by`` counter dict alongside ``generated`` --
+    WO-SWEEP-SILENT-SWEEPS: a scan that legitimately posts 0 looked
+    identical, from the log, to one silently crashing or never running at
+    all. Counts are per (origin, commodity) pair considered, not per
+    candidate station -- ``price`` and ``no_buyer``/``pool``/``unreachable``
+    are mutually exclusive per pair, so the four counts plus ``generated``
+    sum to the number of sell-eligible (origin, commodity) pairs scanned."""
     now = now or _now()
     all_stations = stations if stations is not None else db.query(Station).all()
     if len(all_stations) < 2:
-        return {"generated": 0, "stations_scanned": len(all_stations)}
+        return {
+            "generated": 0, "stations_scanned": len(all_stations),
+            "blocked_by": {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 0},
+        }
 
     pk_to_sector_id, adjacency = _load_directed_sector_graph(db)
     trading_service = TradingService(db)
@@ -202,6 +237,7 @@ def generate_npc_contracts(
     # tick doesn't re-query and doesn't overshoot the cap.
     pool_counts: Dict[uuid.UUID, int] = {}
     generated = 0
+    blocked_by: Dict[str, int] = {"no_buyer": 0, "unreachable": 0, "price": 0, "pool": 0}
 
     for origin in all_stations:
         origin_commodities = origin.commodities or {}
@@ -214,6 +250,7 @@ def generate_npc_contracts(
 
             origin_price = trading_service.calculate_dynamic_price(origin, commodity_name, "sell")
             if origin_price <= 0:
+                blocked_by["price"] += 1
                 continue
 
             # Try EVERY eligible destination candidate, not just the first
@@ -222,16 +259,20 @@ def generate_npc_contracts(
             # have worked (see test_pool_cap_is_per_destination_not_global).
             origin_sector_pk = getattr(origin, "sector_uuid", None)
             if origin_sector_pk is None:
+                blocked_by["unreachable"] += 1
                 continue
 
             destination = None
             hops = None
+            any_buyer = False
+            any_buyer_under_cap = False
             for candidate in all_stations:
                 if candidate.id == origin.id:
                     continue
                 candidate_spec = (candidate.commodities or {}).get(commodity_name)
                 if not isinstance(candidate_spec, dict) or not candidate_spec.get("buys"):
                     continue
+                any_buyer = True
                 if candidate.id not in pool_counts:
                     pool_counts[candidate.id] = _active_npc_pool_count(db, candidate.id)
                 if pool_counts[candidate.id] >= MAX_ACTIVE_NPC_CONTRACTS_PER_STATION:
@@ -239,6 +280,7 @@ def generate_npc_contracts(
                 candidate_sector_pk = getattr(candidate, "sector_uuid", None)
                 if candidate_sector_pk is None:
                     continue
+                any_buyer_under_cap = True
                 candidate_hops = _hop_distance(adjacency, origin_sector_pk, candidate_sector_pk)
                 if candidate_hops is None:
                     continue
@@ -246,6 +288,12 @@ def generate_npc_contracts(
                 hops = candidate_hops
                 break
             if destination is None:
+                if not any_buyer:
+                    blocked_by["no_buyer"] += 1
+                elif not any_buyer_under_cap:
+                    blocked_by["pool"] += 1
+                else:
+                    blocked_by["unreachable"] += 1
                 continue
 
             quantity = min(MAX_CONTRACT_QUANTITY, available)
@@ -279,5 +327,12 @@ def generate_npc_contracts(
             pool_counts[destination.id] += 1
 
     db.flush()
-    logger.info("NPC contract generator: posted %d new cargo_delivery contract(s)", generated)
-    return {"generated": generated, "stations_scanned": len(all_stations)}
+    logger.info(
+        "NPC contract generator: posted %d new cargo_delivery contract(s) "
+        "(scanned %d station(s), blocked_by=%s)",
+        generated, len(all_stations), blocked_by,
+    )
+    return {
+        "generated": generated, "stations_scanned": len(all_stations),
+        "blocked_by": blocked_by,
+    }
