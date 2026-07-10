@@ -150,7 +150,11 @@ def playthrough_world(db: Session) -> PlaythroughWorld:
         name=f"playthrough-{base}",
         display_name="Playthrough Space",
         region_type=RegionType.PLAYER_OWNED.value,
-        total_sectors=10,
+        # valid_region_type_sector_count DB constraint: player_owned requires
+        # total_sectors in [100, 1500] (central_nexus=5000, terran_space=300).
+        # 10 was never valid — this fixture only ever populates one real
+        # sector, so 100 (the floor) is correct, not just "big enough".
+        total_sectors=100,
     )
     db.add(w.region)
     db.flush()
