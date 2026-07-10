@@ -65,6 +65,19 @@ jobs:
       JWT_SECRET: ci-schema-parity-dummy-jwt-secret-not-a-real-secret-32c
       ADMIN_USERNAME: ci-schema-parity
       ADMIN_PASSWORD: ci-schema-parity-dummy-password
+      # ARIA_ENCRYPTION_KEY joined the no-default set 2026-07-10 (07bf5cfb):
+      # Settings._validate_security_config now requires it AND validates that
+      # it parses as a real Fernet key -- so unlike the presence/length-only
+      # vars above, a random dummy string won't pass. This is a throwaway
+      # format-valid Fernet key generated once for CI; it never encrypts or
+      # decrypts anything (this job builds a fresh parity DB with zero
+      # encrypted rows -- it only needs Settings() to construct so `alembic
+      # upgrade head` and schema_parity_check.py can import the app). Inline
+      # dummy, NOT ${{ secrets.ARIA_ENCRYPTION_KEY }}, on purpose: matches the
+      # JWT/ADMIN dummy convention above and survives fork-PR runs where
+      # secrets aren't injected. The real per-env key lives only in each
+      # host's .env + the CI secret store (for a future real-pytest lane).
+      ARIA_ENCRYPTION_KEY: 7Wx6aTfsNcQQDOQWQY6vv8UAEAbJkL5ngNZW_Z0HHq0=
       # Grepped: only tests/conftest.py reads this (neither alembic/env.py
       # nor schema_parity_check.py touches it, so it's a no-op for this
       # specific job today) -- set anyway to match the house convention
