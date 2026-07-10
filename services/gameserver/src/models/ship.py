@@ -254,6 +254,17 @@ class Ship(Base):
     # Why a destroyed hull died, e.g. 'WARP_GATE_ANCHOR' (ADR-0029 — the WJ
     # is consumed as the gate's anchor mass) or 'combat'. NULL while alive.
     destruction_cause = Column(String, nullable=True)
+    # WO-GWQ-STRANDING-2: canon DATA_MODELS/ships.md:21,51-52 already names
+    # both fields ("True after the registered owner explicitly abandons the
+    # ship..."; that canon prose is written for the port-abandonment/free-
+    # claim use case, not yet built). This WO extends the SAME field pair to
+    # a second producer: a stranded pilot's free escape-pod ejection leaves
+    # the hull behind, NOT destroyed, marked abandoned here so it persists
+    # as a recoverable derelict rather than vanishing. The free-claim /
+    # 7-day auto-archive BEHAVIOR canon describes is not built by this WO —
+    # only the state marker.
+    is_abandoned = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    abandoned_at = Column(DateTime(timezone=True), nullable=True)
 
     # Combat
     combat = Column(JSONB, nullable=False)

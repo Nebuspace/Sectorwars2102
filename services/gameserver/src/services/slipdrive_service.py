@@ -67,10 +67,20 @@ class SlipdriveError(Exception):
 # mirrors the closest existing canon analog for a module spin-up window
 # (ADR-0036 gate-construction HARMONIZING is 1h canonical) at half that,
 # since this is emergency self-rescue, not a construction ritual.
+#
+# WO-GWQ-STRANDING-2 [NO-CANON] DENOMINATION CHANGE: SLIPDRIVE_FUEL_BASE /
+# SLIPDRIVE_FUEL_PER_HOP now denominate the ship.cargo["contents"]["fuel"]
+# COMMODITY (units), not player.credits (currency) -- Max's design
+# direction: the Slipdrive burns real fuel cargo; only the escape pod is
+# free. The MAGNITUDES (50 base + 10/hop) are UNCHANGED from the prior
+# WO-GWQ-STRANDING credits framing -- only what they measure changed, per
+# the dispatch's explicit "[NO-CANON] flag the denomination + the numbers"
+# instruction. Re-flagged for Max's sign-off under the new unit.
 SLIPDRIVE_CHARGE_TURN_COST = 3
 SLIPDRIVE_CHARGE_HOURS = 0.5  # canonical, scaled via scaled_deadline
 SLIPDRIVE_FUEL_BASE = 50
 SLIPDRIVE_FUEL_PER_HOP = 10
+FUEL_COMMODITY_KEY = "fuel"
 
 _EQUIPMENT_KEY = "slipdrive_charge"
 
@@ -298,11 +308,13 @@ def complete_charge(
 ) -> Dict[str, Any]:
     """Phase 2: resolve a ready charge. Teleports to the nearest non-sink
     sector by undirected hop distance, ignoring warp topology for the jump
-    itself (same as Quantum Jump's own arrival). Fuel (player.credits, per
-    the WO's explicit "fuel 50+10/hop credits" -- a currency cost, NOT a
-    ship.cargo commodity draw) is charged HERE, not at begin --
-    SLIPDRIVE_FUEL_BASE + SLIPDRIVE_FUEL_PER_HOP per hop. FLUSH-ONLY -- the
-    route owns the commit."""
+    itself (same as Quantum Jump's own arrival). Fuel is charged HERE, not
+    at begin -- SLIPDRIVE_FUEL_BASE + SLIPDRIVE_FUEL_PER_HOP per hop, drawn
+    from ship.cargo["contents"]["fuel"] (WO-GWQ-STRANDING-2: re-denominated
+    from the prior WO-GWQ-STRANDING's player.credits framing -- the
+    Slipdrive burns real fuel cargo the ship must be carrying, or have
+    delivered; see fuel_delivery_service.py). FLUSH-ONLY -- the route owns
+    the commit."""
     now = now or _now()
     player = _lock_player(db, player_id)
     ship = _require_slipdrive_hull(db, player)
@@ -342,13 +354,19 @@ def complete_charge(
     destination = by_pk[destination_pk]
 
     fuel_cost = _fuel_cost(hops)
-    credits_held = player.credits or 0
-    if credits_held < fuel_cost:
+    cargo = ship.cargo if isinstance(ship.cargo, dict) else {}
+    contents = dict(cargo.get("contents") or {})
+    fuel_held = int(contents.get(FUEL_COMMODITY_KEY, 0) or 0)
+    if fuel_held < fuel_cost:
         raise SlipdriveError(
-            f"insufficient_fuel: the Slipdrive needs {fuel_cost} credits for a {hops}-hop escape; "
-            f"you have {credits_held}"
+            f"insufficient_fuel: the Slipdrive needs {fuel_cost} fuel for a {hops}-hop escape; "
+            f"you have {fuel_held}"
         )
-    player.credits = credits_held - fuel_cost
+    contents[FUEL_COMMODITY_KEY] = fuel_held - fuel_cost
+    cargo["contents"] = contents
+    cargo["used"] = sum(int(q) for q in contents.values() if isinstance(q, (int, float)))
+    ship.cargo = cargo
+    flag_modified(ship, "cargo")
 
     # Teleport arrival -- mirrors quantum_service.jump()'s player-state sync
     # (sector, region, undock/unland flags, ship sector, presence broadcast)
@@ -384,5 +402,5 @@ def complete_charge(
         "destination_name": destination.name,
         "hops": hops,
         "fuel_spent": fuel_cost,
-        "credits_remaining": player.credits,
+        "fuel_remaining": contents.get(FUEL_COMMODITY_KEY, 0),
     }

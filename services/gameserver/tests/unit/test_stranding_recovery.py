@@ -187,11 +187,14 @@ def _fake_ship(**overrides: Any) -> SimpleNamespace:
 
 def _real_ship(**overrides: Any) -> Ship:
     """A REAL ORM instance: slipdrive_service calls flag_modified(ship,
-    "equipment_slots"), which requires `_sa_instance_state` -- a bare
-    SimpleNamespace raises AttributeError (test_warp_gate_toll.py's
-    `_fake_tunnel` precedent). `cargo` is accepted for constructor
-    compatibility but unused by the service -- Slipdrive fuel is a
-    player.credits cost (WO: "fuel 50+10/hop credits"), not a cargo draw."""
+    "equipment_slots" / "cargo"), which requires `_sa_instance_state` -- a
+    bare SimpleNamespace raises AttributeError (test_warp_gate_toll.py's
+    `_fake_tunnel` precedent). WO-GWQ-STRANDING-2: Slipdrive fuel is now a
+    ship.cargo["contents"]["fuel"] commodity draw (re-denominated from the
+    prior WO-GWQ-STRANDING's player.credits framing) -- `cargo` defaults to
+    a generously fuel-stocked hold so tests not specifically about fuel
+    sufficiency don't need to think about it; TestFuelSufficiency below
+    overrides it to test both the sufficient and insufficient paths."""
     base = dict(
         id=uuid.uuid4(),
         type=ShipType.WARP_JUMPER,
@@ -199,6 +202,7 @@ def _real_ship(**overrides: Any) -> Ship:
         is_destroyed=False,
         sector_id=1,
         equipment_slots={},
+        cargo={"capacity": 1000, "used": 0, "contents": {"fuel": 10000}},
     )
     base.update(overrides)
     return Ship(**base)
@@ -543,10 +547,81 @@ class TestFuelMonotonic:
         assert result["hops"] == 1  # s2 is reached at hop 1 and is non-sink
         expected_fuel = slipdrive_service._fuel_cost(1)
         assert result["fuel_spent"] == expected_fuel
-        # Fuel is credit-denominated (WO: "fuel 50+10/hop credits"), NOT a
-        # ship.cargo["fuel"] commodity -- complete_charge debits player.credits.
-        assert player.credits == 10000 - expected_fuel
-        assert result["credits_remaining"] == player.credits
+        # WO-GWQ-STRANDING-2: fuel is now ship.cargo["contents"]["fuel"]-
+        # denominated (re-denominated from the prior credits framing) --
+        # complete_charge debits the ship's cargo hold, not player.credits.
+        assert ship.cargo["contents"]["fuel"] == 10000 - expected_fuel
+        assert result["fuel_remaining"] == ship.cargo["contents"]["fuel"]
+        assert player.credits == 10000  # untouched -- no longer a currency cost
+
+
+# --- WO-GWQ-STRANDING-2: sufficient / insufficient fuel-cargo paths ---------- #
+
+
+@pytest.mark.unit
+class TestFuelSufficiency:
+    def _setup(self, monkeypatch: pytest.MonkeyPatch, *, fuel_in_hold: int):
+        origin = _sector(1)  # sink -- inbound-only edge below
+        target = _sector(2)  # non-sink, hop 1
+        ship = _real_ship(
+            sector_id=origin.sector_id,
+            cargo={"capacity": 1000, "used": 0, "contents": {"fuel": fuel_in_hold}},
+        )
+        player = _fake_player(current_sector_id=origin.sector_id, current_ship=ship, turns=100)
+        spec = SimpleNamespace(type=ShipType.WARP_JUMPER, quantum_jump_capable=True)
+        db = _FakeSession(
+            player=player, spec=spec, sectors=[origin, target],
+            warps=[_edge(target, origin, bidirectional=False)],  # origin: inbound only -> sink
+        )
+        _install_movement_and_docking_stubs(monkeypatch)
+        return db, player, ship
+
+    def test_sufficient_fuel_completes_and_deducts_exactly_the_formula_amount(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db, player, ship = self._setup(monkeypatch, fuel_in_hold=100)  # base(50) + 1*10 = 60 needed
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        slipdrive_service.begin_charge(db, player.id, now=t0)
+        ready_at = t0 + timedelta(hours=CHARGE_HOURS, seconds=1)
+
+        result = slipdrive_service.complete_charge(db, player.id, now=ready_at)
+
+        expected_fuel = slipdrive_service._fuel_cost(1)
+        assert expected_fuel == 60
+        assert result["fuel_spent"] == expected_fuel
+        assert ship.cargo["contents"]["fuel"] == 100 - expected_fuel
+        assert player.current_sector_id == 2
+
+    def test_insufficient_fuel_raises_and_charge_state_is_preserved(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db, player, ship = self._setup(monkeypatch, fuel_in_hold=10)  # need 60, have 10
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        slipdrive_service.begin_charge(db, player.id, now=t0)
+        ready_at = t0 + timedelta(hours=CHARGE_HOURS, seconds=1)
+
+        with pytest.raises(SlipdriveError, match="insufficient_fuel"):
+            slipdrive_service.complete_charge(db, player.id, now=ready_at)
+
+        # Rejected before any state mutation: fuel untouched, player did not
+        # move, and the charge slot survives so the player can retry once
+        # fuel is delivered (fuel_delivery_service.py) without re-charging.
+        assert ship.cargo["contents"]["fuel"] == 10
+        assert player.current_sector_id == 1
+        assert ship.equipment_slots.get(slipdrive_service._EQUIPMENT_KEY) is not None
+
+    def test_exactly_enough_fuel_is_sufficient_not_a_strict_inequality_bug(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db, player, ship = self._setup(monkeypatch, fuel_in_hold=60)  # exactly the formula amount
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        slipdrive_service.begin_charge(db, player.id, now=t0)
+        ready_at = t0 + timedelta(hours=CHARGE_HOURS, seconds=1)
+
+        result = slipdrive_service.complete_charge(db, player.id, now=ready_at)
+
+        assert result["fuel_spent"] == 60
+        assert ship.cargo["contents"]["fuel"] == 0
 
 
 # --- Accept #9: nearest-target selection + tiebreak -------------------------- #
@@ -764,7 +839,8 @@ class TestZeroHopSelfMatch:
         expected_fuel = slipdrive_service._fuel_cost(0)  # base cost only, no hop multiplier -- still charged
         assert expected_fuel == FUEL_BASE
         assert result["fuel_spent"] == expected_fuel
-        assert player.credits == 10000 - CHARGE_TURN_COST * 0 - expected_fuel  # turns are separate from credits
+        assert ship.cargo["contents"]["fuel"] == 10000 - expected_fuel  # cargo-denominated, not credits
+        assert player.credits == 10000  # untouched
         assert player.current_sector_id == origin.sector_id  # unchanged (was already there)
         assert ship.equipment_slots.get(slipdrive_service._EQUIPMENT_KEY) is None  # charge cleared regardless
         # No actual sector transition -> no presence-sync / docking-release call fired
