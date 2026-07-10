@@ -868,10 +868,10 @@ class MovementService:
 
             # Execute the move
             result = self._execute_movement(player, destination_sector_id, tunnel_cost)
-            
+
             # Check for tunnel-specific events
             tunnel_events = self._check_for_tunnel_events(player, current_sector_id, destination_sector_id)
-            
+
             # Check for encounters
             encounters = self._check_for_encounters(player, destination_sector_id)
 
@@ -994,10 +994,10 @@ class MovementService:
         current_sector = self.db.query(Sector).filter(Sector.sector_id == player.current_sector_id).first()
         if not current_sector:
             return {"warps": [], "tunnels": []}
-        
+
         # Get ship for capabilities
         ship = player.current_ship
-        
+
         # Get direct warps. sector_warps stores bidirectional connections
         # as ONE row (source, dest, is_bidirectional=true) per the
         # bang-integration schema map — so a sector reaches its
@@ -1494,7 +1494,7 @@ class MovementService:
             "revealed": revealed_count,
             "sectors": revealed_sector_numbers,
         }
-    
+
     def get_path_between_sectors(self, start_sector_id: int, end_sector_id: int) -> List[Dict[str, Any]]:
         """
         Find the shortest path between two sectors.
@@ -1503,21 +1503,21 @@ class MovementService:
         # Get sectors
         start_sector = self.db.query(Sector).filter(Sector.sector_id == start_sector_id).first()
         end_sector = self.db.query(Sector).filter(Sector.sector_id == end_sector_id).first()
-        
+
         if not start_sector or not end_sector:
             return []
-        
+
         # Simple BFS for path finding
         visited = {start_sector.id: None}  # Maps sector ID to previous sector ID
         queue = [(start_sector, 0)]  # (sector, distance)
-        
+
         while queue:
             current, distance = queue.pop(0)
-            
+
             # If we've reached the destination
             if current.id == end_sector.id:
                 break
-            
+
             # Add all neighbors to the queue. Walk both outgoing edges and
             # incoming bidirectional edges so BFS pathfinding can traverse
             # bang's bidirectional sector_warps in reverse.
@@ -1539,27 +1539,27 @@ class MovementService:
                     continue
                 visited[origin.id] = current.id
                 queue.append((origin, distance + 1))
-            
+
             # Check warp tunnels
             tunnels = self.db.query(WarpTunnel).filter(
                 WarpTunnel.origin_sector_id == current.id,
                 WarpTunnel.status == WarpTunnelStatus.ACTIVE
             ).all()
-            
+
             for tunnel in tunnels:
                 dest = self.db.query(Sector).filter(Sector.id == tunnel.destination_sector_id).first()
                 if dest and dest.id not in visited:
                     visited[dest.id] = current.id
                     queue.append((dest, distance + 1))
-        
+
         # If we didn't reach the end sector
         if end_sector.id not in visited:
             return []
-        
+
         # Reconstruct the path
         path = []
         current_id = end_sector.id
-        
+
         while current_id is not None:
             current_sector = self.db.query(Sector).filter(Sector.id == current_id).first()
             if current_sector:
@@ -1568,17 +1568,17 @@ class MovementService:
                     "name": current_sector.name,
                     "type": current_sector.type.name
                 })
-            
+
             current_id = visited[current_id]
-        
+
         # Calculate turn costs between each step
         for i in range(len(path) - 1):
             from_sector_id = path[i]["sector_id"]
             to_sector_id = path[i + 1]["sector_id"]
-            
+
             from_sector = self.db.query(Sector).filter(Sector.sector_id == from_sector_id).first()
             to_sector = self.db.query(Sector).filter(Sector.sector_id == to_sector_id).first()
-            
+
             # Check if direct warp (either direction for bidirectional
             # sector_warps rows) or tunnel.
             if self._is_directly_connected(from_sector, to_sector):
@@ -1591,21 +1591,21 @@ class MovementService:
                     WarpTunnel.destination_sector_id == to_sector.id,
                     WarpTunnel.status == WarpTunnelStatus.ACTIVE
                 ).first()
-                
+
                 if tunnel:
                     path[i + 1]["turn_cost"] = tunnel.turn_cost
                     path[i + 1]["connection_type"] = "tunnel"
                 else:
                     path[i + 1]["turn_cost"] = 999  # Should not happen
                     path[i + 1]["connection_type"] = "unknown"
-        
+
         # Set turn cost for first sector to 0
         if path:
             path[0]["turn_cost"] = 0
             path[0]["connection_type"] = "start"
-        
+
         return path
-    
+
     def _is_directly_connected(self, from_sector: Sector, to_sector: Sector) -> bool:
         """True if there's a usable direct warp from ``from_sector`` to ``to_sector``.
 
@@ -1645,7 +1645,7 @@ class MovementService:
         turn_cost = self._calculate_warp_cost(current_sector, destination_sector, ship)
 
         return True, turn_cost, "Direct warp available"
-    
+
     def _has_player_gate(self, current_sector_id: int, destination_sector_id: int) -> Optional[WarpTunnel]:
         """The ACTIVE player-built warp gate connecting origin ->
         destination (FIX 7), or None. Player gates are one-way ARTIFICIAL
@@ -1789,7 +1789,7 @@ class MovementService:
         turn_cost = max(1, int(turn_cost * self._maintenance_speed_multiplier(ship)))
 
         return True, turn_cost, "Warp tunnel available"
-    
+
     def _maintenance_speed_multiplier(self, ship: Optional[Ship]) -> float:
         """Turn-cost multiplier from the ship's maintenance performance band's
         SPEED modifier (ships.md:68-75 "Performance bands" — the Speed column).
@@ -1973,7 +1973,7 @@ class MovementService:
         # already releases; warp/quantum/hangar/tow did not).
         from src.services.docking_service import release as _release_docking_slip
         _release_docking_slip(self.db, None, player)
-        
+
         # Update ship position
         if player.current_ship:
             player.current_ship.sector_id = destination_sector_id
@@ -2178,7 +2178,7 @@ class MovementService:
             "hazard_level": destination_sector.hazard_level,
             "radiation_level": destination_sector.radiation_level
         }
-        
+
         return {
             "success": True,
             "message": f"Moved to Sector {destination_sector_id}",
@@ -2186,7 +2186,7 @@ class MovementService:
             "sector": sector_info,
             "turns_remaining": player.turns
         }
-    
+
     def _update_player_presence(self, player: Player, old_sector_id: int, new_sector_id: int) -> None:
         """Update player presence records in sectors.
 
@@ -2244,16 +2244,16 @@ class MovementService:
             players_present.append(player_entry)
             new_sector.players_present = players_present
             flag_modified(new_sector, 'players_present')
-    
+
     def _check_for_encounters(self, player: Player, sector_id: int) -> List[Dict[str, Any]]:
         """Check for encounters upon entering a sector."""
         encounters = []
-        
+
         # Get the destination sector
         sector = self.db.query(Sector).filter(Sector.sector_id == sector_id).first()
         if not sector:
             return encounters
-        
+
         # Check for other players (PvP opportunity)
         other_players = [p for p in sector.players_present if p.get("player_id") != str(player.id)]
         if other_players:
@@ -2262,7 +2262,7 @@ class MovementService:
                 "players": other_players,
                 "threat_level": "varies"
             })
-        
+
         # Check for special sector events
         if sector.type.name in ["BLACK_HOLE", "NEBULA", "ASTEROID_FIELD", "WORMHOLE"]:
             encounters.append({
@@ -2270,7 +2270,7 @@ class MovementService:
                 "hazard": sector.type.name,
                 "threat_level": "medium" if sector.hazard_level < 7 else "high"
             })
-        
+
         # Check for sector drones — live hostile deployed Drone rows, mirroring
         # the attackable set defined in attack_sector_drones
         # (combat_service.py:1426-1431): same sector, not the moving player's
@@ -2348,28 +2348,182 @@ class MovementService:
                         "engagement": "pursuit"
                     })
 
+        # WO-CMB-NPC-INITIATED-1 lane C (Max ruling, 2026-07-10) — pirate
+        # trigger. VERIFY-FIRST found this leg's police_patrol_ships block
+        # (immediately above) is the SAME deferral this WO closes: its own
+        # comment says auto-firing combat here would override the
+        # documented "no NPC-initiated combat" v1 scope, "so this leg
+        # stops at detection." That deferral is now superseded — but only
+        # for PIRATES here (police stays on the ADR-0042 PendingEngagement
+        # dispatch-then-2-turn-arrival path, wired separately in
+        # npc_engagement_service._maybe_initiate_police_combat / lane B;
+        # the police_patrol_ships block above is untouched, out of scope
+        # for both assigned lanes).
+        #
+        # pirate_patrol_ships (ADR-0047, seeded by npc_spawn_service.py's
+        # PIRATE_CAPTAIN_KIND rosters) carries npc_character_ids directly
+        # — no Wanted-status gate exists or is needed; canon aggression is
+        # unconditional presence-based, not a player-standing predicate
+        # (faction-lore.md: pirates are hostile by default in the
+        # sectors they occupy).
+        #
+        # [NO-CANON] flee threshold: faction-lore.md "Flee if the
+        # defender's combat rating exceeds the Pirate's by >= 2x" gives
+        # no combat-rating definition (📐 Design-only). Reuses the
+        # SAME "ship value as toughness proxy" convention
+        # combat_service.attack_npc_ship's own loot-faucet already
+        # established (ShipSpecification.base_cost) rather than
+        # inventing a new metric — the pirate flees (no initiation) when
+        # the player's hull value is >= 2x the pirate's.
+        #
+        # [NO-CANON] tribute branch: faction-lore.md also describes a
+        # pre-combat tribute demand (pay/flee/fight) this codebase has
+        # NO existing implementation of anywhere (verified — zero hits
+        # for "tribute" in src/). Building that prompt/UI is explicitly
+        # out of scope here (Samantha's ruling): this wires the FIGHT
+        # branch only, unconditionally, as the honest v1 kernel.
+        #
+        # Cargo disposal for a pirate victory: [NO-CANON] v1 is
+        # evaporates-with-log (cargo_stolen is returned in the result
+        # dict for audit but never transferred to the pirate's hold) —
+        # symmetric with lane B's police-confiscation choice, and avoids
+        # inventing a "pirate loot economy" write path this WO wasn't
+        # scoped to build.
+        pirate_patrols = (sector.defenses or {}).get("pirate_patrol_ships")
+        if isinstance(pirate_patrols, list) and player.current_ship is not None:
+            for patrol in pirate_patrols:
+                if not isinstance(patrol, dict):
+                    continue
+                npc_id_strs = patrol.get("npc_character_ids") or []
+                if not npc_id_strs:
+                    continue
+                try:
+                    npc_ids = [uuid.UUID(s) for s in npc_id_strs]
+                except (TypeError, ValueError):
+                    continue
+                event = self._maybe_initiate_pirate_combat(player, sector, npc_ids)
+                if event is not None:
+                    encounters.append(event)
+                # First live pirate patrol in the sector resolves the
+                # encounter for this movement — mirrors lane A/B's own
+                # strictly-1v1 scoping (the resolver is 1v1; a second
+                # squad becomes eligible on a later encounter, not
+                # stacked onto this same arrival).
+                break
+
         return encounters
-    
+
+    def _maybe_initiate_pirate_combat(
+        self, player: Player, sector: Sector, npc_ids: List[uuid.UUID],
+    ) -> Optional[Dict[str, Any]]:
+        """The pirate fight-branch wiring. Never raises — a failed
+        initiation degrades to no encounter entry, matching every other
+        leg in _check_for_encounters (an encounter-detection failure must
+        never break the player's move, which _execute_movement has
+        ALREADY committed by the time this runs).
+
+        Distinct commit boundary from _execute_movement's own (earlier,
+        already-landed) commit: npc_initiate_attack/npc_attack_player is
+        flush-only by design (WO-CMB-NPC-INITIATED-1), so this method issues its OWN
+        commit for the combat's consequences before emitting — mirrors
+        combat_service.attack_player/attack_npc_ship's established
+        "resolve, commit, then emit inline" shape, adapted for a second,
+        later commit in the same request rather than the request's only
+        one (the earlier movement commit already landed and is
+        unaffected either way)."""
+        try:
+            from src.models.npc_character import NPCCharacter
+            from src.models.ship import ShipSpecification
+            from src.services.npc_engagement_service import (
+                build_npc_combat_initiated_event,
+                emit_npc_combat_initiated,
+                npc_initiate_attack,
+            )
+
+            player_ship = player.current_ship
+            player_spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == player_ship.type
+            ).first()
+            player_value = int(getattr(player_spec, "base_cost", 0) or 0)
+
+            # Flee threshold needs at least one candidate NPC's ship value;
+            # peek the first eligible squad member's ship the same way
+            # _select_attacking_npc will (ENGAGED status not required here
+            # — pirates have no arrival-delay lifecycle, unlike police
+            # squads; presence in the roster is itself "on duty").
+            first_npc = self.db.query(NPCCharacter).filter(
+                NPCCharacter.id.in_(npc_ids)
+            ).first()
+            if first_npc is None or first_npc.ship_id is None:
+                return None
+            pirate_ship = self.db.query(Ship).filter(Ship.id == first_npc.ship_id).first()
+            if pirate_ship is None or pirate_ship.is_destroyed:
+                return None
+            pirate_spec = self.db.query(ShipSpecification).filter(
+                ShipSpecification.type == pirate_ship.type
+            ).first()
+            pirate_value = int(getattr(pirate_spec, "base_cost", 0) or 0)
+
+            if pirate_value > 0 and player_value >= 2 * pirate_value:
+                return None  # pirate flees — player is too tough
+
+            result = npc_initiate_attack(
+                self.db, npc_ids, player.id, sector, cause="pirate_aggression"
+            )
+            if result is None:
+                return None
+
+            self.db.commit()
+
+            npc = self.db.query(NPCCharacter).filter(
+                NPCCharacter.id == uuid.UUID(result["npc_id"])
+            ).first()
+            if npc is not None:
+                emit_npc_combat_initiated(result, npc, player, sector, cause="pirate_aggression")
+                event = build_npc_combat_initiated_event(
+                    result, npc, player, sector, cause="pirate_aggression"
+                )
+            else:
+                event = {"type": "npc_combat_initiated", "trigger": "pirate_aggression"}
+
+            return {
+                "type": "pirate_aggression",
+                "combat_result": result.get("combat_result"),
+                "combat_log_id": result.get("combat_log_id"),
+                "npc_ship_destroyed": result.get("npc_ship_destroyed"),
+                "defender_ship_destroyed": result.get("defender_ship_destroyed"),
+                "threat_level": "high",
+                "engagement": "fight",
+                **{k: v for k, v in event.items() if k not in ("type",)},
+            }
+        except Exception:
+            logger.exception(
+                "Pirate combat initiation failed for player %s in sector %s "
+                "(non-fatal — the move itself already committed)",
+                player.id, sector.sector_id,
+            )
+            return None
+
     def _check_for_tunnel_events(self, player: Player, from_sector_id: int, to_sector_id: int) -> List[Dict[str, Any]]:
         """Check for events during warp tunnel travel."""
         events = []
-        
+
         # Get sectors
         from_sector = self.db.query(Sector).filter(Sector.sector_id == from_sector_id).first()
         to_sector = self.db.query(Sector).filter(Sector.sector_id == to_sector_id).first()
-        
+
         if not from_sector or not to_sector:
             return events
-        
+
         # Get the tunnel
         tunnel = self.db.query(WarpTunnel).filter(
             WarpTunnel.origin_sector_id == from_sector.id,
             WarpTunnel.destination_sector_id == to_sector.id
         ).first()
-        
+
         if not tunnel:
             return events
-        
+
         # Check for tunnel stability issues
         if tunnel.stability < 0.7:
             # Chance of tunnel instability causing issues
@@ -2393,11 +2547,11 @@ class MovementService:
                     "severity": "medium",
                     "effect": "random"
                 })
-        
+
         # Update tunnel usage counter
         if tunnel.max_uses is not None:
             tunnel.current_uses += 1
-            
+
             # Check if tunnel is about to collapse
             if tunnel.max_uses - tunnel.current_uses <= 3:
                 events.append({
@@ -2406,7 +2560,7 @@ class MovementService:
                     "remaining_uses": tunnel.max_uses - tunnel.current_uses,
                     "effect": "warning"
                 })
-                
+
                 # If this was the last use, collapse the tunnel
                 if tunnel.current_uses >= tunnel.max_uses:
                     tunnel.status = WarpTunnelStatus.COLLAPSED
@@ -2415,5 +2569,5 @@ class MovementService:
                         "severity": "high",
                         "effect": "permanent"
                     })
-        
+
         return events

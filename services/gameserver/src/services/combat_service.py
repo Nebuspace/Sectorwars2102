@@ -1618,7 +1618,7 @@ class CombatService:
         Callers: ``npc_engagement_service.npc_initiate_attack`` is the
         police/pirate POLICY layer — defender/NPC guards, squad selection,
         the Terran-Space law-enforcement bypass amendment, and the
-        ``npc_attack_initiated`` WS event all live THERE, not here. This
+        ``npc_combat_initiated`` WS event all live THERE, not here. This
         method is purely mechanical resolution + persistence, mirroring
         ``attack_npc_ship``'s own shape and re-using its exact NPC-ship-
         destroyed handling (``is_destroyed``/``is_active``/``status``,
