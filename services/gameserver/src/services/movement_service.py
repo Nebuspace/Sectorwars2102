@@ -2217,6 +2217,42 @@ class MovementService:
                         sector_id=destination_sector.id,
                     )
                 )
+                # ARIA narration — P-A2 first entry to an undiscovered
+                # sector (aria-companion.md:227, WO-ARIA-NARRATE-KERNEL).
+                # Nested in this new-row branch: same idempotency
+                # argument as the ARIAExplorationMap insert above — fires
+                # exactly once per (player, sector). Best-effort, own
+                # try/except so a narration hiccup can never strand the
+                # exploration-map write it rides alongside.
+                try:
+                    _sector_type_desc = {
+                        SectorType.STANDARD: "standard space",
+                        SectorType.NEBULA: "a nebula",
+                        SectorType.ASTEROID_FIELD: "an asteroid field",
+                        SectorType.BLACK_HOLE: "a black hole",
+                        SectorType.STAR_CLUSTER: "a star cluster",
+                        SectorType.VOID: "open void",
+                        SectorType.INDUSTRIAL: "an industrial zone",
+                        SectorType.AGRICULTURAL: "an agricultural belt",
+                        SectorType.FORBIDDEN: "forbidden space",
+                        SectorType.WORMHOLE: "a wormhole",
+                    }.get(destination_sector.type, "standard space")
+                    from src.services.aria_narration_service import (
+                        dispatch_narration_push,
+                        get_aria_narration_service,
+                        resolve_assistance_level,
+                    )
+                    narration_line = get_aria_narration_service().record_event(
+                        "P-A2",
+                        player.id,
+                        assistance_level=resolve_assistance_level(self.db, player.id),
+                        dedupe_key=str(destination_sector.id),
+                        context={"sector_type_desc": _sector_type_desc},
+                    )
+                    if narration_line is not None and narration_line.delivered_immediately:
+                        dispatch_narration_push(player, narration_line)
+                except Exception as e:
+                    logger.error("ARIA narration hook failed (P-A2): %s", e)
                 # Emergent faction-rep (ADR-0032): "First-scan a NEBULA /
                 # BLACK_HOLE / ANOMALY / WARP_STORM sector | +15 Nova Scientific
                 # Institute" (factions-and-teams.md NS table). IDEMPOTENT BY

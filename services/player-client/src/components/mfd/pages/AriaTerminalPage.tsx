@@ -60,6 +60,10 @@ interface LogEntry {
   actions?: AriaAction[];
   suggestions?: string[];
   isNav?: true;
+  /** Server-pushed ARIA narration catalog event (WO-ARIA-NARRATE-KERNEL /
+   *  ADR-0068), as opposed to a conversational aria_response — styled
+   *  with a faint violet accent, same idiom as isNav's cyan one. */
+  isNarration?: true;
 }
 
 // ── Command grammar regexes (ADR-0072 §Pillar 3 — ported verbatim) ────────
@@ -413,7 +417,7 @@ const AriaTerminalPage: React.FC = () => {
           {mergedMessages.map((message) => (
             <div
               key={message.id}
-              className={`mfd-page-aria-line ${message.type}${message.isNav ? ' nav' : ''}`}
+              className={`mfd-page-aria-line ${message.type}${message.isNav ? ' nav' : ''}${message.isNarration ? ' narration' : ''}`}
             >
               <span className="mfd-page-aria-prefix">{message.type === 'ai' ? 'ARIA>' : 'YOU>'}</span>
               <span className="mfd-page-aria-text">

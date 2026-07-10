@@ -85,6 +85,19 @@ export interface ARIAResponseMessage {
   signature?: string;
 }
 
+// ARIA narration push (WO-ARIA-NARRATE-KERNEL / ADR-0068). Server-side
+// delivery (the drain_due_lines → WS push wiring) lands in a later WO --
+// this handler is the client-side seam, ready to activate the moment the
+// server starts emitting the type. Shape matches
+// aria_narration_service.NarrationLine.to_payload() exactly.
+export interface ARIANarrationMessage {
+  type: 'aria_narration';
+  event_id: string;
+  line: string;
+  priority: number;
+  ts: string;
+}
+
 // Quantum-shard harvest push (quantum.py's _emit_quantum_harvest, sent to the
 // harvesting player's own socket only, post-commit). Canon Resolution step 6:
 // "Emit a real-time event on the WebSocket bus so the client UI updates
@@ -650,6 +663,17 @@ class WebSocketService {
     const handler = (message: WebSocketMessage) => {
       if (message.type === 'aria_response') {
         callback(message as ARIAResponseMessage);
+      }
+    };
+    this.addMessageHandler(handler);
+    return () => this.removeMessageHandler(handler);
+  }
+
+  // ARIA narration push (WO-ARIA-NARRATE-KERNEL) — see ARIANarrationMessage above.
+  onARIANarration(callback: (message: ARIANarrationMessage) => void): () => void {
+    const handler = (message: WebSocketMessage) => {
+      if (message.type === 'aria_narration') {
+        callback(message as ARIANarrationMessage);
       }
     };
     this.addMessageHandler(handler);

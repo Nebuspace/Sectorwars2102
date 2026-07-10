@@ -6,6 +6,7 @@ import websocketService, {
   SectorPlayersMessage,
   NotificationMessage,
   ARIAResponseMessage,
+  ARIANarrationMessage,
   LinkStatus
 } from '../services/websocket';
 import { useAuth } from './AuthContext';
@@ -216,6 +217,7 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
       [key: string]: any;
     }>;
     suggestions?: string[];
+    isNarration?: true;
   }>>([]);
   const [sectorPlayers, setSectorPlayers] = useState<Array<{
     user_id: string;
@@ -476,6 +478,26 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
       }
     });
     cleanups.push(ariaHandler);
+
+    // ARIA narration handler (WO-ARIA-NARRATE-KERNEL / ADR-0068). Appends
+    // into the SAME ariaMessages array aria_response populates, so
+    // AriaTerminalPage's existing merge-and-render (ariaMessages +
+    // navMessages) picks these up with zero further wiring — visually
+    // attributed to ARIA via type: 'ai', no layout changes. Server-side
+    // emission lands in a later WO; this activates the moment the
+    // message type appears on the wire.
+    const ariaNarrationHandler = websocketService.onARIANarration((message: ARIANarrationMessage) => {
+      const narrationMessage = {
+        id: `narration-${message.event_id}-${message.ts}`,
+        type: 'ai' as const,
+        content: message.line,
+        timestamp: message.ts ?? new Date().toISOString(),
+        isNarration: true as const,
+      };
+
+      setAriaMessages(prev => [...prev, narrationMessage]);
+    });
+    cleanups.push(ariaNarrationHandler);
 
     // Handle other message types
     const generalHandler = (message: WebSocketMessage) => {
@@ -765,8 +787,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
         default:
           // Only log truly unhandled message types, not ones handled by specific handlers
           // (aria_response is consumed by the dedicated ariaHandler above; the
-          // generalHandler still sees it, so exclude it from the noise warning.)
-          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'npc_combat_initiated'].includes(message.type)) {
+          // generalHandler still sees it, so exclude it from the noise warning.
+          // aria_narration is consumed by ariaNarrationHandler the same way.)
+          if (!['sector_players', 'connection_status', 'chat_message', 'player_entered_sector', 'player_left_sector', 'notification', 'aria_response', 'aria_narration', 'medal_awarded', 'genesis_progress', 'planetary_update', 'contract_offer', 'contract_settled', 'rp_governor_status', 'npc_combat_initiated'].includes(message.type)) {
             console.warn('WebSocket: Unhandled message type:', message.type);
           }
       }

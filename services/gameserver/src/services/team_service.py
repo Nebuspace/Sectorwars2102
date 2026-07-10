@@ -418,6 +418,36 @@ class TeamService:
         # commit, but the WS room-hop fires AFTER (WO-RT-ROOM-HOP).
         hop_user_id = str(player.user_id)
         hop_team_id = str(team.id)
+        team_name = team.name
+
+        # ARIA narration — P-A3 team join, Player.team_id null→non-null
+        # (aria-companion.md:228, WO-ARIA-NARRATE-KERNEL). Scoped to THIS
+        # method only (the canonical "join" action) — not the separate
+        # create_team path, which is a distinct action from "joining" per
+        # the event's own name. Dedupe key is the team id: a player who
+        # leaves and later rejoins the SAME team is not re-narrated;
+        # joining a DIFFERENT team narrates again. Best-effort, never
+        # fails the join.
+        try:
+            from src.services.aria_narration_service import (
+                dispatch_narration_push,
+                get_aria_narration_service,
+                resolve_assistance_level,
+            )
+            narration_line = get_aria_narration_service().record_event(
+                "P-A3",
+                player_id,
+                assistance_level=resolve_assistance_level(self.db, player_id),
+                dedupe_key=hop_team_id,
+                context={"team_name": team_name},
+            )
+            # `player`, not `player_id`: dispatch_narration_push reads
+            # .user_id synchronously (before commit expires it) — reuses
+            # the same still-live ORM object hop_user_id above snapshotted.
+            if narration_line is not None and narration_line.delivered_immediately:
+                dispatch_narration_push(player, narration_line)
+        except Exception as e:
+            logger.error("ARIA narration hook failed (P-A3): %s", e)
 
         self.db.commit()
         self._schedule_team_hop(hop_user_id, hop_team_id)

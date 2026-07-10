@@ -511,6 +511,34 @@ class RankingService:
                 player.rank_points,
             )
 
+            # ARIA narration — P-F8 military_rank changes
+            # (aria-companion.md:222, WO-ARIA-NARRATE-KERNEL). Dedupe key
+            # is the NEW rank name: "once per promotion" means a repeat
+            # call for the SAME promotion is suppressed, but the NEXT
+            # promotion (a different rank name) narrates again.
+            # Best-effort, never fails the promotion.
+            try:
+                from src.services.aria_narration_service import (
+                    dispatch_narration_push,
+                    get_aria_narration_service,
+                    resolve_assistance_level,
+                )
+                narration_line = get_aria_narration_service().record_event(
+                    "P-F8",
+                    player.id,
+                    assistance_level=resolve_assistance_level(self.db, player.id),
+                    dedupe_key=earned_rank["name"],
+                    context={
+                        "new_rank": earned_rank["name"],
+                        "combat_bonus": earned_rank.get("combat_bonus", 0),
+                        "max_turns_bonus": earned_rank.get("max_turns_bonus", 0),
+                    },
+                )
+                if narration_line is not None and narration_line.delivered_immediately:
+                    dispatch_narration_push(player, narration_line)
+            except Exception as e:
+                logger.error("ARIA narration hook failed (P-F8): %s", e)
+
             result = {
                 "promoted": True,
                 "old_rank": old_rank,

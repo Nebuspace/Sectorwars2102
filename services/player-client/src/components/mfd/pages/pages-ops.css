@@ -184,6 +184,15 @@
   padding-left: 0.35rem;
 }
 
+/* ARIA narration lines (WO-ARIA-NARRATE-KERNEL, server-pushed catalog
+   events): faint violet left accent — ARIA's own channel color — sets a
+   proactive narration apart from a conversational aria_response, without
+   changing geometry (same idiom as .nav above). */
+.mfd-page-aria-line.narration {
+  border-left: 2px solid rgba(123, 47, 255, 0.3);
+  padding-left: 0.35rem;
+}
+
 .mfd-page-aria-actions {
   margin: 0.2rem 0 0 1.6rem;
 }

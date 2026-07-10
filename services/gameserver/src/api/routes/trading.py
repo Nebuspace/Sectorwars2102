@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, UTC
 from pydantic import BaseModel, Field
 
@@ -197,6 +197,42 @@ def _dispatch_trade_medals(db: Session, player: Player) -> None:
         )
     except Exception:
         logger.warning("_dispatch_trade_medals failed (non-fatal)", exc_info=True)
+
+
+def _first_profitable_trade_margin(
+    db: Session, player: Player, commodity: str, sell_unit_price: int, quantity: int
+) -> Optional[int]:
+    """Best-effort "was this trade profitable" signal for ARIA's P-F1
+    narration hook (aria-companion.md:216, WO-ARIA-NARRATE-KERNEL). No
+    cost-basis ledger exists for cargo in this game, so this compares the
+    per-unit payout just received against the unit_price of the player's
+    MOST RECENT completed BUY of the same commodity (any station) — a
+    proxy for "you just closed a buy-low/sell-high loop" without new
+    cost-tracking infrastructure. Returns the total margin in credits if
+    profitable, else None (no prior buy, or this sell didn't beat it).
+
+    WO-QTI-PHANTOM-SCHEMA lane c: SAVEPOINT-scoped (begin_nested) -- an
+    unguarded query failure here would poison this route's shared
+    session, failing the trade's OWN db.commit() downstream even though
+    the hook's own try/except (the caller) already logged and moved on.
+    """
+    with db.begin_nested():
+        last_buy = (
+            db.query(MarketTransaction)
+            .filter(
+                MarketTransaction.player_id == player.id,
+                MarketTransaction.commodity == commodity,
+                MarketTransaction.transaction_type == TransactionType.BUY,
+            )
+            .order_by(MarketTransaction.timestamp.desc())
+            .first()
+        )
+    if last_buy is None or last_buy.unit_price is None:
+        return None
+    per_unit_margin = sell_unit_price - last_buy.unit_price
+    if per_unit_margin <= 0:
+        return None
+    return int(per_unit_margin * quantity)
 
 
 def compute_effective_unit_price(
@@ -1083,6 +1119,34 @@ async def sell_resource(
             total_value=total_earnings,
         )
 
+        # ARIA narration — P-F1 first profitable trade this session
+        # (aria-companion.md:216, WO-ARIA-NARRATE-KERNEL). Best-effort,
+        # never fails the trade. A line the ceiling allows RIGHT NOW is
+        # pushed immediately (lane C); anything queued (backlogged) is
+        # delivered later by the heartbeat drain in websocket_service.py.
+        try:
+            margin = _first_profitable_trade_margin(
+                db, current_player, trade_request.resource_type,
+                effective_sell_price, trade_request.quantity,
+            )
+            if margin is not None:
+                from src.services.aria_narration_service import (
+                    dispatch_narration_push,
+                    get_aria_narration_service,
+                    resolve_assistance_level,
+                )
+                narration_line = get_aria_narration_service().record_event(
+                    "P-F1",
+                    current_player.id,
+                    assistance_level=resolve_assistance_level(db, current_player.id),
+                    session_token=str(current_player.last_game_login),
+                    context={"margin": f"{margin:,}"},
+                )
+                if narration_line is not None and narration_line.delivered_immediately:
+                    dispatch_narration_push(current_player, narration_line)
+        except Exception:
+            logger.warning("ARIA narration hook failed (P-F1)", exc_info=True)
+
         db.commit()
 
         # Real-time market broadcast (post-commit, batched, defensive).
@@ -1407,6 +1471,49 @@ async def dock_at_station(
         # read-only context.
         station_prices = db.query(MarketPrice).filter(MarketPrice.station_id == station.id).all()
         await _record_aria_market_observation(db, current_player, station, station_prices)
+
+        # ARIA narration — P-F7 first docking at a station with open
+        # contracts (aria-companion.md:221, WO-ARIA-NARRATE-KERNEL). The
+        # "once per station ever" suppression key means a station with
+        # zero open contracts on this player's first dock is simply not
+        # recorded here — a LATER dock at the same station that does have
+        # contracts still narrates once, exactly matching the trigger.
+        # Best-effort, never fails the dock. Query is SAVEPOINT-scoped
+        # (WO-QTI-PHANTOM-SCHEMA lane c) -- see _first_profitable_trade_margin's
+        # docstring above for why a read needs this too, not just writes.
+        try:
+            from src.models.contract import Contract, ContractStatus
+
+            with db.begin_nested():
+                open_contract_count = (
+                    db.query(Contract)
+                    .filter(
+                        Contract.destination_station_id == station.id,
+                        Contract.status == ContractStatus.POSTED,
+                    )
+                    .count()
+                )
+            if open_contract_count > 0:
+                from src.services.aria_narration_service import (
+                    dispatch_narration_push,
+                    get_aria_narration_service,
+                    resolve_assistance_level,
+                )
+                narration_line = get_aria_narration_service().record_event(
+                    "P-F7",
+                    current_player.id,
+                    assistance_level=resolve_assistance_level(db, current_player.id),
+                    dedupe_key=str(station.id),
+                    context={
+                        "station_name": station.name,
+                        "contract_count": open_contract_count,
+                        "plural": "" if open_contract_count == 1 else "s",
+                    },
+                )
+                if narration_line is not None and narration_line.delivered_immediately:
+                    dispatch_narration_push(current_player, narration_line)
+        except Exception:
+            logger.warning("ARIA narration hook failed (P-F7)", exc_info=True)
 
         db.commit()
 

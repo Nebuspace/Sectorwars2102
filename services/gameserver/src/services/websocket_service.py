@@ -931,7 +931,32 @@ async def handle_websocket_message(user_id: str, message_data: Dict[str, Any]):
             "type": "heartbeat_ack",
             "timestamp": datetime.now(UTC).isoformat()
         })
-    
+
+        # ARIA narration backlog drain (WO-ARIA-NARRATE-KERNEL lane C). The
+        # kernel's global ceiling is one line/minute/player; the client's
+        # own heartbeat cadence is 30s (services/websocket.ts), comfortably
+        # inside that window, so piggybacking the drain here needs no new
+        # scheduler infrastructure. A line the ceiling allows the moment it
+        # fires is already pushed immediately by dispatch_narration_push at
+        # the emit-hook call site (trading.py/movement_service.py/
+        # ranking_service.py/team_service.py) -- this only flushes what
+        # landed in the per-player BACKLOG queue while the ceiling was
+        # still closed. Best-effort: the kernel itself never raises, but a
+        # malformed metadata blob must never break the heartbeat ack above
+        # (already sent).
+        try:
+            from src.services.aria_narration_service import get_aria_narration_service
+
+            metadata = connection_manager.connection_metadata.get(user_id, {})
+            player_id = metadata.get("user_data", {}).get("player_id")
+            if player_id:
+                for due_line in get_aria_narration_service().drain_due_lines(player_id):
+                    await connection_manager.send_personal_message(user_id, due_line.to_payload())
+        except Exception:
+            logger.debug(
+                "Skipped aria_narration heartbeat drain for user %s", user_id, exc_info=True,
+            )
+
     elif message_type == "chat_message":
         # Handle chat messages
         target_type = message_data.get("target_type", "sector")  # sector, team, global
