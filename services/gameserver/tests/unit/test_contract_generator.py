@@ -9,6 +9,7 @@ generator's documented test-injection point) -- no Station query needed.
 """
 from __future__ import annotations
 
+import inspect
 import operator
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -460,3 +461,80 @@ class TestComputeCargoDeliveryPayment:
     def test_zero_hops_zero_tightness_is_base_commodity_value(self) -> None:
         payment, _ = compute_cargo_delivery_payment(Decimal("20"), 10, hops=0, deadline_hours=Decimal("4.0"))
         assert payment == Decimal("200.00")  # 20 x 10 x 1.0 x 1.0 x 1.0
+
+
+@pytest.mark.unit
+class TestGatherComputeWriteSplit:
+    """WO-SCHED-LOOP-WEDGE: the orchestrator's live capture on heimdall
+    found generate_npc_contracts idle-in-transaction for 28+ minutes, one
+    thread pegged at 99.67% CPU running pure-Python reachability compute
+    the whole time. Split into gather / compute / write so the compute
+    phase structurally cannot hold an open transaction (it takes no db
+    parameter at all) and structurally cannot re-run an overlapping BFS
+    per candidate (one full traversal per DISTINCT origin sector, cached)."""
+
+    def test_compute_phase_takes_no_db_parameter(self) -> None:
+        """Structural pin: compute_contract_generation_batch's signature
+        has no db/Session argument -- "no open transaction can span the
+        compute" is enforced by the function's own type, not just caller
+        discipline."""
+        params = list(inspect.signature(contract_generator.compute_contract_generation_batch).parameters)
+        assert params == ["inputs"]
+
+    def test_hop_distances_computed_once_per_origin_sector_not_per_candidate(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Falsifier for the scaling fix: _all_hop_distances must be
+        called AT MOST once per DISTINCT origin sector, never once per
+        candidate considered -- the exact bottleneck the orchestrator's
+        live capture found. 3 origins sharing ONE sector, each selling a
+        different commodity to a common destination, is 3 (origin,
+        commodity) pairs but only ONE distinct origin sector -- pre-fix
+        (a fresh BFS per candidate) this would have run the traversal
+        3 times; the cache collapses it to 1."""
+        call_count = 0
+        real_all_hop_distances = contract_generator._all_hop_distances
+
+        def _spy(adjacency: Any, origin_pk: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            return real_all_hop_distances(adjacency, origin_pk)
+
+        monkeypatch.setattr(contract_generator, "_all_hop_distances", _spy)
+
+        sec_origin, sec_dest = _sector(1), _sector(2)
+        db = _FakeSession(sectors=[sec_origin, sec_dest], edges=[_edge(sec_origin, sec_dest)])
+        origins = [
+            _station(sector=sec_origin, commodities={f"ore{i}": _sells(100)})
+            for i in range(3)
+        ]
+        destination = _station(sector=sec_dest, commodities={f"ore{i}": _buys() for i in range(3)})
+
+        inputs = contract_generator.gather_contract_generation_inputs(db, stations=[*origins, destination])
+        batch = contract_generator.compute_contract_generation_batch(inputs)
+
+        assert call_count == 1, f"expected exactly 1 BFS for 1 distinct origin sector, got {call_count}"
+        assert len(batch.contracts) == 3  # all 3 pairs still matched correctly
+
+    def test_three_phases_compose_to_the_same_result_as_the_single_call_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """generate_npc_contracts (the preserved single-session API every
+        other test in this file exercises) must produce the IDENTICAL
+        result whether called directly or via its own three phases run
+        by hand -- proving the split is a pure refactor, not a behavior
+        change."""
+        monkeypatch.setattr(contract_generator, "pick_deadline_hours", lambda: 3.0)
+        db, origin, destination = _one_hop_pair()
+
+        inputs = contract_generator.gather_contract_generation_inputs(db, stations=[origin, destination])
+        batch = contract_generator.compute_contract_generation_batch(inputs)
+        generated = contract_generator.write_contract_generation_batch(db, batch, now=_NOW)
+
+        assert generated == 1
+        assert len(db.added) == 1
+        c = db.added[0]
+        assert c.issuer_id == destination.id
+        assert c.commodity_type == "ore"
+        assert c.quantity == 100
+        assert c.deadline == _NOW + timedelta(hours=3.0)

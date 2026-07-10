@@ -51,6 +51,7 @@ import hashlib
 import logging
 import os
 import random
+import threading
 import uuid
 from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, List, Optional, Tuple
@@ -775,6 +776,12 @@ _SUSPECT_CLEAR_LOCK_KEY = _mnemonic_lock_key("SUSP")
 # whole-pass-one-lock shape rather than a per-region key — growth's own
 # per-window idempotence is already the finer-grained safety net).
 _PIRATE_ECOSYSTEM_TICK_LOCK_KEY = _mnemonic_lock_key("PECO")
+# NPC contract generation (WO-SCHED-LOOP-WEDGE refinement) — own key. The
+# wrapper previously took NO lock at all (fine on a single instance); the
+# decoupled generation task now gates its WRITE phase on this so two
+# gameserver instances can't double-generate against the same galaxy in a
+# multi-instance deployment. 'CGEN' = Contract GENeration.
+_CONTRACT_GENERATION_LOCK_KEY = _mnemonic_lock_key("CGEN")
 
 # ADR-0063: recruit lifecycle stage lasts 7 canonical days, then ACTIVE.
 RECRUIT_STAGE_HOURS = 7 * 24
@@ -4692,21 +4699,58 @@ def _run_price_alert_sweep_sync() -> int:
         db.close()
 
 
+def _read_sweep_anchor(db: Session, state_key: str):
+    """Shared read half of the durable-anchor contract (WO-SCHED-CADENCE-
+    DRIFT / WO-SCHED-LOOP-WEDGE): the stable-anchor-row lookup (oldest
+    Galaxy by created_at — a dev re-bootstrap creates a NEWER galaxy;
+    keying off the newest would reset every anchor and double-fire every
+    sweep at once) and last-run parse, factored out so _sweep_is_due
+    (read-only peek) and _sweep_due_and_advance (stamping check) can't
+    drift apart on what "due" means. Returns (galaxy_row_or_None,
+    last_run_datetime_or_None)."""
+    from src.models.galaxy import Galaxy
+
+    galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+    if galaxy is None:
+        return None, None
+    state = dict(galaxy.state or {})
+    last_run_raw = state.get(state_key)
+    if last_run_raw is None:
+        return galaxy, None
+    try:
+        return galaxy, datetime.fromisoformat(last_run_raw)
+    except (TypeError, ValueError):
+        return galaxy, None
+
+
+def _sweep_is_due(db: Session, state_key: str, interval_seconds: int, now: datetime) -> bool:
+    """Read-only peek — WO-SCHED-LOOP-WEDGE. Same due/not-due answer as
+    _sweep_due_and_advance, but never mutates or stamps anything. For
+    gating whether to even START a (now cheap, but non-zero) gather+
+    compute pass before its authoritative, stamping due-check happens at
+    write time — see _run_contract_generation_sync. Not itself a
+    correctness guarantee against concurrent instances (nothing here
+    locks); the stamping call at write time, lock-gated, is the real one."""
+    galaxy, last_run = _read_sweep_anchor(db, state_key)
+    if galaxy is None:
+        return False
+    if last_run is None:
+        return True
+    return (now - last_run).total_seconds() >= interval_seconds
+
+
 def _sweep_due_and_advance(
     db: Session, state_key: str, interval_seconds: int, now: datetime,
 ) -> bool:
-    """WO-SCHED-CADENCE-DRIFT: the ONLY correctness guarantee for the 5
+    """WO-SCHED-CADENCE-DRIFT: the ONLY correctness guarantee for the
     sub-daily loop-table sweeps below — see the _SUSPECT_CLEAR_STATE_KEY
     block's comment for the full mechanism this replaces (iteration-counted
     `elapsed`, which drifts under load and resets on restart).
 
-    Durable, wall-clock, restart-safe due-check. Mirrors _run_weekly_decay_
-    sync's own Galaxy.state anchor discipline exactly, adapted from a
-    canonical-week index to a wall-clock ISO timestamp: same stable-anchor-
-    row selection (oldest Galaxy by created_at — a dev re-bootstrap creates
-    a NEWER galaxy; keying off the newest would reset every anchor and
-    double-fire every sweep at once), same "advance in the caller's own
-    transaction, not here" discipline.
+    Durable, wall-clock, restart-safe due-check-and-stamp. Mirrors
+    _run_weekly_decay_sync's own Galaxy.state anchor discipline exactly,
+    adapted from a canonical-week index to a wall-clock ISO timestamp; same
+    "advance in the caller's own transaction, not here" discipline.
 
     Returns False (not due) without mutating anything if the interval
     hasn't elapsed, or if no Galaxy row exists yet. Returns True AND stamps
@@ -4719,20 +4763,12 @@ def _sweep_due_and_advance(
     Does not take any lock itself — callers that need one (double-run
     protection across gameserver instances) acquire it BEFORE calling this,
     same as they always did for the sweep's own work."""
-    from src.models.galaxy import Galaxy
-
-    galaxy = db.query(Galaxy).order_by(Galaxy.created_at.asc()).first()
+    galaxy, last_run = _read_sweep_anchor(db, state_key)
     if galaxy is None:
         return False
+    if last_run is not None and (now - last_run).total_seconds() < interval_seconds:
+        return False
     state = dict(galaxy.state or {})
-    last_run_raw = state.get(state_key)
-    if last_run_raw is not None:
-        try:
-            last_run = datetime.fromisoformat(last_run_raw)
-        except (TypeError, ValueError):
-            last_run = None
-        if last_run is not None and (now - last_run).total_seconds() < interval_seconds:
-            return False
     state[state_key] = now.isoformat()
     galaxy.state = state
     flag_modified(galaxy, "state")
@@ -4752,25 +4788,110 @@ def _sweep_due_and_advance(
 # contract_service at all.
 # ---------------------------------------------------------------------------
 
-def _run_contract_generation_sync() -> int:
-    from src.core.database import SessionLocal
-    from src.services.contract_generator import generate_npc_contracts
+def _run_contract_generation_sync(cancel_event: "threading.Event | None" = None) -> int:
+    """WO-SCHED-LOOP-WEDGE: 3 short, SEPARATE transactions instead of one
+    session spanning the whole pass — read (gather) → pure-Python compute
+    with NO open transaction at all → write (advisory-lock + durable
+    due-check + INSERTs + anchor stamp, atomic in one commit).
 
-    db = SessionLocal()
+    The orchestrator's live capture on heimdall (2026-07-10) found the
+    OLD single-session shape idle-in-transaction for 28+ minutes: the read
+    phase's last DB op committed nothing, then pure-Python reachability
+    compute ran the whole time with the transaction still open, pinning
+    the WAL/vacuum horizon for no reason (the compute touches no rows).
+    This split makes "no open transaction spans the compute" a structural
+    property (compute_contract_generation_batch takes no db/Session
+    parameter at all), not just a discipline to remember.
+
+    A cheap read-only peek (_sweep_is_due) skips gather+compute entirely
+    when obviously not due yet. The WRITE phase's _sweep_due_and_advance
+    call is the sole AUTHORITATIVE, stamping due-check — lock-gated
+    (_CONTRACT_GENERATION_LOCK_KEY) so two gameserver instances can't
+    double-generate, mirroring _run_suspect_clear_sweep_sync's own
+    lock-then-due-check discipline. A computed batch discarded because
+    another instance won the write race (or already generated since the
+    peek) is wasted CPU, never a correctness issue — nothing was written.
+
+    `cancel_event` (WO-SCHED-GEN-ORPHAN-CANCEL): this runs in a worker
+    thread via `asyncio.to_thread` — cancelling the awaiting asyncio task
+    (as npc_scheduler_loop's shutdown does to _contract_generation_loop)
+    returns control to the event loop in ~1ms but does NOT stop this OS
+    thread; a running `concurrent.futures.Future` can't be interrupted, so
+    without this check the thread runs on unattended, straight into the
+    write phase's advisory-lock acquisition + open write transaction, even
+    after the scheduler has shut down. `cancel_event` is set from the
+    async side the instant that cancellation is observed
+    (_contract_generation_loop's own CancelledError handler); checked here
+    at every phase boundary (after peek, after gather, after compute) so
+    an orphaned thread returns 0 before ever reaching the write phase —
+    never holding the lock or an open txn past shutdown. `None` (the
+    default) means "never cancelled" — every other caller and existing
+    test is unaffected."""
+    from src.core.database import SessionLocal
+    from src.services.contract_generator import (
+        compute_contract_generation_batch,
+        gather_contract_generation_inputs,
+        write_contract_generation_batch,
+    )
+
+    now = datetime.now(UTC)
+
+    peek_db = SessionLocal()
     try:
-        if not _sweep_due_and_advance(
-            db, _CONTRACT_GENERATION_STATE_KEY, CONTRACT_GENERATION_SWEEP_SECONDS, datetime.now(UTC),
-        ):
+        if not _sweep_is_due(peek_db, _CONTRACT_GENERATION_STATE_KEY, CONTRACT_GENERATION_SWEEP_SECONDS, now):
             return 0
-        result = generate_npc_contracts(db)
-        db.commit()
-        return result.get("generated", 0)
     except Exception:
-        logger.exception("NPC contract generation sweep failed")
-        db.rollback()
+        logger.exception("NPC contract generation peek phase failed")
         return 0
     finally:
-        db.close()
+        peek_db.close()
+
+    if cancel_event is not None and cancel_event.is_set():
+        return 0
+
+    read_db = SessionLocal()
+    try:
+        inputs = gather_contract_generation_inputs(read_db)
+    except Exception:
+        logger.exception("NPC contract generation gather phase failed")
+        return 0
+    finally:
+        read_db.close()
+
+    if cancel_event is not None and cancel_event.is_set():
+        return 0
+
+    try:
+        batch = compute_contract_generation_batch(inputs)
+    except Exception:
+        logger.exception("NPC contract generation compute phase failed")
+        return 0
+
+    if cancel_event is not None and cancel_event.is_set():
+        return 0
+
+    write_db = SessionLocal()
+    try:
+        got_lock = write_db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"),
+            {"key": _CONTRACT_GENERATION_LOCK_KEY},
+        ).scalar()
+        if not got_lock:
+            logger.info("NPC scheduler: contract generation write phase — lock busy, skipped")
+            return 0
+        if not _sweep_due_and_advance(
+            write_db, _CONTRACT_GENERATION_STATE_KEY, CONTRACT_GENERATION_SWEEP_SECONDS, now,
+        ):
+            return 0
+        generated = write_contract_generation_batch(write_db, batch, now=now)
+        write_db.commit()
+        return generated
+    except Exception:
+        logger.exception("NPC contract generation write phase failed")
+        write_db.rollback()
+        return 0
+    finally:
+        write_db.close()
 
 
 def _run_contract_expire_sweep_sync() -> int:
@@ -6296,16 +6417,29 @@ async def _contract_generation_loop() -> None:
     CONTRACT_GENERATION_SWEEP_SECONDS) — decoupling the loop this runs on
     changes nothing about ITS OWN cadence guarantee, only what it can no
     longer block. Cancelled alongside npc_scheduler_loop — see that
-    function's own task lifecycle handling."""
+    function's own task lifecycle handling.
+
+    Owns the `cancel_event` (WO-SCHED-GEN-ORPHAN-CANCEL) that guards
+    against an orphaned worker thread outliving this task after
+    cancellation — see _run_contract_generation_sync's own docstring for
+    why the thread can't just be stopped directly. Set the INSTANT this
+    coroutine observes its own cancellation (the CancelledError handler
+    below), while it's still possibly awaiting the very
+    asyncio.to_thread() call whose underlying thread needs to see it —
+    every phase boundary the sync side checks (peek/gather/compute) still
+    has to run before the write phase, so there's ample time for the flag
+    to land before that thread would otherwise reach it."""
+    cancel_event = threading.Event()
     while True:
         try:
-            generated = await asyncio.to_thread(_run_contract_generation_sync)
+            generated = await asyncio.to_thread(_run_contract_generation_sync, cancel_event)
             if generated:
                 logger.info(
                     "NPC scheduler: contract generation — posted %d new contract(s)",
                     generated,
                 )
         except asyncio.CancelledError:
+            cancel_event.set()
             raise
         except Exception:
             logger.exception("NPC scheduler: contract generation sweep crashed (loop continues)")

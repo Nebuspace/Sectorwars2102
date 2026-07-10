@@ -79,6 +79,10 @@ ALL_STATIC_KEYS = {
     # it is a name-site below but deliberately absent from this dict.)
     "_SUSPECT_CLEAR_LOCK_KEY": sched._SUSPECT_CLEAR_LOCK_KEY,
     "_PIRATE_ECOSYSTEM_TICK_LOCK_KEY": sched._PIRATE_ECOSYSTEM_TICK_LOCK_KEY,
+    # WO-SCHED-LOOP-WEDGE refinement — contract generation's write phase now
+    # takes its own lock (the wrapper previously took none at all), so two
+    # gameserver instances can't double-generate.
+    "_CONTRACT_GENERATION_LOCK_KEY": sched._CONTRACT_GENERATION_LOCK_KEY,
 }
 
 # Every {"key": <bare Name>} lock-acquisition site, keyed by its enclosing
@@ -121,11 +125,13 @@ EXPECTED_NAME_SITE_MAP = {
     "_run_suspect_clear_sweep_sync": "_SUSPECT_CLEAR_LOCK_KEY",
     "_run_team_reputation_sweep_sync": "TEAM_REPUTATION_SWEEP_LOCK_KEY",
     "_run_pirate_ecosystem_tick_sync": "_PIRATE_ECOSYSTEM_TICK_LOCK_KEY",
+    # WO-SCHED-LOOP-WEDGE: generation's write phase, own advisory lock.
+    "_run_contract_generation_sync": "_CONTRACT_GENERATION_LOCK_KEY",
 }
 
-# 26 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
-# lock-site count (superseding any stale "27 sites" figure quoted anywhere
-# else -- this file is the enumeration of record going forward).
+# 27 bare-Name sites + 1 Call-form site (bootstrap_region_sync) = the true
+# lock-site count (superseding any stale figure quoted anywhere else --
+# this file is the enumeration of record going forward).
 EXPECTED_TOTAL_LOCK_SITES = len(EXPECTED_NAME_SITE_MAP) + 1
 
 
@@ -255,7 +261,7 @@ def test_all_static_keys_pairwise_distinct():
         seen[value] = name
     assert not dupes, f"colliding lock keys: {dupes}"
     assert len(values) == len(set(values))
-    assert len(ALL_STATIC_KEYS) == 28  # 1 global + 2 legacy + 25 new sweep-type keys
+    assert len(ALL_STATIC_KEYS) == 29  # 1 global + 2 legacy + 26 new sweep-type keys
 
 
 def test_all_static_keys_nonnegative_and_63bit_safe():

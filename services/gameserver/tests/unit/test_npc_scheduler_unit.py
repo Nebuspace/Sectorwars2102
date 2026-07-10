@@ -11,6 +11,7 @@ WO-PIRATE-ECO-2 loop wiring).
 
 import asyncio
 import logging
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -454,7 +455,10 @@ class TestContractGenerationDecoupling:
         slow call returned. Post-fix, they're independent asyncio tasks:
         the counter keeps ticking the whole time the slow call is still
         blocked in its own OS thread."""
-        def _slow_sync_call():
+        def _slow_sync_call(cancel_event=None):
+            # WO-SCHED-GEN-ORPHAN-CANCEL: _contract_generation_loop now
+            # always passes its own cancel_event positionally — accept it
+            # (unused here) so this stand-in matches the real call shape.
             time.sleep(0.4)
             return 0
 
@@ -528,3 +532,324 @@ class TestContractGenerationDecoupling:
 
         assert gen_loop_started.is_set()
         assert gen_loop_cancelled.is_set()
+
+    def test_run_contract_generation_sync_uses_three_separate_short_sessions(self, monkeypatch):
+        """WO-SCHED-LOOP-WEDGE structural falsifier: the pure-Python
+        compute phase must run AFTER the read session has already
+        closed, and the write phase must open a THIRD, separate session
+        — proving no open transaction spans the compute (the exact 'idle
+        in transaction for 28+ minutes' shape the orchestrator's live
+        capture on heimdall found)."""
+        import src.services.npc_scheduler_service as svc
+
+        events: list = []
+
+        class _TrackedDB:
+            def __init__(self, label):
+                self.label = label
+                events.append(("open", label))
+
+            def execute(self, *a, **k):
+                return SimpleNamespace(scalar=lambda: True)
+
+            def commit(self):
+                events.append(("commit", self.label))
+
+            def rollback(self):
+                events.append(("rollback", self.label))
+
+            def close(self):
+                events.append(("close", self.label))
+
+        labels = iter(["peek", "read", "write"])
+        monkeypatch.setattr(
+            "src.core.database.SessionLocal", lambda: _TrackedDB(next(labels)),
+        )
+        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+        monkeypatch.setattr(svc, "_sweep_due_and_advance", lambda db, *a, **k: True)
+
+        def _fake_gather(db):
+            events.append(("gather", db.label))
+            return "INPUTS-SENTINEL"
+
+        def _fake_compute(inputs):
+            assert inputs == "INPUTS-SENTINEL"
+            events.append(("compute", None))  # no db argument at all
+            return "BATCH-SENTINEL"
+
+        def _fake_write(db, batch, now=None):
+            assert batch == "BATCH-SENTINEL"
+            events.append(("write", db.label))
+            return 7
+
+        monkeypatch.setattr(
+            "src.services.contract_generator.gather_contract_generation_inputs", _fake_gather,
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.compute_contract_generation_batch", _fake_compute,
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.write_contract_generation_batch", _fake_write,
+        )
+
+        result = svc._run_contract_generation_sync()
+
+        assert result == 7
+        assert [lbl for (kind, lbl) in events if kind == "open"] == ["peek", "read", "write"]
+        read_close_idx = events.index(("close", "read"))
+        compute_idx = events.index(("compute", None))
+        write_open_idx = events.index(("open", "write"))
+        assert read_close_idx < compute_idx, "read session still open when compute started"
+        assert write_open_idx > compute_idx, "write session opened before compute finished"
+        assert events[-2] == ("commit", "write")
+        assert events[-1] == ("close", "write")
+
+    def test_write_phase_lock_busy_skips_write_without_running_generation(self, monkeypatch, caplog):
+        """WO-SCHED-GEN-LOCK: a not-acquired _CONTRACT_GENERATION_LOCK_KEY
+        must return 0 WITHOUT calling write_contract_generation_batch (no
+        double-write across gameserver instances), and — matching the
+        WO-SWEEP-SILENT-SWEEPS observability lesson — must log the skip
+        rather than returning silently."""
+        import src.services.npc_scheduler_service as svc
+
+        class _LockBusyDB:
+            def __init__(self):
+                self.closed = False
+
+            def execute(self, *a, **k):
+                return SimpleNamespace(scalar=lambda: False)  # lock held elsewhere
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr("src.core.database.SessionLocal", lambda: _LockBusyDB())
+        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+        monkeypatch.setattr(
+            "src.services.contract_generator.gather_contract_generation_inputs",
+            lambda db: "INPUTS-SENTINEL",
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.compute_contract_generation_batch",
+            lambda inputs: "BATCH-SENTINEL",
+        )
+        write_mock_calls = []
+        monkeypatch.setattr(
+            "src.services.contract_generator.write_contract_generation_batch",
+            lambda db, batch, now=None: write_mock_calls.append(batch) or 99,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = svc._run_contract_generation_sync()
+
+        assert result == 0
+        assert write_mock_calls == []
+        assert any(
+            "lock busy, skipped" in r.getMessage() for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+
+# ---------------------------------------------------------------------------
+# WO-SCHED-GEN-ORPHAN-CANCEL (F1) — asyncio.to_thread's underlying OS thread
+# can't be interrupted once running: cancelling the awaiting
+# _contract_generation_loop task returns control to the event loop in ~1ms,
+# but the thread running _run_contract_generation_sync keeps executing —
+# straight into the write phase's advisory-lock acquisition + open write
+# transaction if nothing stops it. cancel_event is the guard: set from the
+# async side the instant cancellation is observed, checked at every phase
+# boundary in the sync thread, before the write phase (the lock/txn holder)
+# is ever entered.
+# ---------------------------------------------------------------------------
+
+class TestContractGenerationCancelEvent:
+    def test_cancel_observed_mid_flight_skips_write_phase_and_lock_entirely(self, monkeypatch):
+        """The exact race F1 describes: cancellation lands WHILE the
+        orphaned thread is still inside compute — simulated here by having
+        the compute stand-in itself flip cancel_event, standing in for the
+        async side calling cancel_event.set() concurrently while this
+        thread runs. The write session must never even be OPENED, so the
+        CGEN advisory lock (acquired via write_db.execute(...)) is
+        structurally unreachable, not just unused, and
+        write_contract_generation_batch must never run."""
+        import src.services.npc_scheduler_service as svc
+
+        events: list = []
+        cancel_event = threading.Event()
+        opened_labels = ["peek", "read"]  # a "write" session must NEVER open
+        open_count = [0]
+
+        class _TrackedDB:
+            def __init__(self, label):
+                self.label = label
+                events.append(("open", label))
+
+            def execute(self, *a, **k):
+                events.append(("execute", self.label))
+                return SimpleNamespace(scalar=lambda: True)
+
+            def commit(self):
+                events.append(("commit", self.label))
+
+            def rollback(self):
+                events.append(("rollback", self.label))
+
+            def close(self):
+                events.append(("close", self.label))
+
+        def _open_db():
+            idx = open_count[0]
+            open_count[0] += 1
+            label = opened_labels[idx] if idx < len(opened_labels) else f"UNEXPECTED-{idx}"
+            return _TrackedDB(label)
+
+        monkeypatch.setattr("src.core.database.SessionLocal", _open_db)
+        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+
+        def _fake_gather(db):
+            events.append(("gather", None))
+            return "INPUTS-SENTINEL"
+
+        def _fake_compute(inputs):
+            assert inputs == "INPUTS-SENTINEL"
+            events.append(("compute", None))
+            # Stand-in for the async side observing this task's own
+            # cancellation and calling cancel_event.set() WHILE this
+            # thread is still mid-flight, ahead of the write phase.
+            cancel_event.set()
+            return "BATCH-SENTINEL"
+
+        write_called = []
+
+        def _fake_write(db, batch, now=None):
+            write_called.append(True)
+            return 1
+
+        monkeypatch.setattr(
+            "src.services.contract_generator.gather_contract_generation_inputs", _fake_gather,
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.compute_contract_generation_batch", _fake_compute,
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.write_contract_generation_batch", _fake_write,
+        )
+
+        result = svc._run_contract_generation_sync(cancel_event)
+
+        # write_contract_generation_batch is asserted via a call-tracking
+        # list rather than a raise-inside-the-mock: _run_contract_
+        # generation_sync's own write phase wraps its body in `except
+        # Exception:` — a raise from inside the mock would just be
+        # swallowed there and silently produce the SAME result==0, proving
+        # nothing about whether the write phase actually ran.
+        assert result == 0
+        assert write_called == [], f"write phase ran once cancel_event was set: {events}"
+        assert ("compute", None) in events, "compute phase should still have run before cancellation landed"
+        assert all(lbl != "write" for (kind, lbl) in events if kind == "open"), \
+            f"write session was opened after cancellation — the CGEN lock became reachable: {events}"
+        assert not any(kind == "execute" for kind, _ in events), \
+            f"the CGEN advisory lock was acquired after cancellation: {events}"
+
+    def test_cancel_preset_before_the_call_skips_gather_and_compute_too(self, monkeypatch):
+        """A coarser falsifier for the same guard: cancel_event already
+        set BEFORE the call even starts must stop the pass immediately
+        after peek — never reaching the (comparatively expensive)
+        gather/compute phases at all, not just write.
+
+        Uses call-tracking rather than a raise-inside-the-mock for the
+        same reason as the mid-flight test above: gather/compute/write
+        each run inside the sync function's own `except Exception:`, which
+        would silently swallow a raise and still report result == 0 even
+        if the phase actually ran."""
+        import src.services.npc_scheduler_service as svc
+
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        peek_db = SimpleNamespace(close=lambda: None)
+        monkeypatch.setattr("src.core.database.SessionLocal", lambda: peek_db)
+        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+
+        called = {"gather": False, "compute": False, "write": False}
+
+        monkeypatch.setattr(
+            "src.services.contract_generator.gather_contract_generation_inputs",
+            lambda db: called.__setitem__("gather", True) or "INPUTS-SENTINEL",
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.compute_contract_generation_batch",
+            lambda inputs: called.__setitem__("compute", True) or "BATCH-SENTINEL",
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.write_contract_generation_batch",
+            lambda db, batch, now=None: called.__setitem__("write", True) or 1,
+        )
+
+        result = svc._run_contract_generation_sync(cancel_event)
+        assert result == 0
+        assert called == {"gather": False, "compute": False, "write": False}, called
+
+    def test_default_none_cancel_event_behaves_exactly_as_before(self, monkeypatch):
+        """The default (no Event passed) must never gate anything — every
+        pre-F1 caller/test keeps working unmodified."""
+        import src.services.npc_scheduler_service as svc
+
+        monkeypatch.setattr(svc, "_sweep_is_due", lambda db, *a, **k: True)
+        db_stub = SimpleNamespace(
+            execute=lambda *a, **k: SimpleNamespace(scalar=lambda: True),
+            commit=lambda: None, rollback=lambda: None, close=lambda: None,
+        )
+        monkeypatch.setattr("src.core.database.SessionLocal", lambda: db_stub)
+        monkeypatch.setattr(svc, "_sweep_due_and_advance", lambda db, *a, **k: True)
+        monkeypatch.setattr(
+            "src.services.contract_generator.gather_contract_generation_inputs",
+            lambda db: "INPUTS-SENTINEL",
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.compute_contract_generation_batch",
+            lambda inputs: "BATCH-SENTINEL",
+        )
+        monkeypatch.setattr(
+            "src.services.contract_generator.write_contract_generation_batch",
+            lambda db, batch, now=None: 5,
+        )
+
+        assert svc._run_contract_generation_sync() == 5
+        assert svc._run_contract_generation_sync(None) == 5
+
+
+# ---------------------------------------------------------------------------
+# WO-SCHED-GEN-PEEK-LOG (F2) — peek was the only one of the four phases
+# (peek/gather/compute/write) without its own try/except + phase-attributed
+# log; a peek crash landed in the generic loop handler with no phase
+# attribution, breaking the SILENT-SWEEPS observability discipline the
+# other three phases already enforce (see gather/compute/write's own
+# logger.exception(...) calls in _run_contract_generation_sync).
+# ---------------------------------------------------------------------------
+
+class TestContractGenerationPeekPhaseObservability:
+    def test_peek_phase_exception_is_caught_logged_and_returns_zero(self, monkeypatch, caplog):
+        import src.services.npc_scheduler_service as svc
+
+        class _RaisingPeekDB:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        db = _RaisingPeekDB()
+        monkeypatch.setattr("src.core.database.SessionLocal", lambda: db)
+
+        def _boom(*a, **k):
+            raise RuntimeError("peek boom")
+
+        monkeypatch.setattr(svc, "_sweep_is_due", _boom)
+
+        with caplog.at_level(logging.INFO):
+            result = svc._run_contract_generation_sync()
+
+        assert result == 0
+        assert db.closed is True
+        assert any(
+            "peek phase failed" in r.getMessage() for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
