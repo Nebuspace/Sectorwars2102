@@ -10,6 +10,7 @@ import GameLayout from '../layouts/GameLayout';
 import TradingInterface from '../trading/TradingInterface';
 import SpaceDockInterface from '../spacedock/SpaceDockInterface';
 import PortOfficeVenue from '../spacedock/PortOfficeVenue';
+import ContractBoardVenue from '../spacedock/ContractBoardVenue';
 import PopulationCenterInterface from '../planetary/PopulationCenterInterface';
 import TacticalCard from '../tactical/TacticalCard';
 import SolarSystemViewscreen from '../tactical/SolarSystemViewscreen';
@@ -657,7 +658,7 @@ const GameDashboard: React.FC = () => {
 
   // Docked trading-station terminal: trade desk or the Port Office registry.
   // SpaceDocks/TradeDocks reach the Port Office through their own venue hub.
-  const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice'>('trade');
+  const [stationTerminal, setStationTerminal] = useState<'trade' | 'portoffice' | 'contracts'>('trade');
   useEffect(() => {
     setStationTerminal('trade');
   }, [playerState?.current_port_id]);
@@ -2575,6 +2576,15 @@ const GameDashboard: React.FC = () => {
                       >
                         🏛️ PORT OFFICE
                       </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={stationTerminal === 'contracts'}
+                        className={`venue-tab${stationTerminal === 'contracts' ? ' active' : ''}`}
+                        onClick={() => setStationTerminal('contracts')}
+                      >
+                        📋 CONTRACTS
+                      </button>
                     </div>
                   )}
                   {/* UNDOCK & LAUNCH — for regular (non-SpaceDock) stations.
@@ -2598,6 +2608,17 @@ const GameDashboard: React.FC = () => {
                     <SpaceDockInterface onUndock={handleUndock} helmBusy={helmBusy} />
                   ) : stationTerminal === 'portoffice' && playerState?.current_port_id ? (
                     <PortOfficeVenue
+                      stationId={playerState.current_port_id}
+                      stationName={
+                        stationsInSector?.find((s: any) => s.id === playerState?.current_port_id)?.name ||
+                        'Trading Station'
+                      }
+                      credits={playerState?.credits ?? 0}
+                      onCreditsSet={() => { refreshPlayerState(); }}
+                      onBack={() => setStationTerminal('trade')}
+                    />
+                  ) : stationTerminal === 'contracts' && playerState?.current_port_id ? (
+                    <ContractBoardVenue
                       stationId={playerState.current_port_id}
                       stationName={
                         stationsInSector?.find((s: any) => s.id === playerState?.current_port_id)?.name ||
