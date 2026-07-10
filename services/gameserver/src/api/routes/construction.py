@@ -282,13 +282,16 @@ async def claim_ship(
     current_user: User = Depends(get_current_user),
     current_player: Player = Depends(get_current_player),
 ):
-    """Claim the finished ship (final milestone must be paid). The ship spawns
-    at the TradeDock's sector with the reservation's custom name."""
+    """Claim the finished build (final milestone must be paid). Ordinary ship
+    reservations spawn the ship at the TradeDock's sector with the
+    reservation's custom name. TradeDock-class reservations (region-funded
+    construction, Task B-3) finalize the TARGET STATION in place instead —
+    Max's ruling (batch-1 #3a) — no Ship is ever created for those."""
     reservation = _get_owned_reservation_or_404(db, reservation_id, current_player)
     station = _get_station_or_404(db, str(reservation.station_id))
     _require_docked_at(current_player, station, "claim your ship")
     try:
-        ship = construction_service.claim(db, reservation, current_player)
+        result = construction_service.claim(db, reservation, current_player)
         db.commit()
     except ConstructionError as e:
         db.rollback()
@@ -297,6 +300,23 @@ async def claim_ship(
         # ShipService raises ValueError when the ShipSpecification is missing.
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
+    if isinstance(result, Station):
+        return {
+            "message": (
+                f"{result.name} has completed construction — now a "
+                f"Tier-{result.tradedock_tier} TradeDock!"
+            ),
+            "station": {
+                "id": str(result.id),
+                "name": result.name,
+                "sector_id": result.sector_id,
+                "tradedock_tier": result.tradedock_tier,
+            },
+            "reservation": construction_service.status_payload(db, reservation),
+        }
+
+    ship = result
     return {
         "message": f"{ship.name} is yours — spawned in sector {ship.sector_id}",
         "ship": {

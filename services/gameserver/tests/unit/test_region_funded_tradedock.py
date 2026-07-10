@@ -667,3 +667,252 @@ class TestGetMyRegionTreasuryBalance:
         with pytest.raises(HTTPException) as exc:
             await gov.get_my_region(current_user=current_user, db=db)
         assert exc.value.status_code == 404
+
+
+# --- claim() completion semantics: TD-RGF batch-1 #3a (Max ruling, 2026-07-10) -
+#
+# Resolves the KNOWN GAP claim()'s own pre-ruling docstring flagged: a
+# TRADEDOCK_CONSTRUCTION reservation reaching 'complete' must finalize the
+# TARGET STATION in place (grant/upgrade tradedock_tier) -- never spawn a
+# Ship. create_region_funded_construction already requires the target to
+# carry an existing tier before a project starts (_require_tradedock), so
+# completion is always a B -> A upgrade (SLIP_POOLS' only two tiers).
+#
+# claim() calls advance() first, which locks the station and re-settles the
+# reservation's whole station pipeline (_advance_station) before returning.
+# For a reservation already in 'complete' state with a future claim_expires_at,
+# every one of _advance_station's loops is a no-op (none of the hold/phase/
+# rent/claim-window/promotion branches match a 'complete', non-terminal-yet
+# reservation outside its own claim-window-expiry check) -- so the minimal
+# fake session below only needs Station + ConstructionReservation (Player is
+# included defensively, matching _make_session's existing convention, though
+# nothing on this path queries it for an unexpired 'complete' reservation).
+
+
+class _FakeClaimSession(_FakeSession):
+    """A ConstructionReservation _FakeQuery answers BOTH advance()'s
+    .first() re-read (populate_existing().with_for_update().first()) and
+    _advance_station()'s .all() reservations-at-this-station scan with the
+    SAME single reservation -- both call sites hit the identical fake
+    session/entity mapping the base _FakeSession already supports."""
+
+
+def _make_reservation(
+    *,
+    station_id: Any,
+    player_id: Any,
+    state: str = "complete",
+    milestones: Optional[Dict[str, bool]] = None,
+    claim_expires_at: Optional[datetime] = None,
+    **overrides: Any,
+) -> SimpleNamespace:
+    defaults = dict(
+        id=uuid.uuid4(),
+        station_id=station_id,
+        player_id=player_id,
+        ship_type="TRADEDOCK_CONSTRUCTION",
+        state=state,
+        ship_name="Region TradeDock — Test Region",
+        total_cost=cs.REGION_TRADEDOCK_COST,
+        deposit_paid=cs.REGION_TRADEDOCK_COST,
+        credits_paid=cs.REGION_TRADEDOCK_COST,
+        milestones=(
+            milestones if milestones is not None
+            else {"deposit": True, "keel_laid": True, "hull_complete": True, "final": True}
+        ),
+        resources_required=dict(cs.REGION_TRADEDOCK_RESOURCES),
+        resources_delivered=dict(cs.REGION_TRADEDOCK_RESOURCES),
+        uses_specialized_slip=False,
+        created_at=FIXED_NOW - timedelta(days=cs.REGION_TRADEDOCK_BUILD_DAYS),
+        updated_at=FIXED_NOW,
+        phase_deadline=None,
+        hold_expires_at=None,
+        claim_expires_at=(
+            claim_expires_at if claim_expires_at is not None
+            else FIXED_NOW + timedelta(hours=cs.CLAIM_WINDOW_HOURS)
+        ),
+        rent_paid_until=None,
+        rent_owed_since=None,
+        queue_bonus_credit=0,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _make_claim_session(*, player: Any, station: Any, reservation: Any) -> _FakeClaimSession:
+    return _FakeClaimSession({
+        Player: _FakeQuery(first=player),
+        Station: _FakeQuery(first=station),
+        ConstructionReservation: _FakeQuery(first=reservation, all=[reservation]),
+    })
+
+
+@pytest.mark.unit
+class TestClaimRegionFundedTradedockCompletion:
+    def test_completion_upgrades_target_station_tier_b_to_a(self) -> None:
+        player = _make_player()
+        station = _make_station(uuid.uuid4(), tradedock_tier="B")
+        reservation = _make_reservation(station_id=station.id, player_id=player.id)
+        db = _make_claim_session(player=player, station=station, reservation=reservation)
+
+        result = cs.claim(db, reservation, player, now=FIXED_NOW)
+
+        assert station.tradedock_tier == "A"
+        assert result is station
+
+    def test_claim_returns_the_station_object_itself_not_a_fabricated_ship(self) -> None:
+        # Fixtures here are lightweight SimpleNamespaces (this file's
+        # established convention), not the real Station ORM class -- the
+        # route-level isinstance(result, Station) branch is pinned
+        # separately below with a REAL ORM Station instance. This test
+        # pins the service-level contract: claim() returns the exact same
+        # object advance() locked, mutated in place -- never a Ship-shaped
+        # value (no `.type` attribute at all, unlike a real Ship).
+        player = _make_player()
+        station = _make_station(uuid.uuid4(), tradedock_tier="B")
+        reservation = _make_reservation(station_id=station.id, player_id=player.id)
+        db = _make_claim_session(player=player, station=station, reservation=reservation)
+
+        result = cs.claim(db, reservation, player, now=FIXED_NOW)
+
+        assert result is station
+        assert not hasattr(result, "type")
+
+    def test_reservation_transitions_to_claimed(self) -> None:
+        player = _make_player()
+        station = _make_station(uuid.uuid4(), tradedock_tier="B")
+        reservation = _make_reservation(station_id=station.id, player_id=player.id)
+        db = _make_claim_session(player=player, station=station, reservation=reservation)
+
+        cs.claim(db, reservation, player, now=FIXED_NOW)
+
+        assert reservation.state == "claimed"
+        assert reservation.updated_at == FIXED_NOW
+
+    def test_no_ship_is_ever_created_for_the_tradedock_construction_class(self) -> None:
+        # NEGATIVE PIN: the fake session below only models Player/Station/
+        # ConstructionReservation queries. If claim() ever fell through to
+        # the ordinary ShipService.create_ship path for this reservation
+        # class (the pre-ruling bug -- ShipType["TRADEDOCK_CONSTRUCTION"]
+        # would KeyError, since it is deliberately not a ShipType enum
+        # member per phase_hours' docstring), it would either raise
+        # immediately or hit an unmodeled query and fail the _FakeSession's
+        # `assert entity in self._specs` -- either way this test fails loud
+        # if the Station-finalization branch is ever bypassed.
+        player = _make_player()
+        station = _make_station(uuid.uuid4(), tradedock_tier="B")
+        reservation = _make_reservation(station_id=station.id, player_id=player.id)
+        db = _make_claim_session(player=player, station=station, reservation=reservation)
+
+        cs.claim(db, reservation, player, now=FIXED_NOW)
+
+        from src.models.ship import Ship
+        assert not any(isinstance(o, Ship) for o in db.added)
+        assert db.added == []  # claim() never calls db.add() on this path at all
+
+    def test_idempotent_when_the_station_is_already_tier_a(self) -> None:
+        player = _make_player()
+        station = _make_station(uuid.uuid4(), tradedock_tier="A")
+        reservation = _make_reservation(station_id=station.id, player_id=player.id)
+        db = _make_claim_session(player=player, station=station, reservation=reservation)
+
+        cs.claim(db, reservation, player, now=FIXED_NOW)
+
+        assert station.tradedock_tier == "A"
+
+    def test_incomplete_reservation_is_rejected_not_finalized(self) -> None:
+        # Regression: the new Station-finalization branch sits AFTER the
+        # existing state/milestone guards, not before -- an in-flight
+        # region-funded project must still be rejected exactly like an
+        # ordinary ship reservation would be, and the station must be
+        # untouched.
+        player = _make_player()
+        station = _make_station(uuid.uuid4(), tradedock_tier="B")
+        reservation = _make_reservation(
+            station_id=station.id, player_id=player.id, state="outfitting",
+            claim_expires_at=None,
+        )
+        db = _make_claim_session(player=player, station=station, reservation=reservation)
+
+        with pytest.raises(ConstructionError) as exc:
+            cs.claim(db, reservation, player, now=FIXED_NOW)
+        assert exc.value.status_code == 400
+        assert "not ready to claim" in exc.value.detail.lower()
+        assert station.tradedock_tier == "B"
+        assert reservation.state == "outfitting"
+
+    def test_unpaid_final_milestone_is_rejected_not_finalized(self) -> None:
+        player = _make_player()
+        station = _make_station(uuid.uuid4(), tradedock_tier="B")
+        reservation = _make_reservation(
+            station_id=station.id, player_id=player.id,
+            milestones={"deposit": True, "keel_laid": True, "hull_complete": True, "final": False},
+        )
+        db = _make_claim_session(player=player, station=station, reservation=reservation)
+
+        with pytest.raises(ConstructionError) as exc:
+            cs.claim(db, reservation, player, now=FIXED_NOW)
+        assert exc.value.status_code == 400
+        assert "final" in exc.value.detail.lower()
+        assert station.tradedock_tier == "B"
+
+    def test_forfeited_reservation_is_rejected_not_finalized(self) -> None:
+        player = _make_player()
+        station = _make_station(uuid.uuid4(), tradedock_tier="B")
+        reservation = _make_reservation(
+            station_id=station.id, player_id=player.id, state="forfeited",
+            claim_expires_at=None,
+        )
+        db = _make_claim_session(player=player, station=station, reservation=reservation)
+
+        with pytest.raises(ConstructionError) as exc:
+            cs.claim(db, reservation, player, now=FIXED_NOW)
+        assert exc.value.status_code == 400
+        assert "claim window expired" in exc.value.detail.lower()
+        assert station.tradedock_tier == "B"
+
+
+@pytest.mark.unit
+class TestClaimRoute:
+    """The /reservations/{id}/claim route's Station-vs-Ship response branch.
+    Uses a REAL Station ORM instance (unlike the SimpleNamespace fixtures
+    above) so isinstance(result, Station) genuinely evaluates -- that check
+    is the route's own new code (routes/construction.py), a separate surface
+    from construction_service.claim() itself."""
+
+    @pytest.mark.asyncio
+    async def test_route_returns_station_payload_not_ship_payload(self) -> None:
+        from src.api.routes import construction as construction_routes
+
+        player_id = uuid.uuid4()
+        station = Station(
+            id=uuid.uuid4(),
+            name="Test TradeDock",
+            sector_id=4173,
+            tradedock_tier="B",
+        )
+        reservation = _make_reservation(station_id=station.id, player_id=player_id)
+        current_player = SimpleNamespace(
+            id=player_id, is_docked=True, current_port_id=station.id,
+        )
+        current_user = SimpleNamespace(id=uuid.uuid4())
+        db = _FakeClaimSession({
+            Player: _FakeQuery(first=current_player),
+            Station: _FakeQuery(first=station),
+            ConstructionReservation: _FakeQuery(first=reservation, all=[reservation]),
+        })
+
+        result = await construction_routes.claim_ship(
+            reservation_id=str(reservation.id),
+            db=db,
+            current_user=current_user,
+            current_player=current_player,
+        )
+
+        assert db.committed is True
+        assert "station" in result
+        assert "ship" not in result
+        assert result["station"]["id"] == str(station.id)
+        assert result["station"]["tradedock_tier"] == "A"
+        assert "Tier-A TradeDock" in result["message"]
+        assert station.tradedock_tier == "A"

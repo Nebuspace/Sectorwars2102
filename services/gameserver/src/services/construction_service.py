@@ -46,7 +46,7 @@ import logging
 import math
 import random as _random_module
 from datetime import datetime, UTC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -1349,10 +1349,27 @@ def claim(
     reservation: ConstructionReservation,
     player: Player,
     now: Optional[datetime] = None,
-) -> Ship:
-    """Claim the finished ship: requires state complete and the final
-    milestone paid. The ship is created via ShipService.create_ship (cargo
-    comes spec-correct) at the TradeDock's sector with the custom name."""
+) -> Union[Ship, Station]:
+    """Claim the finished build: requires state complete and the final
+    milestone paid.
+
+    Ordinary ship-construction reservations: the ship is created via
+    ShipService.create_ship (cargo comes spec-correct) at the TradeDock's
+    sector with the custom name, and returned.
+
+    TradeDock-class reservations (ship_type == "TRADEDOCK_CONSTRUCTION",
+    region-funded construction — Task B-3) are a different completion
+    entirely per Max's ruling (batch-1 #3a, 2026-07-10, resolving the
+    formerly-KNOWN-GAP left by WO-TD-RGF-1): claiming finalizes the TARGET
+    STATION IN PLACE — grants/upgrades its tradedock_tier — and returns the
+    Station. No Ship is ever created for this reservation class; there is no
+    new Station row either, the same station row that funded/hosted the
+    project is mutated. create_region_funded_construction already requires
+    the target to carry an existing tier before a project can even start
+    (_require_tradedock), so completion is always a B -> A upgrade (the only
+    two tiers SLIP_POOLS defines) — setting it to "A" is idempotent on the
+    already-A edge case.
+    """
     now = now or datetime.now(UTC)
     station = advance(db, reservation, now)
 
@@ -1370,12 +1387,19 @@ def claim(
             400, f"Pay the 'final' milestone ({amount:,} credits) before claiming"
         )
 
-    # KNOWN GAP (out of WO-TD-RGF-1 scope): a region-funded reservation
-    # (ship_type "TRADEDOCK_CONSTRUCTION") reaching 'complete' and hitting
-    # this route will KeyError here — it is not a ShipType enum member and
-    # claiming it should not spawn a Ship at all (it should finalize the
-    # target Station as the new TradeDock). No completion route exists yet
-    # for the region-funded path; needs its own WO/design decision.
+    if reservation.ship_type == "TRADEDOCK_CONSTRUCTION":
+        station.tradedock_tier = "A"
+        reservation.state = "claimed"
+        reservation.updated_at = now
+        db.flush()
+
+        logger.info(
+            "Region-funded TradeDock construction claimed: reservation %s -> "
+            "station %s upgraded to tier A",
+            reservation.id, station.id,
+        )
+        return station
+
     from src.services.ship_service import ShipService
 
     name = reservation.ship_name or None
