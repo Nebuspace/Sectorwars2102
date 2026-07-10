@@ -420,19 +420,89 @@ def abandon(
 
 def sweep_expired_contracts(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
     """Bulk-expire every `posted` contract whose deadline has strictly
-    passed. Bulk conditional UPDATE (not per-row `_guarded_transition` --
-    a batch sweep has no single caller to race against; the WHERE clause
-    is its own safety net against a second scheduler instance). FLUSH-ONLY
-    -- the scheduler wrapper commits."""
+    passed. contracts.md:71 -- "deadline expires unaccepted -> expired,
+    escrow returned to issuer": a PLAYER-issued row with escrow still HELD
+    gets a per-row pass that flips status AND refunds the issuer, mirroring
+    abandon()'s exact refund idiom (issuer credited `contract.escrow_amount`,
+    `escrow_state` -> REFUNDING) rather than inventing a new one. NPC-issued
+    rows (escrow_amount always 0, escrow_state stays HELD by default) never
+    match the player-only filter below and fall straight through to the
+    original bulk conditional UPDATE, byte-unchanged from WO-ECON-CONTRACT-
+    1-KERNEL.
+
+    IDEMPOTENCY: the per-row query only selects `escrow_state == HELD` --
+    a row already REFUNDING/RELEASED/DISPUTED (already handled by an
+    earlier sweep tick, or by a race with the issuer's own cancel/abandon)
+    is excluded and never double-refunded. Each candidate is drained via
+    `.first()` rather than `.all()` (this module's `_active_player_
+    postings_in_region` precedent for a materialized list doesn't apply
+    here -- see test_contract_service.py's sibling fake, which never grew
+    an `.all()` method): every per-row UPDATE re-checks `status ==
+    posted` in its WHERE clause -- the same optimistic-concurrency guard
+    `_guarded_transition` uses -- so a row raced away between the SELECT
+    and the UPDATE (by a live player's own cancel/abandon on a *different*
+    session, since the CEXP advisory lock only serializes concurrent
+    *sweep* instances) is simply skipped; the loop's next SELECT is a
+    fresh server-side-filtered query, so a truly raced row's now-updated
+    status excludes it from every subsequent iteration -- no infinite loop.
+    A per-row UPDATE that DOES match is applied to the in-memory `contract`
+    object too (same convention as `_guarded_transition`'s own trailing
+    `setattr` loop -- a raw Core `update()` never syncs the ORM identity
+    map on its own).
+
+    Bulk conditional UPDATE for everything else (not per-row `_guarded_
+    transition` -- a batch sweep has no single caller to race against; the
+    WHERE clause is its own safety net against a second scheduler
+    instance). FLUSH-ONLY -- the scheduler wrapper commits inside the CEXP
+    advisory lock, so the whole per-row-refund + bulk-expire pass is one
+    atomic transaction."""
     now = now or _now()
-    stmt = (
+
+    expired_with_refund = 0
+    while True:
+        candidate = (
+            db.query(Contract)
+            .filter(
+                Contract.status == ContractStatus.POSTED,
+                Contract.deadline < now,
+                Contract.issuer_type == ContractIssuerType.PLAYER,
+                Contract.escrow_state == ContractEscrowState.HELD,
+            )
+            .first()
+        )
+        if candidate is None:
+            break
+
+        row_stmt = (
+            update(Contract)
+            .where(Contract.id == candidate.id, Contract.status == ContractStatus.POSTED)
+            .values(status=ContractStatus.EXPIRED)
+        )
+        result = db.execute(row_stmt)
+        if result.rowcount == 0:
+            # Raced away between the SELECT above and this UPDATE (a live
+            # cancel/abandon on a different session/connection) -- no
+            # mutation occurred, so the next iteration's fresh SELECT
+            # simply won't return this row again (its real DB status has
+            # already moved past 'posted').
+            continue
+        candidate.status = ContractStatus.EXPIRED
+
+        if candidate.escrow_amount and candidate.escrow_amount > 0:
+            issuer = _load_player(db, candidate.issuer_id)
+            refund = int(_round_credits(_as_decimal(candidate.escrow_amount)))
+            issuer.credits = (issuer.credits or 0) + refund
+            candidate.escrow_state = ContractEscrowState.REFUNDING
+        expired_with_refund += 1
+
+    bulk_stmt = (
         update(Contract)
         .where(Contract.status == ContractStatus.POSTED, Contract.deadline < now)
         .values(status=ContractStatus.EXPIRED)
     )
-    result = db.execute(stmt)
+    bulk_result = db.execute(bulk_stmt)
     db.flush()
-    return {"expired": result.rowcount or 0}
+    return {"expired": expired_with_refund + (bulk_result.rowcount or 0)}
 
 
 # --- WO-ECON-CONTRACT-2-PLAYER-ESCROW: player-issued posting + cancel ----

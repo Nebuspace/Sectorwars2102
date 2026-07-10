@@ -412,6 +412,32 @@ class TestEscrowConservationEndToEnd:
         assert issuer.credits == 5000 - 1000 + 1000  # escrow fully returned
         assert contract.escrow_state == ContractEscrowState.REFUNDING
 
+    def test_post_to_expire_refunds_issuer_and_conserves_the_sum(self) -> None:
+        """WO-DRIFT-econ-expired-escrow-refund -- contracts.md:71: an
+        unaccepted PLAYER-issued posting whose deadline passes must return
+        the issuer's escrow in full, mirroring abandon()'s refund idiom."""
+        issuer = _player(credits=5000)
+        destination = _station()
+        db = _FakeSession(players=[issuer], stations=[destination], resources=[_resource()])
+        deadline = _NOW + timedelta(hours=2)
+
+        contract_service.post_player_contract(
+            db, issuer.id, **_post_kwargs(destination, deadline=deadline, payment=Decimal("1500")),
+        )
+        contract = db.added[0]
+        assert issuer.credits == 3500  # 5000 - 1500 escrow debited at post time
+
+        past_deadline = deadline + timedelta(seconds=1)
+        result = contract_service.sweep_expired_contracts(db, now=past_deadline)
+
+        assert result == {"expired": 1}
+        assert contract.status == ContractStatus.EXPIRED
+        assert contract.escrow_state == ContractEscrowState.REFUNDING
+        # Exact escrow (N) refunded, not a percentage -- the issuer did
+        # nothing wrong here (no acceptor, no kill-fee). Full conservation:
+        # the issuer ends exactly where they started.
+        assert issuer.credits == 5000
+
 
 @pytest.mark.unit
 class TestDoubleReleaseImpossibility:
@@ -456,6 +482,33 @@ class TestDoubleReleaseImpossibility:
             contract_service.cancel_player_contract(db, contract.id, issuer.id, now=_NOW)
 
         assert issuer.credits == credits_after_first_cancel  # no second refund
+
+    def test_sweep_does_not_double_refund_an_already_refunding_row(self) -> None:
+        """The sweep's per-row candidate query gates on `escrow_state ==
+        HELD` -- a row already REFUNDING (an earlier tick, or a raced
+        cancel/abandon) must be skipped by the refund branch entirely and
+        fall through to the plain bulk status-flip, exactly like an NPC
+        row does."""
+        issuer = _player(credits=5000)
+        destination = _station()
+        contract = SimpleNamespace(
+            id=uuid.uuid4(), issuer_type=ContractIssuerType.PLAYER, issuer_id=issuer.id,
+            acceptor_player_id=None, destination_station_id=destination.id,
+            commodity_type="ore", quantity=50, status=ContractStatus.POSTED,
+            payment=Decimal("1000.00"), penalty=Decimal("1000.00"),
+            acceptance_fee_pct=Decimal("2.0"), escrow_amount=Decimal("1000.00"),
+            escrow_state=ContractEscrowState.REFUNDING,  # already handled
+            deadline=_NOW - timedelta(hours=1), posted_at=_NOW - timedelta(hours=5),
+            posting_stations=[destination.id], accepted_at=None, completed_at=None,
+        )
+        db = _FakeSession(players=[issuer], contracts=[contract])
+
+        result = contract_service.sweep_expired_contracts(db, now=_NOW)
+
+        assert result == {"expired": 1}  # still gets its status flipped by the bulk pass
+        assert contract.status == ContractStatus.EXPIRED
+        assert issuer.credits == 5000  # untouched -- NOT refunded a second time
+        assert contract.escrow_state == ContractEscrowState.REFUNDING  # unchanged
 
 
 @pytest.mark.unit
@@ -508,3 +561,24 @@ class TestNpcPathByteUnchangedRegression:
         assert result["penalty_charged"] == 1000
         assert acceptor.credits == 0  # exactly as WO-1's flat-penalty math
         assert contract.escrow_state == ContractEscrowState.HELD  # untouched -- NPC branch never fires
+
+    def test_npc_expiry_sweep_only_status_flips_no_refund_branch(self) -> None:
+        """WO-DRIFT-econ-expired-escrow-refund: the sweep's new per-row
+        refund pass is gated on `issuer_type == PLAYER` -- an NPC-issued
+        posting must be swept by the plain bulk UPDATE exactly as before,
+        with escrow_amount/escrow_state byte-unchanged. Zero players
+        seeded on purpose: if the refund branch wrongly matched this row,
+        `_load_player(db, destination.id)` would raise (no such player),
+        making a regression here fail loudly rather than silently."""
+        destination = _station()
+        contract = self._npc_contract(destination)
+        contract.status = ContractStatus.POSTED
+        contract.deadline = _NOW - timedelta(hours=1)
+        db = _FakeSession(contracts=[contract])  # NO players seeded at all
+
+        result = contract_service.sweep_expired_contracts(db, now=_NOW)
+
+        assert result == {"expired": 1}
+        assert contract.status == ContractStatus.EXPIRED  # the only field touched
+        assert contract.escrow_amount == Decimal("0")  # untouched
+        assert contract.escrow_state == ContractEscrowState.HELD  # untouched -- refund branch never fires
