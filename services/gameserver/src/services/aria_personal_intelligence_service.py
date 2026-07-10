@@ -36,9 +36,14 @@ from src.models.station import Station
 from src.models.market_transaction import MarketTransaction
 from src.models.aria_personal_intelligence import (
     ARIAPersonalMemory, ARIAMarketIntelligence, ARIAExplorationMap,
-    ARIATradingPattern, ARIAQuantumCache, ARIASecurityLog,
+    ARIAQuantumCache, ARIASecurityLog,
     ARIATradingObservation, ObservationAction, ObservationOutcome,
 )
+# ARIATradingPattern (the GA/"Trade DNA" model) is DEPRECATED -- WO-ARIA-
+# GA-CLEANUP removed its only callers (evolve_trading_pattern /
+# get_evolved_patterns / _create_trading_pattern / _classify_pattern_type,
+# ADR-0038). No longer imported here; see models/aria_personal_intelligence.py's
+# own deprecation note on the class.
 from src.core.config import settings
 from src.core.security import get_password_hash
 from src.core.game_time import scaled_elapsed
@@ -85,66 +90,6 @@ class ARIAPersonalIntelligenceService:
     # =============================================================================
     # EXPLORATION & MEMORY CREATION
     # =============================================================================
-    
-    async def record_sector_visit(self, player_id: str, sector_id: str, 
-                                 ship_id: str, db: AsyncSession) -> ARIAExplorationMap:
-        """
-        Record that a player visited a sector
-        This is the foundation of all ARIA knowledge
-        """
-        # Security: Validate player owns the ship (OWASP A01)
-        if not await self._validate_player_ship(player_id, ship_id, db):
-            await self._log_security_event(
-                player_id, "unauthorized_visit_attempt", "critical",
-                {"ship_id": ship_id, "sector_id": sector_id}, db
-            )
-            raise ValueError("Unauthorized ship access")
-        
-        # Check if we've visited this sector before
-        stmt = select(ARIAExplorationMap).where(
-            and_(
-                ARIAExplorationMap.player_id == player_id,
-                ARIAExplorationMap.sector_id == sector_id
-            )
-        )
-        result = await db.execute(stmt)
-        exploration = result.scalar_one_or_none()
-        
-        if exploration:
-            # Update existing exploration record
-            exploration.last_visit = datetime.now(UTC)
-            exploration.visit_count += 1
-            
-            # Decay old market intelligence
-            await self._decay_sector_intelligence(player_id, sector_id, db)
-        else:
-            # First visit to this sector!
-            exploration = ARIAExplorationMap(
-                player_id=player_id,
-                sector_id=sector_id,
-                first_visit=datetime.now(UTC),
-                last_visit=datetime.now(UTC),
-                visit_count=1
-            )
-            db.add(exploration)
-            
-            # Create memory of first exploration
-            await self._create_memory(
-                player_id,
-                "exploration",
-                {
-                    "event": "first_sector_visit",
-                    "sector_id": sector_id,
-                    "timestamp": datetime.now(UTC).isoformat()
-                },
-                importance=0.8,  # First visits are important
-                db=db
-            )
-        
-        await db.commit()
-        
-        logger.info(f"Player {player_id} visited sector {sector_id} (visit #{exploration.visit_count})")
-        return exploration
     
     async def record_market_observation(self, player_id: str, station_id: str,
                                       commodity: str, price: float, quantity: int,
@@ -741,259 +686,6 @@ class ARIAPersonalIntelligenceService:
             )
 
     # =============================================================================
-    # QUANTUM PREDICTIONS (Personal Data Only)
-    # =============================================================================
-    
-    async def generate_quantum_states(self, player_id: str, station_id: str,
-                                    commodity: str, quantity: int,
-                                    db: AsyncSession) -> Optional[List[Dict[str, Any]]]:
-        """
-        Generate quantum states based ONLY on player's personal market intelligence
-        Returns None if player has insufficient data
-        """
-        # Check if player has visited this port
-        station = await db.get(Station, station_id)
-        if not station:
-            return None
-
-        exploration = await self._get_sector_exploration(player_id, station.sector_id, db)
-        if not exploration:
-            logger.info(f"Player {player_id} has never visited sector {station.sector_id}")
-            return None
-        
-        # Get player's market intelligence for this commodity/port
-        intelligence = await self._get_market_intelligence(
-            player_id, station_id, commodity, db
-        )
-        
-        if not intelligence or intelligence.data_points < self.MIN_DATA_POINTS_FOR_PREDICTION:
-            logger.info(f"Insufficient data for {commodity} at port {station_id} (need {self.MIN_DATA_POINTS_FOR_PREDICTION} observations)")
-            return None
-        
-        # Generate states based on personal observations
-        states = []
-        
-        # Use player's observed price range
-        prices = [obs["price"] for obs in intelligence.price_observations[-20:]]
-        avg_price = statistics.mean(prices)
-        std_dev = statistics.stdev(prices) if len(prices) > 1 else avg_price * 0.1
-        
-        # State 1: Optimistic (based on player's best observed prices)
-        best_price = max(prices) if commodity in ["ORE", "ORGANICS", "FUEL"] else min(prices)
-        states.append({
-            "state_id": "optimistic",
-            "probability": 0.25,
-            "price": best_price,
-            "confidence": intelligence.prediction_confidence,
-            "based_on": f"{len(prices)} personal observations"
-        })
-        
-        # State 2: Expected (based on identified patterns)
-        if intelligence.identified_patterns:
-            pattern_price = await self._predict_from_patterns(
-                intelligence, datetime.now(UTC)
-            )
-            if pattern_price:
-                states.append({
-                    "state_id": "pattern_based",
-                    "probability": 0.45,
-                    "price": pattern_price,
-                    "confidence": intelligence.pattern_confidence.get(
-                        intelligence.identified_patterns[0], 0.5
-                    ),
-                    "pattern": intelligence.identified_patterns[0]
-                })
-        else:
-            # No patterns, use average
-            states.append({
-                "state_id": "average",
-                "probability": 0.45,
-                "price": avg_price,
-                "confidence": intelligence.prediction_confidence * 0.8,
-                "based_on": "historical average"
-            })
-        
-        # State 3: Pessimistic (based on player's worst observed prices)
-        worst_price = min(prices) if commodity in ["ORE", "ORGANICS", "FUEL"] else max(prices)
-        states.append({
-            "state_id": "pessimistic",
-            "probability": 0.25,
-            "price": worst_price,
-            "confidence": intelligence.prediction_confidence,
-            "based_on": f"{len(prices)} personal observations"
-        })
-        
-        # State 4: Unknown (beyond player's experience)
-        states.append({
-            "state_id": "unknown",
-            "probability": 0.05,
-            "price": avg_price * (0.5 if np.random.random() < 0.5 else 1.5),
-            "confidence": 0.1,  # Very low confidence
-            "based_on": "unexplored market conditions"
-        })
-        
-        # Log quantum generation for security
-        await self._log_security_event(
-            player_id, "quantum_generation", "info",
-            {
-                "station_id": station_id,
-                "commodity": commodity,
-                "states_generated": len(states),
-                "data_points": intelligence.data_points
-            }, db
-        )
-        
-        return states
-    
-    async def get_ghost_trade_prediction(self, player_id: str, station_id: str,
-                                       commodity: str, action: str, quantity: int,
-                                       db: AsyncSession) -> Optional[Dict[str, Any]]:
-        """
-        Generate ghost trade prediction based on personal experience only
-        """
-        # Check cache first
-        cache_key = self._generate_cache_key(player_id, station_id, commodity, action, quantity)
-        cached = await self._get_quantum_cache(player_id, cache_key, db)
-        if cached:
-            return cached
-        
-        # Generate quantum states from personal data
-        states = await self.generate_quantum_states(
-            player_id, station_id, commodity, quantity, db
-        )
-        
-        if not states:
-            return {
-                "error": "insufficient_data",
-                "message": "You need to visit this port more times to generate predictions",
-                "required_visits": self.MIN_DATA_POINTS_FOR_PREDICTION
-            }
-        
-        # Calculate expected outcomes
-        outcomes = []
-        for state in states:
-            if action == "buy":
-                cost = quantity * state["price"]
-                outcome = {
-                    "state": state["state_id"],
-                    "probability": state["probability"],
-                    "cost": cost,
-                    "confidence": state["confidence"],
-                    "based_on": state.get("based_on", "personal experience")
-                }
-            else:  # sell
-                revenue = quantity * state["price"]
-                outcome = {
-                    "state": state["state_id"],
-                    "probability": state["probability"],
-                    "revenue": revenue,
-                    "confidence": state["confidence"],
-                    "based_on": state.get("based_on", "personal experience")
-                }
-            outcomes.append(outcome)
-        
-        # Calculate expected value
-        if action == "buy":
-            expected_cost = sum(o["cost"] * o["probability"] for o in outcomes)
-            result = {
-                "action": "buy",
-                "expected_cost": expected_cost,
-                "outcomes": outcomes,
-                "recommendation": self._generate_recommendation(expected_cost, action, commodity)
-            }
-        else:
-            expected_revenue = sum(o["revenue"] * o["probability"] for o in outcomes)
-            result = {
-                "action": "sell",
-                "expected_revenue": expected_revenue,
-                "outcomes": outcomes,
-                "recommendation": self._generate_recommendation(expected_revenue, action, commodity)
-            }
-        
-        # Cache result
-        await self._cache_quantum_result(player_id, cache_key, result, db)
-        
-        return result
-    
-    # =============================================================================
-    # TRADE DNA EVOLUTION (Personal Patterns)
-    # =============================================================================
-    
-    async def evolve_trading_pattern(self, player_id: str, trade_result: Dict[str, Any],
-                                   db: AsyncSession):
-        """
-        Update a player's personal trading-pattern observation accounting.
-
-        Per ADR-0038 (Accepted) ARIA learning is a purely append-only
-        observation log: this records plain performance metrics
-        (times_used / success_rate / average_profit / best_profit /
-        worst_loss / last_used) for the pattern derived from this trade.
-        There is no genetic-algorithm evolution — no fitness-driven
-        mutation or offspring. The method name is retained for caller
-        compatibility.
-        """
-        pattern_id = trade_result.get("pattern_id")
-        if not pattern_id:
-            # Create new pattern from this trade
-            pattern_id = await self._create_trading_pattern(player_id, trade_result, db)
-        
-        # Get pattern
-        stmt = select(ARIATradingPattern).where(
-            and_(
-                ARIATradingPattern.player_id == player_id,
-                ARIATradingPattern.pattern_id == pattern_id
-            )
-        )
-        result = await db.execute(stmt)
-        pattern = result.scalar_one_or_none()
-        
-        if not pattern:
-            return
-        
-        # Update performance metrics
-        pattern.times_used += 1
-        pattern.last_used = datetime.now(UTC)
-        
-        profit = trade_result.get("profit", 0)
-        if profit > 0:
-            pattern.success_rate = (
-                (pattern.success_rate * (pattern.times_used - 1) + 1) / pattern.times_used
-            )
-            pattern.average_profit = (
-                (pattern.average_profit * (pattern.times_used - 1) + profit) / pattern.times_used
-            )
-            pattern.best_profit = max(pattern.best_profit, profit)
-        else:
-            pattern.success_rate = (
-                (pattern.success_rate * (pattern.times_used - 1)) / pattern.times_used
-            )
-            pattern.worst_loss = min(pattern.worst_loss, profit)
-
-        await db.commit()
-        self.patterns_evolved += 1
-    
-    async def get_evolved_patterns(self, player_id: str,
-                                 db: AsyncSession,
-                                 pattern_type: Optional[str] = None) -> List[ARIATradingPattern]:
-        """
-        Get a player's recorded trading patterns, most-used first.
-
-        Ordered by observation accounting (times_used) rather than the legacy
-        GA fitness score, per ADR-0038's append-only observation-log model.
-        """
-        stmt = select(ARIATradingPattern).where(
-            ARIATradingPattern.player_id == player_id
-        )
-
-        if pattern_type:
-            stmt = stmt.where(ARIATradingPattern.pattern_type == pattern_type)
-
-        stmt = stmt.order_by(ARIATradingPattern.times_used.desc()).limit(10)
-
-        result = await db.execute(stmt)
-        return result.scalars().all()
-    
-    # =============================================================================
     # CASCADE PLANNING (Through Explored Territory Only)
     # =============================================================================
     
@@ -1065,20 +757,6 @@ class ARIAPersonalIntelligenceService:
     # =============================================================================
     # SECURITY & PRIVACY (OWASP Implementation)
     # =============================================================================
-    
-    async def _validate_player_ship(self, player_id: str, ship_id: str, 
-                                  db: AsyncSession) -> bool:
-        """Validate player owns the ship (OWASP A01)"""
-        from src.models.ship import Ship
-        
-        stmt = select(Ship).where(
-            and_(
-                Ship.id == ship_id,
-                Ship.player_id == player_id
-            )
-        )
-        result = await db.execute(stmt)
-        return result.scalar_one_or_none() is not None
     
     async def _validate_player_at_port(self, player_id: str, station_id: str,
                                      db: AsyncSession) -> bool:
@@ -1574,48 +1252,6 @@ class ARIAPersonalIntelligenceService:
         
         db.add(cache_entry)
         await db.commit()
-    
-    async def _create_trading_pattern(self, player_id: str, trade_result: Dict[str, Any],
-                                    db: AsyncSession) -> str:
-        """Create new trading pattern from successful trade"""
-        # Generate pattern DNA from trade characteristics
-        pattern_dna = {
-            "commodity": trade_result.get("commodity"),
-            "action": trade_result.get("action"),
-            "time_preference": datetime.now(UTC).hour,
-            "quantity_range": trade_result.get("quantity"),
-            "risk_tolerance": 0.5  # Would calculate from player profile
-        }
-        
-        # Generate pattern ID
-        pattern_id = hashlib.sha256(
-            json.dumps(pattern_dna, sort_keys=True).encode()
-        ).hexdigest()[:16]
-        
-        pattern = ARIATradingPattern(
-            player_id=player_id,
-            pattern_id=pattern_id,
-            pattern_type=self._classify_pattern_type(pattern_dna),
-            pattern_dna=pattern_dna,
-            generation=1,
-            discovered_at=datetime.now(UTC)
-        )
-        
-        db.add(pattern)
-        await db.commit()
-        
-        return pattern_id
-    
-    def _classify_pattern_type(self, pattern_dna: Dict[str, Any]) -> str:
-        """Classify trading pattern type"""
-        commodity = pattern_dna.get("commodity", "")
-        
-        if commodity in ["ORE", "ORGANICS", "FUEL"]:
-            return "bulk_trading"
-        elif commodity in ["LUXURY", "TECHNOLOGY"]:
-            return "high_value"
-        else:
-            return "general"
     
     # =============================================================================
     # CONSCIOUSNESS & RELATIONSHIP TRACKING
@@ -2343,9 +1979,10 @@ class ARIAPersonalIntelligenceService:
     # =============================================================================
     #
     # Append-only per-trade observation log mined by SQL aggregates -- the
-    # genetic-algorithm framing above (evolve_trading_pattern /
-    # ARIATradingPattern) is retired for this data per ADR-0038; this
-    # section is its replacement recommendation engine.
+    # genetic-algorithm framing (evolve_trading_pattern / get_evolved_
+    # patterns / ARIATradingPattern) was REMOVED (WO-ARIA-GA-CLEANUP,
+    # ADR-0038, zero live callers) rather than merely retired; this section
+    # is its replacement recommendation engine.
     #
     # DELIBERATELY SYNC (Session, not AsyncSession): the intended write-path
     # caller is trading.py's buy/sell routes (lane C of this WO, deferred --

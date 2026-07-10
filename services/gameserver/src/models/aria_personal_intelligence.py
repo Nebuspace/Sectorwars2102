@@ -153,6 +153,20 @@ class ARIAExplorationMap(Base):
 
 class ARIATradingPattern(Base):
     """
+    DEPRECATED (WO-ARIA-GA-CLEANUP, pending Max ruling) -- the genetic-
+    algorithm "Trade DNA" model this table backed (evolve_trading_pattern /
+    get_evolved_patterns / _create_trading_pattern / _classify_pattern_type
+    in aria_personal_intelligence_service.py) has been REMOVED per
+    ADR-0038 (../../../sw2102-docs/ADR/0038-aria-observation-log-learning-
+    model.md): no genetic algorithm, no fitness scoring. Those functions
+    were this table's ONLY writers/readers; as of the removal it has zero
+    live callers. The table itself is NOT dropped here -- that is a
+    destructive migration and explicitly Max-gated; see the WO's report
+    for the proposed DROP TABLE SQL staged for that ruling. Do not add new
+    callers against this model -- the replacement is the append-only
+    ARIATradingObservation log + SQL-aggregate recommendation engine
+    (aria.md#recommendation-engine).
+
     Learned trading patterns unique to each player
     This is their personal 'Trade DNA' that evolves
     """

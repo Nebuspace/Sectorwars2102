@@ -216,6 +216,10 @@ class Player(Base):
     aria_memories = relationship("ARIAPersonalMemory", back_populates="player", cascade="all, delete-orphan")
     aria_market_intelligence = relationship("ARIAMarketIntelligence", back_populates="player", cascade="all, delete-orphan")
     aria_exploration_map = relationship("ARIAExplorationMap", back_populates="player", cascade="all, delete-orphan")
+    # DEPRECATED (WO-ARIA-GA-CLEANUP, pending Max ruling) -- see
+    # ARIATradingPattern's own deprecation note in models/aria_personal_
+    # intelligence.py. Zero live callers as of the GA-strip; relationship
+    # kept (not dropped) until a DECISIONS ruling on the proposed DROP.
     aria_trading_patterns = relationship("ARIATradingPattern", back_populates="player", cascade="all, delete-orphan")
     aria_trading_observations = relationship("ARIATradingObservation", back_populates="player", cascade="all, delete-orphan")
     
