@@ -267,6 +267,46 @@ class BountyService:
         flag_modified(player, "settings")
         return added
 
+    def _load_two_players_for_update(
+        self, id_a: uuid.UUID, id_b: uuid.UUID,
+    ):
+        """WO-ECON-BOUNTY-DUAL-LOCK-ORDER: lock two distinct Player rows
+        for a single operation that touches both (cancel_bounty's
+        placer+target, collect_bounty's collector+target) in a
+        CONSISTENT order — ascending by id — regardless of which one is
+        the semantic "first" party. Mirrors contract_service._load_two_
+        players_for_update exactly (same reasoning, same shape — see that
+        function's own docstring): without this, two concurrent
+        operations that both need to lock the SAME pair of players (e.g.
+        player X cancelling a bounty they placed on player Y, racing
+        player Y's kill of player X collecting a bounty ON player X)
+        could acquire the pair in opposite order and deadlock. BOTH
+        dual-lock sites in this class funnel through this one method, so
+        any two concurrent callers touching the same pair always agree on
+        which row to lock first — including one cancel_bounty call racing
+        one collect_bounty call on the SAME pair, not just two calls to
+        the same method.
+
+        Pure lock-ORDER fix — no credit/refund amount or business logic
+        changes anywhere in this file.
+
+        Returns (player_a, player_b) in the SAME order as (id_a, id_b)
+        were passed — only the DB-side lock ACQUISITION order is
+        normalized internally; the caller's semantic pairing (which one
+        is "placer"/"collector" vs "target") is unaffected. Either or
+        both may be None if not found — callers already null-check both
+        before use."""
+        if id_a == id_b:
+            player = self.db.query(Player).filter(Player.id == id_a).with_for_update().first()
+            return player, player
+        if id_a < id_b:
+            player_a = self.db.query(Player).filter(Player.id == id_a).with_for_update().first()
+            player_b = self.db.query(Player).filter(Player.id == id_b).with_for_update().first()
+        else:
+            player_b = self.db.query(Player).filter(Player.id == id_b).with_for_update().first()
+            player_a = self.db.query(Player).filter(Player.id == id_a).with_for_update().first()
+        return player_a, player_b
+
     def place_bounty(
         self, placer_id: uuid.UUID, target_id: uuid.UUID, amount: int
     ) -> Dict[str, Any]:
@@ -359,18 +399,11 @@ class BountyService:
         # Lock placer + target rows. Acquire the target lock as well so a
         # concurrent collect_bounty (which locks the target) cannot clear the
         # pot between our read and our remove — the refund stays exact.
-        placer = (
-            self.db.query(Player)
-            .filter(Player.id == placer_id)
-            .with_for_update()
-            .first()
-        )
-        target = (
-            self.db.query(Player)
-            .filter(Player.id == target_id)
-            .with_for_update()
-            .first()
-        )
+        # WO-ECON-BOUNTY-DUAL-LOCK-ORDER: acquired in ascending-id order via
+        # the shared helper (not placer-then-target unconditionally) so this
+        # can never deadlock against collect_bounty locking the SAME pair in
+        # the opposite role order.
+        placer, target = self._load_two_players_for_update(placer_id, target_id)
 
         if not placer or not target:
             return {"success": False, "message": "Player not found"}
@@ -453,9 +486,12 @@ class BountyService:
         self, collector_id: uuid.UUID, target_id: uuid.UUID
     ) -> Dict[str, Any]:
         """Award all bounties on target to collector (called on kill)."""
-        # Lock both rows to prevent double-collection race condition
-        collector = self.db.query(Player).filter(Player.id == collector_id).with_for_update().first()
-        target = self.db.query(Player).filter(Player.id == target_id).with_for_update().first()
+        # Lock both rows to prevent double-collection race condition.
+        # WO-ECON-BOUNTY-DUAL-LOCK-ORDER: acquired in ascending-id order via
+        # the shared helper (not collector-then-target unconditionally) so
+        # this can never deadlock against cancel_bounty locking the SAME
+        # pair in the opposite role order.
+        collector, target = self._load_two_players_for_update(collector_id, target_id)
 
         if not collector or not target:
             return {"success": False, "message": "Player not found", "had_bounty": False}
