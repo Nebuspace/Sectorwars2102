@@ -141,7 +141,15 @@ class Region(Base):
     # receives the region share of port revenue. Integer credits, matching
     # Station.treasury_balance.
     treasury_balance = Column(Integer, nullable=False, default=0, server_default="0")
-    
+
+    # WO-PIRATE-ECO-1 (ADR-0048): denormalized pirate-ecosystem snapshot
+    # (pirate-ecosystem.md:379-399, the 11-field shape). NULLABLE — pre-
+    # migration rows read NULL; readers must default-and-write-back (the
+    # failure-modes table's "missing state" row, :432). The live
+    # PirateHolding / PirateKillLog tables stay authoritative; this column is
+    # a fast-path read cache refreshed by pirate_ecosystem_service.
+    pirate_ecosystem_state = Column(JSONB, nullable=True)
+
     # Relationships
     owner = relationship("User", back_populates="owned_regions")
     memberships = relationship("RegionalMembership", back_populates="region", cascade="all, delete-orphan")

@@ -757,10 +757,15 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
             flag_modified(sector, "players_present")
 
             # Presence write 2: squad row under the kind's defenses key —
-            # ADR-0047 shape for pirates (holding_id omitted: the
-            # PirateHolding table is Design-only, canon gap); canon
+            # ADR-0047 shape for pirates. holding_id is now representable
+            # (the PirateHolding table shipped under WO-PIRATE-ECO-1) but
+            # written None here: this v1 spawn path never anchors a squad
+            # to a holding row (pirate_captain rosters are standalone),
+            # so there is nothing to link yet — ECO-2 (holding-anchored
+            # squad spawning) is what actually populates it. Canon
             # police-forces.md squad shape for police (adds
-            # wanted_threshold / scheduled_clear_at).
+            # wanted_threshold / scheduled_clear_at) is unrelated to
+            # holdings and unaffected.
             squad_row: Dict[str, Any] = {
                 "patrol_id": str(uuid.uuid4()),
                 "faction_code": faction_code,
@@ -780,6 +785,10 @@ def materialize_from_bang(db: Session, galaxy: Galaxy) -> Dict[str, Any]:
             if cfg.is_police:
                 squad_row["wanted_threshold"] = POLICE_WANTED_THRESHOLD
                 squad_row["scheduled_clear_at"] = None
+            else:
+                # ADR-0047 pirate shape -- holding_id populated by ECO-2
+                # once holding-anchored squads spawn (see comment above).
+                squad_row["holding_id"] = None
             defenses = dict(sector.defenses or {})
             patrols = list(defenses.get(cfg.defenses_key) or [])
             patrols.append(squad_row)
@@ -1199,6 +1208,95 @@ def handle_npc_ship_destroyed(
 
     sector_id = npc.current_sector_id
     now = datetime.now(UTC)
+
+    # Kill-log feeder (WO-PIRATE-ECO-1 lane C) — SAVEPOINT-scoped so a flush
+    # failure rolls back only this insert, never the caller's open unit of
+    # work (this handler runs inside the combat worker's transaction; an
+    # unguarded failed flush would poison the session and make the caller's
+    # terminal commit raise PendingRollbackError — mirrors bounty_service.
+    # _write_claim / npc_scheduler_service's per-row savepoint idiom).
+    # Placed before the respawn/KIA branch below so a downstream failure in
+    # that branch can never cost the kill record, on the rare path where
+    # one is actually written.
+    #
+    # Canon: SYSTEMS/pirate-ecosystem.md:95-120 — PirateKillLog tracks
+    # HOLDING-CLEAR events, not individual ship kills (disposition is
+    # captured/cleared OF A HOLDING; logging every raider kill at weight
+    # >=1 would corrupt the suppression math — a floor-hitting number of
+    # ordinary ship kills would wrongly tank a region's growth target).
+    # So: a HOSTILE_RAIDER death only feeds the log when its squad row
+    # carries a non-null holding_id AND this kill empties that squad (the
+    # holding's last defender falls) — a genuine "cleared" event.
+    # CAPTURED rows belong to ECO-3's attempt_capture, not this feeder.
+    # holding_id is always None at spawn time today (see the squad_row
+    # comment above) — no holding-anchored squad exists until ECO-2, so
+    # this branch is an honest, currently-unreachable kernel in
+    # production: it starts firing the moment ECO-2 spawns
+    # holding-anchored squads, with no further change needed here.
+    if npc.archetype == NPCArchetype.HOSTILE_RAIDER and sector_id is not None:
+        try:
+            npc_id_str = str(npc.id)
+            peek_sector = (
+                db.query(Sector)
+                .filter(Sector.sector_id == sector_id)
+                .first()
+            )
+            squad_holding_id = None
+            squad_cleared = False
+            if peek_sector is not None:
+                for patrol in (
+                    (peek_sector.defenses or {}).get(PIRATE_PATROL_DEFENSES_KEY) or []
+                ):
+                    ids = patrol.get("npc_character_ids") or []
+                    if npc_id_str not in ids:
+                        continue
+                    squad_holding_id = patrol.get("holding_id")
+                    squad_cleared = not [nid for nid in ids if nid != npc_id_str]
+                    break
+
+            if squad_holding_id is not None and squad_cleared:
+                from src.models.pirate_holding import PirateHolding, PirateHoldingTier
+                from src.models.pirate_kill_log import (
+                    PirateKillDisposition,
+                    PirateKillLog,
+                )
+
+                holding = (
+                    db.query(PirateHolding)
+                    .filter(PirateHolding.id == squad_holding_id)
+                    .first()
+                )
+                if holding is not None:
+                    tier_kill_weight = {
+                        PirateHoldingTier.CAMP: 1,
+                        PirateHoldingTier.OUTPOST: 3,
+                        PirateHoldingTier.STRONGHOLD: 10,
+                    }
+                    attacker_team_id = None
+                    if killed_by_player_id is not None:
+                        from src.models.player import Player
+
+                        attacker_team_id = (
+                            db.query(Player.team_id)
+                            .filter(Player.id == killed_by_player_id)
+                            .scalar()
+                        )
+                    with db.begin_nested():
+                        db.add(PirateKillLog(
+                            region_id=holding.region_id,
+                            holding_id=holding.id,
+                            tier=holding.tier,
+                            kill_weight=tier_kill_weight.get(holding.tier, 1),
+                            attacker_player_id=killed_by_player_id,
+                            attacker_team_id=attacker_team_id,
+                            disposition=PirateKillDisposition.CLEARED,
+                        ))
+                        db.flush()
+        except Exception:
+            logger.exception(
+                "PirateKillLog feeder failed for NPC %s (ship %s) — non-fatal",
+                npc.id, ship_id,
+            )
 
     if npc.archetype in RESPAWN_PERMITTED_ARCHETYPES:
         npc.status = NPCStatus.RESPAWNING

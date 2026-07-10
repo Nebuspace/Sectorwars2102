@@ -66,6 +66,7 @@ from src.api.routes.haggle import router as haggle_router
 from src.api.routes.research_cockpit import router as research_cockpit_router
 from src.api.routes.black_market import router as black_market_router
 from src.api.routes.resources import router as resources_router  # WO-ARCH-RES-1-KERNEL (router carries /resources prefix)
+from src.api.routes.pirate_ecosystem import router as pirate_ecosystem_router  # WO-PIRATE-ECO-1
 from src.core.config import settings
 
 # Main API router - note that the version is now in the main API_V1_STR prefix
@@ -182,6 +183,10 @@ api_router.include_router(black_market_router, tags=["black-market"])
 # Resource registry catalog (WO-ARCH-RES-1-KERNEL): read-only seeded canon
 # resource list (router carries its own /resources prefix → GET /resources).
 api_router.include_router(resources_router, tags=["resources"])
+# Pirate ecosystem read API (WO-PIRATE-ECO-1): region-scoped population/
+# target/cleansed-state snapshot (router carries its own /regions prefix →
+# GET /regions/{region_id}/pirate-ecosystem).
+api_router.include_router(pirate_ecosystem_router, tags=["pirate-ecosystem"])
 
 # Only include test routes in development/test environments
 if settings.TESTING or settings.DEVELOPMENT_MODE:
