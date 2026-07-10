@@ -182,13 +182,16 @@ const FirstLoginContainer: React.FC = () => {
     const circumference = 2 * Math.PI * radius;
     const strokeDashoffset = circumference - (currentTrust * circumference);
 
-    // Pinned to the marker's actual lifelong behavior: the server never
-    // serializes ship_choice (only ship_claimed), so this expression always
-    // evaluated 0.5 and the 0.6 branch never executed. Whether the marker
-    // SHOULD respond to ship_claimed (and at what threshold) is an open
-    // product call -- escalated in STATUS; wire ship_claimed here only
-    // after that ruling.
-    const thresholdPercent = 0.5;
+    // WO-PUX-TRUST-METER (Max ruling #3, 2026-07-10): the marker responds to
+    // ship_claimed -- the server already serializes it correctly on both the
+    // /session and /claim-ship payloads (verified; no server change needed).
+    // Before a ship is claimed the threshold sits at the baseline 50%; once
+    // claimed, the guard's bar rises to the canon-confirmed 60% for the rest
+    // of the interrogation. This is a deliberate UI simplification, not the
+    // full per-ship-rarity Weak/Avg/Strong threshold table (first-login.md) --
+    // that table drives the actual pass/fail scoring server-side; this ring
+    // is a single at-a-glance number, pinned per the ruling.
+    const thresholdPercent = session?.ship_claimed ? 0.6 : 0.5;
     const thresholdRotation = (thresholdPercent * 360) - 90;
 
     return (

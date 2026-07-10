@@ -259,6 +259,37 @@ def test_completed_flow_is_never_resumable():
     assert svc.get_session_with_history(player_id) is None
 
 
+# --- FirstLoginService.record_player_ship_claim ---------------------------
+
+def test_record_player_ship_claim_sets_ship_claimed_field():
+    """WO-PUX-TRUST-METER (Max ruling #3): pins the mechanism every route's
+    ship_claimed serialization (``session.ship_claimed.name if
+    session.ship_claimed else None`` — routes/first_login.py) depends on.
+    record_player_ship_claim must durably set the field on the session row,
+    committed and refreshed, before any route builds a response payload
+    from it (both /session's resume path and /claim-ship's own response
+    already read it straight off this same session object)."""
+    player_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    session = _guard_session(session_id, player_id, ship_claimed=None, completed_at=None)
+    exchange = _exchange(session_id, 1, "Which vessel belongs to you?", "")
+    state = _state(player_id, session_id)
+
+    svc, db = _service({
+        FirstLoginSession: session,
+        DialogueExchange: exchange,
+        PlayerFirstLoginState: state,
+    })
+
+    result = svc.record_player_ship_claim(
+        session_id, ShipChoice.SCOUT_SHIP, "The Scout Ship, obviously."
+    )
+
+    assert result.ship_claimed == ShipChoice.SCOUT_SHIP
+    assert session.ship_claimed == ShipChoice.SCOUT_SHIP
+    assert db.committed is True
+
+
 # --- POST /session route dispatch -----------------------------------------
 
 @pytest.mark.asyncio
