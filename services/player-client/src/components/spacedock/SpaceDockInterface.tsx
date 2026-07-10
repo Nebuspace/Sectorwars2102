@@ -4,6 +4,7 @@ import type { Station } from '../../contexts/GameContext';
 import TradingInterface from '../trading/TradingInterface';
 import ConstructionVenue from './ConstructionVenue';
 import PortOfficeVenue from './PortOfficeVenue';
+import ContractBoardVenue from './ContractBoardVenue';
 import { InsuranceManager, MaintenanceManager, ModuleGridInterface } from '../ships';
 import { formatCredits } from '../../utils/formatters';
 import './spacedock.css';
@@ -18,7 +19,7 @@ const getApiBaseUrl = () => {
 };
 
 // Venue type definitions
-type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining';
+type VenueType = 'hub' | 'trading' | 'shipyard' | 'construction' | 'portoffice' | 'contracts' | 'genesis' | 'armory' | 'services' | 'gambling' | 'mining';
 type GamblingGame = 'menu' | 'slots' | 'dice' | 'blackjack' | 'lottery';
 
 // Blackjack card types
@@ -395,6 +396,16 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
       description: 'Station registry — ownership deeds, sealed-bid sales, tariffs, and takeover filings',
       available: true,
       services: ['Ownership Registry', 'Sealed-Bid Offers', 'Tariff & Treasury', 'Takeover War Room']
+    },
+    // Contract Board is universal — every station keeps a delivery board,
+    // whether or not it has any NPC or player-posted contracts yet
+    {
+      id: 'contracts',
+      name: 'Contract Board',
+      icon: '📋',
+      description: 'Delivery contracts — accept board postings, post your own, track your obligations',
+      available: true,
+      services: ['Delivery Board', 'Player-Posted Contracts', 'Escrow', 'Deadline Tracking']
     },
     {
       id: 'genesis',
@@ -3241,6 +3252,17 @@ const SpaceDockInterface: React.FC<SpaceDockProps> = ({ onUndock, helmBusy = fal
         // The registry desk needs a docked station to file against
         return currentStation ? (
           <PortOfficeVenue
+            stationId={currentStation.id}
+            stationName={currentStation.name}
+            credits={displayCredits}
+            onCreditsSet={handleCreditsSet}
+            onBack={() => setActiveVenue('hub')}
+          />
+        ) : renderHub();
+      case 'contracts':
+        // The board is scoped to whichever station is currently docked
+        return currentStation ? (
+          <ContractBoardVenue
             stationId={currentStation.id}
             stationName={currentStation.name}
             credits={displayCredits}

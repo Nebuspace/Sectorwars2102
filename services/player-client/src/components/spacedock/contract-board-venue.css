@@ -1,0 +1,250 @@
+/* ========================================
+   CONTRACT BOARD VENUE
+   (SYSTEMS/contracts.md, /api/v1/contracts/*)
+
+   SCROLL LAW: `.venue-content-area` is overridden here to NOT scroll
+   itself (overflow: hidden) — only `.cb-list` (board rows / my-contracts
+   rows) scrolls, in its own bounded container. The tab bar, toolbar, and
+   every row's own inline action button stay reachable without a
+   page-level scroll at 1440x900.
+   ======================================== */
+
+.venue-container.contracts .venue-content-area {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.cb-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 16px 0;
+  border-bottom: 1px solid rgba(0, 217, 255, 0.15);
+  flex-shrink: 0;
+}
+
+.cb-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 8px 14px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: all 0.2s ease;
+}
+
+.cb-tab:hover {
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.08);
+}
+
+.cb-tab.active {
+  color: #00d9ff;
+  background: rgba(0, 217, 255, 0.15);
+  border-color: rgba(0, 217, 255, 0.3);
+}
+
+/* Each tab's own content wrapper fills the (now non-scrolling)
+   .venue-content-area exactly — min-height: 0 is required for the
+   flex-child .cb-list below to be allowed to shrink and scroll instead
+   of pushing the container taller than its parent. */
+.cb-tab-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 16px;
+}
+
+.cb-toolbar,
+.cb-mine-subtabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.cb-mine-subtabs {
+  justify-content: flex-start;
+}
+
+.cb-toolbar-count {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.85em;
+}
+
+/* The ONLY scrolling element in the Board / My Contracts tabs. */
+.cb-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(0, 217, 255, 0.15);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.cb-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.cb-commodity {
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.95em;
+}
+
+.cb-route {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.8em;
+}
+
+.cb-status {
+  font-size: 0.7em;
+  letter-spacing: 0.05em;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(0, 217, 255, 0.15);
+  color: #00d9ff;
+}
+
+.cb-status-completed {
+  background: rgba(80, 220, 120, 0.15);
+  color: #50dc78;
+}
+
+.cb-status-cancelled,
+.cb-status-expired {
+  background: rgba(220, 80, 80, 0.15);
+  color: #dc5050;
+}
+
+.cb-row-terms {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.85em;
+}
+
+.cb-payment {
+  color: #50dc78;
+  font-weight: 600;
+}
+
+.cb-penalty {
+  color: rgba(220, 140, 80, 0.85);
+}
+
+.cb-countdown {
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-countdown.urgent {
+  color: #e8b04a;
+}
+
+.cb-countdown.expired {
+  color: #dc5050;
+  font-weight: 600;
+}
+
+.cb-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Danger variant (Abandon / Cancel) — scoped to this venue only, the
+   shared .action-button has no built-in danger tone. */
+.venue-container.contracts .action-button.danger {
+  border-color: rgba(220, 80, 80, 0.5);
+  color: #dc5050;
+}
+
+.venue-container.contracts .action-button.danger:hover {
+  background: rgba(220, 80, 80, 0.15);
+  border-color: #dc5050;
+}
+
+/* --- Post Contract tab --- */
+
+.cb-post-tab {
+  align-items: center;
+}
+
+.cb-post-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 480px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.cb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85em;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.cb-field select,
+.cb-field input {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 217, 255, 0.3);
+  color: #fff;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 0.95em;
+}
+
+.cb-field select:focus,
+.cb-field input:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
+.cb-escrow-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(0, 217, 255, 0.08);
+  border: 1px solid rgba(0, 217, 255, 0.25);
+  border-radius: 6px;
+  font-size: 0.9em;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.cb-escrow-amount {
+  color: #50dc78;
+  font-weight: 700;
+  font-size: 1.05em;
+}
+
+.cb-post-submit {
+  align-self: flex-start;
+}

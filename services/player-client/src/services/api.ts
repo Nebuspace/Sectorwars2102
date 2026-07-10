@@ -995,6 +995,49 @@ export const haggleAPI = {
     ),
 };
 
+// Trade Contract APIs (SYSTEMS/contracts.md, gameserver contracts.py) —
+// per-station board reads, accept/complete/abandon transitions, and
+// player-issued posting/cancel. Callers type-cast the response at the call
+// site (matches resourceAPI.list()'s convention above) — see
+// src/types/contract.ts for the exact wire shapes.
+export const contractsAPI = {
+  getBoard: (stationId: string) =>
+    apiRequest(`/api/v1/contracts/board?station_id=${encodeURIComponent(stationId)}`),
+
+  getMine: () => apiRequest('/api/v1/contracts/mine'),
+
+  getContract: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}`),
+
+  accept: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/accept`, { method: 'POST' }),
+
+  complete: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/complete`, { method: 'POST' }),
+
+  abandon: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/abandon`, { method: 'POST' }),
+
+  // body matches PostContractRequest (src/types/contract.ts) — cargo_delivery
+  // only this stage, no contract_type field (implicit).
+  post: (body: {
+    destination_station_id: string;
+    commodity_type: string;
+    quantity: number;
+    payment: number;
+    deadline: string;
+    origin_station_id?: string;
+    insurance_pool_reserve?: number;
+  }) =>
+    apiRequest('/api/v1/contracts', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  cancel: (contractId: string) =>
+    apiRequest(`/api/v1/contracts/${contractId}/cancel`, { method: 'POST' }),
+};
+
 export const gameAPI = {
   combat: combatAPI,
   planetary: planetaryAPI,
@@ -1015,4 +1058,5 @@ export const gameAPI = {
   construction: constructionAPI,
   haggle: haggleAPI,
   resource: resourceAPI,
+  contracts: contractsAPI,
 };
