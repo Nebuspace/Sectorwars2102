@@ -19,6 +19,7 @@ from src.models.team import TeamRecruitmentStatus
 from src.models.message import Message
 from src.services.team_service import TeamService
 from src.services.message_service import MessageService
+from src.services import team_reputation_service
 
 
 router = APIRouter(prefix="/teams", tags=["teams"])
@@ -963,3 +964,70 @@ async def ceasefire(
     db.commit()
 
     return {"success": True, "message": "Ceasefire declared", "ceased_by": str(current_player.id)}
+
+
+# --------------------------------------------------------------------------- #
+# Team reputation (WO-RT-TEAM-REP) -- factions-and-teams.md:392-399.
+# --------------------------------------------------------------------------- #
+
+class UpdateReputationMethodRequest(BaseModel):
+    method: str
+
+
+def _raise_for_team_reputation(exc: team_reputation_service.TeamReputationError) -> None:
+    if isinstance(exc, team_reputation_service.TeamReputationCooldownError):
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "retry_after": exc.retry_after.isoformat()},
+        )
+    if isinstance(exc, team_reputation_service.TeamReputationPermissionError):
+        raise HTTPException(status_code=403, detail=str(exc))
+    raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/{team_id}/reputation")
+async def get_team_reputation(
+    team_id: UUID,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Standings + method + next_recalculation (WO-RT-TEAM-REP). Requires
+    membership on this team -- mirrors get_treasury_balance's own
+    membership gate; canon does not specify team-reputation visibility
+    rules, [NO-CANON]."""
+    if not player.team_id or str(player.team_id) != str(team_id):
+        raise HTTPException(status_code=403, detail="You are not a member of this team")
+
+    team_service = TeamService(db)
+    team = team_service.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    result = team_reputation_service.get_team_reputation(db, team)
+    db.commit()
+    return result
+
+
+@router.put("/{team_id}/reputation-method")
+async def update_team_reputation_method(
+    team_id: UUID,
+    body: UpdateReputationMethodRequest,
+    player: Player = Depends(get_current_player),
+    db: Session = Depends(get_db),
+):
+    """Leader-only method switch; 7-day cooldown -> 409 with retry_after
+    in the payload (WO-RT-TEAM-REP, factions-and-teams.md:399). Forces an
+    immediate recalculation on success."""
+    team_service = TeamService(db)
+    team = team_service.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    try:
+        result = team_reputation_service.switch_method(db, team, body.method, player.id)
+    except team_reputation_service.TeamReputationError as exc:
+        db.rollback()
+        _raise_for_team_reputation(exc)
+    else:
+        db.commit()
+        return result
