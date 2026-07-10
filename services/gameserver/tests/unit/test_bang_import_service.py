@@ -568,6 +568,67 @@ class TestTerranSpaceStarterInvariants:
 
 
 @pytest.mark.unit
+class TestClass8VenueTypeVsHagglingArchetype:
+    """WO-P2-econ-blackmarket-venue-spawn Leg A regression pin.
+
+    ``_STATION_TYPE_BY_CLASS`` used to carry ``8: StationType.BLACK_MARKET``
+    -- conflating ``StationClass.CLASS_8`` ("Black Hole", a PRICING tier:
+    premium buyer, ``station_class_map.py``'s ``is_premium_buyer``) with the
+    illegal-goods VENUE TYPE ``contraband_service.py`` gates on. Live on
+    stage: 393 stations (12.2% of the fleet) were mis-typed BLACK_MARKET this
+    way -- matching bang's ``rangeInt(1, 8)`` port-class roll (~12.5% land on
+    8). Fixed by dropping the entry so class 8 falls through to the
+    ``.get(klass, StationType.TRADING)`` default, same as classes 4-7.
+
+    This pins the TWO-ENUM DISTINCTION so nobody re-conflates them: a class-8
+    port must import as ``StationType.TRADING`` (the venue type) while STILL
+    resolving the LEGITIMATE ``TraderArchetype.BLACK_MARKET`` haggling
+    personality (``core/trader_personalities.archetype_for_station_class`` --
+    untouched, classes 8 AND 9 both map there) and the class-8 premium-buyer
+    pricing pattern (``station_class_map.py`` -- also untouched, keyed on
+    ``StationClass`` not ``StationType``)."""
+
+    @staticmethod
+    def _class_8_port() -> Dict[str, Any]:
+        return {"class": 8, "name": "Void's Edge", "commodities": {}}
+
+    def test_class_8_port_imports_as_trading_venue_type(self, service: BangImportService) -> None:
+        from src.models.station import StationClass, StationType
+
+        spec = service._build_station_spec(
+            sector_id=42, port=self._class_8_port(), universe_seed=1,
+        )
+
+        assert spec.station_class == StationClass.CLASS_8
+        assert spec.station_type == StationType.TRADING  # NOT BLACK_MARKET -- the fixed conflation
+
+    def test_class_8_port_still_gets_the_black_market_haggling_archetype(
+        self, service: BangImportService,
+    ) -> None:
+        spec = service._build_station_spec(
+            sector_id=42, port=self._class_8_port(), universe_seed=1,
+        )
+
+        # The SEPARATE, legitimate mapping is untouched -- class 8 still
+        # gets the suspicious/opportunistic BLACK_MARKET haggling
+        # personality, just not the venue TYPE.
+        assert spec.trader_personality["type"] == "BLACK_MARKET"
+
+    def test_class_8_port_still_gets_premium_buyer_trading_pattern(
+        self, service: BangImportService,
+    ) -> None:
+        spec = service._build_station_spec(
+            sector_id=42, port=self._class_8_port(), universe_seed=1,
+        )
+
+        # station_class_map.py's premium-buyer pattern is keyed on
+        # StationClass, not StationType -- also untouched by this fix.
+        for commodity in ("ore", "organics", "equipment", "fuel"):
+            assert spec.commodities[commodity]["buys"] is True
+            assert spec.commodities[commodity]["sells"] is False
+
+
+@pytest.mark.unit
 class TestCapitalPlanetDedup:
     """WO-BANG-CAPITAL-DEDUP: bang names EVERY region's Capital-sector
     planet 'Earth' independently (sw2102-bang/src/content.ts:346-354,

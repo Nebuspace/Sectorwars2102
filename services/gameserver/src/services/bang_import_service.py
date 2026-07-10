@@ -148,6 +148,26 @@ _PLANET_TYPE_MAP: Dict[str, PlanetType] = {
 #: bang Port.class → gameserver StationType (heuristic; matches legacy
 #: GalaxyGenerator weighting tables). CLASS_0 stays TRADING since SpaceDocks
 #: route via :attr:`Station.is_spacedock` per Q2.
+#:
+#: WO-P2-econ-blackmarket-venue-spawn Leg A: class 8 (``StationClass.CLASS_8``,
+#: "Black Hole" — a PRICING tier, ``station_class_map.py``'s premium-buyer +20%
+#: rule) had a ``8: StationType.BLACK_MARKET`` entry here that conflated it
+#: with the venue TYPE the contraband-trading kernel gates on
+#: (``contraband_service.py``'s ``_is_black_market_venue``). That conflation
+#: was live: ~12.5% of every randomly-rolled bang port lands on class 8
+#: (``sw2102-bang/src/content.ts`` rolls ``rangeInt(1, 8)`` inclusive), so
+#: every imported region was minting real ``StationType.BLACK_MARKET``
+#: stations at random Black-Hole-class ports, untethered from canon's
+#: intended Frontier-zone/Fringe-Alliance placement (confirmed live on stage:
+#: 393 mis-typed rows, 12.2%, matching the predicted roll rate). Removed —
+#: class 8 now falls through to the ``.get(klass, StationType.TRADING)``
+#: default below, same as classes 4-7. The *separate*, legitimate mapping of
+#: classes 8 AND 9 to the ``TraderArchetype.BLACK_MARKET`` HAGGLING
+#: PERSONALITY (``core/trader_personalities.archetype_for_station_class`` —
+#: a suspicious/opportunistic negotiation style, pinned by
+#: ``test_haggle_service.py``) and class 8's premium-buyer PRICING
+#: (``station_class_map.py``'s ``is_premium_buyer``) are UNTOUCHED — both are
+#: correct and orthogonal to the venue-type bug fixed here.
 _STATION_TYPE_BY_CLASS: Dict[int, StationType] = {
     0: StationType.TRADING,
     1: StationType.MINING,
@@ -157,7 +177,6 @@ _STATION_TYPE_BY_CLASS: Dict[int, StationType] = {
     5: StationType.TRADING,
     6: StationType.TRADING,
     7: StationType.TRADING,
-    8: StationType.BLACK_MARKET,
 }
 
 #: Security level by cluster type. Mirrors the spirit of the legacy generator
