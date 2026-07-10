@@ -763,6 +763,10 @@ class BangImportService:
                     stdout=True,
                     stderr=True,
                     stdin_open=True,
+                    # WO-BANG-NETMODE-1: bang is CPU-only galaxy generation with
+                    # zero network needs — least-privilege on every host, not a
+                    # workaround for any one host's broken bridge.
+                    network_mode="none",
                 )
             except docker_errors.ImageNotFound as exc:
                 raise RuntimeError(
