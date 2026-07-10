@@ -890,10 +890,23 @@ class ARIAPersonalIntelligenceService:
         db.add(log_entry)
 
     def _initialize_encryption(self) -> Fernet:
-        """Initialize encryption for personal memories (OWASP A02)"""
-        # In production, load from secure key management
-        key = settings.ARIA_ENCRYPTION_KEY if hasattr(settings, 'ARIA_ENCRYPTION_KEY') else Fernet.generate_key()
-        return Fernet(key)
+        """Initialize encryption for personal memories (OWASP A02).
+
+        WO-DRIFT-aria-rt-mem-encryption-key: the key comes from the
+        persistent ARIA_ENCRYPTION_KEY env var -- core.config.Settings
+        fail-louds at construction (process startup) if it's absent, the
+        same discipline as JWT_SECRET. The prior
+        `hasattr(settings, 'ARIA_ENCRYPTION_KEY') else Fernet.generate_key()`
+        branch was ALWAYS false (BaseSettings with extra="ignore" never
+        exposes an undeclared field via hasattr), so every instantiation of
+        this service minted a brand-new random key -- every previously-
+        encrypted ARIAPersonalMemory row became permanently undecryptable
+        across a restart (or even within one process: scheduler/
+        presence_helpers.py instantiates its own copy outside the
+        get_aria_intelligence_service() singleton). Fernet accepts str or
+        bytes directly, no manual encode needed.
+        """
+        return Fernet(settings.ARIA_ENCRYPTION_KEY)
     
     def _encrypt_memory(self, content: Dict[str, Any]) -> str:
         """Encrypt memory content"""

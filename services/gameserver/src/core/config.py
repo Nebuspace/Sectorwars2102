@@ -1,6 +1,7 @@
 import logging
 import os
 from typing import Optional
+from cryptography.fernet import Fernet
 from pydantic import PostgresDsn, Field
 from pydantic_settings import BaseSettings
 
@@ -28,6 +29,16 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))  # Reduced to 1 hour
     REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))  # Reduced to 7 days
 
+    # ARIA personal-memory encryption key (WO-DRIFT-aria-rt-mem-encryption-
+    # key). Same discipline as JWT_SECRET above: a persistent, stack-loaded
+    # secret, never a per-boot/per-instantiation generated throwaway -- a
+    # rotating key would permanently orphan every previously-encrypted
+    # ARIAPersonalMemory row (Fernet raises InvalidToken decrypting under a
+    # different key). No default -- MUST be set. Value is a url-safe
+    # base64-encoded 32-byte Fernet key, e.g. the output of
+    # `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+    ARIA_ENCRYPTION_KEY: str = os.environ.get("ARIA_ENCRYPTION_KEY")  # No default - MUST be set
+
     # Admin credentials - CRITICAL: These MUST be set in production
     ADMIN_USERNAME: str = os.environ.get("ADMIN_USERNAME")  # No default - MUST be set
     ADMIN_PASSWORD: str = os.environ.get("ADMIN_PASSWORD")  # No default - MUST be set
@@ -43,6 +54,20 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET environment variable is required for security")
         if len(self.JWT_SECRET) < 32:
             raise ValueError("JWT_SECRET must be at least 32 characters for security")
+        if not self.ARIA_ENCRYPTION_KEY:
+            raise ValueError("ARIA_ENCRYPTION_KEY environment variable is required for security")
+        try:
+            # Validate with the exact constructor the service uses, so
+            # "valid at boot" == "usable by ARIAPersonalIntelligenceService"
+            # -- a malformed key (trailing newline, truncated paste, wrong
+            # length) must fail loud HERE, not lazily as a confusing 500 on
+            # the first ARIA-touching request. Never include the key value
+            # itself in the error message.
+            Fernet(self.ARIA_ENCRYPTION_KEY)
+        except Exception:
+            raise ValueError(
+                "ARIA_ENCRYPTION_KEY must be a valid url-safe base64-encoded 32-byte Fernet key"
+            ) from None
         if not self.ADMIN_USERNAME:
             raise ValueError("ADMIN_USERNAME environment variable is required")
         if not self.ADMIN_PASSWORD:
