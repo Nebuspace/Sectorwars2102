@@ -27,6 +27,25 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# WO-P2-econ-blackmarket-venue-spawn Leg C, Part 2 (nexus-hub placement).
+# [NO-CANON] black-market.md's Locations table (:22-29) places "Class-0
+# Black Market station" venues in "Frontier zone, Fringe Alliance territory"
+# but gives no placement rate/count -- neither that section nor the earlier
+# design brief (audit/design-briefs/black-market.md) pins a number beyond
+# "the Implementer seeds a handful of BLACK_MARKET-type stations in
+# Frontier-zone sectors". This constant is that invented default, proposed
+# to DECISIONS.md rather than silently treated as canon.
+#
+# Math (Central Nexus's current fixed shape: total_sectors=5000,
+# cluster_count=20 -> 250 sectors/cluster, 5 of the 20 clusters are
+# FRONTIER_OUTPOST -- clusters 5/6/15/17/20, _create_nexus_clusters:315-330
+# -- so 1250 frontier sectors; FRONTIER_OUTPOST already halves port density
+# to 2.5% (effective_port_density, :422-424), so ~31 ports/cluster * 5 =~
+# 156 frontier ports total): at 4% of THOSE ports, expected count is
+# 156 * 0.04 =~ 6 BLACK_MARKET stations hub-wide -- a genuine "handful",
+# not a majority of frontier space and not vanishingly rare either.
+BLACK_MARKET_FRONTIER_CHANCE = 0.04
+
 
 def _synthesize_cluster_nebula_fields(cluster: Cluster, nebula_sector_count: int) -> None:
     """WO-GWQ-NEXUS-NEBULA-FIELDS: give a nexus-generated cluster the same
@@ -503,7 +522,7 @@ class NexusGenerationService:
             # FRONTIER_OUTPOST halves effective station density (fewer ports);
             # all other cluster types use the baseline 5% density unchanged.
             if sector_num == 1 or random.random() < effective_port_density:
-                port_data = self._generate_port_for_sector(sector_num, region_id)
+                port_data = self._generate_port_for_sector(sector_num, region_id, is_frontier=is_frontier)
                 batch_ports.append(port_data)
                 stats["ports"] += 1
 
@@ -527,11 +546,35 @@ class NexusGenerationService:
 
         return stats
 
-    def _generate_port_for_sector(self, sector_num: int, region_id: str) -> Dict[str, Any]:
+    def _generate_port_for_sector(
+        self, sector_num: int, region_id: str, is_frontier: bool = False,
+    ) -> Dict[str, Any]:
         """Generate a port configuration for a sector in Central Nexus
 
         Sparse generation: Ports are randomly distributed with mixed types.
         Sector 1 always gets a high-quality trading station for starter access.
+
+        ``is_frontier`` (WO-P2-econ-blackmarket-venue-spawn Leg C, Part 2,
+        default False): when the calling cluster is FRONTIER_OUTPOST, this
+        port has a BLACK_MARKET_FRONTIER_CHANCE roll to become a
+        StationType.BLACK_MARKET venue instead of the normal random type
+        pool (black-market.md :22-29 -- "Frontier zone, Fringe Alliance
+        territory"). The roll is a SEPARATE, ADDITIONAL random.random() call
+        that only fires when is_frontier=True, so a non-frontier caller (the
+        default) takes the exact same RNG-call sequence as before this WO --
+        byte-identical generation for every other cluster type, matching
+        this file's own WO-GX1 "unbiased path is unchanged" convention.
+        station_class is left untouched either way -- venue TYPE and CLASS
+        are orthogonal (the whole point of Leg A's fix one WO ago: never
+        derive BLACK_MARKET from station_class again).
+
+        The existing Fringe-Alliance (OUTLAWS) RECOGNIZED-tier rep gate
+        (contraband_service.py's _passes_rep_gate, already shipped) covers
+        any station with this type regardless of how it was created -- no
+        additional discovery wiring needed here. Canon's "Hidden sector" row
+        (:27, sectors absent from nav tables) is a DIFFERENT venue type in
+        the same Locations table, not this one -- is_nexus_protected /
+        sector.py:129 deliberately NOT wired onto these stations.
         """
         from src.models.station import StationClass, StationType, StationStatus
 
@@ -584,6 +627,14 @@ class NexusGenerationService:
             StationType.DIPLOMATIC,
             StationType.SCIENTIFIC
         ])
+
+        # Leg C Part 2: Frontier-zone black-market placement (see this
+        # method's own docstring + the module-level BLACK_MARKET_FRONTIER_
+        # CHANCE constant for the [NO-CANON] rate + its math). A SEPARATE
+        # roll, only taken for frontier ports, so non-frontier generation's
+        # RNG-call sequence is unchanged.
+        if is_frontier and random.random() < BLACK_MARKET_FRONTIER_CHANCE:
+            port_type = StationType.BLACK_MARKET
 
         # Random port class (mostly mid-tier)
         port_class = random.choice([

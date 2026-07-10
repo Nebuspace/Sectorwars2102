@@ -2579,10 +2579,28 @@ class BangImportService:
         is_spacedock = bool(port.get("isSpaceDock", False))
         station_class = StationClass(klass) if klass in {c.value for c in StationClass} else StationClass.CLASS_0
         if is_spacedock:
-            # Per the legacy SpaceDock recipe — full service hub flags.
+            # Per the legacy SpaceDock recipe — full service hub flags. A
+            # spacedock is a dedicated NPC-neutral hub (TradeDock-style) --
+            # the explicit black_market flag below never applies to it,
+            # mirroring how it already takes precedence over the class-
+            # based type table.
             station_type = StationType.SHIPYARD
         else:
             station_type = _STATION_TYPE_BY_CLASS.get(klass, StationType.TRADING)
+            # WO-P2-econ-blackmarket-venue-spawn Leg C, Part 1 (import-map):
+            # an EXPLICIT `black_market: true` flag on the port manifest
+            # overrides the class-derived type to BLACK_MARKET. Deliberately
+            # NOT class-derived (Leg A fixed exactly this conflation for
+            # class 8 -- reintroducing an implicit class->BLACK_MARKET rule
+            # here would resurrect the same bug under a different name).
+            # Graceful on absence: no flag -> station_type is whatever the
+            # class table already produced, byte-identical to before this
+            # WO -- safe to ship ahead of the bang sidecar actually emitting
+            # the flag (a no-op until then). bang-side emission + the
+            # canon placement rule for WHERE the flag gets set are the
+            # cross-repo half of this WO, not built here.
+            if bool(port.get("black_market", False)):
+                station_type = StationType.BLACK_MARKET
 
         name = str(port.get("name", f"Station {sector_id}"))
         commodities = _build_full_commodities(port.get("commodities") or {})

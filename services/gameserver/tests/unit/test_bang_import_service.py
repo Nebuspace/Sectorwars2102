@@ -629,6 +629,71 @@ class TestClass8VenueTypeVsHagglingArchetype:
 
 
 @pytest.mark.unit
+class TestExplicitBlackMarketFlagImportMap:
+    """WO-P2-econ-blackmarket-venue-spawn Leg C, Part 1 -- the import-map
+    half. An EXPLICIT ``black_market: true`` flag on the bang port manifest
+    overrides the class-derived type to BLACK_MARKET. Deliberately NOT
+    class-derived -- Leg A fixed exactly that conflation for class 8;
+    reintroducing an implicit class rule here would resurrect the same bug
+    under a different name. Graceful on absence: no flag -> byte-identical
+    to the class table's own output (this WO's whole point is that shipping
+    Part 1 ahead of bang actually emitting the flag is a safe no-op)."""
+
+    def test_explicit_flag_overrides_class_derived_type(self, service: BangImportService) -> None:
+        from src.models.station import StationType
+
+        port = {"class": 3, "name": "Shadow Berth", "commodities": {}, "black_market": True}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        # Class 3 alone maps to INDUSTRIAL (_STATION_TYPE_BY_CLASS) -- the
+        # explicit flag wins over that class-derived default.
+        assert spec.station_type == StationType.BLACK_MARKET
+
+    def test_flag_absent_is_a_no_op_class_table_unchanged(self, service: BangImportService) -> None:
+        from src.models.station import StationType
+
+        port = {"class": 3, "name": "Ordinary Berth", "commodities": {}}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        assert spec.station_type == StationType.INDUSTRIAL  # class table's own default, untouched
+
+    def test_flag_false_is_also_a_no_op(self, service: BangImportService) -> None:
+        from src.models.station import StationType
+
+        port = {"class": 3, "name": "Ordinary Berth", "commodities": {}, "black_market": False}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        assert spec.station_type == StationType.INDUSTRIAL
+
+    def test_flag_never_overrides_a_spacedock(self, service: BangImportService) -> None:
+        """A spacedock is a dedicated NPC-neutral hub -- is_spacedock already
+        takes precedence over the class table, and the explicit flag must
+        not bypass that precedence either."""
+        from src.models.station import StationType
+
+        port = {
+            "class": 3, "name": "Should Stay Shipyard", "commodities": {},
+            "isSpaceDock": True, "black_market": True,
+        }
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        assert spec.station_type == StationType.SHIPYARD
+        assert spec.is_spacedock is True
+
+    def test_flag_still_wins_on_the_already_fixed_class_8(self, service: BangImportService) -> None:
+        """Class 8 alone now falls through to TRADING (Leg A) -- the
+        explicit flag is a genuinely SEPARATE, additive path that still
+        applies on top of that fixed default when a real venue is meant to
+        be placed there."""
+        from src.models.station import StationType
+
+        port = {"class": 8, "name": "Void's Edge", "commodities": {}, "black_market": True}
+        spec = service._build_station_spec(sector_id=7, port=port, universe_seed=1)
+
+        assert spec.station_type == StationType.BLACK_MARKET
+
+
+@pytest.mark.unit
 class TestCapitalPlanetDedup:
     """WO-BANG-CAPITAL-DEDUP: bang names EVERY region's Capital-sector
     planet 'Earth' independently (sw2102-bang/src/content.ts:346-354,
