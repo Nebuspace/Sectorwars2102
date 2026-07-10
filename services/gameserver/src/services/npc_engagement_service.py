@@ -484,6 +484,88 @@ def _release_squad(db: Session, engagement: PendingEngagement) -> None:
 
 
 # ---------------------------------------------------------------------------
+# NPC-initiated combat trigger (WO-CMB-NPC-INITIATED-1, Max ruling
+# 2026-07-10) — supersedes the "combat is player-initiated PvE" deferral
+# above: an arrived squad attacks FIRST once co-located with the
+# offender, via npc_combat_initiation_service.initiate_npc_combat (the
+# shared, faction-agnostic resolver both this lane and the pirate
+# encounter leg in movement_service.py call into).
+# ---------------------------------------------------------------------------
+
+def _maybe_initiate_police_combat(
+    db: Session, engagement: PendingEngagement, player: Player, sector: Sector,
+) -> List[Dict[str, Any]]:
+    """Lane B's ARRIVED-transition wiring: once a squad is placed
+    (``_place_squad`` — both the turn-counter and no-officer-grace
+    branches), it attacks FIRST. Outer never-raises wrapper — a failed
+    initiation must degrade to no new events, never poison
+    ``sweep_pending_engagements``' per-row SAVEPOINT (WO-B1/B2)."""
+    try:
+        return _maybe_initiate_police_combat_inner(db, engagement, player, sector)
+    except Exception:
+        logger.exception(
+            "_maybe_initiate_police_combat failed for engagement %s", engagement.id,
+        )
+        return []
+
+
+def _maybe_initiate_police_combat_inner(
+    db: Session, engagement: PendingEngagement, player: Player, sector: Sector,
+) -> List[Dict[str, Any]]:
+    if not engagement.npc_squad_ids:
+        return []
+
+    # Captain-first squad selection, adapted to initiate_npc_combat's
+    # single-npc signature: _pick_squad's own ordering already puts the
+    # Captain first when included, else the nearest Marshal — so the
+    # combatant is simply the first id in the committed squad list.
+    npc = db.query(NPCCharacter).filter(
+        NPCCharacter.id == uuid.UUID(engagement.npc_squad_ids[0])
+    ).first()
+    if npc is None or npc.ship_id is None:
+        return []
+    npc_ship = db.query(Ship).filter(Ship.id == npc.ship_id).first()
+    if npc_ship is None:
+        return []
+
+    from src.services.npc_combat_initiation_service import initiate_npc_combat
+
+    trigger = f"police_{engagement.offense_type}"
+    result = initiate_npc_combat(
+        db, npc, player, sector,
+        trigger=trigger, trigger_context={"engagement_id": str(engagement.id)},
+    )
+    if not result.get("success"):
+        return []
+
+    # Faction-specific consequences layered on the shared resolver's
+    # generic result (attack_player/attack_npc_ship's own layered-
+    # consequence idiom) — isolated in its own try/except so a
+    # rep-service failure can never swallow the heads-up event below.
+    try:
+        from src.services.personal_reputation_service import PersonalReputationService
+
+        rep = PersonalReputationService(db)
+        if result.get("combat_result") == "DEFENDER_FLED":
+            rep.adjust_reputation(player.id, -25, "evade_arrest")
+        if result.get("npc_ship_destroyed"):
+            # [PROVISIONAL] -50 flat leg only (Samantha ruling): no
+            # Suspect/Wanted escalation setter exists to resurrect (WO-BL
+            # removed that anti-pattern) — escalation wires up if/when
+            # CMB-SUSPECT-LIFE-1 actually ships.
+            rep.adjust_reputation(player.id, -50, "destroyed_police_officer")
+    except Exception:
+        logger.exception("Police-combat reputation hook failed (non-fatal)")
+
+    from src.services.npc_combat_initiation_service import build_npc_combat_initiated_event
+
+    event = build_npc_combat_initiated_event(
+        uuid.UUID(result["combat_log_id"]), npc, npc_ship, player, sector, trigger=trigger,
+    )
+    return [event]
+
+
+# ---------------------------------------------------------------------------
 # 1-minute sweep
 # ---------------------------------------------------------------------------
 
@@ -629,6 +711,8 @@ def _sweep_one(db: Session, engagement: PendingEngagement,
         events = _place_squad(db, engagement, player.current_sector_id)
         engagement.status = EngagementStatus.ARRIVED
         engagement.arrival_sector_id = player.current_sector_id
+        # WO-CMB-NPC-INITIATED-1: the arrived squad attacks FIRST.
+        events.extend(_maybe_initiate_police_combat(db, engagement, player, current_sector))
         return events
 
     # (a) Turn-counter watcher.
@@ -637,6 +721,8 @@ def _sweep_one(db: Session, engagement: PendingEngagement,
         events = _place_squad(db, engagement, player.current_sector_id)
         engagement.status = EngagementStatus.ARRIVED
         engagement.arrival_sector_id = player.current_sector_id
+        # WO-CMB-NPC-INITIATED-1: the arrived squad attacks FIRST.
+        events.extend(_maybe_initiate_police_combat(db, engagement, player, current_sector))
         return events
 
     return []

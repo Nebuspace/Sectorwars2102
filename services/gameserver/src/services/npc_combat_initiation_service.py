@@ -18,26 +18,30 @@ own docstring scopes it to police/jurisdiction (ADR-0042 + police-forces.md
 jurisdiction/PendingEngagement concept per faction-lore.md's spawn/encounter
 model, so this module gives both lanes a shared, faction-agnostic home.
 
-Resolution reuses combat_service.CombatService's existing engine via
-composition (no new resolution mechanics — WO-CMB-NPC-INITIATED-1
-constraint 1): ``_resolve_ship_combat`` now takes a symmetric
-``attacker_ship: Optional[Ship] = None`` parameter (the NPC-attacker mirror
-of the pre-existing ``defender_ship`` NPC-defender branch), so escape/flee
-is inherited for free from the unchanged defender-side escape roll —
-constraint 2 ("no zero-agency insta-death") is satisfied structurally, not
-via a new mechanic.
+Resolution reuses combat_service.CombatService's existing engine via the
+PUBLIC ``CombatService.npc_attack_player(npc_ship_id, defender_id)`` method
+(no private reach-around into ``_resolve_ship_combat`` — that method itself
+gained a symmetric ``attacker_ship: Optional[Ship] = None`` parameter, the
+NPC-attacker mirror of the pre-existing ``defender_ship`` NPC-defender
+branch, but this module calls it only through the public entry point
+``npc_attack_player`` wraps around it). Escape/flee is inherited for free
+from the unchanged defender-side escape roll — constraint 2 ("no
+zero-agency insta-death") is satisfied structurally, not via a new
+mechanic. ``npc_attack_player`` is itself FLUSH-ONLY (documented on its own
+docstring in combat_service.py) — safe to call from a per-row SAVEPOINT.
 
 Layered-consequence design, mirroring how attack_player/attack_npc_ship
 already separate the shared resolver from per-context orchestration: this
-module applies only the GENERIC mechanical consequences common to ANY
-NPC-initiated fight (CombatLog, ship destruction/wreck, NPC KIA/respawn
-processing). Faction-specific consequences — Marshal-kill Federation rep
-deltas, pirate loot/drop tables, evade-arrest rep, cargo disposal (pirates
-loot into their own hold; police confiscate to a depot per police-forces.md
-outcome #3) — are the CALLER's responsibility, applied on the returned dict
-exactly like attack_player/attack_npc_ship layer their own consequences
-around the shared resolver today. ``cargo_stolen`` is returned raw (what the
-resolver decided to take) but NOT transferred here for this reason.
+module (via npc_attack_player) applies only the GENERIC mechanical
+consequences common to ANY NPC-initiated fight (CombatLog, ship
+destruction/wreck, NPC KIA/respawn processing). Faction-specific
+consequences — Marshal-kill Federation rep deltas, pirate loot/drop tables,
+evade-arrest rep, cargo disposal (pirates loot into their own hold; police
+confiscate to a depot per police-forces.md outcome #3) — are the CALLER's
+responsibility, applied on the returned dict exactly like attack_player/
+attack_npc_ship layer their own consequences around the shared resolver
+today. ``cargo_stolen`` is returned raw (what the resolver decided to take)
+but NOT transferred here for this reason.
 
 Documented deferrals (flagged, not invented):
   - Surrender (police-forces.md "Engagement outcomes" #1 — a pre-combat
@@ -63,22 +67,18 @@ the documented discipline of combat_service._emit_combat_phase_events
 ("POST-COMMIT... never able to touch the already-landed transaction").
 """
 
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
-from src.models.combat import CombatType
-from src.models.combat_log import CombatLog
 from src.models.npc_character import NPCArchetype, NPCCharacter
 from src.models.player import Player
 from src.models.region import RegionType
 from src.models.sector import Sector
-from src.models.ship import Ship, ShipStatus
+from src.models.ship import Ship
 from src.models.station import SECURITY_TIER_PROTECTED_MIN_RANK, Station
 
 logger = logging.getLogger(__name__)
@@ -205,102 +205,63 @@ def _initiate_npc_combat_inner(
     if failure is not None:
         return failure
 
-    # --- Resolution (WO-CMB-NPC-INITIATED-1's one approved combat_service.py
-    # touch: _resolve_ship_combat's symmetric attacker_ship parameter) -----
-    from src.services.combat_service import CombatService, COMBAT_RESULT_TO_OUTCOME, \
-        _combat_log_region_snapshot
-
-    combat_service = CombatService(db)
-    combat_result = combat_service._resolve_ship_combat(
-        attacker=None, defender=defender, sector=sector, attacker_ship=npc_ship,
+    # Resolution via the PUBLIC entry point — no private reach-around into
+    # _resolve_ship_combat. npc_attack_player is itself flush-only (its own
+    # docstring/combat_service.py:1611) and does its own guard re-checks
+    # (defense-in-depth; _guard_failure above already validated the same
+    # ship/sector conditions, so those never actually trigger via this call
+    # path), builds the CombatLog (attacker_id=None + snapshot fields — no
+    # schema change), and applies the generic ship-destruction/wreck/KIA
+    # consequences — see combat_service.py's own docstring for the full
+    # rationale.
+    from src.services.combat_service import CombatService
+    result = CombatService(db).npc_attack_player(
+        npc_ship_id=npc_ship.id, defender_id=defender.id,
     )
+    if not result.get("success"):
+        return result
 
-    # --- CombatLog — no schema change: attacker_id stays NULL (no Player
-    # behind the NPC), name/type snapshots preserve who attacked — the
-    # literal mirror of attack_npc_ship's existing NPC-defender idiom,
-    # just flipped to the attacker side. -----------------------------------
-    defender_ship = defender.current_ship
-    combat_log = CombatLog(
-        combat_type=CombatType.SHIP_VS_SHIP.value,
-        outcome=COMBAT_RESULT_TO_OUTCOME[combat_result["result"]],
-        sector_id=sector.sector_id,
-        sector_uuid=sector.id,
-        region_id_snapshot=_combat_log_region_snapshot(sector),
-        attacker_id=None,
-        attacker_ship_id=npc_ship.id,
-        attacker_ship_name=npc_ship.name,
-        attacker_ship_type=npc_ship.type.value,
-        defender_id=defender.id,
-        defender_ship_id=defender.current_ship_id,
-        defender_ship_name=defender_ship.name if defender_ship else None,
-        defender_ship_type=defender_ship.type.value if defender_ship else None,
-        rounds=combat_result["rounds"],
-        attacker_drones=0,
-        defender_drones=defender.defense_drones,
-        attacker_drones_lost=combat_result["attacker_drones_lost"],
-        defender_drones_lost=combat_result["defender_drones_lost"],
-        attacker_damage_dealt=combat_result["attacker_damage_dealt"],
-        defender_damage_dealt=combat_result["defender_damage_dealt"],
-        cargo_looted=None,  # disposal is the caller's call — see module docstring
-        combat_log=json.dumps(combat_result["combat_details"]),
-        ended_at=datetime.now(timezone.utc),
-    )
-    db.add(combat_log)
-    db.flush()  # populate combat_log timestamps / surface DB errors early
+    result["npc_id"] = str(npc.id)
+    result["npc_display_name"] = npc.display_name
+    result["trigger"] = trigger
+    result["trigger_context"] = trigger_context
+    return result
 
-    dead_npc: Optional[NPCCharacter] = None
 
-    # Defender's ship destroyed (the NPC attacker won): mirrors
-    # _handle_ship_destruction's EXISTING "player's ship destroyed by a
-    # non-player cause" call (attack_npc_ship's own
-    # `self._handle_ship_destruction(attacker, None, "combat")` for the
-    # symmetric case) — it already handles escape-pod ejection AND wreck
-    # spawning internally, so no separate _spawn_cargo_wreck call is
-    # needed here.
-    if combat_result["defender_ship_destroyed"]:
-        combat_service._handle_ship_destruction(defender, None, "npc_combat")
-
-    # NPC's ship destroyed (the defender won): mirrors attack_npc_ship's
-    # own NPC-destruction pattern exactly, just with the roles swapped —
-    # defender is the killing-blow pilot.
-    if combat_result["attacker_ship_destroyed"]:
-        npc_ship.is_destroyed = True
-        npc_ship.is_active = False
-        npc_ship.status = ShipStatus.DESTROYED
-        combat_service._spawn_cargo_wreck(
-            destroyed_ship=npc_ship, cause="combat",
-            original_owner=None, killing_blow_pilot=defender,
-        )
-        from src.services.npc_spawn_service import handle_npc_ship_destroyed
-        dead_npc = handle_npc_ship_destroyed(
-            db, npc_ship.id,
-            killed_by_player_id=defender.id,
-            combat_log_id=combat_log.id,
-        )
-
-    flag_modified(npc_ship, "combat")
-    if defender_ship is not None:
-        flag_modified(defender_ship, "combat")
-    db.flush()
-
+def build_npc_combat_initiated_event(
+    combat_log_id: uuid.UUID,
+    npc: NPCCharacter,
+    npc_ship: Ship,
+    defender: Player,
+    sector: Sector,
+    *,
+    trigger: str,
+) -> Dict[str, Any]:
+    """The ``npc_combat_initiated`` wire-event dict — factored out of
+    ``emit_npc_combat_initiated`` (below) so a caller with NO running
+    event loop can still obtain the payload: ``sweep_pending_engagements``'
+    scheduler-sweep context has none (a live-context caller does), so it
+    returns this dict up through ``_sweep_one`` for the scheduler's own
+    POST-COMMIT ``_broadcast_events`` drain instead of pushing live.
+    Pure/side-effect-free — both callers get the IDENTICAL payload, so the
+    WS push and the scheduler-drained frame can never drift apart. Adds a
+    ``defender_user_id`` personal-routing field the live-push path only
+    needs locally (for its own participants list) but the scheduler's
+    routing branch needs as a dict key."""
     return {
-        "success": True,
-        "message": combat_result["message"],
-        "combat_result": combat_result["result"].name,
-        "combat_log_id": str(combat_log.id),
-        "npc_ship_destroyed": combat_result["attacker_ship_destroyed"],
-        "defender_ship_destroyed": combat_result["defender_ship_destroyed"],
-        "dead_npc": dead_npc,
+        "type": "npc_combat_initiated",
+        "combat_id": str(combat_log_id),
         "npc_id": str(npc.id),
         "npc_display_name": npc.display_name,
-        "npc_ship_id": str(npc_ship.id),
+        "npc_archetype": npc.archetype.value if npc.archetype else None,
         "npc_ship_name": npc_ship.name,
+        "npc_ship_type": npc_ship.type.name,
         "defender_id": str(defender.id),
-        "defender_ship_id": str(defender.current_ship_id) if defender.current_ship_id else None,
+        "defender_name": defender.username,
         "sector_id": sector.sector_id,
         "trigger": trigger,
-        "trigger_context": trigger_context,
-        "cargo_stolen": combat_result.get("cargo_stolen") or {},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "defender_user_id": str(defender.user_id) if defender.user_id else None,
     }
 
 
@@ -314,10 +275,12 @@ def emit_npc_combat_initiated(
     trigger: str,
 ) -> None:
     """Best-effort ``npc_combat_initiated`` WS push — call this AFTER your
-    own commit (see module docstring). Reuses the SAME transport
-    ``combat_service._emit_combat_phase_events`` already uses:
-    ``connection_manager.send_combat_update`` (personal copy to the
-    defender, keyed by ``combat_id`` for correlation with the
+    own commit (see module docstring), and ONLY from a LIVE request
+    context (a running event loop must be present — the scheduler-sweep
+    context does not have one; see ``build_npc_combat_initiated_event``).
+    Reuses the SAME transport ``combat_service._emit_combat_phase_events``
+    already uses: ``connection_manager.send_combat_update`` (personal copy
+    to the defender, keyed by ``combat_id`` for correlation with the
     combat_started/round/resolved frames you should fire right after via
     the existing, unmodified ``combat_service._emit_combat_phase_events``)
     plus ``connection_manager.broadcast_to_sector`` for spectators. Mirrors
@@ -329,22 +292,11 @@ def emit_npc_combat_initiated(
         from src.services.websocket_service import connection_manager
 
         loop = asyncio.get_running_loop()
-        combat_id = str(combat_log_id)
-        event = {
-            "type": "npc_combat_initiated",
-            "combat_id": combat_id,
-            "npc_id": str(npc.id),
-            "npc_display_name": npc.display_name,
-            "npc_archetype": npc.archetype.value if npc.archetype else None,
-            "npc_ship_name": npc_ship.name,
-            "npc_ship_type": npc_ship.type.name,
-            "defender_id": str(defender.id),
-            "defender_name": defender.username,
-            "sector_id": sector.sector_id,
-            "trigger": trigger,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        participants = [str(defender.user_id)] if defender.user_id else []
+        event = build_npc_combat_initiated_event(
+            combat_log_id, npc, npc_ship, defender, sector, trigger=trigger
+        )
+        combat_id = event["combat_id"]
+        participants = [event["defender_user_id"]] if event.get("defender_user_id") else []
         if participants:
             loop.create_task(connection_manager.send_combat_update(
                 combat_id, dict(event), participants

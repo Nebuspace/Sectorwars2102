@@ -2423,7 +2423,7 @@ class MovementService:
         ALREADY committed by the time this runs).
 
         Distinct commit boundary from _execute_movement's own (earlier,
-        already-landed) commit: npc_initiate_attack/npc_attack_player is
+        already-landed) commit: initiate_npc_combat/npc_attack_player is
         flush-only by design (WO-CMB-NPC-INITIATED-1), so this method issues its OWN
         commit for the combat's consequences before emitting — mirrors
         combat_service.attack_player/attack_npc_ship's established
@@ -2434,10 +2434,10 @@ class MovementService:
         try:
             from src.models.npc_character import NPCCharacter
             from src.models.ship import ShipSpecification
-            from src.services.npc_engagement_service import (
+            from src.services.npc_combat_initiation_service import (
                 build_npc_combat_initiated_event,
                 emit_npc_combat_initiated,
-                npc_initiate_attack,
+                initiate_npc_combat,
             )
 
             player_ship = player.current_ship
@@ -2450,7 +2450,10 @@ class MovementService:
             # peek the first eligible squad member's ship the same way
             # _select_attacking_npc will (ENGAGED status not required here
             # — pirates have no arrival-delay lifecycle, unlike police
-            # squads; presence in the roster is itself "on duty").
+            # squads; presence in the roster is itself "on duty"). This
+            # same first_npc/pirate_ship pair IS the single combatant
+            # initiate_npc_combat's signature expects — no separate
+            # selection step needed for a single-element pirate roster.
             first_npc = self.db.query(NPCCharacter).filter(
                 NPCCharacter.id.in_(npc_ids)
             ).first()
@@ -2467,24 +2470,22 @@ class MovementService:
             if pirate_value > 0 and player_value >= 2 * pirate_value:
                 return None  # pirate flees — player is too tough
 
-            result = npc_initiate_attack(
-                self.db, npc_ids, player.id, sector, cause="pirate_aggression"
+            result = initiate_npc_combat(
+                self.db, first_npc, player, sector, trigger="pirate_aggression",
             )
-            if result is None:
+            if not result.get("success"):
                 return None
 
             self.db.commit()
 
-            npc = self.db.query(NPCCharacter).filter(
-                NPCCharacter.id == uuid.UUID(result["npc_id"])
-            ).first()
-            if npc is not None:
-                emit_npc_combat_initiated(result, npc, player, sector, cause="pirate_aggression")
-                event = build_npc_combat_initiated_event(
-                    result, npc, player, sector, cause="pirate_aggression"
-                )
-            else:
-                event = {"type": "npc_combat_initiated", "trigger": "pirate_aggression"}
+            emit_npc_combat_initiated(
+                uuid.UUID(result["combat_log_id"]), first_npc, pirate_ship, player, sector,
+                trigger="pirate_aggression",
+            )
+            event = build_npc_combat_initiated_event(
+                uuid.UUID(result["combat_log_id"]), first_npc, pirate_ship, player, sector,
+                trigger="pirate_aggression",
+            )
 
             return {
                 "type": "pirate_aggression",

@@ -5,11 +5,12 @@ Extends MovementService._check_for_encounters' pirate_patrol_ships leg
 that file's own docstring documents as the EXACT deferral this WO closes
 for pirates specifically). Mock-session style mirrors test_patrol_
 encounters.py: a MagicMock stands in for the SQLAlchemy session; no live
-DB required. npc_initiate_attack / emit_npc_combat_initiated /
-build_npc_combat_initiated_event are mocked at the module boundary (lane
-A/B's own resolution correctness is proven elsewhere, not re-proven here)
-— these tests prove MY new orchestration: the flee-threshold gate, the
-commit-then-emit sequencing, and the never-raises contract.
+DB required. npc_combat_initiation_service.initiate_npc_combat /
+emit_npc_combat_initiated / build_npc_combat_initiated_event are mocked at
+the MODULE's own boundary (lane A/B's own resolution correctness is
+proven elsewhere, not re-proven here) — these tests prove MY new
+orchestration: the flee-threshold gate, the commit-then-emit sequencing,
+and the never-raises contract.
 """
 import uuid
 from types import SimpleNamespace
@@ -19,6 +20,8 @@ from src.models.npc_character import NPCCharacter
 from src.models.sector import Sector
 from src.models.ship import Ship, ShipSpecification, ShipType
 from src.services.movement_service import MovementService
+
+_MODULE = "src.services.npc_combat_initiation_service"
 
 
 def make_player(player_id=None, ship=None, has_ship=True):
@@ -133,7 +136,7 @@ class TestPirateEncounterLeg:
     def test_patrol_with_no_npc_ids_skipped(self):
         sector = make_sector(defenses={"pirate_patrol_ships": [{"faction_code": "pirates"}]})
         service, _db = build_service(sector)
-        with patch("src.services.npc_engagement_service.npc_initiate_attack") as mock_call:
+        with patch(f"{_MODULE}.initiate_npc_combat") as mock_call:
             encounters = service._check_for_encounters(make_player(), sector.sector_id)
         assert pirate_encounter(encounters) is None
         mock_call.assert_not_called()
@@ -143,7 +146,7 @@ class TestPirateEncounterLeg:
         sector = make_sector(defenses={"pirate_patrol_ships": [_pirate_patrol([npc_id])]})
         service, _db = build_service(sector)
         player = make_player(has_ship=False)
-        with patch("src.services.npc_engagement_service.npc_initiate_attack") as mock_call:
+        with patch(f"{_MODULE}.initiate_npc_combat") as mock_call:
             service._check_for_encounters(player, sector.sector_id)
         mock_call.assert_not_called()
 
@@ -155,7 +158,7 @@ class TestPirateEncounterLeg:
         service, db = build_service(
             sector, npc=npc, npc_ship=npc_ship, player_spec_cost=200, pirate_spec_cost=100,
         )
-        with patch("src.services.npc_engagement_service.npc_initiate_attack") as mock_call:
+        with patch(f"{_MODULE}.initiate_npc_combat") as mock_call:
             encounters = service._check_for_encounters(make_player(), sector.sector_id)
         mock_call.assert_not_called()
         assert pirate_encounter(encounters) is None
@@ -172,20 +175,20 @@ class TestPirateEncounterLeg:
         )
         result = _npc_result(npc_id, player.id)
         with patch(
-            "src.services.npc_engagement_service.npc_initiate_attack", return_value=result,
+            f"{_MODULE}.initiate_npc_combat", return_value=result,
         ) as mock_initiate, patch(
-            "src.services.npc_engagement_service.emit_npc_combat_initiated",
+            f"{_MODULE}.emit_npc_combat_initiated",
         ) as mock_emit, patch(
-            "src.services.npc_engagement_service.build_npc_combat_initiated_event",
+            f"{_MODULE}.build_npc_combat_initiated_event",
             return_value={"type": "npc_combat_initiated", "combat_id": result["combat_log_id"]},
         ):
             encounters = service._check_for_encounters(player, sector.sector_id)
 
         mock_initiate.assert_called_once()
         call_args = mock_initiate.call_args.args
-        assert call_args[1] == [npc_id]
-        assert call_args[2] == player.id
-        assert mock_initiate.call_args.kwargs["cause"] == "pirate_aggression"
+        assert call_args[1] is npc  # the single selected combatant, not an id list
+        assert call_args[2] is player
+        assert mock_initiate.call_args.kwargs["trigger"] == "pirate_aggression"
 
         db.commit.assert_called_once()
         mock_emit.assert_called_once()
@@ -208,11 +211,11 @@ class TestPirateEncounterLeg:
         )
         result = _npc_result(npc_id1, player.id)
         with patch(
-            "src.services.npc_engagement_service.npc_initiate_attack", return_value=result,
+            f"{_MODULE}.initiate_npc_combat", return_value=result,
         ) as mock_initiate, patch(
-            "src.services.npc_engagement_service.emit_npc_combat_initiated",
+            f"{_MODULE}.emit_npc_combat_initiated",
         ), patch(
-            "src.services.npc_engagement_service.build_npc_combat_initiated_event",
+            f"{_MODULE}.build_npc_combat_initiated_event",
             return_value={"type": "npc_combat_initiated"},
         ):
             service._check_for_encounters(player, sector.sector_id)
@@ -228,7 +231,7 @@ class TestPirateEncounterLeg:
             sector, npc=npc, npc_ship=npc_ship, player_spec_cost=100, pirate_spec_cost=100,
         )
         with patch(
-            "src.services.npc_engagement_service.npc_initiate_attack", return_value=None,
+            f"{_MODULE}.initiate_npc_combat", return_value={"success": False, "message": "no"},
         ):
             encounters = service._check_for_encounters(player, sector.sector_id)
         assert pirate_encounter(encounters) is None
