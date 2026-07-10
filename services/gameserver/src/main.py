@@ -176,6 +176,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning(f"Resource registry seed skipped: {e}")
 
+    # ARIA data-index registry seed (WO-P6-aria-data-index-registry). The
+    # `aria_data_streams` catalog table is the single source of truth for
+    # every observation stream ARIA learns from (DATA_MODELS/aria-data-
+    # index.md); GET /ai/data-index serves it. Idempotent upsert, same
+    # pattern as ships/medals/resources above.
+    try:
+        from src.core.database import SessionLocal
+        from src.core.aria_data_stream_seeder import seed_aria_data_streams
+
+        db = SessionLocal()
+        try:
+            seed_aria_data_streams(db)
+            logger.info("ARIA data-index registry seed completed")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"ARIA data-index registry seed skipped: {e}")
+
     # Redis service connection (WO-SWEEP-REDIS-LIFESPAN). RedisService backs
     # player-activity tracking, pub/sub, session cache, and cross-region
     # service discovery -- every caller already tolerates redis_pool being

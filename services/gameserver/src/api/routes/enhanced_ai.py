@@ -31,6 +31,7 @@ from src.services.enhanced_ai_service import (
     ConversationContext, RecommendationPriority, RiskAssessment
 )
 from src.services.ai_security_service import AISecurityService, get_security_service
+from src.services.aria_data_index_service import ARIADataIndexService
 from src.models.enhanced_ai_models import AIComprehensiveAssistant, SecurityLevel
 from src.utils.validation import validate_uuid
 from src.middleware.rate_limit import RateLimitMiddleware
@@ -216,6 +217,29 @@ class AssistantStatusResponse(BaseModel):
                 "total_interactions": 1542,
                 "last_active": "2025-06-07T15:30:00Z",
                 "access_permissions": {"trading": True, "combat": False, "colony": False, "station": True}
+            }
+        }
+
+
+class ARIADataStreamOut(BaseModel):
+    """WO-P6-aria-data-index-registry: one row of the ARIA data-index
+    catalog, as exposed to players via the memory-journal transparency
+    browser (DATA_MODELS/aria-data-index.md rule 3)."""
+    key: str
+    domain: str
+    display_name: str
+    retention_class: str
+    transparency_visible: bool
+
+    class Config:
+        from_attributes = True
+        schema_extra = {
+            "example": {
+                "key": "threat.combat",
+                "domain": "threat",
+                "display_name": "Combat",
+                "retention_class": "budget_pruned",
+                "transparency_visible": True,
             }
         }
 
@@ -751,6 +775,34 @@ async def cleanup_ai_data(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Data cleanup failed"
+        )
+
+
+# =============================================================================
+# DATA INDEX (WO-P6-aria-data-index-registry)
+# =============================================================================
+
+@router.get(
+    "/data-index",
+    response_model=List[ARIADataStreamOut],
+    summary="Get the ARIA data-index catalog",
+    description="List every observation stream ARIA learns from, per DATA_MODELS/aria-data-index.md -- the memory-journal transparency surface."
+)
+async def get_aria_data_index(
+    current_player: Player = Depends(get_current_player),
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Read-only catalog listing, ordered by registry key. No player-scoped
+    filtering here -- the registry itself is global; per-player memory
+    presence is a separate, future memory-journal endpoint."""
+    try:
+        index_service = ARIADataIndexService(db)
+        return await index_service.list_streams()
+    except Exception as e:
+        logger.error(f"Error listing ARIA data index: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ARIA data index temporarily unavailable"
         )
 
 
