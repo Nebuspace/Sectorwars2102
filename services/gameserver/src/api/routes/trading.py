@@ -1208,9 +1208,12 @@ async def dock_at_station(
             detail=f"Insufficient turns. Need {DOCKING_TURN_COST} turn(s), have {current_player.turns}"
         )
 
-    # Docking fee (canon: fees fund the station treasury). Validated after the
+    # Docking fee (canon: size x security-tier matrix, station-protection.md
+    # §Docking fee economics). Sized off the docking ship itself so the quote
+    # shown by /slips and the charge here always agree. Validated after the
     # turn check, in addition to the 1-turn dock cost.
-    docking_fee = docking_service.docking_fee_for(station)
+    docking_ship_size = docking_service.ship_size_for(db, current_ship)
+    docking_fee = docking_service.docking_fee_for(station, docking_ship_size)
     if current_player.credits < docking_fee:
         raise HTTPException(
             status_code=400,
@@ -1392,7 +1395,12 @@ async def get_station_slips(
         None
     )
 
-    fee = docking_service.docking_fee_for(station)
+    # Sized off the player's current ship so this quote agrees with the
+    # /dock charge for the same ship+station (station-protection.md
+    # §Docking fee economics).
+    quote_ship = db.query(Ship).filter(Ship.id == current_player.current_ship_id).first()
+    quote_ship_size = docking_service.ship_size_for(db, quote_ship)
+    fee = docking_service.docking_fee_for(station, quote_ship_size)
 
     # Estimated wait (canon UX promise): wall-clock minutes until the
     # longest-tenured occupant crosses the 4h bumpable threshold — the

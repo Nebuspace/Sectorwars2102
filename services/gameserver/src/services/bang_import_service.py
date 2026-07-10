@@ -1626,6 +1626,17 @@ class BangImportService:
                 )
             )
 
+        # WO-STN-SEC-1: sector→cluster-type lookup so the security-tier
+        # derivation below can see "is this station in a frontier/lawless
+        # cluster" without a second DB round-trip (region_plan already carries
+        # both lists in memory).
+        cluster_type_by_cluster_int: Dict[int, ClusterType] = {
+            cs.cluster_int_id: cs.type for cs in region_plan.clusters
+        }
+        cluster_int_by_sector_int: Dict[int, int] = {
+            ss.sector_id: ss.cluster_int_id for ss in region_plan.sectors
+        }
+
         created_stations: List[Station] = []
         for stsp in region_plan.stations:
             station_kwargs = dict(
@@ -1649,6 +1660,26 @@ class BangImportService:
             # WO-CMB-PORT-DEF-SEED-1: class-scaled defenses (replaces the
             # flat Column default) for every freshly-imported station.
             station_kwargs["defenses"] = Station.default_defenses_for_class(stsp.station_class)
+            # WO-STN-SEC-1: station-protection security tier (FEATURES/economy/
+            # station-protection.md § Security tiers) — see
+            # _derive_station_security_tier's docstring for the canon anchors
+            # vs NO-CANON default. Fresh construction, so no flag_modified
+            # needed (unlike an UPDATE against an already-flushed row).
+            cluster_int_id = cluster_int_by_sector_int.get(stsp.sector_int_id)
+            station_cluster_type = (
+                cluster_type_by_cluster_int.get(cluster_int_id)
+                if cluster_int_id is not None
+                else None
+            )
+            station_kwargs["security"] = {
+                "tier": _derive_station_security_tier(
+                    region_type=region_plan.region_type,
+                    cluster_type=station_cluster_type,
+                    station_class=stsp.station_class,
+                    is_spacedock=stsp.is_spacedock,
+                    tradedock_tier=stsp.tradedock_tier,
+                )
+            }
             station = Station(**station_kwargs)
             session.add(station)
             created_stations.append(station)
@@ -2900,6 +2931,55 @@ def _build_default_services(is_spacedock: bool) -> Dict[str, Any]:
         "refining_facility": False,
         "luxury_amenities": False,
     }
+
+
+# Station-protection security-tier seeding (WO-STN-SEC-1, FEATURES/economy/
+# station-protection.md § Security tiers). Station.security has ZERO writers
+# today (model docstring: defaults "are SEEDED by the larger system, NOT
+# here") — every station imported through this pipeline now carries an
+# explicit tier so the combat_service.py Guarantee #1 gate
+# (ERR_DOCKED_SHIP_PROTECTED at security_rank >= basic) can actually fire.
+#
+# Canon pins exactly three literal anchors to Standard/Premium: "Federation
+# Capital station" (Terran Space's CLASS_0 hub, Earth Station), "Nexus
+# Starport Prime" (Central Nexus's CLASS_0 hub), and "Terran Space hub
+# stations" (the region's other service hubs — the CLASS_11 Stardock
+# SpaceDock, the Tier-A TradeDocks). Frontier/lawless CLUSTERS get "none"
+# ("frontier outposts...lawless ports" — the ClusterType vocabulary already
+# used for hazard/resource biasing, WO-GX1). Everything else is NO-CANON
+# (see WO-STN-SEC-1 report): canon states only "Player-owned stations
+# default to Basic" and is silent on ordinary CLASS_1-11 NPC ports (in ANY
+# region, including the thousands of background ports inside Terran Space/
+# Central Nexus that aren't a named anchor). The proposed default is a
+# uniform "basic" floor — matching the stated player-owned default and
+# giving every unconfigured station SOME protection — rather than a
+# per-class gradient canon gives no basis for.
+_OPERATOR_MANAGED_REGION_TYPES = ("terran_space", "central_nexus")
+_LAWLESS_CLUSTER_TYPES = (ClusterType.FRONTIER_OUTPOST, ClusterType.CONTESTED)
+
+
+def _derive_station_security_tier(
+    *,
+    region_type: str,
+    cluster_type: Optional[ClusterType],
+    station_class: StationClass,
+    is_spacedock: bool,
+    tradedock_tier: Optional[str],
+) -> str:
+    """Return the tier string ("none"/"basic"/"standard"/"premium") to seed
+    on a freshly-created station's ``Station.security`` JSONB. Pure/DB-free —
+    see tests/unit/test_station_security_seeding.py."""
+    if region_type in _OPERATOR_MANAGED_REGION_TYPES:
+        if station_class == StationClass.CLASS_0:
+            # Central Nexus's CLASS_0 hub = Nexus Starport Prime (premium);
+            # Terran Space's CLASS_0 hub = Federation Capital station / Earth
+            # Station (standard).
+            return "premium" if region_type == "central_nexus" else "standard"
+        if is_spacedock or tradedock_tier == "A":
+            return "standard"  # Terran Space / Central Nexus hub stations
+    if cluster_type in _LAWLESS_CLUSTER_TYPES:
+        return "none"
+    return "basic"
 
 
 def _coerce_formation_type(value: str) -> SpecialFormationType:

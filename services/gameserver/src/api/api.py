@@ -54,6 +54,7 @@ from src.api.routes.registry import router as registry_router
 from src.api.routes.bang_galaxy import router as bang_galaxy_router
 from src.api.routes.construction import router as construction_router
 from src.api.routes.port_ownership import router as port_ownership_router
+from src.api.routes.station_security import router as station_security_router
 from src.api.routes.ranking import router as ranking_router
 from src.api.routes.quantum import router as quantum_router
 from src.api.routes.refining import router as refining_router
@@ -141,6 +142,9 @@ api_router.include_router(construction_router, tags=["construction"])
 # Port ownership: listings/auctions, owner powers, economic takeover
 # (router carries its own /port-ownership prefix)
 api_router.include_router(port_ownership_router, tags=["port-ownership"])
+# Station-protection security-tier ladder: upgrade/downgrade/status
+# (WO-STN-SEC-1; router carries its own /station-security prefix)
+api_router.include_router(station_security_router, tags=["station-security"])
 # Military ranking, medals, reputation, and bounties
 # (router carries its own /ranking prefix)
 api_router.include_router(ranking_router, tags=["ranking"])

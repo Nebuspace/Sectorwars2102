@@ -690,6 +690,22 @@ def _transfer_station(
     }
     flag_modified(station, "ownership")
 
+    # Station-protection acquisition default (WO-STN-SEC-1 lane 2; canon
+    # FEATURES/economy/station-protection.md "Security tiers": "Player-owned
+    # stations default to Basic ... the owner can upgrade tier at any time").
+    # Only an UNCONFIGURED station (security NULL/non-dict, which the
+    # security_level property already reads as tier "none" per WO-CB1's
+    # conservative default) is bumped to basic on acquisition. An
+    # already-tiered station (a re-sold Standard/Premium station, or an
+    # insolvency auto-relist) keeps its tier as-is — acquisition is NEVER a
+    # downgrade.
+    # Lazy import (mirrors _dispatch_port_medals / docking_service._realize_fee)
+    # to avoid a service-layer import cycle — station_security_service owns the
+    # acquisition-default rule (DB-free, unit-tested there).
+    from src.services.station_security_service import apply_acquisition_default
+    if apply_acquisition_default(station):
+        flag_modified(station, "security")
+
     # ADR-0053 WR14: guarantee the station's market book exists in THIS
     # transaction — a station changing hands at runtime must never land in a
     # new owner's portfolio invisible to trade. Idempotent (skips commodities
@@ -1340,6 +1356,27 @@ def realize_port_revenue(
     defense_pct, owner_pct, operating_pct = _effective_fee_split_pcts(station)
     defense, owner, operating = split_revenue(int(gross), defense_pct, owner_pct, operating_pct)
 
+    # Station-protection recurring upkeep (WO-STN-SEC-1 lane 2; canon
+    # FEATURES/economy/station-protection.md "Tier upgrade cost > Recurring
+    # upkeep": ~5/10/20% of station revenue by security tier). NO-CANON
+    # (flagged for bless): skimmed OFF the OWNER's cut at fee-realize time —
+    # never an extra deduction from gross, and never touching the
+    # defense_fund / operating_fund buckets. Rationale: the 40% defense_fund
+    # split already funds SIEGE infrastructure (port-ownership.md); this
+    # separate skim funds the docked-ship-protection tier
+    # (station-protection.md) the owner is paying an ongoing premium to
+    # maintain — the two are complementary per that doc's own Status note.
+    # min(owner, ...) guarantees the owner leg (and therefore the
+    # treasury_balance increment below) can never go negative from this —
+    # "treasury floored at 0" for this transaction. A station with no
+    # configured tier (upkeep_pct 0.0) is byte-identical to the pre-upkeep
+    # behavior.
+    upkeep = 0
+    if station.owner_id is not None:
+        from src.services.station_security_service import upkeep_for_gross
+        upkeep = min(owner, upkeep_for_gross(int(gross), station.security_level))
+        owner -= upkeep
+
     ledger = _ledger(station)
     if station.owner_id is None:
         # No owner: the owner cut has nowhere to go — fold it into operating
@@ -1351,6 +1388,11 @@ def realize_port_revenue(
         ledger["defense_fund"] = _bucket(station, "defense_fund") + defense
         ledger["operating_fund"] = _bucket(station, "operating_fund") + operating
         station.treasury_balance = (station.treasury_balance or 0) + owner
+        if upkeep:
+            security = station.security if isinstance(station.security, dict) else {}
+            security["upkeep_collected"] = int(security.get("upkeep_collected", 0) or 0) + upkeep
+            station.security = security
+            flag_modified(station, "security")
     flag_modified(station, "ownership")
     db.flush()
     return {
@@ -1359,6 +1401,7 @@ def realize_port_revenue(
         "defense": defense,
         "owner": owner,
         "operating": operating,
+        "security_upkeep": upkeep,
         "defense_fund": _bucket(station, "defense_fund"),
         "operating_fund": _bucket(station, "operating_fund"),
         "treasury_balance": station.treasury_balance or 0,
