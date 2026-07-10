@@ -27,9 +27,10 @@ from src.core.database import get_async_session
 from src.auth.dependencies import get_current_player, get_current_user
 from src.models.player import Player
 from src.services.enhanced_ai_service import (
-    EnhancedAIService, AISystemType, CrossSystemRecommendation, 
+    EnhancedAIService, AISystemType, CrossSystemRecommendation,
     ConversationContext, RecommendationPriority, RiskAssessment
 )
+from src.services.ai_security_service import AISecurityService, get_security_service
 from src.models.enhanced_ai_models import AIComprehensiveAssistant, SecurityLevel
 from src.utils.validation import validate_uuid
 from src.middleware.rate_limit import RateLimitMiddleware
@@ -165,7 +166,16 @@ class ConversationResponse(BaseModel):
     conversation_id: str
     response_time: str
     intent: Optional[Dict[str, Any]] = None
-    
+    # WO-ARIA-COST-CAPS: additive. `degraded` marks a cost-cap fallback
+    # (never a hard error, per dispatch); `scope` distinguishes the
+    # instance-wide circuit-breaker/provider-chain-failure case from a
+    # personal per-player cap-hit (ADR-0092 §4's "quantum storm" vs
+    # "attunement fatigue" split -- narration copy is a later WO's job,
+    # this carries only the machine-readable flag). Both None/False on a
+    # normal response.
+    degraded: bool = False
+    scope: Optional[str] = None
+
     class Config:
         schema_extra = {
             "example": {
@@ -369,17 +379,55 @@ async def get_trading_recommendations(
 async def chat_with_ai(
     request: ConversationRequest = Body(...),
     player_id: str = Depends(validate_ai_access),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    security_service: AISecurityService = Depends(get_security_service),
 ):
     """
     Natural language conversation with AI assistant
-    
+
     - **message**: Your message to the AI (1-4000 characters)
     - **conversation_id**: Optional conversation ID to continue existing chat
     - **conversation_type**: Type of conversation (query, command, feedback, learning, strategic)
-    
+
     ARIA can help with trading, strategic planning, and game guidance across all systems.
     """
+    # WO-ARIA-COST-CAPS: route through AISecurityService validation + limits
+    # BEFORE any processing -- mirrors the one proven integration point
+    # (api/routes/first_login.py's answer_dialogue). Content-safety and
+    # rate-limit failures stay HARD ERRORS (same canon-cited codes first-
+    # login already uses); a COST-cap hit is the one outcome dispatch says
+    # must NEVER be a hard error -- it degrades to a fallback response with
+    # a scope flag instead (ADR-0092 §4).
+    is_safe, violations = security_service.validate_input(
+        request.message, player_id, request.conversation_id or "chat",
+    )
+    if not is_safe:
+        logger.warning(f"Security violation by player {player_id}: {[v.violation_type.value for v in violations]}")
+        raise HTTPException(status_code=400, detail="Input validation failed due to security policy")
+
+    if not security_service.check_rate_limits(player_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait before making another request.")
+
+    estimated_cost = security_service.estimate_ai_cost(request.message)
+    cost_result = security_service.check_cost_limits_detailed(player_id, estimated_cost)
+    if not cost_result.allowed:
+        logger.info(
+            "ARIA cost cap hit for player %s: %s (scope=%s)",
+            player_id, cost_result.error_code, cost_result.scope,
+        )
+        return ConversationResponse(
+            # Plain operational notice, NOT in-character narration -- the
+            # "quantum storm" / "attunement fatigue" flavor text is a later
+            # ARIA WO's job per dispatch, not this one's.
+            response="ARIA's advanced response is temporarily unavailable. Please try again later.",
+            conversation_id=request.conversation_id or "",
+            response_time=datetime.utcnow().isoformat(),
+            degraded=True,
+            scope=cost_result.scope,
+        )
+
+    sanitized_input = security_service.sanitize_input(request.message)
+
     try:
         ai_service = EnhancedAIService(db)
 
@@ -391,19 +439,24 @@ async def chat_with_ai(
         # conversation_id so the service can continue the thread when valid.
         response_data = await ai_service.process_natural_language_query(
             player_id=uuid.UUID(player_id),
-            user_input=request.message,
+            user_input=sanitized_input,
             conversation_id=request.conversation_id,
         )
-        
+
         await db.commit()
-        
+
+        # Simplified real-cost tracking (matches first_login.py's own
+        # "actual_cost = estimated_cost -- Simplified for now" convention;
+        # real per-call token accounting is a separate, later concern).
+        security_service.track_cost(player_id, estimated_cost)
+
         return ConversationResponse(
             response=response_data["response"],
             conversation_id=response_data["conversation_id"],
             response_time=response_data["response_time"],
             intent=response_data.get("intent")
         )
-        
+
     except ValueError as e:
         logger.warning(f"Invalid chat request: {e}")
         raise HTTPException(

@@ -8,6 +8,7 @@ This service implements comprehensive security measures to protect against:
 - Multiplayer game exploitation (griefing, defacement)
 """
 
+import os
 import re
 import html
 import logging
@@ -63,36 +64,64 @@ class PlayerSecurityProfile:
     violation_count: int = 0
     last_violation: Optional[datetime] = None
     request_count_1min: int = 0
-    request_count_1hour: int = 0
     request_count_1day: int = 0
     last_request_time: Optional[datetime] = None
     is_blocked: bool = False
     block_expires: Optional[datetime] = None
     trust_score: float = 1.0  # 0.0 (untrusted) to 1.0 (trusted)
 
+@dataclass
+class CostLimitResult:
+    """WO-ARIA-COST-CAPS -- the detailed outcome of check_cost_limits_
+    detailed. `scope` is the contract element ADR-0092 §4 calls for:
+    "instance" (the circuit breaker / provider-chain-failure "quantum
+    storm" fiction, galaxy-wide) vs "personal" (a per-player cap hit,
+    "attunement fatigue" fiction) -- narration copy itself belongs to a
+    later ARIA WO; this dataclass carries only the machine-readable flag."""
+    allowed: bool
+    reason: Optional[str] = None       # "instance_breaker" | "request_cap" | "daily_cap" | None
+    error_code: Optional[str] = None   # canon ERR_* string, or None when allowed
+    scope: Optional[str] = None        # "instance" | "personal" | None
+
 class AISecurityService:
     """Comprehensive security service for AI dialogue interactions"""
     
     def __init__(self):
-        # Rate limiting configuration
+        # Rate/cost limiting configuration -- WO-ARIA-COST-CAPS. Canon:
+        # OPERATIONS/aria.md "Cost & rate controls" + SYSTEMS/aria-dialogue.md
+        # "Rate / cost controls", both amended 2026-07-10 (Max GO on ADR-0092
+        # §4): max_cost_per_request raised from the doc's OLD $0.05 to $0.25
+        # ("too low -- throttles legitimate deep queries once tool-retrieval
+        # loops are in play"); requests_per_hour RETIRED (dominated by the
+        # per-minute cap at 10 req/min -> 6 minutes to the old 100/hr ceiling,
+        # zero enforcement value); instance_max_cost_per_day_usd is NEW -- an
+        # aggregate circuit breaker across ALL players, upstream of the
+        # per-player gate (canon: "individual players who haven't hit their
+        # own caps are still rejected during a circuit-breaker event"). All
+        # env-overridable so a deploy can retune without a code change.
         self.rate_limits = {
-            "requests_per_minute": 10,
-            "requests_per_hour": 100,
-            "requests_per_day": 500,
-            "max_chars_per_request": 500,
-            "max_words_per_request": 100,
-            "max_cost_per_day_usd": 1.0  # $1 per player per day max
+            "requests_per_minute": int(os.environ.get("ARIA_RPM", "10")),
+            "requests_per_day": int(os.environ.get("ARIA_RPD", "500")),
+            "max_chars_per_request": int(os.environ.get("ARIA_MAX_CHARS", "500")),
+            "max_words_per_request": int(os.environ.get("ARIA_MAX_WORDS", "100")),
+            "max_cost_per_day_usd": float(os.environ.get("ARIA_DAILY_USD", "2.00")),
+            "max_cost_per_request": float(os.environ.get("ARIA_REQ_USD", "0.25")),
+            "instance_max_cost_per_day_usd": float(os.environ.get("ARIA_INSTANCE_DAILY_USD", "50.00")),
         }
-        
+
         # Player security profiles
         self.player_profiles: Dict[str, PlayerSecurityProfile] = {}
-        
+
         # Blocked content patterns
         self.setup_security_patterns()
-        
+
         # Cost tracking
-        self.cost_tracking: Dict[str, float] = {}  # player_id -> daily_cost_usd
-        
+        self.cost_tracking: Dict[str, float] = {}  # "{player_id}:{YYYY-MM-DD}" -> daily_cost_usd
+        # WO-ARIA-COST-CAPS: aggregate spend across ALL players, keyed by
+        # "YYYY-MM-DD" only (no player_id component) -- backs the instance-
+        # wide circuit breaker.
+        self.instance_cost_tracking: Dict[str, float] = {}
+
     def setup_security_patterns(self):
         """Initialize security detection patterns"""
         
@@ -599,10 +628,11 @@ class AISecurityService:
         return violations
 
     def check_rate_limits(self, player_id: str) -> bool:
-        """Check if player has exceeded rate limits"""
+        """Check if player has exceeded rate limits. Per-hour check RETIRED
+        (WO-ARIA-COST-CAPS) -- see the `rate_limits` dict's docstring."""
         profile = self.get_or_create_player_profile(player_id)
         now = datetime.utcnow()
-        
+
         # Check per-minute limit
         if profile.last_request_time:
             if now - profile.last_request_time < timedelta(minutes=1):
@@ -610,15 +640,7 @@ class AISecurityService:
                     return False
             else:
                 profile.request_count_1min = 0
-        
-        # Check per-hour limit
-        if profile.last_request_time:
-            if now - profile.last_request_time < timedelta(hours=1):
-                if profile.request_count_1hour >= self.rate_limits["requests_per_hour"]:
-                    return False
-            else:
-                profile.request_count_1hour = 0
-        
+
         # Check per-day limit
         if profile.last_request_time:
             if now - profile.last_request_time < timedelta(days=1):
@@ -626,27 +648,81 @@ class AISecurityService:
                     return False
             else:
                 profile.request_count_1day = 0
-        
+
         return True
+
+    def check_cost_limits_detailed(self, player_id: str, estimated_cost_usd: float) -> CostLimitResult:
+        """The full three-gate cost check (WO-ARIA-COST-CAPS), in canon
+        priority order (OPERATIONS/aria.md "Cost & rate controls"):
+
+        1. Instance-wide circuit breaker -- checked FIRST/UPSTREAM of the
+           per-player gate ("individual players who haven't hit their own
+           caps are still rejected during a circuit-breaker event because
+           the instance gate is upstream of the per-player gate").
+        2. Per-request hard ceiling -- a single prompt projected to exceed
+           `max_cost_per_request` is rejected outright, independent of
+           accumulated daily spend.
+        3. Per-player daily 80%-reserve block -- gates on CURRENT spend
+           already having reached 80% of `max_cost_per_day_usd` ("When a
+           player's UTC-day spend reaches 80%... blocked for the rest of
+           the UTC day. The 20% remaining budget is reserved as headroom")
+           -- this is a THRESHOLD-CROSSED check on already-spent dollars,
+           NOT a "would this request push us over 80%" projection.
+
+        Returns a CostLimitResult carrying `allowed`, `reason` (machine key),
+        `error_code` (the canon ERR_* string), and `scope` ("instance" for
+        the circuit breaker, "personal" for either per-player gate) -- the
+        scope is the contract element the chat-wiring lanes surface in the
+        degradation payload (ADR-0092 §4: instance events are the
+        galaxy-wide "quantum storm" fiction, personal cap-hits are
+        "attunement fatigue" -- narration copy itself is a later WO's job,
+        not this one's)."""
+        today_key = datetime.utcnow().strftime("%Y-%m-%d")
+
+        instance_cost = self.instance_cost_tracking.get(today_key, 0.0)
+        if instance_cost >= self.rate_limits["instance_max_cost_per_day_usd"]:
+            return CostLimitResult(
+                allowed=False, reason="instance_breaker",
+                error_code="ERR_INSTANCE_COST_CAP_EXCEEDED", scope="instance",
+            )
+
+        if estimated_cost_usd > self.rate_limits["max_cost_per_request"]:
+            return CostLimitResult(
+                allowed=False, reason="request_cap",
+                error_code="ERR_REQUEST_COST_CAP_EXCEEDED", scope="personal",
+            )
+
+        player_daily_key = f"{player_id}:{today_key}"
+        current_cost = self.cost_tracking.get(player_daily_key, 0.0)
+        reserve_threshold = self.rate_limits["max_cost_per_day_usd"] * 0.8
+        if current_cost >= reserve_threshold:
+            return CostLimitResult(
+                allowed=False, reason="daily_cap",
+                error_code="ERR_DAILY_BUDGET_EXHAUSTED", scope="personal",
+            )
+
+        return CostLimitResult(allowed=True)
 
     def check_cost_limits(self, player_id: str, estimated_cost_usd: float) -> bool:
-        """Check if API call would exceed cost limits"""
-        today_key = datetime.utcnow().strftime("%Y-%m-%d")
-        player_daily_key = f"{player_id}:{today_key}"
-        
-        current_cost = self.cost_tracking.get(player_daily_key, 0.0)
-        if current_cost + estimated_cost_usd > self.rate_limits["max_cost_per_day_usd"]:
-            return False
-        
-        return True
+        """Backward-compatible boolean form. first_login.py's existing call
+        site (`if not security_service.check_cost_limits(...)`) is
+        UNCHANGED and transparently gains the instance breaker's
+        protection through this same check -- it never needed to learn
+        about `CostLimitResult`; the 402 it already raises on any False
+        now also fires for an instance-wide circuit-breaker trip."""
+        return self.check_cost_limits_detailed(player_id, estimated_cost_usd).allowed
 
     def track_cost(self, player_id: str, actual_cost_usd: float):
-        """Track API costs per player per day"""
+        """Track API costs per player per day AND the instance-wide
+        aggregate (WO-ARIA-COST-CAPS) that backs the circuit breaker."""
         today_key = datetime.utcnow().strftime("%Y-%m-%d")
         player_daily_key = f"{player_id}:{today_key}"
-        
+
         current_cost = self.cost_tracking.get(player_daily_key, 0.0)
         self.cost_tracking[player_daily_key] = current_cost + actual_cost_usd
+
+        instance_cost = self.instance_cost_tracking.get(today_key, 0.0)
+        self.instance_cost_tracking[today_key] = instance_cost + actual_cost_usd
 
     def get_or_create_player_profile(self, player_id: str) -> PlayerSecurityProfile:
         """Get or create security profile for player"""
@@ -712,7 +788,6 @@ class AISecurityService:
         now = datetime.utcnow()
         
         profile.request_count_1min += 1
-        profile.request_count_1hour += 1
         profile.request_count_1day += 1
         profile.last_request_time = now
 
@@ -736,7 +811,6 @@ class AISecurityService:
             "violation_count": profile.violation_count,
             "last_violation": profile.last_violation.isoformat() if profile.last_violation else None,
             "request_count_1min": profile.request_count_1min,
-            "request_count_1hour": profile.request_count_1hour,
             "request_count_1day": profile.request_count_1day,
             "block_expires": profile.block_expires.isoformat() if profile.block_expires else None
         }
@@ -761,9 +835,16 @@ class AISecurityService:
         rate = cost_per_token.get(model, 0.000003)
         # Multiply by 3 to account for input + output + overhead
         estimated_cost = total_tokens * rate * 3
-        
-        # Cap at reasonable maximum per request
-        return min(estimated_cost, 0.05)  # Max $0.05 per request
+
+        # WO-ARIA-COST-CAPS: no cap applied here anymore. The old hardcoded
+        # `min(estimated_cost, 0.05)` silently pinned every estimate at the
+        # STALE pre-amendment per-request figure, which would have made
+        # check_cost_limits_detailed's own `max_cost_per_request` (now
+        # $0.25) check structurally unreachable from a real estimate --
+        # the enforcement ceiling now lives in exactly ONE place
+        # (`rate_limits["max_cost_per_request"]`, checked by check_cost_
+        # limits_detailed), not duplicated here.
+        return estimated_cost
 
     def calculate_actual_cost(self, api_response: dict, model: str = "claude-3-sonnet") -> float:
         """Calculate actual cost from API response data"""
@@ -912,14 +993,23 @@ class AISecurityService:
                 "total_today_usd": round(total_daily_cost, 4),
                 "average_per_player_usd": round(total_daily_cost / len(daily_costs), 4) if daily_costs else 0,
                 "highest_spender": max(daily_costs.items(), key=lambda x: x[1]) if daily_costs else None,
-                "players_over_limit": sum(1 for cost in daily_costs.values() 
+                "players_over_limit": sum(1 for cost in daily_costs.values()
                                         if cost > self.rate_limits["max_cost_per_day_usd"] * 0.8),
+                # WO-ARIA-COST-CAPS: instance-wide circuit-breaker visibility --
+                # canon (OPERATIONS/aria.md) calls for operator dashboards to
+                # alert at 75% of the daily instance ceiling.
+                "instance_spend_today_usd": round(self.instance_cost_tracking.get(today_key, 0.0), 4),
+                "instance_breaker_tripped": (
+                    self.instance_cost_tracking.get(today_key, 0.0)
+                    >= self.rate_limits["instance_max_cost_per_day_usd"]
+                ),
             },
             "rate_limits": {
                 "requests_per_minute": self.rate_limits["requests_per_minute"],
-                "requests_per_hour": self.rate_limits["requests_per_hour"],
                 "requests_per_day": self.rate_limits["requests_per_day"],
                 "max_cost_per_day_usd": self.rate_limits["max_cost_per_day_usd"],
+                "max_cost_per_request": self.rate_limits["max_cost_per_request"],
+                "instance_max_cost_per_day_usd": self.rate_limits["instance_max_cost_per_day_usd"],
             }
         }
 

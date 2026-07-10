@@ -1125,8 +1125,17 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
     EnhancedAIService needs an AsyncSession, so we open one here. AI safety —
     input sanitization, prompt-injection filtering, and response sanitization —
     lives INSIDE EnhancedAIService.process_natural_language_query (the same
-    proven path the /enhanced-ai/chat REST route uses); we do not bypass it."""
+    proven path the /enhanced-ai/chat REST route uses); we do not bypass it.
+
+    WO-ARIA-COST-CAPS: rate/cost gating does NOT live inside EnhancedAIService
+    (verified -- no cost/security_service reference anywhere in that module)
+    and did not previously run on this path at all. Wired here to mirror
+    api/routes/enhanced_ai.py's chat_with_ai exactly -- content-safety and
+    rate-limit failures stay hard `error` frames; a cost-cap hit degrades to
+    an `aria_response` carrying `degraded`/`scope`, never a hard error."""
     import uuid as _uuid
+
+    from src.services.ai_security_service import get_security_service
 
     metadata = connection_manager.connection_metadata.get(user_id, {})
     user_data = metadata.get("user_data", {})
@@ -1141,6 +1150,53 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
             "message": "ARIA request missing player context or message content",
         })
         return
+
+    security_service = get_security_service()
+    is_safe, violations = security_service.validate_input(
+        content, str(player_id), str(conversation_id or "ws-aria-chat"),
+    )
+    if not is_safe:
+        logger.warning(f"ARIA WS security violation by player {player_id}: {[v.violation_type.value for v in violations]}")
+        await connection_manager.send_personal_message(user_id, {
+            "type": "error",
+            "message": "Input validation failed due to security policy",
+        })
+        return
+
+    if not security_service.check_rate_limits(str(player_id)):
+        await connection_manager.send_personal_message(user_id, {
+            "type": "error",
+            "message": "Rate limit exceeded. Please wait before making another request.",
+        })
+        return
+
+    estimated_cost = security_service.estimate_ai_cost(content)
+    cost_result = security_service.check_cost_limits_detailed(str(player_id), estimated_cost)
+    if not cost_result.allowed:
+        logger.info(
+            "ARIA WS cost cap hit for player %s: %s (scope=%s)",
+            player_id, cost_result.error_code, cost_result.scope,
+        )
+        await connection_manager.send_personal_message(user_id, {
+            "type": "aria_response",
+            "conversation_id": conversation_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "data": {
+                # Plain operational notice, NOT in-character narration --
+                # flavor text is a later ARIA WO's job per dispatch.
+                "message": "ARIA's advanced response is temporarily unavailable. Please try again later.",
+                "confidence": 0,
+                "context_used": context_type,
+                "actions": [],
+                "suggestions": [],
+                "learning_note": None,
+                "degraded": True,
+                "scope": cost_result.scope,
+            },
+        })
+        return
+
+    sanitized_content = security_service.sanitize_input(content)
 
     try:
         from src.core.database import AsyncSessionLocal
@@ -1157,10 +1213,14 @@ async def handle_aria_chat(user_id: str, message_data: Dict[str, Any]):
             # the service can continue the thread when it is a valid id.
             result = await ai_service.process_natural_language_query(
                 player_id=_uuid.UUID(str(player_id)),
-                user_input=content,
+                user_input=sanitized_content,
                 conversation_id=conversation_id,
             )
             await adb.commit()
+
+        # Simplified real-cost tracking (matches first_login.py's own
+        # "actual_cost = estimated_cost -- Simplified for now" convention).
+        security_service.track_cost(str(player_id), estimated_cost)
 
         await connection_manager.send_personal_message(user_id, {
             "type": "aria_response",
