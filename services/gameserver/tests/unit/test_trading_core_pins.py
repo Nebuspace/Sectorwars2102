@@ -518,6 +518,102 @@ class TestBuySellExecution:
         assert ship.cargo["used"] == 0  # untouched
 
 
+def _bonus_player(*, credits: int, turns: int = 50) -> Player:
+    """Same as `_neutral_player` but carrying the ADR-0026 FL1 lifetime
+    first-login negotiation trade bonus (`Player.settings["trade_bonus"]
+    = 0.1`, written by `first_login_service.complete_first_login` when
+    `negotiation_skill` is STRONG and the awarded ship's `rarity_tier >= 3`
+    -- see `tests/unit/test_first_login_persistence.py` for the write-path
+    pin). Every other modifier stays neutral, isolating the price delta to
+    this one term."""
+    player = _neutral_player(credits=credits, turns=turns)
+    player.settings = {"trade_bonus": 0.1}
+    return player
+
+
+@pytest.mark.asyncio
+class TestFirstLoginTradeBonusPricing:
+    """Pins the ADR-0026 FL1 term of `compute_player_price_multiplier`
+    (trading_service.py) at the route level, through the single shared
+    buy+sell multiplier site `compute_effective_unit_price` calls
+    (trading.py:278).
+
+    Two claims:
+
+    1. A bonus player trades exactly 10% better than a neutral twin -- BUY
+       charges 90% of the posted price; SELL pays 1 / 0.9 of it (the
+       documented divide-on-sell inversion, symmetric with the rank/rep
+       layers).
+    2. `_neutral_player`'s `settings={}` (used throughout
+       `TestBuySellExecution` above) already IS the no-bonus-set legacy
+       shape -- `Player.settings` is `Column(JSONB, nullable=False,
+       default={})` (models/player.py:153), so a never-migrated /
+       never-earned-the-bonus player's settings can only ever be `{}`, not
+       `None`. `test_buy_charges_exact_posted_price_and_fills_cargo` /
+       `test_sell_pays_exact_posted_price_and_drains_cargo` charging exactly
+       the posted `MarketPrice` (no discount) ARE the no-bonus regression
+       pin for this feature -- this class doesn't duplicate them, it makes
+       the cross-reference explicit so the "byte-identical for legacy
+       players" claim is provable from the suite.
+    """
+
+    async def test_buy_charges_10pct_less_for_bonus_player_than_neutral_twin(self):
+        player = _bonus_player(credits=10_000)
+        station = _neutral_station()
+        ship = _ship(capacity=100)
+        mp = _market_price(station.id, buy_price=20, sell_price=30, quantity=500)
+        db = _session_for(player, station, ship, mp, player_seq_len=1)
+
+        result = await buy_resource(
+            trade_request=TradeRequest(station_id=str(station.id), resource_type="ore", quantity=10),
+            db=db, current_user=None, current_player=player,
+        )
+
+        # Neutral twin charges exactly the posted sell_price (30/unit --
+        # see test_buy_charges_exact_posted_price_and_fills_cargo). The
+        # bonus player must charge exactly 10% less: int(30 * 0.9) == 27,
+        # comfortably inside ore's [15, 45] canon band so the final clamp
+        # never interferes.
+        assert result["transaction"]["unit_price"] == 27
+        assert result["transaction"]["total_cost"] == 270
+        assert player.credits == 10_000 - 270
+
+    async def test_sell_pays_10pct_more_for_bonus_player_than_neutral_twin(self):
+        player = _bonus_player(credits=1_000)
+        station = _neutral_station()
+        ship = _ship(capacity=100, used=10, contents={"ore": 10})
+        mp = _market_price(station.id, buy_price=20, sell_price=30, quantity=500)
+        db = _session_for(player, station, ship, mp, player_seq_len=1)
+
+        result = await sell_resource(
+            trade_request=TradeRequest(station_id=str(station.id), resource_type="ore", quantity=10),
+            db=db, current_user=None, current_player=player,
+        )
+
+        # Neutral twin is paid exactly the posted buy_price (20/unit --
+        # see test_sell_pays_exact_posted_price_and_drains_cargo). SELL
+        # divides by the player-pays multiplier (a favoured player is paid
+        # MORE): int(20 / 0.9) == 22.
+        assert result["transaction"]["unit_price"] == 22
+        assert result["transaction"]["total_earnings"] == 220
+        assert player.credits == 1_000 + 220
+
+
+class TestNeutralPlayerIsTheLegacyNoBonusShape:
+    """Not asyncio -- kept as its own plain class (rather than a method on
+    TestFirstLoginTradeBonusPricing) so it doesn't inherit that class's
+    `@pytest.mark.asyncio` mark. Ties claim 2 above to a concrete assertion:
+    `_neutral_player`'s settings really is the same `{}` shape a
+    legacy/no-bonus player's row carries, and reading `trade_bonus` off it
+    really is neutral (0.0) -- exactly what `compute_player_price_multiplier`
+    reads."""
+
+    def test_neutral_player_settings_is_empty_dict_not_none(self):
+        player = _neutral_player(credits=0)
+        assert player.settings == {}
+        assert player.settings.get("trade_bonus", 0.0) == 0.0
+
+
 class TestDockedTradeNeverSpendsTurns:
     """Structural pin (mirrors test_warp_gate_toll.py's inspect.getsource
     technique): buy_resource/sell_resource must never call spend_turns at
