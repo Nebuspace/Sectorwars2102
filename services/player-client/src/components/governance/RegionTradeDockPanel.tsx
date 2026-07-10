@@ -169,8 +169,12 @@ const RegionTradeDockPanel: React.FC<RegionTradeDockPanelProps> = ({
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
+      // Pass the already-known regionId prop through explicitly — a
+      // 2+-region owner's unscoped getMyRegion() 400s (WO-DRIFT-admin-gov-
+      // multiregion-owner-500); this panel already knows which region it's
+      // scoped to, so there's no ambiguity to resolve here.
       const [region, reservations] = await Promise.all([
-        regionOwnerAPI.getMyRegion(),
+        regionOwnerAPI.getMyRegion(regionId || undefined),
         constructionAPI.getMyReservations(),
       ]);
       setTotalSectors(typeof region?.total_sectors === 'number' ? region.total_sectors : null);
@@ -193,7 +197,7 @@ const RegionTradeDockPanel: React.FC<RegionTradeDockPanelProps> = ({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [regionId]);
 
   useEffect(() => {
     if (!isOwner || !regionId) return;

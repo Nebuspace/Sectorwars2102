@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy import select, update, func, and_, or_
+from sqlalchemy.exc import MultipleResultsFound
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 import uuid
@@ -253,17 +254,93 @@ def _serialize_invite(invite: RegionInvite) -> Dict[str, Any]:
     }
 
 
-async def get_user_region(db: AsyncSession, user_id: uuid.UUID) -> Optional[Region]:
-    """Get the region owned by the current user"""
+class AmbiguousRegionOwnerError(Exception):
+    """Raised by get_user_region when the caller owns 2+ regions and no
+    region_id was supplied to disambiguate (WO-DRIFT-admin-gov-multiregion-
+    owner-500). Carries every owned region so the route layer can 400 with a
+    pick-list -- get_user_region / verify_region_owner NEVER silently choose
+    one on the caller's behalf."""
+
+    def __init__(self, regions: List[Region]) -> None:
+        self.regions = regions
+        super().__init__("Ambiguous region owner: region_id required")
+
+
+async def get_owned_regions(db: AsyncSession, user_id: uuid.UUID) -> List[Region]:
+    """All regions owned by user_id, ordered by name for a stable pick-list."""
     result = await db.execute(
-        select(Region).where(Region.owner_id == user_id)
+        select(Region).where(Region.owner_id == user_id).order_by(Region.name)
     )
-    return result.scalar_one_or_none()
+    return list(result.scalars().all())
 
 
-async def verify_region_owner(db: AsyncSession, user: User) -> Region:
-    """Verify that the user owns a region and return it"""
-    region = await get_user_region(db, user.id)
+async def get_user_region(
+    db: AsyncSession, user_id: uuid.UUID, region_id: Optional[uuid.UUID] = None
+) -> Optional[Region]:
+    """Resolve the region the caller is acting on as owner.
+
+    ``region_id`` given: return that region IFF owned by user_id (id AND
+    owner_id both match in one query -- mirrors RegionInviteService.
+    owns_region) -- else None. id is the primary key so this can never raise
+    MultipleResultsFound. The caller (verify_region_owner) turns None into a
+    flat 403, never distinguishing "doesn't exist" from "someone else's
+    region" for a non-owner.
+
+    ``region_id`` absent: the original single-region lookup, unchanged for a
+    1-region owner (same single query, same scalar_one_or_none()). A
+    2+-region owner previously blew this up with an unhandled
+    MultipleResultsFound (500, the bug this fixes); that is now caught and
+    re-raised as AmbiguousRegionOwnerError carrying every owned region, so the
+    route can 400 with a pick-list instead of a crash or a silent pick.
+    """
+    if region_id is not None:
+        result = await db.execute(
+            select(Region).where(
+                and_(Region.id == region_id, Region.owner_id == user_id)
+            )
+        )
+        return result.scalar_one_or_none()
+
+    result = await db.execute(select(Region).where(Region.owner_id == user_id))
+    try:
+        return result.scalar_one_or_none()
+    except MultipleResultsFound:
+        raise AmbiguousRegionOwnerError(await get_owned_regions(db, user_id))
+
+
+async def verify_region_owner(
+    db: AsyncSession, user: User, region_id: Optional[uuid.UUID] = None
+) -> Region:
+    """Verify the user owns the region being acted on and return it.
+
+    - ``region_id`` given: 403 if not owned by this user -- an authz denial,
+      never a 404 (does not leak whether region_id exists at all).
+    - ``region_id`` absent + exactly 1 owned region: that region (unchanged
+      back-compat path for every existing /my-region/* caller).
+    - ``region_id`` absent + 0 owned regions: 404 (unchanged).
+    - ``region_id`` absent + 2+ owned regions: 400 listing the owned regions
+      -- NEVER a silent pick (WO-DRIFT-admin-gov-multiregion-owner-500).
+    """
+    if region_id is not None:
+        region = await get_user_region(db, user.id, region_id)
+        if region is None:
+            raise HTTPException(status_code=403, detail="Not the region owner")
+        return region
+
+    try:
+        region = await get_user_region(db, user.id)
+    except AmbiguousRegionOwnerError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "ERR_AMBIGUOUS_REGION_OWNER",
+                "message": "You own multiple regions; pass region_id to select one.",
+                "regions": [
+                    {"id": str(r.id), "name": r.name, "display_name": r.display_name}
+                    for r in exc.regions
+                ],
+            },
+        )
     if not region:
         raise HTTPException(status_code=404, detail="No region found for this user")
     return region
@@ -272,10 +349,11 @@ async def verify_region_owner(db: AsyncSession, user: User) -> Region:
 @router.get("/my-region")
 async def get_my_region(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get information about the user's owned region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     return {
         "id": str(region.id),
@@ -313,10 +391,11 @@ async def get_my_region(
 @router.get("/my-region/stats")
 async def get_regional_stats(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get comprehensive statistics for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Get membership statistics
     membership_stats = await db.execute(
@@ -406,10 +485,11 @@ async def get_regional_stats(
 async def update_economic_config(
     config: EconomicConfigUpdate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Update economic configuration for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Validate trade bonuses
     for resource, bonus in config.trade_bonuses.items():
@@ -441,10 +521,11 @@ async def update_economic_config(
 async def update_governance_config(
     config: GovernanceConfigUpdate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Update governance configuration for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Validate governance type
     if config.governance_type not in ['autocracy', 'democracy', 'council']:
@@ -475,10 +556,11 @@ async def update_governance_config(
 @router.get("/my-region/policies")
 async def get_regional_policies(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get all policies for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     result = await db.execute(
         select(RegionalPolicy)
@@ -510,10 +592,11 @@ async def get_regional_policies(
 async def create_policy(
     policy_data: PolicyCreate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Create a new policy proposal for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
 
     # Get current user's player record
     player_result = await db.execute(
@@ -560,10 +643,11 @@ async def create_policy(
 @router.get("/my-region/elections")
 async def get_regional_elections(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get all elections for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     result = await db.execute(
         select(RegionalElection)
@@ -590,10 +674,11 @@ async def get_regional_elections(
 async def start_election(
     election_data: ElectionCreate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Start a new election for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Check if there's already an active election for this position
     existing_election = await db.scalar(
@@ -639,10 +724,11 @@ async def start_election(
 @router.get("/my-region/treaties")
 async def get_regional_treaties(
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get all treaties for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     result = await db.execute(
         select(RegionalTreaty, Region.name.label('partner_name'))
@@ -727,6 +813,7 @@ async def propose_treaty(
     body: TreatyPropose,
     current_user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Propose a treaty FROM the caller's owned region TO another region.
 
@@ -736,7 +823,7 @@ async def propose_treaty(
     owner accepts. 400 if proposing to one's own region; 404 if the counterparty
     region does not exist; 409 if a live (proposed/active) treaty already exists
     between the pair (either direction)."""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
 
     result = await RegionalGovernanceService.propose_treaty(
         db,
@@ -844,10 +931,11 @@ async def terminate_treaty(
 async def update_cultural_identity(
     culture_data: CulturalUpdate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Update cultural identity for the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
     
     # Update region
     await db.execute(
@@ -871,10 +959,11 @@ async def get_regional_members(
     current_user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_async_session),
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Get members of the user's region"""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
 
     # Delegate to the service (single source of truth for the
     # Player.username-is-a-property fallback query) rather than duplicating
@@ -889,7 +978,8 @@ async def update_member_dials(
     player_id: uuid.UUID,
     body: MemberDialsUpdate,
     current_user: User = Depends(require_auth),
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
+    region_id: Optional[uuid.UUID] = None,
 ):
     """Adjust a region member's voting_power / local_rank (region OWNER
     only; SYSTEMS/regional-governance.md:71-76).
@@ -898,7 +988,7 @@ async def update_member_dials(
     ``player_id`` does not resolve to a RegionalMembership in the caller's
     region; 400 if neither field is supplied. Schema-level 422 covers the
     [0.0, 5.0] voting_power band and the 50-char local_rank cap."""
-    region = await verify_region_owner(db, current_user)
+    region = await verify_region_owner(db, current_user, region_id)
 
     result = await db.execute(
         select(RegionalMembership).where(

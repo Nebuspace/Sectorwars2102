@@ -38,21 +38,38 @@ async function apiRequest(
       // `.errors`) so a call site that needs per-field detail can read it,
       // while `.message` still gets a sane joined fallback for every other
       // (non-field-aware) caller.
+      //
+      // GET /regions/my-region (no region_id) 400s a 2+-region owner with
+      // `detail: {code: "ERR_AMBIGUOUS_REGION_OWNER", regions: [...]}`
+      // instead of guessing one (WO-DRIFT-admin-gov-multiregion-owner-500).
+      // Surface `code`/`regions` the same way, generalized beyond that one
+      // shape so any future structured-detail route gets them for free.
       let msg: string | undefined;
       let errors: string[] | undefined;
+      let code: string | undefined;
+      let regions: Array<{ id: string; name: string; display_name?: string }> | undefined;
       if (data && typeof data === 'object') {
         if (typeof data.detail === 'string') {
           msg = data.detail;
-        } else if (
-          data.detail && typeof data.detail === 'object' && Array.isArray(data.detail.errors)
-        ) {
-          errors = data.detail.errors;
-          msg = errors!.join('; ');
+        } else if (data.detail && typeof data.detail === 'object') {
+          if (Array.isArray(data.detail.errors)) {
+            errors = data.detail.errors;
+            msg = errors!.join('; ');
+          }
+          if (typeof data.detail.code === 'string') {
+            code = data.detail.code;
+          }
+          if (Array.isArray(data.detail.regions)) {
+            regions = data.detail.regions;
+          }
+          msg = msg || data.detail.message;
         }
         msg = msg || data.message;
       }
       const err = new Error(msg || `API Error: ${error.response.status}`);
       if (errors) (err as any).errors = errors;
+      if (code) (err as any).code = code;
+      if (regions) (err as any).regions = regions;
       throw err;
     }
     // Network-level failure (no response) – rethrow like fetch would.
@@ -931,8 +948,18 @@ export const governanceAPI = {
 //   GET    /api/v1/regions/{region_id}/invites              — list owner's invites
 //   POST   /api/v1/regions/{region_id}/invites/{id}/revoke  — revoke (idempotent)
 export const regionOwnerAPI = {
-  // Probe region ownership + load the owned region. Throws on 404 (not an owner).
-  getMyRegion: () => apiRequest('/api/v1/regions/my-region'),
+  // Probe region ownership + load the owned region. Throws on 404 (not an
+  // owner). Omitting regionId is fine for a 1-region owner (unchanged); a
+  // 2+-region owner without it gets a 400 whose thrown Error carries
+  // `.code === 'ERR_AMBIGUOUS_REGION_OWNER'` and `.regions` (the pick-list) —
+  // never a silent guess. Pass the region_id a caller already knows (e.g. a
+  // panel that received it as a prop) to skip the ambiguity entirely.
+  getMyRegion: (regionId?: string) =>
+    apiRequest(
+      regionId
+        ? `/api/v1/regions/my-region?region_id=${encodeURIComponent(regionId)}`
+        : '/api/v1/regions/my-region'
+    ),
 
   // List the caller's invites for a region (newest first), owner-scoped.
   listInvites: (regionId: string) =>

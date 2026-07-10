@@ -701,6 +701,12 @@ const GameDashboard: React.FC = () => {
   // is taken from the probe response and handed to the invite panel.
   const [ownedRegionId, setOwnedRegionId] = useState<string | null>(null);
   const [ownedRegionName, setOwnedRegionName] = useState<string | null>(null);
+  // WO-DRIFT-admin-gov-multiregion-owner-500: a 2+-region owner's unscoped
+  // probe now 400s with a pick-list (never a silent guess) — these are the
+  // choices offered until the player picks one via the HUD switcher.
+  const [ownedRegionChoices, setOwnedRegionChoices] = useState<
+    Array<{ id: string; name: string; display_name?: string }>
+  >([]);
   const [showRegionInvites, setShowRegionInvites] = useState(false);
   // Region-funded TradeDock construction (WO-TD-RGF-1). Reuses the ownership
   // probe/state above rather than re-probing — same owner, same region.
@@ -714,12 +720,23 @@ const GameDashboard: React.FC = () => {
         if (cancelled || !region?.id) return;
         setOwnedRegionId(String(region.id));
         setOwnedRegionName(region.display_name || region.name || null);
-      } catch {
-        // 404 (not an owner) or transient error — leave the trigger hidden.
-        if (!cancelled) {
+      } catch (err) {
+        if (cancelled) return;
+        const regions = (err as any)?.regions as
+          | Array<{ id: string; name: string; display_name?: string }>
+          | undefined;
+        if ((err as any)?.code === 'ERR_AMBIGUOUS_REGION_OWNER' && regions?.length) {
+          // Multiple owned regions — surface the switcher instead of hiding
+          // ownership entirely.
+          setOwnedRegionChoices(regions);
           setOwnedRegionId(null);
           setOwnedRegionName(null);
+          return;
         }
+        // 404 (not an owner) or a transient error — leave the trigger hidden.
+        setOwnedRegionId(null);
+        setOwnedRegionName(null);
+        setOwnedRegionChoices([]);
       }
     })();
     return () => {
@@ -728,6 +745,12 @@ const GameDashboard: React.FC = () => {
   }, []);
 
   const isRegionOwner = ownedRegionId !== null;
+
+  const selectOwnedRegion = (choice: { id: string; name: string; display_name?: string }) => {
+    setOwnedRegionId(choice.id);
+    setOwnedRegionName(choice.display_name || choice.name);
+    setOwnedRegionChoices([]);
+  };
 
   // Swapping off the Warp Jumper drops back to the warp graph and closes
   // the Gatewright panel — neither exists without the quantum drive.
@@ -2394,6 +2417,26 @@ const GameDashboard: React.FC = () => {
                   >
                     ◆ GOVERNANCE
                   </button>
+                )}
+                {!isRegionOwner && ownedRegionChoices.length > 0 && (
+                  <select
+                    className="hud-region-owner-picker"
+                    defaultValue=""
+                    title="You own multiple regions — pick one to manage"
+                    onChange={(e) => {
+                      const choice = ownedRegionChoices.find((r) => r.id === e.target.value);
+                      if (choice) selectOwnedRegion(choice);
+                    }}
+                  >
+                    <option value="" disabled>
+                      ◆ SELECT REGION TO MANAGE
+                    </option>
+                    {ownedRegionChoices.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.display_name || r.name}
+                      </option>
+                    ))}
+                  </select>
                 )}
                 {isRegionOwner && (
                   <button

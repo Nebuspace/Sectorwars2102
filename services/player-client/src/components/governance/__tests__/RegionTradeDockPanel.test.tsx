@@ -101,6 +101,24 @@ describe('RegionTradeDockPanel', () => {
     expect(mockGetMyReservations).not.toHaveBeenCalled();
   });
 
+  it('passes its regionId prop through to getMyRegion, never an unscoped probe (WO-DRIFT-admin-gov-multiregion-owner-500)', async () => {
+    // This panel already knows which region it's scoped to (its regionId
+    // prop, sourced from GameDashboard's ownership probe/switcher) — it must
+    // never re-probe unscoped, which would 400 for a 2+-region owner instead
+    // of reusing the already-resolved region.
+    mockGetMyRegion.mockResolvedValue(ELIGIBLE_REGION);
+    mockGetMyReservations.mockResolvedValue(NO_RESERVATIONS);
+
+    await act(async () => {
+      root.render(
+        <RegionTradeDockPanel regionId="region-42" regionName="Test Region" isOwner={true} />
+      );
+    });
+    await flush();
+
+    expect(mockGetMyRegion).toHaveBeenCalledWith('region-42');
+  });
+
   it('renders nothing when isOwner is true but no regionId is supplied yet', async () => {
     await act(async () => {
       root.render(<RegionTradeDockPanel regionId={null} isOwner={true} />);
