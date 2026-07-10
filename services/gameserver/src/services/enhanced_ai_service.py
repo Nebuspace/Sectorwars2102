@@ -466,6 +466,22 @@ class EnhancedAIService:
             self.db, player_id_str, max_count
         )
 
+        # WO-SWEEP-RECO-GREENLET-2: the locals above only protect THIS
+        # function's own reads. get_trading_recommendations' final step,
+        # _save_recommendations_to_db, commits unconditionally on BOTH the
+        # profile-create AND profile-exists paths (it's not gated on the
+        # branch that added the profile-create refresh in c29b31c) -- so
+        # `assistant` comes back from this call expired every time, not just
+        # on a fresh DB. The CALLER (get_comprehensive_recommendations)
+        # keeps using `assistant` after this returns: further
+        # has_permission(...) checks for combat/colony/station, and the
+        # unconditional assistant_id=assistant.id in the trailing
+        # _log_security_event call. Refresh here, once, at the one place
+        # that both knows a commit just happened and still holds the
+        # reference, so every downstream read -- in this function's own
+        # future callers too, not just today's -- gets a live object.
+        await self.db.refresh(assistant)
+
         enhanced_recommendations = []
         for rec in aria_recommendations:
             # Convert ARIA TradingRecommendation to CrossSystemRecommendation
@@ -1353,7 +1369,14 @@ What would you like help with today?"""
                 ai_response_text=ai_response,
                 response_type="answer",
                 response_confidence=0.8,  # Default confidence
-                response_time_ms=elapsed_ms,
+                # WO-SWEEP-CHATLOG-CONSTRAINT: ai_conversation_logs has
+                # CheckConstraint(response_time_ms > 0, name=
+                # "positive_response_time") -- fast template-path replies
+                # can measure 0ms (perf_counter int-truncation on a
+                # sub-millisecond response), which would otherwise die at
+                # write time. 0 was never a legitimate value to store, so
+                # a 1ms floor is semantically honest, not a workaround.
+                response_time_ms=max(1, elapsed_ms),
                 conversation_context={
                     "topic": context.current_topic,
                     # security_level may be a SecurityLevel enum or already a raw
@@ -1363,10 +1386,23 @@ What would you like help with today?"""
                 privacy_level="standard",
                 data_retention_days=365  # 1 year retention
             )
-            
-            self.db.add(conversation_log)
+
+            # WO-SWEEP-CHATLOG-CONSTRAINT: conversation logging must be
+            # BEST-EFFORT -- a logging failure must never fail the chat
+            # response. The plain db.add() below this comment used to rely
+            # entirely on the calling transaction's own commit, which
+            # meant any DB-level failure here (a constraint violation, or
+            # any future schema drift) would only surface at that OUTER
+            # commit, poisoning the whole request rather than just this
+            # one log row. SAVEPOINT-isolate it instead, mirroring the
+            # established idiom (aria_personal_intelligence_service.py's
+            # record_market_observation_sync / bounty_service.py:774) --
+            # this method's own try/except then absorbs the failure.
+            async with self.db.begin_nested():
+                self.db.add(conversation_log)
+                await self.db.flush()
             # Commit handled by calling transaction
-            
+
         except Exception as e:
             logger.error(f"Failed to log conversation: {e}")
             # Don't raise - logging failure shouldn't break conversation
